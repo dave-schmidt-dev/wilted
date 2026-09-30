@@ -187,9 +187,12 @@ extension WiltedMacModel {
     /// disk. `undoSkipEpisode` therefore restores it entirely offline. An
     /// episode never started has nothing to finish, and its state is left
     /// exactly as it was.
-    func skipEpisode(_ episode: WiltedMacEpisode) {
+    ///
+    /// `requireStarted` is false only for the phone's Mark completed, where the listening
+    /// happened on the phone and the Mac has no saved position of its own.
+    func skipEpisode(_ episode: WiltedMacEpisode, requireStarted: Bool = true) {
 #if canImport(WiltedProducer)
-        guard hasStartedEpisode(episode) else {
+        guard !requireStarted || hasStartedEpisode(episode) else {
             podcastOperationMessage = "\(episode.title) was not started, so nothing was marked completed."
             return
         }

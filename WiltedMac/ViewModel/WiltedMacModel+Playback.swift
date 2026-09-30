@@ -75,9 +75,12 @@ extension WiltedMacModel {
     func togglePlayback() {
 #if canImport(WiltedProducer)
         guard let playback else { return }
+        let starting = !isPlaying
         Task { [weak self] in
             guard let self else { return }
             do {
+                // Play reads the phone's newest position first (bounded; a failure changes nothing).
+                if starting { await self.refreshPhonePositionBeforePlay() }
                 try await playback.toggle()
                 self.isPlaying = playback.isPlaying
                 self.refreshPlaybackReadout()

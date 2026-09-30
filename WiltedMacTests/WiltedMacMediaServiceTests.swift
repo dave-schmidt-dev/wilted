@@ -93,7 +93,7 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         let clock = rig.clock
         return WiltedMacInboundRuntime(
             source: rig.source, transport: rig.mac, directory: rig.directory,
-            isPlaying: { false }, now: { clock.now }
+            now: { clock.now }
         )
     }
 
@@ -315,31 +315,23 @@ final class WiltedMacMediaServiceTests: XCTestCase {
 
     // MARK: Poller
 
-    func testPollerCadenceFollowsPlaybackWithAnInjectedClock() async throws {
+    func testPollerWaitsThirtySecondsWhetherOrNotTheMacPlays() async throws {
         let rig = rig("poller-cadence")
         let gate = SleepGate()
-        let playing = LockedFlag()
         let poller = WiltedMacInboundPoller(
-            transport: rig.mac, sink: IntentCollector(), isPlaying: { playing.value },
+            transport: rig.mac, sink: IntentCollector(),
             sleep: { try await gate.sleep($0) }
         )
         await poller.start()
 
-        try await eventually("first sleep") { await gate.requested.count == 1 }
-        var requested = await gate.requested
-        XCTAssertEqual(requested, [.seconds(30)], "idle Mac waits 30 s")
-
-        playing.value = true
-        await gate.release()
-        try await eventually("second sleep") { await gate.requested.count == 2 }
-        requested = await gate.requested
-        XCTAssertEqual(requested, [.seconds(30), .seconds(5)], "playing Mac waits 5 s")
-
-        playing.value = false
-        await gate.release()
-        try await eventually("third sleep") { await gate.requested.count == 3 }
-        requested = await gate.requested
-        XCTAssertEqual(requested.last, .seconds(30))
+        for cycle in 1...3 {
+            try await eventually("sleep \(cycle)") { await gate.requested.count == cycle }
+            await gate.release()
+        }
+        let requested = await gate.requested
+        XCTAssertEqual(Array(requested.prefix(3)), Array(repeating: .seconds(30), count: 3))
+        XCTAssertTrue(requested.allSatisfy { $0 == .seconds(30) })
+        XCTAssertEqual(SyncCadence.pollInterval, 30)
         await poller.stop()
         await gate.release()
     }
@@ -350,7 +342,7 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         let sink = IntentCollector()
         let counters = Counters()
         let poller = WiltedMacInboundPoller(
-            transport: rig.mac, sink: sink, isPlaying: { false },
+            transport: rig.mac, sink: sink,
             discover: { _ = counters.bump("discover") }, maintenance: { _ = counters.bump("maintenance") },
             sleep: { _ in }
         )
@@ -370,7 +362,7 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         let rig = rig("poller-rediscover")
         let counters = Counters()
         let poller = WiltedMacInboundPoller(
-            transport: rig.mac, sink: IntentCollector(), isPlaying: { false },
+            transport: rig.mac, sink: IntentCollector(),
             discover: { _ = counters.bump("discover") },
             sleep: { _ in }
         )
@@ -384,7 +376,7 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         let rig = rig("poller-discover-retry")
         let counters = Counters()
         let poller = WiltedMacInboundPoller(
-            transport: rig.mac, sink: IntentCollector(), isPlaying: { false },
+            transport: rig.mac, sink: IntentCollector(),
             discover: {
                 if counters.bump("discover") == 1 { throw NSError(domain: "offline", code: 1) }
             },
@@ -400,15 +392,6 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         XCTAssertEqual(counters.count("discover"), 2)
         let recovered = await poller.lastFailure
         XCTAssertNil(recovered)
-    }
-}
-
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var flag = false
-    var value: Bool {
-        get { lock.withLock { flag } }
-        set { lock.withLock { flag = newValue } }
     }
 }
 

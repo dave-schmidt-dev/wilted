@@ -73,6 +73,7 @@ final class LibraryPlayer: ObservableObject {
     static let rates: [Double] = [0.75, 1, 1.25, 1.5, 1.75, 2]
     nonisolated static let skipBackSeconds: TimeInterval = 15
     nonisolated static let skipForwardSeconds: TimeInterval = 30
+    private static let maxAccrual: TimeInterval = 5
 
     @Published private(set) var item: Item?
     @Published private(set) var status: Status = .idle
@@ -98,6 +99,10 @@ final class LibraryPlayer: ObservableObject {
     private var loadGeneration: UInt64 = 0
     private var resumeAfterInterruption = false
     private var tickTask: Task<Void, Never>?
+    /// When listening was last counted; nil unless playing.
+    private var lastAccrual: ContinuousClock.Instant?
+    /// Told how many real seconds were just played and at what speed, for the phone's own totals.
+    var onListened: (@MainActor (_ wall: TimeInterval, _ rate: Double) -> Void)?
 
     init(
         engine: any ListenerAudioEngine,
@@ -166,6 +171,7 @@ final class LibraryPlayer: ObservableObject {
         if status == .ended { engine.currentTime = 0 }
         guard engine.play() else { return fail("The audio engine refused to play") }
         status = .playing
+        lastAccrual = .now
         position = engine.currentTime
         startTicking()
         publishNowPlaying()
@@ -175,8 +181,10 @@ final class LibraryPlayer: ObservableObject {
     func pause() {
         guard item != nil else { return }
         resumeAfterInterruption = false
+        accrueListening()
         engine.pause()
         stopTicking()
+        lastAccrual = nil
         position = min(engine.currentTime, duration)
         if status == .playing { status = .paused }
         publishNowPlaying()
@@ -223,8 +231,10 @@ final class LibraryPlayer: ObservableObject {
     /// Stops and forgets the item; the audio session and system controls are released.
     func stop() {
         guard item != nil || status != .idle else { return }
+        accrueListening()
         engine.pause()
         stopTicking()
+        lastAccrual = nil
         resumeAfterInterruption = false
         item = nil
         status = .idle
@@ -238,13 +248,26 @@ final class LibraryPlayer: ObservableObject {
     /// Syncs the readout with the engine; the timer calls this while playing.
     func refreshPosition() {
         guard item != nil else { return }
+        accrueListening()
         position = min(max(0, engine.currentTime), duration)
         // The engine stopped on its own without a completion (something else took the output).
         if status == .playing, !engine.isPlaying {
             status = .paused
             stopTicking()
+            lastAccrual = nil
             publishNowPlaying()
         }
+    }
+
+    /// Reports the time played since the last report. A gap longer than `maxAccrual` (a suspended
+    /// app) is capped rather than counted as listening.
+    private func accrueListening() {
+        guard status == .playing, let last = lastAccrual else { return }
+        let now = ContinuousClock.now
+        lastAccrual = now
+        let gap = last.duration(to: now).components
+        let wall = min(Double(gap.seconds) + Double(gap.attoseconds) / 1e18, Self.maxAccrual)
+        onListened?(wall, rate)
     }
 
     // MARK: System events

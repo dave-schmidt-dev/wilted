@@ -16,7 +16,10 @@ public actor HandoffCoordinator {
         /// Pause before the one confirming fetch after a takeover.
         public var settleDelay: TimeInterval
 
-        public init(publishInterval: TimeInterval = 5, settleDelay: TimeInterval = 1) {
+        public init(
+            publishInterval: TimeInterval = SyncCadence.playingPublishInterval,
+            settleDelay: TimeInterval = SyncCadence.takeoverSettleDelay
+        ) {
             self.publishInterval = publishInterval
             self.settleDelay = settleDelay
         }
@@ -41,6 +44,9 @@ public actor HandoffCoordinator {
     private let configuration: Configuration
     private var session: Session?
     private var clockOffset: TimeInterval = 0
+    /// True when the last `publishStoredPositions` skipped an entry only because a device was
+    /// playing it, so the same list is worth offering again once that device pauses.
+    public private(set) var deferredStoredPositions = false
 
     /// - Parameters:
     ///   - clock: local wall clock; injectable for tests.
@@ -113,6 +119,68 @@ public actor HandoffCoordinator {
         session = nil
     }
 
+    /// A durable position the device holds for an entry it is not playing right now.
+    public struct StoredPosition: Sendable, Equatable {
+        public let entryID: ItemID
+        public let revision: RevisionID
+        public let positionSeconds: Double
+        /// When the device last saved this position, on its own clock; nil when unknown.
+        public let updatedAt: Date?
+
+        public init(entryID: ItemID, revision: RevisionID, positionSeconds: Double, updatedAt: Date? = nil) {
+            self.entryID = entryID
+            self.revision = revision
+            self.positionSeconds = positionSeconds
+            self.updatedAt = updatedAt
+        }
+    }
+
+    /// Publishes each stored position as a paused record on the Progress channel only, so
+    /// another device can resume an episode this device paused earlier (or in a run that was
+    /// not syncing). It never touches the session, the NowPlaying record or the takeover
+    /// epoch: a playing device is not asked to relinquish, because `observe()` reads only
+    /// NowPlaying. A record carries the highest epoch already seen for its entry, so the
+    /// later server date decides among devices at that epoch.
+    ///
+    /// Skipped: the entry being played here, an entry another device is playing, an entry
+    /// another device saved more recently than `updatedAt`, and one whose own paused record
+    /// already holds this revision and position. Returns the entries written; see
+    /// `deferredStoredPositions` for a list that was held back while a device played.
+    @discardableResult
+    public func publishStoredPositions(_ positions: [StoredPosition]) async throws -> [ItemID] {
+        deferredStoredPositions = false
+        guard !positions.isEmpty else { return [] }
+        let records = try await transport.fetchDeviceRecords()
+        learnClockOffset(from: records)
+        let now = clock()
+        var written: [ItemID] = []
+        for position in positions {
+            if let session = session, session.entryID == position.entryID, session.isPlaying, !session.relinquished {
+                deferredStoredPositions = true
+                continue
+            }
+            let seen = (records.nowPlaying + records.progress).filter { $0.record.entryID == position.entryID }
+            let others = seen.filter { $0.record.deviceID != deviceID }
+            if HandoffResolver.livePlayers(others, localDeviceID: deviceID, now: now, clockOffset: clockOffset)
+                .contains(where: { $0.record.deviceID != deviceID }) {
+                deferredStoredPositions = true
+                continue
+            }
+            if let saved = position.updatedAt,
+               others.contains(where: { $0.serverModifiedAt.addingTimeInterval(-clockOffset) > saved }) { continue }
+            let own = records.progress.first { $0.record.deviceID == deviceID && $0.record.entryID == position.entryID }
+            if let own, !own.record.isPlaying, own.record.revision == position.revision,
+               abs(own.record.positionSeconds - position.positionSeconds) < 0.5 { continue }
+            let record = try DevicePlaybackPosition(
+                deviceID: deviceID, entryID: position.entryID, revision: position.revision,
+                positionSeconds: max(0, position.positionSeconds), rate: 1, isPlaying: false,
+                epoch: seen.map(\.record.epoch).max() ?? 0, publishedAt: now)
+            try await transport.publish(record, as: .progress)
+            written.append(position.entryID)
+        }
+        return written
+    }
+
     /// Waits about `settleDelay`, then observes once, catching a takeover that raced ours.
     public func settleCheck() async throws -> HandoffDecision {
         try await sleep(configuration.settleDelay)
@@ -123,7 +191,12 @@ public actor HandoffCoordinator {
     /// playing outranks this one. Once relinquished it keeps returning that decision, so a
     /// poller never restarts the loser. Paused and presumed-dead devices never force a handoff.
     public func observe() async throws -> HandoffDecision {
-        let records = try await transport.fetchDeviceRecords()
+        decision(from: try await transport.fetchDeviceRecords())
+    }
+
+    /// The same decision as `observe()`, from records the caller already holds, so a device that
+    /// polls anyway (the Mac's inbound poller) decides without a second fetch.
+    public func decision(from records: LibraryDeviceRecords) -> HandoffDecision {
         learnClockOffset(from: records)
         guard var current = session else { return .keepPlaying }
         if let winner = current.relinquishedTo { return .relinquish(to: winner) }

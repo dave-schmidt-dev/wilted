@@ -11,9 +11,9 @@ public enum HandoffDecision: Sendable, Equatable {
 /// Pure handoff rules. Devices write only their own records; readers order them
 /// by `(epoch, server modification date)`.
 public enum HandoffResolver {
-    /// A playing record not refreshed for longer than this (three publish cadences) is
-    /// treated as paused at its recorded position: its device is presumed dead.
-    public static let staleAfter: TimeInterval = 15
+    /// A playing record not refreshed for longer than this (three publish cadences, see
+    /// `SyncCadence`) is treated as paused at its recorded position: its device is presumed dead.
+    public static let staleAfter: TimeInterval = SyncCadence.staleAfter
 
     /// Whether `incoming` outranks `current`: higher epoch, else later server date.
     /// A lower epoch is stale no matter how recent its server date is.

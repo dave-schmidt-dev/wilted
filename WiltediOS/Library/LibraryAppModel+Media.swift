@@ -194,6 +194,7 @@ extension LibraryAppModel {
             switch outcome {
             case .cached:
                 setMedia(.onPhone, entryID, runID)
+                phoneStats.recordDownload(bytes: offer.byteCount)
                 if let revisionID = offer.revisionID {
                     unacknowledgedMedia[entryID] = revisionID
                     await sendPendingMediaAcknowledgements()

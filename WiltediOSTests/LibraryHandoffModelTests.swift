@@ -81,6 +81,36 @@ private final class HandoffFakeNowPlaying: ListenerNowPlaying, @unchecked Sendab
     func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void) {}
 }
 
+/// The in-memory transport with a switch that takes every playback-record read and write offline.
+private struct OfflineSwitchTransport: LibraryTransport {
+    final class Switch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var offline: Bool { get { lock.withLock { value } } set { lock.withLock { value = newValue } } }
+    }
+
+    let inner: InMemoryLibraryTransport
+    let offlineSwitch: Switch
+
+    private func check() throws {
+        if offlineSwitch.offline { throw LibraryTransportError.transport("offline") }
+    }
+
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
+    func send(intent: LibraryIntent) async throws { try await inner.send(intent: intent) }
+    func listIntents() async throws -> [LibraryIntent] { try await inner.listIntents() }
+    func mediaOffers() async throws -> [LibraryMediaOffer] { try await inner.mediaOffers() }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {
+        try check()
+        try await inner.publish(record, as: channel)
+    }
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
+        try check()
+        return try await inner.fetchDeviceRecords()
+    }
+}
+
 // MARK: - Tests
 
 @MainActor
@@ -138,7 +168,7 @@ final class LibraryHandoffModelTests: XCTestCase {
     }
 
     /// A phone whose cache already holds `cachedRevision` (nil for an empty cache).
-    private func makeRig(cached cachedRevision: RevisionID? = nil) async throws -> Rig {
+    private func makeRig(cached cachedRevision: RevisionID? = nil, transport: (any LibraryTransport)? = nil) async throws -> Rig {
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         if let cachedRevision {
             let file = scratch.appendingPathComponent(UUID().uuidString)
@@ -152,10 +182,10 @@ final class LibraryHandoffModelTests: XCTestCase {
         let sleeper = sleeper
         let clock = clock
         let model = LibraryAppModel(
-            transport: phoneTransport, deviceID: "phone", mediaCache: cache,
+            transport: transport ?? phoneTransport, deviceID: "phone", mediaCache: cache,
             mediaTiming: LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30)),
             handoffTiming: LibraryHandoffTiming(
-                observeInterval: 5, sleep: { try await sleeper.sleep($0) }, settleSleep: { _ in }),
+                observeInterval: SyncCadence.phoneObserveInterval, sleep: { try await sleeper.sleep($0) }, settleSleep: { _ in }),
             now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
         model.attachPlayer(player)
         return Rig(model: model, player: player, engine: engine, cache: cache)
@@ -233,7 +263,7 @@ final class LibraryHandoffModelTests: XCTestCase {
         XCTAssertEqual(resumed.epoch, 2)
     }
 
-    func testProgressPublishesAtFiveSecondCadenceAndOnPauseAndSeek() async throws {
+    func testProgressPublishesAtTheThirtySecondCadenceAndOnPauseAndSeek() async throws {
         let rig = try await makeRig(cached: rev1)
         rig.player.start(try await item(rig))
         await rig.model.waitForHandoff()
@@ -243,16 +273,16 @@ final class LibraryHandoffModelTests: XCTestCase {
         rig.player.refreshPosition()
         await rig.model.waitForHandoff()
         let early = try await phoneRecord()
-        XCTAssertEqual(early.positionSeconds, 0, "inside the 5 s cadence nothing is published")
+        XCTAssertEqual(early.positionSeconds, 0, "inside the 30 s cadence nothing is published")
 
-        await setTime(1_006)
-        rig.engine.currentTime = 8
+        await setTime(1_000 + SyncCadence.playingPublishInterval + 1)
+        rig.engine.currentTime = 3 + SyncCadence.playingPublishInterval - 1
         rig.player.refreshPosition()
         await rig.model.waitForHandoff()
         let cadence = try await phoneRecord()
-        XCTAssertEqual(cadence.positionSeconds, 8)
+        XCTAssertEqual(cadence.positionSeconds, 3 + SyncCadence.playingPublishInterval - 1)
 
-        await setTime(1_007)
+        await setTime(1_000 + SyncCadence.playingPublishInterval + 2)
         rig.player.seek(to: 900)
         await rig.model.waitForHandoff()
         let seeked = try await phoneRecord()
@@ -301,11 +331,11 @@ final class LibraryHandoffModelTests: XCTestCase {
 
     // MARK: relinquish
 
-    func testAPlayingPhoneRelinquishesOnTheFiveSecondObserveCadence() async throws {
+    func testAPlayingPhoneRelinquishesOnTheObserveCadence() async throws {
         let rig = try await makeRig(cached: rev1)
         rig.player.start(try await item(rig), at: 60)
         await rig.model.waitForHandoff()
-        try await eventually("observe loop sleeping") { await self.sleeper.requested == [5] }
+        try await eventually("observe loop sleeping") { await self.sleeper.requested == [SyncCadence.phoneObserveInterval] }
 
         // The Mac takes over at the next epoch; the phone notices only when its cadence fires.
         try await macPublishes(epoch: 2, playing: true, position: 61, at: 1_003)
@@ -324,7 +354,7 @@ final class LibraryHandoffModelTests: XCTestCase {
         XCTAssertTrue(stillHolds)
         // Never restarts: the loop is gone, so no further sleep is requested.
         let requested = await sleeper.requested
-        XCTAssertEqual(requested, [5])
+        XCTAssertEqual(requested, [SyncCadence.phoneObserveInterval])
     }
 
     func testALowerEpochElsewhereDoesNotPauseThePhone() async throws {
@@ -332,13 +362,13 @@ final class LibraryHandoffModelTests: XCTestCase {
         try await macPublishes(epoch: 1, playing: false, position: 10)
         rig.player.start(try await item(rig))   // phone epoch 2
         await rig.model.waitForHandoff()
-        try await eventually("observe loop sleeping") { await self.sleeper.requested == [5] }
+        try await eventually("observe loop sleeping") { await self.sleeper.requested == [SyncCadence.phoneObserveInterval] }
 
         try await macPublishes(epoch: 1, playing: true, position: 20, at: 1_002)
         await sleeper.release()
         try await eventually("second cycle") { rig.model.handoffState.observeCycles == 1 }
         XCTAssertTrue(rig.player.isPlaying)
-        try await eventually("loop sleeping again") { await self.sleeper.requested == [5, 5] }
+        try await eventually("loop sleeping again") { await self.sleeper.requested == [SyncCadence.phoneObserveInterval, SyncCadence.phoneObserveInterval] }
     }
 
     func testPlayingAgainAfterRelinquishingTakesOverWithAHigherEpoch() async throws {
@@ -475,5 +505,205 @@ final class LibraryHandoffModelTests: XCTestCase {
             records: LibraryDeviceRecords(nowPlaying: [observed]), deviceID: "phone", cachedRevisions: [entryID: rev1],
             durations: [:], now: Date(timeIntervalSince1970: 1_600), clockOffset: 0)
         XCTAssertEqual(plan, .ready(entryID: entryID, positionSeconds: 300, rate: 1.5, wasPlaying: false, sourceDeviceID: "mac"))
+    }
+
+    // MARK: Play resumes at the last position
+
+    /// The Mac's stored position for a paused episode, on the Progress channel only, as
+    /// `HandoffCoordinator.publishStoredPositions` writes it.
+    private func macStoredPosition(_ position: Double, revision: RevisionID? = nil, epoch: Int = 0) async throws {
+        let record = try DevicePlaybackPosition(
+            deviceID: "mac", entryID: entryID, revision: revision ?? rev1, positionSeconds: position, rate: 1,
+            isPlaying: false, epoch: epoch, publishedAt: clock.now)
+        try await mac.publish(record, as: .progress)
+    }
+
+    func testPlayResumesAtTheMacsStoredPausedPosition() async throws {
+        let rig = try await makeRig(cached: rev1)
+        try await macStoredPosition(754)
+        await rig.model.refresh()
+
+        await rig.model.playCached(try row())
+        await rig.model.waitForHandoff()
+
+        XCTAssertEqual(rig.player.position, 754)
+        XCTAssertEqual(rig.player.status, .playing)
+    }
+
+    func testPlayStartsOverWhenTheStoredPositionIsForADifferentRevision() async throws {
+        let rig = try await makeRig(cached: rev1)
+        try await macStoredPosition(754, revision: rev2)
+        await rig.model.refresh()
+
+        await rig.model.playCached(try row())
+        await rig.model.waitForHandoff()
+
+        XCTAssertEqual(rig.player.position, 0)
+    }
+
+    func testPlayResumesWhereThePhoneLeftOffWhenTheMacRecordIsOlder() async throws {
+        let rig = try await makeRig(cached: rev1)
+        try await macStoredPosition(50, epoch: 0)
+        rig.player.start(try await item(rig), at: 10)   // the phone takes over at epoch 1
+        await rig.model.waitForHandoff()
+        await setTime(1_010)
+        rig.engine.currentTime = 200
+        rig.player.seek(to: 200)
+        await rig.model.waitForHandoff()
+        rig.player.pause()
+        await rig.model.waitForHandoff()
+
+        // Without a fetch: the phone's own pause is remembered.
+        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 200)
+        // And after a fetch, from its own progress record on the server.
+        await rig.model.refresh()
+        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 200)
+
+        // A later Mac takeover outranks it.
+        try await macPublishes(epoch: 5, playing: false, position: 900, at: 1_020)
+        await rig.model.refresh()
+        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 900)
+    }
+    // MARK: positions the Mac adopts
+
+    private func phoneProgress() async throws -> DevicePlaybackPosition? {
+        try await mac.fetchDeviceRecords().progress.first { $0.record.deviceID == "phone" }?.record
+    }
+
+    func testAPauseThatCouldNotBePublishedIsRepublishedOnTheNextSync() async throws {
+        let offline = OfflineSwitchTransport.Switch()
+        let rig = try await makeRig(cached: rev1, transport: OfflineSwitchTransport(inner: phoneTransport, offlineSwitch: offline))
+        rig.player.start(try await item(rig), at: 10)
+        await rig.model.waitForHandoff()
+        offline.offline = true
+        await setTime(1_030)
+        rig.engine.currentTime = 300
+        rig.player.seek(to: 300)
+        await rig.model.waitForHandoff()
+        rig.player.pause()
+        await rig.model.waitForHandoff()
+        let stale = try await phoneRecord()
+        XCTAssertTrue(stale.isPlaying, "the pause never reached the server")
+        XCTAssertLessThan(stale.positionSeconds, 300)
+
+        offline.offline = false
+        await setTime(1_040)
+        await rig.model.refresh()
+
+        let progress = try await phoneProgress()
+        XCTAssertEqual(progress?.isPlaying, false)
+        XCTAssertEqual(progress?.positionSeconds, 300)
+        XCTAssertEqual(progress?.revision, rev1)
+        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 300)
+    }
+
+    func testAListenWithNoSessionAtAllIsPublishedOnceBackOnline() async throws {
+        let offline = OfflineSwitchTransport.Switch()
+        offline.offline = true
+        let rig = try await makeRig(cached: rev1, transport: OfflineSwitchTransport(inner: phoneTransport, offlineSwitch: offline))
+        rig.player.start(try await item(rig), at: 30)
+        await rig.model.waitForHandoff()
+        await setTime(1_060)
+        rig.engine.currentTime = 200
+        rig.player.refreshPosition()
+        await rig.model.waitForHandoff()
+        rig.player.pause()
+        await rig.model.waitForHandoff()
+        let nothing = try await phoneProgress()
+        XCTAssertNil(nothing, "takeover failed offline, so nothing was published")
+
+        offline.offline = false
+        await setTime(1_070)
+        await rig.model.refresh()
+
+        let progress = try await phoneProgress()
+        XCTAssertEqual(progress?.positionSeconds, 200)
+        XCTAssertEqual(progress?.isPlaying, false)
+        XCTAssertEqual(progress?.revision, rev1)
+        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 200)
+    }
+
+    func testAnOfflineListenAfterAMacTakeoverIsPublishedAtTheMacsEpochSoTheMacAdoptsIt() async throws {
+        let offline = OfflineSwitchTransport.Switch()
+        let rig = try await makeRig(cached: rev1, transport: OfflineSwitchTransport(inner: phoneTransport, offlineSwitch: offline))
+        rig.player.start(try await item(rig), at: 10)   // the phone's session, epoch 1
+        await rig.model.waitForHandoff()
+        rig.player.pause()
+        await rig.model.waitForHandoff()
+        try await macPublishes(epoch: 2, playing: false, position: 600, at: 1_020)
+        await rig.model.refresh()
+
+        offline.offline = true
+        await setTime(1_030)
+        rig.player.start(try await item(rig), at: 700)
+        await rig.model.waitForHandoff()
+        await setTime(1_060)
+        rig.engine.currentTime = 900
+        rig.player.refreshPosition()
+        await rig.model.waitForHandoff()
+        rig.player.pause()
+        await rig.model.waitForHandoff()
+
+        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 900, "offline, the phone's newer listen beats the Mac's older record")
+
+        offline.offline = false
+        await setTime(1_070)
+        await rig.model.refresh()
+
+        let progress = try await phoneProgress()
+        XCTAssertEqual(progress?.positionSeconds, 900)
+        XCTAssertGreaterThanOrEqual(progress?.epoch ?? 0, 2, "published at the entry's highest epoch")
+        let records = try await mac.fetchDeviceRecords()
+        let candidates = HandoffPositionImport.candidates(records: records, localDeviceID: "mac")
+        XCTAssertEqual(candidates.map(\.positionSeconds), [900], "the Mac would adopt the phone's listen")
+        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 900)
+    }
+
+    func testAnOfflineListenAfterAnEarlierStopIsStillPublished() async throws {
+        let offline = OfflineSwitchTransport.Switch()
+        let rig = try await makeRig(cached: rev1, transport: OfflineSwitchTransport(inner: phoneTransport, offlineSwitch: offline))
+        rig.player.start(try await item(rig), at: 10)
+        await rig.model.waitForHandoff()
+        rig.player.stop()   // the session ends with the item gone
+        await rig.model.waitForHandoff()
+
+        offline.offline = true
+        await setTime(1_030)
+        rig.player.start(try await item(rig), at: 300)
+        await rig.model.waitForHandoff()
+        await setTime(1_060)
+        rig.engine.currentTime = 450
+        rig.player.refreshPosition()
+        await rig.model.waitForHandoff()
+        rig.player.pause()
+        await rig.model.waitForHandoff()
+
+        offline.offline = false
+        await setTime(1_070)
+        await rig.model.refresh()
+
+        let progress = try await phoneProgress()
+        XCTAssertEqual(progress?.positionSeconds, 450)
+        XCTAssertEqual(progress?.isPlaying, false)
+    }
+
+    func testAPublishedPauseIsNotRepublishedAndProgressStaysAtThePause() async throws {
+        let rig = try await makeRig(cached: rev1)
+        rig.player.start(try await item(rig), at: 10)
+        await rig.model.waitForHandoff()
+        await setTime(1_030)
+        rig.engine.currentTime = 400
+        rig.player.seek(to: 400)
+        await rig.model.waitForHandoff()
+        rig.player.pause()
+        await rig.model.waitForHandoff()
+        let before = try await mac.fetchDeviceRecords().progress.first { $0.record.deviceID == "phone" }
+
+        await setTime(1_100)
+        await rig.model.refresh()
+
+        let after = try await mac.fetchDeviceRecords().progress.first { $0.record.deviceID == "phone" }
+        XCTAssertEqual(after?.serverModifiedAt, before?.serverModifiedAt, "nothing pending, nothing written")
+        XCTAssertEqual(after?.record.positionSeconds, 400)
     }
 }

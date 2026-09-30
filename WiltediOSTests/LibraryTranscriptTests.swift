@@ -186,6 +186,30 @@ final class LibraryTranscriptTests: XCTestCase {
         XCTAssertNotNil(nextSession.transcript(for: id("a")), "a new session retries once more")
     }
 
+    func testAnAlreadyCachedEpisodeGetsTheTranscriptTheMacPublishesLater() async throws {
+        let cache = makeCache()
+        try await cacheEpisode(cache, "a") // downloaded before transcripts shipped
+        let clock = TranscriptTestClock()
+        let model = LibraryAppModel(
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
+            mediaCache: cache, preferences: defaults, now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
+
+        await model.prepareTranscript(entryID: id("a"))
+        XCTAssertNil(model.transcript(for: id("a")), "the Mac has published nothing yet")
+
+        // The Mac starts syncing and publishes it for the prepared entry without a request.
+        try await mac.publishTranscript(try timed("a"))
+        clock.advance(LibraryAppModel.transcriptRetryInterval - 1)
+        await model.prepareTranscript(entryID: id("a"))
+        XCTAssertNil(model.transcript(for: id("a")), "retries are spaced, not one per open")
+
+        clock.advance(2)
+        await model.prepareTranscript(entryID: id("a"))
+        XCTAssertNotNil(model.transcript(for: id("a")), "the same session picks it up once the gap has passed")
+        let stored = await cache.cachedTranscript(entryID: id("a"), revisionID: revision("rev-a"))
+        XCTAssertNotNil(stored)
+    }
+
     func testATranscriptForAnotherRevisionIsNotUsed() async throws {
         let cache = makeCache()
         try await cacheEpisode(cache, "a", revision: "rev-a")
@@ -225,4 +249,11 @@ final class LibraryTranscriptTests: XCTestCase {
         let none = await cache.cachedTranscript(entryID: id("b"), revisionID: revision("rev-a"))
         XCTAssertNil(none)
     }
+}
+
+private final class TranscriptTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSince1970: 1_800_000_000)
+    var now: Date { lock.withLock { current } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { current = current.addingTimeInterval(seconds) } }
 }

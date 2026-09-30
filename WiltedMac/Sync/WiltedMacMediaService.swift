@@ -26,10 +26,20 @@ protocol WiltedMacReadyAudioSource: Sendable {
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio]
     /// The compact transcript the Mac already holds for exactly this revision, or nil.
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript?
+    /// The transcripts held for exactly these revisions, from one read; entries without one are absent.
+    func transcripts(for revisions: [ItemID: RevisionID]) async throws -> [ItemID: LibraryTranscript]
 }
 
 extension WiltedMacReadyAudioSource {
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? { nil }
+
+    func transcripts(for revisions: [ItemID: RevisionID]) async throws -> [ItemID: LibraryTranscript] {
+        var found: [ItemID: LibraryTranscript] = [:]
+        for (entryID, revisionID) in revisions {
+            if let value = try await transcript(for: entryID, revisionID: revisionID) { found[entryID] = value }
+        }
+        return found
+    }
 }
 
 #if canImport(WiltedProducer)
@@ -62,6 +72,16 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
         let stored = try await store.podcastLibrarySnapshot().transcripts["\(entryID.rawValue)|\(revisionID.rawValue)"]
         return stored.flatMap { LibraryTranscript.capped(entryID: entryID, from: $0) }
+    }
+
+    func transcripts(for revisions: [ItemID: RevisionID]) async throws -> [ItemID: LibraryTranscript] {
+        let stored = try await store.podcastLibrarySnapshot().transcripts
+        var found: [ItemID: LibraryTranscript] = [:]
+        for (entryID, revisionID) in revisions {
+            if let value = stored["\(entryID.rawValue)|\(revisionID.rawValue)"],
+               let capped = LibraryTranscript.capped(entryID: entryID, from: value) { found[entryID] = capped }
+        }
+        return found
     }
 }
 #endif
@@ -286,13 +306,15 @@ actor WiltedMacMediaService {
                 do {
                     let entryID = try ItemID(rawValue: key.entryID)
                     mediaLog.notice("Withdrawing audio for \(key.entryID, privacy: .public): \(record.isComplete ? "all requesters cached it" : "seven days elapsed", privacy: .public)")
-                    // Transcript first: if it fails the audio stays held, so the next sweep retries both.
-                    try await removeTranscriptIfHeld(for: key.entryID)
                     if let available = availableOffers[key.entryID], available.revisionID?.rawValue == key.revisionID {
-                        // Still prepared and queued: drop the audio, keep the offer as `available`.
+                        // Still prepared and queued: drop the audio, keep the offer as `available` and
+                        // the transcript with it, so a phone that cached the audio before transcripts
+                        // existed (or lost its copy) can still fetch it.
                         try await transport.publishMedia(offer: available, fileURL: URL(fileURLWithPath: "/dev/null"))
                         offered[key.entryID] = available
                     } else {
+                        // Transcript first: if it fails the audio stays held, so the next sweep retries both.
+                        try await removeTranscriptIfHeld(for: key.entryID)
                         try await transport.removeMedia(entryID: entryID)
                         offered[key.entryID] = nil
                     }
@@ -360,9 +382,38 @@ actor WiltedMacMediaService {
                 mediaLog.error("Could not publish the available offer for \(raw, privacy: .public): \(String(describing: error), privacy: .public)")
             }
         }
+        await publishMissingTranscripts(for: desired)
         do { try persist() } catch { mediaLog.error("Could not save media accounting: \(String(describing: error), privacy: .public)") }
         if succeeded { lastFailure = nil }
         return succeeded
+    }
+
+    /// Publishes the transcript of every prepared Larder entry that has one and is not yet published
+    /// at its revision, without a request. A phone that downloaded audio before transcripts existed
+    /// never asks again, so this is the only way it gets one. Entries without a transcript are left
+    /// alone; a failure is logged and retried by the next reconcile.
+    private func publishMissingTranscripts(for desired: [String: LibraryMediaOffer]) async {
+        var pending: [ItemID: RevisionID] = [:]
+        for (raw, offer) in desired {
+            guard let revisionID = offer.revisionID, publishedTranscripts[raw] != revisionID.rawValue else { continue }
+            pending[offer.entryID] = revisionID
+        }
+        guard !pending.isEmpty else { return }
+        let found: [ItemID: LibraryTranscript]
+        do { found = try await source.transcripts(for: pending) } catch {
+            mediaLog.error("Could not read transcripts to publish: \(String(describing: error), privacy: .public)")
+            return
+        }
+        for (entryID, transcript) in found.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            guard transcript.revisionID == pending[entryID] else { continue }
+            do {
+                try await transport.publishTranscript(transcript)
+                publishedTranscripts[entryID.rawValue] = transcript.revisionID.rawValue
+                mediaLog.notice("Published the transcript for \(entryID.rawValue, privacy: .public) without a request")
+            } catch {
+                mediaLog.error("Transcript for \(entryID.rawValue, privacy: .public) was not published: \(String(describing: error), privacy: .public)")
+            }
+        }
     }
 
     // MARK: - Transcript (published with the audio, withdrawn with it)

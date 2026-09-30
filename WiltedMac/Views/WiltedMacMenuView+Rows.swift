@@ -32,6 +32,14 @@ extension WiltedMacMenuView {
                     lifecycleLabel: showsGroupName ? group.displayName : nil,
                     identifier: "wilted-menu-metadata-\(episode.id)"
                 )
+                // Only while the phone holds the newest position; hidden otherwise.
+                if let phoneLine = model.phonePositionLabel(forEpisodeID: episode.id) {
+                    Text(phoneLine)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .lineLimit(1)
+                        .accessibilityIdentifier("wilted-menu-phone-position-\(episode.id)")
+                }
                 // Preparing stays in Downloaded, and this is the figure that
                 // says so; the row does not move groups while it runs.
                 if episode.preparationState.isRunning,

@@ -2,57 +2,156 @@ import SwiftUI
 import WiltedDomain
 import WiltedLibrary
 
-/// The decision line of a row: its buttons, or the state of the decision in flight. The state is
-/// spelled out, never carried by color alone.
-struct LibraryDecisionControl: View {
+/// A round icon button: a Wilted-coloured SF Symbol in a 44 pt target, named for VoiceOver.
+/// Every Larder and episode control is one of these, so they read as a single family.
+struct LibraryIconButton: View {
+    let symbol: String
+    let label: String
+    let identifier: String
+    var tone: WiltedStatusTone = .active
+    let action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.wiltedTextScale) private var textScale
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: WiltedTheme.scaled(24, scale: textScale)))
+                .foregroundStyle(color)
+                .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(identifier)
+    }
+
+    /// Leaf green for an action, muted for a quiet or destructive one.
+    private var color: Color {
+        tone == .neutral ? WiltedTheme.color(.secondaryText, scheme: colorScheme) : WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
+    }
+}
+
+/// The download control for one episode. Its symbol is the state: a download arrow to fetch, a
+/// ring with a stop while it moves, a trash can once the audio is on the phone. Delete asks first.
+struct LibraryDownloadControl: View {
     let entryID: ItemID
-    let actions: [LibraryDecisionAction]
-    let status: LibraryDecisionStatus?
-    let perform: (LibraryDecisionAction) -> Void
-    let cancel: () -> Void
+    let state: LibraryMediaState
+    let perform: (LibraryMediaAction) -> Void
+    @Binding var isConfirmingDelete: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        if !actions.isEmpty || status != nil {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                if let status { statusLine(status) }
-                if !actions.isEmpty {
-                    HStack(spacing: WiltedTheme.Spacing.medium) {
-                        ForEach(actions, id: \.identifier) { action in
-                            Button(action.title, systemImage: action.systemImage) { perform(action) }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-                                .accessibilityIdentifier("wilted-library-action-\(action.identifier)-\(entryID.rawValue)")
-                        }
-                    }
-                }
+        switch state {
+        case .available:
+            icon("arrow.down.circle", "Download to phone", .request, id: "get")
+        case .requested, .downloading:
+            ZStack {
+                ring
+                LibraryIconButton(
+                    symbol: "xmark", label: "Cancel download",
+                    identifier: "wilted-library-media-cancel-\(entryID.rawValue)") { perform(.cancel) }
+                    .imageScale(.small)
             }
-            .padding(.top, WiltedTheme.Spacing.xSmall)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("wilted-library-action-\(entryID.rawValue)")
+        case .verifying:
+            ProgressView()
+                .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                .accessibilityLabel("Verifying download")
+        case .onPhone:
+            LibraryIconButton(
+                symbol: "trash", label: "Delete download", identifier: "wilted-library-media-remove-\(entryID.rawValue)",
+                tone: .neutral) { isConfirmingDelete = true }
+        case .failed:
+            icon("arrow.clockwise.circle", "Retry download", .request, id: "retry")
+        case .notPrepared:
+            icon("arrow.clockwise.circle", "Check again", .request, id: "retry")
         }
     }
 
-    private func statusLine(_ status: LibraryDecisionStatus) -> some View {
-        HStack(alignment: .center, spacing: WiltedTheme.Spacing.medium) {
-            Label {
-                Text(status.text)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(tone(status).color(colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: symbol(status)).foregroundStyle(tone(status).color(colorScheme))
+    private func icon(_ symbol: String, _ label: String, _ action: LibraryMediaAction, id: String) -> some View {
+        LibraryIconButton(symbol: symbol, label: label, identifier: "wilted-library-media-\(id)-\(entryID.rawValue)") { perform(action) }
+    }
+
+    /// Progress drawn around the stop button; an unknown total shows a plain track.
+    private var ring: some View {
+        let leaf = WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
+        return ZStack {
+            Circle().stroke(leaf.opacity(0.2), lineWidth: 3)
+            if let fraction = state.fraction {
+                Circle().trim(from: 0, to: fraction)
+                    .stroke(leaf, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            } else {
+                ProgressView()
             }
-            .accessibilityIdentifier("wilted-library-action-status-\(entryID.rawValue)")
+        }
+        .frame(width: 32, height: 32)
+    }
+}
+
+/// One line of words under the controls while something is moving or has gone wrong: transfer
+/// progress, a failure, or a decision waiting on the Mac. Silent when everything is at rest, so the
+/// row stays quiet. State is always spelled out, never carried by color alone.
+struct LibraryStatusLine: View {
+    let entryID: ItemID
+    let media: LibraryMediaState?
+    let decision: LibraryDecisionStatus?
+    let cancelDecision: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            if let media, showsMedia(media) { mediaLine(media) }
+            if let decision { decisionLine(decision) }
+        }
+    }
+
+    private func showsMedia(_ state: LibraryMediaState) -> Bool {
+        switch state {
+        case .available, .onPhone: false
+        default: true
+        }
+    }
+
+    /// Re-evaluated every second while a transfer runs so the elapsed time keeps moving.
+    @ViewBuilder private func mediaLine(_ state: LibraryMediaState) -> some View {
+        if let start = state.startedAt {
+            TimelineView(.periodic(from: start, by: 1)) { context in
+                text(state.statusText(elapsed: max(0, context.date.timeIntervalSince(start))), tone(state))
+            }
+        } else {
+            text(state.statusText(), tone(state))
+        }
+    }
+
+    private func decisionLine(_ status: LibraryDecisionStatus) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.medium) {
+            text(status.text, tone(status)).accessibilityIdentifier("wilted-library-action-status-\(entryID.rawValue)")
             Spacer(minLength: 0)
             if status == .pendingOnMac {
-                Button("Stop waiting", action: cancel)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                Button(action: cancelDecision) { Text("Stop waiting").wiltedFont(.utility) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
                     .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                     .accessibilityIdentifier("wilted-library-action-cancel-\(entryID.rawValue)")
             }
+        }
+    }
+
+    private func text(_ string: String, _ tone: WiltedStatusTone) -> some View {
+        Text(string)
+            .wiltedFont(.utility)
+            .foregroundStyle(tone.color(colorScheme))
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("wilted-library-media-status-\(entryID.rawValue)")
+    }
+
+    private func tone(_ state: LibraryMediaState) -> WiltedStatusTone {
+        switch state {
+        case .requested, .downloading, .verifying: .active
+        case .failed: .failure
+        case .notPrepared: .caution
+        case .available, .onPhone: .neutral
         }
     }
 
@@ -61,114 +160,6 @@ struct LibraryDecisionControl: View {
         case .waiting, .confirming: .active
         case .pendingOnMac: .caution
         case .failed: .failure
-        }
-    }
-
-    private func symbol(_ status: LibraryDecisionStatus) -> String {
-        switch status {
-        case .waiting: "clock"
-        case .confirming: "checkmark.circle"
-        case .pendingOnMac: "exclamationmark.circle"
-        case .failed: "exclamationmark.triangle"
-        }
-    }
-}
-
-/// The audio line of a Larder row: what state the episode's audio is in, live progress while it
-/// moves, and the one action that fits. The state is always spelled out, never carried by color alone.
-struct LibraryMediaControl: View {
-    let entryID: ItemID
-    let state: LibraryMediaState
-    let perform: (LibraryMediaAction) -> Void
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-            HStack(alignment: .center, spacing: WiltedTheme.Spacing.medium) {
-                status
-                Spacer(minLength: 0)
-                action
-            }
-            progress
-        }
-        .padding(.top, WiltedTheme.Spacing.xSmall)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-library-media-\(entryID.rawValue)")
-    }
-
-    /// Re-evaluated every second while a transfer runs so the elapsed time keeps moving.
-    @ViewBuilder private var status: some View {
-        if let start = state.startedAt {
-            TimelineView(.periodic(from: start, by: 1)) { context in
-                statusText(elapsed: context.date.timeIntervalSince(start))
-            }
-        } else {
-            statusText(elapsed: 0)
-        }
-    }
-
-    private func statusText(elapsed: TimeInterval) -> some View {
-        Label {
-            Text(state.statusText(elapsed: max(0, elapsed)))
-                .wiltedFont(.utility)
-                .foregroundStyle(tone.color(colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: symbol).foregroundStyle(tone.color(colorScheme))
-        }
-        .accessibilityIdentifier("wilted-library-media-status-\(entryID.rawValue)")
-    }
-
-    @ViewBuilder private var progress: some View {
-        switch state {
-        case .downloading:
-            if let fraction = state.fraction { ProgressView(value: fraction) } else { ProgressView() }
-        case .requested, .verifying:
-            ProgressView()
-        default:
-            EmptyView()
-        }
-    }
-
-    @ViewBuilder private var action: some View {
-        switch state {
-        case .available: button("Get audio", .request, id: "get", symbol: "arrow.down.circle")
-        case .requested, .downloading: button("Cancel", .cancel, id: "cancel")
-        case .verifying: EmptyView()
-        case .onPhone: button("Remove from phone", .removeFromPhone, id: "remove")
-        case .failed: button("Retry", .request, id: "retry")
-        case .notPrepared: button("Check again", .request, id: "retry")
-        }
-    }
-
-    private func button(_ title: String, _ action: LibraryMediaAction, id: String, symbol: String? = nil) -> some View {
-        Button { perform(action) } label: {
-            if let symbol { Label(title, systemImage: symbol) } else { Text(title) }
-        }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-            .accessibilityIdentifier("wilted-library-media-\(id)-\(entryID.rawValue)")
-    }
-
-    private var tone: WiltedStatusTone {
-        switch state {
-        case .available: .neutral
-        case .requested, .downloading, .verifying: .active
-        case .onPhone: .positive
-        case .failed: .failure
-        case .notPrepared: .caution
-        }
-    }
-
-    private var symbol: String {
-        switch state {
-        case .available: "icloud.and.arrow.down"
-        case .requested: "clock"
-        case .downloading, .verifying: "arrow.down.circle"
-        case .onPhone: "checkmark.circle"
-        case .failed: "exclamationmark.triangle"
-        case .notPrepared: "exclamationmark.circle"
         }
     }
 }

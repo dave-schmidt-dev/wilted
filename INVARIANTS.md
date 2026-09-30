@@ -63,13 +63,13 @@ rationale: A failed or cancelled preparation never replaces the last valid media
 area: ["WiltedMac/**", "WiltedKit/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: SwiftUI presentation and interaction invoke domain operations; producer/library state is changed only through the producer service and shared contracts.
+rationale: SwiftUI presentation and interaction invoke domain operations; producer/library state is changed only through the producer service and shared contracts. A position the iPhone reports is such a change: the phone only publishes a record, and the Mac adopts it into its stored playback state through `PlaybackController.applyRemotePosition` (never from the UI, never by the phone writing library state).
 
 ### W-INV-006 — Resume merge preserves intent
 area: ["WiltedKit/**", "WiltediOS/**", "WiltedMac/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Playback state carries revision ID, position, completion, session epoch, explicit restart/rewind intent, and update time. Merge rules preserve intentional rewinds/restarts and reject incompatible revisions. After an explicit rewind or restart, later Mac and iPhone checkpoints retain that intent for the session; compatible pending listener playback rebases against fetched server state before retry.
+rationale: Playback state carries revision ID, position, completion, session epoch, explicit restart/rewind intent, and update time. Merge rules preserve intentional rewinds/restarts and reject incompatible revisions. After an explicit rewind or restart, later Mac and iPhone checkpoints retain that intent for the session; compatible pending listener playback rebases against fetched server state before retry. A position adopted from another device is stamped with the time that device saved it and is refused when it is not newer than the stored one, when its epoch is below the highest seen for the entry, when it is for another revision, or when the episode is finished or playing; a backward move by a newer record is an intentional rewind and starts a rewind session.
 
 ### W-INV-007 — CloudKit transfer with local cache
 area: ["WiltedKit/**", "WiltedMac/**", "WiltediOS/**", "CloudSync/**", "Listener/**"]

@@ -214,4 +214,46 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTAssertNotNil(flagged.libraryDeviceID().range(of: "mac-"))
         flagged.stopLibrarySync()
     }
+    // MARK: Positions adopted from the phone
+
+    func testAPhonePositionOnTheServerBecomesTheStoredPositionThroughTheRealWiring() async throws {
+        let (model, store) = try await bootstrapped("library-sync-position-import")
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        try await store.save(feed: try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Show", createdAt: created))
+        let directory = wiltedTemporaryDirectory("library-sync-position-import-audio")
+        var ids: [ItemID] = []
+        for (index, guid) in ["a", "b"].enumerated() {
+            let enclosure = URL(string: "https://media.example.test/\(guid).mp3")!
+            let id = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosure)
+            try await WiltedMacModelTests.addReadyEpisode(
+                id, guid: guid, feedID: feedID, feedURL: feedURL, enclosureURL: enclosure,
+                publishedAt: Date(timeIntervalSince1970: 1_700_000_000 + Double(index)), directory: directory,
+                store: store, created: created)
+            ids.append(id)
+        }
+        // "b" was finished on the Mac: a phone position must not bring it back.
+        try await store.saveListening(PodcastListeningState(
+            episodeID: ids[1], completedAt: Timestamp(Date()), lastRevisionID: nil, updatedAt: Timestamp(Date())))
+        let snapshot = try await store.podcastLibrarySnapshot()
+        let server = InMemoryLibraryServer(writerDeviceID: "mac-test")
+        let phone = HandoffCoordinator(
+            transport: InMemoryLibraryTransport(deviceID: "iphone", server: server), deviceID: "iphone")
+        for id in ids {
+            let revision = try XCTUnwrap(snapshot.readyRevisions[id]).revision.revisionID
+            try await phone.takeover(entryID: id, revision: revision, positionSeconds: 1)
+            try await phone.paused(at: 4)
+        }
+
+        model.startLibrarySyncIfEnabled(
+            environment: flagOn, transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
+            debounce: .milliseconds(20), retryDelay: .milliseconds(50))
+        let revisionA = try XCTUnwrap(snapshot.readyRevisions[ids[0]]).revision.revisionID
+        try await eventually("the phone's position is stored") {
+            (try? await store.playbackState(for: ids[0], revisionID: revisionA))?.positionSeconds == 4
+        }
+        let revisionB = try XCTUnwrap(snapshot.readyRevisions[ids[1]]).revision.revisionID
+        let finished = try await store.playbackState(for: ids[1], revisionID: revisionB)
+        XCTAssertNil(finished, "a finished episode is not resurrected")
+        model.stopLibrarySync()
+    }
 }

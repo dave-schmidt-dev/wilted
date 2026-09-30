@@ -2,6 +2,8 @@ import Foundation
 import Observation
 import AppKit
 import os
+import WiltedDomain
+import WiltedLibrary
 
 #if canImport(WiltedProducer)
 import WiltedDomain
@@ -273,6 +275,11 @@ final class WiltedMacModel {
     var coordinator: PreparationCoordinator?
     var playback: PlaybackController?
     var syncLifecycle: WiltedMacSyncLifecycle?
+    /// Why CloudKit calls are paused (rate limited, unavailable) and until when; nil while they run.
+    /// Set by the library sync's shared gate, shown in the Sync settings card.
+    var libraryThrottle: TransportGateState?
+    /// Episodes whose newest listen was on the phone, from the latest device records.
+    var phonePositions: [ItemID: WiltedMacPhonePosition] = [:]
     /// Podcast feeds Wilted follows, newest subscription first.
     var subscriptions: [WiltedMacSubscription] = []
     /// Read-order metadata only. A committed Feed decision advances this

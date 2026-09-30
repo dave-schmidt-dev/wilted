@@ -55,11 +55,12 @@ enum LibraryContinuationPlanner {
     }
 }
 
-/// Waits the handoff timers use. Injected so tests drive the 5 s observe cadence without real time.
+/// Waits the handoff timers use. Injected so tests drive the observe cadence without real time.
 struct LibraryHandoffTiming: Sendable {
-    /// Gap between observations of the other devices while the phone plays. Peers treat a
-    /// device as dead after 15 s and the goal is a pause within 10 s of a Mac takeover.
-    var observeInterval: TimeInterval = 5
+    /// Gap between observations of the other devices while the phone plays
+    /// (`SyncCadence.phoneObserveInterval`, 30 s). Peers treat a device as dead after
+    /// `SyncCadence.staleAfter`, so a Mac takeover pauses the phone within about 30 s.
+    var observeInterval: TimeInterval = SyncCadence.phoneObserveInterval
     /// Waits `observeInterval` between observations.
     var sleep: @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
     /// The pause before the single confirming fetch after a takeover.
@@ -80,10 +81,22 @@ final class LibraryHandoffState {
     /// True between a successful takeover and the next pause, stop or relinquish.
     var reportedPlaying = false
     var reportedEntry: ItemID?
+    /// The entry the coordinator's session belongs to; only a successful takeover sets it. Whether
+    /// the session still exists is the coordinator's `epoch`, not this.
+    var sessionEntry: ItemID?
+    /// The entry the player held at the previous sync, so a change of item is not read as a seek.
+    var lastItemEntry: ItemID?
     var lastPosition: Double = 0
     var lastPositionAt: Date?
     /// When a takeover last failed; nil after a success. Failed attempts repeat at the observe interval.
     var lastTakeoverFailure: Date?
+    /// This phone's own last position per entry (progress records), so Play resumes where the phone
+    /// left off when nothing newer came from another device. Refreshed from every device-record fetch.
+    var ownPositions: [ItemID: ObservedPlayback] = [:]
+    /// Positions this phone saved but could not publish (offline, a failed write), by entry. The
+    /// Mac adopts the phone's position only from a published record, so each is republished on the
+    /// next sync, and meanwhile stays this phone's own position for Play.
+    var unpublished: [ItemID: (position: Double, savedAt: Date)] = [:]
     /// Server clock minus this phone's clock, learned from this device's own record.
     var clockOffset: TimeInterval = 0
     var refusedRevisions: [ItemID: RevisionID] = [:]
@@ -92,7 +105,19 @@ final class LibraryHandoffState {
     var observeCycles = 0
 }
 
+/// Lets the transport gate, built before the model exists, report to it afterwards.
+@MainActor
+final class LibraryThrottleRelay {
+    weak var model: LibraryAppModel?
+}
+
 extension LibraryAppModel {
+    /// Called by the shared gate when iCloud pushes back (state set) and when a call succeeds again (nil).
+    func throttleChanged(_ state: TransportGateState?) {
+        guard throttleState != state else { return }
+        throttleState = state
+    }
+
     /// A position change larger than this from what elapsed time predicts counts as a seek.
     static let seekThreshold: Double = 2
 
@@ -102,6 +127,7 @@ extension LibraryAppModel {
     /// player directly, so its published state is the source of truth, not the buttons.
     func attachPlayer(_ player: LibraryPlayer) {
         guard handoffState.player !== player else { return }
+        player.onListened = { [phoneStats] wall, rate in phoneStats.recordListening(wall: wall, rate: rate) }
         handoffState.subscriptions.removeAll()
         handoffState.player = player
         // `@Published` emits on the thread that mutates it, which is always the main actor here.
@@ -119,21 +145,30 @@ extension LibraryAppModel {
     /// Waits until every queued coordinator call has finished. For tests.
     func waitForHandoff() async { await handoffState.chain?.value }
 
-    /// Plays the cached file for `row` from the Mac's last observed position (else the start), or
-    /// toggles it when it is already loaded. Starting playback takes over through the player's
-    /// status change.
+    /// Plays the cached file for `row` from where it was last left, or toggles it when it is
+    /// already loaded. The start is the newest position (highest epoch, then latest server date)
+    /// among the Mac's and this phone's own records for the audio revision that is cached; a
+    /// position recorded against a different revision is never used. Starting playback takes over
+    /// through the player's status change.
     func playCached(_ row: LibraryRow) async {
         guard let player = handoffState.player, let cached = await mediaCache.cachedEntries()[row.id] else { return }
         let item = LibraryPlayer.Item(entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url)
         guard player.item != item else { return player.togglePlayPause() }
-        // The Mac's position belongs to the revision it played; a different cached revision starts over.
-        let sameAudio = checkpoints[row.id]?.record.revision == cached.revisionID
-        player.start(item, at: sameAudio ? row.resumeSeconds ?? 0 : 0)
+        player.start(item, at: resumeStart(for: row.id, cachedRevision: cached.revisionID))
+    }
+
+    /// Where `entryID` should start: the newest same-revision position, else the start.
+    func resumeStart(for entryID: ItemID, cachedRevision: RevisionID) -> Double {
+        let candidates = [checkpoints[entryID], handoffState.ownPositions[entryID]]
+            .compactMap { $0 }.filter { $0.record.revision == cachedRevision }
+        return LibraryRowBuilder.resumeSeconds(
+            HandoffResolver.winner(among: candidates), duration: entryDurations[entryID]) ?? 0
     }
 
     /// The app moved to the background: publish the current position now, since the next
     /// cadence tick may be a long way off.
     func sceneEnteredBackground() async {
+        await republishUnpublishedPositions()
         guard handoffState.reportedPlaying, let player = handoffState.player else { return }
         await runOnHandoffChain { [weak self] in
             guard let self, self.handoffState.reportedPlaying else { return }
@@ -174,10 +209,15 @@ extension LibraryAppModel {
         let state = handoffState
         let (status, position, item) = (player.status, player.position, player.item)
         let clock = now()
-        defer { state.lastPosition = position; state.lastPositionAt = clock }
+        defer { state.lastPosition = position; state.lastPositionAt = clock; state.lastItemEntry = item?.entryID }
         if status == .playing, let item {
             if !state.reportedPlaying || state.reportedEntry != item.entryID {
                 await beginPlayback(item, position: position, rate: player.rate, at: clock)
+                // A listen with no session (offline, a failed takeover) is published on the next sync.
+                if !state.reportedPlaying {
+                    state.unpublished[item.entryID] = (position, clock)
+                    await rememberOwnPosition(item.entryID, position: position)
+                }
             } else if hasJumped(to: position, rate: player.rate, at: clock) {
                 try? await coordinator.seeked(to: position)
             } else {
@@ -187,13 +227,76 @@ extension LibraryAppModel {
             state.reportedPlaying = false
             state.observeTask?.cancel()
             state.settleTask?.cancel()
+            let entryID = item?.entryID ?? state.reportedEntry
+            let paused = item == nil ? state.lastPosition : position
+            var published = true
             do {
-                if item == nil { try await coordinator.stopped(at: state.lastPosition) } else { try await coordinator.paused(at: position) }
+                if item == nil { try await coordinator.stopped(at: paused) } else { try await coordinator.paused(at: paused) }
             } catch {
+                published = false
                 handoffLog.error("Could not publish the pause: \(String(describing: error), privacy: .public)")
             }
-        } else if item != nil, abs(position - state.lastPosition) > 0.01 {
-            try? await coordinator.seeked(to: position)
+            if let entryID {
+                await rememberOwnPosition(entryID, position: paused)
+                if !published { state.unpublished[entryID] = (paused, clock) } else { state.unpublished[entryID] = nil }
+            }
+        } else if let item, state.lastItemEntry == item.entryID, abs(position - state.lastPosition) > 0.01 {
+            // The coordinator's session speaks for a seek only while it is this entry's, still exists
+            // and has not been outranked by another device's epoch since (a Mac takeover): its
+            // records publish at its own epoch. Anything else is a stored position, which takes
+            // the entry's highest epoch and needs no session.
+            var published = false
+            if state.sessionEntry == item.entryID, let epoch = await coordinator.epoch,
+               epoch >= (checkpoints[item.entryID]?.record.epoch ?? 0) {
+                do { try await coordinator.seeked(to: position); published = true } catch {}
+            }
+            if !published {
+                state.unpublished[item.entryID] = (position, clock)
+                await rememberOwnPosition(item.entryID, position: position)
+                await republishUnpublishedPositions()
+            }
+        }
+    }
+
+    /// Keeps this phone's own last position current between device-record fetches, so returning to
+    /// an episode after playing another one resumes here rather than at an older record.
+    private func rememberOwnPosition(_ entryID: ItemID, position: Double) async {
+        // The highest epoch this phone knows for the entry, so its own position outranks an older
+        // Mac record when the phone resumes offline.
+        let epoch = max(await coordinator.epoch ?? 0, checkpoints[entryID]?.record.epoch ?? 0)
+        guard let revision = await mediaCache.cachedEntries()[entryID]?.revisionID,
+              let record = try? DevicePlaybackPosition(
+                  deviceID: deviceID, entryID: entryID, revision: revision, positionSeconds: max(0, position),
+                  isPlaying: false, epoch: epoch, publishedAt: now()) else { return }
+        handoffState.ownPositions[entryID] = ObservedPlayback(
+            record: record, serverModifiedAt: now().addingTimeInterval(handoffState.clockOffset))
+    }
+
+    /// Publishes positions saved while a write failed, as paused Progress records. Anything the
+    /// coordinator declines (another device is playing the entry or saved it later) is settled
+    /// too; a failed write keeps them for the next sync.
+    func republishUnpublishedPositions() async {
+        let state = handoffState
+        guard !state.unpublished.isEmpty else { return }
+        let cached = await mediaCache.cachedEntries()
+        let pending = state.unpublished
+        do {
+            // Stored positions, not the session: they publish at the entry's highest epoch (a Mac
+            // takeover since the session began has outranked the session's own) and need no session.
+            var stored: [HandoffCoordinator.StoredPosition] = []
+            for (entryID, saved) in pending {
+                // An entry playing right now is left to its takeover, which clears the record.
+                if state.player?.isPlaying == true, state.player?.item?.entryID == entryID { continue }
+                if let revision = cached[entryID]?.revisionID {
+                    stored.append(.init(entryID: entryID, revision: revision, positionSeconds: saved.position, updatedAt: saved.savedAt))
+                }
+            }
+            _ = try await coordinator.publishStoredPositions(stored)
+            for (entryID, saved) in pending where state.unpublished[entryID]?.savedAt == saved.savedAt {
+                state.unpublished[entryID] = nil
+            }
+        } catch {
+            handoffLog.error("Could not republish positions: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -220,6 +323,8 @@ extension LibraryAppModel {
                 entryID: item.entryID, revision: revision, positionSeconds: position, rate: rate)
             state.reportedPlaying = true
             state.lastTakeoverFailure = nil
+            state.sessionEntry = item.entryID
+            state.unpublished[item.entryID] = nil
             handoffMessage = nil
             handoffLog.info("Took over playback at epoch \(epoch, privacy: .public)")
             startObserving()
@@ -290,6 +395,11 @@ extension LibraryAppModel {
     /// Recomputes the banner from fresh device records. Runs on every sync, so it covers app
     /// activation, pull to refresh and silent pushes.
     func updateContinuation(from records: LibraryDeviceRecords) async {
+        // The fetch that produced `records` replaced the own positions with what the server holds, which
+        // for a position saved offline is older: put the saved ones back once they are settled or kept.
+        let pending = handoffState.unpublished
+        await republishUnpublishedPositions()
+        for (entryID, saved) in pending { await rememberOwnPosition(entryID, position: saved.position) }
         if let own = records.nowPlaying.first(where: { $0.record.deviceID == deviceID }),
            let offset = HandoffResolver.clockOffset(of: own) { handoffState.clockOffset = offset }
         if handoffState.player?.isPlaying == true { continuation = nil; return }

@@ -6,23 +6,24 @@ import WiltedLibrary
 private let pollerLog = Logger(subsystem: "com.zerodelta.wilted", category: "MacInboundPoller")
 
 /// Reads follower intents and every device's playback records on a timer, because the Mac has
-/// no other inbound trigger while idle.
+/// no other inbound trigger while idle. Each fetch of the device records is handed to
+/// `onDeviceRecords`, where the Mac adopts the phone's positions.
 ///
 /// Every read is a targeted fetch by record name (`listIntents`, `fetchDeviceRecords`); a cycle
 /// never scans the zone. The one scan is `discover`, run at startup (retried until it succeeds)
 /// and again every `rediscoverEveryCycles` cycles, which teaches the transport the device and
 /// entry names to ask for; a phone that first publishes after startup is otherwise never heard.
-/// The interval is 5 s while the Mac plays and 30 s otherwise; `pollNow()` runs a cycle on demand.
+/// The interval is `SyncCadence.pollInterval` (30 s) whether or not the Mac plays: nothing in the
+/// background needs to be faster, and a Mac Play press reads the phone's position itself.
+/// `pollNow()` runs a cycle on demand.
 actor WiltedMacInboundPoller {
-    static let playingInterval: Duration = .seconds(5)
-    static let idleInterval: Duration = .seconds(30)
-    static let rediscoverEveryCycles = 4
+    static let pollInterval: Duration = .seconds(SyncCadence.pollInterval)
+    static let rediscoverEveryCycles = SyncCadence.rediscoverEveryCycles
 
     typealias Sleep = @Sendable (Duration) async throws -> Void
 
     private let transport: any LibraryTransport
     private let sink: any LibraryIntentSink
-    private let isPlaying: @Sendable () async -> Bool
     private let discover: (@Sendable () async throws -> Void)?
     private let onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)?
     private let maintenance: (@Sendable () async -> Void)?
@@ -40,7 +41,6 @@ actor WiltedMacInboundPoller {
     init(
         transport: any LibraryTransport,
         sink: any LibraryIntentSink,
-        isPlaying: @escaping @Sendable () async -> Bool,
         discover: (@Sendable () async throws -> Void)? = nil,
         onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
         maintenance: (@Sendable () async -> Void)? = nil,
@@ -48,7 +48,6 @@ actor WiltedMacInboundPoller {
     ) {
         self.transport = transport
         self.sink = sink
-        self.isPlaying = isPlaying
         self.discover = discover
         self.onDeviceRecords = onDeviceRecords
         self.maintenance = maintenance
@@ -83,7 +82,7 @@ actor WiltedMacInboundPoller {
     private func run() async {
         while !Task.isCancelled {
             await pollNow()
-            let interval = await isPlaying() ? Self.playingInterval : Self.idleInterval
+            let interval = Self.pollInterval
             scheduledIntervals.append(interval)
             do { try await sleep(interval) } catch { return }
         }
@@ -118,8 +117,11 @@ actor WiltedMacInboundPoller {
         }
         await maintenance?()
         cycleCount += 1
-        // A failure repeats every cycle while offline, so only a change is logged.
-        if let failure, failure != lastFailure { pollerLog.error("Poll failed: \(failure, privacy: .public)") }
+        // A failure repeats every cycle while offline, so only a change is logged. A closed gate is
+        // reported by its own status, not once per cycle here.
+        if let failure, failure != lastFailure, !failure.contains("throttled until") {
+            pollerLog.error("Poll failed: \(failure, privacy: .public)")
+        }
         lastFailure = failure
     }
 }
@@ -131,21 +133,21 @@ final class WiltedMacInboundRuntime {
     let ledger: WiltedMacIntentLedger
     let service: WiltedMacMediaService
     private let transport: any LibraryTransport
-    private let isPlaying: @Sendable () async -> Bool
     private let discover: (@Sendable () async throws -> Void)?
+    private let onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)?
     private(set) var poller: WiltedMacInboundPoller?
 
     init(
         source: any WiltedMacReadyAudioSource,
         transport: any LibraryTransport,
         directory: URL,
-        isPlaying: @escaping @Sendable () async -> Bool,
         discover: (@Sendable () async throws -> Void)? = nil,
+        onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
-        self.isPlaying = isPlaying
         self.discover = discover
+        self.onDeviceRecords = onDeviceRecords
         ledger = WiltedMacIntentLedger(fileURL: directory.appendingPathComponent("intent-ledger.json"), now: now)
         service = WiltedMacMediaService(
             source: source, transport: transport,
@@ -169,7 +171,8 @@ final class WiltedMacInboundRuntime {
         guard poller == nil else { return }
         let service = service
         let poller = WiltedMacInboundPoller(
-            transport: transport, sink: sink, isPlaying: isPlaying, discover: discover,
+            transport: transport, sink: sink, discover: discover,
+            onDeviceRecords: onDeviceRecords,
             maintenance: { await service.sweepExpired() }
         )
         self.poller = poller

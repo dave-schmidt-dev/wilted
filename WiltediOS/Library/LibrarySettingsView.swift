@@ -30,17 +30,22 @@ struct LibrarySettingsView: View {
                 .padding(WiltedTheme.Spacing.large)
             }
             .background(WiltedTheme.color(.page, scheme: colorScheme))
+            .overlay { LibraryWatermark() }
             .refreshable { await model.refresh() }
-            .navigationTitle(WiltedScreenCopy.settings)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(WiltedScreenCopy.settings).wiltedFont(.title)
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done", action: onDone)
+                    Button(action: onDone) { Text("Done").wiltedFont(.body) }
                         .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                         .accessibilityIdentifier("wilted-library-settings-done")
                 }
             }
         }
+        .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
         .task { await reloadCache() }
         // A refresh can add or drop cached audio (an account change clears it).
         .onChange(of: model.isRefreshing) { _, running in
@@ -53,14 +58,8 @@ struct LibrarySettingsView: View {
 
     private var appearanceCard: some View {
         WiltedSettingsCard(title: "Appearance") {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                Picker("Text and icon size", selection: $settings.textScale) {
-                    ForEach(WiltedTheme.TextScale.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("wilted-library-settings-text-scale")
-                note("Applies to every screen. Icons and artwork grow with the text.")
-            }
+            iconRow("textformat.size", "Text and icon size") { EmptyView() }
+            segmented(selection: $settings.textScale, identifier: "wilted-library-settings-text-scale")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-appearance")
@@ -68,20 +67,26 @@ struct LibrarySettingsView: View {
 
     private var playbackCard: some View {
         WiltedSettingsCard(title: "Playback") {
-            Stepper(
-                value: $settings.defaultSpeed, in: LibrarySettingsStore.speedRange, step: LibrarySettingsStore.speedStep
-            ) {
-                row("Default speed", LibrarySettingsFormat.speed(settings.defaultSpeed))
+            iconRow("gauge.with.dots.needle.67percent", "Default speed") {
+                Text(LibrarySettingsFormat.speed(settings.defaultSpeed)).wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .monospacedDigit()
+                Stepper(
+                    "Default speed", value: $settings.defaultSpeed, in: LibrarySettingsStore.speedRange,
+                    step: LibrarySettingsStore.speedStep)
+                    .labelsHidden()
             }
-            .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+            .accessibilityElement(children: .contain)
             .accessibilityValue(LibrarySettingsFormat.speed(settings.defaultSpeed))
             .accessibilityIdentifier("wilted-library-settings-speed")
-            Divider()
-            skipPicker("Skip back", selection: $settings.skipBackSeconds, identifier: "wilted-library-settings-skip-back")
-            Divider()
-            skipPicker("Skip forward", selection: $settings.skipForwardSeconds, identifier: "wilted-library-settings-skip-forward")
-            note("A new episode starts at the default speed. "
-                 + "Skip lengths also apply to the lock screen controls.")
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                skipMenu(
+                    "Rewind", selection: $settings.skipBackSeconds, symbol: "gobackward", leading: true,
+                    identifier: "wilted-library-settings-skip-back")
+                skipMenu(
+                    "Fast forward", selection: $settings.skipForwardSeconds, symbol: "goforward", leading: false,
+                    identifier: "wilted-library-settings-skip-forward")
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-playback")
@@ -89,20 +94,28 @@ struct LibrarySettingsView: View {
 
     private var storageCard: some View {
         WiltedSettingsCard(title: "Storage") {
-            WiltedSettingsRow(
-                "Downloaded audio", value: LibrarySettingsFormat.storage(count: cache.episodeCount, bytes: cache.byteCount),
-                identifier: "wilted-library-settings-cache-size")
-            Divider()
+            iconRow("internaldrive", "Downloaded audio") {
+                infoButton(
+                    "Removes the phone's copies only. Episodes stay in the Larder to fetch again from the Mac.",
+                    identifier: "wilted-library-settings-storage-info")
+                Spacer(minLength: 0)
+                Text(LibrarySettingsFormat.storage(count: cache.episodeCount, bytes: cache.byteCount))
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("wilted-library-settings-cache-size")
+            }
             Button(role: .destructive) { isConfirmingRemoval = true } label: {
-                Label("Remove all downloaded audio", systemImage: "trash")
+                Label { Text("Remove all downloaded audio").wiltedFont(.body) } icon: { Image(systemName: "trash") }
                     .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
             }
             .disabled(cache.episodeCount == 0)
             .accessibilityIdentifier("wilted-library-settings-remove-audio")
             if let removalNotice {
-                note(removalNotice).accessibilityIdentifier("wilted-library-settings-remove-notice")
+                Text(removalNotice).wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-library-settings-remove-notice")
             }
-            note("Removes the phone's copies only. Episodes stay in the Larder to fetch again from the Mac.")
         }
         .confirmationDialog(
             "Remove all downloaded audio?", isPresented: $isConfirmingRemoval, titleVisibility: .visible
@@ -118,48 +131,48 @@ struct LibrarySettingsView: View {
         .accessibilityIdentifier("wilted-library-settings-storage")
     }
 
+    /// One row: the status, plus when the mirror was last fetched once it is current. The last
+    /// refresh, and the Mac's own activity, are the same fact seen from two ends, so it is shown once.
     private var syncCard: some View {
         let sync = model.syncSummary
         return WiltedSettingsCard(title: WiltedScreenCopy.sync) {
-            WiltedSettingsRow(
-                "Status", value: sync.status, identifier: "wilted-library-settings-sync-status", tone: sync.tone)
-            if let detail = sync.detail {
-                Divider()
-                WiltedSettingsRow("Detail", value: detail, identifier: "wilted-library-settings-sync-detail")
+            iconRow("arrow.triangle.2.circlepath", "Status") {
+                Spacer(minLength: 0)
+                Text(LibrarySettingsFormat.syncLine(sync, lastRefresh: model.lastSynchronizedAt))
+                    .wiltedFont(.utility)
+                    .foregroundStyle(sync.tone.color(colorScheme))
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("wilted-library-settings-sync-status")
             }
-            Divider()
-            WiltedSettingsRow(
-                "Last refresh", value: LibrarySettingsFormat.date(model.lastSynchronizedAt),
-                identifier: "wilted-library-settings-last-refresh")
-            Divider()
-            WiltedSettingsRow(
-                "Mac last seen", value: LibrarySettingsFormat.date(model.macLastSeenAt),
-                identifier: "wilted-library-settings-mac-last-seen")
-            Divider()
-            WiltedSettingsRow("Device", value: model.deviceID, identifier: "wilted-library-settings-device-id")
+            if let detail = sync.detail {
+                Text(detail).wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-library-settings-sync-detail")
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-sync")
     }
 
     private var statisticsCard: some View {
-        WiltedSettingsCard(title: WiltedScreenCopy.lifetimeStatistics) {
-            note(LibrarySettingsFormat.statsScope(model.lifetimeStats))
-                .accessibilityIdentifier(WiltedScreenCopy.lifetimeStatisticsScopeIdentifier)
-            ForEach(LibrarySettingsFormat.statRows(model.lifetimeStats), id: \.identifier) { stat in
-                Divider()
-                WiltedSettingsRow(stat.label, value: stat.value, identifier: stat.identifier)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-lifetime-statistics")
+        StatisticsCard(stats: model.phoneStats)
     }
 
     private var aboutCard: some View {
         WiltedSettingsCard(title: "About") {
-            WiltedSettingsRow(
-                "Version", value: LibrarySettingsFormat.version(Bundle.main.infoDictionary),
-                identifier: "wilted-library-settings-version")
+            iconRow("info.circle", "Version") {
+                Spacer(minLength: 0)
+                Text(LibrarySettingsFormat.version(Bundle.main.infoDictionary)).wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-library-settings-version")
+            }
+            iconRow("iphone", "Device") {
+                Spacer(minLength: 0)
+                Text(model.deviceID).wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .lineLimit(1).truncationMode(.middle)
+                    .accessibilityIdentifier("wilted-library-settings-device-id")
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-about")
@@ -167,33 +180,87 @@ struct LibrarySettingsView: View {
 
     // MARK: Pieces
 
-    private func row(_ label: String, _ value: String) -> some View {
-        HStack {
+    /// A leading symbol, the label, then whatever trails. Every settings row is built from this so
+    /// the spacing, type and symbol treatment cannot drift.
+    private func iconRow<Trailing: View>(
+        _ symbol: String, _ label: String, @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            Image(symbol: symbol)
+                .wiltedFont(.body)
+                .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                .frame(width: 26)
+                .accessibilityHidden(true)
             Text(label).wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Spacer(minLength: WiltedTheme.Spacing.large)
-            Text(value).wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.8)
+            trailing()
         }
+        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
     }
 
-    private func skipPicker(_ label: String, selection: Binding<Int>, identifier: String) -> some View {
-        Picker(selection: selection) {
-            ForEach(LibrarySettingsStore.skipOptions, id: \.self) { Text(LibrarySettingsFormat.skip($0)).tag($0) }
-        } label: {
-            Text(label).wiltedFont(.body)
+    /// An "i" that opens `text` in a popover, so explanations stay off the page until asked for.
+    private func infoButton(_ text: String, identifier: String) -> some View {
+        SettingsInfoButton(text: text, identifier: identifier)
+    }
+
+    /// The text-size choice as a row of themed segments (the system control ignores the app's type).
+    private func segmented(selection: Binding<WiltedTheme.TextScale>, identifier: String) -> some View {
+        HStack(spacing: 2) {
+            ForEach(WiltedTheme.TextScale.allCases) { option in
+                let isSelected = selection.wrappedValue == option
+                Button { selection.wrappedValue = option } label: {
+                    Text(option.label).wiltedFont(.utility)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .foregroundStyle(isSelected
+                            ? WiltedTheme.color(.page, scheme: colorScheme)
+                            : WiltedTheme.color(.primaryText, scheme: colorScheme))
+                        .background(
+                            RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+                                .fill(isSelected ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme) : .clear))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
         }
-        .pickerStyle(.menu)
-        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+                .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12)))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(identifier)
     }
 
-    private func note(_ text: String) -> some View {
-        Text(text)
-            .wiltedFont(.utility)
-            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            .fixedSize(horizontal: false, vertical: true)
+    /// A skip length picker whose face is the direction's own symbol at the chosen length
+    /// (`gobackward.15`) and a word for which way it goes.
+    private func skipMenu(
+        _ title: String, selection: Binding<Int>, symbol: String, leading: Bool, identifier: String
+    ) -> some View {
+        let value = selection.wrappedValue
+        let icon = Image(systemName: "\(symbol).\(value)")
+        return Menu {
+            Picker(title, selection: selection) {
+                ForEach(LibrarySettingsStore.skipOptions, id: \.self) { Text(LibrarySettingsFormat.skip($0)).tag($0) }
+            }
+        } label: {
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                if leading { icon }
+                Text(title).lineLimit(1).minimumScaleFactor(0.8)
+                if !leading { icon }
+                Image(systemName: "chevron.up.chevron.down").imageScale(.small)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+            .wiltedFont(.body)
+            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+            .background(
+                RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+                    .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12)))
+        }
+        .accessibilityLabel(title)
+        .accessibilityValue(LibrarySettingsFormat.skip(value))
+        .accessibilityIdentifier(identifier)
     }
 
     // MARK: Actions
@@ -206,5 +273,65 @@ struct LibrarySettingsView: View {
         let removed = await model.removeAllDownloadedAudio(keeping: playingID)
         await reloadCache()
         removalNotice = removed == 0 ? nil : "Removed \(removed) episode\(removed == 1 ? "" : "s")."
+    }
+}
+
+/// The "i" button and its popover. Its own view so the popover state is local to one button.
+private struct SettingsInfoButton: View {
+    let text: String
+    let identifier: String
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isShown = false
+
+    var body: some View {
+        Button { isShown = true } label: {
+            Image(systemName: "info.circle")
+                .wiltedFont(.body)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isShown) {
+            Text(text).wiltedFont(.body)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .padding(WiltedTheme.Spacing.large)
+                .frame(maxWidth: 300)
+                .fixedSize(horizontal: false, vertical: true)
+                .presentationCompactAdaptation(.popover)
+        }
+        .accessibilityLabel("More information")
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+/// This phone's lifetime totals. Observes the store itself, since the model does not republish it.
+private struct StatisticsCard: View {
+    @ObservedObject var stats: LibraryPhoneStatsStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        WiltedSettingsCard(title: WiltedScreenCopy.lifetimeStatistics) {
+            ForEach(LibrarySettingsFormat.phoneStatRows(stats.stats), id: \.identifier) { stat in
+                HStack(spacing: WiltedTheme.Spacing.medium) {
+                    Image(symbol: stat.symbol)
+                        .wiltedFont(.body)
+                        .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                        .frame(width: 26)
+                        .accessibilityHidden(true)
+                    Text(stat.label).wiltedFont(.body)
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    Spacer(minLength: WiltedTheme.Spacing.medium)
+                    Text(stat.value).wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .multilineTextAlignment(.trailing)
+                }
+                .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                .accessibilityElement(children: .combine)
+                .accessibilityValue(stat.value)
+                .accessibilityIdentifier(stat.identifier)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-lifetime-statistics")
     }
 }

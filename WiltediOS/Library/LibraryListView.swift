@@ -11,6 +11,7 @@ struct LibraryRoot: View {
     @State private var isPlayerPresented = false
     @State private var isSettingsPresented = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
 
     init(model: LibraryAppModel? = nil, player: LibraryPlayer? = nil, settings: LibrarySettingsStore? = nil) {
         _settings = StateObject(wrappedValue: settings ?? LibrarySettingsStore())
@@ -51,6 +52,7 @@ struct LibraryRoot: View {
                 .environment(\.wiltedTextScale, settings.textScale)
                 .presentationDetents([.large])
         }
+        .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
         .onChange(of: settings.playback, initial: true) { _, preferences in player.apply(preferences) }
         .environment(\.wiltedTextScale, settings.textScale)
         // Removing the file from the phone must not leave its audio playing.
@@ -73,6 +75,8 @@ struct LibraryRoot: View {
 struct LibraryListView: View {
     @ObservedObject var model: LibraryAppModel
     @Environment(\.colorScheme) private var colorScheme
+    /// The episode whose detail is open.
+    @State private var opened: ItemID?
 
     /// The entry the player is playing right now; its row offers Pause instead of Play.
     var playingID: ItemID?
@@ -89,6 +93,14 @@ struct LibraryListView: View {
                     WiltedAccountRecoveryNotice { Task { await model.recoverFromAccountChange() } }
                 }
             }
+            if let notice = model.throttleNotice {
+                Section {
+                    Label(notice, systemImage: "hourglass")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
+                        .accessibilityIdentifier("wilted-library-throttle")
+                }
+            }
             if let error = model.errorMessage {
                 Section {
                     Text(error)
@@ -102,22 +114,31 @@ struct LibraryListView: View {
             } else {
                 Section {
                     ForEach(rows) { row in
-                        NavigationLink(value: row.id) {
-                            LibraryRowView(
-                                row: row, media: model.mediaState(for: row.id),
-                                isPlaying: playingID == row.id,
-                                onMedia: { model.performMediaAction($0, entryID: row.id) },
-                                onPlay: onPlay.map { play in { play(row) } },
-                                decisionActions: model.decisionActions(for: row),
-                                decisionStatus: model.decisionStatus(for: row.id),
-                                onDecision: { model.performDecision($0, entryID: row.id) },
-                                onCancelDecision: { model.cancelDecision(entryID: row.id) })
-                        }
+                        // A tap on the row opens the episode. Not a NavigationLink: while the drag
+                        // handles show, the list is in edit mode and a link would stop navigating.
+                        LibraryRowView(
+                            row: row, media: model.mediaState(for: row.id),
+                            isPlaying: playingID == row.id,
+                            onMedia: { model.performMediaAction($0, entryID: row.id) },
+                            onPlay: onPlay.map { play in { play(row) } },
+                            decisionActions: model.decisionActions(for: row).filter { $0 == .markDone },
+                            decisionStatus: model.decisionStatus(for: row.id),
+                            onDecision: { model.performDecision($0, entryID: row.id) },
+                            onCancelDecision: { model.cancelDecision(entryID: row.id) },
+                            player: player)
+                        .contentShape(Rectangle())
+                        .onTapGesture { opened = row.id }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction(named: "Open episode") { opened = row.id }
+                        .listRowBackground(WiltedTheme.color(.card, scheme: colorScheme))
                         .moveDisabled(!model.canReorder || model.pendingDecision(for: row.id) != nil)
                     }
                     .onMove(perform: model.canReorder ? { model.moveQueued(fromOffsets: $0, toOffset: $1) } : nil)
                 } header: {
                     Text(header(count: rows.count))
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .textCase(nil)
                         .accessibilityIdentifier("wilted-library-count")
                 }
             }
@@ -125,19 +146,29 @@ struct LibraryListView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .overlay { LibraryWatermark() }
+        // The drag handles show exactly when the order can be edited: Custom order, unfiltered,
+        // unsearched. There is no Edit button.
+        .environment(\.editMode, .constant(model.canReorder && rows.count > 1 ? .active : .inactive))
         .refreshable { await model.refresh() }
         .searchable(text: $model.searchText, prompt: "Title, show or notes")
-        .navigationTitle(WiltedScreenCopy.library)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if model.canReorder && rows.count > 1 {
-                    EditButton().accessibilityIdentifier("wilted-library-reorder")
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    Image(.larder).foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                    Text(WiltedScreenCopy.library)
                 }
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .accessibilityAddTraits(.isHeader)
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 filterMenu
                 sortMenu
             }
         }
-        .navigationDestination(for: ItemID.self) { id in
+        .navigationDestination(item: $opened) { id in
             LibraryEpisodeDetailView(model: model, entryID: id, playingID: playingID, onPlay: onPlay, player: player)
         }
         .accessibilityIdentifier("wilted-library-list")
@@ -211,6 +242,8 @@ struct LibraryRowView: View {
     var decisionStatus: LibraryDecisionStatus?
     var onDecision: (LibraryDecisionAction) -> Void = { _ in }
     var onCancelDecision: () -> Void = {}
+    /// Lets the checkpoint line speak for this phone once it has the episode loaded.
+    var player: LibraryPlayer?
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -237,12 +270,7 @@ struct LibraryRowView: View {
                         .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
                         .accessibilityIdentifier("wilted-library-removal-\(row.id.rawValue)")
                 }
-                if let checkpoint = row.checkpointText {
-                    Text(checkpoint)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.progress, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-library-checkpoint-\(row.id.rawValue)")
-                }
+                LibraryCheckpointLine(row: row, player: player, identifier: "wilted-library-checkpoint-\(row.id.rawValue)")
                 LibraryEpisodeActions(
                     row: row, media: media, isPlaying: isPlaying, onMedia: onMedia, onPlay: onPlay,
                     decisionActions: decisionActions, decisionStatus: decisionStatus,
@@ -263,7 +291,7 @@ struct LibraryRowView: View {
     private var secondary: Color { WiltedTheme.color(.secondaryText, scheme: colorScheme) }
 }
 
-/// The episode's artwork at thumbnail size, with a neutral placeholder while it loads, when the
+/// The episode's artwork at thumbnail size, with a cabbage tile as placeholder while it loads, when the
 /// Mac published none, or when it fails. Decorative: the title carries the meaning.
 struct LibraryArtwork: View {
     let url: URL?
@@ -271,7 +299,6 @@ struct LibraryArtwork: View {
     /// True in a list row, where the title carries the meaning; false where the artwork is its own
     /// element and needs an identifier and label.
     var isDecorative = true
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Group {
@@ -288,11 +315,9 @@ struct LibraryArtwork: View {
         .accessibilityHidden(isDecorative)
     }
 
+    /// The cabbage tile, the Wilted mark for an episode, at the artwork's size.
     private var placeholder: some View {
-        ZStack {
-            WiltedTheme.color(.card, scheme: colorScheme)
-            Image(systemName: "waveform").foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-        }
+        WiltedProduceTile(symbol: .cabbage, size: side)
     }
 }
 

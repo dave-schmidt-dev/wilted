@@ -160,6 +160,12 @@ struct LibraryTranscriptSection: View {
         }
         .task(id: model.media[entryID] == .onPhone) {
             await model.prepareTranscript(entryID: entryID)
+            // The Mac may publish it later; look again each interval while this screen stays open.
+            while !Task.isCancelled, model.media[entryID] == .onPhone, model.transcript(for: entryID) == nil {
+                try? await Task.sleep(for: .seconds(LibraryAppModel.transcriptRetryInterval))
+                if Task.isCancelled { return }
+                await model.prepareTranscript(entryID: entryID)
+            }
         }
     }
 

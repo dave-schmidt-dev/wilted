@@ -81,25 +81,40 @@ final class LibrarySettingsTests: XCTestCase {
 
     // MARK: format
 
-    func testStatisticsAreUnavailableUntilTheMacPublishes() {
-        let rows = LibrarySettingsFormat.statRows(nil)
-        XCTAssertEqual(rows.count, 4)
-        XCTAssertTrue(rows.allSatisfy { $0.value == "Unavailable" })
-        XCTAssertTrue(LibrarySettingsFormat.statsScope(nil).contains("Not published yet"))
+    func testPhoneStatisticsReadNoneUntilThereIsSomethingToCount() {
+        let rows = LibrarySettingsFormat.phoneStatRows(LibraryPhoneStats())
+        XCTAssertEqual(rows.map(\.label), ["Listening time", "Downloaded from Mac", "Time saved at faster speeds"])
+        XCTAssertTrue(rows.allSatisfy { $0.value == "None" })
     }
 
-    func testStatisticsUseTheMacsLabelsAndSpokenDurations() {
-        let stats = LibraryStats(
-            audioProcessedSeconds: 3_725, speechGeneratedSeconds: 60, confirmedAdTimeRemovedSeconds: 0,
-            fasterPlaybackTimeSavedSeconds: 7_200, updatedAt: Date(timeIntervalSince1970: 1_000))
-        let rows = LibrarySettingsFormat.statRows(stats)
-        XCTAssertEqual(rows.map(\.label), [
-            "Audio processed", "Speech generated", "Confirmed ad time removed", "Time saved at faster speeds"])
-        XCTAssertEqual(rows.map(\.value), ["1 hour 2 minutes 5 seconds", "1 minute", "0 seconds", "2 hours"])
-        XCTAssertEqual(rows.map(\.identifier), [
-            "wilted-lifetime-audio-processed", "wilted-lifetime-speech-generated",
-            "wilted-lifetime-ad-time-removed", "wilted-lifetime-speed-time-saved"])
-        XCTAssertTrue(LibrarySettingsFormat.statsScope(stats).hasPrefix("This Mac. Updated"))
+    func testPhoneStatisticsUseSpokenDurationsAndFileSizes() {
+        let rows = LibrarySettingsFormat.phoneStatRows(
+            LibraryPhoneStats(listenedSeconds: 3_725, downloadedBytes: 41_200_000, savedSeconds: 7_200))
+        XCTAssertEqual(rows[0].value, "1 hour 2 minutes 5 seconds")
+        XCTAssertEqual(rows[1].value, ByteCountFormatter.string(fromByteCount: 41_200_000, countStyle: .file))
+        XCTAssertEqual(rows[2].value, "2 hours")
+    }
+
+    func testListeningCountsRealTimeAndSavesOnlyAboveNormalSpeed() {
+        let store = LibraryPhoneStatsStore(defaults: defaults)
+        store.recordListening(wall: 60, rate: 1.5)
+        store.recordListening(wall: 60, rate: 1)
+        store.recordListening(wall: 60, rate: 0.75)
+        XCTAssertEqual(store.stats.listenedSeconds, 180)
+        XCTAssertEqual(store.stats.savedSeconds, 30, accuracy: 0.001)
+        store.recordListening(wall: -5, rate: 2)
+        store.recordListening(wall: .nan, rate: 2)
+        XCTAssertEqual(store.stats.listenedSeconds, 180)
+    }
+
+    func testPhoneStatisticsSurviveARelaunch() {
+        let store = LibraryPhoneStatsStore(defaults: defaults)
+        store.recordListening(wall: 4, rate: 2)
+        store.recordDownload(bytes: 1_000)
+        store.recordDownload(bytes: 0)
+        store.flush()
+        let reloaded = LibraryPhoneStatsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.stats, LibraryPhoneStats(listenedSeconds: 4, downloadedBytes: 1_000, savedSeconds: 4))
     }
 
     func testStorageSpeedVersionAndSyncWording() {
@@ -116,8 +131,17 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: true, error: "x", lastRefresh: now).status, "Needs review")
         XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: true, quarantined: false, error: "x", lastRefresh: now).status, "Syncing")
         XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: "x", lastRefresh: now).detail, "x")
+        let paused = LibrarySettingsFormat.sync(
+            isRefreshing: true, quarantined: false, error: "x", lastRefresh: now, throttleNotice: "iCloud is rate limiting sync.")
+        XCTAssertEqual(paused.status, "Paused")
+        XCTAssertEqual(paused.detail, "iCloud is rate limiting sync.")
         XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now).status, "Up to date")
         XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: nil).status, "Not synced yet")
+
+        let current = LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now)
+        XCTAssertEqual(LibrarySettingsFormat.syncLine(current, lastRefresh: now), "Up to date · \(LibrarySettingsFormat.date(now))")
+        let broken = LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: "x", lastRefresh: now)
+        XCTAssertEqual(LibrarySettingsFormat.syncLine(broken, lastRefresh: now), "Problem")
     }
 
     // MARK: model seam
@@ -174,31 +198,5 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertEqual(rest, 1)
         let none = await cache.cachedEntries()
         XCTAssertTrue(none.isEmpty)
-    }
-
-    func testStatisticsStayNilUntilThePublishedRecordIsRead() async throws {
-        let model = makeModel(cache: FileMediaCache(rootURL: scratch.appendingPathComponent("cache")))
-        await model.refresh()
-        XCTAssertNil(model.lifetimeStats)
-
-        let published = LibraryStats(audioProcessedSeconds: 600, updatedAt: Date(timeIntervalSince1970: 5))
-        try await InMemoryLibraryTransport(deviceID: "mac", server: server).publishStats(published)
-        await model.refresh()
-        XCTAssertEqual(model.lifetimeStats, published)
-    }
-
-    func testMacLastSeenIsTheNewestMacRecordAndIgnoresPhones() throws {
-        func observed(_ device: String, at seconds: TimeInterval) throws -> ObservedPlayback {
-            ObservedPlayback(
-                record: try DevicePlaybackPosition(
-                    deviceID: device, entryID: id("a"), revision: RevisionID(rawValue: "r"), positionSeconds: 1,
-                    isPlaying: false, epoch: 1),
-                serverModifiedAt: Date(timeIntervalSince1970: seconds))
-        }
-        let records = LibraryDeviceRecords(
-            nowPlaying: [try observed("mac-1", at: 100), try observed("iphone-2", at: 900)],
-            progress: [try observed("mac-1", at: 300), try observed("phone", at: 950)])
-        XCTAssertEqual(LibraryAppModel.macLastSeen(from: records, excluding: "phone"), Date(timeIntervalSince1970: 300))
-        XCTAssertNil(LibraryAppModel.macLastSeen(from: LibraryDeviceRecords(), excluding: "phone"))
     }
 }

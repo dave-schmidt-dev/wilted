@@ -124,16 +124,19 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         XCTAssertEqual(published["s-b"]?.reason, IntentOutcome.reasonNotApplicable)
     }
 
-    func testMarkDoneNeedsAStartedEpisode() async throws {
+    func testMarkDoneCompletesAnyLiveEntryBecauseTheListeningMayHaveBeenOnThePhone() async throws {
         let r = rig()
         r.host.states[ids[0]] = .live(queued: true, started: true)
         r.host.states[ids[1]] = .live(queued: true, started: false)
+        r.host.states[ids[2]] = .dismissed
         try await r.applier.apply(intent(.markDone(entryID: ids[0]), id: "m-a"))
         try await r.applier.apply(intent(.markDone(entryID: ids[1]), id: "m-b"))
-        XCTAssertEqual(r.host.calls, ["markDone item-a"])
+        try await r.applier.apply(intent(.markDone(entryID: ids[2]), id: "m-c"))
+        XCTAssertEqual(r.host.calls, ["markDone item-a", "markDone item-b"])
         let published = Dictionary(uniqueKeysWithValues: try await outcomes(r).map { ($0.intentID, $0) })
         XCTAssertEqual(published["m-a"]?.disposition, .applied)
-        XCTAssertEqual(published["m-b"]?.reason, IntentOutcome.reasonNotApplicable)
+        XCTAssertEqual(published["m-b"]?.disposition, .applied, "a phone-only listen has no Mac position, and is still completed")
+        XCTAssertEqual(published["m-c"]?.reason, IntentOutcome.reasonNotApplicable)
     }
 
     func testRemoveFromLarderActsOnAQueuedEntryOnceAndIsAppliedWhenAlreadyOffTheLarder() async throws {

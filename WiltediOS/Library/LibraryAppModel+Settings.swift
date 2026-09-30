@@ -8,9 +8,7 @@ struct LibraryCacheSummary: Equatable, Sendable {
     var byteCount: Int64 = 0
 }
 
-/// The Settings page's view of the library model: cache size, bulk removal, the Mac's lifetime
-/// statistics and when the Mac was last heard from. Read-only toward the library; the phone
-/// never writes statistics.
+/// The Settings page's view of the library model: cache size, bulk removal and the sync summary.
 extension LibraryAppModel {
     /// Size of the audio cache; `excluding` leaves out an entry the caller will not remove.
     func cacheSummary(excluding kept: ItemID? = nil) async -> LibraryCacheSummary {
@@ -31,23 +29,9 @@ extension LibraryAppModel {
         return removed
     }
 
-    /// Reads the Mac's published statistics with the library refresh. A failed read, or nothing
-    /// published yet, keeps the last known value (nil until the Mac first publishes).
-    func refreshStats() async {
-        if let stats = try? await transport.readStats() { lifetimeStats = stats }
-    }
-
-    /// The newest record any Mac wrote, by the server's own clock. Nil until one exists. Macs
-    /// name themselves `mac...`; every phone is `iphone-...`.
-    static func macLastSeen(from records: LibraryDeviceRecords, excluding deviceID: String) -> Date? {
-        (records.nowPlaying + records.progress)
-            .filter { $0.record.deviceID != deviceID && $0.record.deviceID.hasPrefix("mac") }
-            .map(\.serverModifiedAt).max()
-    }
-
     var syncSummary: LibrarySettingsFormat.SyncSummary {
         LibrarySettingsFormat.sync(
             isRefreshing: isRefreshing, quarantined: accountQuarantined, error: errorMessage,
-            lastRefresh: lastSynchronizedAt)
+            lastRefresh: lastSynchronizedAt, throttleNotice: throttleNotice)
     }
 }

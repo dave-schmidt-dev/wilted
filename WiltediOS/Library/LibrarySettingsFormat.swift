@@ -8,32 +8,23 @@ enum LibrarySettingsFormat {
     struct StatRow: Equatable {
         let label: String
         let value: String
+        let symbol: String
         let identifier: String
     }
 
-    /// The Mac's four lifetime rows, in the Mac card's order and words. Every value reads
-    /// "Unavailable" until the Mac has published a record.
-    static func statRows(_ stats: LibraryStats?) -> [StatRow] {
-        func row(_ label: String, _ seconds: Double?, _ identifier: String) -> StatRow {
-            StatRow(label: label, value: seconds.map(WiltedDuration.spoken) ?? unavailable, identifier: identifier)
-        }
+    /// This phone's three lifetime rows. Zero reads as "None" so a fresh install is not a wall of zeros.
+    static func phoneStatRows(_ stats: LibraryPhoneStats) -> [StatRow] {
+        func time(_ seconds: Double) -> String { seconds >= 1 ? WiltedDuration.spoken(seconds) : "None" }
         return [
-            row(WiltedScreenCopy.audioProcessed, stats?.audioProcessedSeconds, WiltedScreenCopy.audioProcessedIdentifier),
-            row(WiltedScreenCopy.speechGenerated, stats?.speechGeneratedSeconds, WiltedScreenCopy.speechGeneratedIdentifier),
-            row(WiltedScreenCopy.confirmedAdTimeRemoved, stats?.confirmedAdTimeRemovedSeconds,
-                WiltedScreenCopy.confirmedAdTimeRemovedIdentifier),
-            row(WiltedScreenCopy.fasterPlaybackTimeSaved, stats?.fasterPlaybackTimeSavedSeconds,
-                WiltedScreenCopy.fasterPlaybackTimeSavedIdentifier),
+            StatRow(label: "Listening time", value: time(stats.listenedSeconds), symbol: "headphones",
+                    identifier: "wilted-library-settings-stat-listened"),
+            StatRow(label: "Downloaded from Mac",
+                    value: stats.downloadedBytes > 0
+                        ? ByteCountFormatter.string(fromByteCount: stats.downloadedBytes, countStyle: .file) : "None",
+                    symbol: "arrow.down.circle", identifier: "wilted-library-settings-stat-downloaded"),
+            StatRow(label: "Time saved at faster speeds", value: time(stats.savedSeconds), symbol: "hare",
+                    identifier: "wilted-library-settings-stat-saved"),
         ]
-    }
-
-    /// Under the card title: whose numbers these are and when the Mac last wrote them.
-    static func statsScope(_ stats: LibraryStats?) -> String {
-        guard let stats else {
-            return "\(WiltedScreenCopy.lifetimeStatisticsScope). Not published yet: open Wilted on the Mac with iCloud sync on."
-        }
-        guard let updatedAt = stats.updatedAt else { return WiltedScreenCopy.lifetimeStatisticsScope }
-        return "\(WiltedScreenCopy.lifetimeStatisticsScope). Updated \(date(updatedAt))."
     }
 
     static func date(_ value: Date?) -> String {
@@ -72,12 +63,21 @@ enum LibrarySettingsFormat {
         let tone: WiltedStatusTone
     }
 
+    /// One line for the sync row: the status, and when the mirror was last fetched once it is current.
+    static func syncLine(_ summary: SyncSummary, lastRefresh: Date?) -> String {
+        guard summary.tone == .positive, let lastRefresh else { return summary.status }
+        return "\(summary.status) · \(date(lastRefresh))"
+    }
+
     /// Status in words, so state never rests on color alone. Precedence: an account review blocks
-    /// everything, then a running fetch, then the last error, then how fresh the mirror is.
-    static func sync(isRefreshing: Bool, quarantined: Bool, error: String?, lastRefresh: Date?) -> SyncSummary {
+    /// everything, then iCloud rate limiting, then a running fetch, then the last error, then how fresh the mirror is.
+    static func sync(
+        isRefreshing: Bool, quarantined: Bool, error: String?, lastRefresh: Date?, throttleNotice: String? = nil
+    ) -> SyncSummary {
         if quarantined {
             return SyncSummary(status: "Needs review", detail: "The iCloud account changed.", tone: .caution)
         }
+        if let throttleNotice { return SyncSummary(status: "Paused", detail: throttleNotice, tone: .caution) }
         if isRefreshing { return SyncSummary(status: "Syncing", detail: nil, tone: .active) }
         if let error { return SyncSummary(status: "Problem", detail: error, tone: .failure) }
         if lastRefresh != nil { return SyncSummary(status: "Up to date", detail: nil, tone: .positive) }

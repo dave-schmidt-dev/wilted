@@ -17,7 +17,7 @@ extension LibraryAppModel {
     /// The transcript for the audio now on the phone, when there is one.
     func transcript(for entryID: ItemID) -> LibraryTranscript? { transcripts[entryID] }
 
-    /// Loads the transcript for `entryID` from the cache, fetching it once more per session when
+    /// Loads the transcript for `entryID` from the cache, fetching it again, at most once a minute, when
     /// the audio is cached but the transcript is not. Call when a screen showing it opens.
     func prepareTranscript(entryID: ItemID) async {
         if let run = transcriptRuns[entryID] {
@@ -25,10 +25,20 @@ extension LibraryAppModel {
             return
         }
         let cached = await mediaCache.cachedEntries()[entryID]
-        let fetch = cached.map { transcriptRetried[entryID] != $0.revisionID } ?? false
-        if fetch, let cached { transcriptRetried[entryID] = cached.revisionID }
+        let fetch = cached.map { canRetryTranscript(entryID, revision: $0.revisionID) } ?? false
+        if fetch, let cached { transcriptRetried[entryID] = (cached.revisionID, now()) }
         startTranscriptLoad(entryID: entryID, fetchOnMiss: fetch)
         await transcriptRuns[entryID]?.task?.value
+    }
+
+    /// Minimum gap before a missing transcript is asked for again. The Mac publishes transcripts
+    /// for episodes the phone already holds when its sync starts, which can be after the phone
+    /// first looked, so one look per session would miss it.
+    static let transcriptRetryInterval: TimeInterval = 60
+
+    private func canRetryTranscript(_ entryID: ItemID, revision: RevisionID) -> Bool {
+        guard let last = transcriptRetried[entryID], last.revision == revision else { return true }
+        return now().timeIntervalSince(last.at) >= Self.transcriptRetryInterval
     }
 
     /// Starts loading in the background; `fetchOnMiss` asks the transport when the cache has none.

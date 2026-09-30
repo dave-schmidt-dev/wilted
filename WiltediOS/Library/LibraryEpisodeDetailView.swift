@@ -95,7 +95,7 @@ struct LibraryEpisodeDetailView: View {
                         isPlaying: playingID == row.id,
                         onMedia: { model.performMediaAction($0, entryID: row.id) },
                         onPlay: onPlay.map { play in { play(row) } },
-                        decisionActions: model.decisionActions(for: row),
+                        decisionActions: model.decisionActions(for: row).filter { $0 == .markDone },
                         decisionStatus: model.decisionStatus(for: row.id),
                         onDecision: { model.performDecision($0, entryID: row.id) },
                         onCancelDecision: { model.cancelDecision(entryID: row.id) })
@@ -130,11 +130,7 @@ struct LibraryEpisodeDetailView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
             }
-            if let checkpoint = row.checkpointText {
-                Text(checkpoint)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.progress, scheme: colorScheme))
-            }
+            LibraryCheckpointLine(row: row, player: player, identifier: "wilted-library-detail-checkpoint")
         }
     }
 

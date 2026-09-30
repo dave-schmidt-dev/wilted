@@ -117,6 +117,22 @@ extension WiltedMacIntentApplierTests {
         XCTAssertFalse(queue.contains(rig.episodes[1]), "a finished episode leaves the Larder")
     }
 
+    func testModelHostCompletesAnEpisodeOnlyThePhoneListenedTo() async throws {
+        let rig = try await modelRig("applier-model-done-unstarted")
+        XCTAssertEqual(rig.model.decisionState(of: rig.episodes[1]), .live(queued: true, started: false))
+
+        let done = await rig.model.markEntryDone(rig.episodes[1])
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(rig.model.decisionState(of: rig.episodes[1]), .retired)
+        let listening = try await rig.store.listeningState(for: rig.episodes[1])
+        XCTAssertNotNil(listening?.completedAt, "completed, not merely dismissed")
+        let kind = try await rig.store.removalKind(for: rig.episodes[1])
+        XCTAssertNotEqual(kind, .dismissed)
+        let queue = try await rig.store.podcastQueueState().episodeIDs
+        XCTAssertFalse(queue.contains(rig.episodes[1]))
+    }
+
     func testModelHostRemovesAQueuedEntryFromTheLarderAndKeepsItLive() async throws {
         let rig = try await modelRig("applier-model-remove")
         let target = rig.episodes[1]

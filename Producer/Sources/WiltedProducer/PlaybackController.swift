@@ -183,6 +183,11 @@ public final class PlaybackController {
     /// this baseline before persistence, so skipped audio is never playback.
     private var speedSavingsBaselineSeconds: TimeInterval = 0
     private var speedSavingsRate = 1.0
+    /// The last state written for the loaded revision, so a checkpoint that changes nothing (paused,
+    /// same position, session, intent and completion) keeps its original time. Otherwise every
+    /// idle checkpoint, such as the one taken when the app goes to the background, would look
+    /// newer than a position another device saved in the meantime.
+    private var lastWritten: (sessionID: String, position: TimeInterval, completed: Bool, intent: PlaybackIntent, at: Date)?
 
     public init(
         store: LocalLibraryStore,
@@ -240,7 +245,9 @@ public final class PlaybackController {
             intent = persisted.intent
             completed = persisted.completed
             positionSeconds = clamp(persisted.positionSeconds)
+            lastWritten = (persisted.sessionID, persisted.positionSeconds, persisted.completed, persisted.intent, persisted.updatedAt.date)
         } else {
+            lastWritten = nil
             sessionID = Self.newSessionID()
             sequence = 1
             intent = .progress
@@ -562,6 +569,10 @@ public final class PlaybackController {
         completed = markCompletedAtEnd && positionSeconds >= durationSeconds
             && recoverableFault != .playbackFailed(itemID)
         sequence = max(1, sequence + 1)
+        let unchanged = !backend.isPlaying && lastWritten.map {
+            $0.sessionID == sessionID && $0.position == positionSeconds && $0.completed == completed && $0.intent == intent
+        } == true
+        let stamp = unchanged ? lastWritten?.at ?? Date() : Date()
         let state = try PlaybackState(
             itemID: itemID,
             revisionID: revisionID,
@@ -572,11 +583,49 @@ public final class PlaybackController {
             completed: completed,
             intent: intent,
             deviceID: deviceID,
-            updatedAt: Timestamp(Date())
+            updatedAt: Timestamp(stamp)
         )
         try await store.save(playback: state)
+        lastWritten = (state.sessionID, state.positionSeconds, state.completed, state.intent, stamp)
         stageSpeedInterval(endingAt: positionSeconds)
         try await persistPendingSpeedIntervals(revisionID: revisionID)
+    }
+
+    /// Adopts a position another device saved for this exact revision (the Mac adopting the
+    /// phone's), unless it is not newer than the stored one, the episode is finished here, or it
+    /// is playing here. Never starts playback and never touches a playing episode.
+    ///
+    /// Not loaded: only the stored state changes, so a later load resumes there. Loaded and
+    /// paused: the playhead and the checkpoint state move too, so the next checkpoint keeps the
+    /// position instead of overwriting it. The stored state is stamped with when the other
+    /// device saved it, which makes a repeat of the same request `.notNewer`.
+    public func applyRemotePosition(_ request: RemotePositionRequest) async throws -> RemotePositionOutcome {
+        func loadedHere() -> Bool { itemID == request.itemID && revisionID == request.revisionID }
+        func playingHere() -> Bool { loadedHere() && (backend.isPlaying || isPlaying) }
+        if playingHere() { return .playing }
+        let persisted = try await store.playbackState(for: request.itemID, revisionID: request.revisionID)
+        if playingHere() { return .playing }
+        let duration = loadedHere() && durationSeconds > 0 ? durationSeconds : request.durationSeconds
+        if let refusal = RemotePositionRules.refusal(
+            persisted: persisted, positionSeconds: request.positionSeconds, durationSeconds: duration,
+            observedAt: request.observedAt) { return refusal }
+        let state = try RemotePositionRules.state(
+            persisted: persisted, request: request, deviceID: deviceID, now: Date(), newSessionID: Self.newSessionID)
+        try await store.save(playback: state)
+        // Loaded (possibly while the write was in flight): bring the in-memory state to the stored one.
+        if loadedHere(), !playingHere() {
+            lastWritten = (state.sessionID, state.positionSeconds, false, state.intent, state.updatedAt.date)
+            stageSpeedInterval(endingAt: livePositionSeconds)
+            sessionID = state.sessionID
+            sequence = state.sequence
+            intent = state.intent
+            completed = false
+            positionSeconds = clamp(state.positionSeconds)
+            backend.currentTime = positionSeconds
+            speedSavingsBaselineSeconds = positionSeconds
+            recoverableFault = nil
+        }
+        return .applied
     }
 
     public func manualCheckpoint() async throws { try await checkpoint() }

@@ -51,7 +51,7 @@ final class WiltedMacTranscriptPublishTests: XCTestCase {
             self.directory = directory
             let clock = self.clock, source = self.source, mac = self.mac
             runtime = WiltedMacInboundRuntime(
-                source: source, transport: mac, directory: directory, isPlaying: { false }, now: { clock.now })
+                source: source, transport: mac, directory: directory, now: { clock.now })
         }
     }
 
@@ -171,5 +171,44 @@ final class WiltedMacTranscriptPublishTests: XCTestCase {
         await rig.runtime.consume(try request(rig, other, from: tabletID, "f-2"))
         let dropped = try await rig.phone.transcript(entryID: other, revisionID: rev("rev-9"))
         XCTAssertNil(dropped, "notReady drops the transcript with the audio")
+    }
+
+    func testReconcilePublishesTheTranscriptOfAnAlreadyCachedEpisodeWithoutARequest() async throws {
+        let rig = rig("transcript-reconcile")
+        let withTranscript = try id("episode-g")
+        let without = try id("episode-h")
+        let expected = try transcript(withTranscript, revision: "rev-1")
+        rig.source.set(withTranscript, audio: try audio(rig, revision: "rev-1"), transcript: expected)
+        rig.source.set(without, audio: try audio(rig, revision: "rev-2"), transcript: nil)
+
+        let ok = await rig.runtime.service.reconcileAvailable()
+        XCTAssertTrue(ok)
+
+        let published = try await rig.phone.transcript(entryID: withTranscript, revisionID: rev("rev-1"))
+        XCTAssertEqual(published, expected)
+        let none = try await rig.phone.transcript(entryID: without, revisionID: rev("rev-2"))
+        XCTAssertNil(none)
+        let offers = try await rig.phone.mediaOffers()
+        XCTAssertEqual(offers.filter { $0.state == .ready }.count, 0, "publishing a transcript uploads no audio")
+    }
+
+    func testTheTranscriptSurvivesTheAckWhileTheEntryStaysPreparedAndLeavesWithTheLarder() async throws {
+        let rig = rig("transcript-survives-ack")
+        let entry = try id("episode-i")
+        let expected = try transcript(entry, revision: "rev-1")
+        rig.source.set(entry, audio: try audio(rig, revision: "rev-1"), transcript: expected)
+        _ = await rig.runtime.service.reconcileAvailable()
+        await rig.runtime.consume(try request(rig, entry, from: phoneID, "i-1"))
+        await rig.runtime.consume(try cached(rig, entry, "rev-1", from: phoneID, "i-2"))
+
+        let held = try await rig.phone.transcript(entryID: entry, revisionID: rev("rev-1"))
+        XCTAssertEqual(held, expected, "a phone that lost its copy, or asks later, can still fetch it")
+        let offers = try await rig.phone.mediaOffers()
+        XCTAssertEqual(offers.first?.state, .available)
+
+        rig.source.set(entry, audio: nil, transcript: nil)
+        _ = await rig.runtime.service.reconcileAvailable()
+        let gone = try await rig.phone.transcript(entryID: entry, revisionID: rev("rev-1"))
+        XCTAssertNil(gone, "it goes when the entry leaves the prepared Larder")
     }
 }

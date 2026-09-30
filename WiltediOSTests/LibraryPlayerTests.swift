@@ -158,6 +158,22 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertEqual(rig.nowPlaying.updates.last, .init(title: "Episode One", duration: 600, position: 42, rate: 0))
     }
 
+    func testPlayedTimeIsReportedWithTheSpeedItWasHeardAt() async {
+        let rig = makeRig()
+        var reports: [(TimeInterval, Double)] = []
+        rig.player.onListened = { wall, rate in reports.append((wall, rate)) }
+        rig.player.start(item)
+        rig.player.setRate(1.5)
+        try? await Task.sleep(for: .milliseconds(60))
+        rig.player.pause()
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertEqual(reports[0].1, 1.5)
+        XCTAssertGreaterThan(reports[0].0, 0.05)
+        XCTAssertLessThan(reports[0].0, 1)
+        rig.player.pause()
+        XCTAssertEqual(reports.count, 1, "paused time is not listening")
+    }
+
     func testTogglePlayPauseAlternates() {
         let rig = makeRig()
         rig.player.start(item)

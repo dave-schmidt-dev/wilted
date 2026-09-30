@@ -175,7 +175,7 @@ final class HandoffCoordinatorTests: XCTestCase {
         XCTAssertEqual(alive.positionSeconds, 110, accuracy: 1e-9)
         XCTAssertTrue(alive.wasPlaying)
 
-        await env.advance(to: 1_020)
+        await env.advance(to: 1_000 + SyncCadence.staleAfter + 5)
         let dead = try await mac.resumeTarget(localRevision: { [revisionA] _ in revisionA })
         guard case .resume(let stale) = dead else { return XCTFail("expected resume, got \(dead)") }
         XCTAssertEqual(stale.positionSeconds, 100, accuracy: 1e-9)
@@ -184,7 +184,7 @@ final class HandoffCoordinatorTests: XCTestCase {
     }
 
     func testDeadDeviceWithHigherEpochDoesNotForceRelinquish() async throws {
-        for (observeAt, expected) in [(1_010.0, HandoffDecision.relinquish(to: "phone")), (1_020.0, .keepPlaying)] {
+        for (observeAt, expected) in [(1_010.0, HandoffDecision.relinquish(to: "phone")), (1_000 + SyncCadence.staleAfter + 10, .keepPlaying)] {
             let env = await makeEnv()
             let lag = LagSwitch()
             let mac = env.coordinator("mac", over: LaggingTransport(base: env.transport("mac"), lag: lag))
@@ -249,32 +249,37 @@ final class HandoffCoordinatorTests: XCTestCase {
         await env.advance(to: 1_002)
         try await phone.positionUpdate(2)
         var published = try await nowPlaying(env, "phone")
-        XCTAssertEqual(published?.record.positionSeconds, 0, "inside the 5 s cadence")
+        XCTAssertEqual(published?.record.positionSeconds, 0, "inside the 30 s cadence")
 
         await env.advance(to: 1_005)
         try await phone.positionUpdate(5)
         published = try await nowPlaying(env, "phone")
-        XCTAssertEqual(published?.record.positionSeconds, 5)
+        XCTAssertEqual(published?.record.positionSeconds, 0, "still inside the cadence")
 
-        await env.advance(to: 1_006)
+        await env.advance(to: 1_030)
+        try await phone.positionUpdate(30)
+        published = try await nowPlaying(env, "phone")
+        XCTAssertEqual(published?.record.positionSeconds, 30)
+
+        await env.advance(to: 1_031)
         try await phone.seeked(to: 300)
         published = try await nowPlaying(env, "phone")
         XCTAssertEqual(published?.record.positionSeconds, 300)
         XCTAssertEqual(published?.record.isPlaying, true)
 
-        await env.advance(to: 1_007)
+        await env.advance(to: 1_032)
         try await phone.paused(at: 301)
         published = try await nowPlaying(env, "phone")
         XCTAssertEqual(published?.record.positionSeconds, 301)
         XCTAssertEqual(published?.record.isPlaying, false)
 
-        await env.advance(to: 1_020)
+        await env.advance(to: 1_100)
         try await phone.positionUpdate(400)
         published = try await nowPlaying(env, "phone")
         XCTAssertEqual(published?.record.positionSeconds, 301, "paused sessions do not heartbeat")
 
         try await phone.takeover(entryID: entry, revision: revisionA, positionSeconds: 301)
-        await env.advance(to: 1_021)
+        await env.advance(to: 1_101)
         try await phone.stopped(at: 350)
         published = try await nowPlaying(env, "phone")
         XCTAssertEqual(published?.record.positionSeconds, 350)
@@ -332,5 +337,49 @@ final class HandoffCoordinatorTests: XCTestCase {
         try await env.transport("phone").publish(record("phone", epoch: 5), as: .nowPlaying)
         let decision = try await mac.observe()
         XCTAssertEqual(decision, .relinquish(to: "phone"))
+    }
+
+    func testDecisionFromRecordsInHandNeedsNoFetch() async throws {
+        let env = await makeEnv()
+        let mac = env.coordinator("mac")
+        try await mac.takeover(entryID: entry, revision: revisionA, positionSeconds: 10)
+        let phone = env.coordinator("phone")
+        try await phone.takeover(entryID: entry, revision: revisionA, positionSeconds: 50)
+        let records = try await env.transport("mac").fetchDeviceRecords()
+        let first = await mac.decision(from: records)
+        XCTAssertEqual(first, .relinquish(to: "phone"))
+        let second = await mac.decision(from: LibraryDeviceRecords())
+        XCTAssertEqual(second, .relinquish(to: "phone"), "once relinquished it stays relinquished")
+        let untouched = await phone.decision(from: records)
+        XCTAssertEqual(untouched, .keepPlaying)
+    }
+
+    func testALiveDevicePublishingEveryThirtySecondsIsNeverPresumedDead() async throws {
+        let env = await makeEnv()
+        let phone = env.coordinator("phone")
+        try await phone.takeover(entryID: entry, revision: revisionA, positionSeconds: 10)
+        for tick in 1...4 {
+            await env.advance(to: 1_000 + Double(tick) * SyncCadence.playingPublishInterval)
+            try await phone.positionUpdate(10 + Double(tick) * 30)
+            let records = try await env.transport("mac").fetchDeviceRecords()
+            await env.advance(to: env.clock.now.timeIntervalSince1970 + SyncCadence.playingPublishInterval - 1)
+            let live = HandoffResolver.livePlayers(records.nowPlaying, localDeviceID: "mac", now: env.clock.now)
+            XCTAssertEqual(live.map(\.record.deviceID), ["phone"], "tick \(tick): 29 s after a publish it is still live")
+        }
+    }
+
+    func testTheCadenceThrottlesPublishesToOnePerThirtySeconds() async throws {
+        let env = await makeEnv()
+        let phone = env.coordinator("phone")
+        try await phone.takeover(entryID: entry, revision: revisionA, positionSeconds: 0)
+        var publishedAt: [Date] = []
+        for second in 1...95 {
+            await env.advance(to: 1_000 + Double(second))
+            try await phone.positionUpdate(Double(second))
+            if let now = try await nowPlaying(env, "phone"), publishedAt.last != now.record.publishedAt {
+                publishedAt.append(now.record.publishedAt ?? .distantPast)
+            }
+        }
+        XCTAssertEqual(publishedAt.count, 4, "takeover at 0 s, then 30, 60 and 90 s")
     }
 }

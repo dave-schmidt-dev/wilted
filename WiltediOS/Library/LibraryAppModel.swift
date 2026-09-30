@@ -38,10 +38,8 @@ final class LibraryAppModel: ObservableObject {
     /// On-demand audio state per entry; an entry with no value is `.available`. Written by
     /// `LibraryAppModel+Media`, which owns the request, download, verify and cache flow.
     @Published var media: [ItemID: LibraryMediaState] = [:]
-    /// The Mac's lifetime statistics as last read; nil until the Mac has published. Read-only here.
-    @Published var lifetimeStats: LibraryStats?
-    /// When a Mac last wrote a device record, by the server clock; shown in Settings.
-    @Published var macLastSeenAt: Date?
+    /// This phone's own lifetime totals, shown in Settings. Never synced.
+    let phoneStats: LibraryPhoneStatsStore
     /// What "Continue from Mac" would do right now; nil when no other device outranks this one.
     /// Written by `LibraryAppModel+Handoff`.
     @Published var continuation: LibraryContinuation?
@@ -53,7 +51,19 @@ final class LibraryAppModel: ObservableObject {
     /// Why a decision was rolled back, per entry, in words.
     @Published var decisionNotices: [ItemID: String] = [:]
 
+    /// Why iCloud calls are paused (rate limited, unavailable) and until when; nil while they run.
+    /// Set by the shared `TransportGate`, cleared by the next call that succeeds. Written by
+    /// `LibraryAppModel+Throttle`.
+    @Published var throttleState: TransportGateState?
+
+    /// The line for the Sync status when `throttleState` is set, in words, with the resume time:
+    /// "iCloud is rate limiting sync. Retrying at 11:26:30." Nil while nothing is paused.
+    var throttleNotice: String? { throttleState?.noticeWithResumeTime }
+
+    /// Wraps the transport this model was given, so every call the phone makes (refresh, handoff,
+    /// media, decisions) goes through one gate.
     let transport: any LibraryTransport
+    let throttleGate: TransportGate
     let deviceID: String
     let now: @Sendable () -> Date
     let mediaCache: any LibraryMediaCache
@@ -79,8 +89,8 @@ final class LibraryAppModel: ObservableObject {
     @Published var transcripts: [ItemID: LibraryTranscript] = [:]
     /// One load per entry, so a cancelled or replaced load can never write for its successor.
     var transcriptRuns: [ItemID: LibraryTranscriptRun] = [:]
-    /// The revision whose missing transcript was already re-requested this session.
-    var transcriptRetried: [ItemID: RevisionID] = [:]
+    /// When a revision's missing transcript was last re-requested this session, to space retries.
+    var transcriptRetried: [ItemID: (revision: RevisionID, at: Date)] = [:]
     let clockFormat: LibraryClockFormat
     private let preferences: UserDefaults
     private let recovery: LibraryAccountRecovery?
@@ -103,6 +113,12 @@ final class LibraryAppModel: ObservableObject {
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current
     ) {
+        let relay = LibraryThrottleRelay()
+        let gate = TransportGate(clock: now, onChange: { state in
+            Task { @MainActor in relay.model?.throttleChanged(state) }
+        })
+        let transport = ThrottledLibraryTransport(wrapping: transport, gate: gate)
+        self.throttleGate = gate
         self.transport = transport
         self.mediaCache = mediaCache ?? FileMediaCache(rootURL: FileMediaCache.defaultRoot())
         self.mediaTiming = mediaTiming
@@ -111,6 +127,7 @@ final class LibraryAppModel: ObservableObject {
         self.coordinator = HandoffCoordinator(
             transport: transport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
         self.preferences = preferences
+        self.phoneStats = LibraryPhoneStatsStore(defaults: preferences)
         self.sort = LibrarySortOrder.stored(in: preferences)
         self.store = store
         self.deviceID = deviceID
@@ -118,6 +135,7 @@ final class LibraryAppModel: ObservableObject {
         self.now = now
         self.clockFormat = LibraryClockFormat(timeZone: timeZone)
         self.reconciler = LibraryReconciler(transport: transport, store: store)
+        relay.model = self
     }
 
     /// Launch entry point: watches for account changes once, then fetches.
@@ -171,8 +189,7 @@ final class LibraryAppModel: ObservableObject {
         queued = []
         readyOffers = []
         checkpoints = [:]
-        lifetimeStats = nil
-        macLastSeenAt = nil
+        handoffState.ownPositions = [:]
         continuation = nil
         discardDecisionsAfterAccountChange()
         await discardMediaAfterAccountChange()
@@ -192,7 +209,7 @@ final class LibraryAppModel: ObservableObject {
         let records = try? await transport.fetchDeviceRecords()
         if let records {
             checkpoints = Self.checkpoints(from: records, excluding: deviceID)
-            macLastSeenAt = Self.macLastSeen(from: records, excluding: deviceID)
+            handoffState.ownPositions = Self.ownPositions(from: records, deviceID: deviceID)
         }
         // A failed read keeps the last known offers: a flaky fetch must not empty the Larder.
         if let offers = try? await transport.mediaOffers() {
@@ -206,7 +223,6 @@ final class LibraryAppModel: ObservableObject {
         await refreshMediaFromCache()
         if let records { await updateContinuation(from: records) }
         await resolveDecisions()
-        await refreshStats()
     }
 
     /// Projects the fetched content, with unsettled decisions laid over it, into queue-ordered rows.
@@ -253,8 +269,16 @@ final class LibraryAppModel: ObservableObject {
         return Dictionary(grouping: others, by: { $0.record.entryID }).compactMapValues(HandoffResolver.winner(among:))
     }
 
+    /// This device's own progress record per entry, as the server last held it.
+    static func ownPositions(from records: LibraryDeviceRecords, deviceID: String) -> [ItemID: ObservedPlayback] {
+        Dictionary(
+            records.progress.filter { $0.record.deviceID == deviceID }.map { ($0.record.entryID, $0) },
+            uniquingKeysWith: { first, _ in first })
+    }
+
     private static func message(for error: Error) -> String {
         switch error {
+        case let throttled as TransportThrottled: return "iCloud sync is paused until \(throttled.retryAt.formatted(date: .omitted, time: .standard))."
         case LibraryTransportError.transport(let text): return text
         case LibraryTransportError.superseded: return "iCloud account changed. Sync was cancelled."
         default: return "Sync failed: \(error.localizedDescription)"

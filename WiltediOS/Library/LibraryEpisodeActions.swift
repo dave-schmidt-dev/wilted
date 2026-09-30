@@ -2,9 +2,10 @@ import SwiftUI
 import WiltedDomain
 import WiltedLibrary
 
-/// The audio and decision actions of one episode: the audio state line (Get audio, progress,
-/// Cancel), Play once the audio is on the phone, and the decision buttons. The Larder row and the
-/// episode detail both render this, so the two never drift apart.
+/// The controls of one episode, as a row of SF Symbol buttons: download or delete the phone's copy,
+/// play or pause, and mark completed. Delete and Mark completed ask first. The Larder row and the
+/// episode detail both render this, so the two never drift apart. Larder management (removing an
+/// episode from the Mac's Larder) is deliberately not offered here.
 struct LibraryEpisodeActions: View {
     let row: LibraryRow
     var media: LibraryMediaState?
@@ -18,29 +19,49 @@ struct LibraryEpisodeActions: View {
     var onDecision: (LibraryDecisionAction) -> Void = { _ in }
     var onCancelDecision: () -> Void = {}
 
+    @State private var isConfirmingDelete = false
+    @State private var isConfirmingCompletion = false
+
     var body: some View {
-        if let media {
-            LibraryMediaControl(entryID: row.id, state: media, perform: onMedia)
-            if media == .onPhone, let onPlay { playButton(onPlay) }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                if let media {
+                    LibraryDownloadControl(
+                        entryID: row.id, state: media, perform: onMedia, isConfirmingDelete: $isConfirmingDelete)
+                    if media == .onPhone, let onPlay {
+                        LibraryIconButton(
+                            symbol: isPlaying ? "pause.circle.fill" : "play.circle.fill", label: playLabel,
+                            identifier: "wilted-library-play-\(row.id.rawValue)", action: onPlay)
+                    }
+                }
+                if decisionActions.contains(.markDone) {
+                    LibraryIconButton(
+                        symbol: LibraryDecisionAction.markDone.systemImage, label: LibraryDecisionAction.markDone.title,
+                        identifier: "wilted-library-action-done-\(row.id.rawValue)") { isConfirmingCompletion = true }
+                }
+                Spacer(minLength: 0)
+            }
+            LibraryStatusLine(entryID: row.id, media: media, decision: decisionStatus, cancelDecision: onCancelDecision)
         }
-        LibraryDecisionControl(
-            entryID: row.id, actions: decisionActions, status: decisionStatus,
-            perform: onDecision, cancel: onCancelDecision)
+        .confirmationDialog("Delete the download?", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
+            Button("Delete download", role: .destructive) { onMedia(.removeFromPhone) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The episode stays in the Larder to download again.")
+        }
+        .confirmationDialog("Mark completed?", isPresented: $isConfirmingCompletion, titleVisibility: .visible) {
+            Button("Mark completed") { onDecision(.markDone) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("It is marked completed on the Mac too.")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-library-media-\(row.id.rawValue)")
     }
 
-    private func playButton(_ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(playTitle, systemImage: isPlaying ? "pause.fill" : "play.fill")
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-        .accessibilityIdentifier("wilted-library-play-\(row.id.rawValue)")
-    }
-
-    /// "Resume 12:34" when the Mac left off partway, so the button says where it will start.
-    private var playTitle: String {
+    /// "Resume 12:34" when the Mac left off partway, so VoiceOver says where it will start.
+    private var playLabel: String {
         if isPlaying { return "Pause" }
-        return row.resumeSeconds.map { "Resume \(LibraryClockFormat.duration($0))" } ?? "Play"
+        return row.resumeSeconds.map { "Resume from \(LibraryClockFormat.duration($0))" } ?? "Play"
     }
 }

@@ -294,4 +294,9 @@ final class LibraryLarderTests: XCTestCase {
         model.sort = .oldest
         XCTAssertFalse(model.canReorder)
     }
+
+    func testCheckpointLineSpeaksForThisPhoneOnceItHasTheEpisode() {
+        XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: true, position: 252), "Playing on this iPhone at 04:12")
+        XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: false, position: 3_725), "Paused on this iPhone at 1:02:05")
+    }
 }

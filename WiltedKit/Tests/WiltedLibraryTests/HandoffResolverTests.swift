@@ -134,11 +134,11 @@ final class HandoffResolverTests: XCTestCase {
         XCTAssertNil(HandoffResolver.clockOffset(of: try observed("mac", epoch: 1, at: 1)))
     }
 
-    func testPlayingRecordOlderThanFifteenSecondsIsPausedAtItsPosition() throws {
+    func testPlayingRecordOlderThanThreePublishCadencesIsPausedAtItsPosition() throws {
         let playing = try observed("phone", epoch: 2, at: 100, position: 50, rate: 2)
-        let fresh = HandoffResolver.effective(playing, now: Date(timeIntervalSince1970: 115))
-        XCTAssertTrue(fresh.record.isPlaying, "exactly 15 s old is still live")
-        let dead = HandoffResolver.effective(playing, now: Date(timeIntervalSince1970: 115.5))
+        let fresh = HandoffResolver.effective(playing, now: Date(timeIntervalSince1970: 190))
+        XCTAssertTrue(fresh.record.isPlaying, "exactly 90 s old is still live")
+        let dead = HandoffResolver.effective(playing, now: Date(timeIntervalSince1970: 190.5))
         XCTAssertFalse(dead.record.isPlaying)
         XCTAssertEqual(dead.record.positionSeconds, 50)
         XCTAssertEqual(dead.serverModifiedAt, playing.serverModifiedAt)

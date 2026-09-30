@@ -230,6 +230,8 @@ final class WiltedMacLibrarySyncController {
     var inbound: WiltedMacInboundRuntime?
     /// The only writer of the Mac's playback records; stopped with the controller.
     var handoff: WiltedMacHandoffController?
+    /// The fresh read of the phone's position a Play press makes before the audio starts.
+    var playRefresher: WiltedMacPlayPositionRefresher?
     private weak var model: WiltedMacModel?
     private let triggers: AsyncStream<Void>.Continuation
     private var loop: Task<Void, Never>?
@@ -324,7 +326,10 @@ final class WiltedMacLibrarySyncController {
             return true
         } catch {
             lastFailure = String(describing: error)
-            librarySyncLog.error("Library publish failed: \(String(describing: error), privacy: .public)")
+            // A closed gate reports itself (the Sync card); only a new kind of failure is an error.
+            if !(error is TransportThrottled) {
+                librarySyncLog.error("Library publish failed: \(String(describing: error), privacy: .public)")
+            }
             return false
         }
     }
@@ -358,14 +363,27 @@ extension WiltedMacModel {
         let source = WiltedMacLocalLibraryStateSource(store: store, deviceID: deviceID) { [weak self] in
             await MainActor.run { self?.librarySyncPlaybackSample() }
         }
-        let resolvedTransport = transport ?? WiltedMacLibraryTransports.production(deviceID: deviceID, hostsTests: Self.hostsTests)
+        let rawTransport = transport ?? WiltedMacLibraryTransports.production(deviceID: deviceID, hostsTests: Self.hostsTests)
+        // One gate for every server call this device makes (poller, handoff, publisher, intents,
+        // media): a rate limit anywhere pauses all of them together and the Sync card says so.
+        let gate = TransportGate(onChange: { [weak self] state in
+            Task { @MainActor in self?.libraryThrottleChanged(state) }
+        })
+        let resolvedTransport = ThrottledLibraryTransport(wrapping: rawTransport, gate: gate)
         let syncDirectory = libraryURL.deletingLastPathComponent().appendingPathComponent("library-sync", isDirectory: true)
+        // The phone's positions become the Mac's stored positions (see WiltedMacPositionImporter).
+        let importer = WiltedMacPositionImporter(host: WiltedMacModelPositionImportHost(model: self), deviceID: deviceID)
         let inbound = WiltedMacInboundRuntime(
             source: WiltedMacLocalReadyAudioSource(store: store), transport: resolvedTransport,
             directory: syncDirectory,
-            isPlaying: { [weak self] in await MainActor.run { self?.isPlaying ?? false } },
             // The one whole-zone scan: it teaches the transport the peer and entry names to poll.
-            discover: { _ = try await (resolvedTransport as? CloudKitLibraryTransport)?.discoverPeers() }
+            discover: {
+                try await gate.run { _ = try await (rawTransport as? CloudKitLibraryTransport)?.discoverPeers() }
+            },
+            onDeviceRecords: { [weak self] records in
+                await importer.handle(records)
+                await MainActor.run { self?.updatePhonePositions(from: records) }
+            }
         )
         // Decision intents (keep, skip, mark done, remove from Larder, restore, reorder) go to the applier, which shares
         // the media service's ledger; media intents keep their existing route.
@@ -386,10 +404,15 @@ extension WiltedMacModel {
             model: self, publisher: publisher, sink: sink, debounce: debounce, retryDelay: retryDelay
         )
         controller.inbound = inbound
+        // Play reads the phone's position itself (one bounded fetch) instead of waiting for a poll.
+        controller.playRefresher = WiltedMacPlayPositionRefresher(
+            fetch: { try await resolvedTransport.fetchDeviceRecords() }, importer: importer,
+            onRecords: { [weak self] records in self?.updatePhonePositions(from: records) })
         inbound.start(sink: sink)
         let handoff = WiltedMacHandoffController(
             coordinator: HandoffCoordinator(transport: resolvedTransport, deviceID: deviceID),
-            player: WiltedMacModelHandoffPlayer(model: self, audio: WiltedMacLocalReadyAudioSource(store: store)),
+            player: WiltedMacModelHandoffPlayer(
+                model: self, audio: WiltedMacLocalReadyAudioSource(store: store), adopted: { importer.adopted }),
             deviceID: deviceID,
             latestRecords: {
                 guard let poller = await MainActor.run(body: { inbound.poller }) else { return nil }
@@ -405,6 +428,8 @@ extension WiltedMacModel {
     func stopLibrarySync() {
         librarySyncController?.stop()
         objc_setAssociatedObject(self, &librarySyncControllerKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        libraryThrottle = nil
+        phonePositions = [:]
     }
 
     /// Everything whose change should republish: the queue and removals. Playback is published
@@ -438,13 +463,22 @@ extension WiltedMacModel {
 /// exactly as the transport toggle does, including the durable checkpoint.
 @MainActor
 final class WiltedMacModelHandoffPlayer: WiltedMacHandoffPlayer {
-    private weak var model: WiltedMacModel?
+    weak var model: WiltedMacModel?
     private let audio: any WiltedMacReadyAudioSource
 
-    init(model: WiltedMacModel, audio: any WiltedMacReadyAudioSource) {
+    /// Positions the Mac stored from the phone, which it does not publish back as its own.
+    private let adopted: @MainActor () -> [ItemID: WiltedMacPositionImporter.Adoption]
+
+    init(
+        model: WiltedMacModel, audio: any WiltedMacReadyAudioSource,
+        adopted: @escaping @MainActor () -> [ItemID: WiltedMacPositionImporter.Adoption] = { [:] }
+    ) {
         self.model = model
         self.audio = audio
+        self.adopted = adopted
     }
+
+    func adoptedPositions() -> [ItemID: WiltedMacPositionImporter.Adoption] { adopted() }
 
     func handoffSample() -> WiltedMacPlaybackSample? {
         guard let model, var sample = model.librarySyncPlaybackSample() else { return nil }

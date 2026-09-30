@@ -364,6 +364,19 @@ struct WiltedMacSettingsView: View {
                 identifier: "wilted-sync-status",
                 tone: model.syncStatus.phase.tone
             )
+            if let throttle = model.libraryThrottle {
+                Divider()
+                // In words, counting down; cleared by the next call that succeeds.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    WiltedSettingsRow(
+                        "iCloud",
+                        value: "\(throttle.notice(now: context.date)) Resumes at "
+                            + throttle.retryAt.formatted(date: .omitted, time: .standard) + ".",
+                        identifier: "wilted-sync-throttle",
+                        tone: .caution
+                    )
+                }
+            }
             Divider()
             WiltedSettingsRow(
                 "Detail",

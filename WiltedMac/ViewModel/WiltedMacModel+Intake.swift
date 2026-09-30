@@ -335,6 +335,7 @@ extension WiltedMacModel {
                 // The outgoing episode is still current here; the forced
                 // publish below is the one that names the new episode.
                 self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
+                await self.refreshPhonePositionBeforePlay()
                 try await playback.playPodcastQueueEpisodeNow(id)
                 Self.playbackLog.notice(
                     "playEpisode returned: episode=\(episode.id, privacy: .public) isPlaying=\(playback.liveIsPlaying, privacy: .public) time=\(playback.livePositionSeconds, privacy: .public) rate=\(playback.playbackRate, privacy: .public)"

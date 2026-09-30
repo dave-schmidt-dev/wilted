@@ -12,7 +12,7 @@ enum LibraryDecisionAction: Equatable, Sendable {
     var title: String {
         switch self {
         case .removeFromLarder: "Remove from Larder"
-        case .markDone: "Mark done"
+        case .markDone: "Mark completed"
         case .reorder: "Move"
         }
     }

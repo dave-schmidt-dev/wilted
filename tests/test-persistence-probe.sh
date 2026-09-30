@@ -11,7 +11,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 package="$repo_root/Probes/PersistenceProbe"
 output_file="$(mktemp -t wilted-persistence-probe.XXXXXX)"
 status_file="$(mktemp -t wilted-persistence-probe-status.XXXXXX)"
-trap 'rm -f "$output_file" "$status_file"' EXIT
+probe_scratch="${TMPDIR:?TMPDIR must be set}/wilted-persistence-probe"
+trap 'rm -f "$output_file" "$status_file"; rm -rf "$probe_scratch"' EXIT
 
 printf '%s\n' 'stage=persistence-probe-tests.start' >&2
 python3 "$repo_root/scripts/build-with-cache.py" run swiftpm persistence-probe -- swift test --package-path "$package" 2>&1 | tee "$output_file"
@@ -36,7 +37,7 @@ for stage in store.open.ready concurrent-callbacks.complete probe.complete; do
 done
 
 crash_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-persistence-crash.XXXXXX")"
-trap 'rm -f "$output_file" "$status_file"; rm -rf "$crash_dir"' EXIT
+trap 'rm -f "$output_file" "$status_file"; rm -rf "$crash_dir" "$probe_scratch"' EXIT
 crash_store="$crash_dir/store.sqlite"
 set +e
 "$probe_bin" --durable-child "$crash_store" >"$output_file" 2>"$status_file"

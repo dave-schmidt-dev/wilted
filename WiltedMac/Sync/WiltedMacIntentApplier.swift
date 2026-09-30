@@ -199,7 +199,9 @@ final class WiltedMacIntentApplier {
         case .markDone:
             switch state {
             case .retired: return try applied()
-            case .live(_, started: true): return try result(await host.markEntryDone(entryID))
+            // The listening may have happened on the phone, which the Mac's own saved position
+            // cannot show, so any live entry the phone marks done is completed here.
+            case .live: return try result(await host.markEntryDone(entryID))
             default: return try rejected(notApplicable)
             }
         case .removeFromLarder:
@@ -294,7 +296,7 @@ extension WiltedMacModel: WiltedMacDecisionHost {
 
     func markEntryDone(_ entryID: ItemID) async -> Bool {
         guard let episode = episodes.first(where: { $0.id == entryID.rawValue }) else { return false }
-        await awaitingDecisionWriters { skipEpisode(episode) }
+        await awaitingDecisionWriters { skipEpisode(episode, requireStarted: false) }
         return decisionState(of: entryID) == .retired
     }
 
