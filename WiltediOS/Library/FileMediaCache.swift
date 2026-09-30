@@ -37,6 +37,7 @@ protocol LibraryMediaCache: MediaCacheStore {
 actor FileMediaCache: LibraryMediaCache {
     private let root: URL
     private let fileManager = FileManager.default
+    private var protectionRepaired = false
 
     init(rootURL: URL) { root = rootURL.standardizedFileURL }
 
@@ -66,6 +67,11 @@ actor FileMediaCache: LibraryMediaCache {
             try fileManager.moveItem(at: verifiedFile, to: staging)
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fileManager.moveItem(at: staging, to: destination)
+            // A moved CloudKit download keeps whatever protection class it arrived with, so the
+            // file and both of its directories say it explicitly.
+            LibraryFileProtection.apply(to: destination)
+            LibraryFileProtection.apply(to: destination.deletingLastPathComponent())
+            LibraryFileProtection.apply(to: destination.deletingLastPathComponent().deletingLastPathComponent())
         } catch {
             try? fileManager.removeItem(at: staging)
             throw error
@@ -80,6 +86,7 @@ actor FileMediaCache: LibraryMediaCache {
     }
 
     func cachedEntries() async -> [ItemID: CachedMedia] {
+        repairProtectionOnce()
         var found: [ItemID: (media: CachedMedia, modified: Date)] = [:]
         for entryDirectory in subdirectories(of: root) {
             guard let entryID = try? ItemID(rawValue: entryDirectory.lastPathComponent) else { continue }
@@ -117,7 +124,7 @@ actor FileMediaCache: LibraryMediaCache {
         guard fileManager.fileExists(atPath: url.deletingLastPathComponent().path, isDirectory: &isDirectory), isDirectory.boolValue,
               let data = try? JSONEncoder().encode(transcript)
         else { return }
-        try? data.write(to: url, options: .atomic)
+        try? data.write(to: url, options: [.atomic, LibraryFileProtection.writingOption])
     }
 
     private func transcriptURL(_ entryID: ItemID, _ revisionID: RevisionID) -> URL {
@@ -142,9 +149,22 @@ actor FileMediaCache: LibraryMediaCache {
         return children.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
     }
 
-    /// Creates the root and keeps re-downloadable audio out of device backups.
+    /// Audio downloaded before the cache set its protection class explicitly may carry a stronger one
+    /// from its CloudKit download, which would not open once the phone locks. Fixed once per launch,
+    /// before the first listing exposes those files to the car.
+    private func repairProtectionOnce() {
+        guard !protectionRepaired else { return }
+        protectionRepaired = true
+        guard let walker = fileManager.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
+        LibraryFileProtection.apply(to: root)
+        for case let url as URL in walker { LibraryFileProtection.apply(to: url) }
+    }
+
+    /// Creates the root, keeps re-downloadable audio out of device backups, and keeps it
+    /// readable while the phone is locked.
     private func prepareRoot() throws {
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        LibraryFileProtection.apply(to: root)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var mutableRoot = root

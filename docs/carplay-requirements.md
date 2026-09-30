@@ -75,6 +75,29 @@ Consequence for Wilted: the car offers listening only. Downloading, deleting, La
 
 Voice commands are developed together with CarPlay but do not depend on it: they drive the same `LibraryPlayer` and work on the phone alone. The list template can show a Siri assistant cell (p.18). Siri work does not use CarPlay APIs, so it may proceed before the entitlement is granted. See the Siri task in TASKS.md; the mechanism (App Intents or SiriKit media intents) is verified against current Apple docs before coding.
 
+## iOS 26 floor and API availability
+
+Owner decision (2026-09-30): iOS 26 is the compatibility floor. Wilted builds **iOS 26-only** for CarPlay: no iOS 27-only API, not even behind `#available`. Anything that seems to need iOS 27 stops and goes to the owner with the symbol, what it gives, and the iOS 26 alternative.
+
+Availability read from the iOS 27.0 SDK's CarPlay headers (Xcode 27.0, 27A266a). The app currently ships only symbols available since iOS 14 or earlier.
+
+| Symbol | Available | Used |
+|---|---|---|
+| `CPTemplateApplicationScene`, `CPTemplateApplicationSceneDelegate` | iOS 13 | yes |
+| `CPInterfaceController.setRootTemplate(_:animated:completion:)`, `pushTemplate(_:animated:completion:)`, `topTemplate` | iOS 14 (the non-completion forms are deprecated since 14) | yes |
+| `CPListTemplate`, `CPListSection`, `CPListItem`, `CPListItem.isPlaying`, `CPListItem.handler` | iOS 14 | yes |
+| `CPListTemplate.maximumItemCount`, `emptyViewTitleVariants`, `updateSections(_:)` | iOS 14 | yes |
+| `CPNowPlayingTemplate.shared`, `updateNowPlayingButtons(_:)`, `CPNowPlayingPlaybackRateButton` | iOS 14 | yes |
+| `CPTabBarTemplate` | iOS 14 | no (single list root) |
+| `CPNowPlayingTemplate.allowsMiniPlayer` | **iOS 27** | no; on iOS 26 there is no mini player, so the Now Playing button is always in the navigation bar |
+| `CPInterfaceController.showOverlayTemplate(_:animated:completion:)`, `hideOverlayTemplateAnimated:completion:` | **iOS 27** | no |
+| `CPChargingStationConnection` | **iOS 27** | no (not an audio-app feature) |
+| `CPVoiceControlTemplate`, `CPSearchTemplate` | headers say iOS 12, but Apple's guide permits them for audio apps only from iOS 27 | no |
+| `CPListTemplate(... assistantCellConfiguration:)`, `CPListTemplate.listHeader`, `CPPlaybackConfiguration`, `CPImageOverlay`, `CPListItem` (26.4 extension) | **iOS 26.4** (above the 26.0 floor) | no; the Siri assistant cell needs `#available(iOS 26.4, *)` and owner approval |
+| `CPListImageRowItem` elements, `CPGridButton`, `headerGridButtons` | iOS 26.0 | no (not needed for an episode list) |
+
+Only a runtime check on an iOS 26 simulator and a real iOS 26 head unit proves the behaviour; the header table proves only that the symbols exist.
+
 ## Open items
 
 - Entitlement granted 2026-09-30; the Addendum's no-access clause lifts once the CarPlay entitlement profile exists for the App ID. Until that profile is in place, nothing that touches the CarPlay APIs is added (see TASKS.md). Allowed groundwork now: the locked-phone file-protection audit, making the library model, transport, and player start without the iPhone window scene, and a framework-free episode-list model for the car. An earlier idea of adding the entitlement for simulator builds only is dropped because of the Addendum's no-access clause.

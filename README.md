@@ -100,6 +100,8 @@ Explicitly excluded from the active Mac milestone: automatic classification, wea
 | `Producer/Sources/WiltedProducer/Preparation/` | Focused Swift preparation pipeline types, IPC runner, response handling, and commit behavior. |
 | `Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests*.swift` | Fourteen LocalLibraryStore behavior test files. |
 | `WiltedMacTests/WiltedMacModelTests*.swift`, `WiltedMacTests/WiltedMacModelTestDoubles.swift` | Twenty-eight Mac model test and test-double files. |
+| `WiltediOS/Library/LibraryRuntime.swift` | Process-wide library model, player and settings (`LibraryRuntime.shared`), started without any iPhone window scene; the phone Larder, CarPlay and Siri all use it. |
+| `WiltediOS/CarPlay/` | CarPlay audio scene (list of episodes on the phone, Now Playing) and its framework-free list model; see `docs/carplay-requirements.md`. |
 | `WiltediOS/ListenerAppModel*.swift`, `WiltediOS/ListenerAppTypes.swift` | Nine listener model, type, and extension files. |
 | `WiltediOSTests/ListenerAppModel*.swift` | Seven listener model test and double files. |
 | `scripts/` | Contract validators, phase gates, snapshot and walkthrough tooling. |

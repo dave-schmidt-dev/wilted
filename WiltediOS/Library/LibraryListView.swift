@@ -5,6 +5,7 @@ import WiltedLibrary
 /// The iPhone Larder: episodes the Mac has prepared, in the Mac's order unless sorted. Builds the
 /// production CloudKit environment unless a test or preview injects a model.
 struct LibraryRoot: View {
+    private let runtime: LibraryRuntime
     @StateObject private var model: LibraryAppModel
     @StateObject private var player: LibraryPlayer
     @StateObject private var settings: LibrarySettingsStore
@@ -14,9 +15,17 @@ struct LibraryRoot: View {
     @Environment(\.colorScheme) private var colorScheme
 
     init(model: LibraryAppModel? = nil, player: LibraryPlayer? = nil, settings: LibrarySettingsStore? = nil) {
-        _settings = StateObject(wrappedValue: settings ?? LibrarySettingsStore())
-        _model = StateObject(wrappedValue: model ?? LibraryEnvironment.makeModel())
-        _player = StateObject(wrappedValue: player ?? LibraryPlayer.live())
+        // The default launch shares the process-wide runtime with CarPlay and Siri; injected objects
+        // (tests, previews) get a private one.
+        let runtime = (model == nil && player == nil && settings == nil)
+            ? LibraryRuntime.shared
+            : LibraryRuntime(
+                model: model ?? LibraryEnvironment.makeModel(), player: player ?? LibraryPlayer.live(),
+                settings: settings ?? LibrarySettingsStore())
+        self.runtime = runtime
+        _settings = StateObject(wrappedValue: runtime.settings)
+        _model = StateObject(wrappedValue: runtime.model)
+        _player = StateObject(wrappedValue: runtime.player)
     }
 
     var body: some View {
@@ -53,17 +62,8 @@ struct LibraryRoot: View {
                 .presentationDetents([.large])
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-        .onChange(of: settings.playback, initial: true) { _, preferences in player.apply(preferences) }
         .environment(\.wiltedTextScale, settings.textScale)
-        // Removing the file from the phone must not leave its audio playing.
-        .onChange(of: model.media) { _, media in
-            if let playing = player.item, media[playing.entryID] != .onPhone { player.stop() }
-        }
-        .task {
-            model.attachPlayer(player)
-            LibraryPushHandler.shared.attach { await model.handleSilentPush() }
-            await model.start()
-        }
+        .task { await runtime.start() }
         .onChange(of: scenePhase) { _, phase in
             // The refresh also fetches the device records behind "Continue from Mac".
             if phase == .active { Task { await model.refresh() } }

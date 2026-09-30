@@ -24,6 +24,7 @@ validate-inner:
 	@bash tests/test-phase0-aggregate.sh
 	@bash scripts/test-phase0.sh
 	@bash tests/test-native-gate.sh
+	@bash tests/test-carplay-config.sh
 	@bash scripts/test-gate.sh
 
 native-meta:

@@ -215,6 +215,6 @@ actor FileLibraryStore: LibraryStore {
             listening: Array(content.listening.values), versions: state.versions.map { Versioned(key: $0.key, version: $0.value) },
             cursor: state.cursor)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(saved).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try JSONEncoder().encode(saved).write(to: url, options: [.atomic, LibraryFileProtection.writingOption])
     }
 }

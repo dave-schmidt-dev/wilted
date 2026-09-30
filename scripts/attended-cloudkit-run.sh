@@ -168,10 +168,16 @@ cmd_mac() {
   printf '\nMAC_APP=%s\n' "$mac_app_path"
 }
 
+# The iOS Development build signs manually with the "Wilted iOS Development" profile (the only one that
+# carries the CarPlay audio entitlement), so the automatic-signing overrides are dropped for it.
+ios_signing_args() {
+  signing_args | grep -Fvx -e -allowProvisioningUpdates -e CODE_SIGN_STYLE=Automatic -e 'CODE_SIGN_IDENTITY=Apple Development'
+}
+
 cmd_ios() {
   require_tool xcodebuild; require_tool codesign
-  step 'Building iOS listener (Development, live CloudKit, device slice)'
-  local args=(); while IFS= read -r a; do args+=("$a"); done < <(signing_args)
+  step 'Building iOS listener (Development, live CloudKit, device slice, manual CarPlay profile)'
+  local args=(); while IFS= read -r a; do args+=("$a"); done < <(ios_signing_args)
   run_build ios python3 "$build_cache" run xcode attended-cloudkit -- xcodebuild build \
     -project "$project" -scheme WiltediOS -configuration Development \
     -destination 'generic/platform=iOS' \

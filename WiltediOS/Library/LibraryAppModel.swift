@@ -151,6 +151,16 @@ final class LibraryAppModel: ObservableObject {
         await refresh()
     }
 
+    /// Shows the persisted library and the audio already on the phone without any network call, so a
+    /// launch with no signal still lists and plays what is downloaded. `start()` follows with the sync.
+    func loadLocalState() async {
+        let content = await store.state().content
+        entryDurations = content.entries.compactMapValues(\.durationSeconds)
+        decisionContent = content
+        rebuildRows()
+        await refreshMediaFromCache()
+    }
+
     /// Fetches now. Calls made while a fetch is running share it and queue exactly one rerun,
     /// so a burst of pushes never runs overlapping syncs.
     func refresh() async {

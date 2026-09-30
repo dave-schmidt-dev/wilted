@@ -143,6 +143,16 @@ targets:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
         Development:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements
+          # CarPlay needs a provisioning profile that carries com.apple.developer.carplay-audio, so the
+          # device build signs manually with it (Xcode cannot make that profile automatically).
+          # The profile lists only this certificate; a second "Apple Development" identity in the
+          # keychain would otherwise be picked and rejected.
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Apple Development: DAVID MICHAEL SCHMIDT (8Q6KTCFAD2)"
+          CODE_SIGNING_ALLOWED: YES
+          CODE_SIGNING_REQUIRED: YES
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
+          PROVISIONING_PROFILE_SPECIFIER: Wilted iOS Development
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
         Release:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements
@@ -169,6 +179,15 @@ targets:
         UIBackgroundModes:
           - audio
           - remote-notification
+        # CarPlay scene (carplay-audio entitlement, docs/carplay-requirements.md). SwiftUI supplies the
+        # iPhone window scene for the WindowGroup, so only the CarPlay role is declared here.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations:
+            CPTemplateApplicationSceneSessionRoleApplication:
+              - UISceneClassName: CPTemplateApplicationScene
+                UISceneConfigurationName: CarPlay
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
