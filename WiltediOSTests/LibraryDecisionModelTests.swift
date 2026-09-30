@@ -40,7 +40,7 @@ final class LibraryDecisionModelTests: XCTestCase {
         for ack in result.acknowledged { versions[ack.key] = ack.version }
     }
 
-    /// New: fresh. Larder: a, b, c in that order. Retired: old. Dismissed: gone.
+    /// Larder: a, b, c in that order. Not queued, so not on the phone: fresh (New), old (retired), gone (dismissed).
     private func seed() async throws {
         try await macPush([
             .source(LibrarySource(id: id("show"), kind: .podcastFeed, title: "The Show")),
@@ -53,11 +53,24 @@ final class LibraryDecisionModelTests: XCTestCase {
         ])
     }
 
+    /// The Mac offering ready audio for `raw`, which is what puts a queued row on the phone.
+    private func offerAudio(_ raw: String) async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("decision-audio-\(UUID().uuidString)")
+        try Data([1, 2, 3]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let offer = try LibraryMediaOffer(
+            entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"),
+            contentHash: MediaHash.prefix + String(repeating: "0", count: 64), byteCount: 3, mediaType: "audio/mp4")
+        try await mac.publishMedia(offer: offer, fileURL: file)
+    }
+
     private func makeModel() -> LibraryAppModel {
         let clock = clock
+        UserDefaults(suiteName: "library-decision-tests")!.removePersistentDomain(forName: "library-decision-tests")
         return LibraryAppModel(
             transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
             decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60, pollInterval: .seconds(3_600), pendingPollInterval: .seconds(3_600)),
+            preferences: UserDefaults(suiteName: "library-decision-tests")!,
             now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
     }
 
@@ -83,42 +96,31 @@ final class LibraryDecisionModelTests: XCTestCase {
 
     private func ids(_ rows: [LibraryRow]) -> [String] { rows.map(\.id.rawValue) }
 
-    // MARK: sections and eligibility
+    // MARK: eligibility
 
-    func testNewSectionHoldsLiveUnqueuedPodcastEpisodesOnly() async throws {
+    func testOnlyQueuedRowsExistAndNewOrRemovedEntriesNeverAppear() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        XCTAssertEqual(ids(model.new), ["fresh"])
         XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
-        XCTAssertEqual(Set(ids(model.removed)), ["old", "gone"])
     }
 
-    func testKeepAndSkipAreOfferedOnlyInNewAndNeverOnLarderRows() async throws {
+    func testRemoveFromLarderIsOfferedOnEveryRowAndMarkDoneOnlyOnAStartedOne() async throws {
         try await seed()
         try await startedOnMac("a")
         let model = makeModel()
         await model.refresh()
-        let fresh = try XCTUnwrap(model.new.first)
-        XCTAssertEqual(model.decisionActions(for: fresh, in: .new), [.keep, .skip])
-        for row in model.queued {
-            let actions = model.decisionActions(for: row, in: .larder)
-            XCTAssertFalse(actions.contains(.keep) || actions.contains(.skip), "\(row.id) offers a feed decision")
-        }
-        // Mark done only for the started row; Restore only for the retired one.
-        XCTAssertEqual(model.decisionActions(for: model.queued[0], in: .larder), [.markDone])
-        XCTAssertEqual(model.decisionActions(for: model.queued[1], in: .larder), [])
-        XCTAssertEqual(model.decisionActions(for: try XCTUnwrap(model.removed.first { $0.id.rawValue == "old" }), in: .removed), [.restore])
-        XCTAssertEqual(model.decisionActions(for: try XCTUnwrap(model.removed.first { $0.id.rawValue == "gone" }), in: .removed), [])
+        XCTAssertEqual(model.decisionActions(for: model.queued[0]), [.removeFromLarder, .markDone])
+        XCTAssertEqual(model.decisionActions(for: model.queued[1]), [.removeFromLarder])
     }
 
     func testAnIneligibleDecisionSendsNothing() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.keep, entryID: id("a"))      // already queued
         await model.decide(.markDone, entryID: id("b"))  // not started
-        await model.decide(.restore, entryID: id("gone")) // dismissed, not retired
+        await model.decide(.removeFromLarder, entryID: id("fresh"))  // not on the phone's list
+        await model.decide(.removeFromLarder, entryID: id("gone"))   // dismissed on the Mac
         let sent = try await intents()
         XCTAssertTrue(sent.isEmpty)
         XCTAssertTrue(model.decisions.isEmpty)
@@ -126,39 +128,36 @@ final class LibraryDecisionModelTests: XCTestCase {
 
     // MARK: optimistic apply
 
-    func testKeepMovesTheEpisodeToTheEndOfTheLarderAtOnceAndSendsAnIntent() async throws {
+    func testRemoveFromLarderRemovesTheRowAtOnceAndSendsAnIntent() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.keep, entryID: id("fresh"))
-        XCTAssertEqual(ids(model.queued), ["a", "b", "c", "fresh"])
-        XCTAssertTrue(model.new.isEmpty)
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .waiting)
+        await model.decide(.removeFromLarder, entryID: id("b"))
+        XCTAssertEqual(ids(model.queued), ["a", "c"])
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .waiting)
         let sent = try await intents()
-        XCTAssertEqual(sent.map(\.action), [.keep(entryID: id("fresh"))])
+        XCTAssertEqual(sent.map(\.action), [.removeFromLarder(entryID: id("b"))])
         XCTAssertEqual(sent.first?.deviceID, "phone")
         XCTAssertTrue(model.decisions.first?.isSent == true)
     }
 
-    func testSkipMarkDoneAndRestoreMoveRowsBetweenSections() async throws {
+    func testRemoveFromLarderAndMarkDoneRemoveRowsAndASecondDecisionIsIgnored() async throws {
         try await seed()
         try await startedOnMac("b")
         let model = makeModel()
         await model.refresh()
-        await model.decide(.skip, entryID: id("fresh"))
+        await model.decide(.removeFromLarder, entryID: id("a"))
         await model.decide(.markDone, entryID: id("b"))
-        await model.decide(.restore, entryID: id("old"))
-        XCTAssertEqual(ids(model.queued), ["a", "c"])
-        XCTAssertEqual(Set(ids(model.removed)), ["fresh", "b", "gone"])
-        XCTAssertEqual(ids(model.new), ["old"])
+        XCTAssertEqual(ids(model.queued), ["c"])
         // A second decision for an entry with one in flight is ignored.
-        await model.decide(.keep, entryID: id("old"))
+        await model.decide(.removeFromLarder, entryID: id("a"))
         let count = try await intents().count
-        XCTAssertEqual(count, 3)
+        XCTAssertEqual(count, 2)
     }
 
     func testReorderIsOptimisticEntryRelativeAndFollowsTheMovedList() async throws {
         try await seed()
+        for raw in ["a", "b", "c"] { try await offerAudio(raw) }
         let model = makeModel()
         await model.refresh()
         await model.reorderQueued(fromOffsets: IndexSet(integer: 2), toOffset: 0) // c to the front
@@ -167,6 +166,37 @@ final class LibraryDecisionModelTests: XCTestCase {
         XCTAssertEqual(ids(model.queued), ["c", "b", "a"])
         let sent = try await intents().map(\.action)
         XCTAssertEqual(sent, [.reorder(entryID: id("c"), afterEntryID: nil), .reorder(entryID: id("a"), afterEntryID: id("b"))])
+    }
+
+    func testReorderIsIgnoredWhileTheListIsSortedOrFiltered() async throws {
+        try await seed()
+        for raw in ["a", "b", "c"] { try await offerAudio(raw) }
+        let model = makeModel()
+        await model.refresh()
+        XCTAssertTrue(model.canReorder)
+        model.sort = .title
+        XCTAssertFalse(model.canReorder)
+        model.moveQueued(fromOffsets: IndexSet(integer: 2), toOffset: 0)
+        model.sort = .custom
+        model.searchText = "Title"
+        XCTAssertFalse(model.canReorder)
+        model.filter = .onPhone
+        model.searchText = ""
+        XCTAssertFalse(model.canReorder)
+        let sent = try await intents()
+        XCTAssertTrue(sent.isEmpty)
+    }
+
+    func testReorderOnlyTouchesPreparedRowsAndLeavesHiddenOnesInPlace() async throws {
+        try await seed()
+        for raw in ["a", "c"] { try await offerAudio(raw) } // b is queued but not prepared
+        let model = makeModel()
+        await model.refresh()
+        XCTAssertEqual(ids(model.visibleRows), ["a", "c"])
+        await model.reorderQueued(fromOffsets: IndexSet(integer: 1), toOffset: 0) // c above a
+        XCTAssertEqual(ids(model.queued), ["c", "a", "b"])
+        let sent = try await intents().map(\.action)
+        XCTAssertEqual(sent, [.reorder(entryID: id("c"), afterEntryID: nil)])
     }
 
     func testReorderRequestConversion() {
@@ -189,121 +219,118 @@ final class LibraryDecisionModelTests: XCTestCase {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.keep, entryID: id("fresh"))
+        await model.decide(.removeFromLarder, entryID: id("b"))
         let intent = try await firstIntent()
         try await macAnswers(intent, applied: true)
         await model.refresh() // outcome seen, publish not yet
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .confirming)
-        XCTAssertEqual(ids(model.queued), ["a", "b", "c", "fresh"])
-        try await macPush([.slot(try QueueSlot(entryID: id("fresh"), sortKey: 3))])
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .confirming)
+        XCTAssertEqual(ids(model.queued), ["a", "c"])
+        try await macPush([.slotRemoved(entryID: id("b"))])
         await model.refresh() // publish confirms
-        XCTAssertNil(model.decisionStatus(for: id("fresh")))
+        XCTAssertNil(model.decisionStatus(for: id("b")))
         XCTAssertTrue(model.decisions.isEmpty)
-        XCTAssertEqual(ids(model.queued), ["a", "b", "c", "fresh"])
+        XCTAssertEqual(ids(model.queued), ["a", "c"])
     }
 
     func testPublishThatMatchesConfirmsBeforeAnyOutcome() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.skip, entryID: id("fresh"))
-        try await macPush([.removal(entryID: id("fresh"), state: .retired)])
+        await model.decide(.removeFromLarder, entryID: id("b"))
+        try await macPush([.slotRemoved(entryID: id("b"))])
         await model.refresh()
         XCTAssertTrue(model.decisions.isEmpty)
-        XCTAssertTrue(ids(model.removed).contains("fresh"))
+        XCTAssertEqual(ids(model.queued), ["a", "c"])
     }
 
     func testRejectionRollsBackAndSaysWhy() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.keep, entryID: id("fresh"))
-        try await macAnswers(try await firstIntent(), applied: false, reason: IntentOutcome.reasonUnknownEntry)
+        await model.decide(.removeFromLarder, entryID: id("b"))
+        try await macAnswers(try await firstIntent(), applied: false, reason: IntentOutcome.reasonNotApplicable)
         await model.refresh()
-        XCTAssertEqual(ids(model.new), ["fresh"])
         XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
         XCTAssertTrue(model.decisions.isEmpty)
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .failed(LibraryAppModel.rejectionText(IntentOutcome.reasonUnknownEntry)))
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .failed(LibraryAppModel.rejectionText(IntentOutcome.reasonNotApplicable)))
         // The next decision clears the notice.
-        await model.decide(.skip, entryID: id("fresh"))
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .waiting)
+        await model.decide(.removeFromLarder, entryID: id("b"))
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .waiting)
     }
 
     func testAContradictingPublishDropsTheOptimisticState() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.keep, entryID: id("fresh"))
-        try await macPush([.removal(entryID: id("fresh"), state: .dismissed)]) // the Mac did something else
+        await model.decide(.removeFromLarder, entryID: id("b"))
+        try await macPush([.slot(try QueueSlot(entryID: id("b"), sortKey: 9))]) // the Mac did something else
         await model.refresh()
         XCTAssertTrue(model.decisions.isEmpty)
-        XCTAssertNil(model.decisionStatus(for: id("fresh")))
-        XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
-        XCTAssertTrue(ids(model.removed).contains("fresh"))
+        XCTAssertNil(model.decisionStatus(for: id("b")))
+        XCTAssertEqual(ids(model.queued), ["a", "c", "b"])
     }
 
     func testUnansweredDecisionRevertsAfterSixtySecondsStaysQueuedAndCanBeCancelled() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.keep, entryID: id("fresh"))
+        await model.decide(.removeFromLarder, entryID: id("b"))
         clock.advance(59)
         await model.refresh()
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .waiting)
-        XCTAssertEqual(ids(model.queued), ["a", "b", "c", "fresh"])
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .waiting)
+        XCTAssertEqual(ids(model.queued), ["a", "c"])
 
         clock.advance(2)
         await model.refresh()
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .pendingOnMac)
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .pendingOnMac)
         XCTAssertTrue(LibraryDecisionStatus.pendingOnMac.text.hasPrefix("Pending on Mac"))
-        XCTAssertEqual(ids(model.new), ["fresh"], "the display reverts")
-        XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
-        XCTAssertEqual(model.decisionActions(for: try XCTUnwrap(model.new.first), in: .new), [], "no second decision on top of a pending one")
+        XCTAssertEqual(ids(model.queued), ["a", "b", "c"], "the display reverts")
+        XCTAssertEqual(model.decisionActions(for: try XCTUnwrap(model.queued.first { $0.id == id("b") })), [], "no second decision on top of a pending one")
         let stillQueued = try await intents().count
         XCTAssertEqual(stillQueued, 1)
 
         // A late answer resumes the confirmed display.
         try await macAnswers(try await firstIntent(), applied: true)
         await model.refresh()
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .confirming)
-        XCTAssertEqual(ids(model.queued), ["a", "b", "c", "fresh"])
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .confirming)
+        XCTAssertEqual(ids(model.queued), ["a", "c"])
 
         // Cancelling only drops local tracking.
-        model.cancelDecision(entryID: id("fresh"))
-        XCTAssertNil(model.decisionStatus(for: id("fresh")))
-        XCTAssertEqual(ids(model.new), ["fresh"])
+        model.cancelDecision(entryID: id("b"))
+        XCTAssertNil(model.decisionStatus(for: id("b")))
+        XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
     }
 
     func testCancelFromPendingOnMacDropsTracking() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.skip, entryID: id("fresh"))
+        await model.decide(.removeFromLarder, entryID: id("b"))
         clock.advance(61)
         await model.refresh()
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .pendingOnMac)
-        model.cancelDecision(entryID: id("fresh"))
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .pendingOnMac)
+        model.cancelDecision(entryID: id("b"))
         XCTAssertTrue(model.decisions.isEmpty)
-        XCTAssertEqual(ids(model.new), ["fresh"])
+        XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
     }
 
     func testOutcomesForOtherDevicesAreIgnored() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.keep, entryID: id("fresh"))
+        await model.decide(.removeFromLarder, entryID: id("b"))
         let mine = try await firstIntent()
         let foreign = try LibraryIntent(id: mine.id, deviceID: "tablet", createdAt: clock.now, action: mine.action)
         try await macAnswers(foreign, applied: false)
         await model.refresh()
-        XCTAssertEqual(model.decisionStatus(for: id("fresh")), .waiting)
+        XCTAssertEqual(model.decisionStatus(for: id("b")), .waiting)
     }
 
     func testAccountRecoveryClearsDecisions() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.keep, entryID: id("fresh"))
+        await model.decide(.removeFromLarder, entryID: id("b"))
         model.discardDecisionsAfterAccountChange()
         XCTAssertTrue(model.decisions.isEmpty)
         XCTAssertTrue(model.decisionNotices.isEmpty)

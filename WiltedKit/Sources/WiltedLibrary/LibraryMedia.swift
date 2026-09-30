@@ -1,16 +1,30 @@
 import Foundation
 import WiltedDomain
 
-/// The Mac's statement about audio for one entry: either a verified, transferable file
-/// (`ready`) or the fact that no ready revision exists yet (`notReady`). The Mac is the
-/// only writer of offers; a follower never triggers preparation by asking.
+/// The Mac's statement about audio for one entry: a verified, transferable file (`ready`),
+/// audio the Mac has prepared but not uploaded (`available`), or the fact that no ready
+/// revision exists (`notReady`). The Mac is the only writer of offers; a follower never
+/// triggers preparation by asking, and asking an `available` entry is what triggers the upload.
 public struct LibraryMediaOffer: Codable, Sendable, Equatable {
-    public enum State: String, Codable, Sendable { case ready, notReady }
+    public enum State: String, Codable, Sendable {
+        case ready, notReady
+        /// Prepared on the Mac and queued, with no audio uploaded yet: revision, size, type and
+        /// duration are known and the hash may be empty. A reader may list it and request it, but
+        /// cannot fetch it until the offer turns `ready`.
+        case available
+
+        /// A state this reader does not know degrades to `notReady`: nothing to fetch, no crash.
+        public init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = State(rawValue: raw) ?? .notReady
+        }
+    }
 
     public let entryID: ItemID
     /// The revision the file belongs to. Nil only for `notReady`, where none exists.
     public let revisionID: RevisionID?
-    /// `sha256:<64 lowercase hex>` of the exact bytes delivered; empty for `notReady`.
+    /// `sha256:<64 lowercase hex>` of the exact bytes delivered; empty for `notReady`, and for
+    /// `available` until the audio is uploaded.
     public let contentHash: String
     public let byteCount: Int64
     public let mediaType: String
@@ -31,11 +45,12 @@ public struct LibraryMediaOffer: Codable, Sendable, Equatable {
                 throw DomainError.invalidValue(field: "durationSeconds", reason: "must be finite and non-negative")
             }
         }
-        if state == .ready {
+        if state == .ready || state == .available {
             guard revisionID != nil else {
-                throw DomainError.invalidValue(field: "revisionID", reason: "a ready offer needs a revision")
+                throw DomainError.invalidValue(field: "revisionID", reason: "a ready or available offer needs a revision")
             }
-            guard MediaHash.isWellFormed(contentHash) else {
+            // An available offer has no upload to verify yet, so its hash may be empty.
+            guard MediaHash.isWellFormed(contentHash) || (state == .available && contentHash.isEmpty) else {
                 throw DomainError.invalidValue(field: "contentHash", reason: "must be sha256:<64 lowercase hex>")
             }
             guard byteCount > 0 else {
@@ -53,6 +68,9 @@ public struct LibraryMediaOffer: Codable, Sendable, Equatable {
         self.durationSeconds = durationSeconds
         self.state = state
     }
+
+    /// True when the audio is prepared on the Mac, whether or not it is uploaded yet.
+    public var isPrepared: Bool { state == .ready || state == .available }
 
     /// Offer stating that no ready audio exists for `entryID`.
     public static func notReady(entryID: ItemID) -> LibraryMediaOffer {

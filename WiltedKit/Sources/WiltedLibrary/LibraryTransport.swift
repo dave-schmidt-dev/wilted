@@ -185,6 +185,18 @@ public protocol LibraryTransport: Sendable {
     func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL
     /// Mac only: withdraws the audio and offer for `entryID`.
     func removeMedia(entryID: ItemID) async throws
+    /// Mac only: publishes the lifetime statistics. One record, replaced by each publish.
+    func publishStats(_ stats: LibraryStats) async throws
+    /// The Mac's last published statistics, or nil before it has published any. Read by name.
+    func readStats() async throws -> LibraryStats?
+    /// Mac only: publishes the transcript for one prepared revision. One per entry; a newer
+    /// revision replaces the older. Kept apart from the library state, so no state fetch carries it.
+    func publishTranscript(_ transcript: LibraryTranscript) async throws
+    /// The published transcript for exactly this revision, or nil when none is published or the
+    /// published one belongs to a different revision. Read by name; never triggers a zone scan.
+    func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript?
+    /// Mac only: withdraws the transcript for `entryID`, alongside its audio.
+    func removeTranscript(entryID: ItemID) async throws
     func commitFetchedState(_ token: LibraryChangeToken?) async throws
     func commitSentState(_ token: LibraryChangeToken?) async throws
 }
@@ -203,6 +215,15 @@ public extension LibraryTransport {
         throw LibraryTransportError.transport("media transfer is not supported by this transport")
     }
     func removeMedia(entryID: ItemID) async throws {}
+    func publishStats(_ stats: LibraryStats) async throws {
+        throw LibraryTransportError.transport("statistics are not supported by this transport")
+    }
+    func readStats() async throws -> LibraryStats? { nil }
+    func publishTranscript(_ transcript: LibraryTranscript) async throws {
+        throw LibraryTransportError.transport("transcripts are not supported by this transport")
+    }
+    func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? { nil }
+    func removeTranscript(entryID: ItemID) async throws {}
     func commitFetchedState(_ token: LibraryChangeToken?) async throws {}
     func commitSentState(_ token: LibraryChangeToken?) async throws {}
 }

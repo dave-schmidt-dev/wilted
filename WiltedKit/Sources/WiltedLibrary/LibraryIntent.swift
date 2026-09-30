@@ -17,6 +17,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case skip(entryID: ItemID)
         /// Mark a started Larder episode done (the Larder skip).
         case markDone(entryID: ItemID)
+        /// Take a queued entry off the Larder without retiring it (the Mac's Remove from Larder).
+        case removeFromLarder(entryID: ItemID)
         /// Bring a retired entry back.
         case restore(entryID: ItemID)
         /// Move a queued entry to just after `afterEntryID`; nil moves it to the front. The Mac
@@ -27,7 +29,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         public var entryID: ItemID {
             switch self {
             case let .requestMedia(entryID), let .mediaCached(entryID, _, _), let .keep(entryID), let .skip(entryID),
-                 let .markDone(entryID), let .restore(entryID), let .reorder(entryID, _):
+                 let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _):
                 return entryID
             }
         }
@@ -35,7 +37,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// True for the decision actions the Mac answers with an `IntentOutcome`.
         public var isDecision: Bool {
             switch self {
-            case .keep, .skip, .markDone, .restore, .reorder: return true
+            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder: return true
             case .requestMedia, .mediaCached: return false
             }
         }
@@ -93,6 +95,10 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
 
     public static func markDone(entryID: ItemID, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
         try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .markDone(entryID: entryID))
+    }
+
+    public static func removeFromLarder(entryID: ItemID, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
+        try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .removeFromLarder(entryID: entryID))
     }
 
     public static func restore(entryID: ItemID, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {

@@ -36,6 +36,12 @@ enum LibraryRemoteCommand: Equatable, Sendable {
     /// The handler returns whether the command did anything.
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool)
     func uninstall()
+    /// The lengths the lock-screen skip buttons advertise. Optional: doubles need not care.
+    func setSkipIntervals(back: TimeInterval, forward: TimeInterval)
+}
+
+extension LibraryRemoteCommands {
+    func setSkipIntervals(back: TimeInterval, forward: TimeInterval) {}
 }
 
 /// Plays one cached episode file at a time through a `ListenerAudioEngine`.
@@ -74,6 +80,11 @@ final class LibraryPlayer: ObservableObject {
     @Published private(set) var position: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var rate: Double = 1
+    /// Skip lengths from Settings; the static constants are the untouched defaults.
+    @Published private(set) var skipBackSeconds = Int(LibraryPlayer.skipBackSeconds)
+    @Published private(set) var skipForwardSeconds = Int(LibraryPlayer.skipForwardSeconds)
+    /// The speed a newly started item takes; nil leaves the player's current speed alone.
+    private var defaultRate: Double?
 
     var isPlaying: Bool { status == .playing }
     /// False for an engine with no speed control, so the UI can hide the picker.
@@ -134,6 +145,7 @@ final class LibraryPlayer: ObservableObject {
         }
         self.item = item
         duration = engine.duration
+        if supportsRate, let defaultRate { rate = Self.clampRate(defaultRate) }
         applyRateToEngine()
         engine.currentTime = min(max(0, start), duration)
         position = engine.currentTime
@@ -184,12 +196,26 @@ final class LibraryPlayer: ObservableObject {
     }
 
     func skip(by seconds: TimeInterval) { seek(to: position + seconds) }
-    func skipBack() { skip(by: -Self.skipBackSeconds) }
-    func skipForward() { skip(by: Self.skipForwardSeconds) }
+    func skipBack() { skip(by: -TimeInterval(skipBackSeconds)) }
+    func skipForward() { skip(by: TimeInterval(skipForwardSeconds)) }
+
+    /// Takes the phone's Settings: the default speed applies from the next item started, the skip
+    /// lengths apply at once, to the buttons and to the lock-screen commands.
+    func apply(_ preferences: LibraryPlaybackPreferences) {
+        defaultRate = preferences.defaultSpeed
+        skipBackSeconds = preferences.skipBackSeconds
+        skipForwardSeconds = preferences.skipForwardSeconds
+        remoteCommands.setSkipIntervals(back: TimeInterval(skipBackSeconds), forward: TimeInterval(skipForwardSeconds))
+    }
+
+    /// Within what the picker offers, which is what `AVAudioPlayer` accepts.
+    private static func clampRate(_ value: Double) -> Double {
+        min(max(value, rates.first ?? 0.5), rates.last ?? 2)
+    }
 
     func setRate(_ newRate: Double) {
         guard supportsRate else { return }
-        rate = min(max(newRate, Self.rates.first ?? 0.5), Self.rates.last ?? 2)
+        rate = Self.clampRate(newRate)
         applyRateToEngine()
         publishNowPlaying()
     }
@@ -359,13 +385,14 @@ nonisolated final class LibraryAudioEngine: NSObject, ListenerAudioEngine, Libra
 final class MediaPlayerLibraryRemoteCommands: LibraryRemoteCommands {
     private let center: MPRemoteCommandCenter
     private var installed: [(command: MPRemoteCommand, token: Any)] = []
+    private var skipBack = LibraryPlayer.skipBackSeconds
+    private var skipForward = LibraryPlayer.skipForwardSeconds
 
     init(center: MPRemoteCommandCenter = .shared()) { self.center = center }
 
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {
         uninstall()
-        center.skipForwardCommand.preferredIntervals = [NSNumber(value: LibraryPlayer.skipForwardSeconds)]
-        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: LibraryPlayer.skipBackSeconds)]
+        publishSkipIntervals()
         add(center.playCommand) { _ in .play }
         add(center.pauseCommand) { _ in .pause }
         add(center.togglePlayPauseCommand) { _ in .togglePlayPause }
@@ -379,6 +406,17 @@ final class MediaPlayerLibraryRemoteCommands: LibraryRemoteCommands {
             (event as? MPChangePlaybackPositionCommandEvent).map { .seek(to: $0.positionTime) }
         }
         self.handler = handler
+    }
+
+    func setSkipIntervals(back: TimeInterval, forward: TimeInterval) {
+        skipBack = back
+        skipForward = forward
+        publishSkipIntervals()
+    }
+
+    private func publishSkipIntervals() {
+        center.skipForwardCommand.preferredIntervals = [NSNumber(value: skipForward)]
+        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: skipBack)]
     }
 
     func uninstall() {

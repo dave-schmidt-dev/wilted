@@ -169,7 +169,7 @@ final class LibraryHandoffModelTests: XCTestCase {
 
     private func row() throws -> LibraryRow {
         LibraryRow(
-            id: entryID, title: "Episode", showTitle: "Show", durationText: nil, removal: .none, removedAt: nil,
+            id: entryID, title: "Episode", showTitle: "Show", durationText: nil, removal: .none,
             publishedAt: Date(timeIntervalSince1970: 0), removalText: nil, checkpointText: nil)
     }
 

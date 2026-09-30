@@ -414,6 +414,8 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                 case let .outcomeIndex(index):
                     serverRecords[name] = record
                     peers.note(device: index.deviceID)
+                case .stats:
+                    serverRecords[name] = record
                 }
             } catch {
                 log.error("Skipping undecodable record \(name, privacy: .public): \(String(describing: error), privacy: .public)")

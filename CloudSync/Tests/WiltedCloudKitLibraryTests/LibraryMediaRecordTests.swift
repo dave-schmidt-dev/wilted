@@ -163,7 +163,10 @@ final class LibraryMediaRecordTests: XCTestCase {
 
     func testOfferRecordLivesInTheLibraryZoneAndRoundTripsIncludingNotReady() throws {
         let ready = try MediaFixture().offer()
-        for offer in [ready, .notReady(entryID: try item("ep-2"))] {
+        let available = try LibraryMediaOffer(
+            entryID: item("ep-3"), revisionID: RevisionID(rawValue: "rev-1"), contentHash: "", byteCount: 100,
+            mediaType: "audio/mpeg", durationSeconds: 61, state: .available)
+        for offer in [ready, available, .notReady(entryID: try item("ep-2"))] {
             let record = try mapper.record(offer: offer)
             XCTAssertEqual(record.recordType, LibraryRecordType.offer.rawValue)
             XCTAssertEqual(record.recordID.recordName, "offer:" + offer.entryID.rawValue)
@@ -177,6 +180,14 @@ final class LibraryMediaRecordTests: XCTestCase {
         XCTAssertEqual(try mapper.decode(mapper.record(offerIndex: index)), .offerIndex(index))
         let intents = LibraryIntentIndex(deviceID: "phone", intentIDs: ["a", "b"])
         XCTAssertEqual(try mapper.decode(mapper.record(intentIndex: intents)), .intentIndex(intents))
+    }
+
+    func testAnOfferWithAnUnknownStateDecodesAsNotReadyThroughTheMapper() throws {
+        let known = try mapper.record(offer: .notReady(entryID: try item("ep-9")))
+        let json = #"{"entryID":"ep-9","revisionID":"rev-1","contentHash":"","byteCount":5,"mediaType":"audio/mpeg","state":"streaming"}"#
+        known[LibraryRecordMapper.payloadField] = Data(json.utf8) as CKRecordValue
+        guard case let .offer(decoded) = try mapper.decode(known) else { return XCTFail("expected an offer") }
+        XCTAssertEqual(decoded.state, .notReady)
     }
 
     func testAudioRecordIsOneAssetInTheMediaZoneAndRejectsOversizedOffers() throws {
@@ -230,6 +241,25 @@ final class LibraryMediaRecordTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: delivered) }
         XCTAssertEqual(received.values, [25, 50, 100], "fractions of the record become cumulative bytes")
         XCTAssertEqual(try Data(contentsOf: delivered), try Data(contentsOf: file), "the file is in place when fetchMedia returns")
+    }
+
+    func testAnAvailableOfferHasNoAssetAndReplacesAReadyOneWithoutItsAudio() async throws {
+        let fixture = try MediaFixture()
+        let mac = try fixture.endpoint("mac", writer: true)
+        let phone = try fixture.endpoint("phone", writer: false)
+        let ready = try fixture.offer()
+        try await mac.transport.publishMedia(offer: ready, fileURL: try fixture.audioFile())
+        let available = try LibraryMediaOffer(
+            entryID: item("ep-1"), revisionID: RevisionID(rawValue: "rev-1"), contentHash: "", byteCount: 100,
+            mediaType: "audio/mpeg", durationSeconds: 61, state: .available)
+        try await mac.transport.publishMedia(offer: available, fileURL: URL(fileURLWithPath: "/dev/null"))
+        let audio = await fixture.server.records["audio:ep-1"]
+        XCTAssertNil(audio, "going back to available drops the uploaded audio")
+        let offers = try await phone.transport.mediaOffers()
+        XCTAssertEqual(offers, [available])
+        await XCTAssertThrowsErrorAsync(try await phone.transport.fetchMedia(available) { _ in }) {
+            XCTAssertEqual($0 as? LibraryTransportError, .transport("no ready audio is offered for ep-1"))
+        }
     }
 
     func testChangedRevisionOnTheServerFailsTheDownloadAndLeavesNoFile() async throws {

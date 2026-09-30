@@ -14,11 +14,19 @@ struct CachedMedia: Equatable, Sendable {
 protocol LibraryMediaCache: MediaCacheStore {
     /// The newest cached revision for every entry that has one.
     func cachedEntries() async -> [ItemID: CachedMedia]
+
+    /// The transcript stored beside the audio for exactly this revision, or nil.
+    func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript?
+    /// Stores `transcript` beside its audio. Does nothing when that revision's audio is not
+    /// cached, so a transcript can never outlive or precede the audio it belongs to.
+    func storeTranscript(_ transcript: LibraryTranscript) async
 }
 
 /// Directory-backed cache for verified episode audio.
 ///
-/// Layout: `<root>/<entryID>/<revisionID>/<sha256 hex>.<ext>`. The hash is in the file
+/// Layout: `<root>/<entryID>/<revisionID>/<sha256 hex>.<ext>`, plus a hidden
+/// `.transcript.json` beside the audio (hidden, so listing the audio never sees it, and removed
+/// with the entry's directory). The hash is in the file
 /// name, so `cachedFile(for:)` finds exactly the bytes an offer describes. `adopt` moves the
 /// file to a hidden name inside the root first and renames it into place, so a partial file
 /// is never visible under a cached name, and a failed adopt leaves nothing behind.
@@ -90,6 +98,33 @@ actor FileMediaCache: LibraryMediaCache {
             }
         }
         return found.mapValues(\.media)
+    }
+
+    /// File name of the transcript inside a revision directory.
+    nonisolated static let transcriptFileName = ".transcript.json"
+
+    func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? {
+        guard let data = try? Data(contentsOf: transcriptURL(entryID, revisionID)),
+              let transcript = try? JSONDecoder().decode(LibraryTranscript.self, from: data),
+              transcript.entryID == entryID, transcript.revisionID == revisionID
+        else { return nil }
+        return transcript
+    }
+
+    func storeTranscript(_ transcript: LibraryTranscript) async {
+        let url = transcriptURL(transcript.entryID, transcript.revisionID)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.deletingLastPathComponent().path, isDirectory: &isDirectory), isDirectory.boolValue,
+              let data = try? JSONEncoder().encode(transcript)
+        else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private func transcriptURL(_ entryID: ItemID, _ revisionID: RevisionID) -> URL {
+        root
+            .appendingPathComponent(entryID.rawValue, isDirectory: true)
+            .appendingPathComponent(revisionID.rawValue, isDirectory: true)
+            .appendingPathComponent(Self.transcriptFileName, isDirectory: false)
     }
 
     private func location(for offer: LibraryMediaOffer) -> URL? {

@@ -44,12 +44,22 @@ enum LibraryMediaState: Equatable, Sendable {
         case .available: "Not on phone"
         case .requested: "Requested, waiting for Mac · \(LibraryClockFormat.duration(elapsed))"
         case let .downloading(bytes, total, _):
-            "Downloading \(Self.size(bytes)) of \(Self.size(total)) · \(LibraryClockFormat.duration(elapsed))"
+            "Downloading \(Self.size(bytes)) of \(Self.size(total)) · \(LibraryClockFormat.duration(elapsed))\(Self.rateSuffix(bytes: bytes, total: total, elapsed: elapsed))"
         case .verifying: "Verifying"
         case .onPhone: "On phone"
         case let .failed(reason): "Failed: \(reason)"
         case .notPrepared: "Not prepared on Mac"
         }
+    }
+
+    /// Average rate and estimated time left since the transfer began; empty until there is enough
+    /// data to mean something.
+    static func rateSuffix(bytes: Int64, total: Int64, elapsed: TimeInterval) -> String {
+        guard bytes > 0, elapsed >= 2 else { return "" }
+        let rate = Double(bytes) / elapsed
+        var text = " · \(size(Int64(rate)))/s"
+        if total > bytes { text += " · \(LibraryClockFormat.duration(Double(total - bytes) / rate)) left" }
+        return text
     }
 
     private static func size(_ bytes: Int64) -> String {
@@ -118,6 +128,7 @@ extension LibraryAppModel {
     func removeFromPhone(entryID: ItemID) async {
         guard mediaRuns[entryID] == nil else { return }
         do {
+            cancelTranscript(entryID: entryID)
             try await mediaCache.remove(entryID: entryID)
             unacknowledgedMedia[entryID] = nil
             media[entryID] = nil
@@ -138,6 +149,9 @@ extension LibraryAppModel {
         for (entryID, state) in media where state == .onPhone && cached[entryID] == nil && mediaRuns[entryID] == nil {
             media[entryID] = nil
         }
+        for entryID in transcripts.keys where cached[entryID]?.revisionID != transcripts[entryID]?.revisionID {
+            transcripts[entryID] = nil
+        }
         for entryID in cached.keys where mediaRuns[entryID] == nil {
             switch media[entryID] {
             case .none, .some(.available), .some(.notPrepared), .some(.failed): media[entryID] = .onPhone
@@ -152,6 +166,10 @@ extension LibraryAppModel {
         for run in mediaRuns.values { run.task?.cancel() }
         mediaRuns = [:]
         unacknowledgedMedia = [:]
+        for run in transcriptRuns.values { run.task?.cancel() }
+        transcriptRuns = [:]
+        transcriptRetried = [:]
+        transcripts = [:]
         for entryID in await mediaCache.cachedEntries().keys { try? await mediaCache.remove(entryID: entryID) }
         media = [:]
     }
@@ -180,6 +198,7 @@ extension LibraryAppModel {
                     unacknowledgedMedia[entryID] = revisionID
                     await sendPendingMediaAcknowledgements()
                 }
+                startTranscriptLoad(entryID: entryID, fetchOnMiss: true)
             case .notReady: setMedia(.notPrepared, entryID, runID)
             case let .failed(reason): setMedia(.failed(Self.text(for: reason)), entryID, runID)
             }
@@ -190,13 +209,15 @@ extension LibraryAppModel {
         }
     }
 
-    /// Polls for the Mac's offer until one for `entryID` appears, `offerTimeout` passes (nil), or the
-    /// request is cancelled. A failing poll is retried until the timeout rather than ending the request.
+    /// Polls for the Mac's answer to the request until a `ready` (or `notReady`) offer for `entryID`
+    /// appears, `offerTimeout` passes (nil), or the request is cancelled. An `available` offer is the
+    /// Mac's standing statement that the audio is prepared, not an answer, so it keeps waiting for the
+    /// upload. A failing poll is retried until the timeout rather than ending the request.
     private func awaitOffer(for entryID: ItemID, runID: UUID) async throws -> LibraryMediaOffer? {
         let deadline = ContinuousClock.now.advanced(by: mediaTiming.offerTimeout)
         while true {
             try Task.checkCancellation()
-            if let offers = try? await transport.mediaOffers(), let offer = offers.first(where: { $0.entryID == entryID }) {
+            if let offers = try? await transport.mediaOffers(), let offer = offers.first(where: { $0.entryID == entryID }), offer.state != .available {
                 return offer
             }
             if ContinuousClock.now >= deadline { return nil }

@@ -20,7 +20,7 @@ final class LibraryAppModelTests: XCTestCase {
     private func makeModel(store: any LibraryStore = InMemoryLibraryStore()) -> LibraryAppModel {
         LibraryAppModel(
             transport: InMemoryLibraryTransport(deviceID: "phone", server: server),
-            store: store, deviceID: "phone", timeZone: TimeZone(identifier: "UTC")!)
+            store: store, deviceID: "phone", preferences: UserDefaults(suiteName: "library-app-model-tests")!, timeZone: TimeZone(identifier: "UTC")!)
     }
 
     private func entry(_ raw: String, title: String, show: String = "show", duration: Double? = 1_800,
@@ -124,43 +124,11 @@ final class LibraryAppModelTests: XCTestCase {
         XCTAssertEqual(model.queued.map(\.id.rawValue), ["keep", "lingering"])
         XCTAssertEqual(model.queued.last?.removal, .retired)
         XCTAssertEqual(model.queued.last?.removalText, "Retired on Mac")
-        XCTAssertEqual(Set(model.removed.map(\.id.rawValue)), ["retire", "dismiss"])
-        XCTAssertEqual(model.removed.first { $0.id.rawValue == "dismiss" }?.removalText, "Dismissed on Mac")
 
         try await macPush([.removal(entryID: id("retire"), state: .none), .slot(try QueueSlot(entryID: id("retire"), sortKey: 9))])
         await model.refresh()
         XCTAssertEqual(model.queued.map(\.id.rawValue), ["keep", "lingering", "retire"])
         XCTAssertNil(model.queued.last?.removalText)
-    }
-
-    func testRemovedListSortsByDecisionDateNewestFirstByDefaultAndTogglesToPublicationDate() async throws {
-        func removedEntry(_ raw: String, published: TimeInterval, removedAt: TimeInterval?) throws -> LibraryEntry {
-            try LibraryEntry(
-                id: id(raw), kind: .podcastEpisode, sourceID: id("show"), title: raw, summary: "",
-                publishedAt: Date(timeIntervalSince1970: published), removal: .retired,
-                removedAt: removedAt.map { Date(timeIntervalSince1970: $0) })
-        }
-        try await macPush([
-            .source(LibrarySource(id: id("show"), kind: .podcastFeed, title: "The Show")),
-            .entry(try removedEntry("oldPubNewDecision", published: 100, removedAt: 900)),
-            .entry(try removedEntry("newPubOldDecision", published: 500, removedAt: 200)),
-            .entry(try removedEntry("undatedNewPub", published: 800, removedAt: nil)),
-            .entry(try removedEntry("undatedOldPub", published: 50, removedAt: nil)),
-        ])
-        let model = makeModel()
-        XCTAssertEqual(model.removedSort, .decisionDate)
-        await model.refresh()
-        XCTAssertEqual(model.removed.map(\.id.rawValue),
-                       ["oldPubNewDecision", "newPubOldDecision", "undatedNewPub", "undatedOldPub"])
-
-        model.removedSort = .publicationDate
-        XCTAssertEqual(model.removed.map(\.id.rawValue),
-                       ["undatedNewPub", "newPubOldDecision", "oldPubNewDecision", "undatedOldPub"])
-
-        await model.refresh()
-        XCTAssertEqual(model.removed.first?.id.rawValue, "undatedNewPub", "a refresh keeps the chosen sort")
-        model.removedSort = .decisionDate
-        XCTAssertEqual(model.removed.first?.id.rawValue, "oldPubNewDecision")
     }
 
     func testSilentPushReportsWhetherTheLibraryChanged() async throws {

@@ -5,26 +5,22 @@ import WiltedLibrary
 /// A decision a person can make about an episode from the phone. Each one becomes an intent
 /// for the Mac; the phone itself never changes a slot or a removal.
 enum LibraryDecisionAction: Equatable, Sendable {
-    case keep, skip, markDone, restore
+    case removeFromLarder, markDone
     /// Move to just after `afterEntryID`; nil moves to the front of the Larder.
     case reorder(afterEntryID: ItemID?)
 
     var title: String {
         switch self {
-        case .keep: "Keep"
-        case .skip: "Skip"
+        case .removeFromLarder: "Remove from Larder"
         case .markDone: "Mark done"
-        case .restore: "Restore"
         case .reorder: "Move"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .keep: "tray.and.arrow.down"
-        case .skip: "forward.end"
+        case .removeFromLarder: "minus.circle"
         case .markDone: "checkmark.circle"
-        case .restore: "arrow.uturn.backward"
         case .reorder: "arrow.up.arrow.down"
         }
     }
@@ -32,37 +28,27 @@ enum LibraryDecisionAction: Equatable, Sendable {
     /// Short word used in accessibility identifiers.
     var identifier: String {
         switch self {
-        case .keep: "keep"
-        case .skip: "skip"
+        case .removeFromLarder: "remove"
         case .markDone: "done"
-        case .restore: "restore"
         case .reorder: "move"
         }
     }
 
     func intentAction(for entryID: ItemID) -> LibraryIntent.Action {
         switch self {
-        case .keep: .keep(entryID: entryID)
-        case .skip: .skip(entryID: entryID)
+        case .removeFromLarder: .removeFromLarder(entryID: entryID)
         case .markDone: .markDone(entryID: entryID)
-        case .restore: .restore(entryID: entryID)
         case let .reorder(after): .reorder(entryID: entryID, afterEntryID: after)
         }
     }
 }
 
-/// The three list sections a row can sit in.
-enum LibraryRowSection: Sendable {
-    case new, larder, removed
-
-    /// The row buttons offered. Keep and Skip belong to New only; Larder never repeats them
-    /// (W-INV-010). Mark done needs a started, unfinished episode; Restore needs a retired one.
-    func actions(for row: LibraryRow) -> [LibraryDecisionAction] {
-        switch self {
-        case .new: [.keep, .skip]
-        case .larder: row.isStarted ? [.markDone] : []
-        case .removed: row.removal == .retired ? [.restore] : []
-        }
+/// The buttons a Larder row offers. The phone decides nothing about New or removed episodes;
+/// those stay on the Mac, and a Larder row never repeats Feeds' Keep or Skip. Remove from Larder is
+/// always available; Mark done needs a started, unfinished episode.
+enum LibraryRowActions {
+    static func actions(for row: LibraryRow) -> [LibraryDecisionAction] {
+        row.isStarted ? [.removeFromLarder, .markDone] : [.removeFromLarder]
     }
 }
 
@@ -119,6 +105,7 @@ struct PendingDecision: Identifiable, Equatable, Sendable {
         switch intent.action {
         case .keep: placement.isQueued && placement.removal == .none
         case .skip, .markDone: placement.removal != .none && !placement.isQueued
+        case .removeFromLarder: !placement.isQueued
         case .restore: placement.removal == .none
         case let .reorder(_, after): placement.isQueued && placement.predecessor == after
         case .requestMedia, .mediaCached: true
@@ -158,6 +145,8 @@ enum LibraryDecisionOverlay {
             guard entry.removal == .none, content.slots[entryID] == nil else { return content }
             let last = content.slots.values.map(\.sortKey).max() ?? -1
             next.slots[entryID] = try? QueueSlot(entryID: entryID, sortKey: last + 1)
+        case .removeFromLarder:
+            next.slots[entryID] = nil
         case .skip, .markDone:
             next.entries[entryID] = try? entry.with(removal: .retired, removedAt: decision.intent.createdAt)
             next.slots[entryID] = nil
@@ -219,8 +208,8 @@ extension LibraryAppModel {
     }
 
     /// The buttons a row offers now; none while it has a decision in flight.
-    func decisionActions(for row: LibraryRow, in section: LibraryRowSection) -> [LibraryDecisionAction] {
-        pendingDecision(for: row.id) == nil ? section.actions(for: row) : []
+    func decisionActions(for row: LibraryRow) -> [LibraryDecisionAction] {
+        pendingDecision(for: row.id) == nil ? LibraryRowActions.actions(for: row) : []
     }
 
     // MARK: - Acting
@@ -237,14 +226,16 @@ extension LibraryAppModel {
         await send(decision)
     }
 
-    /// Fire-and-forget for the Larder's `onMove`.
+    /// Fire-and-forget for the Larder's `onMove`; ignored unless the list shows the Mac's own order.
     func moveQueued(fromOffsets: IndexSet, toOffset: Int) {
+        guard canReorder else { return }
         Task { await reorderQueued(fromOffsets: fromOffsets, toOffset: toOffset) }
     }
 
     /// Sends one `reorder` intent per moved entry, relative to the entry now before it.
     func reorderQueued(fromOffsets: IndexSet, toOffset: Int) async {
-        let requests = LibraryReorder.requests(queue: queued.map(\.id), from: fromOffsets, to: toOffset)
+        // Offsets index the list as shown; only the prepared rows appear, so hidden ones keep their slots.
+        let requests = LibraryReorder.requests(queue: visibleRows.map(\.id), from: fromOffsets, to: toOffset)
         var started: [PendingDecision] = []
         for request in requests {
             if let decision = begin(.reorder(afterEntryID: request.afterEntryID), entryID: request.entryID) {
@@ -341,9 +332,7 @@ extension LibraryAppModel {
     /// Whether the displayed sections offer `action` for `entryID` right now.
     private func isOffered(_ action: LibraryDecisionAction, entryID: ItemID) -> Bool {
         switch action {
-        case .keep, .skip: return new.contains { $0.id == entryID }
-        case .markDone: return queued.first { $0.id == entryID }.map { LibraryRowSection.larder.actions(for: $0).contains(action) } ?? false
-        case .restore: return removed.first { $0.id == entryID }.map { LibraryRowSection.removed.actions(for: $0).contains(action) } ?? false
+        case .removeFromLarder, .markDone: return queued.first { $0.id == entryID }.map { LibraryRowActions.actions(for: $0).contains(action) } ?? false
         case let .reorder(after):
             let order = queued.map(\.id)
             guard let index = order.firstIndex(of: entryID), after != entryID else { return false }

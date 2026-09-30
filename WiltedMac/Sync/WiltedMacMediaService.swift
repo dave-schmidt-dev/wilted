@@ -22,6 +22,14 @@ struct WiltedMacReadyAudio: Sendable, Equatable {
 /// Read-only view of what the Mac has ready. It never starts or triggers preparation.
 protocol WiltedMacReadyAudioSource: Sendable {
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio?
+    /// Ready audio for every entry on the Larder (queued and not retired), from one read.
+    func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio]
+    /// The compact transcript the Mac already holds for exactly this revision, or nil.
+    func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript?
+}
+
+extension WiltedMacReadyAudioSource {
+    func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? { nil }
 }
 
 #if canImport(WiltedProducer)
@@ -30,17 +38,41 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
     let store: LocalLibraryStore
 
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? {
-        guard let stored = try await store.podcastLibrarySnapshot().readyRevisions[entryID] else { return nil }
+        try await store.podcastLibrarySnapshot().readyRevisions[entryID].map(Self.audio)
+    }
+
+    func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
+        let snapshot = try await store.podcastLibrarySnapshot()
+        let queue = try await store.podcastQueueState().episodeIDs
+        var prepared: [ItemID: WiltedMacReadyAudio] = [:]
+        for id in queue where snapshot.retiredAtByEpisode[id] == nil {
+            if let stored = snapshot.readyRevisions[id] { prepared[id] = Self.audio(stored) }
+        }
+        return prepared
+    }
+
+    private static func audio(_ stored: StoredAudioRevision) -> WiltedMacReadyAudio {
         let revision = stored.revision
         return WiltedMacReadyAudio(
             revisionID: revision.revisionID, contentHash: revision.contentHash, byteCount: revision.byteCount,
             mediaType: revision.mediaType, durationSeconds: revision.durationSeconds, fileURL: stored.mediaURL
         )
     }
+
+    func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
+        let stored = try await store.podcastLibrarySnapshot().transcripts["\(entryID.rawValue)|\(revisionID.rawValue)"]
+        return stored.flatMap { LibraryTranscript.capped(entryID: entryID, from: $0) }
+    }
 }
 #endif
 
-/// Serves `requestMedia` and retires assets, on the Mac only.
+/// Serves `requestMedia`, keeps an `available` offer up for every prepared Larder entry, and
+/// retires assets, on the Mac only.
+///
+/// `reconcileAvailable` publishes `available` offers (metadata only, no upload) for the prepared
+/// queued entries and withdraws offers for entries that left the Larder; a request then uploads
+/// the audio and turns the offer `ready`, and once every requester has cached it the asset is
+/// withdrawn and the offer returns to `available` while the entry is still prepared and queued.
 ///
 /// A request finds the entry's ready revision (read only), uploads it through
 /// `publishMedia`, or publishes `notReady` when there is none; nothing here ever prepares
@@ -76,6 +108,8 @@ actor WiltedMacMediaService {
         var records: [AssetRecord]
         /// Entry id to the revision currently on the transport.
         var published: [String: String]
+        /// Entry id to the revision whose transcript is on the transport. Absent in older files.
+        var transcripts: [String: String]?
     }
 
     private let source: any WiltedMacReadyAudioSource
@@ -84,6 +118,12 @@ actor WiltedMacMediaService {
     private let now: @Sendable () -> Date
     private var records: [AssetKey: AssetRecord] = [:]
     private var published: [String: String] = [:]
+    /// What the transport holds per entry, seeded from it on the first reconcile.
+    private var offered: [String: LibraryMediaOffer] = [:]
+    private var offersSeeded = false
+    /// The `available` offer each prepared queued entry should show, from the last reconcile.
+    private var availableOffers: [String: LibraryMediaOffer] = [:]
+    private var publishedTranscripts: [String: String] = [:]
     private var tail: Task<Void, Never>?
     private(set) var lastFailure: String?
 
@@ -99,6 +139,7 @@ actor WiltedMacMediaService {
            let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             records = Dictionary(stored.records.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last })
             published = stored.published
+            publishedTranscripts = stored.transcripts ?? [:]
         }
     }
 
@@ -107,6 +148,15 @@ actor WiltedMacMediaService {
     /// Applies one media intent; other intents are ignored.
     func handle(_ intent: LibraryIntent) async {
         await serialized { await self.process(intent) }
+    }
+
+    /// Brings the offers in line with the prepared Larder: publishes `available` for prepared
+    /// queued entries that have no offer at their revision, and withdraws offers for entries that
+    /// left the Larder. Uploads nothing. False when something could not be published, so the
+    /// caller retries.
+    @discardableResult
+    func reconcileAvailable() async -> Bool {
+        await serialized { await self.reconcile() }
     }
 
     /// Withdraws every asset that has passed its seven days, and retries pending withdrawals.
@@ -122,14 +172,14 @@ actor WiltedMacMediaService {
 
     var accountedAssetCount: Int { records.count }
 
-    private func serialized(_ work: @escaping @Sendable () async -> Void) async {
+    private func serialized<T: Sendable>(_ work: @escaping @Sendable () async -> T) async -> T {
         let previous = tail
-        let task = Task {
+        let task = Task<T, Never> {
             await previous?.value
-            await work()
+            return await work()
         }
-        tail = task
-        await task.value
+        tail = Task { _ = await task.value }
+        return await task.value
     }
 
     // MARK: - Processing
@@ -170,6 +220,7 @@ actor WiltedMacMediaService {
                 existing.touchedAt = now()
                 records[key] = existing
                 try persist()
+                await publishTranscript(for: entryID, revisionID: ready.revisionID)
                 mediaLog.notice("Audio for \(entryID.rawValue, privacy: .public) is already offered; added a requester")
                 return
             }
@@ -187,7 +238,9 @@ actor WiltedMacMediaService {
             record.touchedAt = now()
             records[key] = record
             published[entryID.rawValue] = key.revisionID
+            offered[entryID.rawValue] = offer
             try persist()
+            await publishTranscript(for: entryID, revisionID: ready.revisionID)
             lastFailure = nil
         } catch {
             lastFailure = String(describing: error)
@@ -199,9 +252,16 @@ actor WiltedMacMediaService {
     private func publishNotReady(_ entryID: ItemID, why: String) async throws {
         mediaLog.notice("Publishing notReady for \(entryID.rawValue, privacy: .public): \(why, privacy: .public)")
         try await transport.publishMedia(offer: .notReady(entryID: entryID), fileURL: URL(fileURLWithPath: "/dev/null"))
-        published[entryID.rawValue] = nil
-        records = records.filter { $0.key.entryID != entryID.rawValue }
+        offered[entryID.rawValue] = .notReady(entryID: entryID)
+        dropBooks(for: entryID.rawValue)
+        await withdrawTranscript(for: entryID.rawValue)
         try persist()
+    }
+
+    /// Forgets the asset accounting for an entry whose audio is no longer on the transport.
+    private func dropBooks(for entry: String) {
+        published[entry] = nil
+        records = records.filter { $0.key.entryID != entry }
     }
 
     private func acknowledge(entryID: ItemID, revisionID: RevisionID, deviceID: String) async {
@@ -226,7 +286,16 @@ actor WiltedMacMediaService {
                 do {
                     let entryID = try ItemID(rawValue: key.entryID)
                     mediaLog.notice("Withdrawing audio for \(key.entryID, privacy: .public): \(record.isComplete ? "all requesters cached it" : "seven days elapsed", privacy: .public)")
-                    try await transport.removeMedia(entryID: entryID)
+                    // Transcript first: if it fails the audio stays held, so the next sweep retries both.
+                    try await removeTranscriptIfHeld(for: key.entryID)
+                    if let available = availableOffers[key.entryID], available.revisionID?.rawValue == key.revisionID {
+                        // Still prepared and queued: drop the audio, keep the offer as `available`.
+                        try await transport.publishMedia(offer: available, fileURL: URL(fileURLWithPath: "/dev/null"))
+                        offered[key.entryID] = available
+                    } else {
+                        try await transport.removeMedia(entryID: entryID)
+                        offered[key.entryID] = nil
+                    }
                 } catch {
                     lastFailure = String(describing: error)
                     mediaLog.error("Could not withdraw audio for \(key.entryID, privacy: .public): \(String(describing: error), privacy: .public)")
@@ -239,12 +308,104 @@ actor WiltedMacMediaService {
         do { try persist() } catch { mediaLog.error("Could not save media accounting: \(String(describing: error), privacy: .public)") }
     }
 
+    // MARK: - Available offers
+
+    private func reconcile() async -> Bool {
+        let prepared: [ItemID: WiltedMacReadyAudio]
+        do {
+            prepared = try await source.preparedQueuedAudio()
+            if !offersSeeded {
+                for offer in try await transport.mediaOffers() { offered[offer.entryID.rawValue] = offer }
+                offersSeeded = true
+            }
+        } catch {
+            lastFailure = String(describing: error)
+            mediaLog.error("Could not read the prepared Larder to publish offers: \(String(describing: error), privacy: .public)")
+            return false
+        }
+        var desired: [String: LibraryMediaOffer] = [:]
+        for (entryID, audio) in prepared where audio.byteCount <= Self.maximumByteCount && Self.fileSize(audio.fileURL) == audio.byteCount {
+            desired[entryID.rawValue] = try? LibraryMediaOffer(
+                entryID: entryID, revisionID: audio.revisionID, contentHash: "", byteCount: audio.byteCount,
+                mediaType: audio.mediaType, durationSeconds: audio.durationSeconds, state: .available
+            )
+        }
+        availableOffers = desired
+        var succeeded = true
+        // A `notReady` offer answers a request rather than describing the Larder, so it is left alone.
+        for (raw, offer) in offered.sorted(by: { $0.key < $1.key }) where desired[raw] == nil && offer.state != .notReady {
+            do {
+                await withdrawTranscript(for: raw)
+                try await transport.removeMedia(entryID: offer.entryID)
+                dropBooks(for: raw)
+                offered[raw] = nil
+                mediaLog.notice("Withdrew the offer for \(raw, privacy: .public): it left the Larder or is no longer prepared")
+            } catch {
+                succeeded = false
+                mediaLog.error("Could not withdraw the offer for \(raw, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
+        for (raw, want) in desired.sorted(by: { $0.key < $1.key }) {
+            if let current = offered[raw], current.revisionID == want.revisionID {
+                if current.state == .available { continue }
+                if current.state == .ready, published[raw] == want.revisionID?.rawValue { continue }
+            }
+            do {
+                try await transport.publishMedia(offer: want, fileURL: URL(fileURLWithPath: "/dev/null"))
+                await withdrawTranscript(for: raw)
+                dropBooks(for: raw)
+                offered[raw] = want
+            } catch {
+                succeeded = false
+                mediaLog.error("Could not publish the available offer for \(raw, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
+        do { try persist() } catch { mediaLog.error("Could not save media accounting: \(String(describing: error), privacy: .public)") }
+        if succeeded { lastFailure = nil }
+        return succeeded
+    }
+
+    // MARK: - Transcript (published with the audio, withdrawn with it)
+
+    /// Publishes the Mac's transcript for `revisionID` once. A missing transcript, or a failure,
+    /// never affects the audio: the transcript is retried by the next request for the entry.
+    private func publishTranscript(for entryID: ItemID, revisionID: RevisionID) async {
+        if publishedTranscripts[entryID.rawValue] == revisionID.rawValue { return }
+        do {
+            guard let transcript = try await source.transcript(for: entryID, revisionID: revisionID) else {
+                // A transcript left over from an older revision would never be asked for; drop it.
+                await withdrawTranscript(for: entryID.rawValue)
+                return
+            }
+            try await transport.publishTranscript(transcript)
+            publishedTranscripts[entryID.rawValue] = revisionID.rawValue
+            try persist()
+            mediaLog.notice("Published the transcript for \(entryID.rawValue, privacy: .public)")
+        } catch {
+            mediaLog.error("Transcript for \(entryID.rawValue, privacy: .public) was not published: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Withdraws a held transcript, logging rather than failing; the audio flow must not depend on it.
+    private func withdrawTranscript(for entryID: String) async {
+        do { try await removeTranscriptIfHeld(for: entryID) } catch {
+            mediaLog.error("Could not withdraw the transcript for \(entryID, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func removeTranscriptIfHeld(for entryID: String) async throws {
+        guard publishedTranscripts[entryID] != nil else { return }
+        try await transport.removeTranscript(entryID: try ItemID(rawValue: entryID))
+        publishedTranscripts[entryID] = nil
+        try persist()
+    }
+
     // MARK: - Persistence
 
     private func persist() throws {
         guard let accountingURL else { return }
         try FileManager.default.createDirectory(at: accountingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let stored = Stored(records: records.values.sorted { ($0.key.entryID, $0.key.revisionID) < ($1.key.entryID, $1.key.revisionID) }, published: published)
+        let stored = Stored(records: records.values.sorted { ($0.key.entryID, $0.key.revisionID) < ($1.key.entryID, $1.key.revisionID) }, published: published, transcripts: publishedTranscripts)
         try JSONEncoder().encode(stored).write(to: accountingURL, options: .atomic)
     }
 

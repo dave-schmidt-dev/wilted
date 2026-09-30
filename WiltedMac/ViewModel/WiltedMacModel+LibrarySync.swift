@@ -127,6 +127,8 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
             try await record(intent, describing: "skip for \(entryID.rawValue)")
         case let .markDone(entryID):
             try await record(intent, describing: "markDone for \(entryID.rawValue)")
+        case let .removeFromLarder(entryID):
+            try await record(intent, describing: "removeFromLarder for \(entryID.rawValue)")
         case let .restore(entryID):
             try await record(intent, describing: "restore for \(entryID.rawValue)")
         case let .reorder(entryID, afterEntryID):
@@ -231,6 +233,9 @@ final class WiltedMacLibrarySyncController {
     private weak var model: WiltedMacModel?
     private let triggers: AsyncStream<Void>.Continuation
     private var loop: Task<Void, Never>?
+    private var offerReconcile: Task<Void, Never>?
+    private var offerReconcileRequested = false
+    private let retryDelay: Duration
     private var stopped = false
 
     init(
@@ -240,6 +245,7 @@ final class WiltedMacLibrarySyncController {
         self.model = model
         self.publisher = publisher
         self.sink = sink
+        self.retryDelay = retryDelay
         let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         triggers = continuation
         loop = Task { [weak self] in
@@ -264,6 +270,7 @@ final class WiltedMacLibrarySyncController {
         inbound?.stop()
         handoff?.stop()
         loop?.cancel()
+        offerReconcile?.cancel()
         triggers.finish()
     }
 
@@ -281,10 +288,37 @@ final class WiltedMacLibrarySyncController {
         }
     }
 
+    /// Publishes `available` offers, one run at a time; a request that arrives during a run makes
+    /// it repeat, so bursts coalesce. A run that could not publish everything asks for a full pass
+    /// again after `retryDelay`.
+    private func scheduleOfferReconcile() {
+        guard !stopped, let service = inbound?.service else { return }
+        guard offerReconcile == nil else {
+            offerReconcileRequested = true
+            return
+        }
+        offerReconcile = Task { [weak self] in
+            var succeeded = true
+            repeat {
+                self?.offerReconcileRequested = false
+                succeeded = await service.reconcileAvailable()
+            } while self?.offerReconcileRequested == true && !Task.isCancelled
+            guard let self else { return }
+            self.offerReconcile = nil
+            guard !succeeded, !Task.isCancelled, !self.stopped else { return }
+            try? await Task.sleep(for: self.retryDelay)
+            if !self.stopped { self.triggers.yield() }
+        }
+    }
+
     private func runPass() async -> Bool {
         guard let model, !model.isClosingTemporaryState else { return true }
         do {
             lastReport = try await publisher.sync()
+            // Offers follow the same triggers as state (the queue and the prepared set) but run on
+            // their own task: the media service serializes behind an upload in flight, and a long
+            // upload must not hold up state publishing.
+            scheduleOfferReconcile()
             lastFailure = nil
             passCount += 1
             return true
@@ -333,7 +367,7 @@ extension WiltedMacModel {
             // The one whole-zone scan: it teaches the transport the peer and entry names to poll.
             discover: { _ = try await (resolvedTransport as? CloudKitLibraryTransport)?.discoverPeers() }
         )
-        // Decision intents (keep, skip, mark done, restore, reorder) go to the applier, which shares
+        // Decision intents (keep, skip, mark done, remove from Larder, restore, reorder) go to the applier, which shares
         // the media service's ledger; media intents keep their existing route.
         let applier = WiltedMacIntentApplier(
             host: self, ledger: inbound.ledger,
@@ -344,7 +378,10 @@ extension WiltedMacModel {
         let sink = WiltedMacLibraryIntentSink(consumer: mediaRequestConsumer ?? { intent in
             if intent.action.isDecision { try await applier.apply(intent) } else { await inbound.consume(intent) }
         })
-        let publisher = WiltedMacLibraryPublisher(source: source, transport: resolvedTransport, sink: sink, isEnabled: true)
+        let publisher = WiltedMacLibraryPublisher(
+            source: source, transport: resolvedTransport, sink: sink, isEnabled: true,
+            statsProvider: { try? await store.lifetimeStatistics() }
+        )
         let controller = WiltedMacLibrarySyncController(
             model: self, publisher: publisher, sink: sink, debounce: debounce, retryDelay: retryDelay
         )
@@ -376,6 +413,7 @@ extension WiltedMacModel {
         _ = podcastQueueIDs
         _ = episodes
         _ = dismissedEpisodes
+        _ = lifetimeStatistics
     }
 
     func librarySyncPlaybackSample() -> WiltedMacPlaybackSample? {

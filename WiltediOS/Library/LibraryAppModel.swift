@@ -3,41 +3,6 @@ import Foundation
 import WiltedDomain
 import WiltedLibrary
 
-/// One Larder row, already resolved to display strings.
-struct LibraryRow: Identifiable, Equatable, Sendable {
-    let id: ItemID
-    let title: String
-    let showTitle: String
-    let durationText: String?
-    let removal: LibraryRemoval
-    /// When the Mac removed the entry; nil while live or when the Mac did not publish it.
-    let removedAt: Date?
-    let publishedAt: Date
-    /// "Retired on Mac" or "Dismissed on Mac"; nil while the entry is live.
-    let removalText: String?
-    /// "Paused on Mac at mm:ss (as of hh:mm)" from the Mac's last checkpoint for this entry.
-    let checkpointText: String?
-    /// True when some device has started the episode and it is not completed; the only rows
-    /// that offer Mark done.
-    var isStarted: Bool = false
-}
-
-/// How the removed section is ordered, always newest first.
-enum LibraryRemovedSort: String, CaseIterable, Identifiable, Sendable {
-    /// When the Mac retired or dismissed the entry; entries without a date sort last.
-    case decisionDate
-    case publicationDate
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .decisionDate: "Decision date"
-        case .publicationDate: "Publication date"
-        }
-    }
-}
-
 /// What a recovering account gives back: a fresh store for the new account, plus the
 /// stream that announces an account change needing review.
 struct LibraryAccountRecovery: Sendable {
@@ -47,19 +12,23 @@ struct LibraryAccountRecovery: Sendable {
 }
 
 /// Owns the iPhone's library replica: fetches on launch, foreground, pull-to-refresh and
-/// silent push, and exposes queue-ordered rows plus the Mac's last checkpoint per entry.
+/// silent push, and exposes queue-ordered rows plus the Mac's last checkpoint per entry. The
+/// phone lists only what the Mac has prepared; `visibleRows` is that Larder after sort, filter
+/// and search.
 /// The iPhone never writes library state; the Mac is the single writer.
 @MainActor
 final class LibraryAppModel: ObservableObject {
+    /// Every entry the Mac has queued, in its order, prepared or not. The list shows `visibleRows`.
     @Published private(set) var queued: [LibraryRow] = []
-    /// Retired or dismissed entries the Mac no longer queues.
-    @Published private(set) var removed: [LibraryRow] = []
-    /// Live entries with no queue slot: the episodes still waiting for a Keep or Skip decision.
-    @Published private(set) var new: [LibraryRow] = []
-    /// Ordering of `removed`; changing it re-sorts in place without a fetch.
-    @Published var removedSort: LibraryRemovedSort = .decisionDate {
-        didSet { if removedSort != oldValue { removed = LibraryRowBuilder.sorted(removed, by: removedSort) } }
+    /// Entries whose media offer from the Mac says the audio is prepared: `ready` (fetchable now) or
+    /// `available` (prepared on the Mac; asking for it starts the upload).
+    @Published private(set) var readyOffers: Set<ItemID> = []
+    /// Larder ordering, remembered across launches. `custom` is the Mac's queue order.
+    @Published var sort: LibrarySortOrder {
+        didSet { if sort != oldValue { preferences.set(sort.rawValue, forKey: LibrarySortOrder.preferenceKey) } }
     }
+    @Published var filter: LibraryFilter = .all
+    @Published var searchText = ""
     /// The most authoritative record per entry from any device other than this one.
     @Published private(set) var checkpoints: [ItemID: ObservedPlayback] = [:]
     @Published private(set) var isRefreshing = false
@@ -69,6 +38,10 @@ final class LibraryAppModel: ObservableObject {
     /// On-demand audio state per entry; an entry with no value is `.available`. Written by
     /// `LibraryAppModel+Media`, which owns the request, download, verify and cache flow.
     @Published var media: [ItemID: LibraryMediaState] = [:]
+    /// The Mac's lifetime statistics as last read; nil until the Mac has published. Read-only here.
+    @Published var lifetimeStats: LibraryStats?
+    /// When a Mac last wrote a device record, by the server clock; shown in Settings.
+    @Published var macLastSeenAt: Date?
     /// What "Continue from Mac" would do right now; nil when no other device outranks this one.
     /// Written by `LibraryAppModel+Handoff`.
     @Published var continuation: LibraryContinuation?
@@ -102,7 +75,14 @@ final class LibraryAppModel: ObservableObject {
     var mediaRuns: [ItemID: LibraryMediaRun] = [:]
     /// Verified files that still need their `mediaCached` acknowledgement sent to the Mac.
     var unacknowledgedMedia: [ItemID: RevisionID] = [:]
+    /// Transcripts for audio on the phone, keyed by entry; each is for the cached revision.
+    @Published var transcripts: [ItemID: LibraryTranscript] = [:]
+    /// One load per entry, so a cancelled or replaced load can never write for its successor.
+    var transcriptRuns: [ItemID: LibraryTranscriptRun] = [:]
+    /// The revision whose missing transcript was already re-requested this session.
+    var transcriptRetried: [ItemID: RevisionID] = [:]
     let clockFormat: LibraryClockFormat
+    private let preferences: UserDefaults
     private let recovery: LibraryAccountRecovery?
     private var store: any LibraryStore
     private var reconciler: LibraryReconciler
@@ -119,6 +99,7 @@ final class LibraryAppModel: ObservableObject {
         mediaTiming: LibraryMediaTiming = LibraryMediaTiming(),
         handoffTiming: LibraryHandoffTiming = LibraryHandoffTiming(),
         decisionTiming: LibraryDecisionTiming = LibraryDecisionTiming(),
+        preferences: UserDefaults = .standard,
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current
     ) {
@@ -129,6 +110,8 @@ final class LibraryAppModel: ObservableObject {
         self.decisionTiming = decisionTiming
         self.coordinator = HandoffCoordinator(
             transport: transport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
+        self.preferences = preferences
+        self.sort = LibrarySortOrder.stored(in: preferences)
         self.store = store
         self.deviceID = deviceID
         self.recovery = recovery
@@ -172,9 +155,10 @@ final class LibraryAppModel: ObservableObject {
 
     /// A silent push arrived; returns true when the visible library changed.
     func handleSilentPush() async -> Bool {
-        let before = new + queued + removed
+        // The mirror and offers, not the filtered view: a push's answer must not depend on search or filter.
+        let before = (queued, readyOffers)
         await refresh()
-        return before != new + queued + removed
+        return before != (queued, readyOffers)
     }
 
     /// Discards the quarantined account's replica and starts from an empty one.
@@ -185,9 +169,10 @@ final class LibraryAppModel: ObservableObject {
         reconciler = LibraryReconciler(transport: transport, store: fresh)
         accountQuarantined = false
         queued = []
-        removed = []
-        new = []
+        readyOffers = []
         checkpoints = [:]
+        lifetimeStats = nil
+        macLastSeenAt = nil
         continuation = nil
         discardDecisionsAfterAccountChange()
         await discardMediaAfterAccountChange()
@@ -205,7 +190,14 @@ final class LibraryAppModel: ObservableObject {
             errorMessage = Self.message(for: error)
         }
         let records = try? await transport.fetchDeviceRecords()
-        if let records { checkpoints = Self.checkpoints(from: records, excluding: deviceID) }
+        if let records {
+            checkpoints = Self.checkpoints(from: records, excluding: deviceID)
+            macLastSeenAt = Self.macLastSeen(from: records, excluding: deviceID)
+        }
+        // A failed read keeps the last known offers: a flaky fetch must not empty the Larder.
+        if let offers = try? await transport.mediaOffers() {
+            readyOffers = Set(offers.filter(\.isPrepared).map(\.entryID))
+        }
         let content = await store.state().content
         entryDurations = content.entries.compactMapValues(\.durationSeconds)
         decisionContent = content
@@ -214,16 +206,40 @@ final class LibraryAppModel: ObservableObject {
         await refreshMediaFromCache()
         if let records { await updateContinuation(from: records) }
         await resolveDecisions()
+        await refreshStats()
     }
 
-    /// Projects the fetched content, with unsettled decisions laid over it, into the three sections.
+    /// Projects the fetched content, with unsettled decisions laid over it, into queue-ordered rows.
     func rebuildRows() {
         let visible = LibraryDecisionOverlay.apply(decisions, to: decisionContent)
-        (queued, removed) = LibraryRowBuilder.rows(
-            content: visible, checkpoints: checkpoints, clock: clockFormat, removedSort: removedSort,
-            started: startedEntries)
-        new = LibraryRowBuilder.newRows(content: visible, checkpoints: checkpoints, clock: clockFormat)
+        queued = LibraryRowBuilder.rows(
+            content: visible, checkpoints: checkpoints, clock: clockFormat, started: startedEntries)
     }
+
+    /// Queued entries the phone can play or fetch: a ready or available offer, a transfer under way, or audio
+    /// already cached.
+    var preparedIDs: (offered: Set<ItemID>, onPhone: Set<ItemID>) {
+        let inFlight = Set(media.filter { $0.value.isInFlight }.keys)
+        let onPhone = Set(media.filter { $0.value == .onPhone }.keys)
+        return (readyOffers.union(inFlight), onPhone)
+    }
+
+    /// The Larder as listed: prepared rows only, narrowed by filter and search, ordered by `sort`.
+    var visibleRows: [LibraryRow] {
+        let ids = preparedIDs
+        return LibraryListing.rows(
+            queued, offered: ids.offered, onPhone: ids.onPhone, sort: sort, filter: filter, query: searchText)
+    }
+
+    /// How many queued entries are prepared, before any filter or search; tells an empty Larder
+    /// from an empty result.
+    var preparedCount: Int {
+        let ids = preparedIDs
+        return LibraryListing.prepared(queued, offered: ids.offered, onPhone: ids.onPhone).count
+    }
+
+    /// Drag reorder edits the Mac's own order, so it needs that order shown whole.
+    var canReorder: Bool { sort.allowsReorder && filter == .all && searchText.trimmingCharacters(in: .whitespaces).isEmpty }
 
     /// Entries any device, this one included, has played past the start.
     static func startedEntries(from records: LibraryDeviceRecords) -> Set<ItemID> {
@@ -243,102 +259,5 @@ final class LibraryAppModel: ObservableObject {
         case LibraryTransportError.superseded: return "iCloud account changed. Sync was cancelled."
         default: return "Sync failed: \(error.localizedDescription)"
         }
-    }
-}
-
-/// Fixed-format clock and duration text, so labels do not shift with the device locale.
-struct LibraryClockFormat: Sendable {
-    let timeZone: TimeZone
-
-    func clock(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
-    }
-
-    /// `mm:ss`, or `h:mm:ss` from one hour up.
-    static func duration(_ seconds: Double) -> String {
-        let total = Int(max(0, seconds).rounded(.down))
-        let (hours, minutes, secs) = (total / 3600, total % 3600 / 60, total % 60)
-        return hours > 0
-            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
-            : String(format: "%02d:%02d", minutes, secs)
-    }
-}
-
-/// Pure projection from mirrored content to rows.
-enum LibraryRowBuilder {
-    /// Queued entries in slot order, then removed entries that have no slot.
-    static func rows(
-        content: LibrarySnapshot,
-        checkpoints: [ItemID: ObservedPlayback],
-        clock: LibraryClockFormat,
-        removedSort: LibraryRemovedSort = .decisionDate,
-        started: Set<ItemID> = []
-    ) -> (queued: [LibraryRow], removed: [LibraryRow]) {
-        let row = { (entry: LibraryEntry) in
-            makeRow(entry, content: content, checkpoints: checkpoints, clock: clock, started: started)
-        }
-        let queued = content.queue.compactMap { content.entries[$0.entryID] }.map(row)
-        let removed = content.entries.values
-            .filter { $0.removal != .none && content.slots[$0.id] == nil }
-            .map(row)
-        return (queued, sorted(removed, by: removedSort))
-    }
-
-    /// Live podcast episodes with no queue slot, newest first: the ones awaiting Keep or Skip.
-    static func newRows(content: LibrarySnapshot, checkpoints: [ItemID: ObservedPlayback], clock: LibraryClockFormat) -> [LibraryRow] {
-        content.entries.values
-            .filter { $0.removal == .none && $0.kind == .podcastEpisode && content.slots[$0.id] == nil }
-            .map { makeRow($0, content: content, checkpoints: checkpoints, clock: clock, started: []) }
-            .sorted { ($0.publishedAt, $0.id.rawValue) > ($1.publishedAt, $1.id.rawValue) }
-    }
-
-    private static func makeRow(
-        _ entry: LibraryEntry, content: LibrarySnapshot, checkpoints: [ItemID: ObservedPlayback],
-        clock: LibraryClockFormat, started: Set<ItemID>
-    ) -> LibraryRow {
-        LibraryRow(
-            id: entry.id,
-            title: entry.title,
-            showTitle: content.sources[entry.sourceID]?.title ?? "Unknown show",
-            durationText: entry.durationSeconds.map(LibraryClockFormat.duration),
-            removal: entry.removal,
-            removedAt: entry.removedAt,
-            publishedAt: entry.publishedAt,
-            removalText: removalText(entry.removal),
-            checkpointText: checkpoints[entry.id].map { checkpointText($0, clock: clock) },
-            isStarted: started.contains(entry.id) && content.listening[entry.id]?.isCompleted != true
-        )
-    }
-
-    /// Newest first by the chosen date. Decision order puts rows with no `removedAt` after
-    /// dated ones, then falls back to publication date; the id breaks every remaining tie.
-    static func sorted(_ rows: [LibraryRow], by sort: LibraryRemovedSort) -> [LibraryRow] {
-        rows.sorted { lhs, rhs in
-            if sort == .decisionDate, lhs.removedAt != rhs.removedAt {
-                guard let left = lhs.removedAt else { return false }
-                guard let right = rhs.removedAt else { return true }
-                return left > right
-            }
-            if lhs.publishedAt != rhs.publishedAt { return lhs.publishedAt > rhs.publishedAt }
-            return lhs.id.rawValue > rhs.id.rawValue
-        }
-    }
-
-    static func removalText(_ removal: LibraryRemoval) -> String? {
-        switch removal {
-        case .none: nil
-        case .retired: "Retired on Mac"
-        case .dismissed: "Dismissed on Mac"
-        }
-    }
-
-    static func checkpointText(_ observed: ObservedPlayback, clock: LibraryClockFormat) -> String {
-        let state = observed.record.isPlaying ? "Playing" : "Paused"
-        let position = LibraryClockFormat.duration(observed.record.positionSeconds)
-        return "\(state) on Mac at \(position) (as of \(clock.clock(observed.serverModifiedAt)))"
     }
 }

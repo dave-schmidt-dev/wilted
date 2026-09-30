@@ -24,6 +24,8 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
     case outcome = "IntentOutcomeRecord"
     /// The intent ids the Mac has answered for one device, so that device finds its outcomes without a zone scan.
     case outcomeIndex = "IntentOutcomeIndexRecord"
+    /// The Mac's lifetime statistics (`LibraryStats`); one record, only the library writer writes it.
+    case stats = "LibraryStatsRecord"
 
     /// Record-name prefix. Names for device-written records embed the device id, so each
     /// record has exactly one writer and two devices can never collide on a name.
@@ -41,6 +43,7 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
         case .intentIndex: "intentindex:"
         case .outcome: "outcome:"
         case .outcomeIndex: "outcomeindex:"
+        case .stats: "stats:"
         }
     }
 }
@@ -68,6 +71,7 @@ public enum LibraryDecodedRecord: Sendable, Equatable {
     case intentIndex(LibraryIntentIndex)
     case outcome(IntentOutcome)
     case outcomeIndex(IntentOutcomeIndex)
+    case stats(LibraryStats)
     case skipped(recordType: String)
 }
 
@@ -135,6 +139,9 @@ public struct LibraryRecordMapper: Sendable {
 
     /// The single offer index record; only the library writer writes it.
     public var offerIndexRecordID: CKRecord.ID { CKRecord.ID(recordName: LibraryRecordType.offerIndex.namePrefix + "library", zoneID: zoneID) }
+
+    /// The single statistics record, read by name; only the library writer writes it.
+    public var statsRecordID: CKRecord.ID { CKRecord.ID(recordName: LibraryRecordType.stats.namePrefix + "library", zoneID: zoneID) }
 
     public func recordID(intentIndexFor deviceID: String) throws -> CKRecord.ID { try id(.intentIndex, [deviceID]) }
 
@@ -208,6 +215,10 @@ public struct LibraryRecordMapper: Sendable {
 
     public func record(outcomeIndex: IntentOutcomeIndex, existing: CKRecord? = nil) throws -> CKRecord {
         try save(.outcomeIndex, recordID(outcomeIndexFor: outcomeIndex.deviceID), outcomeIndex, existing)
+    }
+
+    public func record(stats: LibraryStats, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.stats, statsRecordID, stats, existing)
     }
 
     private func save<Value: Encodable>(_ type: LibraryRecordType, _ id: CKRecord.ID, _ value: Value, _ existing: CKRecord?) throws -> CKRecord {
@@ -285,6 +296,10 @@ public struct LibraryRecordMapper: Sendable {
                 let value = try Self.decoder.decode(IntentOutcomeIndex.self, from: data)
                 try expect(name, recordID(outcomeIndexFor: value.deviceID))
                 return .outcomeIndex(value)
+            case .stats:
+                let value = try Self.decoder.decode(LibraryStats.self, from: data)
+                try expect(name, statsRecordID)
+                return .stats(value)
             }
         } catch let error as LibraryRecordMapperError {
             throw error

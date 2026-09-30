@@ -86,6 +86,8 @@ private final class PlayerFakeNowPlaying: ListenerNowPlaying, @unchecked Sendabl
     private(set) var installs = 0
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) { installs += 1; self.handler = handler }
     func uninstall() { handler = nil }
+    private(set) var skipIntervals: (back: TimeInterval, forward: TimeInterval)?
+    func setSkipIntervals(back: TimeInterval, forward: TimeInterval) { skipIntervals = (back, forward) }
 }
 
 @MainActor private final class PlayerFakeEvents: LibrarySessionEvents {
@@ -385,5 +387,38 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertEqual(LibraryPlayerText.statusLine(for: .failed("x")), "Could not play: x")
         XCTAssertEqual(LibraryPlayerText.rate(1.5), "1.5x")
         XCTAssertEqual(LibraryPlayerText.rate(2), "2x")
+    }
+
+    // MARK: Settings
+
+    func testDefaultSpeedAppliesWhenAnItemStartsAndIsClampedToTheEngine() {
+        let rig = makeRig()
+        rig.player.apply(LibraryPlaybackPreferences(defaultSpeed: 1.25, skipBackSeconds: 15, skipForwardSeconds: 30))
+        rig.player.start(item)
+        XCTAssertEqual(rig.player.rate, 1.25)
+        XCTAssertEqual(rig.engine.rate, 1.25)
+
+        rig.player.apply(LibraryPlaybackPreferences(defaultSpeed: 3, skipBackSeconds: 15, skipForwardSeconds: 30))
+        XCTAssertEqual(rig.player.rate, 1.25, "a running item keeps its own speed")
+        rig.player.start(item)
+        XCTAssertEqual(rig.player.rate, 2, "the player never exceeds what its engine accepts")
+    }
+
+    func testWithoutSettingsAStartLeavesTheSpeedAlone() {
+        let rig = makeRig()
+        rig.player.start(item)
+        XCTAssertEqual(rig.player.rate, 1)
+    }
+
+    func testSkipLengthsFromSettingsDriveTheButtonsAndCommands() {
+        let rig = makeRig()
+        rig.player.apply(LibraryPlaybackPreferences(defaultSpeed: 1, skipBackSeconds: 10, skipForwardSeconds: 45))
+        rig.player.start(item, at: 100)
+        rig.player.skipBack()
+        XCTAssertEqual(rig.player.position, 90)
+        rig.player.skipForward()
+        XCTAssertEqual(rig.player.position, 135)
+        XCTAssertEqual(rig.remote.skipIntervals?.back, 10)
+        XCTAssertEqual(rig.remote.skipIntervals?.forward, 45)
     }
 }

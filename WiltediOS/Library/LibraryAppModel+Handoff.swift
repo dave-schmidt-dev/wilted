@@ -119,12 +119,16 @@ extension LibraryAppModel {
     /// Waits until every queued coordinator call has finished. For tests.
     func waitForHandoff() async { await handoffState.chain?.value }
 
-    /// Plays the cached file for `row` from the start, or toggles it when it is already loaded.
-    /// Starting playback takes over through the player's status change.
+    /// Plays the cached file for `row` from the Mac's last observed position (else the start), or
+    /// toggles it when it is already loaded. Starting playback takes over through the player's
+    /// status change.
     func playCached(_ row: LibraryRow) async {
         guard let player = handoffState.player, let cached = await mediaCache.cachedEntries()[row.id] else { return }
         let item = LibraryPlayer.Item(entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url)
-        if player.item == item { player.togglePlayPause() } else { player.start(item) }
+        guard player.item != item else { return player.togglePlayPause() }
+        // The Mac's position belongs to the revision it played; a different cached revision starts over.
+        let sameAudio = checkpoints[row.id]?.record.revision == cached.revisionID
+        player.start(item, at: sameAudio ? row.resumeSeconds ?? 0 : 0)
     }
 
     /// The app moved to the background: publish the current position now, since the next
@@ -303,7 +307,7 @@ extension LibraryAppModel {
 
     /// The title shown for a continuation.
     func continuationTitle(_ entryID: ItemID) -> String {
-        (queued + removed).first { $0.id == entryID }?.title ?? "Episode"
+        decisionContent.entries[entryID]?.title ?? "Episode"
     }
 
     /// Continues what the Mac plays. Always re-reads the records so the position is current.
@@ -322,9 +326,10 @@ extension LibraryAppModel {
         switch plan {
         case let .ready(entryID, position, rate, _, _):
             guard let cached = await mediaCache.cachedEntries()[entryID] else { return }
-            let row = (queued + removed).first { $0.id == entryID }
+            let entry = decisionContent.entries[entryID]
             let item = LibraryPlayer.Item(
-                entryID: entryID, title: row?.title ?? "Episode", showTitle: row?.showTitle ?? "", fileURL: cached.url)
+                entryID: entryID, title: entry?.title ?? "Episode",
+                showTitle: entry.flatMap { decisionContent.sources[$0.sourceID]?.title } ?? "", fileURL: cached.url)
             player.setRate(rate)
             continuation = nil
             player.start(item, at: position)
@@ -351,7 +356,7 @@ extension LibraryAppModel {
     /// the Mac offers a different revision than the one being continued.
     private func fetchAudio(_ entryID: ItemID, revision: RevisionID) async -> Bool {
         if let offers = try? await transport.mediaOffers(),
-           let offer = offers.first(where: { $0.entryID == entryID }), offer.state == .ready,
+           let offer = offers.first(where: { $0.entryID == entryID }), offer.isPrepared,
            let offered = offer.revisionID, offered != revision {
             handoffState.refusedRevisions[entryID] = revision
             continuation = .refused(entryID: entryID, reason: Self.offerMismatchReason)

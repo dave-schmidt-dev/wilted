@@ -15,6 +15,8 @@ public actor InMemoryLibraryServer {
     private var nowPlaying: [String: ObservedPlayback] = [:]
     private var progress: [String: ObservedPlayback] = [:]
     private var manualNow: Date?
+    private var stats: LibraryStats?
+    private var transcripts: [ItemID: LibraryTranscript] = [:]
     private var mediaOffers: [ItemID: LibraryMediaOffer] = [:]
     private var mediaFiles: [ItemID: URL] = [:]
     private let mediaDirectory = FileManager.default.temporaryDirectory
@@ -127,6 +129,33 @@ public actor InMemoryLibraryServer {
         mediaOffers[entryID] = nil
     }
 
+    func publishStats(_ value: LibraryStats, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not publish statistics")
+        }
+        stats = value
+    }
+
+    func currentStats() -> LibraryStats? { stats }
+
+    func publishTranscript(_ transcript: LibraryTranscript, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not publish transcripts")
+        }
+        transcripts[transcript.entryID] = transcript
+    }
+
+    func transcript(entryID: ItemID, revisionID: RevisionID) -> LibraryTranscript? {
+        transcripts[entryID].flatMap { $0.revisionID == revisionID ? $0 : nil }
+    }
+
+    func removeTranscript(entryID: ItemID, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not remove transcripts")
+        }
+        transcripts[entryID] = nil
+    }
+
     private func dropMediaFile(for entryID: ItemID) {
         if let old = mediaFiles.removeValue(forKey: entryID) { try? FileManager.default.removeItem(at: old) }
     }
@@ -236,6 +265,24 @@ public actor InMemoryLibraryTransport: LibraryTransport {
     }
 
     public func removeMedia(entryID: ItemID) async throws { try await server.removeMedia(entryID: entryID, from: deviceID) }
+
+    public func publishStats(_ stats: LibraryStats) async throws {
+        try await server.publishStats(stats, from: deviceID)
+    }
+
+    public func readStats() async throws -> LibraryStats? { await server.currentStats() }
+
+    public func publishTranscript(_ transcript: LibraryTranscript) async throws {
+        try await server.publishTranscript(transcript, from: deviceID)
+    }
+
+    public func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
+        await server.transcript(entryID: entryID, revisionID: revisionID)
+    }
+
+    public func removeTranscript(entryID: ItemID) async throws {
+        try await server.removeTranscript(entryID: entryID, from: deviceID)
+    }
 
     private static let deliveryChunkSize = 1 << 20
 

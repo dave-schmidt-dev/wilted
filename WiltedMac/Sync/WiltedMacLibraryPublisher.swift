@@ -12,6 +12,8 @@ struct LibraryPublishReport: Sendable, Equatable {
     var terminal = 0
     var intentsDelivered = 0
     var intentFailures = 0
+    var statsPublished = false
+    var statsFailures = 0
 
     static let disabled = Self(isEnabled: false)
 }
@@ -40,17 +42,24 @@ actor WiltedMacLibraryPublisher {
     private var versions: [LibraryRecordKey: UInt64] = [:]
     private var nextLocalSeq: UInt64 = 1
     private var deliveredIntentIDs = Set<String>()
+    private let statsProvider: (@Sendable () async -> LifetimeStatistics?)?
+    private let clock: @Sendable () -> Date
+    private var publishedStats: LibraryStats?
 
     init(
         source: any LibraryStateSource,
         transport: any LibraryTransport,
         sink: any LibraryIntentSink,
-        isEnabled: Bool = WiltedMacLibraryPublisher.isEnabled()
+        isEnabled: Bool = WiltedMacLibraryPublisher.isEnabled(),
+        statsProvider: (@Sendable () async -> LifetimeStatistics?)? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.source = source
         self.transport = transport
         self.sink = sink
         self.isEnabled = isEnabled
+        self.statsProvider = statsProvider
+        self.clock = clock
     }
 
     /// One publish-then-relay pass. Returns `.disabled` without touching the source or
@@ -60,6 +69,7 @@ actor WiltedMacLibraryPublisher {
         var report = LibraryPublishReport()
         let state = try await source.currentState()
         try await publishState(state, into: &report)
+        await publishStats(into: &report)
         try await relayIntents(into: &report)
         return report
     }
@@ -114,6 +124,23 @@ actor WiltedMacLibraryPublisher {
         try await transport.commitFetchedState(batch.token)
         published = snapshot
         return snapshot
+    }
+
+    // MARK: - Statistics
+
+    /// Publishes the lifetime statistics when a metric changed since the last acknowledged publish.
+    /// A failure is counted and retried on the next pass; it never blocks state or intent relay.
+    private func publishStats(into report: inout LibraryPublishReport) async {
+        guard let statsProvider, let lifetime = await statsProvider() else { return }
+        let next = LibraryStats(lifetime, updatedAt: clock())
+        if let publishedStats, publishedStats.hasSameMetrics(as: next) { return }
+        do {
+            try await transport.publishStats(next)
+            publishedStats = next
+            report.statsPublished = true
+        } catch {
+            report.statsFailures += 1
+        }
     }
 
     // MARK: - Intents

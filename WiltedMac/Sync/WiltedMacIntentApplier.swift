@@ -32,6 +32,8 @@ protocol WiltedMacDecisionHost: AnyObject {
     func keepEntry(_ entryID: ItemID) async -> Bool
     func skipEntry(_ entryID: ItemID) async -> Bool
     func markEntryDone(_ entryID: ItemID) async -> Bool
+    /// Takes a queued entry off the Larder through the row's Remove from Larder; true once it is off.
+    func removeEntryFromLarder(_ entryID: ItemID) async -> Bool
     func restoreEntry(_ entryID: ItemID) async -> Bool
     /// Moves within the full queue by the index API (`to` is a post-removal index); true once
     /// the queue reads `resulting`.
@@ -104,7 +106,7 @@ actor WiltedMacIntentOutcomeBook {
 
 // MARK: - Applier
 
-/// Applies the phone's decision intents (`keep`, `skip`, `markDone`, `restore`, `reorder`) on the
+/// Applies the phone's decision intents (`keep`, `skip`, `markDone`, `removeFromLarder`, `restore`, `reorder`) on the
 /// Mac and answers each with an `IntentOutcome`.
 ///
 /// An intent id goes into the ledger before anything is applied, so it is applied at most once
@@ -200,6 +202,13 @@ final class WiltedMacIntentApplier {
             case .live(_, started: true): return try result(await host.markEntryDone(entryID))
             default: return try rejected(notApplicable)
             }
+        case .removeFromLarder:
+            switch state {
+            case .live(queued: true, _): return try result(await host.removeEntryFromLarder(entryID))
+            // Already off the Larder, retired or not: the phone's aim is met.
+            case .live(queued: false, _), .retired: return try applied()
+            default: return try rejected(notApplicable)
+            }
         case .restore:
             switch state {
             case .live: return try applied()
@@ -287,6 +296,12 @@ extension WiltedMacModel: WiltedMacDecisionHost {
         guard let episode = episodes.first(where: { $0.id == entryID.rawValue }) else { return false }
         await awaitingDecisionWriters { skipEpisode(episode) }
         return decisionState(of: entryID) == .retired
+    }
+
+    func removeEntryFromLarder(_ entryID: ItemID) async -> Bool {
+        // The Larder row's own Remove from Larder: it takes the entry off the queue and keeps it.
+        await awaitingDecisionWriters { removeEpisodeFromUpNext(entryID.rawValue) }
+        return !podcastQueueIDs.contains(entryID.rawValue)
     }
 
     func restoreEntry(_ entryID: ItemID) async -> Bool {

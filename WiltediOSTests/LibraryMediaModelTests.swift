@@ -43,6 +43,9 @@ private struct ScriptedTransport: LibraryTransport {
     func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws { try await inner.publish(record, as: channel) }
     func fetchDeviceRecords() async throws -> LibraryDeviceRecords { try await inner.fetchDeviceRecords() }
     func mediaOffers() async throws -> [LibraryMediaOffer] { try await inner.mediaOffers() }
+    func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
+        try await inner.transcript(entryID: entryID, revisionID: revisionID)
+    }
 
     func send(intent: LibraryIntent) async throws {
         if case .mediaCached = intent.action, failAcknowledgements.isSet {
@@ -154,6 +157,46 @@ final class LibraryMediaModelTests: XCTestCase {
         XCTAssertTrue(sent.contains { $0.action == .requestMedia(entryID: entryID) && $0.deviceID == "phone" })
         XCTAssertTrue(sent.contains { $0.action == .mediaCached(entryID: entryID, revisionID: revisionID, deviceID: "phone") })
         XCTAssertTrue(model.unacknowledgedMedia.isEmpty)
+    }
+
+    func testTheTranscriptIsFetchedAndCachedAfterTheAudioVerifies() async throws {
+        let cache = makeCache()
+        let model = makeModel(cache: cache)
+        let transcript = try LibraryTranscript(
+            entryID: entryID, revisionID: revisionID, cues: [LibraryTranscriptCue(start: 0, end: 2, text: "Hello")])
+        try await mac.publishTranscript(transcript)
+
+        model.performMediaAction(.request, entryID: entryID)
+        try await macPublish(makeOffer())
+        await model.waitForMedia(entryID: entryID)
+        await model.waitForTranscript(entryID: entryID)
+
+        XCTAssertEqual(model.mediaState(for: entryID), .onPhone)
+        XCTAssertEqual(model.transcript(for: entryID), transcript)
+        let stored = await cache.cachedTranscript(entryID: entryID, revisionID: revisionID)
+        XCTAssertEqual(stored, transcript)
+    }
+
+    func testAnAvailableOfferIsNotAnAnswerSoTheRequestWaitsForTheUploadAndOnlyThenFetches() async throws {
+        let model = makeModel()
+        try await macPublish(
+            try LibraryMediaOffer(
+                entryID: entryID, revisionID: revisionID, contentHash: "", byteCount: Int64(payload.count),
+                mediaType: "audio/mp4", durationSeconds: 60, state: .available),
+            data: Data())
+
+        model.performMediaAction(.request, entryID: entryID)
+        try await eventually("request intent") {
+            ((try? await self.intents()) ?? []).contains { $0.action == .requestMedia(entryID: self.entryID) }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        guard case .requested = model.mediaState(for: entryID) else {
+            return XCTFail("an available offer must not end the wait, got \(model.mediaState(for: entryID))")
+        }
+
+        try await macPublish(makeOffer())
+        await model.waitForMedia(entryID: entryID)
+        XCTAssertEqual(model.mediaState(for: entryID), .onPhone)
     }
 
     func testDownloadingReportsRealBytesAndTotalBeforeVerifyingAndCached() async throws {

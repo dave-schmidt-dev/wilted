@@ -13,6 +13,7 @@ final class LibraryIntentTests: XCTestCase {
             try .keep(entryID: a, deviceID: "phone", createdAt: created, id: "k"),
             try .skip(entryID: a, deviceID: "phone", createdAt: created, id: "s"),
             try .markDone(entryID: a, deviceID: "phone", createdAt: created, id: "m"),
+            try .removeFromLarder(entryID: a, deviceID: "phone", createdAt: created, id: "l"),
             try .restore(entryID: a, deviceID: "phone", createdAt: created, id: "r"),
             try .reorder(entryID: a, afterEntryID: b, deviceID: "phone", createdAt: created, id: "o1"),
             try .reorder(entryID: a, afterEntryID: nil, deviceID: "phone", createdAt: created, id: "o2"),

@@ -35,8 +35,8 @@ struct LibraryMiniPlayer: View {
                 .accessibilityIdentifier("wilted-player-expand")
 
                 if player.item != nil {
-                    Button { player.skipBack() } label: { Image(systemName: "gobackward.15") }
-                        .accessibilityLabel("Back 15 seconds")
+                    Button { player.skipBack() } label: { Image(systemName: "gobackward.\(player.skipBackSeconds)") }
+                        .accessibilityLabel("Back \(player.skipBackSeconds) seconds")
                         .accessibilityIdentifier("wilted-player-mini-back")
                     Button { player.togglePlayPause() } label: {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
@@ -127,8 +127,11 @@ struct LibraryContinueBanner: View {
 /// The full player: scrubber, transport, speed.
 struct LibraryPlayerView: View {
     @ObservedObject var player: LibraryPlayer
+    /// When given, the player offers the playing episode's transcript.
+    var model: LibraryAppModel?
     let onClose: () -> Void
     @State private var scrubPosition: Double?
+    @State private var isTranscriptPresented = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -157,11 +160,43 @@ struct LibraryPlayerView: View {
             scrubber
             transport
             if player.supportsRate { rateMenu }
+            if model != nil, player.item != nil { transcriptButton }
             Spacer(minLength: 0)
         }
         .padding(WiltedTheme.Spacing.large)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityIdentifier("wilted-player-full")
+        .sheet(isPresented: $isTranscriptPresented) { transcriptSheet }
+    }
+
+    private var transcriptButton: some View {
+        Button { isTranscriptPresented = true } label: {
+            Label("Transcript", systemImage: "text.alignleft")
+                .wiltedFont(.body)
+                .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+        }
+        .accessibilityIdentifier("wilted-player-transcript")
+    }
+
+    @ViewBuilder
+    private var transcriptSheet: some View {
+        if let model, let entryID = player.item?.entryID {
+            NavigationStack {
+                LibraryTranscriptSection(model: model, entryID: entryID, player: player)
+                    .padding(WiltedTheme.Spacing.large)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                .background(WiltedTheme.color(.page, scheme: colorScheme))
+                .navigationTitle("Transcript")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { isTranscriptPresented = false }
+                            .accessibilityIdentifier("wilted-player-transcript-done")
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     private var scrubber: some View {
@@ -193,16 +228,16 @@ struct LibraryPlayerView: View {
 
     private var transport: some View {
         HStack(spacing: WiltedTheme.Spacing.section) {
-            Button { player.skipBack() } label: { Image(systemName: "gobackward.15") }
-                .accessibilityLabel("Back 15 seconds")
+            Button { player.skipBack() } label: { Image(systemName: "gobackward.\(player.skipBackSeconds)") }
+                .accessibilityLabel("Back \(player.skipBackSeconds) seconds")
                 .accessibilityIdentifier("wilted-player-back")
             Button { player.togglePlayPause() } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill").imageScale(.large)
             }
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             .accessibilityIdentifier("wilted-player-toggle")
-            Button { player.skipForward() } label: { Image(systemName: "goforward.30") }
-                .accessibilityLabel("Forward 30 seconds")
+            Button { player.skipForward() } label: { Image(systemName: "goforward.\(player.skipForwardSeconds)") }
+                .accessibilityLabel("Forward \(player.skipForwardSeconds) seconds")
                 .accessibilityIdentifier("wilted-player-forward")
         }
         .font(.title)

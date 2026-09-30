@@ -91,6 +91,12 @@ final class LibraryRecordMapperTests: XCTestCase {
         assertShape(record, type: .intent)
         XCTAssertEqual(try mapper.decode(record), .intent(intent))
         XCTAssertTrue(record.recordID.recordName.contains("phone"))
+
+        let removal = try LibraryIntent.removeFromLarder(entryID: item("ep-1"), deviceID: "phone",
+                                                         createdAt: Date(timeIntervalSince1970: 1_700_000_301), id: "intent-2")
+        let removalRecord = try mapper.record(intent: removal)
+        assertShape(removalRecord, type: .intent)
+        XCTAssertEqual(try mapper.decode(removalRecord), .intent(removal))
     }
 
     func testUnknownKindEntryRoundTripsUnchanged() throws {

@@ -5,12 +5,21 @@ import XCTest
 @testable import WiltedMac
 
 /// Serves a scripted ready revision and counts lookups; never touches a store.
-private final class ScriptedAudioSource: WiltedMacReadyAudioSource, @unchecked Sendable {
+final class ScriptedAudioSource: WiltedMacReadyAudioSource, @unchecked Sendable {
     private let lock = NSLock()
     private var audio: [ItemID: WiltedMacReadyAudio] = [:]
+    private var queue: Set<ItemID> = []
     private var lookups = 0
 
     func set(_ entryID: ItemID, _ value: WiltedMacReadyAudio?) { lock.withLock { audio[entryID] = value } }
+    /// Puts the entry on, or takes it off, the scripted Larder queue.
+    func setQueued(_ entryID: ItemID, _ queued: Bool) {
+        lock.withLock { if queued { queue.insert(entryID) } else { queue.remove(entryID) } }
+    }
+
+    func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
+        lock.withLock { audio.filter { queue.contains($0.key) } }
+    }
     var lookupCount: Int { lock.withLock { lookups } }
 
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? {
@@ -18,7 +27,7 @@ private final class ScriptedAudioSource: WiltedMacReadyAudioSource, @unchecked S
     }
 }
 
-private final class MutableClock: @unchecked Sendable {
+final class MutableClock: @unchecked Sendable {
     private let lock = NSLock()
     private var current: Date
     init(_ start: Date) { current = start }
@@ -47,13 +56,13 @@ private actor IntentCollector: LibraryIntentSink {
 
 @MainActor
 final class WiltedMacMediaServiceTests: XCTestCase {
-    private let macID = "mac-test"
-    private let phoneID = "iphone-a"
-    private let tabletID = "ipad-b"
+    let macID = "mac-test"
+    let phoneID = "iphone-a"
+    let tabletID = "ipad-b"
 
-    private func id(_ raw: String) throws -> ItemID { try ItemID(rawValue: raw) }
+    func id(_ raw: String) throws -> ItemID { try ItemID(rawValue: raw) }
 
-    private func makeAudio(_ directory: URL, revision: String, bytes: Int = 4_096) throws -> WiltedMacReadyAudio {
+    func makeAudio(_ directory: URL, revision: String, bytes: Int = 4_096) throws -> WiltedMacReadyAudio {
         let file = directory.appendingPathComponent("\(revision).m4a")
         try Data(repeating: UInt8(revision.utf8.last ?? 1), count: bytes).write(to: file)
         return WiltedMacReadyAudio(
@@ -62,7 +71,7 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         )
     }
 
-    private struct Rig {
+    struct Rig {
         let server: InMemoryLibraryServer
         let mac: InMemoryLibraryTransport
         let phone: InMemoryLibraryTransport
@@ -71,7 +80,7 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         let directory: URL
     }
 
-    private func rig(_ name: String) -> Rig {
+    func rig(_ name: String) -> Rig {
         let server = InMemoryLibraryServer(writerDeviceID: macID)
         return Rig(
             server: server, mac: InMemoryLibraryTransport(deviceID: macID, server: server),
@@ -80,7 +89,7 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         )
     }
 
-    private func runtime(_ rig: Rig) -> WiltedMacInboundRuntime {
+    func runtime(_ rig: Rig) -> WiltedMacInboundRuntime {
         let clock = rig.clock
         return WiltedMacInboundRuntime(
             source: rig.source, transport: rig.mac, directory: rig.directory,
@@ -88,17 +97,17 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         )
     }
 
-    private func request(_ rig: Rig, _ entry: ItemID, from device: String, intentID: String) throws -> LibraryIntent {
+    func request(_ rig: Rig, _ entry: ItemID, from device: String, intentID: String) throws -> LibraryIntent {
         try LibraryIntent.requestMedia(entryID: entry, deviceID: device, createdAt: rig.clock.now, id: intentID)
     }
 
-    private func cached(_ rig: Rig, _ entry: ItemID, _ revision: String, from device: String, intentID: String) throws -> LibraryIntent {
+    func cached(_ rig: Rig, _ entry: ItemID, _ revision: String, from device: String, intentID: String) throws -> LibraryIntent {
         try LibraryIntent.mediaCached(
             entryID: entry, revisionID: try RevisionID(rawValue: revision), deviceID: device, createdAt: rig.clock.now, id: intentID
         )
     }
 
-    private func eventually(_ what: String, _ condition: () async -> Bool) async throws {
+    func eventually(_ what: String, _ condition: () async -> Bool) async throws {
         for _ in 0..<200 {
             if await condition() { return }
             try await Task.sleep(for: .milliseconds(10))
