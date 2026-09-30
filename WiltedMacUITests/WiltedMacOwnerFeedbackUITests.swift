@@ -175,6 +175,9 @@ final class WiltedMacOwnerFeedbackUITests: XCTestCase {
         // this app before removing the state directory even if the test fails.
         addTeardownBlock { app.terminate() }
         app.launch()
+        // On macOS 27 a fixture app launched by XCUITest can stay inactive, and an inactive app
+        // exposes only its menu bar to accessibility, so bring it forward before looking for a window.
+        app.activate()
         guard app.windows.firstMatch.waitForExistence(timeout: 10) else {
             XCTFail("Fixture app did not present a window before owner-feedback assertions")
             fatalError("Fixture app window is unavailable")

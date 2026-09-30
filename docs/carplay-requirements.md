@@ -2,7 +2,7 @@
 
 Binding requirements for any CarPlay work. Sources: Apple's *CarPlay Developer Guide* (June 2026, dated 2026-06-08) and the *CarPlay Entitlement Addendum* (Rev. 06-08-2026, LYL247). Page numbers are the guide's own. The PDF is kept locally under gitignored `.logs/reference/` because Apple's terms do not allow redistribution; this file is a paraphrase of the parts that apply to an audio app.
 
-Status: Audio entitlement requested from Apple on 2026-09-30 (not yet granted). Nothing here is implemented yet.
+Status: Audio entitlement requested 2026-09-30 (Case-ID 22579502) and **assigned to the Zero Delta account by Apple on 2026-09-30** (email from Apple Developer Relations). Assignment is not yet a profile: the capability still has to be enabled on the App ID and a provisioning profile created and imported (see Category and entitlement). Nothing here is implemented yet.
 
 ## Category and entitlement
 
@@ -77,6 +77,6 @@ Voice commands are developed together with CarPlay but do not depend on it: they
 
 ## Open items
 
-- Entitlement approval. Nothing that touches the CarPlay APIs is added until it is granted (see TASKS.md). Allowed groundwork now: the locked-phone file-protection audit, making the library model, transport, and player start without the iPhone window scene, and a framework-free episode-list model for the car. An earlier idea of adding the entitlement for simulator builds only is dropped because of the Addendum's no-access clause.
+- Entitlement granted 2026-09-30; the Addendum's no-access clause lifts once the CarPlay entitlement profile exists for the App ID. Until that profile is in place, nothing that touches the CarPlay APIs is added (see TASKS.md). Allowed groundwork now: the locked-phone file-protection audit, making the library model, transport, and player start without the iPhone window scene, and a framework-free episode-list model for the car. An earlier idea of adding the entitlement for simulator builds only is dropped because of the Addendum's no-access clause.
 - Whether the file protection class of the audio cache, library snapshot, and positions allows access while locked: audit before the first device test.
 - Whether launching with only the CarPlay scene can bring up the library model, transport, and player without the iPhone window scene.

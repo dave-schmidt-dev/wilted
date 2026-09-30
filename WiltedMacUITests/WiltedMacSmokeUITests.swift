@@ -54,14 +54,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
 
         let sort = app.descendants(matching: .any)["wilted-menu-sort"]
         XCTAssertTrue(sort.waitForExistence(timeout: 5))
-        XCTAssertEqual(sort.label, "Sort Larder: Custom order")
+        XCTAssertTrue(visibleText(of: sort).contains("Sort Larder: Custom order"), visibleText(of: sort))
 
         sort.click()
         for choice in ["Custom order", "Newest", "Oldest", "Length · shortest", "Show · A–Z", "Title · A–Z"] {
             XCTAssertTrue(app.menuItems[choice].exists, "missing Larder sort choice: \(choice)")
         }
         app.menuItems["Oldest"].click()
-        XCTAssertEqual(sort.label, "Sort Larder: Oldest")
+        XCTAssertTrue(visibleText(of: sort).contains("Sort Larder: Oldest"), visibleText(of: sort))
 
         // The box is behind a button now, so opening it is part of the
         // journey: a trigger that draws but opens nothing would otherwise
@@ -632,7 +632,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// its label, and a Text with links can hand each run to a child, so the
     /// element and its static-text descendants are read together.
     private func visibleText(of element: XCUIElement) -> String {
-        let own = [element.value as? String, element.label].compactMap { $0 }
+        // macOS 27 can leave a menu button's label empty and carry its name in the title.
+        let own = [element.value as? String, element.label, element.title].compactMap { $0 }
         let children = element.descendants(matching: .staticText).allElementsBoundByIndex
             .map { $0.value as? String ?? $0.label }
         return (own + children).joined(separator: " ")
@@ -652,6 +653,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         ]
         app.launch()
         launchedFixtureApps.append(app)
+        // On macOS 27 a fixture app launched by XCUITest can stay inactive, and an inactive app
+        // exposes only its menu bar to accessibility, so bring it forward before looking for a window.
+        app.activate()
         guard app.windows.firstMatch.waitForExistence(timeout: 10) else {
             XCTFail("Fixture app did not present a window before smoke assertions")
             fatalError("Fixture app window is unavailable")
