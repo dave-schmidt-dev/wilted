@@ -37,7 +37,8 @@ for expected in \
   "PASS 09-invalid-aggregate-budget.json" \
   "PASS 10-valid-transcript.json" \
   "PASS 11-valid-timed-transcript.json"; do
-  if ! printf '%s\n' "$output" | grep -Fqx "$expected"; then
+  # A here-string, not a pipe: under pipefail, grep -q exiting early SIGPIPEs printf and fails the check at random.
+  if ! grep -Fqx "$expected" <<<"$output"; then
     echo "error: missing fixture result: $expected" >&2
     exit 1
   fi

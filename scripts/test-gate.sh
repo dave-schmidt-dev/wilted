@@ -473,7 +473,18 @@ xcode_test_leg() {
   require_tool xmllint
   assert_test_sources "$label" "$source_dir"
   project="$(find_project)" || return 1
-  if [[ "$scheme" == "WiltedMac" ]]; then wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK" || fail "could not bind $label XCTest to its owned temp parent"; fi
+  if [[ "$scheme" == "WiltedMac" ]]; then
+    # macOS 27 Foundation ignores TMPDIR for FileManager.temporaryDirectory, so
+    # the unit-test host would allocate every per-test root in the machine-wide
+    # temp directory (shared with other sessions' hosts, where a quit or killed
+    # host strands its root and this leg's own audit sees nothing). Hand it the
+    # leg-owned parent explicitly. Only the unit leg: the UI runner is sandboxed
+    # and cannot write a host-owned path, so its scheme keeps the key stripped.
+    local -a mac_test_env=()
+    if [[ "$label" == macos-unit-tests ]]; then mac_test_env=("WILTED_TEST_TMPDIR=$WILTED_TEMP_LEG_WORK"); fi
+    wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK" \
+      ${mac_test_env[@]+"${mac_test_env[@]}"} || fail "could not bind $label XCTest to its owned temp parent"
+  fi
   [[ "$xcode_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
     fail 'WILTED_XCODE_TEST_TIMEOUT_SECONDS must be a positive integer'
   cleanup_mac_test_hosts

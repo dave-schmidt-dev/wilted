@@ -217,7 +217,10 @@ enum PersistenceMigrationPlan: SchemaMigrationPlan {
 
 public enum PersistenceStoreURL {
     public static func deterministic(named name: String, root: URL? = nil) -> URL {
-        let base = root ?? FileManager.default.temporaryDirectory.appendingPathComponent("wilted-persistence-probe", isDirectory: true)
+        // macOS 27 Foundation ignores TMPDIR, so honor it explicitly: the gate points it at a leg-owned directory.
+        let temporary = ProcessInfo.processInfo.environment["TMPDIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.temporaryDirectory
+        let base = root ?? temporary.appendingPathComponent("wilted-persistence-probe", isDirectory: true)
         return base.appendingPathComponent(name, isDirectory: true).appendingPathComponent("store.sqlite")
     }
 

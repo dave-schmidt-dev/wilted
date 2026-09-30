@@ -131,15 +131,16 @@ validate_pixel_snapshot_baselines() {
   window_baselines=$'testShippingMacProducerPixelBaselines.mac-shell-producer-library-light.png\ntestShippingMacProducerPixelBaselines.mac-shell-producer-library-dark.png\ntestMacNavigationSelectionPixelBaselines.mac-shell-navigation-selection-light.png\ntestMacNavigationSelectionPixelBaselines.mac-shell-navigation-selection-dark.png'
   while IFS= read -r window_name; do
     [[ -n "$window_name" ]] || continue
-    file "$snapshot_dir/$window_name" | grep -Fq 'PNG image data, 1100 x 700' ||
+    grep -Fq 'PNG image data, 1100 x 700' <<<"$(file "$snapshot_dir/$window_name")" ||
       fail "Mac window-scale baseline is not 1100 x 700: $window_name"
   done <<<"$window_baselines"
   bad_pngs=0
   while IFS= read -r png_path; do
     [[ -n "$png_path" ]] || continue
     png_name="$(basename "$png_path")"
-    printf '%s\n' "$window_baselines" | grep -Fxq "$png_name" && continue
-    file "$png_path" | grep -Fq 'PNG image data, 520 x 260' || {
+    # Here-strings, not pipes: under pipefail an early-exiting grep -q SIGPIPEs the writer and fails the test at random.
+    grep -Fxq "$png_name" <<<"$window_baselines" && continue
+    grep -Fq 'PNG image data, 520 x 260' <<<"$(file "$png_path")" || {
       bad_pngs=$((bad_pngs + 1))
       printf 'native.snapshots.unexpected-size name=%s\n' "$png_name" >&2
     }

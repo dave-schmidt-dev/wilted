@@ -116,6 +116,7 @@ assert_gatekeeper_contract
 
 assert_mac_test_parent_static_contract() {
   assert_contains 'wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK"' "$gate"
+  assert_contains 'mac_test_env=("WILTED_TEST_TMPDIR=$WILTED_TEMP_LEG_WORK")' "$gate"
   assert_contains 'wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$WILTED_TEMP_LEG_WORK"' "$gate"
   assert_contains 'TMPDIR="$WILTED_TEMP_LEG_WORK" "$@"' "$gate"
   assert_contains 'without exporting a host-owned' "$repo_root/scripts/lib/mac-test-parent.sh"

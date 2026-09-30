@@ -199,6 +199,17 @@ assert values == {"LAUNCH_ONLY": "launch", "COLLISION": "test-value", "TEST_ONLY
                   "WILTED_CAPTURE": "1"}
 assert "WILTED_TEST_TMPDIR" not in values
 PY
+  # The unit-test leg passes its parent explicitly (Foundation on macOS 27
+  # ignores TMPDIR); a stale host-owned value must be replaced, never duplicated.
+  wilted_mac_test_scheme_configure "$scheme" "$parent" WILTED_TEST_TMPDIR="$parent"
+  python3 - "$scheme" "$parent" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+items = root.find("TestAction").find("EnvironmentVariables").findall("EnvironmentVariable")
+delivered = [x.get("value") for x in items if x.get("key") == "WILTED_TEST_TMPDIR"]
+assert delivered == [sys.argv[2]], delivered
+PY
   local invalid="$scratch/mac-test-invalid.xcscheme" before
   printf '%s\n' '<Scheme><LaunchAction /></Scheme>' >"$invalid"
   before="$(shasum -a 256 "$invalid" | cut -d ' ' -f 1)"
