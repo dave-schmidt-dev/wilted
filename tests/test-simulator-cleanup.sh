@@ -135,7 +135,7 @@ run_case fail 23 20000000-0000-0000-0000-000000000002
 # Run the real recorder in a copied fixture project with fake Xcode and simctl.
 recorder_repo="$tmp/recorder-repo"
 mkdir -p "$recorder_repo/scripts/lib" "$recorder_repo/WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"
-for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests; do
+for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents; do
   mkdir -p "$recorder_repo/$directory"
 done
 for package in WiltedKit Producer CloudSync Listener; do
