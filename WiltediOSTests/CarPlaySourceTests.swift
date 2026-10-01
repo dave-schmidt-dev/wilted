@@ -55,6 +55,17 @@ final class CarPlaySourceTests: XCTestCase {
             "the scene must not hardcode the cap; 12 is only the model's default for tests")
     }
 
+    func testAssistantCellIsOnlyEnabledWhenTheSiriCapabilityIsSigned() throws {
+        let entitlements = try XCTUnwrap(
+            NSDictionary(contentsOf: root.appendingPathComponent("WiltediOS/WiltediOS.entitlements")) as? [String: Any])
+        if CarPlaySiri.assistantCellEnabled {
+            XCTAssertEqual(entitlements["com.apple.developer.siri"] as? Bool, true, "the cell needs the Siri capability to have anything to answer")
+            XCTAssertNotNil(CarPlaySiri.assistantCellConfiguration())
+        } else {
+            XCTAssertNil(CarPlaySiri.assistantCellConfiguration())
+        }
+    }
+
     func testEveryListItemHandlerCompletes() throws {
         for (name, text) in try carPlaySources() where text.contains(".handler") {
             XCTAssertTrue(text.contains("completion()"), "\(name) has a list item handler that never calls completion()")

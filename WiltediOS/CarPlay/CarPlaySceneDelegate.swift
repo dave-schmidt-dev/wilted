@@ -25,7 +25,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         player = runtime.player
         self.interfaceController = interfaceController
 
-        let list = CPListTemplate(title: "Episodes", sections: [])
+        let list = CPListTemplate(
+            title: "Episodes", sections: [], assistantCellConfiguration: CarPlaySiri.assistantCellConfiguration())
         listTemplate = list
         configureNowPlayingButtons()
         interfaceController.setRootTemplate(list, animated: false, completion: nil)

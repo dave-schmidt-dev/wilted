@@ -4,7 +4,7 @@ options:
   bundleIdPrefix: com.zerodelta.wilted
   deploymentTarget:
     macOS: "14.0"
-    iOS: "17.0"
+    iOS: "26.0"
   developmentLanguage: en
   createIntermediateGroups: true
 
@@ -112,7 +112,7 @@ targets:
   WiltediOS:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "26.0"
     sources:
       - path: WiltediOS
       - path: Shared
@@ -225,7 +225,7 @@ targets:
   WiltediOSTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "26.0"
     sources:
       - path: WiltediOSTests
         optional: true
@@ -267,7 +267,7 @@ targets:
   WiltediOSUITests:
     type: bundle.ui-testing
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "26.0"
     sources:
       - path: WiltediOSUITests
     dependencies:

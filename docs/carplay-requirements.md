@@ -77,7 +77,7 @@ Voice commands are developed together with CarPlay but do not depend on it: they
 
 ## iOS 26 floor and API availability
 
-Owner decision (2026-09-30): iOS 26 is the compatibility floor. Wilted builds **iOS 26-only** for CarPlay: no iOS 27-only API, not even behind `#available`. Anything that seems to need iOS 27 stops and goes to the owner with the symbol, what it gives, and the iOS 26 alternative.
+Owner decision (2026-09-30): iOS 26 is the compatibility floor, and the iOS deployment target is 26.0 (raised from 17.0 on 2026-09-30, with the WiltedKit, Listener and CloudSync packages at `.iOS(.v26)`, swift-tools-version 6.2). iOS 26.x APIs are allowed, gated with `#available` when newer than 26.0; no iOS 27-only API, not even behind `#available`. Anything that seems to need iOS 27 stops and goes to the owner with the symbol, what it gives, and the iOS 26 alternative.
 
 Availability read from the iOS 27.0 SDK's CarPlay headers (Xcode 27.0, 27A266a). The app currently ships only symbols available since iOS 14 or earlier.
 
@@ -93,7 +93,8 @@ Availability read from the iOS 27.0 SDK's CarPlay headers (Xcode 27.0, 27A266a).
 | `CPInterfaceController.showOverlayTemplate(_:animated:completion:)`, `hideOverlayTemplateAnimated:completion:` | **iOS 27** | no |
 | `CPChargingStationConnection` | **iOS 27** | no (not an audio-app feature) |
 | `CPVoiceControlTemplate`, `CPSearchTemplate` | headers say iOS 12, but Apple's guide permits them for audio apps only from iOS 27 | no |
-| `CPListTemplate(... assistantCellConfiguration:)`, `CPListTemplate.listHeader`, `CPPlaybackConfiguration`, `CPImageOverlay`, `CPListItem` (26.4 extension) | **iOS 26.4** (above the 26.0 floor) | no; the Siri assistant cell needs `#available(iOS 26.4, *)` and owner approval |
+| `CPAssistantCellConfiguration`, `CPListTemplate(title:sections:assistantCellConfiguration:)` | iOS 15 (read from the iOS 27.0 SDK header; an earlier note wrongly said 26.4: only the variant that also takes `listHeader` is 26.4) | built, switched off (`CarPlaySiri.assistantCellEnabled`), see "Siri assistant cell" |
+| `CPListTemplate.listHeader`, `CPPlaybackConfiguration`, `CPImageOverlay`, `CPListItem` (26.4 extension) | **iOS 26.4** (above the 26.0 floor) | no |
 | `CPListImageRowItem` elements, `CPGridButton`, `headerGridButtons` | iOS 26.0 | no (not needed for an episode list) |
 
 Only a runtime check on an iOS 26 simulator and a real iOS 26 head unit proves the behaviour; the header table proves only that the symbols exist.
@@ -103,3 +104,13 @@ Only a runtime check on an iOS 26 simulator and a real iOS 26 head unit proves t
 - Entitlement granted 2026-09-30; the Addendum's no-access clause lifts once the CarPlay entitlement profile exists for the App ID. Until that profile is in place, nothing that touches the CarPlay APIs is added (see TASKS.md). Allowed groundwork now: the locked-phone file-protection audit, making the library model, transport, and player start without the iPhone window scene, and a framework-free episode-list model for the car. An earlier idea of adding the entitlement for simulator builds only is dropped because of the Addendum's no-access clause.
 - Whether the file protection class of the audio cache, library snapshot, and positions allows access while locked: audit before the first device test.
 - Whether launching with only the CarPlay scene can bring up the library model, transport, and player without the iPhone window scene.
+
+## Siri assistant cell
+
+What is built: `CarPlaySiri` configures `CPAssistantCellConfiguration(position: .top, visibility: .always, assistantAction: .playMedia)` on the list; `PlayMediaIntentHandler` (WiltediOS/Siri) handles `INPlayMediaIntent` in the app, returned from `LibraryPushAppDelegate.application(_:handlerFor:)` (iOS 14). It maps the request with `PlayMediaRequest` onto the existing Voice layer (`VoiceCommandPlanner`, `VoiceShowMatcher`), resolves only to episodes already on the phone, and plays through `VoiceRuntime` -> `LibraryRuntime.shared.prepare()` -> `playCachedWithoutToggling`, so it never waits on a sync and never starts a download. Tests: `PlayMediaIntentTests`.
+
+Verified from primary sources (iOS 27.0 SDK headers): the assistant cell API is iOS 15; the list initializer's header says the cell gives no callback and that requests arrive through SiriKit, naming "an Intents app extension"; `application(_:handlerFor:)` exists since iOS 14. The Developer Guide (p.18) says only that the cell shows a Siri prompt "if your app supports SiriKit".
+
+Not verified (needs a real phone or car, David's): whether the system routes the cell's `INPlayMediaIntent` to in-app handling rather than requiring an Intents extension (the header wording suggests an extension); the exact Info.plist declaration for in-app SiriKit handling; the SiriKit authorization prompt (`INPreferences.requestSiriAuthorization` and `NSSiriUsageDescription`). The cell therefore ships off.
+
+Blocker for turning it on: SiriKit needs the Siri capability (`com.apple.developer.siri`) on the App ID and in the "Wilted iOS Development" provisioning profile, a portal change that is David's. When done: add the key to `WiltediOS.entitlements`, set `CarPlaySiri.assistantCellEnabled = true` (`CarPlaySourceTests` fails if the cell is on without the entitlement), and verify on a device or in a car.

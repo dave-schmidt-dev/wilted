@@ -110,9 +110,7 @@ built app (the tests are hosted in it) and asserts all 11 intents, `ShowEntity`,
 queries are exported, at most 10 App Shortcuts are declared, and every phrase contains
 `${applicationName}`. Last build log (`xcodebuild test`, Xcode 27): no `appintentsmetadataprocessor`
 warnings for the app target; the only ones are "Metadata extraction skipped, no AppIntents.framework
-dependency found" for the unit- and UI-test bundles, which do not link AppIntents. The iOS 18
-`requestConfirmation(dialog:)` shows the mark-completed question; below iOS 18 the system's generic prompt
-is used (the project floor is iOS 26, so the fallback only keeps the current 17.0 deployment target compiling).
+dependency found" for the unit- and UI-test bundles, which do not link AppIntents. `requestConfirmation(dialog:)` (iOS 18) shows the mark-completed question; the deployment target is iOS 26, so it is called directly.
 
 ## Outcomes and races
 

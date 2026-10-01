@@ -165,12 +165,7 @@ struct MarkCompletedIntent: AppIntent {
 
     /// Asks the question and throws if it is declined.
     private func confirm(_ question: String) async throws {
-        if #available(iOS 18.0, *) {
-            try await requestConfirmation(dialog: IntentDialog(stringLiteral: question))
-        } else {
-            // iOS 17 has no way to pass the question without a deprecated call; the floor is iOS 26.
-            try await requestConfirmation()
-        }
+        try await requestConfirmation(dialog: IntentDialog(stringLiteral: question))
     }
 }
 

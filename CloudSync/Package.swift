@@ -1,10 +1,10 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 
 import PackageDescription
 
 let package = Package(
     name: "WiltedCloudKit",
-    platforms: [.macOS(.v14), .iOS(.v17)],
+    platforms: [.macOS(.v14), .iOS(.v26)],
     products: [
         .library(name: "WiltedCloudKit", targets: ["WiltedCloudKit"]),
         .library(name: "WiltedCloudKitLibrary", targets: ["WiltedCloudKitLibrary"]),

@@ -1,3 +1,4 @@
+import Intents
 import UIKit
 
 /// Routes silent CloudKit pushes to the library model.
@@ -46,5 +47,10 @@ final class LibraryPushAppDelegate: NSObject, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any]
     ) async -> UIBackgroundFetchResult {
         await LibraryPushHandler.shared.receiveSilentPush()
+    }
+
+    /// SiriKit media requests (the CarPlay Siri assistant cell) are handled in the app, with no extension.
+    func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
+        intent is INPlayMediaIntent ? PlayMediaIntentHandler() : nil
     }
 }
