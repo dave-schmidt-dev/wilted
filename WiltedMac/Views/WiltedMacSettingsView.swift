@@ -366,12 +366,12 @@ struct WiltedMacSettingsView: View {
             )
             if let throttle = model.libraryThrottle {
                 Divider()
-                // In words, counting down; cleared by the next call that succeeds.
+                // The phone's line: the retry time while it is ahead, "Retrying now…" once it has passed
+                // (never a time that has gone by); cleared by the next call that succeeds.
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     WiltedSettingsRow(
                         "iCloud",
-                        value: "\(throttle.notice(now: context.date)) Resumes at "
-                            + throttle.retryAt.formatted(date: .omitted, time: .standard) + ".",
+                        value: throttle.noticeWithResumeTime(now: context.date, retrying: false),
                         identifier: "wilted-sync-throttle",
                         tone: .caution
                     )
