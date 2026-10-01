@@ -261,19 +261,27 @@ public struct WiltedSyncedTranscriptView: View {
     private let markers: [WiltedTranscriptMarkerLine]
     private let activeCueID: Int?
     private let identifier: String
+    private let following: Binding<Bool>?
     private let onSelect: (WiltedTranscriptCueLine) -> Void
 
+    /// - Parameter following: Whether the view keeps the active line in view.
+    ///   Pass a binding to let the reader take over: scrolling by hand on the
+    ///   Mac sets it false, the view then stops moving, and a "Back to now"
+    ///   control sets it true again. `nil` keeps the original behaviour of
+    ///   always following, which is what the phone listener wants.
     public init(
         cues: [WiltedTranscriptCueLine],
         markers: [WiltedTranscriptMarkerLine] = [],
         activeCueID: Int?,
         identifier: String,
+        following: Binding<Bool>? = nil,
         onSelect: @escaping (WiltedTranscriptCueLine) -> Void
     ) {
         self.cues = cues
         self.markers = markers
         self.activeCueID = activeCueID
         self.identifier = identifier
+        self.following = following
         self.onSelect = onSelect
     }
 
@@ -343,9 +351,38 @@ public struct WiltedSyncedTranscriptView: View {
                 .padding(.vertical, WiltedTheme.Spacing.small)
             }
             .onChange(of: activeCueID) { _, current in
-                guard let current else { return }
+                guard let current, following?.wrappedValue ?? true else { return }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     proxy.scrollTo(Row.scrollTarget(forCueID: current), anchor: .center)
+                }
+            }
+            .onChange(of: following?.wrappedValue ?? true) { _, isFollowing in
+                // Back to now: jump straight to the line being spoken.
+                guard isFollowing, let activeCueID else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(Row.scrollTarget(forCueID: activeCueID), anchor: .center)
+                }
+            }
+#if os(macOS)
+            .background {
+                if let following {
+                    WiltedUserScrollDetector { following.wrappedValue = false }
+                }
+            }
+#endif
+            .overlay(alignment: .bottom) {
+                if let following, !following.wrappedValue, activeCueID != nil {
+                    Button {
+                        following.wrappedValue = true
+                    } label: {
+                        Label("Back to now", systemImage: "arrow.down.to.line")
+                            .wiltedFont(.utility)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                    .controlSize(.small)
+                    .padding(.bottom, WiltedTheme.Spacing.small)
+                    .accessibilityIdentifier("\(identifier)-back-to-now")
                 }
             }
             .onAppear {
@@ -356,7 +393,9 @@ public struct WiltedSyncedTranscriptView: View {
                 // `LazyVStack` has not completed its first layout pass, so
                 // `scrollTo` has no geometry to resolve an off-screen target
                 // against and silently does nothing.
-                guard let activeCueID else { return }
+                // A reader who scrolled away stays where they left off when the
+                // view remounts (a tab change), rather than being pulled back.
+                guard let activeCueID, following?.wrappedValue ?? true else { return }
                 DispatchQueue.main.async {
                     proxy.scrollTo(Row.scrollTarget(forCueID: activeCueID), anchor: .center)
                 }

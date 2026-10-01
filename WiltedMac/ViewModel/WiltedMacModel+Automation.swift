@@ -27,6 +27,7 @@ extension WiltedMacModel {
             || arguments.contains("--wilted-ui-fixture-playing")
             || arguments.contains("--wilted-ui-fixture-preparing")
             || arguments.contains("--wilted-ui-fixture-podcasts")
+            || arguments.contains(larderDemoFlag)
             || arguments.contains("--wilted-ui-fixture-download-failure")
             || arguments.contains("--wilted-ui-fixture-long-transcript")
             || arguments.contains("--wilted-ui-fixture-subscription-intake-26")

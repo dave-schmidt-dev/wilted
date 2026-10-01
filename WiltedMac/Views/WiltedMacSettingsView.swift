@@ -12,7 +12,7 @@ struct WiltedMacSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings") {
+        WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings", watermark: true) {
             appearanceCard
             lifetimeStatisticsCard
             automationCard

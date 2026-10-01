@@ -22,6 +22,7 @@ extension WiltedMacMenuView {
                 .monospacedDigit()
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityHidden(true)
+            rowArtwork(episode)
             VStack(alignment: .leading, spacing: 2) {
                 Text(episode.title)
                     .wiltedFont(.body)
@@ -32,6 +33,22 @@ extension WiltedMacMenuView {
                     lifecycleLabel: showsGroupName ? group.displayName : nil,
                     identifier: "wilted-menu-metadata-\(episode.id)"
                 )
+                // Partway through: how much is heard and how much is left,
+                // worded as the CarPlay rows word it.
+                if let progress = model.episodeProgress(episode) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ProgressView(value: progress.fraction)
+                            .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+                            .frame(maxWidth: 160)
+                            .accessibilityHidden(true)
+                        Text(progress.timeLeftLabel)
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .lineLimit(1)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("wilted-menu-listened-\(episode.id)")
+                }
                 // Only while the phone holds the newest position; hidden otherwise.
                 if let phoneLine = model.phonePositionLabel(forEpisodeID: episode.id) {
                     Text(phoneLine)
@@ -120,6 +137,24 @@ extension WiltedMacMenuView {
         .accessibilityLabel("\(episode.title), number \(position) in Larder")
         .accessibilityValue("\(position) of \(count)")
         .accessibilityIdentifier("wilted-menu-row-\(episode.id)")
+    }
+
+    /// The show's artwork at row size, or the produce tile when the feed
+    /// published none or it has not arrived.
+    @ViewBuilder private func rowArtwork(_ episode: WiltedMacEpisode) -> some View {
+        if let url = episode.artworkURL {
+            AsyncImage(url: url) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                WiltedProduceTile(symbol: .cabbage, size: 40)
+            }
+            .wiltedSquare(40)
+            .clipShape(RoundedRectangle(cornerRadius: WiltedTheme.Radius.control))
+            .accessibilityHidden(true)
+        } else {
+            WiltedProduceTile(symbol: .cabbage, size: 40)
+                .accessibilityHidden(true)
+        }
     }
 
     /// The single step the row is waiting for. Its group already says which

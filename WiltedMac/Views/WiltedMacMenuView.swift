@@ -15,41 +15,75 @@ struct WiltedMacMenuView: View {
     static let trailingActionSlotsWidth: CGFloat = 58
 
     @Bindable var model: WiltedMacModel
-    @Binding var presentation: WiltedMacPlayerSection?
-    let focusRequest: WiltedMacPlayerSection?
+    /// Where the Now Playing pane sits, decided from the window's width by
+    /// the root: beside the list, or in the bar the root draws beneath it.
+    let paneMode: WiltedMacPaneMode
+    /// The section the full-window player last collapsed to, if any.
+    let collapsedSection: WiltedMacPlayerSection?
+    @State private var paneState = WiltedMacPaneState()
     @Environment(\.colorScheme) var colorScheme
     @State var dropTargetID: String?
 
     var body: some View {
-        WiltedMacDestination(title: "Larder", identifier: "wilted-mac-menu-detail") {
-            Text("Playback follows Ready episodes from top to bottom and skips rows that are not ready. Needs preparation has downloaded audio; Not downloaded needs downloading.")
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                Text("Now Playing")
-                    .wiltedFont(.title)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                WiltedMacCompactPlayer(
-                    model: model,
-                    presentation: $presentation,
-                    focusRequest: focusRequest
-                )
-            }
-
-            HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.medium) {
-                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    Text("Audio in Larder: \(model.menuAudioSummary.detailLabel)")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-menu-audio-total")
-                    Text("Waiting for you: \(model.menuWaitingEpisodes.count) episodes")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-menu-waiting-count")
+        // One list view in both compositions, at the same place in the
+        // hierarchy: only its header and the pane beside it come and go.
+        // Two separate subtrees would be torn down and rebuilt each time
+        // the window crossed the threshold, resetting the list's scroll
+        // position. The pane's own state lives on this view for the same
+        // reason -- the pane is unmounted whenever it is at the bottom.
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                WiltedMacDestination(
+                    title: "Larder",
+                    identifier: "wilted-mac-menu-detail",
+                    contentWidth: paneMode == .side ? nil : 760,
+                    inset: paneMode == .side ? WiltedTheme.Spacing.large : WiltedTheme.Spacing.section,
+                    watermark: true
+                ) {
+                    if paneMode == .bottom { bottomModeHeader }
+                    larderList
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                if paneMode == .side {
+                    Divider()
+                    WiltedMacNowPlayingPane(model: model, state: $paneState)
+                        .frame(width: WiltedMacLarderLayout.paneColumnWidth(detailWidth: geometry.size.width))
+                }
+            }
+        }
+        // A new episode starts at its own line, not wherever the last was.
+        // Observed here because this view owns the state and outlives the
+        // pane, which is unmounted whenever it is at the bottom.
+        .onChange(of: model.currentPodcastEpisodeID) { paneState.episodeChanged() }
+        .onChange(of: collapsedSection) { _, section in
+            if let section { paneState.collapsed(to: section) }
+        }
+        .searchable(text: $model.librarySearchQuery, prompt: "Search episodes")
+    }
+
+    /// How playback follows the list, when the pane is in the bar below.
+    @ViewBuilder private var bottomModeHeader: some View {
+        Text("Playback follows Ready episodes from top to bottom and skips rows that are not ready. Needs preparation has downloaded audio; Not downloaded needs downloading.")
+            .wiltedFont(.body)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Totals, grouping and sort, filters, the grouped rows and the articles:
+    /// the Larder itself, shared by both compositions.
+    @ViewBuilder private var larderList: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text("Audio in Larder: \(model.menuAudioSummary.detailLabel)")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-menu-audio-total")
+                Text("Waiting for you: \(model.menuWaitingEpisodes.count) episodes")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-menu-waiting-count")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            WiltedMacFlowLayout {
                 Menu {
                     ForEach(Array(WiltedMacMenuGrouping.allCases), id: \.id) { option in
                         Button {
@@ -96,13 +130,10 @@ struct WiltedMacMenuView: View {
                 .accessibilityLabel("Sort Larder: \(model.menuSort.displayName)")
                 .accessibilityIdentifier("wilted-menu-sort")
             }
-
-            filterBar
-            groupList
-            articlesSection
         }
-        .searchable(text: $model.librarySearchQuery,
-                    prompt: "Search titles, shows, notes, and transcripts")
-    }
 
+        filterBar
+        groupList.wiltedMarksRowsTop()
+        articlesSection
+    }
 }

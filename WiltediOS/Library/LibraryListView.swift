@@ -148,7 +148,7 @@ struct LibraryListView: View {
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .overlay { LibraryWatermark() }
         .refreshable { await model.refresh() }
-        .searchable(text: $model.searchText, prompt: "Title, show or notes")
+        .searchable(text: $model.searchText, prompt: "Search episodes")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {

@@ -415,6 +415,11 @@ final class WiltedMacModel {
     /// Seeds one episode deferred to off-peak, so the UI leg has a row whose
     /// only way forward is the override.
     var fixtureEpisodeIsDeferred = false
+    /// Ten Larder episodes, two part played, the first open in Now Playing.
+    var fixtureLarderDemo = false
+    /// Cover art for fixture rows. The store accepts only https artwork, so a
+    /// fixture that wants art without the network supplies it at load time.
+    var fixtureArtworkURL: URL?
     /// Host-only owner-feedback fixture; production keeps the injected client.
     let fixtureSubscriptionIntakeMode: Bool
     let podcastFeedClient: PodcastFeedClient
@@ -516,7 +521,9 @@ final class WiltedMacModel {
         self.mediaAvailabilityChecker = mediaAvailabilityChecker
         self.pastedLinkClassifier = pastedLinkClassifier
         fixtureDownloadFailuresRemaining = arguments.contains("--wilted-ui-fixture-download-failure") ? 1 : 0
-        fixtureEpisodeIsPrepared = arguments.contains("--wilted-ui-fixture-prepared")
+        let larderDemo = arguments.contains(Self.larderDemoFlag)
+        fixtureLarderDemo = larderDemo
+        fixtureEpisodeIsPrepared = arguments.contains("--wilted-ui-fixture-prepared") || larderDemo
         fixtureEpisodeHasLongTranscript = arguments.contains("--wilted-ui-fixture-long-transcript")
         fixtureEpisodeIsDeferred = arguments.contains("--wilted-ui-fixture-deferred")
         seamMarkerOutput = (Self.hostsTests || usesFixtureMode)
@@ -530,10 +537,12 @@ final class WiltedMacModel {
                 ? .failed(Self.startupFailure(canRetry: false))
                 : .ready
             installFixture(
-                ready: arguments.contains("--wilted-ui-fixture-ready") || arguments.contains("--wilted-ui-fixture-playing"),
+                ready: arguments.contains("--wilted-ui-fixture-ready") || arguments.contains("--wilted-ui-fixture-playing")
+                    || larderDemo,
                 preparing: arguments.contains("--wilted-ui-fixture-preparing"),
-                podcasts: arguments.contains("--wilted-ui-fixture-podcasts")
+                podcasts: arguments.contains("--wilted-ui-fixture-podcasts") || fixtureLarderDemo
             )
+            if fixtureLarderDemo, let first = episodes.first { playEpisode(first) }
             if arguments.contains("--wilted-ui-fixture-quarantined") {
                 syncLifecycle?.quarantineAccount()
             }

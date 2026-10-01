@@ -8,12 +8,11 @@ extension WiltedMacMenuView {
     /// under a search it is the matching set, so the count and the rows agree.
     var filterBar: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-            HStack(spacing: WiltedTheme.Spacing.small) {
+            WiltedMacFlowLayout {
                 filterChip(nil, label: "All waiting", count: model.menuSearchResults.count)
                 ForEach(WiltedMacMenuGroup.allCases) { group in
                     filterChip(group, label: group.displayName, count: model.menuEpisodes(in: group).count)
                 }
-                Spacer()
                 bulkAction(
                     "Download all new (\(model.menuDownloadableEpisodes.count))",
                     identifier: "wilted-menu-download-all",
@@ -84,6 +83,8 @@ extension WiltedMacMenuView {
         } label: {
             Text("\(label) \(count)")
                 .wiltedFont(.utility)
+                .lineLimit(1)
+                .fixedSize()
                 .foregroundStyle(
                     selected
                         ? WiltedTheme.color(.primaryText, scheme: colorScheme)
@@ -165,11 +166,12 @@ extension WiltedMacMenuView {
         )
         let total = model.menuWaitingEpisodes.count
         if model.menuFilteredEpisodes.isEmpty {
-            Text(model.isSearchingMenu
-                 ? (model.isSearchingTranscripts ? "Still reading transcripts…" : "No episodes match this search.")
-                 : emptyMenuCopy)
+            Label(model.isSearchingMenu
+                  ? (model.isSearchingTranscripts ? "Still reading transcripts…" : "No episodes match this search.")
+                  : emptyMenuCopy, symbol: .larder)
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("wilted-menu-empty")
         } else {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {

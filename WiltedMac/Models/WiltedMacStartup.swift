@@ -31,7 +31,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     var symbolName: String {
         switch self {
         case .feeds: WiltedSymbol.broccoli.rawValue
-        case .menu: "list.number"
+        case .menu: WiltedSymbol.larder.rawValue
         case .settings: "gearshape"
         }
     }

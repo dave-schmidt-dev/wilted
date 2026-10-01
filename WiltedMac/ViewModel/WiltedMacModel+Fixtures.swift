@@ -172,10 +172,11 @@ extension WiltedMacModel {
                 notes: Self.fixtureEpisodeNotes,
                 createdAt: Timestamp(Date(timeIntervalSince1970: 1_699_827_200))
               ) else { return }
-        episodes = [WiltedMacEpisode(
+        if fixtureLarderDemo { fixtureArtworkURL = larderDemoArtworkURL() }
+        let firstEpisode = WiltedMacEpisode(
             id: episodeID.rawValue, title: episode.title, feedTitle: feed.title,
             summary: Self.episodeSummary(notes: Self.fixtureEpisodeNotes, fallback: "Field Notes desk"),
-            notes: Self.fixtureEpisodeNotes, artworkURL: nil, releasedAt: episode.createdAt.date,
+            notes: Self.fixtureEpisodeNotes, artworkURL: fixtureArtworkURL, releasedAt: episode.createdAt.date,
             durationSeconds: episode.durationSeconds, playbackSeconds: 0,
             downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed,
             preparationState: fixtureEpisodeIsPrepared
@@ -183,7 +184,8 @@ extension WiltedMacModel {
                     ? "Ready · 8 ads removed (1:52) · transcript synced"
                     : Self.fixturePreparedSummary)
                 : (fixtureEpisodeIsDeferred ? .preparing(stage: Self.preparationQueuedStage) : .notPrepared)
-        )]
+        )
+        episodes = [firstEpisode]
         if fixtureEpisodeIsDeferred {
             // The same shape `admitAutomaticPreparation` writes when the
             // off-peak window is shut, minus the download that produced it.
@@ -299,6 +301,9 @@ extension WiltedMacModel {
                         id: requestID + "|terminal", itemID: episodeID, requestID: requestID, status: status
                     ))
                 }
+            }
+            if fixtureLarderDemo {
+                await installLarderDemoEpisodes(in: store, feed: feed, queueingFirst: episodeID)
             }
         }
     }

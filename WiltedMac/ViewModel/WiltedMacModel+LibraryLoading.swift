@@ -294,7 +294,7 @@ extension WiltedMacModel {
             episodeValues.append(WiltedMacEpisode(
                 id: episode.itemID.rawValue, title: episode.title, feedTitle: feedTitle,
                 summary: Self.episodeSummary(notes: episode.notes, fallback: episode.author ?? feedTitle),
-                notes: episode.notes, artworkURL: episode.artworkURL ?? feeds[episode.feedID]?.artworkURL,
+                notes: episode.notes, artworkURL: episode.artworkURL ?? feeds[episode.feedID]?.artworkURL ?? fixtureArtworkURL,
                 releasedAt: (episode.publishedTime ?? episode.createdAt).date,
                 publishedAt: episode.publishedTime?.date,
                 sourceDurationSeconds: episode.durationSeconds,

@@ -284,7 +284,7 @@ extension WiltedMacModelTests {
         // List rather than inside it, where a growing destination list would
         // scroll them out of sight.
         let listEnd = try XCTUnwrap(view.range(of: ".scrollContentBackground(.hidden)"))
-        let totals = try XCTUnwrap(view.range(of: "sidebarTotals\n"))
+        let totals = try XCTUnwrap(view.range(of: "if mode == .full { totals }"))
         XCTAssertTrue(totals.lowerBound > listEnd.upperBound,
                       "the totals must be pinned below the navigation List, not scroll with it")
         XCTAssertTrue(view.contains("wilted-sidebar-totals"))

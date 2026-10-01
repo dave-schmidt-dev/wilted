@@ -122,7 +122,7 @@ extension WiltedVisualSystemTests {
         for symbol in WiltedSymbol.allCases {
             XCTAssertNotNil(NSImage(named: symbol.rawValue), symbol.rawValue)
         }
-        XCTAssertEqual(WiltedMacNavigation.menu.symbolName, "list.number")
+        XCTAssertEqual(WiltedMacNavigation.menu.symbolName, WiltedSymbol.larder.rawValue)
         XCTAssertEqual(WiltedMacNavigation.feeds.symbolName, WiltedSymbol.broccoli.rawValue)
         XCTAssertEqual(WiltedPreviewState.preparing(.synthesizing).symbolName, WiltedSymbol.processor.rawValue)
         XCTAssertEqual(WiltedPreviewState.emptyLibrary.symbolName, WiltedSymbol.larder.rawValue)
@@ -295,26 +295,21 @@ extension WiltedVisualSystemTests {
         XCTAssertTrue(source.contains("WiltedMacPlayerContent("))
         XCTAssertFalse(playerSource.contains("maxHeight: 170"))
         XCTAssertTrue(playerSource.contains("maxHeight: .infinity"))
-        // Menu owns its compact player inside the destination, so it stays
-        // live while the full-window presentation is set; every other
-        // destination is still made unavailable behind the overlay, which is
-        // what keeps duplicate live controls out of the accessibility tree.
-        XCTAssertTrue(source.contains(
-            ".allowsHitTesting(playerPresentation == nil || model.selectedNavigation == .menu)"))
-        XCTAssertTrue(source.contains(
-            ".accessibilityHidden(playerPresentation != nil && model.selectedNavigation != .menu)"))
-        XCTAssertTrue(source.contains(
-            ".disabled(playerPresentation != nil && model.selectedNavigation != .menu)"))
+        // Every destination, the Larder included, is made unavailable behind
+        // the full-window overlay, which is what keeps duplicate live controls
+        // out of the accessibility tree.
+        XCTAssertTrue(source.contains(".allowsHitTesting(playerPresentation == nil)"))
+        XCTAssertTrue(source.contains(".accessibilityHidden(playerPresentation != nil)"))
+        XCTAssertTrue(source.contains(".disabled(playerPresentation != nil)"))
         // The sidebar no longer clears the presentation itself: every
         // navigation change is retired by the detail's onChange, while
         // collapsing keeps its own clear.
-        XCTAssertTrue(source.contains("playerFocusRequest = nil\n                            model.selectedNavigation = destination"))
+        XCTAssertTrue(source.contains("playerFocusRequest = nil\n                model.selectedNavigation = $0"))
         XCTAssertTrue(source.contains(".onChange(of: model.selectedNavigation) {"))
-        XCTAssertTrue(source.contains("playerPresentation = nil\n                            playerFocusRequest = section"))
+        XCTAssertTrue(source.contains("playerPresentation = nil\n                        playerFocusRequest = section"))
         XCTAssertTrue(source.contains("case .menu:"))
         XCTAssertTrue(source.contains("WiltedMacMenuView("))
         XCTAssertTrue(source.contains("presentation: $playerPresentation"))
-        XCTAssertTrue(source.contains("presentation: $presentation"))
         XCTAssertTrue(source.contains("wilted-mac-menu-detail"))
         XCTAssertTrue(source.contains(".draggable(episode.id)"))
         XCTAssertTrue(source.contains(".dropDestination(for: String.self)"))

@@ -57,7 +57,7 @@ mkdir -p "$root/WiltedKit" "$root/Producer" "$root/CloudSync" "$root/Listener"
 cp "$repo_root/project.yml" "$root/project.yml"
 cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests" \
   "$repo_root/WiltedMacUITests" "$repo_root/WiltediOS" "$repo_root/WiltediOSTests" \
-  "$repo_root/WiltediOSUITests" "$root/"
+  "$repo_root/WiltediOSIntents" "$repo_root/WiltediOSUITests" "$root/"
 for package in WiltedKit Producer CloudSync Listener; do
   cp "$repo_root/$package/Package.swift" "$root/$package/Package.swift"
   cp -R "$repo_root/$package/Sources" "$repo_root/$package/Tests" "$root/$package/"
