@@ -408,6 +408,7 @@ assert_snapshot_contract() {
   assert_contains 'foreign-peer-preserved=1' "$repo_root/scripts/lib/mac-test-parent.sh"
   assert_contains 'trap cleanup EXIT' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS' "$gate"
+  assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS:-600' "$gate"
   assert_contains 'WILTED_NATIVE_LEG_TIMEOUT_SECONDS' "$gate"
   assert_contains 'scripts/run-bounded.py' "$gate"
   assert_contains 'WILTED_TEST_TIMEOUT_SECONDS="$timeout_seconds"' "$gate"

@@ -25,7 +25,10 @@ forced_missing_ios_mvp_journey="${NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY:-0}"
 forced_screen_locked="${NATIVE_FORCE_SCREEN_LOCKED:-0}"
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 wilted_mac_ui="${WILTED_MAC_UI:-0}"
-xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-300}"
+# Covers the whole Xcode build-and-test invocation, including the cold build: the integration root is a new
+# path every run, so the local packages and app recompile from scratch, which took over 300 s
+# on a loaded machine (the iOS leg was killed while still linking, not hung).
+xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-600}"
 native_leg_timeout_seconds="${WILTED_NATIVE_LEG_TIMEOUT_SECONDS:-1800}"
 # The iOS pixel baselines were recorded on iPhone 17 Pro. Selecting it by name
 # keeps the UI leg from silently using a different first-listed iPhone model.
