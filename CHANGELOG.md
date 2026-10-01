@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- An episode no longer starts over after the phone sat locked in the car: its position is now saved on the phone the moment playback pauses (and on backgrounding, and every 10 s while playing), instead of after a network call that a parked car could leave hanging until the app was suspended. A saved position also outranks the older copy the server still held when the app next syncs.
 - The Mac window's toolbar no longer shows a grey band when the pointer is over it: the toolbar background and the top scroll-edge effect are hidden, so the window keeps its transparent look. Not yet confirmed on a real hover; to be checked on the next install.
 - An episode that plays to its end on the iPhone is now marked completed on the Mac (W-INV-011) and leaves the Larder, as when it finishes on the Mac. The phone saved only a final position, which can sit a few seconds short of the feed's length, so the Mac kept showing "10 seconds left"; it now also sends one silent Mark completed request. The request is retried while the app runs; one still unsent when the app quits is not (the saved position remains).
 - The Mac's iCloud sync banner shows the rate-limit message with its resume time from the same state as the phone and never a "Resumes at" time that has already passed.

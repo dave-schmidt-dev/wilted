@@ -111,6 +111,11 @@ final class LibraryHandoffState {
     }
     /// Server clock minus this phone's clock, learned from this device's own record.
     var clockOffset: TimeInterval = 0
+    /// The playing position last written to the phone's own store, so the next write waits for
+    /// `LibraryAppModel.localSaveInterval` of listening; and which write is the newest.
+    /// nil after the loaded item changes: the first position of an episode is the baseline, not a save.
+    var lastLocalSave: Double?
+    var localSaveToken: UInt64 = 0
     var refusedRevisions: [ItemID: RevisionID] = [:]
     var continueInFlight = false
     /// Completed observations; lets tests wait for a cycle.
@@ -126,6 +131,8 @@ final class LibraryThrottleRelay {
 extension LibraryAppModel {
     /// A position change larger than this from what elapsed time predicts counts as a seek.
     static let seekThreshold: Double = 2
+    /// Seconds of listening between writes of the playing position to the phone's own store.
+    static let localSaveInterval: Double = 10
 
     // MARK: - Player wiring
 
@@ -140,19 +147,33 @@ extension LibraryAppModel {
         handoffState.subscriptions.removeAll()
         handoffState.player = player
         // `@Published` emits on the thread that mutates it, which is always the main actor here.
-        player.$status.removeDuplicates().sink { [weak self] _ in
+        player.$status.removeDuplicates().sink { [weak self] status in
             // The status is already visible on the player when its own subscribers run on the next turn.
             MainActor.assumeIsolated {
+                // Before anything queues behind the network: a pause is when the car drops the phone.
+                if status == .paused { self?.saveLoadedPositionLocally() }
                 self?.enqueueHandoffSync()
                 Task { @MainActor [weak self] in self?.refreshProgress() }
             }
         }.store(in: &handoffState.subscriptions)
-        player.$position.sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.enqueueHandoffSync() }
+        player.$position.sink { [weak self] position in
+            MainActor.assumeIsolated {
+                if let state = self?.handoffState {
+                    if let last = state.lastLocalSave {
+                        if player.status == .playing, abs(position - last) >= Self.localSaveInterval {
+                            self?.saveLoadedPositionLocally(position)
+                        }
+                    } else {
+                        state.lastLocalSave = position
+                    }
+                }
+                self?.enqueueHandoffSync()
+            }
         }.store(in: &handoffState.subscriptions)
         player.$item.sink { [weak self] item in
             // `@Published` emits before the value changes, so hand the new item over rather than re-reading it.
             MainActor.assumeIsolated {
+                self?.handoffState.lastLocalSave = nil
                 self?.refreshProgress(playingEntry: item?.entryID)
                 self?.enqueueHandoffSync()
             }
@@ -205,6 +226,7 @@ extension LibraryAppModel {
     /// The app moved to the background: publish the current position now, since the next
     /// cadence tick may be a long way off.
     func sceneEnteredBackground() async {
+        saveLoadedPositionLocally()
         await sceneBecameBackground()
         await republishUnpublishedPositions()
         guard handoffState.reportedPlaying, let player = handoffState.player else { return }
@@ -296,13 +318,34 @@ extension LibraryAppModel {
         }
     }
 
+    /// Writes the loaded episode's position to the phone's own store now, outside the handoff event
+    /// chain. The chain waits on the network (a pause publish, or an earlier call that is still
+    /// hanging in a car park), and a locked, backgrounded phone is suspended before it gets there:
+    /// the next launch then resumed from the last record the server held, usually the start. The
+    /// position is also marked unpublished, so a fetch cannot replace it with an older server copy
+    /// and the next sync publishes it.
+    func saveLoadedPositionLocally(_ position: Double? = nil) {
+        guard let player = handoffState.player, let entryID = player.item?.entryID else { return }
+        let position = position ?? player.position
+        handoffState.localSaveToken &+= 1
+        let token = handoffState.localSaveToken
+        handoffState.lastLocalSave = position
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.rememberOwnPosition(entryID, position: position, unless: { self.handoffState.localSaveToken != token })
+            guard self.handoffState.localSaveToken == token, self.handoffState.ownPositions[entryID] != nil else { return }
+            self.handoffState.unpublished[entryID] = (position, self.now())
+        }
+    }
+
     /// Keeps this phone's own last position current between device-record fetches, so returning to
-    /// an episode after playing another one resumes here rather than at an older record.
-    func rememberOwnPosition(_ entryID: ItemID, position: Double) async {
+    /// an episode after playing another one resumes here rather than at an older record. `stale`
+    /// is asked again after the lookups, so a write that a newer one overtook is dropped.
+    func rememberOwnPosition(_ entryID: ItemID, position: Double, unless stale: () -> Bool = { false }) async {
         // The highest epoch this phone knows for the entry, so its own position outranks an older
         // Mac record when the phone resumes offline.
         let epoch = max(await coordinator.epoch ?? 0, checkpoints[entryID]?.record.epoch ?? 0)
-        guard let revision = await mediaCache.cachedEntries()[entryID]?.revisionID,
+        guard let revision = await mediaCache.cachedEntries()[entryID]?.revisionID, !stale(),
               let record = try? DevicePlaybackPosition(
                   deviceID: deviceID, entryID: entryID, revision: revision, positionSeconds: max(0, position),
                   isPlaying: false, epoch: epoch, publishedAt: now()) else { return }
