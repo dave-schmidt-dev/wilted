@@ -100,6 +100,9 @@ final class LibraryPlayer: ObservableObject {
     /// with its value when the item finished, so a command given after the end cancels what follows it.
     private var transportCount = 0
     private var endedAtTransportCount = -1
+    /// Set by the sleep timer's "end of episode": the next natural end reports auto-play off, once, so the
+    /// next episode does not start. Cleared when used, when the timer is cancelled and when playback stops.
+    private(set) var stopsAfterCurrentItem = false
     /// True while the item that just played out is still loaded and nothing has been commanded since.
     var isUntouchedSinceEnd: Bool { status == .ended && transportCount == endedAtTransportCount }
     /// Artwork bytes for the loaded item, read once from the local cache when it starts.
@@ -172,6 +175,8 @@ final class LibraryPlayer: ObservableObject {
         transportCount &+= 1
         stopTicking()
         resumeAfterInterruption = false
+        // "End of this episode" belongs to the episode it was set on, not to whatever plays next.
+        if self.item?.entryID != item.entryID { stopsAfterCurrentItem = false }
         loadGeneration &+= 1
         do {
             try engine.load(url: item.fileURL, completionGeneration: loadGeneration)
@@ -267,6 +272,8 @@ final class LibraryPlayer: ObservableObject {
         rates.first { $0 > current + 0.001 } ?? rates[0]
     }
 
+    func setStopsAfterCurrentItem(_ on: Bool) { stopsAfterCurrentItem = on }
+
     func setRate(_ newRate: Double) {
         guard supportsRate else { return }
         rate = Self.clampRate(newRate)
@@ -277,6 +284,7 @@ final class LibraryPlayer: ObservableObject {
     /// Stops and forgets the item; the audio session and system controls are released.
     func stop() {
         transportCount &+= 1
+        stopsAfterCurrentItem = false
         guard item != nil || status != .idle else { return }
         accrueListening()
         engine.pause()
@@ -359,7 +367,9 @@ final class LibraryPlayer: ObservableObject {
         status = .ended
         publishNowPlaying()
         endedAtTransportCount = transportCount
-        if let entryID = item?.entryID { onFinished?(entryID, autoPlayNext) }
+        let holdAtEnd = stopsAfterCurrentItem
+        stopsAfterCurrentItem = false
+        if let entryID = item?.entryID { onFinished?(entryID, autoPlayNext && !holdAtEnd) }
     }
 
     @discardableResult

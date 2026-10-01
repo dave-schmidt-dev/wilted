@@ -143,6 +143,15 @@ public enum VoiceCommandPlanner {
             let listString = titles.joined(separator: ", ")
             let countString = count == 1 ? "1 episode" : "\(count) episodes"
             return VoicePlan(action: .none, dialog: "\(countString) on your phone: \(listString).")
+
+        case .timeLeft:
+            return planTimeLeft(snapshot: snapshot)
+
+        case .setSpeed(let rate):
+            return planSetSpeed(rate, snapshot: snapshot)
+
+        case .sleepTimer(let request):
+            return planSleepTimer(request, snapshot: snapshot)
         }
     }
 

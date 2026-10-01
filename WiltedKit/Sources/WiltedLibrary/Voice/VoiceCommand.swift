@@ -24,6 +24,20 @@ public enum VoiceCommand: Sendable, Equatable {
     case whatsPlaying
     /// Count and first few titles of the episodes downloaded on the phone, in Larder order.
     case listDownloaded
+    /// "How much is left": the loaded episode's remaining time at the current speed.
+    case timeLeft
+    /// Set the playback speed, now and for the next episodes (it is the app's speed setting).
+    case setSpeed(Double)
+    /// Pause after a while, or switch the timer off.
+    case sleepTimer(VoiceSleepTimer)
+}
+
+/// What a spoken sleep timer asks for.
+public enum VoiceSleepTimer: Sendable, Equatable {
+    case minutes(Int)
+    /// Stop when the loaded episode ends, and do not start the next one.
+    case endOfEpisode
+    case off
 }
 
 /// A downloaded episode, as the voice layer sees it. Only episodes whose audio is on the phone
@@ -49,11 +63,22 @@ public struct VoiceNowPlaying: Sendable, Equatable {
     public let isPlaying: Bool
     /// Whether the Larder offers Mark completed for this episode right now.
     public let canMarkCompleted: Bool
+    /// Seconds into the file and its length; a zero duration means unknown.
+    public let position: TimeInterval
+    public let duration: TimeInterval
+    /// The playback speed, 1 for normal.
+    public let rate: Double
 
-    public init(episode: VoiceEpisode, isPlaying: Bool, canMarkCompleted: Bool) {
+    public init(
+        episode: VoiceEpisode, isPlaying: Bool, canMarkCompleted: Bool,
+        position: TimeInterval = 0, duration: TimeInterval = 0, rate: Double = 1
+    ) {
         self.episode = episode
         self.isPlaying = isPlaying
         self.canMarkCompleted = canMarkCompleted
+        self.position = position
+        self.duration = duration
+        self.rate = rate
     }
 }
 
@@ -85,6 +110,10 @@ public enum VoiceAction: Sendable, Equatable {
     case skipBack
     case restart
     case markCompleted(ItemID)
+    case setSpeed(Double)
+    case startSleepTimer(minutes: Int)
+    case stopAfterEpisode
+    case cancelSleepTimer
 }
 
 /// The planner's answer: an action plus the short line Siri speaks.

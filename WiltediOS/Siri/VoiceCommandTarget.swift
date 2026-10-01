@@ -26,7 +26,7 @@ enum VoiceRuntime {
     static var provider: @MainActor () async -> (any VoiceCommandTarget)? = {
         let runtime = LibraryRuntime.shared
         await runtime.prepare()
-        return LibraryVoiceTarget(model: runtime.model, player: runtime.player)
+        return LibraryVoiceTarget(model: runtime.model, player: runtime.player, settings: runtime.settings)
     }
 
     static func target() async -> (any VoiceCommandTarget)? { await provider() }

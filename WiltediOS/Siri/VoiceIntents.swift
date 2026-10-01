@@ -90,7 +90,7 @@ struct EpisodeEntityQuery: EntityStringQuery {
 
 /// Runs `command` through the shared runner and speaks the planner's short line.
 @MainActor
-private func speak(_ command: VoiceCommand) async throws -> some IntentResult & ProvidesDialog {
+func speak(_ command: VoiceCommand) async throws -> some IntentResult & ProvidesDialog {
     let line = try await VoiceCommandRunner.run(command, on: await VoiceRuntime.target()) { _ in }
     return .result(dialog: IntentDialog(stringLiteral: line))
 }
@@ -180,10 +180,11 @@ struct ListDownloadedIntent: AppIntent {
 }
 
 /// The phrases Siri recognizes with no setup. Every phrase names the app, as App Shortcuts require,
-/// and an app may declare at most 10. Pause, resume and the two skips have no phrase: Siri's own
-/// "pause", "resume" and "skip" reach `LibraryPlayer`'s remote commands while Wilted is the Now
-/// Playing app (and the car's skip buttons use them), and the four intents stay available in the
-/// Shortcuts app.
+/// and an app may declare at most 10; these are exactly 10. Pause, resume and the two skips have no
+/// phrase: Siri's own "pause", "resume" and "skip" reach `LibraryPlayer`'s remote commands while
+/// Wilted is the Now Playing app (and the car's skip buttons use them), and the four intents stay
+/// available in the Shortcuts app. No phrase starts with pause, resume, continue or stop, so none can
+/// collide with those system commands, and none stands in for "resume" (Play next would skip ahead).
 struct WiltedShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -191,29 +192,78 @@ struct WiltedShortcuts: AppShortcutsProvider {
             phrases: [
                 "Play the next episode of \(\.$show) in \(.applicationName)",
                 "Play the next \(.applicationName) episode",
+                "Play my next podcast in \(.applicationName)",
+                "Play the next podcast of \(\.$show) in \(.applicationName)",
             ],
             shortTitle: "Play next", systemImageName: "play.circle")
         AppShortcut(
-            intent: PlayEpisodeIntent(), phrases: ["Play \(\.$episode) in \(.applicationName)"],
+            intent: PlayEpisodeIntent(),
+            phrases: [
+                "Play \(\.$episode) in \(.applicationName)",
+                "Put on \(\.$episode) in \(.applicationName)",
+            ],
             shortTitle: "Play episode", systemImageName: "play.square")
         AppShortcut(
             intent: PlayLatestIntent(),
             phrases: [
                 "Play the latest episode of \(\.$show) in \(.applicationName)",
                 "Play the latest \(.applicationName) episode",
+                "Play the newest episode of \(\.$show) in \(.applicationName)",
+                "Play the newest \(.applicationName) episode",
             ],
             shortTitle: "Play latest", systemImageName: "clock.arrow.circlepath")
         AppShortcut(
-            intent: RestartEpisodeIntent(), phrases: ["Restart this episode in \(.applicationName)"],
+            intent: RestartEpisodeIntent(),
+            phrases: [
+                "Restart this episode in \(.applicationName)",
+                "Start this episode over in \(.applicationName)",
+            ],
             shortTitle: "Restart", systemImageName: "arrow.counterclockwise")
         AppShortcut(
-            intent: MarkCompletedIntent(), phrases: ["Mark this episode completed in \(.applicationName)"],
+            intent: MarkCompletedIntent(),
+            phrases: [
+                "Mark this episode completed in \(.applicationName)",
+                "Mark this episode as done in \(.applicationName)",
+            ],
             shortTitle: "Mark completed", systemImageName: "checkmark.circle")
         AppShortcut(
-            intent: WhatsPlayingIntent(), phrases: ["What's playing in \(.applicationName)"],
+            intent: WhatsPlayingIntent(),
+            phrases: [
+                "What's playing in \(.applicationName)",
+                "What am I listening to in \(.applicationName)",
+            ],
             shortTitle: "What's playing", systemImageName: "waveform")
         AppShortcut(
-            intent: ListDownloadedIntent(), phrases: ["What's downloaded in \(.applicationName)"],
+            intent: ListDownloadedIntent(),
+            phrases: [
+                "What's downloaded in \(.applicationName)",
+                "What episodes do I have in \(.applicationName)",
+            ],
             shortTitle: "Downloaded", systemImageName: "arrow.down.circle")
+        AppShortcut(
+            intent: TimeLeftIntent(),
+            phrases: [
+                "How much is left in \(.applicationName)",
+                "How much time is left in \(.applicationName)",
+                "How long is left in \(.applicationName)",
+            ],
+            shortTitle: "Time left", systemImageName: "hourglass")
+        AppShortcut(
+            intent: SetSpeedIntent(),
+            phrases: [
+                "Set speed to \(\.$speed) in \(.applicationName)",
+                "Set the speed to \(\.$speed) in \(.applicationName)",
+            ],
+            shortTitle: "Set speed", systemImageName: "speedometer")
+        AppShortcut(
+            intent: SleepTimerIntent(),
+            phrases: [
+                "Put \(.applicationName) to sleep \(\.$option)",
+                "\(.applicationName) sleep \(\.$option)",
+                "Turn \(.applicationName) off \(\.$option)",
+                "Cancel the \(.applicationName) sleep",
+                "Turn off sleep in \(.applicationName)",
+            ],
+            shortTitle: "Sleep", systemImageName: "moon.zzz")
     }
 }

@@ -8,10 +8,15 @@ import WiltedLibrary
 final class LibraryVoiceTarget: VoiceCommandTarget {
     private let model: LibraryAppModel
     private let player: LibraryPlayer
+    /// Where a spoken speed is kept, so it is the app's own speed setting; nil keeps it for the loaded episode only.
+    private let settings: LibrarySettingsStore?
+    private let sleepTimer: SleepTimer
 
-    init(model: LibraryAppModel, player: LibraryPlayer) {
+    init(model: LibraryAppModel, player: LibraryPlayer, settings: LibrarySettingsStore? = nil, sleepTimer: SleepTimer = .shared) {
         self.model = model
         self.player = player
+        self.settings = settings
+        self.sleepTimer = sleepTimer
     }
 
     func voiceSnapshot() async -> VoiceSnapshot {
@@ -32,7 +37,7 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
             guard let row = model.queued.first(where: { $0.id == entryID }) else { return .failed }
             // Never toggles: a spoken "play" resumes a loaded episode, also when something else loaded it
             // while the cache was being read.
-            await model.playCachedWithoutToggling(row)
+            await IntentDonor.shared.withoutDonatingPlay(of: entryID) { await model.playCachedWithoutToggling(row) }
             return Self.outcome(player.item?.entryID == entryID && player.isPlaying)
         case .pause:
             player.pause()
@@ -49,6 +54,24 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
             return Self.outcome(player.isPlaying || player.play())
         case let .markCompleted(entryID):
             return await markCompleted(entryID)
+        case let .setSpeed(rate):
+            guard player.supportsRate else { return .failed }
+            // The setting makes it stick for the next episodes; the player change is for the loaded one now.
+            settings?.defaultSpeed = rate
+            player.setRate(rate)
+            return .done
+        case let .startSleepTimer(minutes):
+            player.setStopsAfterCurrentItem(false)
+            sleepTimer.start(minutes: minutes) { [player] in player.pause() }
+            return .done
+        case .stopAfterEpisode:
+            sleepTimer.cancel()
+            player.setStopsAfterCurrentItem(true)
+            return .done
+        case .cancelSleepTimer:
+            sleepTimer.cancel()
+            player.setStopsAfterCurrentItem(false)
+            return .done
         }
     }
 
@@ -56,7 +79,9 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
     /// shows the same optimistic result), an unsent one is queued for retry, and a row that started no
     /// decision, or whose pending decision is some other action, is a failure.
     private func markCompleted(_ entryID: ItemID) async -> VoiceOutcome {
-        if model.pendingDecision(for: entryID) == nil { await model.decide(.markDone, entryID: entryID) }
+        if model.pendingDecision(for: entryID) == nil {
+            await IntentDonor.shared.withoutDonatingMark(of: entryID) { await model.decide(.markDone, entryID: entryID) }
+        }
         guard let pending = model.pendingDecision(for: entryID), pending.intent.action == .markDone(entryID: entryID) else {
             return .failed
         }
@@ -89,7 +114,9 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
         let episode = VoiceEpisode(id: item.entryID, title: item.title, showTitle: item.showTitle)
         let canMark = model.queued.first { $0.id == item.entryID }
             .map { model.decisionActions(for: $0).contains(.markDone) } ?? false
-        return VoiceNowPlaying(episode: episode, isPlaying: player.isPlaying, canMarkCompleted: canMark)
+        return VoiceNowPlaying(
+            episode: episode, isPlaying: player.isPlaying, canMarkCompleted: canMark,
+            position: player.position, duration: player.duration, rate: player.rate)
     }
 
     private static func episode(_ row: LibraryRow) -> VoiceEpisode {

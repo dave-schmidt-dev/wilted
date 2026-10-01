@@ -54,6 +54,8 @@ final class LibraryRuntime {
         LibraryPushHandler.shared.attach { await model.handleSilentPush() }
         player.apply(settings.playback)
         ShortcutParameterRefresher.observe(model).store(in: &subscriptions)
+        subscriptions.insert(SpotlightIndexer.observe(model))
+        IntentDonor.shared.observe(model, player).forEach { subscriptions.insert($0) }
         settings.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
