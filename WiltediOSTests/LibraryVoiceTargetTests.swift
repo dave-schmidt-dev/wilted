@@ -147,7 +147,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
         XCTAssertEqual(snapshot.downloaded.map(\.showTitle), ["The Show", "The Show"])
     }
 
-    func testDownloadedEpisodesCarryTheirPublishedDateForPlayLatest() async throws {
+    func testDownloadedEpisodesCarryTheirPublishedDateAndPlayFirstFollowsPlayOrder() async throws {
         try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
             EpisodeSpec(raw: "a", title: "Old", show: "show", sortKey: 0, published: 1_600_000_000),
             EpisodeSpec(raw: "b", title: "New", show: "show", sortKey: 1, published: 1_700_000_000),
@@ -157,7 +157,9 @@ final class LibraryVoiceTargetTests: XCTestCase {
         let snapshot = await rig.target.voiceSnapshot()
         XCTAssertEqual(snapshot.downloaded.map(\.publishedAt.timeIntervalSince1970), [1_600_000_000, 1_700_000_000])
         let plan = VoiceCommandPlanner.plan(.playLatest(show: nil), snapshot: snapshot)
-        XCTAssertEqual(plan.action, .play(id("b")), "newest published wins over Larder order")
+        XCTAssertEqual(plan.action, .play(id("b")), "playLatest (the car's \"newest\") is still the newest published")
+        let first = VoiceCommandPlanner.plan(.playFirst(show: nil), snapshot: snapshot)
+        XCTAssertEqual(first.action, .play(id("a")), "playFirst takes the head of the play order: the oldest not-started episode")
     }
 
     /// Siri uses the shared play order: ties on the published date keep the Mac's queue order.

@@ -17,7 +17,7 @@ struct LibraryPlaybackPreferences: Equatable, Sendable {
 final class LibrarySettingsStore: ObservableObject {
     /// Speeds the setting offers; the player applies what its engine can do (`LibraryPlayer.rates`).
     nonisolated static let speedRange: ClosedRange<Double> = 0.75...2.0
-    nonisolated static let speedStep = 0.05
+    nonisolated static let speedStep = 0.25
     nonisolated static let defaultSpeed = 1.25
     /// Whole-second lengths that have a matching `gobackward.N` / `goforward.N` SF Symbol.
     nonisolated static let skipOptions = [5, 10, 15, 30, 45, 60, 75, 90]
@@ -79,7 +79,7 @@ final class LibrarySettingsStore: ObservableObject {
             autoPlayNext: autoPlayNext)
     }
 
-    /// Nearest 0.05 step inside `speedRange`; a non-finite value falls back to the default.
+    /// Nearest 0.25 step inside `speedRange`; a non-finite value falls back to the default.
     nonisolated static func clampSpeed(_ value: Double) -> Double {
         guard value.isFinite else { return defaultSpeed }
         let stepped = (value / speedStep).rounded() * speedStep

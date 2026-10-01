@@ -35,11 +35,16 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertEqual(store.textScale, .standard)
     }
 
-    func testSpeedClampsToTheRangeInFiveHundredthsSteps() {
+    func testSpeedClampsToTheRangeInQuarterSteps() {
         XCTAssertEqual(LibrarySettingsStore.clampSpeed(0.1), 0.75)
         XCTAssertEqual(LibrarySettingsStore.clampSpeed(9), 2.0)
         XCTAssertEqual(LibrarySettingsStore.clampSpeed(1.27), 1.25)
-        XCTAssertEqual(LibrarySettingsStore.clampSpeed(1.33), 1.35)
+        XCTAssertEqual(LibrarySettingsStore.clampSpeed(1.4), 1.5)
+        XCTAssertEqual(LibrarySettingsStore.clampSpeed(1.35), 1.25)
+        XCTAssertEqual(LibrarySettingsStore.clampSpeed(1.05), 1.0, "an old 0.05-step value rounds to the nearest quarter")
+        XCTAssertEqual(LibrarySettingsStore.speedStep, 0.25)
+        XCTAssertEqual(LibrarySettingsStore.speedRange.lowerBound, LibraryPlayer.rates.first)
+        XCTAssertEqual(LibrarySettingsStore.speedRange.upperBound, LibraryPlayer.rates.last)
         XCTAssertEqual(LibrarySettingsStore.clampSpeed(.nan), 1.25)
         XCTAssertEqual(LibrarySettingsStore.clampSpeed(.infinity), 1.25)
     }

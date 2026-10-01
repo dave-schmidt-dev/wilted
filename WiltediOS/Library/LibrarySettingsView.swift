@@ -141,6 +141,7 @@ struct LibrarySettingsView: View {
         return WiltedSettingsCard(title: WiltedScreenCopy.sync) {
             iconRow("arrow.triangle.2.circlepath", "Status") {
                 Spacer(minLength: 0)
+                if sync.tone == .active { ProgressView().accessibilityIdentifier("wilted-library-settings-sync-progress") }
                 Text(LibrarySettingsFormat.syncLine(sync, lastRefresh: model.lastSynchronizedAt))
                     .wiltedFont(.utility)
                     .foregroundStyle(sync.tone.color(colorScheme))
@@ -215,16 +216,18 @@ struct LibrarySettingsView: View {
                 Button { selection.wrappedValue = option } label: {
                     Text(option.label).wiltedFont(.utility)
                         .lineLimit(1).minimumScaleFactor(0.7)
-                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                         .foregroundStyle(isSelected
                             ? WiltedTheme.color(.page, scheme: colorScheme)
                             : WiltedTheme.color(.primaryText, scheme: colorScheme))
                         .background(
                             RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
                                 .fill(isSelected ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme) : .clear))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityIdentifier("\(identifier)-\(option.id)")
             }
         }
         .padding(2)
@@ -292,6 +295,7 @@ private struct SettingsInfoButton: View {
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isShown) {

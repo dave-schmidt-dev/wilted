@@ -29,7 +29,7 @@ while the intents run in the app process (`openAppWhenRun = false`).
 | | show matched, playing episode is of that show | play the next downloaded episode of that show after it, in Larder order | "Playing <title>." |
 | | ... and it is the last one | none | "That was the last <Show> episode on your phone." |
 | | show matched, playing episode is another show (or nothing) | play the first downloaded episode of that show | "Playing <title>." |
-| (all lists) | order | The shared play order (also the phone list's order): downloaded episodes someone is partway through (here, on the Mac or elsewhere) first, newest play first; then not-started ones, oldest published first (ties keep the Larder order); then completed ones last. "Next", "what's downloaded" and the disambiguation lists follow it; "latest" is still the newest published | |
+| (all lists) | order | The shared play order (also the phone list's order): downloaded episodes someone is partway through (here, on the Mac or elsewhere) first, newest play first; then not-started ones, oldest published first (ties keep the Larder order); then completed ones last. "Next", "what's downloaded" and the disambiguation lists follow it; "play something" takes the head of this order; only the car's "newest" request (`playLatest`) is the newest published | |
 | playNext(nil) | nothing downloaded | none | "No episodes are on your phone." |
 | | otherwise | next downloaded episode after the playing one (first when nothing plays or the playing one is not listed); last one -> none | "Playing <title>." / "That was the last episode on your phone." |
 | pause | playing | pause | "Paused." |
@@ -66,7 +66,8 @@ The sleep timer intent has no App Shortcut (see Phase 3).
 |---|---|---|---|---|
 | play next episode of a show | App Intent | `PlayNextEpisodeIntent` | `playNext(show:)` | `VoiceCommandPlannerTests`, `LibraryVoiceTargetTests` |
 | play a named episode | App Intent | `PlayEpisodeIntent` | `playEpisodeByID(id)`; `playEpisode(title:show:)` for title-only callers | `VoiceCommandPlannerTests` |
-| play latest | App Intent | `PlayLatestIntent` | `playLatest(show:)` | `VoiceCommandPlannerTests` |
+| play something | App Intent | `PlayFirstEpisodeIntent` | `playFirst(show:)` | `VoicePlayLookupPlannerTests`, `VoiceRealRuntimeTests` |
+| newest (SiriKit "play the newest ...", the car) | `INPlayMediaIntent` | `PlayMediaIntentHandler` | `playLatest(show:)` | `PlayMediaIntentTests` |
 | pause | remote command (spoken); App Intent in Shortcuts app | `PauseEpisodeIntent` | `pause` | planner, runner, adapter |
 | resume | remote command (spoken); App Intent in Shortcuts app | `ResumeEpisodeIntent` | `resume` | planner, runner, adapter |
 | skip forward / back | remote command (spoken); App Intent in Shortcuts app | `SkipForwardIntent`, `SkipBackIntent` | `skipForward`, `skipBack` | planner, adapter |
@@ -90,7 +91,9 @@ The sleep timer intent has no App Shortcut (see Phase 3).
 | | id downloaded (an `EpisodeEntity` Siri resolved; the id decides, so equal titles are never confused) | play it | "Playing <title>." |
 | playLatest(show) | show rules as playNext (no match, ambiguous, none downloaded) | none | same lines as playNext |
 | | no episodes downloaded (no show) | none | "No episodes are on your phone." |
-| | otherwise | play the downloaded episode (of the show, if given) with the newest `publishedAt`; ties keep Larder order | "Playing <title>." |
+| | otherwise | play the downloaded episode (of the show, if given) with the newest `publishedAt`; ties keep Larder order. Only the SiriKit "newest" request sends this | "Playing <title>." |
+| playFirst(show) | show rules as playNext (no match, ambiguous, none downloaded) | none | same lines as playNext |
+| | otherwise | play the first downloaded episode (of the show, if given) in the shared play order: partway through first (newest play first), then not-started oldest first, then completed; never `publishedAt` | "Playing <title>." |
 
 Episode titles are matched with `VoiceShowMatcher.match` over the candidate episodes' titles, so
 the same tolerance (case, punctuation, accents, leading "the", whole-word runs, close spelling) applies.
@@ -195,7 +198,7 @@ for "resume" (Siri's own "resume" covers it; Play next would skip ahead).
 |---|---|
 | Play next | "Play the next episode of <show> in Wilted", "Play the next Wilted episode", "Play my next podcast in Wilted", "Play the next podcast of <show> in Wilted" |
 | Play episode | "Play <episode> in Wilted", "Put on <episode> in Wilted" |
-| Play latest | "Play the latest episode of <show> in Wilted", "Play the latest Wilted episode", "Play the newest episode of <show> in Wilted", "Play the newest Wilted episode" |
+| Play something | "Play something in Wilted", "Play an episode of <show> in Wilted", "Play the first episode of <show> in Wilted", "Play my top Wilted episode" (the app's own pick: partway through first, otherwise the oldest not started; it replaced the "latest" and "newest" phrases, which played the newest published and so disagreed with the phone list and autoplay) |
 | Restart | "Restart this episode in Wilted", "Start this episode over in Wilted" |
 | Mark completed | "Mark this episode completed in Wilted", "Mark this episode as done in Wilted" |
 | What's playing | "What's playing in Wilted", "What am I listening to in Wilted" |

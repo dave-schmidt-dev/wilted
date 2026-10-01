@@ -21,6 +21,7 @@ struct LibraryEpisodeActions: View {
 
     @State private var isConfirmingDelete = false
     @State private var isConfirmingCompletion = false
+    @State private var isConfirmingRemoval = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,6 +40,12 @@ struct LibraryEpisodeActions: View {
                         symbol: LibraryDecisionAction.markDone.systemImage, label: LibraryDecisionAction.markDone.title,
                         identifier: "wilted-library-action-done-\(row.id.rawValue)") { isConfirmingCompletion = true }
                 }
+                if decisionActions.contains(.removeFromLarder) {
+                    LibraryIconButton(
+                        symbol: LibraryDecisionAction.removeFromLarder.systemImage,
+                        label: LibraryDecisionAction.removeFromLarder.title,
+                        identifier: "wilted-library-action-remove-\(row.id.rawValue)", tone: .neutral) { isConfirmingRemoval = true }
+                }
                 Spacer(minLength: 0)
             }
             LibraryStatusLine(entryID: row.id, media: media, decision: decisionStatus, cancelDecision: onCancelDecision)
@@ -49,11 +56,19 @@ struct LibraryEpisodeActions: View {
         } message: {
             Text("The episode stays in the Larder to download again.")
         }
+        .confirmationDialog(
+            LibrarySwipe.Confirmation.removeFromLarder(row.id).title, isPresented: $isConfirmingRemoval, titleVisibility: .visible
+        ) {
+            Button(LibrarySwipe.Confirmation.removeFromLarder(row.id).confirmLabel, role: .destructive) { onDecision(.removeFromLarder) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(LibrarySwipe.Confirmation.removeFromLarder(row.id).message)
+        }
         .confirmationDialog("Mark completed?", isPresented: $isConfirmingCompletion, titleVisibility: .visible) {
             Button("Mark completed") { onDecision(.markDone) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("It is marked completed on the Mac too.")
+            Text(LibrarySwipe.Confirmation.markCompleted(row.id).message)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-media-\(row.id.rawValue)")

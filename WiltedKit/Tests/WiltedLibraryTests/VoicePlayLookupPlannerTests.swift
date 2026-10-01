@@ -148,4 +148,24 @@ final class VoicePlayLookupPlannerTests: XCTestCase {
         )
         XCTAssertEqual(plan(.playLatest(show: nil), snap).action, .play(item("a")))
     }
+
+    // MARK: playFirst (the app's play order, never `publishedAt`)
+
+    func testPlayFirstTakesTheFirstCandidateInPlayOrderNotTheNewest() {
+        let overall = plan(.playFirst(show: nil))
+        let newest = plan(.playLatest(show: nil))
+        XCTAssertNotEqual(overall.action, newest.action, "the fixture's newest is not its first row")
+        XCTAssertEqual(overall.action, .play(item("1")))
+        XCTAssertEqual(plan(.playFirst(show: "Planet Money")).action, .play(item("1")))
+        XCTAssertEqual(plan(.playFirst(show: "short wave")).action, .play(item("3")))
+    }
+
+    func testPlayFirstShowUnknownAmbiguousOrEmpty() {
+        XCTAssertEqual(plan(.playFirst(show: "Nonexistent Pod")).dialog, "I can't find a show called Nonexistent Pod.")
+        XCTAssertEqual(plan(.playFirst(show: "Empty Show")).dialog, "No Empty Show episodes are on your phone.")
+        let empty = VoiceSnapshot(downloaded: [], knownShowTitles: [], nowPlaying: nil)
+        let result = plan(.playFirst(show: nil), empty)
+        XCTAssertEqual(result.action, .none)
+        XCTAssertEqual(result.dialog, "No episodes are on your phone.")
+    }
 }

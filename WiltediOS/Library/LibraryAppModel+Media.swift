@@ -186,7 +186,7 @@ extension LibraryAppModel {
                 return
             }
             guard offer.state == .ready else {
-                setMedia(.notPrepared, entryID, runID)
+                setNotPrepared(entryID, runID)
                 return
             }
             let outcome = try await download(offer, runID: runID)
@@ -200,7 +200,7 @@ extension LibraryAppModel {
                     await sendPendingMediaAcknowledgements()
                 }
                 startTranscriptLoad(entryID: entryID, fetchOnMiss: true)
-            case .notReady: setMedia(.notPrepared, entryID, runID)
+            case .notReady: setNotPrepared(entryID, runID)
             case let .failed(reason): setMedia(.failed(Self.text(for: reason)), entryID, runID)
             }
         } catch is CancellationError {
@@ -270,6 +270,15 @@ extension LibraryAppModel {
     }
 
     private func isCurrent(_ entryID: ItemID, _ runID: UUID) -> Bool { mediaRuns[entryID]?.id == runID }
+
+    /// The Mac answered that it has no ready audio. The Larder lists only what the Mac reports ready, so
+    /// the row leaves at once instead of waiting for the next refresh to withdraw it, and returns when
+    /// a later refresh sees the Mac offer it again.
+    private func setNotPrepared(_ entryID: ItemID, _ runID: UUID) {
+        guard isCurrent(entryID, runID) else { return }
+        media[entryID] = .notPrepared
+        dropOffer(entryID)
+    }
 
     private func setMedia(_ state: LibraryMediaState, _ entryID: ItemID, _ runID: UUID) {
         guard isCurrent(entryID, runID) else { return }

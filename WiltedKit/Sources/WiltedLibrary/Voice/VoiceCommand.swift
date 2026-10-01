@@ -13,6 +13,9 @@ public enum VoiceCommand: Sendable, Equatable {
     case playEpisodeByID(ItemID)
     /// "Play the latest episode", optionally of one show: the most recently published downloaded one.
     case playLatest(show: String?)
+    /// "Play something", optionally of one show: the first downloaded episode in the app's play order
+    /// (partway through first, then not-started oldest first), the one the phone list and autoplay reach first.
+    case playFirst(show: String?)
     case pause
     case resume
     case skipForward

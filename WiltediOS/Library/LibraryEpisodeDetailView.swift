@@ -95,7 +95,7 @@ struct LibraryEpisodeDetailView: View {
                         isPlaying: playingID == row.id,
                         onMedia: { model.performMediaAction($0, entryID: row.id) },
                         onPlay: onPlay.map { play in { play(row) } },
-                        decisionActions: model.decisionActions(for: row).filter { $0 == .markDone },
+                        decisionActions: model.decisionActions(for: row),
                         decisionStatus: model.decisionStatus(for: row.id),
                         onDecision: { model.performDecision($0, entryID: row.id) },
                         onCancelDecision: { model.cancelDecision(entryID: row.id) })

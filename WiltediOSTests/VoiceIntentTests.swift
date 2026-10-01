@@ -66,13 +66,18 @@ final class VoiceIntentTests: XCTestCase {
         XCTAssertEqual(found.map(\.id), ["a", "b", "c"])
     }
 
-    func testPlayLatestIntentPicksTheNewestOfTheGivenShowOrOverall() async throws {
+    func testPlayFirstIntentPicksTheTopOfThePlayOrderOfTheGivenShowOrOverall() async throws {
         let target = install(try fixtures())
-        let intent = PlayLatestIntent()
+        let intent = PlayFirstEpisodeIntent()
         _ = try await intent.perform()
         intent.show = ShowEntity(id: "Short Wave")
         _ = try await intent.perform()
-        XCTAssertEqual(target.performed, [.play(try ItemID(rawValue: "b")), .play(try ItemID(rawValue: "c"))])
+        intent.show = ShowEntity(id: "Planet Money")
+        _ = try await intent.perform()
+        XCTAssertEqual(
+            target.performed,
+            [.play(try ItemID(rawValue: "a")), .play(try ItemID(rawValue: "c")), .play(try ItemID(rawValue: "a"))],
+            "the snapshot is already in play order, so the first candidate wins, never the newest published (b)")
     }
 
     func testEpisodeQueryMatchesSpokenTitlesAndResolvesIdentifiers() async throws {

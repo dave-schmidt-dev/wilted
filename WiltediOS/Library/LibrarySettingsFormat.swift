@@ -72,12 +72,17 @@ enum LibrarySettingsFormat {
     /// Status in words, so state never rests on color alone. Precedence: an account review blocks
     /// everything, then iCloud rate limiting, then a running fetch, then the last error, then how fresh the mirror is.
     static func sync(
-        isRefreshing: Bool, quarantined: Bool, error: String?, lastRefresh: Date?, throttleNotice: String? = nil
+        isRefreshing: Bool, quarantined: Bool, error: String?, lastRefresh: Date?, throttleNotice: String? = nil,
+        throttleRetrying: Bool = false
     ) -> SyncSummary {
         if quarantined {
             return SyncSummary(status: "Needs review", detail: "The iCloud account changed.", tone: .caution)
         }
-        if let throttleNotice { return SyncSummary(status: "Paused", detail: throttleNotice, tone: .caution) }
+        if let throttleNotice {
+            return throttleRetrying
+                ? SyncSummary(status: "Retrying", detail: throttleNotice, tone: .active)
+                : SyncSummary(status: "Paused", detail: throttleNotice, tone: .caution)
+        }
         if isRefreshing { return SyncSummary(status: "Syncing", detail: nil, tone: .active) }
         if let error { return SyncSummary(status: "Problem", detail: error, tone: .failure) }
         if lastRefresh != nil { return SyncSummary(status: "Up to date", detail: nil, tone: .positive) }

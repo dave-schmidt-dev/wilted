@@ -5,13 +5,23 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- A rate-limited or unavailable iCloud no longer leaves the phone showing a retry time that has already passed: the phone now retries on its own when the time arrives (and when a refresh starts after it), the banner reads "Retrying now…" with an activity indicator while it runs, then clears on success or shows the new future time. A retry that fails without iCloud saying why is tried again 30 s later. The Larder shows one sync banner at a time (account review, iCloud pause or retry, or a plain failure), never two.
+- Settings and episode controls are full-size touch targets: the "More information" button and the text-size options respond over their whole area, not just the glyph.
 - CarPlay's speed button no longer reads "0x" while an episode plays: it follows the system's playback-rate command, which the app never enabled. The app now enables it, lists the offered speeds, and applies a speed chosen there.
 - CarPlay no longer crashes on launch: no Siri assistant cell is configured. A cell without an Intents extension made CarPlay raise from `clientAssistantCellUnavailableWithError:`; and David does not want a Siri button on the car screen at all.
 
 ### Changed
+- The default speed steps by 0.25 (0.75 to 2.0), matching Now Playing, CarPlay and Siri; a stored value off the step shows on the nearest one.
+- The Siri "play latest" shortcut is now "Play something in Wilted" (also "Play an episode of <show> in Wilted", "Play the first episode of <show> in Wilted", "Play my top Wilted episode"): it plays the first downloaded episode in the app's play order (partway through first, then not-started oldest first), like the phone list and auto-continue, not the newest published. The car's spoken "newest" request still plays the newest published.
 - Removed the "Skip forward in Wilted" and "Skip back in Wilted" Siri phrases: plain "skip" and the car's skip buttons already do it. The skip intents stay in the Shortcuts app.
 
 ### Added
+- The Now Playing position bar is a real scrubber, on the full player and the mini player's line: drag or tap to pick a time, the chosen time shows live, playback moves once on release, and VoiceOver adjusts it by the skip lengths.
+- Mark completed and Remove from Larder on Now Playing and the episode detail, each asking first; the Larder rows now use swipes (not downloaded: right removes, left downloads; downloaded: right marks a started episode completed, left plays), a full swipe only opens the question, and VoiceOver gets each action by name. The inline completion tick is gone.
+- The iPhone shows only what the Mac reports ready (Larder, CarPlay, Siri, play order); an episode the Mac says it has no ready audio for leaves the list at once and returns when the Mac offers it.
+- A soft wash of the playing episode's artwork across the top of Now Playing, from the local cache only, with text contrast pinned in a test.
+- Transcripts show who is speaking when the Mac's transcript names speakers (the speaker is optional on the wire, so an older Mac or phone is unaffected).
+- Hosted headless UI tests for the Larder list, episode detail, Settings, transcript and Now Playing (touch-target sizes, VoiceOver actions, swipe states and their confirmations).
 - W-INV-016: the Mac, iPhone, CarPlay and Siri surfaces keep one Wilted look, design and behavior (shared symbols, watermark, palette, episode rows and play order); platform differences are limited to the Mac's rich sorting and two-pane layout, the iPhone's simplicity, CarPlay's templates and Siri being voice-only.
 - A Siri Intents extension (`WiltediOSIntents`, `com.zerodelta.wilted.ios.intents`) confirms spoken "play ..." requests ("Hey Siri", the car's Siri button) and hands them to the app, which plays the downloaded episode. Release ships without it until Siri does.
 - CarPlay now opens on a tab bar: Downloaded (the episode list) and Shows (one row per show with downloaded episodes, its artwork and "N downloaded"; a tap opens that show's episodes). Episode rows show the time left (or the full length marked New), a listened-progress bar, the playing flag and artwork, from local data only.

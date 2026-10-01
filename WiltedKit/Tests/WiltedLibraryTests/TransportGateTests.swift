@@ -231,9 +231,26 @@ final class TransportGateStatusTests: XCTestCase {
         XCTAssertEqual(state.notice(now: now), "iCloud is rate limiting sync. Retrying in 1 s.")
     }
 
-    func testTheResumeTimeVariantNamesTheClockTime() {
+    func testTheResumeTimeVariantNamesTheClockTimeOnlyWhileItIsInTheFuture() {
         let state = TransportGateState(kind: .rateLimited, retryAt: now.addingTimeInterval(30), consecutiveFailures: 1)
-        XCTAssertTrue(state.noticeWithResumeTime.hasPrefix("iCloud is rate limiting sync. Retrying at "))
-        XCTAssertTrue(state.noticeWithResumeTime.hasSuffix("."))
+        let waiting = state.noticeWithResumeTime(now: now, retrying: false)
+        XCTAssertTrue(waiting.hasPrefix("iCloud is rate limiting sync. Retrying at "), waiting)
+        XCTAssertTrue(waiting.hasSuffix("."), waiting)
+    }
+
+    func testARetryInFlightOrDueNeverShowsATimeThatHasPassed() {
+        let state = TransportGateState(kind: .serviceUnavailable, retryAt: now.addingTimeInterval(-40), consecutiveFailures: 1)
+        let due = "iCloud is temporarily unavailable. Retrying now…"
+        XCTAssertEqual(state.noticeWithResumeTime(now: now, retrying: false), due, "the time has passed: no past time")
+        let future = TransportGateState(kind: .serviceUnavailable, retryAt: now.addingTimeInterval(30), consecutiveFailures: 1)
+        XCTAssertEqual(future.noticeWithResumeTime(now: now, retrying: true), due, "in flight beats a future time")
+    }
+
+    func testALaterScheduledAttemptReplacesTheGatesOwnTime() {
+        let state = TransportGateState(kind: .rateLimited, retryAt: now.addingTimeInterval(-5), consecutiveFailures: 1)
+        let later = now.addingTimeInterval(10)
+        let line = state.noticeWithResumeTime(now: now, retrying: false, attemptAt: later)
+        XCTAssertTrue(line.contains("Retrying at "), line)
+        XCTAssertTrue(line.contains(later.formatted(date: .omitted, time: .standard)), line)
     }
 }

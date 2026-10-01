@@ -60,9 +60,23 @@ final class LibraryAppModel: ObservableObject {
     /// `LibraryAppModel+Throttle`.
     @Published var throttleState: TransportGateState?
 
-    /// The line for the Sync status when `throttleState` is set, in words, with the resume time:
-    /// "iCloud is rate limiting sync. Retrying at 11:26:30." Nil while nothing is paused.
-    var throttleNotice: String? { throttleState?.noticeWithResumeTime }
+    /// True while a refresh runs after the gate's wait has passed: the banner shows "Retrying now…"
+    /// with an activity indicator instead of the old time. Written by `LibraryAppModel+ThrottleRetry`.
+    @Published var throttleRetrying = false
+    /// When the next retry is scheduled, once the gate's own time has passed without the retry
+    /// clearing it (a probe that failed for another reason). Nil while the gate's `retryAt` is the time.
+    var throttleAttemptAt: Date?
+    /// The scheduled retry; replaced whenever the gate closes again, cancelled when it reopens.
+    var throttleRetryTask: Task<Void, Never>?
+    /// Waits for the retry time; injected so tests run without waiting.
+    let throttleSleep: @Sendable (TimeInterval) async throws -> Void
+
+    /// The line for the Sync status when `throttleState` is set, in words: the time while waiting
+    /// ("iCloud is rate limiting sync. Retrying at 11:26:30."), "Retrying now…" while retrying, and
+    /// never a time that has passed. Nil while nothing is paused.
+    var throttleNotice: String? {
+        throttleState?.noticeWithResumeTime(now: now(), retrying: throttleRetrying, attemptAt: throttleAttemptAt)
+    }
 
     /// Wraps the transport this model was given, so every call the phone makes (refresh, handoff,
     /// media, decisions) goes through one gate.
@@ -116,8 +130,10 @@ final class LibraryAppModel: ObservableObject {
         preferences: UserDefaults = .standard,
         ownPositionsURL: URL? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
-        timeZone: TimeZone = .current
+        timeZone: TimeZone = .current,
+        throttleSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
     ) {
+        self.throttleSleep = throttleSleep
         let relay = LibraryThrottleRelay()
         let gate = TransportGate(clock: now, onChange: { state in
             Task { @MainActor in relay.model?.throttleChanged(state) }
@@ -223,13 +239,20 @@ final class LibraryAppModel: ObservableObject {
 
     private func performRefresh() async {
         isRefreshing = true
-        defer { isRefreshing = false }
+        // A refresh that starts once the gate's wait is over is the retry, whoever asked for it.
+        let isRetry = throttleIsDue
+        if isRetry { throttleRetrying = true }
+        defer {
+            isRefreshing = false
+            if isRetry { throttleRetrying = false }
+        }
         switch await reconciler.synchronize() {
         case .success:
             errorMessage = nil
             lastSynchronizedAt = now()
         case let .failure(error):
-            errorMessage = Self.message(for: error)
+            // A refusal from the closed gate is the throttle banner's to say; storing it too would show it twice.
+            errorMessage = error is TransportThrottled ? nil : Self.message(for: error)
         }
         let records = try? await transport.fetchDeviceRecords()
         if let records {
@@ -245,6 +268,8 @@ final class LibraryAppModel: ObservableObject {
         // A failed read keeps the last known offers: a flaky fetch must not empty the Larder.
         if let offers = try? await transport.mediaOffers() {
             readyOffers = Set(offers.filter(\.isPrepared).map(\.entryID))
+            // An entry the Mac offers again is no longer "not prepared".
+            for entryID in readyOffers where media[entryID] == .notPrepared { media[entryID] = nil }
         }
         let content = await store.state().content
         entryDurations = content.entries.compactMapValues(\.durationSeconds)
@@ -283,6 +308,9 @@ final class LibraryAppModel: ObservableObject {
         for (id, at) in playedOut where !completed.contains(id) { ended[id] = max(ended[id] ?? .distantPast, at) }
         if ended != finished { finished = ended }
     }
+
+    /// Stops listing `entryID` until a refresh sees the Mac offer it again.
+    func dropOffer(_ entryID: ItemID) { readyOffers.remove(entryID) }
 
     /// Queued entries the phone can play or fetch: a ready or available offer, a transfer under way, or audio
     /// already cached.
@@ -328,7 +356,6 @@ final class LibraryAppModel: ObservableObject {
 
     private static func message(for error: Error) -> String {
         switch error {
-        case let throttled as TransportThrottled: return "iCloud sync is paused until \(throttled.retryAt.formatted(date: .omitted, time: .standard))."
         case LibraryTransportError.transport(let text): return text
         case LibraryTransportError.superseded: return "iCloud account changed. Sync was cancelled."
         default: return "Sync failed: \(error.localizedDescription)"

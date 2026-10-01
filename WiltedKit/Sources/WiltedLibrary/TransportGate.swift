@@ -93,9 +93,15 @@ public struct TransportGateState: Sendable, Equatable {
             : "\(Self.cause(kind)) Retrying in \(Self.wait(remaining))."
     }
 
-    /// The same line with the resume time instead of a countdown, for a place that does not tick.
-    public var noticeWithResumeTime: String {
-        "\(Self.cause(kind)) Retrying at \(retryAt.formatted(date: .omitted, time: .standard))."
+    /// The same line for a place that does not tick, by what the gate is doing: while a retry is in
+    /// flight (or its time has passed, which means one is about to start) it says "Retrying now…",
+    /// never a time that has already gone by; otherwise it names the time the retry is due.
+    /// `attemptAt` is when the next attempt is scheduled, when that is later than the gate's own `retryAt`
+    /// (a probe that failed without pressure is retried after a short wait).
+    public func noticeWithResumeTime(now: Date, retrying: Bool, attemptAt: Date? = nil) -> String {
+        let due = max(retryAt, attemptAt ?? retryAt)
+        if retrying || due <= now { return "\(Self.cause(kind)) Retrying now…" }
+        return "\(Self.cause(kind)) Retrying at \(due.formatted(date: .omitted, time: .standard))."
     }
 
     static func cause(_ kind: TransportPressure.Kind) -> String {

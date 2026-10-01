@@ -78,6 +78,8 @@ struct LibraryListView: View {
     @Environment(\.colorScheme) private var colorScheme
     /// The episode whose detail is open.
     @State private var opened: ItemID?
+    /// A swipe choice waiting for a yes (Remove from Larder, Mark completed).
+    @State private var confirming: LibrarySwipe.Confirmation?
 
     /// The entry the player is playing right now; its row offers Pause instead of Play.
     var playingID: ItemID?
@@ -89,51 +91,16 @@ struct LibraryListView: View {
     var body: some View {
         let rows = model.visibleRows
         List {
-            if model.accountQuarantined {
+            if let banner = model.syncBanner {
                 Section {
-                    WiltedAccountRecoveryNotice { Task { await model.recoverFromAccountChange() } }
-                }
-            }
-            if let notice = model.throttleNotice {
-                Section {
-                    Label(notice, systemImage: "hourglass")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
-                        .accessibilityIdentifier("wilted-library-throttle")
-                }
-            }
-            if let error = model.errorMessage {
-                Section {
-                    Text(error)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
-                        .accessibilityIdentifier("wilted-library-error")
+                    LibrarySyncBannerView(banner: banner) { Task { await model.recoverFromAccountChange() } }
                 }
             }
             if rows.isEmpty {
                 emptyState
             } else {
                 Section {
-                    ForEach(rows) { row in
-                        // A tap on the row opens the episode. Not a NavigationLink: while the drag
-                        // handles show, the list is in edit mode and a link would stop navigating.
-                        LibraryRowView(
-                            row: row, media: model.mediaState(for: row.id),
-                            isPlaying: playingID == row.id,
-                            onMedia: { model.performMediaAction($0, entryID: row.id) },
-                            onPlay: onPlay.map { play in { play(row) } },
-                            decisionActions: model.decisionActions(for: row).filter { $0 == .markDone },
-                            decisionStatus: model.decisionStatus(for: row.id),
-                            onDecision: { model.performDecision($0, entryID: row.id) },
-                            onCancelDecision: { model.cancelDecision(entryID: row.id) },
-                            player: player, progress: model.progress[row.id],
-                            isCompleted: LibraryListing.completionDate(row, finished: model.finished) != nil)
-                        .contentShape(Rectangle())
-                        .onTapGesture { opened = row.id }
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAction(named: "Open episode") { opened = row.id }
-                        .listRowBackground(WiltedTheme.color(.card, scheme: colorScheme))
-                    }
+                    ForEach(rows) { row in episodeRow(row) }
                 } header: {
                     Text(header(count: rows.count))
                         .wiltedFont(.utility)
@@ -164,10 +131,94 @@ struct LibraryListView: View {
                 filterMenu
             }
         }
+        .confirmationDialog(
+            confirming?.title ?? "", isPresented: isConfirming,
+            titleVisibility: .visible, presenting: confirming
+        ) { question in
+            Button(question.confirmLabel, role: question.isDestructive ? .destructive : nil) { question.confirmed(on: model) }
+            Button("Cancel", role: .cancel) {}
+        } message: { question in
+            Text(question.message)
+        }
         .navigationDestination(item: $opened) { id in
             LibraryEpisodeDetailView(model: model, entryID: id, playingID: playingID, onPlay: onPlay, player: player)
         }
         .accessibilityIdentifier("wilted-library-list")
+    }
+
+    /// One Larder row, its swipes and its VoiceOver actions. Kept out of `body` so the list type-checks quickly.
+    @ViewBuilder
+    private func episodeRow(_ row: LibraryRow) -> some View {
+        // A tap on the row opens the episode. Not a NavigationLink: while the drag
+        // handles show, the list is in edit mode and a link would stop navigating.
+        LibraryRowView(
+            row: row, media: model.mediaState(for: row.id),
+            isPlaying: playingID == row.id,
+            onMedia: { model.performMediaAction($0, entryID: row.id) },
+            onPlay: onPlay.map { play in { play(row) } },
+            decisionStatus: model.decisionStatus(for: row.id),
+            onDecision: { model.performDecision($0, entryID: row.id) },
+            onCancelDecision: { model.cancelDecision(entryID: row.id) },
+            player: player, progress: model.progress[row.id],
+            isCompleted: LibraryListing.completionDate(row, finished: model.finished) != nil,
+            voiceOverActions: voiceOverActions(for: row))
+        .contentShape(Rectangle())
+        .onTapGesture { opened = row.id }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: "Open episode") { opened = row.id }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) { swipeButtons(leading(for: row), row: row) }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) { swipeButtons(trailing(for: row), row: row) }
+        .listRowBackground(WiltedTheme.color(.card, scheme: colorScheme))
+    }
+
+    private var isConfirming: Binding<Bool> {
+        Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })
+    }
+
+    private func leading(for row: LibraryRow) -> [LibrarySwipe] {
+        LibrarySwipe.leading(
+            media: model.mediaState(for: row.id),
+            canMarkCompleted: model.decisionActions(for: row).contains(.markDone))
+    }
+
+    private func trailing(for row: LibraryRow) -> [LibrarySwipe] {
+        LibrarySwipe.trailing(media: model.mediaState(for: row.id), isPlaying: playingID == row.id)
+    }
+
+    /// What VoiceOver can do to a row by name: open it, plus every swipe action, through the same
+    /// handler the swipe uses (so Remove and Mark completed still ask first).
+    private func voiceOverActions(for row: LibraryRow) -> [LibraryRowVoiceAction] {
+        let swipes = leading(for: row) + trailing(for: row)
+        return [LibraryRowVoiceAction(name: "Open episode") { opened = row.id }]
+            + swipes.map { item in LibraryRowVoiceAction(name: item.title) { perform(item, row: row) } }
+    }
+
+    @ViewBuilder
+    private func swipeButtons(_ items: [LibrarySwipe], row: LibraryRow) -> some View {
+        ForEach(items, id: \.identifierWord) { item in
+            // Not `role: .destructive`: that collapses the row before the question is answered.
+            Button { perform(item, row: row) } label: { Label(item.title, systemImage: item.symbol) }
+                .tint(swipeTint(item))
+                .accessibilityIdentifier("wilted-library-swipe-\(item.identifierWord)-\(row.id.rawValue)")
+        }
+    }
+
+    /// Download and Play act at once; Remove from Larder and Mark completed ask first.
+    private func perform(_ item: LibrarySwipe, row: LibraryRow) {
+        switch item {
+        case .removeFromLarder: confirming = .removeFromLarder(row.id)
+        case .markCompleted: confirming = .markCompleted(row.id)
+        case .download: model.performMediaAction(.request, entryID: row.id)
+        case .play, .pause: onPlay?(row)
+        }
+    }
+
+    private func swipeTint(_ item: LibrarySwipe) -> Color {
+        switch item {
+        case .removeFromLarder: WiltedTheme.color(.error, scheme: colorScheme)
+        case .markCompleted: WiltedTheme.color(.progress, scheme: colorScheme)
+        default: WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
+        }
     }
 
     private func header(count: Int) -> String {
@@ -213,6 +264,12 @@ struct LibraryListView: View {
     }
 }
 
+/// A named VoiceOver action on a Larder row.
+struct LibraryRowVoiceAction {
+    let name: String
+    let perform: () -> Void
+}
+
 struct LibraryRowView: View {
     let row: LibraryRow
     var media: LibraryMediaState?
@@ -232,6 +289,8 @@ struct LibraryRowView: View {
     /// whether it is finished; the same data the car rows use.
     var progress: EpisodeProgress?
     var isCompleted = false
+    /// Offered to VoiceOver on the title, where the row's swipe actions are not reachable.
+    var voiceOverActions: [LibraryRowVoiceAction] = []
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -241,6 +300,9 @@ struct LibraryRowView: View {
                 Text(row.title)
                     .wiltedFont(.body)
                     .lineLimit(2)
+                    .accessibilityActions {
+                        ForEach(voiceOverActions, id: \.name) { action in Button(action.name, action: action.perform) }
+                    }
                     .accessibilityIdentifier("wilted-library-title-\(row.id.rawValue)")
                 Text(row.showTitle)
                     .wiltedFont(.utility)

@@ -126,12 +126,6 @@ final class LibraryThrottleRelay {
 }
 
 extension LibraryAppModel {
-    /// Called by the shared gate when iCloud pushes back (state set) and when a call succeeds again (nil).
-    func throttleChanged(_ state: TransportGateState?) {
-        guard throttleState != state else { return }
-        throttleState = state
-    }
-
     /// A position change larger than this from what elapsed time predicts counts as a seek.
     static let seekThreshold: Double = 2
 

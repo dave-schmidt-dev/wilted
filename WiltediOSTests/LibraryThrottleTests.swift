@@ -55,7 +55,7 @@ final class LibraryThrottleTests: XCTestCase {
 
         // The next refresh is refused locally until the wait passes: nothing is sent, and the status says why.
         await model.refresh()
-        XCTAssertTrue(model.errorMessage?.hasPrefix("iCloud sync is paused until ") == true, model.errorMessage ?? "nil")
+        XCTAssertNil(model.errorMessage, "the refusal is the throttle banner's to say, not a second line")
         XCTAssertNotNil(model.throttleState, "a refused refresh does not clear the notice")
 
         // Once the server's 45 s wait has passed, the next refresh is the probe; its success clears it.

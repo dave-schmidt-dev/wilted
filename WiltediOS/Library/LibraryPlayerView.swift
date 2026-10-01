@@ -6,15 +6,24 @@ import WiltedDomain
 struct LibraryMiniPlayer: View {
     @ObservedObject var player: LibraryPlayer
     let onExpand: () -> Void
+    @State private var scrubPosition: Double?
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 0) {
             if player.duration > 0 {
-                ProgressView(value: min(player.position, player.duration), total: player.duration)
-                    .progressViewStyle(.linear)
-                    .tint(WiltedTheme.color(.progress, scheme: colorScheme))
-                    .accessibilityHidden(true)
+                LibraryScrubber(player: player, scrubPosition: $scrubPosition, compact: true)
+                    .overlay(alignment: .topLeading) {
+                        // The time under the finger while it drags; the line itself is too thin to carry it.
+                        if let target = scrubPosition {
+                            Text(LibraryClockFormat.duration(target))
+                                .wiltedFont(.utility).monospacedDigit()
+                                .padding(.horizontal, WiltedTheme.Spacing.small)
+                                .background(WiltedTheme.color(.card, scheme: colorScheme), in: Capsule())
+                                .offset(y: -WiltedTheme.Spacing.large)
+                                .accessibilityHidden(true)
+                        }
+                    }
             }
             HStack(spacing: WiltedTheme.Spacing.medium) {
                 Button(action: onExpand) {
@@ -129,6 +138,8 @@ struct LibraryPlayerView: View {
     @ObservedObject var player: LibraryPlayer
     /// When given, the player shows the playing episode's transcript below the controls.
     var model: LibraryAppModel?
+    /// Where the backdrop reads artwork from; tests give it their own folder.
+    var artworkCache: LibraryArtworkCache = LibraryArtworkCache.shared
     let onClose: () -> Void
     @State private var scrubPosition: Double?
     @Environment(\.colorScheme) private var colorScheme
@@ -158,11 +169,22 @@ struct LibraryPlayerView: View {
             }
             scrubber
             transport
-            if player.supportsRate { rateMenu }
+            HStack(spacing: WiltedTheme.Spacing.large) {
+                if player.supportsRate { rateMenu }
+                if let model, let entryID = player.item?.entryID {
+                    LibraryPlayerCompletion(model: model, entryID: entryID)
+                }
+            }
             transcript
         }
         .padding(WiltedTheme.Spacing.large)
-        .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .background {
+            ZStack {
+                WiltedTheme.color(.page, scheme: colorScheme)
+                LibraryArtworkBackdrop(url: player.item?.artworkURL, cache: artworkCache)
+            }
+        }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-player-full")
     }
 
@@ -180,19 +202,7 @@ struct LibraryPlayerView: View {
 
     private var scrubber: some View {
         VStack(spacing: WiltedTheme.Spacing.xSmall) {
-            Slider(
-                value: Binding(get: { scrubPosition ?? player.position }, set: { scrubPosition = $0 }),
-                in: 0...max(player.duration, 1),
-                onEditingChanged: { editing in
-                    guard !editing, let target = scrubPosition else { return }
-                    player.seek(to: target)
-                    scrubPosition = nil
-                }
-            )
-            .disabled(player.item == nil || player.duration <= 0)
-            .accessibilityLabel("Playback position")
-            .accessibilityValue(LibraryPlayerText.position(scrubPosition ?? player.position, of: player.duration))
-            .accessibilityIdentifier("wilted-player-scrubber")
+            LibraryScrubber(player: player, scrubPosition: $scrubPosition)
             HStack {
                 Text(LibraryClockFormat.duration(scrubPosition ?? player.position))
                 Spacer()
@@ -239,6 +249,49 @@ struct LibraryPlayerView: View {
                 .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
         }
         .accessibilityIdentifier("wilted-player-rate")
+    }
+}
+
+/// Mark completed and Remove from Larder for the episode on screen, the same requests the Larder and
+/// the Siri intent make (`decide`), offered while the row would offer them. Both ask first and say
+/// when the request is waiting on the Mac.
+struct LibraryPlayerCompletion: View {
+    @ObservedObject var model: LibraryAppModel
+    let entryID: ItemID
+    @State private var confirming: LibrarySwipe.Confirmation?
+
+    var body: some View {
+        let row = model.queued.first { $0.id == entryID }
+        let actions = row.map { model.decisionActions(for: $0) } ?? []
+        VStack(spacing: WiltedTheme.Spacing.xSmall) {
+            HStack(spacing: WiltedTheme.Spacing.large) {
+                if actions.contains(.markDone) { button(.markCompleted(entryID), "wilted-player-mark-completed") }
+                if actions.contains(.removeFromLarder) { button(.removeFromLarder(entryID), "wilted-player-remove-from-larder") }
+            }
+            LibraryStatusLine(
+                entryID: entryID, media: nil, decision: model.decisionStatus(for: entryID),
+                cancelDecision: { model.cancelDecision(entryID: entryID) })
+        }
+        .confirmationDialog(
+            confirming?.title ?? "", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+            titleVisibility: .visible, presenting: confirming
+        ) { question in
+            Button(question.confirmLabel, role: question.isDestructive ? .destructive : nil) { question.confirmed(on: model) }
+            Button("Cancel", role: .cancel) {}
+        } message: { question in
+            Text(question.message)
+        }
+    }
+
+    private func button(_ question: LibrarySwipe.Confirmation, _ identifier: String) -> some View {
+        let action: LibraryDecisionAction = question.isDestructive ? .removeFromLarder : .markDone
+        return Button { confirming = question } label: {
+            Label(action.title, systemImage: action.systemImage)
+                .wiltedFont(.body)
+                .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier(identifier)
     }
 }
 

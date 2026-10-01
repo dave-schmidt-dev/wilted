@@ -6,11 +6,15 @@ public struct LibraryTranscriptCue: Codable, Equatable, Sendable {
     public let start: Double
     public let end: Double
     public let text: String
+    /// Who is speaking, when the Mac's transcript names anyone (an older Mac, or speech-to-text alone, sends none).
+    /// Optional and absent from the JSON when nil, so an older reader ignores it and an older writer decodes to nil.
+    public let speaker: String?
 
-    public init(start: Double, end: Double, text: String) {
+    public init(start: Double, end: Double, text: String, speaker: String? = nil) {
         self.start = start
         self.end = end
         self.text = text
+        self.speaker = speaker
     }
 }
 
@@ -126,7 +130,7 @@ public struct LibraryTranscript: Codable, Equatable, Sendable {
         guard transcript.availability == .available else { return nil }
         let language = transcript.languageCode
         if transcript.timing != .none, let cues = transcript.cues, !cues.isEmpty {
-            let mapped = cues.map { LibraryTranscriptCue(start: $0.startSeconds, end: $0.endSeconds, text: $0.text) }
+            let mapped = cues.map { LibraryTranscriptCue(start: $0.startSeconds, end: $0.endSeconds, text: $0.text, speaker: $0.speaker) }
             return capped(entryID: entryID, revisionID: transcript.revisionID, cues: mapped, languageCode: language)
         }
         return capped(entryID: entryID, revisionID: transcript.revisionID, plainText: transcript.text, languageCode: language)

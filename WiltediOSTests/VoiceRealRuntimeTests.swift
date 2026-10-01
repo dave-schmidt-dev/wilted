@@ -154,8 +154,17 @@ final class VoiceRealRuntimeTests: XCTestCase {
         XCTAssertEqual(rig.runtime.player.item?.entryID.rawValue, "ep-c")
         XCTAssertTrue(rig.engine.isPlaying)
 
-        _ = try await PlayLatestIntent().perform()
-        XCTAssertEqual(rig.runtime.player.item?.entryID.rawValue, "ep-b", "newest published, not Larder order")
+        rig.runtime.player.seek(to: 40)
+        rig.runtime.model.refreshProgress()
+        _ = try await PlayFirstEpisodeIntent().perform()
+        XCTAssertEqual(rig.runtime.player.item?.entryID.rawValue, "ep-c", "an episode partway through leads the play order")
+        XCTAssertTrue(rig.engine.isPlaying)
+    }
+
+    func testPlayFirstFollowsThePlayOrderNotTheNewestPublished() async throws {
+        let rig = try await coldRuntime(episodes: library, onPhone: ["ep-a", "ep-b", "ep-c"])
+        _ = try await PlayFirstEpisodeIntent().perform()
+        XCTAssertEqual(rig.runtime.player.item?.entryID.rawValue, "ep-a", "nothing started: the oldest published leads, ep-b is the newest")
         XCTAssertTrue(rig.engine.isPlaying)
     }
 
@@ -173,7 +182,7 @@ final class VoiceRealRuntimeTests: XCTestCase {
     func testWithNothingDownloadedTheIntentsSpeakAndPlayNothing() async throws {
         let rig = try await coldRuntime(episodes: library, onPhone: [])
         _ = try await PlayNextEpisodeIntent().perform()
-        _ = try await PlayLatestIntent().perform()
+        _ = try await PlayFirstEpisodeIntent().perform()
         _ = try await PauseEpisodeIntent().perform()
         XCTAssertNil(rig.runtime.player.item)
         XCTAssertFalse(rig.engine.isPlaying)

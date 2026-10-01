@@ -8,7 +8,7 @@ import XCTest
 /// to Siri and Shortcuts.
 final class AppIntentsMetadataTests: XCTestCase {
     private static let intents: Set<String> = [
-        "PlayNextEpisodeIntent", "PlayEpisodeIntent", "PlayLatestIntent", "PauseEpisodeIntent",
+        "PlayNextEpisodeIntent", "PlayEpisodeIntent", "PlayFirstEpisodeIntent", "PauseEpisodeIntent",
         "ResumeEpisodeIntent", "SkipForwardIntent", "SkipBackIntent", "RestartEpisodeIntent",
         "MarkCompletedIntent", "WhatsPlayingIntent", "ListDownloadedIntent",
         "TimeLeftIntent", "SetSpeedIntent", "SleepTimerIntent",

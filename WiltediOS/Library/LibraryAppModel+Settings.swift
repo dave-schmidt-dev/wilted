@@ -32,6 +32,13 @@ extension LibraryAppModel {
     var syncSummary: LibrarySettingsFormat.SyncSummary {
         LibrarySettingsFormat.sync(
             isRefreshing: isRefreshing, quarantined: accountQuarantined, error: errorMessage,
-            lastRefresh: lastSynchronizedAt, throttleNotice: throttleNotice)
+            lastRefresh: lastSynchronizedAt, throttleNotice: throttleNotice,
+            throttleRetrying: throttleRetrying)
+    }
+
+    /// The one sync status the Larder shows, or nil when there is nothing to say.
+    var syncBanner: LibrarySyncBanner? {
+        LibrarySyncBanner.resolve(
+            quarantined: accountQuarantined, throttleNotice: throttleNotice, retrying: throttleRetrying, error: errorMessage)
     }
 }

@@ -86,12 +86,21 @@ struct LibraryTranscriptView: View {
                 .wiltedFont(.utility)
                 .monospacedDigit()
                 .foregroundStyle(secondary)
-            Text(cue.text)
-                .wiltedFont(.body)
-                .fontWeight(isCurrent ? .bold : .regular)
-                .foregroundStyle(isCurrent ? WiltedTheme.color(.progress, scheme: colorScheme) : primary)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                if let speaker = cue.speaker {
+                    Text(speaker)
+                        .wiltedFont(.utility)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(secondary)
+                        .accessibilityIdentifier("wilted-library-transcript-speaker-\(index)")
+                }
+                Text(cue.text)
+                    .wiltedFont(.body)
+                    .fontWeight(isCurrent ? .bold : .regular)
+                    .foregroundStyle(isCurrent ? WiltedTheme.color(.progress, scheme: colorScheme) : primary)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minHeight: onSeek == nil ? 0 : WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
         .accessibilityElement(children: .combine)

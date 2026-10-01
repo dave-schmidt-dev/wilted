@@ -67,6 +67,9 @@ public enum VoiceCommandPlanner {
         case .playLatest(let show):
             return planPlayLatest(show: show, snapshot: snapshot)
 
+        case .playFirst(let show):
+            return planPlayFirst(show: show, snapshot: snapshot)
+
         case .pause:
             if let nowPlaying = snapshot.nowPlaying, nowPlaying.isPlaying {
                 return VoicePlan(action: .pause, dialog: "Paused.")
@@ -213,6 +216,14 @@ public enum VoiceCommandPlanner {
             latest = episode
         }
         return VoicePlan(action: .play(latest.id), dialog: "Playing \(latest.title).")
+    }
+
+    /// `snapshot.downloaded` is already in the shared play order, so the first candidate is the app's own pick.
+    private static func planPlayFirst(show: String?, snapshot: VoiceSnapshot) -> VoicePlan {
+        switch candidates(show: show, snapshot: snapshot) {
+        case .stop(let plan): return plan
+        case .episodes(let found): return VoicePlan(action: .play(found[0].id), dialog: "Playing \(found[0].title).")
+        }
     }
 
     private static func sameShow(_ lhs: String, _ rhs: String) -> Bool {

@@ -45,6 +45,17 @@ final class LibraryTranscriptTests: XCTestCase {
         XCTAssertTrue(encoded.contains(#""start":1"#) && encoded.contains(#""end":2"#) && encoded.contains(#""text":"a""#))
     }
 
+    func testTheSpeakerRoundTripsAndAnAbsentSpeakerStaysOffTheWire() throws {
+        let named = LibraryTranscriptCue(start: 1, end: 2, text: "a", speaker: "Ann")
+        let value = try LibraryTranscript(entryID: entry(), revisionID: revision(), cues: cues(1) + [named])
+        let data = try JSONEncoder().encode(value)
+        XCTAssertEqual(try JSONDecoder().decode(LibraryTranscript.self, from: data).cues.map(\.speaker), [nil, "Ann"])
+        let unnamed = try JSONEncoder().encode(LibraryTranscriptCue(start: 1, end: 2, text: "a"))
+        XCTAssertFalse(String(decoding: unnamed, as: UTF8.self).contains("speaker"), "no key for a nil speaker, so an older reader sees the old shape")
+        let fromSpeakerJSON = try JSONDecoder().decode(LibraryTranscriptCue.self, from: Data(#"{"start":1,"end":2,"text":"a","speaker":"Bo"}"#.utf8))
+        XCTAssertEqual(fromSpeakerJSON.speaker, "Bo")
+    }
+
     func testValidationRejectsEmptyMixedAndInvalidContent() throws {
         XCTAssertThrowsError(try LibraryTranscript(entryID: entry(), revisionID: revision()))
         XCTAssertThrowsError(try LibraryTranscript(entryID: entry(), revisionID: revision(), plainText: ""))
@@ -108,7 +119,7 @@ final class LibraryTranscriptTests: XCTestCase {
         let cue = try TranscriptCue(startSeconds: 1, endSeconds: 3, text: "Hi", speaker: "Ann")
         let value = try XCTUnwrap(LibraryTranscript.capped(entryID: entry(), from: stored(.available, timing: .published, cues: [cue])))
         XCTAssertEqual(value.revisionID, try revision("rev-9"))
-        XCTAssertEqual(value.cues, [LibraryTranscriptCue(start: 1, end: 3, text: "Hi")])
+        XCTAssertEqual(value.cues, [LibraryTranscriptCue(start: 1, end: 3, text: "Hi", speaker: "Ann")])
         XCTAssertNil(value.plainText)
         XCTAssertEqual(value.languageCode, "en")
     }

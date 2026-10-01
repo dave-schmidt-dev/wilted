@@ -117,14 +117,15 @@ struct PlayEpisodeIntent: AudioPlaybackIntent {
     }
 }
 
-struct PlayLatestIntent: AudioPlaybackIntent {
-    static let title: LocalizedStringResource = "Play latest episode"
-    static let description = IntentDescription("Plays the newest downloaded episode, optionally of one show.")
+struct PlayFirstEpisodeIntent: AudioPlaybackIntent {
+    static let title: LocalizedStringResource = "Play something"
+    static let description = IntentDescription(
+        "Plays the episode Wilted would play first: one you are partway through, otherwise the oldest you have not started. Optionally of one show.")
 
     @Parameter(title: "Show") var show: ShowEntity?
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        try await speak(.playLatest(show: show?.id))
+        try await speak(.playFirst(show: show?.id))
     }
 }
 
@@ -204,14 +205,14 @@ struct WiltedShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Play episode", systemImageName: "play.square")
         AppShortcut(
-            intent: PlayLatestIntent(),
+            intent: PlayFirstEpisodeIntent(),
             phrases: [
-                "Play the latest episode of \(\.$show) in \(.applicationName)",
-                "Play the latest \(.applicationName) episode",
-                "Play the newest episode of \(\.$show) in \(.applicationName)",
-                "Play the newest \(.applicationName) episode",
+                "Play something in \(.applicationName)",
+                "Play an episode of \(\.$show) in \(.applicationName)",
+                "Play the first episode of \(\.$show) in \(.applicationName)",
+                "Play my top \(.applicationName) episode",
             ],
-            shortTitle: "Play latest", systemImageName: "clock.arrow.circlepath")
+            shortTitle: "Play something", systemImageName: "play.circle")
         AppShortcut(
             intent: RestartEpisodeIntent(),
             phrases: [
