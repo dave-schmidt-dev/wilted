@@ -45,10 +45,11 @@ enum LibraryDecisionAction: Equatable, Sendable {
 
 /// The buttons a Larder row offers. The phone decides nothing about New or removed episodes;
 /// those stay on the Mac, and a Larder row never repeats Feeds' Keep or Skip. Remove from Larder is
-/// always available; Mark done needs a started, unfinished episode.
+/// always available; Mark done needs a started, unfinished episode, or one whose audio is on the phone
+/// and not yet completed (W-INV-010: the phone is where a downloaded episode is finished or abandoned).
 enum LibraryRowActions {
-    static func actions(for row: LibraryRow) -> [LibraryDecisionAction] {
-        row.isStarted ? [.removeFromLarder, .markDone] : [.removeFromLarder]
+    static func actions(for row: LibraryRow, onPhone: Bool = false) -> [LibraryDecisionAction] {
+        row.isStarted || (onPhone && row.completedAt == nil) ? [.removeFromLarder, .markDone] : [.removeFromLarder]
     }
 }
 
@@ -190,7 +191,7 @@ extension LibraryAppModel {
 
     /// The buttons a row offers now; none while it has a decision in flight.
     func decisionActions(for row: LibraryRow) -> [LibraryDecisionAction] {
-        pendingDecision(for: row.id) == nil ? LibraryRowActions.actions(for: row) : []
+        pendingDecision(for: row.id) == nil ? LibraryRowActions.actions(for: row, onPhone: media[row.id] == .onPhone) : []
     }
 
     // MARK: - Acting
@@ -294,7 +295,7 @@ extension LibraryAppModel {
     /// Whether the displayed sections offer `action` for `entryID` right now.
     private func isOffered(_ action: LibraryDecisionAction, entryID: ItemID) -> Bool {
         switch action {
-        case .removeFromLarder, .markDone: return queued.first { $0.id == entryID }.map { LibraryRowActions.actions(for: $0).contains(action) } ?? false
+        case .removeFromLarder, .markDone: return queued.first { $0.id == entryID }.map { LibraryRowActions.actions(for: $0, onPhone: media[$0.id] == .onPhone).contains(action) } ?? false
         case let .reorder(after):
             let order = queued.map(\.id)
             guard let index = order.firstIndex(of: entryID), after != entryID else { return false }

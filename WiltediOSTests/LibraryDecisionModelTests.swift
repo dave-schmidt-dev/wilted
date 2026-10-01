@@ -118,7 +118,7 @@ final class LibraryDecisionModelTests: XCTestCase {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.markDone, entryID: id("b"))  // not started
+        await model.decide(.markDone, entryID: id("b"))  // not started and not on the phone
         await model.decide(.removeFromLarder, entryID: id("fresh"))  // not on the phone's list
         await model.decide(.removeFromLarder, entryID: id("gone"))   // dismissed on the Mac
         let sent = try await intents()

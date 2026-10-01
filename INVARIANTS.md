@@ -93,7 +93,7 @@ rationale: As of 2026-09-29, Mac owner acceptance no longer gates iPhone library
 area: ["Shared/**", "WiltedMac/**", "WiltediOS/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Wilted preserves Zero Delta structure, status semantics, native typography, accessibility, and flat surfaces while limiting the lettuce motif to a restrained identity mark and accent. Navigation stays literal, color never carries state alone, and light/dark behavior is snapshot- and contrast-tested. Larder's Add article action remains accessible after its last article is removed and when a search has no article matches. Larder never repeats Feeds' Keep/Skip decision; its Played label requires a durable completion record, and its completion control appears only for a started, unfinished row.
+rationale: Wilted preserves Zero Delta structure, status semantics, native typography, accessibility, and flat surfaces while limiting the lettuce motif to a restrained identity mark and accent. Navigation stays literal, color never carries state alone, and light/dark behavior is snapshot- and contrast-tested. Larder's Add article action remains accessible after its last article is removed and when a search has no article matches. Larder never repeats Feeds' Keep/Skip decision; its Played label requires a durable completion record, and its completion control appears only for a started, unfinished row on the Mac; on the iPhone, a row whose audio is on the phone may also be marked completed (behind a confirmation), because the phone is where a downloaded episode is finished or abandoned.
 
 ### W-INV-011 — Episode state dimensions stay orthogonal and locally durable
 area: ["Producer/**"]

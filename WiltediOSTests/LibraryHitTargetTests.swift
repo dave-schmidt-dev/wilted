@@ -61,7 +61,7 @@ final class LibraryHitTargetTests: XCTestCase {
         XCTAssertNotNil(started.element("wilted-library-action-remove-a"), "and Remove from Larder")
 
         let fresh = HostedView(NavigationStack { LibraryEpisodeDetailView(model: fixture.model, entryID: fixture.id("b"), onPlay: { _ in }) })
-        XCTAssertNil(fresh.element("wilted-library-action-done-b"), "W-INV-010: not before it is started")
+        XCTAssertNotNil(fresh.element("wilted-library-action-done-b"), "W-INV-010: audio on the phone offers it before it is started")
         XCTAssertNotNil(fresh.element("wilted-library-action-remove-b"))
     }
 

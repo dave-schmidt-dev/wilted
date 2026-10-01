@@ -259,7 +259,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
         XCTAssertEqual(
             nowPlaying.canMarkCompleted, rig.model.decisionActions(for: row).contains(.markDone),
             "canMarkCompleted mirrors the Larder's own buttons for the row")
-        XCTAssertFalse(nowPlaying.canMarkCompleted, "an unstarted episode offers no Mark completed")
+        XCTAssertTrue(nowPlaying.canMarkCompleted, "an episode on the phone offers Mark completed even before it is started")
     }
 
     // MARK: perform: transport
@@ -378,13 +378,13 @@ final class LibraryVoiceTargetTests: XCTestCase {
             "the decision travels as a markDone intent from this phone")
     }
 
-    func testMarkCompletedForAnUnstartedEpisodeSendsNothing() async throws {
+    func testMarkCompletedForAnUnstartedEpisodeNotOnThePhoneSendsNothing() async throws {
         try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
             EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
             EpisodeSpec(raw: "b", title: "Episode B", show: "show", sortKey: 1),
         ])
         try await macPublishesProgress("a", position: 100)
-        let rig = try await makeRig(cached: ["a", "b"])
+        let rig = try await makeRig(cached: ["a"])
 
         await rig.target.perform(.markCompleted(id("b")))
 
@@ -461,16 +461,16 @@ final class LibraryVoiceTargetTests: XCTestCase {
         XCTAssertTrue(rig.player.isPlaying, "play on the paused loaded episode resumes it")
     }
 
-    func testPerformReportsFailureForAnEpisodeThatIsNotQueuedOrNotStarted() async throws {
+    func testPerformReportsFailureForAnEpisodeThatIsNotQueuedOrNotOnThePhone() async throws {
         try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
             EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
         ])
-        let rig = try await makeRig(cached: ["a"])
+        let rig = try await makeRig(cached: [])
 
         let played = await rig.target.perform(.play(id("missing")))
         XCTAssertEqual(played, .failed)
         let marked = await rig.target.perform(.markCompleted(id("a")))
-        XCTAssertEqual(marked, .failed, "an unstarted row offers no Mark completed, so nothing was accepted")
+        XCTAssertEqual(marked, .failed, "an unstarted row that is not on the phone offers no Mark completed, so nothing was accepted")
     }
 
     // MARK: perform: none

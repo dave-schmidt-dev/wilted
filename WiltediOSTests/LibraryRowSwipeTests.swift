@@ -68,7 +68,7 @@ final class LibraryRowSwipeTests: XCTestCase {
     func testVoiceOverGetsTheSwipeActionsByName() async throws {
         let hosted = try await host()
         XCTAssertEqual(hosted.element("wilted-library-title-a")?.customActionNames, ["Play", "Mark completed", "Open episode"])
-        XCTAssertEqual(hosted.element("wilted-library-title-b")?.customActionNames, ["Play", "Open episode"])
+        XCTAssertEqual(hosted.element("wilted-library-title-b")?.customActionNames, ["Play", "Mark completed", "Open episode"], "downloaded but not started still offers it")
         XCTAssertEqual(hosted.element("wilted-library-title-c")?.customActionNames, ["Download", "Remove from Larder", "Open episode"])
     }
 

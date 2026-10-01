@@ -93,7 +93,7 @@ final class LibraryPlayerHostedTests: XCTestCase {
 
     // MARK: Mark completed and Remove from Larder
 
-    func testNowPlayingOffersMarkCompletedOnlyForAStartedEpisodeAndRemoveForAny() async throws {
+    func testNowPlayingOffersMarkCompletedAndRemoveForAnEpisodeOnThePhone() async throws {
         try await fixture.seed(["a", "b"])
         try await fixture.startOnMac("a")
         await fixture.model.refresh()
@@ -105,7 +105,7 @@ final class LibraryPlayerHostedTests: XCTestCase {
 
         let (freshPlayer, _) = started("b", artwork: nil)
         let freshView = HostedView(LibraryPlayerView(player: freshPlayer, model: fixture.model, onClose: {}))
-        XCTAssertNil(freshView.element("wilted-player-mark-completed"), "W-INV-010")
+        XCTAssertNotNil(freshView.element("wilted-player-mark-completed"), "W-INV-010: audio on the phone offers it before it is started")
         XCTAssertNotNil(freshView.element("wilted-player-remove-from-larder"))
     }
 

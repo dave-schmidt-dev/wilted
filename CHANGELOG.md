@@ -17,7 +17,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - The Now Playing position bar is a real scrubber, on the full player and the mini player's line: drag or tap to pick a time, the chosen time shows live, playback moves once on release, and VoiceOver adjusts it by the skip lengths.
-- Mark completed and Remove from Larder on Now Playing and the episode detail, each asking first; the Larder rows now use swipes (not downloaded: right removes, left downloads; downloaded: right marks a started episode completed, left plays), a full swipe only opens the question, and VoiceOver gets each action by name. The inline completion tick is gone.
+- Mark completed and Remove from Larder on Now Playing and the episode detail, each asking first; the Larder rows now use swipes (not downloaded: right removes, left downloads; downloaded: right marks the episode completed, started or not, left plays), a full swipe only opens the question, and VoiceOver gets each action by name. The inline completion tick is gone.
 - The iPhone shows only what the Mac reports ready (Larder, CarPlay, Siri, play order); an episode the Mac says it has no ready audio for leaves the list at once and returns when the Mac offers it.
 - A soft wash of the playing episode's artwork across the top of Now Playing, from the local cache only, with text contrast pinned in a test.
 - Transcripts show who is speaking when the Mac's transcript names speakers (the speaker is optional on the wire, so an older Mac or phone is unaffected).
