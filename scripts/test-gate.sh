@@ -335,7 +335,9 @@ leg_xcodegen_reproducible() {
   for project_file in \
     WiltedMac/Info.plist WiltedMac/WiltedMac.entitlements \
     WiltedMac/WiltedMacProduction.entitlements WiltediOS/Info.plist \
-    WiltediOS/WiltediOS.entitlements WiltediOS/WiltediOSProduction.entitlements; do
+    WiltediOS/WiltediOS.entitlements WiltediOS/WiltediOSProduction.entitlements \
+    WiltediOSIntents/Info.plist WiltediOSIntents/WiltediOSIntents.entitlements \
+    WiltediOSIntents/WiltediOSIntentsProduction.entitlements; do
     mkdir -p "$first/$(dirname "$project_file")" "$second/$(dirname "$project_file")"
     cp "$integration_root/$project_file" "$first/$project_file"
     cp "$integration_root/$project_file" "$second/$project_file"
