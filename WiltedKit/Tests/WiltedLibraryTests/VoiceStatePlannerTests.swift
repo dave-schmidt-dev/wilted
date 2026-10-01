@@ -53,7 +53,7 @@ final class VoiceStatePlannerTests: XCTestCase {
     // MARK: setSpeed
 
     func testSetSpeedEverySupportedRate() {
-        for rate in VoiceCommandPlanner.supportedSpeeds {
+        for rate in PlaybackSpeeds.all {
             XCTAssertEqual(plan(.setSpeed(rate), snapshot()).action, .setSpeed(rate))
         }
     }
@@ -61,6 +61,7 @@ final class VoiceStatePlannerTests: XCTestCase {
     func testSetSpeedDialogNamesTheRateAndWhetherSomethingPlays() {
         XCTAssertEqual(plan(.setSpeed(1.5), snapshot()).dialog, "Speed set to 1.5 times.")
         XCTAssertEqual(plan(.setSpeed(0.75), snapshot()).dialog, "Speed set to 0.75 times.")
+        XCTAssertEqual(plan(.setSpeed(0.5), snapshot()).dialog, "Speed set to 0.5 times.")
         XCTAssertEqual(plan(.setSpeed(2), snapshot()).dialog, "Speed set to 2 times.")
         XCTAssertEqual(plan(.setSpeed(1), snapshot()).dialog, "Speed set to normal.")
         XCTAssertEqual(plan(.setSpeed(1.25), empty).dialog, "Default speed set to 1.25 times.")
@@ -68,7 +69,7 @@ final class VoiceStatePlannerTests: XCTestCase {
     }
 
     func testSetSpeedRefusesARateThePlayerDoesNotOffer() {
-        for rate in [0.5, 1.1, 3, .nan] {
+        for rate in [0.25, 1.1, 3, .nan] {
             XCTAssertEqual(plan(.setSpeed(rate), snapshot()), VoicePlan(action: .none, dialog: "That speed isn't available."))
         }
     }

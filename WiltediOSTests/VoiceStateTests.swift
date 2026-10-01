@@ -30,8 +30,7 @@ final class VoiceStateTests: XCTestCase {
     // MARK: enums
 
     func testSpeedOptionsAreExactlyThePlayersRatesAndThePlannersSpeeds() {
-        XCTAssertEqual(SpeedOption.allCases.map(\.rate), LibraryPlayer.rates)
-        XCTAssertEqual(LibraryPlayer.rates, VoiceCommandPlanner.supportedSpeeds)
+        XCTAssertEqual(SpeedOption.allCases.map(\.rate), PlaybackSpeeds.all)
         XCTAssertEqual(Set(SpeedOption.caseDisplayRepresentations.keys), Set(SpeedOption.allCases), "every speed has a spoken title")
     }
 

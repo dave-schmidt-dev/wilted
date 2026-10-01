@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import MediaPlayer
 import WiltedDomain
+import WiltedLibrary
 import WiltedListener
 
 /// An engine that can also change speed. `ListenerAudioEngine` has no rate, and the legacy
@@ -74,8 +75,6 @@ final class LibraryPlayer: ObservableObject {
         case failed(String)
     }
 
-    /// Speeds the picker offers; `AVAudioPlayer` accepts 0.5 through 2.
-    static let rates: [Double] = [0.75, 1, 1.25, 1.5, 1.75, 2]
     nonisolated static let skipBackSeconds: TimeInterval = 15
     nonisolated static let skipForwardSeconds: TimeInterval = 30
     private static let maxAccrual: TimeInterval = 5
@@ -263,13 +262,13 @@ final class LibraryPlayer: ObservableObject {
 
     /// Within what the picker offers, which is what `AVAudioPlayer` accepts.
     private static func clampRate(_ value: Double) -> Double {
-        min(max(value, rates.first ?? 0.5), rates.last ?? 2)
+        min(max(value, PlaybackSpeeds.range.lowerBound), PlaybackSpeeds.range.upperBound)
     }
 
     /// The next speed up from `current`, wrapping from the fastest to the slowest. `current` need not
-    /// be one of `rates` (a Settings speed the picker lacks): it steps to the next offered one above it.
+    /// be one of `PlaybackSpeeds.all` (a Settings speed the picker lacks): it steps to the next offered one above it.
     static func nextRate(after current: Double) -> Double {
-        rates.first { $0 > current + 0.001 } ?? rates[0]
+        PlaybackSpeeds.all.first { $0 > current + 0.001 } ?? PlaybackSpeeds.all[0]
     }
 
     func setStopsAfterCurrentItem(_ on: Bool) { stopsAfterCurrentItem = on }
@@ -507,7 +506,7 @@ final class MediaPlayerLibraryRemoteCommands: LibraryRemoteCommands {
         // CarPlay's speed button follows this command (Apple: CPNowPlayingPlaybackRateButton "uses
         // MPRemoteCommandCenter to observe changes to the playback rate"). Without it enabled and
         // advertising rates, the button reads 0x even while the episode plays.
-        center.changePlaybackRateCommand.supportedPlaybackRates = LibraryPlayer.rates.map { NSNumber(value: $0) }
+        center.changePlaybackRateCommand.supportedPlaybackRates = PlaybackSpeeds.all.map { NSNumber(value: $0) }
         add(center.changePlaybackRateCommand) { event in
             (event as? MPChangePlaybackRateCommandEvent).map { .setRate(Double($0.playbackRate)) }
         }

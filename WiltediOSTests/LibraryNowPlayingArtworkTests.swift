@@ -93,7 +93,7 @@ final class LibraryNowPlayingArtworkTests: XCTestCase {
         commands.install { received.append($0); return true }
         defer { commands.uninstall() }
         XCTAssertTrue(center.changePlaybackRateCommand.isEnabled)
-        XCTAssertEqual(center.changePlaybackRateCommand.supportedPlaybackRates.map(\.doubleValue), LibraryPlayer.rates)
+        XCTAssertEqual(center.changePlaybackRateCommand.supportedPlaybackRates.map(\.doubleValue), PlaybackSpeeds.all)
         let recorder = RecordingNowPlaying()
         let player = player(recorder)
         player.start(item(), autoplay: true)
@@ -141,10 +141,10 @@ final class LibraryNowPlayingArtworkTests: XCTestCase {
 
     func testNextRateStepsFromAnySpeedAndWraps() {
         XCTAssertEqual(LibraryPlayer.nextRate(after: 1.25), 1.5)
-        XCTAssertEqual(LibraryPlayer.nextRate(after: 2), 0.75, "wraps from the fastest to the slowest")
+        XCTAssertEqual(LibraryPlayer.nextRate(after: 2), 0.5, "wraps from the fastest to the slowest")
         XCTAssertEqual(LibraryPlayer.nextRate(after: 1.1), 1.25, "a speed the picker lacks moves up to the next offered")
         XCTAssertEqual(LibraryPlayer.nextRate(after: 0.5), 0.75)
-        XCTAssertEqual(LibraryPlayer.nextRate(after: 3), 0.75)
+        XCTAssertEqual(LibraryPlayer.nextRate(after: 3), 0.5)
     }
 
     // MARK: artwork

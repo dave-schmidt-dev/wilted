@@ -75,8 +75,8 @@ struct LibrarySettingsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .monospacedDigit()
                 Stepper(
-                    "Default speed", value: $settings.defaultSpeed, in: LibrarySettingsStore.speedRange,
-                    step: LibrarySettingsStore.speedStep)
+                    "Default speed", value: $settings.defaultSpeed, in: PlaybackSpeeds.range,
+                    step: PlaybackSpeeds.step)
                     .labelsHidden()
             }
             .accessibilityElement(children: .contain)

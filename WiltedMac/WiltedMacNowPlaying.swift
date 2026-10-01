@@ -1,4 +1,5 @@
 import Foundation
+import WiltedLibrary
 
 #if canImport(AppKit)
 import AppKit
@@ -224,7 +225,7 @@ final class MediaPlayerRemoteCommandSource: WiltedRemoteCommandSource {
             return .changeRate(Double(event.playbackRate))
         }
         center.changePlaybackRateCommand.supportedPlaybackRates =
-            WiltedMacModel.playbackRateChoices.map { NSNumber(value: $0) }
+            PlaybackSpeeds.all.map { NSNumber(value: $0) }
 
         // Not a podcast's controls, and leaving them enabled draws dead buttons.
         for unsupported in [center.stopCommand, center.seekForwardCommand, center.seekBackwardCommand,

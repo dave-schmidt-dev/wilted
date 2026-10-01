@@ -1,5 +1,6 @@
 import SwiftUI
 import WiltedDomain
+import WiltedLibrary
 
 /// The bar pinned above the Larder while an episode is loaded. Tapping the title opens the
 /// full player. State is spelled out in words, never left to color or an icon alone.
@@ -236,7 +237,7 @@ struct LibraryPlayerView: View {
 
     private var rateMenu: some View {
         Menu {
-            ForEach(LibraryPlayer.rates, id: \.self) { rate in
+            ForEach(PlaybackSpeeds.all, id: \.self) { rate in
                 Button {
                     player.setRate(rate)
                 } label: {

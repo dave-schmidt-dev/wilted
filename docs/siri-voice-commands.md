@@ -142,7 +142,7 @@ from there; the planner, `SleepTimer` and `LibraryPlayer.stopsAfterCurrentItem` 
 | | episode loaded, length unknown | none | "I can't tell how long is left." |
 | | under a second left | none | "<title> has finished." |
 | | otherwise | none | "About <n> minutes left." / "About 1 hour 5 minutes left." / "Less than a minute left." (under 30 s) |
-| setSpeed(rate) | rate not one of `LibraryPlayer.rates` | none | "That speed isn't available." |
+| setSpeed(rate) | rate not one of `PlaybackSpeeds.all` | none | "That speed isn't available." |
 | | episode loaded | set the speed now and as the app's default speed | "Speed set to 1.5 times." ("normal" for 1) |
 | | nothing loaded | set the default speed | "Default speed set to 1.5 times." |
 | sleepTimer(minutes) | 1 to 720 minutes, episode loaded | pause after that long | "Sleep timer set for 30 minutes." |
@@ -204,7 +204,7 @@ for "resume" (Siri's own "resume" covers it; Play next would skip ahead).
 | What's playing | "What's playing in Wilted", "What am I listening to in Wilted" |
 | Downloaded | "What's downloaded in Wilted", "What episodes do I have in Wilted" |
 | Time left | "How much is left in Wilted", "How much time is left in Wilted", "How long is left in Wilted" |
-| Set speed | "Set speed to <0.75, 1, 1.25, 1.5, 1.75 or 2> in Wilted", "Set the speed to <speed> in Wilted" |
+| Set speed | "Set speed to <0.5, 0.75, 1, 1.25, 1.5, 1.75 or 2> in Wilted", "Set the speed to <speed> in Wilted" |
 
 Unverified on a physical iPhone: how Siri's speech recognition matches the numeric speed titles and the
 minute presets (the enum cases carry spoken synonyms such as "one and a half" and "an hour"). The

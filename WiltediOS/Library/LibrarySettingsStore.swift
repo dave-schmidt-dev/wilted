@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import WiltedLibrary
 
 /// What the player needs from Settings: the speed a new item starts at and both skip lengths.
 struct LibraryPlaybackPreferences: Equatable, Sendable {
@@ -15,9 +16,6 @@ struct LibraryPlaybackPreferences: Equatable, Sendable {
 /// here syncs, and none of it is library state (W-INV-005 is about the Mac's records).
 @MainActor
 final class LibrarySettingsStore: ObservableObject {
-    /// Speeds the setting offers; the player applies what its engine can do (`LibraryPlayer.rates`).
-    nonisolated static let speedRange: ClosedRange<Double> = 0.75...2.0
-    nonisolated static let speedStep = 0.25
     nonisolated static let defaultSpeed = 1.25
     /// Whole-second lengths that have a matching `gobackward.N` / `goforward.N` SF Symbol.
     nonisolated static let skipOptions = [5, 10, 15, 30, 45, 60, 75, 90]
@@ -79,12 +77,9 @@ final class LibrarySettingsStore: ObservableObject {
             autoPlayNext: autoPlayNext)
     }
 
-    /// Nearest 0.25 step inside `speedRange`; a non-finite value falls back to the default.
+    /// The nearest speed in `PlaybackSpeeds`; a non-finite value falls back to the default.
     nonisolated static func clampSpeed(_ value: Double) -> Double {
-        guard value.isFinite else { return defaultSpeed }
-        let stepped = (value / speedStep).rounded() * speedStep
-        let clamped = min(max(stepped, speedRange.lowerBound), speedRange.upperBound)
-        return (clamped * 100).rounded() / 100
+        PlaybackSpeeds.nearest(value, fallback: defaultSpeed)
     }
 
     /// `value` when it is an offered length, otherwise the nearest offered one; `fallback` when unset.

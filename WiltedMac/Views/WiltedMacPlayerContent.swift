@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WiltedDomain
+import WiltedLibrary
 
 struct WiltedMacPlayerContent: View {
     @Bindable var model: WiltedMacModel
@@ -67,7 +68,7 @@ struct WiltedMacPlayerContent: View {
                 Picker("Speed", selection: Binding(
                     get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
                 )) {
-                    ForEach(WiltedMacModel.playbackRateChoices, id: \.self) {
+                    ForEach(PlaybackSpeeds.all, id: \.self) {
                         Text("\($0, specifier: "%g")×").tag($0)
                     }
                 }

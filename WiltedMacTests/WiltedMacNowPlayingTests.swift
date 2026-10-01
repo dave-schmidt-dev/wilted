@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 import AppKit
 import MediaPlayer
+import WiltedLibrary
 @testable import WiltedMac
 
 @MainActor
@@ -260,7 +261,7 @@ final class WiltedMacNowPlayingTests: XCTestCase {
     func testTheSkipIntervalsMatchTheOnScreenTransports() {
         XCTAssertEqual(WiltedMacModel.backwardSkipSeconds, 15)
         XCTAssertEqual(WiltedMacModel.forwardSkipSeconds, 30)
-        XCTAssertTrue(WiltedMacModel.playbackRateChoices.contains(WiltedMacModel.initialPlaybackRate),
+        XCTAssertTrue(PlaybackSpeeds.all.contains(WiltedMacModel.initialPlaybackRate),
                       "the widget is told these speeds, so the default has to be one of them")
     }
 

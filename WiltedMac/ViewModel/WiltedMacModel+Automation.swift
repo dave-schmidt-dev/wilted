@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import AppKit
 import os
+import WiltedLibrary
 
 #if canImport(WiltedProducer)
 import WiltedDomain
@@ -57,7 +58,7 @@ extension WiltedMacModel {
 #endif
 
     static func clampPlaybackRate(_ value: Double) -> Double {
-        min(max(value.isFinite ? value : initialPlaybackRate, 0.5), 2)
+        PlaybackSpeeds.nearest(value, fallback: initialPlaybackRate)
     }
 
     /// Stores only a complete, current settings envelope for a later automation coordinator.

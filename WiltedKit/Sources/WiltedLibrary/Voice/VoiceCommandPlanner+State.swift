@@ -3,8 +3,6 @@ import Foundation
 /// Commands about the player's own state rather than which episode plays: time left, speed and the
 /// sleep timer. Same rules as the rest of the planner: pure, one short sentence each.
 extension VoiceCommandPlanner {
-    /// The speeds the player offers (`LibraryPlayer.rates`; a test keeps the two equal).
-    public static let supportedSpeeds: [Double] = [0.75, 1, 1.25, 1.5, 1.75, 2]
     /// Longest sleep timer a spoken request may set.
     public static let maxSleepMinutes = 12 * 60
 
@@ -25,7 +23,7 @@ extension VoiceCommandPlanner {
     }
 
     static func planSetSpeed(_ rate: Double, snapshot: VoiceSnapshot) -> VoicePlan {
-        guard supportedSpeeds.contains(rate) else {
+        guard PlaybackSpeeds.contains(rate) else {
             return VoicePlan(action: .none, dialog: "That speed isn't available.")
         }
         let spoken = rate == 1 ? "normal" : "\(speedText(rate)) times"

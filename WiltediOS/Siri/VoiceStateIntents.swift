@@ -3,9 +3,10 @@ import Foundation
 import WiltedLibrary
 
 /// A speed Siri can be asked for. An App Shortcut phrase may only carry an `AppEnum` or `AppEntity`
-/// parameter, so the speeds the player offers (`LibraryPlayer.rates`) are cases here. The raw value is
-/// hundredths, the planner's `supportedSpeeds` and `LibraryPlayer.rates` are kept equal by a test.
+/// parameter, so the speeds in `PlaybackSpeeds` are cases here. The raw value is hundredths; a test
+/// keeps the cases equal to `PlaybackSpeeds.all`.
 enum SpeedOption: Int, AppEnum, CaseIterable {
+    case half = 50
     case threeQuarters = 75
     case normal = 100
     case oneAndAQuarter = 125
@@ -15,6 +16,7 @@ enum SpeedOption: Int, AppEnum, CaseIterable {
 
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Speed")
     static let caseDisplayRepresentations: [SpeedOption: DisplayRepresentation] = [
+        .half: DisplayRepresentation(title: "0.5", synonyms: ["half", "half speed", "point five"]),
         .threeQuarters: DisplayRepresentation(title: "0.75", synonyms: ["three quarters", "point seven five"]),
         .normal: DisplayRepresentation(title: "1", synonyms: ["normal", "regular", "one times"]),
         .oneAndAQuarter: DisplayRepresentation(title: "1.25", synonyms: ["one and a quarter", "one point two five"]),

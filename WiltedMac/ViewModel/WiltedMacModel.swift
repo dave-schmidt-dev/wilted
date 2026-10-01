@@ -116,10 +116,6 @@ final class WiltedMacModel {
     /// per-episode speed of its own, so 1.25× chosen once stays 1.25×.
     static let playbackRatePreferenceKey = "wilted.playback.rate"
     static let initialPlaybackRate = 1.25
-    /// The speeds the rate control offers, and the same list the system widget
-    /// is told about. One array, because two would drift and the widget would
-    /// offer a speed the app refuses.
-    static let playbackRateChoices: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 2]
     /// Transport step sizes. Asymmetric on purpose: a listener rewinds to hear
     /// something again and skips forward past an advertisement, and those are
     /// not the same distance. Published to the system so a media key's skip
