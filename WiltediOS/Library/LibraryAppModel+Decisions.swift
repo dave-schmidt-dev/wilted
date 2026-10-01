@@ -93,10 +93,13 @@ struct PendingDecision: Identifiable, Equatable, Sendable {
     var phase: Phase = .awaiting
     /// False until the transport accepted the intent; unsent intents are retried.
     var isSent = false
+    /// A decision the listener did not make (an episode that played to its end): sent and tracked like
+    /// any other, but it changes nothing on screen and says nothing on the row; the row follows the Mac.
+    var isSilent = false
 
     var id: String { intent.id }
     var entryID: ItemID { intent.action.entryID }
-    var showsOptimistically: Bool { phase != .pendingOnMac }
+    var showsOptimistically: Bool { !isSilent && phase != .pendingOnMac }
 
     /// True once the fetched state already shows what this decision asked for.
     func isSatisfied(by placement: EntryPlacement) -> Bool {
@@ -172,7 +175,9 @@ extension LibraryAppModel {
     // MARK: - Reading
 
     /// The decision in flight for `entryID`, if any.
-    func pendingDecision(for entryID: ItemID) -> PendingDecision? { decisions.first { $0.entryID == entryID } }
+    /// The listener's own pending decision for the entry; a silent one (an episode that played out) is not
+    /// theirs and neither hides the row's buttons nor blocks a decision they make.
+    func pendingDecision(for entryID: ItemID) -> PendingDecision? { decisions.first { $0.entryID == entryID && !$0.isSilent } }
 
     /// What to show under the row: the state of its decision or why one was rolled back.
     func decisionStatus(for entryID: ItemID) -> LibraryDecisionStatus? {
@@ -200,8 +205,8 @@ extension LibraryAppModel {
 
     /// Records the decision, shows its expected result and sends it. A decision the row would not
     /// offer, or a second one for an entry that already has one, is ignored.
-    func decide(_ action: LibraryDecisionAction, entryID: ItemID) async {
-        guard let decision = begin(action, entryID: entryID) else { return }
+    func decide(_ action: LibraryDecisionAction, entryID: ItemID, requiresOffer: Bool = true, silent: Bool = false) async {
+        guard let decision = begin(action, entryID: entryID, requiresOffer: requiresOffer, silent: silent) else { return }
         await send(decision)
     }
 
@@ -240,7 +245,7 @@ extension LibraryAppModel {
                 if outcome.isApplied {
                     if case .applied = decision.phase {} else { decision.phase = .applied(at: current) }
                 } else {
-                    decisionNotices[decision.entryID] = Self.rejectionText(outcome.reason)
+                    if !decision.isSilent { decisionNotices[decision.entryID] = Self.rejectionText(outcome.reason) }
                     settled = true
                 }
             }
@@ -271,15 +276,18 @@ extension LibraryAppModel {
 
     // MARK: - Internals
 
-    private func begin(_ action: LibraryDecisionAction, entryID: ItemID) -> PendingDecision? {
-        guard !accountQuarantined, pendingDecision(for: entryID) == nil,
-              isOffered(action, entryID: entryID),
+    /// `requiresOffer` is false and `silent` true for an episode that just played out: the listener did
+    /// not ask, so the row's own buttons do not gate it and nothing on screen changes until the Mac does.
+    private func begin(_ action: LibraryDecisionAction, entryID: ItemID, requiresOffer: Bool = true, silent: Bool = false) -> PendingDecision? {
+        guard !accountQuarantined, !decisions.contains(where: { $0.entryID == entryID && (silent ? $0.intent.action == .markDone(entryID: entryID) : !$0.isSilent) }),
+              !requiresOffer || isOffered(action, entryID: entryID),
               let baseline = EntryPlacement(of: entryID, in: decisionContent),
               let intent = try? LibraryIntent(
                   id: UUID().uuidString, deviceID: deviceID, createdAt: now(), action: action.intentAction(for: entryID))
         else { return nil }
-        let decision = PendingDecision(intent: intent, baseline: baseline)
-        decisionNotices[entryID] = nil
+        var decision = PendingDecision(intent: intent, baseline: baseline)
+        decision.isSilent = silent
+        if !silent { decisionNotices[entryID] = nil }
         decisions.append(decision)
         rebuildRows()
         return decision

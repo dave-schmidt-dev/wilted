@@ -253,6 +253,50 @@ final class LibraryAutoContinueTests: XCTestCase {
         XCTAssertEqual(rig.model.playOrderRows.map(\.id.rawValue).suffix(2).sorted(), ["a", "b"])
     }
 
+    func testPlayingAnEpisodeToItsEndSendsTheMacOneMarkCompleted() async throws {
+        let rig = try await makeRig(autoPlayNext: false)
+        await start(rig, "a")
+        rig.engine.finishNaturally()
+        try await eventually("the intent") { rig.model.decisions.contains { $0.entryID == self.id("a") && $0.isSilent } }
+        let sent = try await mac.listIntents()
+        XCTAssertEqual(sent.map(\.action), [.markDone(entryID: id("a"))], "the Mac is told, not left to guess from a position")
+        XCTAssertEqual(sent.first?.deviceID, "phone")
+        XCTAssertNotNil(rig.model.queued.first { $0.id == id("a") }, "the row stays until the Mac takes it off the Larder")
+        XCTAssertNil(rig.model.decisionStatus(for: id("a")), "and says nothing about a request the listener did not make")
+        // Starting it again and letting it finish again does not stack a second request.
+        await start(rig, "a")
+        rig.engine.finishNaturally()
+        await settle()
+        let again = try await mac.listIntents()
+        XCTAssertEqual(again.count, 1)
+        let row = try XCTUnwrap(rig.model.queued.first { $0.id == id("a") })
+        XCTAssertTrue(rig.model.decisionActions(for: row).contains(.markDone), "the row's own buttons stay while the Mac has not answered")
+        await rig.model.decide(.markDone, entryID: id("a"))
+        XCTAssertNotNil(rig.model.pendingDecision(for: id("a")), "the listener's own decision is not blocked by the silent one")
+    }
+
+    func testAPendingRemoveDoesNotDropTheCompletionWhenTheEpisodePlaysOut() async throws {
+        let rig = try await makeRig(autoPlayNext: false)
+        await start(rig, "a")
+        await rig.model.decide(.removeFromLarder, entryID: id("a"))
+        rig.engine.finishNaturally()
+        try await eventually("the completion") { rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("a") } }
+        let sent = try await mac.listIntents().map(\.action)
+        XCTAssertTrue(sent.contains(.removeFromLarder(entryID: id("a"))))
+        XCTAssertTrue(sent.contains(.markDone(entryID: id("a"))))
+    }
+
+    func testAnEpisodeTheMacAlreadyCompletedSendsNothingWhenItPlaysOut() async throws {
+        let rig = try await makeRig(autoPlayNext: false)
+        try await complete("a", at: 1_690_000_000)
+        await rig.model.refresh()
+        await start(rig, "a")
+        rig.engine.finishNaturally()
+        await settle()
+        let sent = try await mac.listIntents()
+        XCTAssertTrue(sent.isEmpty)
+    }
+
     func testTheSettingOffLeavesTheEpisodeEnded() async throws {
         let rig = try await makeRig(autoPlayNext: false)
         await start(rig, "a")
