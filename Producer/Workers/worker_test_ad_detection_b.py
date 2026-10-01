@@ -222,6 +222,45 @@ class AdDetectionMixinB:
             "so it cannot share the sign-off's last words",
         )
 
+    # TechCrunch Daily "Obama urges Democrats to have a 'clear plan' for AI
+    # safeguards" (2026-09): the last 20 s were a Motley Fool Hidden Gems promo
+    # that survived a 2026-09-16 preparation, when the closing-boundary probe ran
+    # unconditionally, answered "carries program" for the spot and moved the cut
+    # past it. Times are the retained prepared cues mapped back to source time
+    # (+180.68 s after the 6.64-187.32 sponsor cut). The text of the last
+    # segment is the show's usual spot continuation: the cut audio left no cue.
+    OBAMA_TAIL = [
+        FakeSegment(476.88, 497.04, "invented programme reporting"),
+        FakeSegment(497.52, 517.76, "invented programme reporting continues"),
+        FakeSegment(517.84, 537.84, "and folks that's your daily crunch today's stories are reported by"),
+        FakeSegment(538.0, 538.4, "dot com"),
+        FakeSegment(543.72, 563.88, "hey there i'm travis hoyam one of the hosts of motley fool hidden gems"),
+        FakeSegment(563.88, 575.608, "tune in for insights and a long term perspective on investing"),
+    ]
+
+    def test_the_obama_episode_tail_promo_is_cut_whole_when_the_spot_is_nominated(self):
+        llm = FakeLLM(postroll_advertising_start_id=4, tail_carries_program=True, preroll_program_id=-1)
+        recovered, details = self.postroll(
+            llm, detections=[FakeAd(6.64, 187.32, "sponsor_read")], total=575.608, segments=self.OBAMA_TAIL
+        )
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in recovered], [(6.64, 187.32), (538.4, 575.608)]
+        )
+        self.assertNotIn(wp.BOUNDARY_SEGMENT_TAIL_PROMPT, llm.request_prompts)
+        self.assertIn("segment 4 starts 5.32s after the segment before it", details["ads.detect.boundary.clean"])
+
+    def test_the_obama_episode_tail_promo_is_cut_whole_when_the_dot_com_orphan_is_nominated(self):
+        # The spot's 0.4 s "dot com" lead-in sits flush against the sign-off, so
+        # the probe still runs for it; one step on lands on the spot, not past it.
+        llm = FakeLLM(postroll_advertising_start_id=3, tail_carries_program=True, preroll_program_id=-1)
+        recovered, details = self.postroll(
+            llm, detections=[FakeAd(6.64, 187.32, "sponsor_read")], total=575.608, segments=self.OBAMA_TAIL
+        )
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in recovered], [(6.64, 187.32), (538.4, 575.608)]
+        )
+        self.assertIn("segment 3", details["ads.detect.boundary.shortened"])
+
     def test_terminal_window_with_earlier_unclaimed_promo_gap_recovers_across_ending(self):
         # TWiT 1100 regression: two terminal cuts left a promo fragment between
         # them. Re-reviewing the bounded ending must be able to join that gap.
