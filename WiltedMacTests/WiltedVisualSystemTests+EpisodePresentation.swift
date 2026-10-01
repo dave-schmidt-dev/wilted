@@ -223,6 +223,37 @@ extension WiltedVisualSystemTests {
         )
     }
 
+    /// The window keeps its transparent look: the toolbar background and the top
+    /// scroll-edge effect are hidden, so no grey band shows across the toolbar on
+    /// hover. AppKit chrome cannot be snapshotted headlessly and no snapshot covers
+    /// the toolbar, so this source contract pins the modifiers on the window's root.
+    func testWindowToolbarBackgroundAndTopScrollEdgeEffectAreHidden() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/Views/WiltedMacRootView.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains(".wiltedTransparentToolbar()"), "the split view applies the transparent toolbar")
+        XCTAssertTrue(source.contains("toolbarBackgroundVisibility(.hidden, for: .windowToolbar)"))
+        XCTAssertTrue(source.contains("scrollEdgeEffectHidden(true, for: .top)"))
+        XCTAssertTrue(source.contains("if #available(macOS 26.0, *) {\n            toolbarBackgroundVisibility"), "the scroll-edge effect is macOS 26 API")
+    }
+
+    /// The iPhone's one word for an episode that can play now is "Ready"; the Mac's
+    /// Larder count line used to say "Waiting for you". No Mac source shows that term.
+    func testNoMacSourceSaysWaitingForYou() throws {
+        let macRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac", isDirectory: true)
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: macRoot, includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        XCTAssertFalse(files.isEmpty)
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("waiting for you"), "\(file.lastPathComponent) says \"Waiting for you\"; the term is \"Ready\"")
+        }
+        let menu = try String(contentsOf: macRoot.appendingPathComponent("Views/WiltedMacMenuView.swift"), encoding: .utf8)
+        // The count is the Ready group, the sidebar Ready row's own source: the whole
+        // Larder also holds Downloaded and Not downloaded rows, which are not ready.
+        XCTAssertTrue(menu.contains("Text(\"Ready: \\(model.menuUnfilteredEpisodes(in: .playable).count) episodes\")"))
+    }
+
     /// Prep controls live in the Menu row that owns the run, and the player's
     /// facts keep their predictable regions. This source contract catches a
     /// visual regression without changing snapshots.

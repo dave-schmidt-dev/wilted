@@ -195,7 +195,7 @@ def build(captures, commit, date_iso, date_human, previous):
             "and Now Playing embeds the compact player (<code>wilted-compact-player</code>) directly in the "
             "destination rather than in a separate rail, because Menu is the one destination that expands "
             "Transcript and Notes inline (5.4) instead of into the full-window overlay. Audio on Menu "
-            "(<code>wilted-menu-audio-total</code>) and Waiting for you "
+            "(<code>wilted-menu-audio-total</code>) and Ready "
             "(<code>wilted-menu-waiting-count</code>) sit beside the independent "
             "<strong>Group by: Status</strong> menu (<code>wilted-menu-grouping</code>), which also offers "
             "Feed and Date, and the always-labelled <strong>Sort by: Custom order</strong> menu "

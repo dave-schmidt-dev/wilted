@@ -77,7 +77,7 @@ struct WiltedMacMenuView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-menu-audio-total")
-                Text("Waiting for you: \(model.menuWaitingEpisodes.count) episodes")
+                Text("Ready: \(model.menuUnfilteredEpisodes(in: .playable).count) episodes")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-menu-waiting-count")

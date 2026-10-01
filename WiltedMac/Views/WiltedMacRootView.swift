@@ -164,6 +164,7 @@ struct WiltedMacRootView: View {
         // no longer suppresses, so remove the item where the API exists and
         // keep the AppKit fallback for macOS 14.
         .wiltedRemovingToolbarTitle()
+        .wiltedTransparentToolbar()
         .background(WiltedWindowTitleHider())
         .background {
             if let width = WiltedMacFixtureWindowWidth.width(arguments: ProcessInfo.processInfo.arguments) {
@@ -259,6 +260,29 @@ private extension View {
     func wiltedRemovingToolbarTitle() -> some View {
         if #available(macOS 15.0, *) {
             toolbar(removing: .title)
+        } else {
+            self
+        }
+    }
+}
+
+/// A toolbar over the window's own page, with no band of its own.
+///
+/// Every destination fills the window under the toolbar with its page colour, so
+/// the toolbar has nothing to float over. On macOS 26 the system still draws a
+/// backing for it, and a scroll-edge effect over the scroll views beneath, which
+/// showed as a grey band across the toolbar on hover. Both are hidden where the
+/// API exists: the toolbar background from macOS 15, the top scroll-edge effect
+/// from macOS 26. Hiding the effect on this ancestor reaches every scroll view
+/// under it, the sidebar's list included.
+private extension View {
+    @ViewBuilder
+    func wiltedTransparentToolbar() -> some View {
+        if #available(macOS 26.0, *) {
+            toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+                .scrollEdgeEffectHidden(true, for: .top)
+        } else if #available(macOS 15.0, *) {
+            toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         } else {
             self
         }
