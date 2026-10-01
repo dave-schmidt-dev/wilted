@@ -16,6 +16,7 @@ final class AppIntentsMetadataTests: XCTestCase {
     /// Voiced by Siri's own transport commands, so they have no App Shortcut phrase.
     private static let unvoiced: Set<String> = [
         "PauseEpisodeIntent", "ResumeEpisodeIntent", "SkipForwardIntent", "SkipBackIntent",
+        "SleepTimerIntent",
     ]
 
     private func metadata() throws -> [String: Any] {
@@ -54,8 +55,8 @@ final class AppIntentsMetadataTests: XCTestCase {
         let withPhrases = Set(shortcuts.compactMap { $0["actionIdentifier"] as? String })
         XCTAssertEqual(
             withPhrases, Self.intents.subtracting(Self.unvoiced),
-            "pause, resume and skip are voiced by Siri's own transport commands, every other intent has a phrase")
-        XCTAssertEqual(shortcuts.count, 10, "all ten App Shortcut slots are used; an eleventh fails the build")
+            "pause, resume and skip are voiced by Siri's own transport commands and the sleep timer has no shortcut; every other intent has a phrase")
+        XCTAssertEqual(shortcuts.count, 9, "nine App Shortcuts are declared, one slot is free")
     }
 
     func testNoPhraseCollidesWithSiriTransportOrStandsInForResume() throws {
@@ -70,17 +71,6 @@ final class AppIntentsMetadataTests: XCTestCase {
         }
     }
 
-    func testSleepPhrasesNeverSayTimerBecauseSiriGivesThoseToTheClock() throws {
-        let shortcuts = try XCTUnwrap(try metadata()["autoShortcuts"] as? [[String: Any]])
-        let sleep = try XCTUnwrap(shortcuts.first { $0["actionIdentifier"] as? String == "SleepTimerIntent" })
-        let phrases = (sleep["phraseTemplates"] as? [[String: Any]] ?? []).compactMap { $0["key"] as? String }
-        XCTAssertGreaterThanOrEqual(phrases.count, 4)
-        for phrase in phrases {
-            XCTAssertFalse(phrase.lowercased().contains("timer"), "\"\(phrase)\" would be taken by the system timer")
-        }
-        XCTAssertTrue(phrases.contains { !$0.contains("${option}") }, "a phrase with no time cancels the sleep")
-    }
-
     func testEveryShortcutHasAtLeastTheDocumentedPhrases() throws {
         let shortcuts = try XCTUnwrap(try metadata()["autoShortcuts"] as? [[String: Any]])
         var phraseCount: [String: Int] = [:]
@@ -89,7 +79,7 @@ final class AppIntentsMetadataTests: XCTestCase {
             phraseCount[action] = (shortcut["phraseTemplates"] as? [[String: Any]] ?? []).count
         }
         XCTAssertGreaterThanOrEqual(phraseCount["PlayNextEpisodeIntent"] ?? 0, 4)
-        XCTAssertGreaterThanOrEqual(phraseCount["SleepTimerIntent"] ?? 0, 4)
+        XCTAssertNil(phraseCount["SleepTimerIntent"], "the sleep timer is Shortcuts-app only: Siri sends \"sleep timer\" to the Clock")
         XCTAssertGreaterThanOrEqual(phraseCount["TimeLeftIntent"] ?? 0, 3)
         XCTAssertGreaterThanOrEqual(phraseCount["SetSpeedIntent"] ?? 0, 2)
     }

@@ -255,15 +255,5 @@ struct WiltedShortcuts: AppShortcutsProvider {
                 "Set the speed to \(\.$speed) in \(.applicationName)",
             ],
             shortTitle: "Set speed", systemImageName: "speedometer")
-        AppShortcut(
-            intent: SleepTimerIntent(),
-            phrases: [
-                "Put \(.applicationName) to sleep \(\.$option)",
-                "\(.applicationName) sleep \(\.$option)",
-                "Turn \(.applicationName) off \(\.$option)",
-                "Cancel the \(.applicationName) sleep",
-                "Turn off sleep in \(.applicationName)",
-            ],
-            shortTitle: "Sleep", systemImageName: "moon.zzz")
     }
 }

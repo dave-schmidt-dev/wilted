@@ -59,8 +59,8 @@ commands `LibraryPlayer` installs on `MPRemoteCommandCenter` when Wilted is the 
 App Intents below add the phrases that name Wilted and the commands the remote center cannot express.
 An app may declare at most 10 App Shortcuts (the build fails on the 11th), so pause, resume and the two
 skips, which the remote commands already serve, have intents but no App Shortcut phrase (the intents stay
-in the Shortcuts app); the other seven each have one, and time left, speed and the sleep timer (phase 3) take
-the last three slots: 10 of 10.
+in the Shortcuts app); the other seven each have one, and time left and speed (phase 3) take two more: 9 of 10.
+The sleep timer intent has no App Shortcut (see Phase 3).
 
 | v1 command | Path | Intent | Planner command | Tests |
 |---|---|---|---|---|
@@ -110,8 +110,8 @@ and remote-command hooks are fakes, because they need a device. Mark completed n
 
 `WiltediOSTests/AppIntentsMetadataTests.swift` reads `Metadata.appintents/extract.actionsdata` from the
 built app (the tests are hosted in it) and asserts all 14 intents, `ShowEntity`, `EpisodeEntity`, both
-queries and the `SpeedOption` and `SleepTimerOption` enums are exported, exactly 10 App Shortcuts are declared
-(every intent except the four voiced by Siri's transport commands has one), every phrase contains
+queries and the `SpeedOption` and `SleepTimerOption` enums are exported, exactly 9 App Shortcuts are declared
+(every intent except the four voiced by Siri's transport commands and the sleep timer has one), every phrase contains
 `${applicationName}`, and no phrase starts with pause, resume, continue, stop or skip. Last build log (`xcodebuild test`, Xcode 27): no `appintentsmetadataprocessor`
 warnings for the app target; the only ones are "Metadata extraction skipped, no AppIntents.framework
 dependency found" for the unit- and UI-test bundles, which do not link AppIntents. `requestConfirmation(dialog:)` (iOS 18) shows the mark-completed question; the deployment target is iOS 26, so it is called directly.
@@ -125,7 +125,13 @@ dependency found" for the unit- and UI-test bundles, which do not link AppIntent
   your Mac when it's reachable." when it exists but the send failed (it is retried), and "That didn't work."
   when no markDone decision exists (not offered, or another action owns the row).
 
-## Phase 3: time left, speed, sleep timer
+## Phase 3: time left, speed, sleep timer (Shortcuts app only)
+
+The sleep timer has no App Shortcut. On a device (phone and CarPlay, the PCC Siri planner) every phrase tried,
+including ones without the word "timer", was handled as a system sleep timer by the Clock (a 30 second timer
+was created, and "end of episode" was refused), so Wilted's intent was never reached. David does not expect to
+use it, so the slot is free (9 of 10). The `SleepTimerIntent` stays available in the Shortcuts app and works
+from there; the planner, `SleepTimer` and `LibraryPlayer.stopsAfterCurrentItem` are unchanged.
 
 | Command | Condition | Action | Dialog |
 |---|---|---|---|
@@ -154,7 +160,7 @@ dependency found" for the unit- and UI-test bundles, which do not link AppIntent
 - The sleep timer (`SleepTimer`, one per process) is deadline-based: it wakes, checks the clock and sleeps the
   remainder. A wake more than 30 s past the deadline (the app was suspended while paused) is dropped, so it never
   pauses something started since. Starting again replaces it; "off" cancels it. Presets are 5, 10, 15, 20, 30,
-  45, 60 and 90 minutes (`SleepTimerOption`, an `AppEnum` with "off" as a case so one shortcut covers cancel).
+  45, 60 and 90 minutes (`SleepTimerOption`, an `AppEnum` with "off" as a case so one intent covers cancel).
   "End of episode" is a `SleepTimerOption` too: it sets `LibraryPlayer.stopsAfterCurrentItem`, which makes the
   next natural end report auto-play off (once) through `onFinished`, so the episode finishes, its bookkeeping
   runs, and `autoContinue` never starts the next one. It is cleared when used, by "off", by a minutes timer
@@ -180,7 +186,7 @@ the iOS 26.0 floor) is not used.
   A play or mark Siri itself ran is skipped (the system already counted it), and a decision restored at launch
   is not donated (nothing is loaded then).
 
-## App Shortcut phrases (10 of 10)
+## App Shortcut phrases (9 of 10)
 
 Every phrase names the app, none starts with pause, resume, continue, stop or skip, and none stands in
 for "resume" (Siri's own "resume" covers it; Play next would skip ahead).
@@ -196,7 +202,6 @@ for "resume" (Siri's own "resume" covers it; Play next would skip ahead).
 | Downloaded | "What's downloaded in Wilted", "What episodes do I have in Wilted" |
 | Time left | "How much is left in Wilted", "How much time is left in Wilted", "How long is left in Wilted" |
 | Set speed | "Set speed to <0.75, 1, 1.25, 1.5, 1.75 or 2> in Wilted", "Set the speed to <speed> in Wilted" |
-| Sleep | "Put Wilted to sleep in 30 minutes", "Put Wilted to sleep at the end of the episode", "Wilted sleep in 15 minutes", "Turn Wilted off in 30 minutes / at the end of the episode", "Cancel the Wilted sleep", "Turn off sleep in Wilted" (none of them says "timer": Siri hands any "timer" request to the Clock app, which cannot end an episode and made a 30 second system timer on device) |
 
 Unverified on a physical iPhone: how Siri's speech recognition matches the numeric speed titles and the
 minute presets (the enum cases carry spoken synonyms such as "one and a half" and "an hour"). The
