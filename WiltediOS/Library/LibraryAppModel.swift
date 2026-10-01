@@ -110,6 +110,7 @@ final class LibraryAppModel: ObservableObject {
         handoffTiming: LibraryHandoffTiming = LibraryHandoffTiming(),
         decisionTiming: LibraryDecisionTiming = LibraryDecisionTiming(),
         preferences: UserDefaults = .standard,
+        ownPositionsURL: URL? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current
     ) {
@@ -127,6 +128,7 @@ final class LibraryAppModel: ObservableObject {
         self.coordinator = HandoffCoordinator(
             transport: transport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
         self.preferences = preferences
+        handoffState.ownPositionStore = LibraryOwnPositionStore(url: ownPositionsURL)
         self.phoneStats = LibraryPhoneStatsStore(defaults: preferences)
         self.sort = LibrarySortOrder.stored(in: preferences)
         self.store = store
@@ -157,6 +159,15 @@ final class LibraryAppModel: ObservableObject {
         let content = await store.state().content
         entryDurations = content.entries.compactMapValues(\.durationSeconds)
         decisionContent = content
+        // The phone's own last positions, so an offline launch resumes where it left off.
+        if handoffState.ownPositions.isEmpty {
+            let saved = handoffState.ownPositionStore.load()
+            let own = saved.positions.filter { $0.value.record.deviceID == deviceID }
+            handoffState.unpublished = saved.unpublished.filter { own[$0.key] != nil }
+            handoffState.ownPositions = own
+            handoffState.savedCheckpoints = saved.checkpoints.filter { $0.value.record.deviceID != deviceID }
+            if checkpoints.isEmpty { checkpoints = handoffState.savedCheckpoints }
+        }
         rebuildRows()
         await refreshMediaFromCache()
     }
@@ -199,6 +210,7 @@ final class LibraryAppModel: ObservableObject {
         queued = []
         readyOffers = []
         checkpoints = [:]
+        handoffState.savedCheckpoints = [:]
         handoffState.ownPositions = [:]
         continuation = nil
         discardDecisionsAfterAccountChange()
@@ -219,7 +231,13 @@ final class LibraryAppModel: ObservableObject {
         let records = try? await transport.fetchDeviceRecords()
         if let records {
             checkpoints = Self.checkpoints(from: records, excluding: deviceID)
-            handoffState.ownPositions = Self.ownPositions(from: records, deviceID: deviceID)
+            handoffState.savedCheckpoints = checkpoints
+            var own = Self.ownPositions(from: records, deviceID: deviceID)
+            // A position saved here and not yet published is newer than the server's copy.
+            for entryID in handoffState.unpublished.keys {
+                if let local = handoffState.ownPositions[entryID] { own[entryID] = local }
+            }
+            handoffState.ownPositions = own
         }
         // A failed read keeps the last known offers: a flaky fetch must not empty the Larder.
         if let offers = try? await transport.mediaOffers() {

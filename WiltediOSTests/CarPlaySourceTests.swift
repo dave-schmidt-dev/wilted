@@ -47,6 +47,14 @@ final class CarPlaySourceTests: XCTestCase {
         }
     }
 
+    func testListCapComesFromTheCarAtRuntimeNotAHardcodedNumber() throws {
+        let delegate = try XCTUnwrap(carPlaySources().first { $0.name == "CarPlaySceneDelegate.swift" }).text
+        XCTAssertTrue(delegate.contains("CPListTemplate.maximumItemCount"), "the car's own item limit sizes the list")
+        XCTAssertFalse(
+            delegate.contains("limit: 12") || delegate.contains("prefix(12)"),
+            "the scene must not hardcode the cap; 12 is only the model's default for tests")
+    }
+
     func testEveryListItemHandlerCompletes() throws {
         for (name, text) in try carPlaySources() where text.contains(".handler") {
             XCTAssertTrue(text.contains("completion()"), "\(name) has a list item handler that never calls completion()")

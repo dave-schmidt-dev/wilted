@@ -92,11 +92,25 @@ final class LibraryHandoffState {
     var lastTakeoverFailure: Date?
     /// This phone's own last position per entry (progress records), so Play resumes where the phone
     /// left off when nothing newer came from another device. Refreshed from every device-record fetch.
-    var ownPositions: [ItemID: ObservedPlayback] = [:]
+    var ownPositions: [ItemID: ObservedPlayback] = [:] {
+        didSet { persistOwnPositions() }
+    }
+    /// Persists `ownPositions` so a launch with no network still resumes where the phone left off.
+    var ownPositionStore = LibraryOwnPositionStore(url: nil)
+    /// The other devices' newest records as last fetched, persisted for a cold offline start.
+    var savedCheckpoints: [ItemID: ObservedPlayback] = [:] {
+        didSet { persistOwnPositions() }
+    }
+
+    func persistOwnPositions() {
+        ownPositionStore.save(.init(positions: ownPositions, unpublished: unpublished, checkpoints: savedCheckpoints))
+    }
     /// Positions this phone saved but could not publish (offline, a failed write), by entry. The
     /// Mac adopts the phone's position only from a published record, so each is republished on the
     /// next sync, and meanwhile stays this phone's own position for Play.
-    var unpublished: [ItemID: (position: Double, savedAt: Date)] = [:]
+    var unpublished: [ItemID: (position: Double, savedAt: Date)] = [:] {
+        didSet { persistOwnPositions() }
+    }
     /// Server clock minus this phone's clock, learned from this device's own record.
     var clockOffset: TimeInterval = 0
     var refusedRevisions: [ItemID: RevisionID] = [:]
@@ -151,9 +165,22 @@ extension LibraryAppModel {
     /// position recorded against a different revision is never used. Starting playback takes over
     /// through the player's status change.
     func playCached(_ row: LibraryRow) async {
+        await startCached(row, togglingIfLoaded: true)
+    }
+
+    /// `playCached` for a spoken "play": an episode that is already loaded plays (it is never paused),
+    /// checked after the cache lookup so a start from CarPlay or the phone during the await is not undone.
+    func playCachedWithoutToggling(_ row: LibraryRow) async {
+        await startCached(row, togglingIfLoaded: false)
+    }
+
+    private func startCached(_ row: LibraryRow, togglingIfLoaded: Bool) async {
         guard let player = handoffState.player, let cached = await mediaCache.cachedEntries()[row.id] else { return }
         let item = LibraryPlayer.Item(entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url)
-        guard player.item != item else { return player.togglePlayPause() }
+        guard player.item != item else {
+            if togglingIfLoaded { player.togglePlayPause() } else if !player.isPlaying { player.play() }
+            return
+        }
         player.start(item, at: resumeStart(for: row.id, cachedRevision: cached.revisionID))
     }
 

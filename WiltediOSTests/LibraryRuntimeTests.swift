@@ -5,7 +5,7 @@ import WiltedListener
 import XCTest
 @testable import WiltediOS
 
-private final class RuntimeFakeEngine: ListenerAudioEngine, @unchecked Sendable {
+final class RuntimeFakeEngine: ListenerAudioEngine, @unchecked Sendable {
     var duration = 600.0
     var currentTime = 0.0
     var isPlaying = false
@@ -16,25 +16,26 @@ private final class RuntimeFakeEngine: ListenerAudioEngine, @unchecked Sendable 
     func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) {}
 }
 
-private final class RuntimeFakeSession: ListenerAudioSession, @unchecked Sendable {
+final class RuntimeFakeSession: ListenerAudioSession, @unchecked Sendable {
     private(set) var activations = 0
     func activate() throws { activations += 1 }
     func deactivate() {}
 }
 
-private final class RuntimeFakeNowPlaying: ListenerNowPlaying, @unchecked Sendable {
+final class RuntimeFakeNowPlaying: ListenerNowPlaying, @unchecked Sendable {
     func update(title: String, duration: Double, position: Double, rate: Double) {}
     func clear() {}
 }
 
-@MainActor private final class RuntimeFakeRemote: LibraryRemoteCommands {
+@MainActor final class RuntimeFakeRemote: LibraryRemoteCommands {
     private(set) var skipIntervals: (back: TimeInterval, forward: TimeInterval)?
+    private(set) var skipCalls = 0
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
     func uninstall() {}
-    func setSkipIntervals(back: TimeInterval, forward: TimeInterval) { skipIntervals = (back, forward) }
+    func setSkipIntervals(back: TimeInterval, forward: TimeInterval) { skipIntervals = (back, forward); skipCalls += 1 }
 }
 
-@MainActor private final class RuntimeFakeEvents: LibrarySessionEvents {
+@MainActor final class RuntimeFakeEvents: LibrarySessionEvents {
     func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void) {}
 }
 

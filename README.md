@@ -101,12 +101,15 @@ Explicitly excluded from the active Mac milestone: automatic classification, wea
 | `Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests*.swift` | Fourteen LocalLibraryStore behavior test files. |
 | `WiltedMacTests/WiltedMacModelTests*.swift`, `WiltedMacTests/WiltedMacModelTestDoubles.swift` | Twenty-eight Mac model test and test-double files. |
 | `WiltediOS/Library/LibraryRuntime.swift` | Process-wide library model, player and settings (`LibraryRuntime.shared`), started without any iPhone window scene; the phone Larder, CarPlay and Siri all use it. |
+| `WiltediOS/Library/LibraryOwnPositionStore.swift` | The phone's own last position per episode, persisted (readable while locked) so offline resume does not start at 0. |
+| `WiltediOSTests/LibraryFixtureSeedTests.swift` | Seeding tool, skipped unless `TEST_RUNNER_WILTED_SEED_AUDIO=<audio file>` is set and a one-shot `<audio file>.seed-once` token exists: writes one downloaded episode into the simulator app's container so a plain launch lists and plays it with no iCloud or network (attended CarPlay, Siri and Larder checks). |
 | `WiltediOS/CarPlay/` | CarPlay audio scene (list of episodes on the phone, Now Playing) and its framework-free list model; see `docs/carplay-requirements.md`. |
 | `WiltediOS/ListenerAppModel*.swift`, `WiltediOS/ListenerAppTypes.swift` | Nine listener model, type, and extension files. |
 | `WiltediOSTests/ListenerAppModel*.swift` | Seven listener model test and double files. |
 | `scripts/` | Contract validators, phase gates, snapshot and walkthrough tooling. |
 | `tests/` | Probe and aggregate gate runners. |
 | `docs/` | Capability inventory and phase/task verification records. |
+| `docs/siri-voice-commands.md` | Siri voice control: the App Intents decision and the planner's command and dialog table. Code lives in `WiltedKit/Sources/WiltedLibrary/Voice/` and `WiltediOS/Siri/`. |
 | `docs/mockups/` | Standalone HTML UX proposals reviewed before native implementation. |
 | `WiltedKit/` | CloudKit-free shared Swift domain package and tests. |
 | `CloudSync/` | CloudKit adapter, transport, mapping, and deterministic tests. |

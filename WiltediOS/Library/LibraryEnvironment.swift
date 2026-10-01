@@ -42,7 +42,9 @@ enum LibraryEnvironment {
             store.discard()
             return FileLibraryStore(url: storeURL)
         }
-        return LibraryAppModel(transport: built.transport, store: store, deviceID: deviceID, recovery: recovery)
+        return LibraryAppModel(
+            transport: built.transport, store: store, deviceID: deviceID, recovery: recovery,
+            ownPositionsURL: directory.appendingPathComponent("own-positions.json"))
     }
 
     /// Tries the persisted cursor first, then a clean start; a cursor the engine cannot read is
