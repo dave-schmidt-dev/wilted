@@ -112,7 +112,7 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         XCTAssertEqual(rig.controller.takeoverCount, 1)
     }
 
-    func testTimerRepublishesOnlyOnCadenceWhilePlaying() async throws {
+    func testOnlyTheSyncRoundRepublishesWhilePlaying() async throws {
         let rig = await makeRig()
         macPlays(rig, position: 10)
         await rig.controller.reconcile()
@@ -121,12 +121,15 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         macPlays(rig, position: 12)
         await rig.controller.reconcile()
         let current = try await macPosition(rig)
-        XCTAssertEqual(current.positionSeconds, 10, "inside the 30 s cadence")
+        XCTAssertEqual(current.positionSeconds, 10, "the local 2 s tick sends nothing")
 
         rig.clock.advance(SyncCadence.playingPublishInterval - 2)
         await rig.server.setClock(rig.clock.now)
         macPlays(rig, position: 10 + SyncCadence.playingPublishInterval)
         await rig.controller.reconcile()
+        let stillOld = try await macPosition(rig)
+        XCTAssertEqual(stillOld.positionSeconds, 10, "time passing is not a reason to publish; the round is")
+        await rig.controller.tickRound()
         let record = try await macPosition(rig)
         XCTAssertEqual(record.positionSeconds, 10 + SyncCadence.playingPublishInterval)
         XCTAssertEqual(record.epoch, 1, "cadence publishes keep the session epoch")
@@ -282,6 +285,9 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         try await phonePlays(rig, epoch: 2, playing: false)
 
         await rig.controller.reconcile()
+        let beforeRound = try await progressRecords(rig).filter { $0.record.deviceID == macID }
+        XCTAssertTrue(beforeRound.isEmpty, "the local tick does not publish stored positions")
+        await rig.controller.tickRound()
 
         let progress = try await progressRecords(rig)
         XCTAssertEqual(progress.count, 1)
@@ -298,13 +304,13 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         let rig = await makeRig()
         macPlays(rig, position: 50)
         rig.player.stored = [.init(entryID: entry, revision: revision, positionSeconds: 5, updatedAt: nil)]
-        await rig.controller.reconcile()
+        await rig.controller.tickRound()
         XCTAssertEqual(rig.player.storedReadCount, 0, "nothing is read while a session plays")
 
         rig.player.sample?.isPlaying = false
         rig.player.sample?.positionSeconds = 88
         rig.player.stored = [.init(entryID: entry, revision: revision, positionSeconds: 88, updatedAt: nil)]
-        await rig.controller.reconcile()
+        await rig.controller.tickRound()
 
         let progress = try await progressRecords(rig)
         XCTAssertEqual(progress.first?.record.positionSeconds, 88)
@@ -314,7 +320,7 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
     func testStoredPositionsAreReadOncePerTriggerNotOnEveryPass() async throws {
         let rig = await makeRig()
         rig.player.stored = [.init(entryID: entry, revision: revision, positionSeconds: 10, updatedAt: nil)]
-        await rig.controller.reconcile()
+        await rig.controller.tickRound()
         await rig.controller.reconcile()
         XCTAssertEqual(rig.player.storedReadCount, 1)
         let first = try await progressRecords(rig).first?.serverModifiedAt
@@ -324,7 +330,7 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         await rig.controller.reconcile()
         rig.player.sample?.isPlaying = false
         rig.player.stored = [.init(entryID: entry, revision: revision, positionSeconds: 30, updatedAt: nil)]
-        await rig.controller.reconcile()
+        await rig.controller.tickRound()
         XCTAssertEqual(rig.player.storedReadCount, 2)
         let after = try await progressRecords(rig).first
         XCTAssertEqual(after?.record.positionSeconds, 30)

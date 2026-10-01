@@ -56,11 +56,8 @@ enum LibraryRowActions {
 /// Waiting limits for a decision.
 struct LibraryDecisionTiming: Sendable {
     /// How long an unacknowledged decision shows as waiting before it reverts to "Pending on Mac".
-    var confirmationTimeout: TimeInterval = 60
-    /// How often to look for the Mac's answer while one is expected.
-    var pollInterval: Duration = .seconds(5)
-    /// How often to keep looking once every decision is pending, so a stale intent costs little.
-    var pendingPollInterval: Duration = .seconds(30)
+    /// The Mac's answer is read by the sync tick (every 30 s), so this spans a few rounds.
+    var confirmationTimeout: TimeInterval = 90
 }
 
 /// Where an entry sits in the mirrored library; what a decision is compared against.
@@ -217,8 +214,6 @@ extension LibraryAppModel {
     }
 
     func discardDecisionsAfterAccountChange() {
-        decisionPoll?.cancel()
-        decisionPoll = nil
         decisions = []
         decisionNotices = [:]
         decisionContent = LibrarySnapshot()
@@ -231,10 +226,10 @@ extension LibraryAppModel {
     /// rolls it back with a reason, an applied outcome or a matching publish confirms it, a publish
     /// that moved the entry somewhere else contradicts it (the Mac's state wins), and an unanswered
     /// one reverts to "Pending on Mac" after the timeout while staying tracked.
-    func resolveDecisions() async {
+    func resolveDecisions(outcomes read: [IntentOutcome]) async {
         guard !decisions.isEmpty else { return }
         for decision in decisions where !decision.isSent { await send(decision) }
-        let mine = ((try? await transport.intentOutcomes()) ?? []).filter { $0.deviceID == deviceID }
+        let mine = read.filter { $0.deviceID == deviceID }
         let outcomes = Dictionary(mine.map { ($0.intentID, $0) }, uniquingKeysWith: { first, _ in first })
         let current = now()
         var changed: [String: PendingDecision?] = [:]
@@ -255,7 +250,6 @@ extension LibraryAppModel {
         }
         if !changed.isEmpty { decisions = decisions.compactMap { changed[$0.id] ?? $0 } }
         rebuildRows()
-        ensureDecisionPolling()
     }
 
     private func isSettledByFetchedState(_ decision: PendingDecision) -> Bool {
@@ -288,7 +282,6 @@ extension LibraryAppModel {
         decisionNotices[entryID] = nil
         decisions.append(decision)
         rebuildRows()
-        ensureDecisionPolling()
         return decision
     }
 
@@ -309,24 +302,6 @@ extension LibraryAppModel {
         guard (try? await transport.send(intent: decision.intent)) != nil,
               let index = decisions.firstIndex(where: { $0.id == decision.id }) else { return }
         decisions[index].isSent = true
-    }
-
-    /// Looks again every few seconds while any decision is unsettled, then stops.
-    private func ensureDecisionPolling() {
-        guard decisionPoll == nil, !decisions.isEmpty else { return }
-        decisionPoll = Task { [weak self] in
-            while let interval = self?.nextDecisionInterval() {
-                try? await Task.sleep(for: interval)
-                if Task.isCancelled { return }
-                await self?.refresh()
-            }
-            self?.decisionPoll = nil
-        }
-    }
-
-    private func nextDecisionInterval() -> Duration? {
-        guard !decisions.isEmpty else { return nil }
-        return decisions.contains { $0.phase != .pendingOnMac } ? decisionTiming.pollInterval : decisionTiming.pendingPollInterval
     }
 
     static func rejectionText(_ reason: String?) -> String {

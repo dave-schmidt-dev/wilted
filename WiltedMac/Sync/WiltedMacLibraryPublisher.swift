@@ -18,7 +18,12 @@ struct LibraryPublishReport: Sendable, Equatable {
     static let disabled = Self(isEnabled: false)
 }
 
-/// Publishes the Mac's library state through a `LibraryTransport` and relays inbound intents.
+/// Publishes the Mac's library state through a `LibraryTransport` and, unless the Mac's sync round
+/// already reads intents (`relaysIntents` false), relays inbound intents.
+///
+/// A pass touches the server only when something changed: state when the diff is not empty,
+/// statistics when a metric moved. An edit (a Keep, a reorder) runs a state-only pass at once; the
+/// statistics ride the next sync round, so a playing Mac's listening time never wakes the publisher.
 ///
 /// It never writes playback records: `HandoffCoordinator` (driven by `WiltedMacHandoffController`)
 /// is the only writer of the Mac's NowPlaying and Progress, so an epoch is never published twice.
@@ -43,6 +48,7 @@ actor WiltedMacLibraryPublisher {
     private var nextLocalSeq: UInt64 = 1
     private var deliveredIntentIDs = Set<String>()
     private let statsProvider: (@Sendable () async -> LifetimeStatistics?)?
+    private let relaysIntents: Bool
     private let clock: @Sendable () -> Date
     private var publishedStats: LibraryStats?
 
@@ -52,8 +58,10 @@ actor WiltedMacLibraryPublisher {
         sink: any LibraryIntentSink,
         isEnabled: Bool = WiltedMacLibraryPublisher.isEnabled(),
         statsProvider: (@Sendable () async -> LifetimeStatistics?)? = nil,
+        relaysIntents: Bool = true,
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.relaysIntents = relaysIntents
         self.source = source
         self.transport = transport
         self.sink = sink
@@ -64,13 +72,13 @@ actor WiltedMacLibraryPublisher {
 
     /// One publish-then-relay pass. Returns `.disabled` without touching the source or
     /// transport when the feature flag is off.
-    func sync() async throws -> LibraryPublishReport {
+    func sync(includesStats: Bool = true) async throws -> LibraryPublishReport {
         guard isEnabled else { return .disabled }
         var report = LibraryPublishReport()
         let state = try await source.currentState()
         try await publishState(state, into: &report)
-        await publishStats(into: &report)
-        try await relayIntents(into: &report)
+        if includesStats { await publishStats(into: &report) }
+        if relaysIntents { try await relayIntents(into: &report) }
         return report
     }
 

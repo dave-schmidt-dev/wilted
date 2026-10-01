@@ -65,9 +65,10 @@ struct LibraryRoot: View {
         .environment(\.wiltedTextScale, settings.textScale)
         .task { await runtime.start() }
         .task { SiriAuthorization.requestIfNeeded() }
-        .onChange(of: scenePhase) { _, phase in
-            // The refresh also fetches the device records behind "Continue from Mac".
-            if phase == .active { Task { await model.refresh() } }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            // Coming forward starts the phone's sync tick; its round also fetches the device records
+            // behind "Continue from Mac". At launch the first sync runs it, so this only notes the scene.
+            if phase == .active { Task { await model.sceneBecameActive() } }
             if phase == .background { Task { await model.sceneEnteredBackground() } }
         }
     }
@@ -114,7 +115,7 @@ struct LibraryListView: View {
         .scrollContentBackground(.hidden)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .overlay { LibraryWatermark() }
-        .refreshable { await model.refresh() }
+        .refreshable { await model.pullToRefresh() }
         .searchable(text: $model.searchText, prompt: "Search episodes")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

@@ -5,6 +5,16 @@ import XCTest
 /// The intervals are the request budget. A change to any of them is a decision about how hard the
 /// app hits CloudKit, so each is pinned here and must be changed on purpose.
 final class SyncCadenceTests: XCTestCase {
+    func testEveryDeviceHasOneThirtySecondTick() {
+        XCTAssertEqual(SyncCadence.tickInterval, 30)
+        // Everything periodic is the tick or a multiple of it; nothing is faster.
+        XCTAssertEqual(SyncCadence.pollInterval, SyncCadence.tickInterval)
+        XCTAssertEqual(SyncCadence.playingPublishInterval, SyncCadence.tickInterval)
+        XCTAssertEqual(SyncCadence.phoneObserveInterval, SyncCadence.tickInterval)
+        XCTAssertEqual(SyncCadence.phoneStateEveryRounds, 10)
+        XCTAssertEqual(SyncCadence.rediscoverEveryCyclesWithPeers, 40)
+    }
+
     func testTheSteadyStateIntervalsAreThirtySecondsOrLonger() {
         XCTAssertEqual(SyncCadence.pollInterval, 30)
         XCTAssertEqual(SyncCadence.playingPublishInterval, 30)

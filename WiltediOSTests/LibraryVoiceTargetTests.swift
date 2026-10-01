@@ -113,7 +113,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
             mediaTiming: LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30)),
             handoffTiming: LibraryHandoffTiming(
                 observeInterval: SyncCadence.phoneObserveInterval, sleep: { try await sleeper.sleep($0) }, settleSleep: { _ in }),
-            decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60, pollInterval: .seconds(3600), pendingPollInterval: .seconds(3600)),
+            decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60),
             preferences: UserDefaults(suiteName: suite)!, now: { Date(timeIntervalSince1970: 1_000) },
             timeZone: TimeZone(identifier: "UTC")!)
         model.attachPlayer(player)

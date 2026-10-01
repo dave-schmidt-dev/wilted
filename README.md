@@ -122,6 +122,10 @@ Explicitly excluded from the active Mac milestone: automatic classification, wea
 | `WiltedMac/`, `WiltediOS/` | Native Mac producer and iOS listener targets. |
 | `WiltedMacTests/`, `WiltedMacUITests/`, `WiltediOSTests/`, `WiltediOSUITests/` | Unit, pixel-snapshot, and UI regression coverage. |
 
+## Sync cadence
+
+Each device has one 30 s sync tick (`WiltedKit` `SyncTick`, `SyncCadence.tickInterval`); every periodic read, publish, checkpoint and pending-decision check batches into its rounds and nothing runs faster. A user action sends its one write at once, a confirming read waits for the next round, a rate limit holds the whole tick for the server's Retry-After, and pull to refresh runs a round now (or shows the retry state while limited). The rule, the per-round contents, the request-rate audit and `scripts/sync-ops-rate.sh` (operations per minute from the unified log) are in `docs/2026-10-01-sync-cadence.md`; the tests that pin it are `SyncTickTests`, `LibraryPollRequestCountTests`, `WiltedMacSyncRoundTests` and `LibraryPhoneSyncTickTests`.
+
 ## Planning artifacts
 
 The detailed implementation plans are maintained locally outside this public repository. Checked-in decision, capability, and verification records under `docs/` preserve the public evidence boundary.

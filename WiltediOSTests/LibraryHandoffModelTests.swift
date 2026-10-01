@@ -263,24 +263,31 @@ final class LibraryHandoffModelTests: XCTestCase {
         XCTAssertEqual(resumed.epoch, 2)
     }
 
-    func testProgressPublishesAtTheThirtySecondCadenceAndOnPauseAndSeek() async throws {
+    func testProgressPublishesOnTheSyncRoundAndOnPauseAndSeek() async throws {
         let rig = try await makeRig(cached: rev1)
         rig.player.start(try await item(rig))
         await rig.model.waitForHandoff()
+        try await eventually("tick sleeping") { await self.sleeper.requested == [SyncCadence.tickInterval] }
 
         await setTime(1_002)
         rig.engine.currentTime = 3
         rig.player.refreshPosition()
         await rig.model.waitForHandoff()
         let early = try await phoneRecord()
-        XCTAssertEqual(early.positionSeconds, 0, "inside the 30 s cadence nothing is published")
+        XCTAssertEqual(early.positionSeconds, 0, "between rounds nothing is published")
 
         await setTime(1_000 + SyncCadence.playingPublishInterval + 1)
         rig.engine.currentTime = 3 + SyncCadence.playingPublishInterval - 1
         rig.player.refreshPosition()
         await rig.model.waitForHandoff()
+        let still = try await phoneRecord()
+        XCTAssertEqual(still.positionSeconds, 0, "the position moving is not a reason to write")
+
+        await sleeper.release()
+        let expected = 3 + SyncCadence.playingPublishInterval - 1
+        try await eventually("checkpoint in the round") { (try? await self.phoneRecord().positionSeconds) == expected }
         let cadence = try await phoneRecord()
-        XCTAssertEqual(cadence.positionSeconds, 3 + SyncCadence.playingPublishInterval - 1)
+        XCTAssertEqual(cadence.positionSeconds, expected)
 
         await setTime(1_000 + SyncCadence.playingPublishInterval + 2)
         rig.player.seek(to: 900)
@@ -489,7 +496,8 @@ final class LibraryHandoffModelTests: XCTestCase {
         let rig = try await makeRig(cached: rev1)
         rig.player.start(try await item(rig))
         await rig.model.waitForHandoff()
-        try await macPublishes(epoch: 5, playing: true, position: 10, at: 1_001)
+        // Paused, so the round does not hand playback over (a playing Mac at a higher epoch would pause the phone).
+        try await macPublishes(epoch: 5, playing: false, position: 10, at: 1_001)
         await rig.model.refresh()
         XCTAssertNil(rig.model.continuation)
     }

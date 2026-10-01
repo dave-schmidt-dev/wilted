@@ -78,7 +78,7 @@ enum LibraryMediaAction: Equatable, Sendable {
 /// Waiting limits for one request. The download watchdog is `MediaFetcher`'s.
 struct LibraryMediaTiming: Sendable {
     /// How often to look for the Mac's offer after sending the request.
-    var pollInterval: Duration = .seconds(2)
+    var pollInterval: Duration = .seconds(SyncCadence.tickInterval)
     /// How long to wait for the Mac to answer before failing. The Mac polls every 30 s while idle.
     var offerTimeout: Duration = .seconds(180)
     /// Longest a download may go without receiving bytes.
@@ -210,19 +210,28 @@ extension LibraryAppModel {
         }
     }
 
-    /// Polls for the Mac's answer to the request until a `ready` (or `notReady`) offer for `entryID`
+    /// Waits for the Mac's answer to the request until a `ready` (or `notReady`) offer for `entryID`
     /// appears, `offerTimeout` passes (nil), or the request is cancelled. An `available` offer is the
     /// Mac's standing statement that the audio is prepared, not an answer, so it keeps waiting for the
-    /// upload. A failing poll is retried until the timeout rather than ending the request.
+    /// upload. A failing read is retried until the timeout rather than ending the request.
+    ///
+    /// While the sync tick runs, its rounds read the offers (with the playback records, every round) and this
+    /// only looks at what they found, so a request costs no reads of its own. Without a tick (the app is
+    /// not in front) it reads the offers itself every `pollInterval`, which defaults to the tick interval.
     private func awaitOffer(for entryID: ItemID, runID: UUID) async throws -> LibraryMediaOffer? {
         let deadline = ContinuousClock.now.advanced(by: mediaTiming.offerTimeout)
+        let requestedAt = now()
         while true {
             try Task.checkCancellation()
-            if let offers = try? await transport.mediaOffers(), let offer = offers.first(where: { $0.entryID == entryID }), offer.state != .available {
+            if tickState.tick != nil {
+                if let readAt = tickState.offersReadAt, readAt >= requestedAt,
+                   let offer = tickState.offers[entryID], offer.state != .available { return offer }
+            } else if let offers = try? await transport.mediaOffers(), let offer = offers.first(where: { $0.entryID == entryID }), offer.state != .available {
                 return offer
             }
             if ContinuousClock.now >= deadline { return nil }
-            try await Task.sleep(for: mediaTiming.pollInterval)
+            // Looking at the tick's findings costs nothing, so that check is quick.
+            try await Task.sleep(for: tickState.tick != nil ? min(mediaTiming.pollInterval, .milliseconds(500)) : mediaTiming.pollInterval)
         }
     }
 

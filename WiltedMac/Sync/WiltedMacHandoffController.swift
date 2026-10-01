@@ -29,21 +29,23 @@ extension WiltedMacHandoffPlayer {
 }
 
 /// Drives `HandoffCoordinator` from the Mac player: takes over when the Mac starts playing,
-/// republishes on a timer while it plays, records a pause, and stops the Mac when another device
-/// holds a higher epoch (W-INV-005: it pauses through the player, never writes library state).
+/// republishes the position in every sync round while it plays (`tickRound`, the Mac's one 30 s
+/// tick), records a pause, and stops the Mac when another device holds a higher epoch (W-INV-005:
+/// it pauses through the player, never writes library state). A takeover, a seek, a pause and a
+/// relinquish are the listener's own actions and publish at once, as one write.
 ///
 /// The coordinator is the only writer of the Mac's playback records. `reconcile()` is the whole
-/// state machine and runs on every observed change and on each timer tick, so a failed publish
-/// or a failed pause is retried by the next tick.
+/// state machine and runs on every observed change, on each local tick (which sends nothing by
+/// itself) and in every sync round, so a failed publish or a failed pause is retried by the next one.
 @MainActor
 final class WiltedMacHandoffController {
-    /// Gap between timer ticks. A tick sends nothing by itself: publishes are paced by the
-    /// coordinator's `SyncCadence.playingPublishInterval` and the other devices are read from the
-    /// poller's records, so this only bounds how soon an edge (a pause, a seek) is noticed.
+    /// Gap between local ticks. A local tick sends nothing by itself: the cadence publish and the
+    /// stored positions go out in the sync round, and the other devices are read from the poller's
+    /// records, so this only bounds how soon an edge (a pause, a seek) is noticed.
     static let defaultTickInterval: Duration = .seconds(SyncCadence.macTickInterval)
-    /// Ticks between rereads of the stored positions while nothing plays
+    /// Sync rounds between rereads of the stored positions while nothing plays
     /// (`SyncCadence.storedPositionRefreshInterval`), which catches a seek made while paused.
-    static let storedPositionRefreshTicks = Int(SyncCadence.storedPositionRefreshInterval / SyncCadence.macTickInterval)
+    static let storedPositionRefreshRounds = max(1, Int(SyncCadence.storedPositionRefreshInterval / SyncCadence.tickInterval))
 
     private let coordinator: HandoffCoordinator
     private let player: any WiltedMacHandoffPlayer
@@ -67,7 +69,9 @@ final class WiltedMacHandoffController {
     /// Stored positions are due for publishing: at start, after a pause, and on the refresh tick.
     private var storedPositionsDue = true
     private var lastStoredPositions: [HandoffCoordinator.StoredPosition] = []
-    private var tickCount = 0
+    private var roundCount = 0
+    /// A sync round started and has not yet been served by a pass.
+    private var roundDue = false
     /// When the tick last fetched the other devices itself (only without a poller to read from).
     private var lastOwnObserveAt: Date?
     /// The last failure that was logged, so a repeat of it (every tick while offline or throttled)
@@ -106,12 +110,20 @@ final class WiltedMacHandoffController {
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.tickCount += 1
-                if self.tickCount % Self.storedPositionRefreshTicks == 0 { self.storedPositionsDue = true }
                 await self.reconcile()
                 do { try await self.sleep(self.tickInterval) } catch { return }
             }
         }
+    }
+
+    /// The sync round's share: the playing checkpoint, the stored positions (every other round, or
+    /// when a pause made them due) and a fresh look at the other devices' records. Runs after the
+    /// round's read, so the decision and the stored positions use the same records.
+    func tickRound() async {
+        roundCount += 1
+        roundDue = true
+        if roundCount % Self.storedPositionRefreshRounds == 0 { storedPositionsDue = true }
+        await reconcile()
     }
 
     func stop() {
@@ -147,6 +159,8 @@ final class WiltedMacHandoffController {
     }
 
     private func step() async {
+        let isRound = roundDue
+        roundDue = false
         do {
             let sample = player.handoffSample()
             if let sample, sample.isPlaying {
@@ -158,11 +172,11 @@ final class WiltedMacHandoffController {
                 } else if pendingRelinquish {
                     try await relinquish()
                 } else {
-                    // A seek is an edge: published now, not at the next 30 s publish.
+                    // A seek is an edge: published now, not at the next sync round.
                     if jumped {
                         try await coordinator.seeked(to: sample.positionSeconds)
-                    } else {
-                        try await coordinator.positionUpdate(sample.positionSeconds, rate: sample.rate)
+                    } else if isRound {
+                        try await coordinator.checkpoint(sample.positionSeconds, rate: sample.rate)
                     }
                     try await applyDecision(await observeDecision())
                 }
@@ -173,7 +187,7 @@ final class WiltedMacHandoffController {
                 pendingRelinquish = false
                 storedPositionsDue = true
             }
-            if storedPositionsDue, !sessionPlaying { try await publishStoredPositions() }
+            if storedPositionsDue, isRound, !sessionPlaying { try await publishStoredPositions() }
             lastFailure = nil
             lastLoggedFailure = nil
         } catch {
@@ -255,7 +269,8 @@ final class WiltedMacHandoffController {
             storedPositionsDue = false
             return
         }
-        let written = try await coordinator.publishStoredPositions(positions)
+        let records = await latestRecords?()
+        let written = try await coordinator.publishStoredPositions(positions, records: records)
         // A list held back while a device was playing is offered again on the next refresh.
         lastStoredPositions = await coordinator.deferredStoredPositions ? [] : positions
         storedPositionsDue = false

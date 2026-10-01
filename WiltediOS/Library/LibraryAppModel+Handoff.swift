@@ -55,15 +55,15 @@ enum LibraryContinuationPlanner {
     }
 }
 
-/// Waits the handoff timers use. Injected so tests drive the observe cadence without real time.
+/// Waits the phone's sync tick uses. Injected so tests drive the cadence without real time.
 struct LibraryHandoffTiming: Sendable {
-    /// Gap between observations of the other devices while the phone plays
-    /// (`SyncCadence.phoneObserveInterval`, 30 s). Peers treat a device as dead after
+    /// The tick interval (`SyncCadence.phoneObserveInterval`, 30 s): the gap between rounds that look at
+    /// the other devices and publish the playing checkpoint. Peers treat a device as dead after
     /// `SyncCadence.staleAfter`, so a Mac takeover pauses the phone within about 30 s.
     var observeInterval: TimeInterval = SyncCadence.phoneObserveInterval
-    /// Waits `observeInterval` between observations.
+    /// Waits `observeInterval` between rounds.
     var sleep: @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
-    /// The pause before the single confirming fetch after a takeover.
+    /// The coordinator's settle wait; the phone no longer makes a confirming fetch after a takeover, the next round decides.
     var settleSleep: @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
 }
 
@@ -76,8 +76,6 @@ final class LibraryHandoffState {
     /// The last queued player-change task; each new one waits for it, so coordinator calls stay in order.
     var chain: Task<Void, Never>?
     var syncQueued = false
-    var observeTask: Task<Void, Never>?
-    var settleTask: Task<Void, Never>?
     /// True between a successful takeover and the next pause, stop or relinquish.
     var reportedPlaying = false
     var reportedEntry: ItemID?
@@ -207,6 +205,7 @@ extension LibraryAppModel {
     /// The app moved to the background: publish the current position now, since the next
     /// cadence tick may be a long way off.
     func sceneEnteredBackground() async {
+        await sceneBecameBackground()
         await republishUnpublishedPositions()
         guard handoffState.reportedPlaying, let player = handoffState.player else { return }
         await runOnHandoffChain { [weak self] in
@@ -260,13 +259,10 @@ extension LibraryAppModel {
             } else if hasJumped(to: position, rate: player.rate, at: clock) {
                 try? await coordinator.seeked(to: position)
                 refreshProgress()
-            } else {
-                try? await coordinator.positionUpdate(position, rate: player.rate)
             }
+            // Otherwise the position is only noted locally: the sync round publishes the checkpoint.
         } else if state.reportedPlaying {
             state.reportedPlaying = false
-            state.observeTask?.cancel()
-            state.settleTask?.cancel()
             let entryID = item?.entryID ?? state.reportedEntry
             let paused = item == nil ? state.lastPosition : position
             var published = true
@@ -280,6 +276,7 @@ extension LibraryAppModel {
                 await rememberOwnPosition(entryID, position: paused)
                 if !published { state.unpublished[entryID] = (paused, clock) } else { state.unpublished[entryID] = nil }
             }
+            await updateSyncTick()
         } else if let item, state.lastItemEntry == item.entryID, abs(position - state.lastPosition) > 0.01 {
             // The coordinator's session speaks for a seek only while it is this entry's, still exists
             // and has not been outranked by another device's epoch since (a Mac takeover): its
@@ -369,8 +366,7 @@ extension LibraryAppModel {
             state.unpublished[item.entryID] = nil
             handoffMessage = nil
             handoffLog.info("Took over playback at epoch \(epoch, privacy: .public)")
-            startObserving()
-            scheduleSettleCheck()
+            await updateSyncTick()
         } catch {
             state.lastTakeoverFailure = clock
             handoffMessage = "Handoff is unavailable: \(Self.text(for: error))"
@@ -378,57 +374,22 @@ extension LibraryAppModel {
         }
     }
 
-    // MARK: - Observing the other devices
+    // MARK: - Relinquishing
 
-    /// While the phone plays, look at the other devices every `observeInterval`. Runs on the
-    /// audio background mode too, since the audio session keeps the app alive.
-    private func startObserving() {
-        handoffState.observeTask?.cancel()
-        handoffState.observeTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let timing = self?.handoffTiming else { return }
-                do { try await timing.sleep(timing.observeInterval) } catch { return }
-                guard !Task.isCancelled, let self else { return }
-                await self.observeHandoffOnce()
-            }
-        }
-    }
-
-    /// One observation. A higher epoch elsewhere pauses the phone.
-    func observeHandoffOnce() async {
-        defer { handoffState.observeCycles += 1 }
-        do {
-            if case let .relinquish(winner) = try await coordinator.observe() {
-                await relinquish(to: winner)
-            }
-        } catch {
-            handoffLog.error("Observe failed: \(String(describing: error), privacy: .public)")
-        }
-    }
-
-    private func scheduleSettleCheck() {
-        handoffState.settleTask?.cancel()
-        handoffState.settleTask = Task { [weak self] in
-            guard let self, let decision = try? await self.coordinator.settleCheck(),
-                  case let .relinquish(winner) = decision, !Task.isCancelled else { return }
-            await self.relinquish(to: winner)
-        }
-    }
-
-    private func relinquish(to winner: String) async {
+    /// Pauses for `winner`, the device that outranks this one, from the round's own `records`.
+    func relinquish(to winner: String, records: LibraryDeviceRecords) async {
         await runOnHandoffChain { [weak self] in
             guard let self, let player = self.handoffState.player, self.handoffState.reportedPlaying else { return }
             let state = self.handoffState
             state.reportedPlaying = false
-            state.observeTask?.cancel()
-            state.settleTask?.cancel()
             player.pause()
             state.lastPosition = player.position
             // The coordinator does not publish a paused record on its own after a loss.
             try? await self.coordinator.paused(at: player.position)
             self.handoffMessage = "Paused because \(winner) started playing."
             handoffLog.info("Relinquished to \(winner, privacy: .public)")
-            if let records = try? await self.transport.fetchDeviceRecords() { await self.updateContinuation(from: records) }
+            await self.updateSyncTick()
+            await self.updateContinuation(from: records)
         }
     }
 

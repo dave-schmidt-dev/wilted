@@ -94,7 +94,8 @@ final class LibraryAppModel: ObservableObject {
     var decisionContent = LibrarySnapshot()
     /// Entries some device has started, from the last device-record fetch.
     var startedEntries: Set<ItemID> = []
-    var decisionPoll: Task<Void, Never>?
+    /// The phone's one sync tick and what its rounds track; owned by `LibraryAppModel+SyncTick`.
+    let tickState = LibraryTickState()
     /// Mutable handoff bookkeeping, owned by `LibraryAppModel+Handoff`.
     let handoffState = LibraryHandoffState()
     /// Entry durations from the last sync, to clamp a resumed position.
@@ -116,7 +117,7 @@ final class LibraryAppModel: ObservableObject {
     private var reconciler: LibraryReconciler
     private var refreshTask: Task<Void, Never>?
     private var refreshRequested = false
-    private var started = false
+    private(set) var started = false
 
     init(
         transport: any LibraryTransport,
@@ -169,7 +170,10 @@ final class LibraryAppModel: ObservableObject {
                 }
             }
         }
-        await refresh()
+        // The first sync is a full one; with the tick running it also restarts the 30 s timer.
+        tickState.forceFull = true
+        await updateSyncTick()
+        await pullToRefresh()
     }
 
     /// Shows the persisted library and the audio already on the phone without any network call, so a
@@ -193,17 +197,20 @@ final class LibraryAppModel: ObservableObject {
 
     /// Fetches now. Calls made while a fetch is running share it and queue exactly one rerun,
     /// so a burst of pushes never runs overlapping syncs.
-    func refresh() async {
+    func refresh(_ plan: LibraryRefreshPlan = .full) async {
         if let running = refreshTask {
-            refreshRequested = true
+            // A round of the tick joins the running fetch; only a full one asks for another pass.
+            if plan.isFull { refreshRequested = true }
             await running.value
             return
         }
         let task = Task { [weak self] in
+            var next = plan
             repeat {
                 guard let self else { return }
                 self.refreshRequested = false
-                await self.performRefresh()
+                await self.performRefresh(next)
+                next = .full
             } while self?.refreshRequested == true
             self?.refreshTask = nil
         }
@@ -215,7 +222,13 @@ final class LibraryAppModel: ObservableObject {
     func handleSilentPush() async -> Bool {
         // The mirror and offers, not the filtered view: a push's answer must not depend on search or filter.
         let before = (queued, readyOffers)
-        await refresh()
+        if tickState.tick != nil {
+            // The tick reads the state in its next round; a round now only if one is due.
+            tickState.forceFull = true
+            guard await tickState.tick?.requestSoon() == true else { return false }
+        } else {
+            await refresh()
+        }
         return before != (queued, readyOffers)
     }
 
@@ -237,24 +250,32 @@ final class LibraryAppModel: ObservableObject {
         await refresh()
     }
 
-    private func performRefresh() async {
-        isRefreshing = true
+    private func performRefresh(_ plan: LibraryRefreshPlan) async {
+        if plan.showsProgress { isRefreshing = true }
         // A refresh that starts once the gate's wait is over is the retry, whoever asked for it.
         let isRetry = throttleIsDue
         if isRetry { throttleRetrying = true }
         defer {
-            isRefreshing = false
+            if plan.showsProgress { isRefreshing = false }
             if isRetry { throttleRetrying = false }
         }
-        switch await reconciler.synchronize() {
-        case .success:
-            errorMessage = nil
-            lastSynchronizedAt = now()
-        case let .failure(error):
-            // A refusal from the closed gate is the throttle banner's to say; storing it too would show it twice.
-            errorMessage = error is TransportThrottled ? nil : Self.message(for: error)
+        if plan.readsState {
+            switch await reconciler.synchronize() {
+            case .success:
+                errorMessage = nil
+                lastSynchronizedAt = now()
+            case let .failure(error):
+                // A refusal from the closed gate is the throttle banner's to say; storing it too would show it twice.
+                errorMessage = error is TransportThrottled ? nil : Self.message(for: error)
+            }
         }
-        let records = try? await transport.fetchDeviceRecords()
+        // One batched read: the playback records, the offers when due, and this phone's outcomes while
+        // a decision waits. A failed read keeps what was last known: a flaky fetch must not empty the Larder.
+        var options: LibraryPollOptions = [.deviceRecords]
+        if plan.readsOffers { options.insert(.offers) }
+        if !decisions.isEmpty { options.insert(.outcomes) }
+        let polled = try? await transport.poll(options)
+        let records = polled?.records
         if let records {
             checkpoints = Self.checkpoints(from: records, excluding: deviceID)
             handoffState.savedCheckpoints = checkpoints
@@ -265,8 +286,8 @@ final class LibraryAppModel: ObservableObject {
             }
             handoffState.ownPositions = own
         }
-        // A failed read keeps the last known offers: a flaky fetch must not empty the Larder.
-        if let offers = try? await transport.mediaOffers() {
+        if let offers = polled?.offers {
+            noteOffers(offers)
             readyOffers = Set(offers.filter(\.isPrepared).map(\.entryID))
             // An entry the Mac offers again is no longer "not prepared".
             for entryID in readyOffers where media[entryID] == .notPrepared { media[entryID] = nil }
@@ -277,8 +298,11 @@ final class LibraryAppModel: ObservableObject {
         if let records { startedEntries = Self.startedEntries(from: records) }
         rebuildRows()
         await refreshMediaFromCache()
-        if let records { await updateContinuation(from: records) }
-        await resolveDecisions()
+        if let records {
+            await updateContinuation(from: records)
+            await observeHandoff(records)
+        }
+        await resolveDecisions(outcomes: polled?.outcomes ?? [])
     }
 
     /// Projects the fetched content, with unsettled decisions laid over it, into queue-ordered rows.

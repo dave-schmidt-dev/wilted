@@ -215,10 +215,11 @@ enum WiltedMacLibraryTransports {
 
 // MARK: - Controller
 
-/// Republishes when the queue, removals or playback change: it watches the model with
-/// `withObservationTracking`, coalesces bursts, and runs one publisher pass at a time. A
-/// failed pass retries after `retryDelay`. Owned by the model through an associated object,
-/// so it ends with the model.
+/// Republishes when the queue or removals change: it watches the model with
+/// `withObservationTracking`, coalesces bursts, and runs one publisher pass at a time. A user's
+/// edit publishes its state at once (debounced); everything else, statistics and the playing
+/// checkpoint included, waits for the next sync round (`tickRound`, 30 s), which is also what
+/// retries a failed pass. Owned by the model through an associated object, so it ends with the model.
 @MainActor
 final class WiltedMacLibrarySyncController {
     let publisher: WiltedMacLibraryPublisher
@@ -237,27 +238,24 @@ final class WiltedMacLibrarySyncController {
     private var loop: Task<Void, Never>?
     private var offerReconcile: Task<Void, Never>?
     private var offerReconcileRequested = false
-    private let retryDelay: Duration
+    private var passTail: Task<Bool, Never>?
     private var stopped = false
 
     init(
         model: WiltedMacModel, publisher: WiltedMacLibraryPublisher, sink: WiltedMacLibraryIntentSink,
-        debounce: Duration, retryDelay: Duration
+        debounce: Duration
     ) {
         self.model = model
         self.publisher = publisher
         self.sink = sink
-        self.retryDelay = retryDelay
         let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         triggers = continuation
         loop = Task { [weak self] in
             for await _ in stream {
                 try? await Task.sleep(for: debounce)
                 guard !Task.isCancelled, let self else { return }
-                if await self.runPass() == false {
-                    try? await Task.sleep(for: retryDelay)
-                    continuation.yield()
-                }
+                // A failed edit waits for the next sync round instead of running its own retry timer.
+                _ = await self.runPass(includesStats: false)
             }
         }
         continuation.yield()
@@ -266,6 +264,13 @@ final class WiltedMacLibrarySyncController {
 
     /// Asks for a publisher pass now (still coalesced and debounced), e.g. after a phone decision.
     func requestPublish() { triggers.yield() }
+
+    /// The Mac's own work in one sync round, after the round's reads: the library state and
+    /// statistics (a request only when one changed), then the playing checkpoint and the stored positions.
+    func tickRound() async {
+        _ = await runPass(includesStats: true)
+        await handoff?.tickRound()
+    }
 
     func stop() {
         stopped = true
@@ -291,8 +296,8 @@ final class WiltedMacLibrarySyncController {
     }
 
     /// Publishes `available` offers, one run at a time; a request that arrives during a run makes
-    /// it repeat, so bursts coalesce. A run that could not publish everything asks for a full pass
-    /// again after `retryDelay`.
+    /// it repeat, so bursts coalesce. A run that could not publish everything is repeated by the
+    /// next sync round.
     private func scheduleOfferReconcile() {
         guard !stopped, let service = inbound?.service else { return }
         guard offerReconcile == nil else {
@@ -300,23 +305,29 @@ final class WiltedMacLibrarySyncController {
             return
         }
         offerReconcile = Task { [weak self] in
-            var succeeded = true
             repeat {
                 self?.offerReconcileRequested = false
-                succeeded = await service.reconcileAvailable()
+                _ = await service.reconcileAvailable()
             } while self?.offerReconcileRequested == true && !Task.isCancelled
-            guard let self else { return }
-            self.offerReconcile = nil
-            guard !succeeded, !Task.isCancelled, !self.stopped else { return }
-            try? await Task.sleep(for: self.retryDelay)
-            if !self.stopped { self.triggers.yield() }
+            self?.offerReconcile = nil
         }
     }
 
-    private func runPass() async -> Bool {
+    /// One pass at a time: an edit and a sync round never publish the same diff twice.
+    private func runPass(includesStats: Bool) async -> Bool {
+        let previous = passTail
+        let task = Task { @MainActor [weak self] in
+            _ = await previous?.value
+            return await self?.performPass(includesStats: includesStats) ?? true
+        }
+        passTail = task
+        return await task.value
+    }
+
+    private func performPass(includesStats: Bool) async -> Bool {
         guard let model, !model.isClosingTemporaryState else { return true }
         do {
-            lastReport = try await publisher.sync()
+            lastReport = try await publisher.sync(includesStats: includesStats)
             // Offers follow the same triggers as state (the queue and the prepared set) but run on
             // their own task: the media service serializes behind an upload in flight, and a long
             // upload must not hold up state publishing.
@@ -354,8 +365,7 @@ extension WiltedMacModel {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         transport: (any LibraryTransport)? = nil,
         mediaRequestConsumer: WiltedMacLibraryIntentSink.Consumer? = nil,
-        debounce: Duration = .seconds(2),
-        retryDelay: Duration = .seconds(60)
+        debounce: Duration = .seconds(2)
     ) -> Bool {
         stopLibrarySync()
         guard WiltedMacLibraryPublisher.isEnabled(in: environment), !fixtureMode, let store else { return false }
@@ -375,7 +385,7 @@ extension WiltedMacModel {
         let importer = WiltedMacPositionImporter(host: WiltedMacModelPositionImportHost(model: self), deviceID: deviceID)
         let inbound = WiltedMacInboundRuntime(
             source: WiltedMacLocalReadyAudioSource(store: store), transport: resolvedTransport,
-            directory: syncDirectory,
+            directory: syncDirectory, deviceID: deviceID, gate: gate,
             // The one whole-zone scan: it teaches the transport the peer and entry names to poll.
             discover: {
                 try await gate.run { _ = try await (rawTransport as? CloudKitLibraryTransport)?.discoverPeers() }
@@ -398,17 +408,20 @@ extension WiltedMacModel {
         })
         let publisher = WiltedMacLibraryPublisher(
             source: source, transport: resolvedTransport, sink: sink, isEnabled: true,
-            statsProvider: { try? await store.lifetimeStatistics() }
+            statsProvider: { try? await store.lifetimeStatistics() },
+            // The sync round reads intents once for everything; the publisher does not read them again.
+            relaysIntents: false
         )
         let controller = WiltedMacLibrarySyncController(
-            model: self, publisher: publisher, sink: sink, debounce: debounce, retryDelay: retryDelay
+            model: self, publisher: publisher, sink: sink, debounce: debounce
         )
         controller.inbound = inbound
         // Play reads the phone's position itself (one bounded fetch) instead of waiting for a poll.
         controller.playRefresher = WiltedMacPlayPositionRefresher(
             fetch: { try await resolvedTransport.fetchDeviceRecords() }, importer: importer,
             onRecords: { [weak self] records in self?.updatePhonePositions(from: records) })
-        inbound.start(sink: sink)
+        // The Mac's one 30 s sync round: reads, then its own writes (state, statistics, checkpoint).
+        inbound.start(sink: sink, publishRound: { [weak controller] in await controller?.tickRound() })
         let handoff = WiltedMacHandoffController(
             coordinator: HandoffCoordinator(transport: resolvedTransport, deviceID: deviceID),
             player: WiltedMacModelHandoffPlayer(
@@ -432,13 +445,13 @@ extension WiltedMacModel {
         phonePositions = [:]
     }
 
-    /// Everything whose change should republish: the queue and removals. Playback is published
-    /// by the handoff controller, so play, pause and position changes do not wake the publisher.
+    /// Everything whose change should republish at once: the queue and removals. Playback is
+    /// published by the handoff controller and statistics by the sync round, so neither a position
+    /// checkpoint nor the listening clock wakes the publisher.
     func librarySyncObservedInputs() {
         _ = podcastQueueIDs
         _ = episodes
         _ = dismissedEpisodes
-        _ = lifetimeStatistics
     }
 
     func librarySyncPlaybackSample() -> WiltedMacPlaybackSample? {

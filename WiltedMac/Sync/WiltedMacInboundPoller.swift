@@ -5,116 +5,141 @@ import WiltedLibrary
 
 private let pollerLog = Logger(subsystem: "com.zerodelta.wilted", category: "MacInboundPoller")
 
-/// Reads follower intents and every device's playback records on a timer, because the Mac has
-/// no other inbound trigger while idle. Each fetch of the device records is handed to
-/// `onDeviceRecords`, where the Mac adopts the phone's positions.
+/// The Mac's sync round, run by its one `SyncTick` (30 s, `SyncCadence.tickInterval`): it reads
+/// follower intents and every device's playback records as one batch (`LibraryTransport.poll`),
+/// hands the records to `onDeviceRecords` (where the Mac adopts the phone's positions), and then
+/// runs `publishRound`, the Mac's own batched writes (library state, statistics, the playing
+/// checkpoint), so a round is one read and the few writes that are due, never a request per loop.
 ///
-/// Every read is a targeted fetch by record name (`listIntents`, `fetchDeviceRecords`); a cycle
-/// never scans the zone. The one scan is `discover`, run at startup (retried until it succeeds)
-/// and again every `rediscoverEveryCycles` cycles, which teaches the transport the device and
-/// entry names to ask for; a phone that first publishes after startup is otherwise never heard.
-/// The interval is `SyncCadence.pollInterval` (30 s) whether or not the Mac plays: nothing in the
-/// background needs to be faster, and a Mac Play press reads the phone's position itself.
-/// `pollNow()` runs a cycle on demand.
+/// Every read is by record name; a cycle never scans the zone. The one scan is `discover`, run at
+/// startup (retried until it succeeds) and again every `rediscoverEveryCycles` cycles while no other
+/// device is known, or every `rediscoverEveryCyclesWithPeers` once one is, which teaches the
+/// transport the device and entry names to ask for. Nothing in the background is faster than the
+/// tick, and a Mac Play press reads the phone's position itself. `pollNow()` runs a cycle on demand
+/// and joins one already running.
 actor WiltedMacInboundPoller {
-    static let pollInterval: Duration = .seconds(SyncCadence.pollInterval)
+    static let pollInterval: Duration = .seconds(SyncCadence.tickInterval)
     static let rediscoverEveryCycles = SyncCadence.rediscoverEveryCycles
+    static let rediscoverEveryCyclesWithPeers = SyncCadence.rediscoverEveryCyclesWithPeers
 
     typealias Sleep = @Sendable (Duration) async throws -> Void
 
     private let transport: any LibraryTransport
     private let sink: any LibraryIntentSink
+    private let deviceID: String?
+    private let gate: TransportGate?
     private let discover: (@Sendable () async throws -> Void)?
     private let onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)?
+    private let publishRound: (@Sendable () async -> Void)?
     private let maintenance: (@Sendable () async -> Void)?
     private let sleep: Sleep
-    private var loop: Task<Void, Never>?
+    private let clock: @Sendable () -> Date
+    private var tick: SyncTick?
+    private var inFlight: Task<Void, Never>?
     private var discovered = false
-    private var polling = false
-    private var rerun = false
     private(set) var cycleCount = 0
     private(set) var lastFailure: String?
     private(set) var latestDeviceRecords = LibraryDeviceRecords()
-    /// The wait chosen after each cycle, in order.
-    private(set) var scheduledIntervals: [Duration] = []
 
+    /// - Parameters:
+    ///   - deviceID: this Mac, to tell its own records from a peer's when choosing how often to rescan.
+    ///   - gate: the device's shared gate; a closed gate holds the whole tick until its retry time.
+    ///   - publishRound: the Mac's own writes for this round, run after the reads.
     init(
         transport: any LibraryTransport,
         sink: any LibraryIntentSink,
+        deviceID: String? = nil,
+        gate: TransportGate? = nil,
         discover: (@Sendable () async throws -> Void)? = nil,
         onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
+        publishRound: (@Sendable () async -> Void)? = nil,
         maintenance: (@Sendable () async -> Void)? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping Sleep = { try await Task.sleep(for: $0) }
     ) {
+        self.clock = clock
         self.transport = transport
         self.sink = sink
+        self.deviceID = deviceID
+        self.gate = gate
         self.discover = discover
         self.onDeviceRecords = onDeviceRecords
+        self.publishRound = publishRound
         self.maintenance = maintenance
         self.sleep = sleep
     }
 
-    /// Starts the loop; a first cycle runs at once. Calling it again while running does nothing.
-    func start() {
-        guard loop == nil else { return }
-        loop = Task { await self.run() }
+    /// Starts the tick; the first round runs at once. Calling it again while running does nothing.
+    func start() async {
+        guard tick == nil else { return }
+        let sleep = sleep
+        let tick = SyncTick(gate: gate, clock: clock, sleep: { try await sleep(.seconds($0)) }, round: { [weak self] _ in
+            await self?.pollNow()
+        })
+        self.tick = tick
+        await tick.start()
     }
 
-    func stop() {
-        loop?.cancel()
-        loop = nil
+    func stop() async {
+        let stopping = tick
+        tick = nil
+        await stopping?.stop()
     }
 
-    /// Runs a cycle now. A call made while a cycle is running schedules one more right after it.
+    /// A refresh the person asked for: a round now, the timer restarted from it, nothing sent while
+    /// the gate is closed.
+    func refreshNow() async -> SyncTick.RefreshOutcome? { await tick?.refreshNow() }
+
+    /// Runs a cycle now. A call made while a cycle is running waits for that cycle instead of
+    /// queueing another, so a burst of callers costs one round.
     func pollNow() async {
-        if polling {
-            rerun = true
+        if let inFlight {
+            await inFlight.value
             return
         }
-        polling = true
-        repeat {
-            rerun = false
-            await cycle()
-        } while rerun && !Task.isCancelled
-        polling = false
+        let task = Task { await self.cycle() }
+        inFlight = task
+        await task.value
+        inFlight = nil
     }
 
-    private func run() async {
-        while !Task.isCancelled {
-            await pollNow()
-            let interval = Self.pollInterval
-            scheduledIntervals.append(interval)
-            do { try await sleep(interval) } catch { return }
-        }
+    /// Whether any device other than this Mac has published, so the costly scan can be rare.
+    private var knowsAPeer: Bool {
+        (latestDeviceRecords.nowPlaying + latestDeviceRecords.progress).contains { $0.record.deviceID != deviceID }
     }
 
     private func cycle() async {
         var failure: String?
-        let rediscoverDue = discovered && cycleCount % Self.rediscoverEveryCycles == 0
+        var received = 0
+        var scanned = false
+        let every = knowsAPeer ? Self.rediscoverEveryCyclesWithPeers : Self.rediscoverEveryCycles
+        let rediscoverDue = discovered && cycleCount % every == 0
         if !discovered || rediscoverDue, let discover {
             do {
                 try await discover()
                 if !discovered { pollerLog.notice("Peer discovery finished") }
                 discovered = true
+                scanned = true
             } catch {
                 failure = "discovery: \(error)"
             }
         }
         do {
-            for intent in try await transport.listIntents() {
+            let polled = try await transport.poll([.intents, .deviceRecords])
+            received = polled.intents.count
+            for intent in polled.intents {
                 do { try await sink.receive(intent) } catch {
                     pollerLog.error("Intent \(intent.id, privacy: .public) was not applied: \(String(describing: error), privacy: .public)")
                 }
             }
+            if let records = polled.records {
+                latestDeviceRecords = records
+                await onDeviceRecords?(records)
+            }
         } catch {
-            failure = failure ?? "intents: \(error)"
+            failure = failure ?? "poll: \(error)"
         }
-        do {
-            latestDeviceRecords = try await transport.fetchDeviceRecords()
-            await onDeviceRecords?(latestDeviceRecords)
-        } catch {
-            failure = failure ?? "device records: \(error)"
-        }
+        await publishRound?()
         await maintenance?()
         cycleCount += 1
         // A failure repeats every cycle while offline, so only a change is logged. A closed gate is
@@ -123,6 +148,8 @@ actor WiltedMacInboundPoller {
             pollerLog.error("Poll failed: \(failure, privacy: .public)")
         }
         lastFailure = failure
+        // One line per round, so the request rate can be read from the unified log.
+        pollerLog.notice("Sync round \(self.cycleCount): intents \(received), scan \(scanned ? "yes" : "no", privacy: .public), \(failure == nil ? "ok" : "failed", privacy: .public)")
     }
 }
 
@@ -133,6 +160,8 @@ final class WiltedMacInboundRuntime {
     let ledger: WiltedMacIntentLedger
     let service: WiltedMacMediaService
     private let transport: any LibraryTransport
+    private let deviceID: String?
+    private let gate: TransportGate?
     private let discover: (@Sendable () async throws -> Void)?
     private let onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)?
     private(set) var poller: WiltedMacInboundPoller?
@@ -141,11 +170,15 @@ final class WiltedMacInboundRuntime {
         source: any WiltedMacReadyAudioSource,
         transport: any LibraryTransport,
         directory: URL,
+        deviceID: String? = nil,
+        gate: TransportGate? = nil,
         discover: (@Sendable () async throws -> Void)? = nil,
         onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
+        self.deviceID = deviceID
+        self.gate = gate
         self.discover = discover
         self.onDeviceRecords = onDeviceRecords
         ledger = WiltedMacIntentLedger(fileURL: directory.appendingPathComponent("intent-ledger.json"), now: now)
@@ -166,13 +199,14 @@ final class WiltedMacInboundRuntime {
         await service.handle(intent)
     }
 
-    /// Starts polling; intents reach `sink`, which routes media intents to `consume`.
-    func start(sink: any LibraryIntentSink) {
+    /// Starts the tick; intents reach `sink`, which routes media intents to `consume`. `publishRound`
+    /// is the Mac's own batched writes, run in every round after the reads.
+    func start(sink: any LibraryIntentSink, publishRound: (@Sendable () async -> Void)? = nil) {
         guard poller == nil else { return }
         let service = service
         let poller = WiltedMacInboundPoller(
-            transport: transport, sink: sink, discover: discover,
-            onDeviceRecords: onDeviceRecords,
+            transport: transport, sink: sink, deviceID: deviceID, gate: gate, discover: discover,
+            onDeviceRecords: onDeviceRecords, publishRound: publishRound,
             maintenance: { await service.sweepExpired() }
         )
         self.poller = poller

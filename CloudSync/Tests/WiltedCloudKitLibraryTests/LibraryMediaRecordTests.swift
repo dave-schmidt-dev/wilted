@@ -59,6 +59,9 @@ actor FakeMediaDriver: CloudKitEngineDriver {
     private(set) var scopes: [Set<CKRecordZone.ID>] = []
     private(set) var unscopedFetches = 0
     private(set) var targetedFetches = 0
+    /// The names each targeted fetch asked for, in order, and how many sends the engine made.
+    private(set) var askedNames: [[String]] = []
+    private(set) var sendCount = 0
 
     init(server: FakeMediaServer, outbox: CloudKitLibraryOutbox) {
         (stream, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream()
@@ -74,6 +77,7 @@ actor FakeMediaDriver: CloudKitEngineDriver {
     nonisolated func isValidStateData(_ data: Data) -> Bool { true }
 
     func sendChanges() async throws {
+        sendCount += 1
         var saved: [CKRecord] = [], deleted: [CKRecord.ID] = []
         for change in pending {
             switch change {
@@ -89,6 +93,7 @@ actor FakeMediaDriver: CloudKitEngineDriver {
 
     func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] {
         targetedFetches += 1
+        askedNames.append(ids.map(\.recordName))
         return await server.present(ids)
     }
 

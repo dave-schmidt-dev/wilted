@@ -176,7 +176,7 @@ extension WiltedMacIntentApplierTests {
         XCTAssertTrue(rig.model.startLibrarySyncIfEnabled(
             environment: ["WILTED_LIBRARY_SYNC": "1"],
             transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
-            debounce: .milliseconds(20), retryDelay: .milliseconds(50)
+            debounce: .milliseconds(20)
         ))
         var published: [String: IntentOutcome] = [:]
         for _ in 0..<200 where published.count < 4 {

@@ -51,6 +51,14 @@ public struct ThrottledLibraryTransport: LibraryTransport {
         try await gate.run { try await inner.fetchDeviceRecords() }
     }
 
+    public func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
+        try await gate.run { try await inner.publish(records) }
+    }
+
+    public func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
+        try await gate.run { try await inner.poll(options) }
+    }
+
     public func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
         try await gate.run { try await inner.publishMedia(offer: offer, fileURL: fileURL) }
     }

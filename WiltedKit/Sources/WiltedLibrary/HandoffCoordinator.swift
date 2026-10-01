@@ -71,11 +71,15 @@ public actor HandoffCoordinator {
     /// True once `observe()` decided another device holds playback.
     public var hasRelinquished: Bool { session?.relinquished ?? false }
 
-    /// Starts playing `entryID` here. Fetches every device's records first, takes epoch
-    /// max seen plus one, and publishes NowPlaying and Progress immediately.
+    /// Starts playing `entryID` here. Reads every device's records first (or uses `records`, when the
+    /// caller read them a moment ago), takes epoch max seen plus one, and publishes NowPlaying and
+    /// Progress at once, as one write.
     @discardableResult
-    public func takeover(entryID: ItemID, revision: RevisionID, positionSeconds: Double, rate: Double = 1) async throws -> Int {
-        let records = try await transport.fetchDeviceRecords()
+    public func takeover(
+        entryID: ItemID, revision: RevisionID, positionSeconds: Double, rate: Double = 1,
+        records known: LibraryDeviceRecords? = nil
+    ) async throws -> Int {
+        let records = if let known { known } else { try await transport.fetchDeviceRecords() }
         learnClockOffset(from: records)
         let seen = (records.nowPlaying + records.progress).map(\.record)
         let epoch = HandoffResolver.takeoverEpoch(seen: seen)
@@ -93,6 +97,17 @@ public actor HandoffCoordinator {
         if let rate { current.rate = rate }
         session = current
         if let last = current.lastPublishedAt, clock().timeIntervalSince(last) < configuration.publishInterval { return }
+        try await publishCurrent()
+    }
+
+    /// The sync round's checkpoint: publishes the current position now, whatever the last publish
+    /// was, so a playing device's record rides the device's one tick instead of a timer of its own.
+    /// No-op while paused, stopped or relinquished.
+    public func checkpoint(_ positionSeconds: Double, rate: Double? = nil) async throws {
+        guard var current = session, current.isPlaying, !current.relinquished else { return }
+        current.position = positionSeconds
+        if let rate { current.rate = rate }
+        session = current
         try await publishCurrent()
     }
 
@@ -147,10 +162,12 @@ public actor HandoffCoordinator {
     /// already holds this revision and position. Returns the entries written; see
     /// `deferredStoredPositions` for a list that was held back while a device played.
     @discardableResult
-    public func publishStoredPositions(_ positions: [StoredPosition]) async throws -> [ItemID] {
+    public func publishStoredPositions(
+        _ positions: [StoredPosition], records known: LibraryDeviceRecords? = nil
+    ) async throws -> [ItemID] {
         deferredStoredPositions = false
         guard !positions.isEmpty else { return [] }
-        let records = try await transport.fetchDeviceRecords()
+        let records = if let known { known } else { try await transport.fetchDeviceRecords() }
         learnClockOffset(from: records)
         let now = clock()
         var written: [ItemID] = []
@@ -236,8 +253,7 @@ public actor HandoffCoordinator {
             deviceID: deviceID, entryID: current.entryID, revision: current.revision,
             positionSeconds: max(0, current.position), rate: current.rate, isPlaying: current.isPlaying,
             epoch: current.epoch, publishedAt: now)
-        try await transport.publish(record, as: .nowPlaying)
-        try await transport.publish(record, as: .progress)
+        try await transport.publish([(record, .nowPlaying), (record, .progress)])
         guard var after = session else { return }
         after.lastPublishedAt = now
         session = after

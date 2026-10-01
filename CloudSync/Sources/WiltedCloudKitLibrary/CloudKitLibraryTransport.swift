@@ -46,6 +46,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     var outcomeCache: [String: IntentOutcome] = [:]
     /// This device's own sent intent ids; nil until first loaded from its index record.
     var ownIntentIDs: Set<String>?
+    /// The last read found no intent index for this device, so it is not asked for again until this
+    /// device sends an intent (which creates it). A device that never sends one stops paying for it.
+    var ownIntentIndexMissing = false
     /// Seconds without upload or download progress before a media transfer is abandoned.
     let mediaWatchdogInterval: TimeInterval
     private var gate: [CheckedContinuation<Void, Never>] = []
@@ -164,6 +167,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
             throw LibraryTransportError.ownershipViolation("\(deviceID) may not write intents for \(intent.deviceID)")
         }
         let id = try mapper.recordID(intent: intent).recordName
+        ownIntentIndexMissing = false
         // An intent is immutable, so an existing record with this id is the same request.
         try await write(name: id, conflictIsSuccess: true) { try self.mapper.record(intent: intent, existing: $0) }
         // Second write: if it fails the caller retries `send`, and the immutable intent above is then a no-op.
@@ -176,6 +180,21 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         }
         let id = try mapper.recordID(playback: record, channel: channel).recordName
         try await write(name: id, conflictIsSuccess: false) { try self.mapper.record(playback: record, channel: channel, existing: $0) }
+    }
+
+    /// One write for all of a moment's playback records: now-playing and progress go up together.
+    public func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
+        for item in records where item.record.deviceID != deviceID {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not write records for \(item.record.deviceID)")
+        }
+        let items = try records.map { item in
+            (name: try mapper.recordID(playback: item.record, channel: item.channel).recordName, item: item)
+        }
+        try await writeMany(items.map { entry in
+            (name: entry.name, build: { base in
+                try self.mapper.record(playback: entry.item.record, channel: entry.item.channel, existing: base)
+            })
+        })
     }
 
     public func commitFetchedState(_ token: LibraryChangeToken?) async throws {
@@ -216,6 +235,40 @@ public actor CloudKitLibraryTransport: LibraryTransport {
             defer { Task { await scanDriver.cancelOperations() } }
             try await scanDriver.ensureZone()
             return try await runFetch(on: scanDriver, epoch: scanEpoch)
+        } catch { throw failure(error) }
+    }
+
+    /// Saves several records in one send. A record the server holds a newer copy of is rebuilt on that
+    /// copy and sent again, once; playback records are replaced by the next publish, so a record
+    /// still conflicting after that is reported as not acknowledged.
+    func writeMany(_ items: [(name: String, build: (CKRecord?) throws -> CKRecord)]) async throws {
+        guard !items.isEmpty else { return }
+        await acquire()
+        defer { release() }
+        guard !quarantined else { throw CloudKitSyncError.quarantined }
+        do {
+            var bases: [String: CKRecord] = [:]
+            for item in items { bases[item.name] = serverRecords[item.name] }
+            var remaining = items
+            for _ in 1...2 {
+                try await driver.ensureZone()
+                let acc = try await runSend(saves: try remaining.map { try $0.build(bases[$0.name]) }, deletes: [])
+                var retry: [(name: String, build: (CKRecord?) throws -> CKRecord)] = []
+                for item in remaining where acc.saved[item.name] == nil {
+                    if let failed = acc.failed[item.name] {
+                        guard failed.disposition == .conflict else {
+                            throw LibraryTransportError.transport("save failed: \(failed.disposition.rawValue)")
+                        }
+                        bases[item.name] = failed.server
+                    } else if acc.zoneMissing {
+                        bases[item.name] = nil
+                    }
+                    retry.append(item)
+                }
+                if retry.isEmpty { return }
+                remaining = retry
+            }
+            throw LibraryTransportError.transport("record \(remaining[0].name) was not acknowledged")
         } catch { throw failure(error) }
     }
 

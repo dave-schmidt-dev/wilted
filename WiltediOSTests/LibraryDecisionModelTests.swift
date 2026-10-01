@@ -69,7 +69,7 @@ final class LibraryDecisionModelTests: XCTestCase {
         UserDefaults(suiteName: "library-decision-tests")!.removePersistentDomain(forName: "library-decision-tests")
         return LibraryAppModel(
             transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
-            decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60, pollInterval: .seconds(3_600), pendingPollInterval: .seconds(3_600)),
+            decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60),
             preferences: UserDefaults(suiteName: "library-decision-tests")!,
             now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
     }

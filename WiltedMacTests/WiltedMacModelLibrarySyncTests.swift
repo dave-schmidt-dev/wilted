@@ -162,7 +162,7 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         let transport = InMemoryLibraryTransport(deviceID: "mac-test", server: server)
 
         XCTAssertTrue(model.startLibrarySyncIfEnabled(
-            environment: flagOn, transport: transport, debounce: .milliseconds(20), retryDelay: .milliseconds(50)
+            environment: flagOn, transport: transport, debounce: .milliseconds(20)
         ))
         try await eventually("first publish") { await server.currentSnapshot.entries.count == 3 }
         var snapshot = await server.currentSnapshot
@@ -194,7 +194,7 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
 
         model.startLibrarySyncIfEnabled(
             environment: flagOn, transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
-            debounce: .milliseconds(20), retryDelay: .milliseconds(50)
+            debounce: .milliseconds(20)
         )
         let sink = try XCTUnwrap(model.librarySyncController).sink
         try await eventually("intent recorded") { await sink.recorded.count == 1 }
@@ -246,7 +246,7 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
 
         model.startLibrarySyncIfEnabled(
             environment: flagOn, transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
-            debounce: .milliseconds(20), retryDelay: .milliseconds(50))
+            debounce: .milliseconds(20))
         let revisionA = try XCTUnwrap(snapshot.readyRevisions[ids[0]]).revision.revisionID
         try await eventually("the phone's position is stored") {
             (try? await store.playbackState(for: ids[0], revisionID: revisionA))?.positionSeconds == 4

@@ -141,6 +141,39 @@ public struct LibraryDeviceRecords: Sendable, Equatable {
     }
 }
 
+/// What one inbound poll reads. A transport fetches everything asked for in as few requests as
+/// it can (one, when the names are known), because a sync round is one batch, not one request per read.
+public struct LibraryPollOptions: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    /// The intents every known device has sent (the Mac).
+    public static let intents = LibraryPollOptions(rawValue: 1 << 0)
+    /// Every device's now-playing and progress records.
+    public static let deviceRecords = LibraryPollOptions(rawValue: 1 << 1)
+    /// The Mac's media offers.
+    public static let offers = LibraryPollOptions(rawValue: 1 << 2)
+    /// The Mac's answers to this device's intents (the phone).
+    public static let outcomes = LibraryPollOptions(rawValue: 1 << 3)
+}
+
+/// The parts of an inbound poll that were asked for; the others stay nil or empty.
+public struct LibraryPollResult: Sendable, Equatable {
+    public var intents: [LibraryIntent]
+    public var records: LibraryDeviceRecords?
+    public var offers: [LibraryMediaOffer]?
+    public var outcomes: [IntentOutcome]?
+
+    public init(
+        intents: [LibraryIntent] = [], records: LibraryDeviceRecords? = nil,
+        offers: [LibraryMediaOffer]? = nil, outcomes: [IntentOutcome]? = nil
+    ) {
+        self.intents = intents
+        self.records = records
+        self.offers = offers
+        self.outcomes = outcomes
+    }
+}
+
 /// Cumulative bytes received so far by a media download.
 public typealias MediaProgressHandler = @Sendable (Int64) -> Void
 
@@ -176,6 +209,11 @@ public protocol LibraryTransport: Sendable {
     /// Publishes this device's own record; `record.deviceID` must be this device.
     func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws
     func fetchDeviceRecords() async throws -> LibraryDeviceRecords
+    /// Publishes several of this device's own records as one write, so the now-playing and
+    /// progress records of one moment cost one operation.
+    func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws
+    /// The inbound reads of one sync round, as one batch. See `LibraryPollOptions`.
+    func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult
     /// Mac only: offers `fileURL` as the audio for `offer`. The transport takes its own copy.
     func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws
     /// Current offers, one per entry, learned without staging any audio.
@@ -203,6 +241,17 @@ public protocol LibraryTransport: Sendable {
 
 public extension LibraryTransport {
     func operationGeneration() async -> UInt64 { 0 }
+    func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
+        for item in records { try await publish(item.record, as: item.channel) }
+    }
+    func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
+        var result = LibraryPollResult()
+        if options.contains(.intents) { result.intents = try await listIntents() }
+        if options.contains(.deviceRecords) { result.records = try await fetchDeviceRecords() }
+        if options.contains(.offers) { result.offers = try await mediaOffers() }
+        if options.contains(.outcomes) { result.outcomes = try await intentOutcomes() }
+        return result
+    }
     func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
         throw LibraryTransportError.transport("media transfer is not supported by this transport")
     }

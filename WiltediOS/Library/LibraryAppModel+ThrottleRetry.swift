@@ -46,7 +46,7 @@ extension LibraryAppModel {
             }
             guard let self else { return }
             guard !Task.isCancelled else { return }
-            await self.refresh()
+            await self.pullToRefresh()
             guard !Task.isCancelled, self.throttleState == state else { return }
             // Still closed with the same state: nothing reopened it and nothing closed it again.
             self.throttleAttemptAt = self.now().addingTimeInterval(Self.throttleFallbackWait)

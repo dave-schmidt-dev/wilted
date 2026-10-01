@@ -31,7 +31,7 @@ struct LibrarySettingsView: View {
             }
             .background(WiltedTheme.color(.page, scheme: colorScheme))
             .overlay { LibraryWatermark() }
-            .refreshable { await model.refresh() }
+            .refreshable { await model.pullToRefresh() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {

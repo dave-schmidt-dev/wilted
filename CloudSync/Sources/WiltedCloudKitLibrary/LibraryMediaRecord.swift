@@ -124,10 +124,13 @@ extension CloudKitLibraryTransport {
     }
 
     public func listIntents() async throws -> [LibraryIntent] {
-        let devices = peers.devices.union([deviceID]).sorted()
+        let devices = peers.devices.union([deviceID]).sorted().filter { $0 != deviceID || !ownIntentIndexMissing }
         var wanted: [(name: String, deviceID: String, id: String)] = []
+        var sawOwn = false
+        defer { if devices.contains(deviceID), !sawOwn { ownIntentIndexMissing = true } }
         for record in try await fetchPresent(devices.compactMap { try? mapper.recordID(intentIndexFor: $0) }) {
             guard case let .intentIndex(index)? = try? mapper.decode(record) else { continue }
+            if index.deviceID == deviceID { sawOwn = true }
             peers.note(device: index.deviceID)
             for id in index.intentIDs {
                 guard let name = try? mapper.recordID(intentID: id, deviceID: index.deviceID).recordName else { continue }

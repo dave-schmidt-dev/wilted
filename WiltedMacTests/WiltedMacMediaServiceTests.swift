@@ -329,8 +329,9 @@ final class WiltedMacMediaServiceTests: XCTestCase {
             await gate.release()
         }
         let requested = await gate.requested
-        XCTAssertEqual(Array(requested.prefix(3)), Array(repeating: .seconds(30), count: 3))
-        XCTAssertTrue(requested.allSatisfy { $0 == .seconds(30) })
+        // The timer counts from the round's start, so the wait is the interval less the round itself.
+        XCTAssertEqual(requested.count >= 3, true)
+        XCTAssertTrue(requested.allSatisfy { $0 > .seconds(29) && $0 <= .seconds(30) })
         XCTAssertEqual(SyncCadence.pollInterval, 30)
         await poller.stop()
         await gate.release()
