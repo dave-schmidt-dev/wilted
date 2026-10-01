@@ -130,6 +130,21 @@ targets:
         product: WiltedCloudKitLibrary
       - package: WiltedListener
         product: WiltedListener
+      # Built first, embedded in PlugIns/ by the script below (ordinary Siri requests, in the car too, are routed through it).
+      - target: WiltediOSIntents
+        embed: false
+        link: false
+    # Embedded by this script instead of Xcode's embed phase so Release can leave it out: Production has no
+    # Siri entitlement (an App Store app with an Intents extension needs it) and no CarPlay entitlement, so
+    # Release ships without the extension until Siri does.
+    postBuildScripts:
+      - name: Embed the Intents extension (not in Release)
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$CONFIGURATION" != "Release" ]; then
+            mkdir -p "$TARGET_BUILD_DIR/$PLUGINS_FOLDER_PATH"
+            rsync -a --delete "$BUILT_PRODUCTS_DIR/WiltediOSIntents.appex" "$TARGET_BUILD_DIR/$PLUGINS_FOLDER_PATH/"
+          fi
     settings:
       base:
         # Source bundle ID; Apple App ID ownership and portal registration remain
@@ -143,7 +158,8 @@ targets:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
         Development:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements
-          # CarPlay needs a provisioning profile that carries com.apple.developer.carplay-audio, so the
+          # CarPlay and Siri need a provisioning profile that carries com.apple.developer.carplay-audio and
+          # com.apple.developer.siri (WILTED_SIRI asks for SiriKit authorization), so the
           # device build signs manually with it (Xcode cannot make that profile automatically).
           # The profile lists only this certificate; a second "Apple Development" identity in the
           # keychain would otherwise be picked and rejected.
@@ -153,7 +169,7 @@ targets:
           CODE_SIGNING_REQUIRED: YES
           DEVELOPMENT_TEAM: 4CJ49V6QHW
           PROVISIONING_PROFILE_SPECIFIER: Wilted iOS Development
-          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE WILTED_SIRI"
         Release:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements
           CODE_SIGN_STYLE: Manual
@@ -175,6 +191,13 @@ targets:
         # Wilted uses only Apple-provided HTTPS/CloudKit transport and SHA-256
         # integrity hashes; it does not implement non-exempt encryption.
         ITSAppUsesNonExemptEncryption: false
+        # Required by SiriKit authorization (INPreferences.requestSiriAuthorization), asked once on the phone.
+        NSSiriUsageDescription: Wilted shares your episode titles with Siri so you can ask it to play your downloaded episodes by voice, including from CarPlay.
+        # The intent the app answers itself (PlayMediaIntentHandler); in-app handling needs it declared here.
+        INIntentsSupported:
+          - INPlayMediaIntent
+        INSupportedMediaCategories:
+          - INMediaCategoryPodcasts
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
@@ -193,6 +216,58 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  # The Siri Intents extension for spoken play requests ("Hey Siri", the car's Siri button). It resolves and confirms INPlayMediaIntent
+  # and hands it to the app (.handleInApp); it plays nothing and shares no data with the app.
+  WiltediOSIntents:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: WiltediOSIntents
+        excludes:
+          - "*.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.intents
+        INFOPLIST_FILE: WiltediOSIntents/Info.plist
+        SKIP_INSTALL: YES
+      configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: ""
+        # Automatic, as asked (build with -allowProvisioningUpdates): Xcode creates and manages the
+        # extension's App ID and profile; the app keeps its manual "Wilted iOS Development" profile.
+        Development:
+          CODE_SIGN_ENTITLEMENTS: WiltediOSIntents/WiltediOSIntents.entitlements
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Development"
+          CODE_SIGNING_ALLOWED: YES
+          CODE_SIGNING_REQUIRED: YES
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
+        Release:
+          CODE_SIGN_ENTITLEMENTS: WiltediOSIntents/WiltediOSIntentsProduction.entitlements
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Distribution"
+          CODE_SIGNING_ALLOWED: YES
+          CODE_SIGNING_REQUIRED: YES
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
+    info:
+      path: WiltediOSIntents/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: en
+        CFBundleDisplayName: Wilted Siri
+        CFBundleName: WiltediOSIntents
+        CFBundlePackageType: XPC!
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.intents-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).IntentHandler
+          NSExtensionAttributes:
+            IntentsSupported:
+              - INPlayMediaIntent
+            SupportedMediaCategories:
+              - INMediaCategoryPodcasts
 
   WiltedMacTests:
     type: bundle.unit-test
@@ -229,6 +304,8 @@ targets:
     sources:
       - path: WiltediOSTests
         optional: true
+      # The extension's handler is plain Intents code, so the tests compile it directly.
+      - path: WiltediOSIntents/PlayMediaExtensionHandler.swift
     dependencies:
       - target: WiltediOS
       - package: WiltedKit

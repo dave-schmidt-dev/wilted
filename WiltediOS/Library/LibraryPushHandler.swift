@@ -1,4 +1,4 @@
-import Intents
+@preconcurrency import Intents
 import UIKit
 
 /// Routes silent CloudKit pushes to the library model.
@@ -49,7 +49,20 @@ final class LibraryPushAppDelegate: NSObject, UIApplicationDelegate {
         await LibraryPushHandler.shared.receiveSilentPush()
     }
 
-    /// SiriKit media requests (the CarPlay Siri assistant cell) are handled in the app, with no extension.
+    /// The Intents extension answers `.handleInApp`; the app then plays the request itself, so playback
+    /// runs in the app (an extension's lifespan is short), through the shared player.
+    func application(
+        _ application: UIApplication, handle intent: INIntent, completionHandler: @escaping (INIntentResponse) -> Void
+    ) {
+        guard let play = intent as? INPlayMediaIntent else {
+            completionHandler(INPlayMediaIntentResponse(code: .failure, userActivity: nil))
+            return
+        }
+        nonisolated(unsafe) let complete = completionHandler
+        Task { complete(await PlayMediaIntentHandler().handle(intent: play)) }
+    }
+
+    /// SiriKit media requests are also handled in the app itself when no extension is in the way.
     func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
         intent is INPlayMediaIntent ? PlayMediaIntentHandler() : nil
     }

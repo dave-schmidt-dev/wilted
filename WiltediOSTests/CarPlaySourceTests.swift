@@ -17,7 +17,9 @@ final class CarPlaySourceTests: XCTestCase {
     }
 
     func testOnlyListAndNowPlayingTemplatesAreUsed() throws {
-        let allowed: Set<String> = ["CPListTemplate", "CPNowPlayingTemplate", "CPTemplateApplicationSceneDelegate"]
+        let allowed: Set<String> = [
+            "CPListTemplate", "CPNowPlayingTemplate", "CPTabBarTemplate", "CPTemplateApplicationSceneDelegate",
+            "CPTemplate"]  // the base class, as a variable type
         let regex = try NSRegularExpression(pattern: "CP[A-Za-z]*Template[A-Za-z]*")
         for (name, text) in try carPlaySources() {
             let range = NSRange(text.startIndex..., in: text)
@@ -27,14 +29,36 @@ final class CarPlaySourceTests: XCTestCase {
         }
     }
 
-    func testOnlyNowPlayingIsPushedSoDepthStaysAtTwo() throws {
+    /// Depth is tab bar, then one show's list, then Now Playing: three of the five CarPlay allows.
+    func testOnlyAShowListAndNowPlayingArePushedSoDepthStaysAtThree() throws {
+        var pushes = 0
         for (name, text) in try carPlaySources() {
-            for line in text.split(separator: "\n") where line.contains("pushTemplate(") || line.contains("presentTemplate(") {
+            XCTAssertFalse(text.contains("presentTemplate("), "\(name) presents a template")
+            for line in text.split(separator: "\n") where line.contains("pushTemplate(") {
+                pushes += 1
                 XCTAssertTrue(
-                    line.contains("CPNowPlayingTemplate.shared") && line.contains("pushTemplate"),
-                    "\(name) pushes or presents something other than Now Playing: \(line)")
+                    line.contains("CPNowPlayingTemplate.shared") || line.contains("pushTemplate(template,"),
+                    "\(name) pushes something other than Now Playing or a show's list: \(line)")
             }
         }
+        XCTAssertEqual(pushes, 2, "one push for a show's list, one for Now Playing")
+    }
+
+    /// A show's list is filled before it is pushed, so filling it must not depend on it being on the
+    /// stack yet; the driver going back is noticed through the interface delegate instead.
+    func testAShowListIsFilledBeforeItsPushAndForgottenThroughTheDelegate() throws {
+        let delegate = try XCTUnwrap(carPlaySources().first { $0.name == "CarPlaySceneDelegate.swift" }).text
+        let body = try XCTUnwrap(delegate.components(separatedBy: "private func renderOpenShow").last?
+            .components(separatedBy: "private func showItem").first)
+        XCTAssertFalse(body.contains("templates.contains"), "filling an open show must not require it to be on the stack")
+        XCTAssertTrue(delegate.contains("func templateDidDisappear"), "the delegate notices the driver going back")
+    }
+
+    func testTabCountComesFromTheCarAndTheTabBarStaysSmall() throws {
+        let delegate = try XCTUnwrap(carPlaySources().first { $0.name == "CarPlaySceneDelegate.swift" }).text
+        XCTAssertTrue(delegate.contains("CPTabBarTemplate.maximumTabCount"), "the tab limit is read from the car")
+        XCTAssertTrue(delegate.contains("CPTabBarTemplate(templates: [list, shows])"), "two tabs: Downloaded and Shows")
+        XCTAssertTrue(delegate.contains("CPListTemplate.maximumItemCount"), "list length comes from the car")
     }
 
     func testCarPlayCodeNeverTouchesTheAudioSession() throws {
@@ -55,15 +79,29 @@ final class CarPlaySourceTests: XCTestCase {
             "the scene must not hardcode the cap; 12 is only the model's default for tests")
     }
 
-    func testAssistantCellIsOnlyEnabledWhenTheSiriCapabilityIsSigned() throws {
+    /// David does not want a Siri button on the car screen ("Hey Siri" and the car's Siri button cover it),
+    /// and a misconfigured cell crashed the scene on a device. No source configures one.
+    func testNoAssistantCellIsConfiguredAnywhereInTheApp() throws {
+        let sources = root.appendingPathComponent("WiltediOS", isDirectory: true)
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        XCTAssertFalse(files.isEmpty)
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for forbidden in ["CPAssistantCellConfiguration", "assistantCellConfiguration"] {
+                XCTAssertFalse(text.contains(forbidden), "\(file.lastPathComponent) configures a Siri assistant cell (\(forbidden))")
+            }
+        }
+    }
+
+    func testAppInfoPlistDeclaresThePlayMediaIntentItHandlesInApp() throws {
+        let plist = try XCTUnwrap(NSDictionary(contentsOf: root.appendingPathComponent("WiltediOS/Info.plist")) as? [String: Any])
+        XCTAssertEqual(plist["INIntentsSupported"] as? [String], ["INPlayMediaIntent"])
+        XCTAssertEqual(plist["INSupportedMediaCategories"] as? [String], ["INMediaCategoryPodcasts"])
+        XCTAssertNotNil(plist["NSSiriUsageDescription"])
         let entitlements = try XCTUnwrap(
             NSDictionary(contentsOf: root.appendingPathComponent("WiltediOS/WiltediOS.entitlements")) as? [String: Any])
-        if CarPlaySiri.assistantCellEnabled {
-            XCTAssertEqual(entitlements["com.apple.developer.siri"] as? Bool, true, "the cell needs the Siri capability to have anything to answer")
-            XCTAssertNotNil(CarPlaySiri.assistantCellConfiguration())
-        } else {
-            XCTAssertNil(CarPlaySiri.assistantCellConfiguration())
-        }
+        XCTAssertEqual(entitlements["com.apple.developer.siri"] as? Bool, true)
     }
 
     func testEveryListItemHandlerCompletes() throws {

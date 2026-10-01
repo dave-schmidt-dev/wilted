@@ -155,65 +155,40 @@ final class LibraryDecisionModelTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
-    func testReorderIsOptimisticEntryRelativeAndFollowsTheMovedList() async throws {
+    func testEpisodesStartedOnTheMacListFirst() async throws {
         try await seed()
         for raw in ["a", "b", "c"] { try await offerAudio(raw) }
+        try await startedOnMac("c")
         let model = makeModel()
         await model.refresh()
-        await model.reorderQueued(fromOffsets: IndexSet(integer: 2), toOffset: 0) // c to the front
-        XCTAssertEqual(ids(model.queued), ["c", "a", "b"])
-        await model.reorderQueued(fromOffsets: IndexSet(integer: 1), toOffset: 3) // a to after b
-        XCTAssertEqual(ids(model.queued), ["c", "b", "a"])
-        let sent = try await intents().map(\.action)
-        XCTAssertEqual(sent, [.reorder(entryID: id("c"), afterEntryID: nil), .reorder(entryID: id("a"), afterEntryID: id("b"))])
+        XCTAssertEqual(ids(model.visibleRows), ["c", "a", "b"], "a position synced from the Mac pins the episode first")
     }
 
-    func testReorderIsIgnoredWhileTheListIsSortedOrFiltered() async throws {
+    func testACompletedEpisodeIsNeverPinnedAndTheNewestPlayLeads() async throws {
         try await seed()
         for raw in ["a", "b", "c"] { try await offerAudio(raw) }
+        try await startedOnMac("a", position: 20)
+        try await startedOnMac("b", position: 40)
+        try await macPush([.listening(ListeningRecord(
+            itemID: id("a"), completedAt: Date(timeIntervalSince1970: 1_700_000_000), updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            deviceID: "mac"))])
         let model = makeModel()
         await model.refresh()
-        XCTAssertTrue(model.canReorder)
-        model.sort = .title
-        XCTAssertFalse(model.canReorder)
-        model.moveQueued(fromOffsets: IndexSet(integer: 2), toOffset: 0)
-        model.sort = .custom
-        model.searchText = "Title"
-        XCTAssertFalse(model.canReorder)
-        model.filter = .onPhone
-        model.searchText = ""
-        XCTAssertFalse(model.canReorder)
-        let sent = try await intents()
-        XCTAssertTrue(sent.isEmpty)
+        XCTAssertEqual(Set(model.progress.keys), [id("b")], "a completed episode does not count as in progress")
+        XCTAssertEqual(ids(model.visibleRows), ["b", "c", "a"], "in progress first, completed last")
     }
 
-    func testReorderOnlyTouchesPreparedRowsAndLeavesHiddenOnesInPlace() async throws {
+    func testSiriListsAndShowsPutInProgressFirstToo() async throws {
         try await seed()
-        for raw in ["a", "c"] { try await offerAudio(raw) } // b is queued but not prepared
+        for raw in ["a", "b", "c"] { try await offerAudio(raw) }
+        try await startedOnMac("b")
         let model = makeModel()
         await model.refresh()
-        XCTAssertEqual(ids(model.visibleRows), ["a", "c"])
-        await model.reorderQueued(fromOffsets: IndexSet(integer: 1), toOffset: 0) // c above a
-        XCTAssertEqual(ids(model.queued), ["c", "a", "b"])
-        let sent = try await intents().map(\.action)
-        XCTAssertEqual(sent, [.reorder(entryID: id("c"), afterEntryID: nil)])
+        for raw in ["a", "b", "c"] { model.media[id(raw)] = .onPhone }
+        let snapshot = await LibraryVoiceTarget(model: model, player: LibraryPlayer.live()).voiceSnapshot()
+        XCTAssertEqual(snapshot.downloaded.map(\.id.rawValue), ["b", "a", "c"])
+        XCTAssertEqual(VoiceCommandPlanner.plan(.playNext(show: nil), snapshot: snapshot).action, .play(id("b")))
     }
-
-    func testReorderRequestConversion() {
-        let q = ["a", "b", "c", "d"].map(id)
-        XCTAssertTrue(LibraryReorder.requests(queue: q, from: IndexSet(integer: 1), to: 1).isEmpty)
-        XCTAssertTrue(LibraryReorder.requests(queue: q, from: IndexSet(integer: 1), to: 2).isEmpty)
-        let down = LibraryReorder.requests(queue: q, from: IndexSet(integer: 0), to: 3)
-        XCTAssertEqual(down.map(\.entryID), [id("a")])
-        XCTAssertEqual(down.map(\.afterEntryID), [id("c")])
-        let front = LibraryReorder.requests(queue: q, from: IndexSet(integer: 3), to: 0)
-        XCTAssertEqual(front.map(\.afterEntryID), [nil])
-        let pair = LibraryReorder.requests(queue: q, from: IndexSet([0, 1]), to: 4)
-        XCTAssertEqual(pair.map(\.entryID), [id("a"), id("b")])
-        XCTAssertEqual(pair.map(\.afterEntryID), [id("d"), id("a")])
-    }
-
-    // MARK: confirmation, rejection, contradiction, timeout
 
     func testAppliedOutcomeHoldsTheDisplayUntilThePublishCatchesUp() async throws {
         try await seed()

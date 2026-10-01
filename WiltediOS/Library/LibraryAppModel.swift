@@ -13,7 +13,7 @@ struct LibraryAccountRecovery: Sendable {
 
 /// Owns the iPhone's library replica: fetches on launch, foreground, pull-to-refresh and
 /// silent push, and exposes queue-ordered rows plus the Mac's last checkpoint per entry. The
-/// phone lists only what the Mac has prepared; `visibleRows` is that Larder after sort, filter
+/// phone lists only what the Mac has prepared; `visibleRows` is that Larder in the play order, after filter
 /// and search.
 /// The iPhone never writes library state; the Mac is the single writer.
 @MainActor
@@ -23,14 +23,18 @@ final class LibraryAppModel: ObservableObject {
     /// Entries whose media offer from the Mac says the audio is prepared: `ready` (fetchable now) or
     /// `available` (prepared on the Mac; asking for it starts the upload).
     @Published private(set) var readyOffers: Set<ItemID> = []
-    /// Larder ordering, remembered across launches. `custom` is the Mac's queue order.
-    @Published var sort: LibrarySortOrder {
-        didSet { if sort != oldValue { preferences.set(sort.rawValue, forKey: LibrarySortOrder.preferenceKey) } }
-    }
     @Published var filter: LibraryFilter = .all
     @Published var searchText = ""
     /// The most authoritative record per entry from any device other than this one.
     @Published private(set) var checkpoints: [ItemID: ObservedPlayback] = [:]
+    /// In-progress episodes (position past the start, not completed) from this phone, the Mac and any
+    /// other device, with when each was last played. Every listing puts these first.
+    @Published private(set) var progress: [ItemID: EpisodeProgress] = [:]
+    /// Episodes played to their end but not marked completed, with when; they list and auto-continue as completed.
+    @Published private(set) var finished: [ItemID: Date] = [:]
+    /// Episodes that played out on this phone since launch, with when. The feed's length can differ from
+    /// the file's, so a position at the file's end is not always at the feed's end; this is exact.
+    var playedOut: [ItemID: Date] = [:]
     @Published private(set) var isRefreshing = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastSynchronizedAt: Date?
@@ -130,7 +134,6 @@ final class LibraryAppModel: ObservableObject {
         self.preferences = preferences
         handoffState.ownPositionStore = LibraryOwnPositionStore(url: ownPositionsURL)
         self.phoneStats = LibraryPhoneStatsStore(defaults: preferences)
-        self.sort = LibrarySortOrder.stored(in: preferences)
         self.store = store
         self.deviceID = deviceID
         self.recovery = recovery
@@ -258,6 +261,27 @@ final class LibraryAppModel: ObservableObject {
         let visible = LibraryDecisionOverlay.apply(decisions, to: decisionContent)
         queued = LibraryRowBuilder.rows(
             content: visible, checkpoints: checkpoints, clock: clockFormat, started: startedEntries)
+        refreshProgress()
+    }
+
+    /// Recomputes `progress` from every device's records and what the player has loaded.
+    func refreshProgress() { refreshProgress(playingEntry: handoffState.player?.item?.entryID) }
+
+    func refreshProgress(playingEntry: ItemID?) {
+        let completed = Set(LibraryDecisionOverlay.apply(decisions, to: decisionContent).listening.filter { $0.value.isCompleted }.keys)
+        let player = handoffState.player
+        let playing = playingEntry.map { (id: $0, position: player?.position ?? 0, isPlaying: player?.isPlaying ?? false) }
+        let next = InProgressOrdering.progress(
+            checkpoints: checkpoints, ownPositions: handoffState.ownPositions, completed: completed,
+            durations: entryDurations, nowPlaying: playing, now: now().addingTimeInterval(handoffState.clockOffset))
+        if next != progress { progress = next }
+        // Playing an episode again takes it out of the played-out set; its new position decides from here.
+        if let loaded = player?.item?.entryID, player?.status != .ended { playedOut[loaded] = nil }
+        var ended = InProgressOrdering.finished(
+            checkpoints: checkpoints, ownPositions: handoffState.ownPositions, completed: completed,
+            durations: entryDurations, nowPlaying: playing, now: now().addingTimeInterval(handoffState.clockOffset))
+        for (id, at) in playedOut where !completed.contains(id) { ended[id] = max(ended[id] ?? .distantPast, at) }
+        if ended != finished { finished = ended }
     }
 
     /// Queued entries the phone can play or fetch: a ready or available offer, a transfer under way, or audio
@@ -272,7 +296,8 @@ final class LibraryAppModel: ObservableObject {
     var visibleRows: [LibraryRow] {
         let ids = preparedIDs
         return LibraryListing.rows(
-            queued, offered: ids.offered, onPhone: ids.onPhone, sort: sort, filter: filter, query: searchText)
+            queued, offered: ids.offered, onPhone: ids.onPhone, filter: filter, query: searchText,
+            progress: progress, finished: finished)
     }
 
     /// How many queued entries are prepared, before any filter or search; tells an empty Larder
@@ -281,9 +306,6 @@ final class LibraryAppModel: ObservableObject {
         let ids = preparedIDs
         return LibraryListing.prepared(queued, offered: ids.offered, onPhone: ids.onPhone).count
     }
-
-    /// Drag reorder edits the Mac's own order, so it needs that order shown whole.
-    var canReorder: Bool { sort.allowsReorder && filter == .all && searchText.trimmingCharacters(in: .whitespaces).isEmpty }
 
     /// Entries any device, this one included, has played past the start.
     static func startedEntries(from records: LibraryDeviceRecords) -> Set<ItemID> {

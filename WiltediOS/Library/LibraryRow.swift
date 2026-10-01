@@ -19,10 +19,14 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     /// True when some device has started the episode and it is not completed; the only rows
     /// that offer Mark done.
     var isStarted: Bool = false
+    /// When the episode was marked completed on any device; nil while it is not.
+    var completedAt: Date?
     /// The episode notes the Mac published; searched, never shown in the row.
     var summary: String = ""
     /// Artwork location as published by the Mac; nil when the episode has none.
     var artworkURL: URL?
+    /// The show's own artwork (from its source), for lists of shows; nil when the Mac published none.
+    var showArtworkURL: URL?
     /// Where Play should begin: the Mac's last observed position, nil to begin at the start.
     var resumeSeconds: Double?
 }
@@ -79,8 +83,10 @@ enum LibraryRowBuilder {
             removalText: removalText(entry.removal),
             checkpointText: checkpoints[entry.id].map { checkpointText($0, clock: clock) },
             isStarted: started.contains(entry.id) && content.listening[entry.id]?.isCompleted != true,
+            completedAt: content.listening[entry.id]?.completedAt,
             summary: entry.summary,
             artworkURL: artworkURL(entry.artworkRef),
+            showArtworkURL: artworkURL(content.sources[entry.sourceID]?.artworkRef),
             resumeSeconds: resumeSeconds(checkpoints[entry.id], duration: entry.durationSeconds)
         )
     }

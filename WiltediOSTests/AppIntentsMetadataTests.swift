@@ -46,7 +46,10 @@ final class AppIntentsMetadataTests: XCTestCase {
         }
         let withPhrases = Set(shortcuts.compactMap { $0["actionIdentifier"] as? String })
         XCTAssertEqual(
-            withPhrases, Self.intents.subtracting(["PauseEpisodeIntent", "ResumeEpisodeIntent"]),
-            "pause and resume are voiced by Siri's own transport commands, every other intent has a phrase")
+            withPhrases,
+            Self.intents.subtracting([
+                "PauseEpisodeIntent", "ResumeEpisodeIntent", "SkipForwardIntent", "SkipBackIntent"]),
+            "pause, resume and skip are voiced by Siri's own transport commands, every other intent has a phrase")
+        XCTAssertEqual(shortcuts.count, 7)
     }
 }

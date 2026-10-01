@@ -43,11 +43,11 @@ final class LibraryLarderTests: XCTestCase {
     }
 
     private func list(
-        _ rows: [LibraryRow], offered: [String] = [], onPhone: [String] = [], sort: LibrarySortOrder = .custom,
+        _ rows: [LibraryRow], offered: [String] = [], onPhone: [String] = [],
         filter: LibraryFilter = .all, query: String = ""
     ) -> [String] {
         ids(LibraryListing.rows(
-            rows, offered: Set(offered.map(id)), onPhone: Set(onPhone.map(id)), sort: sort, filter: filter, query: query))
+            rows, offered: Set(offered.map(id)), onPhone: Set(onPhone.map(id)), filter: filter, query: query))
     }
 
     // MARK: pure listing
@@ -58,20 +58,14 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertEqual(list(rows), [])
     }
 
-    func testCustomKeepsQueueOrderAndOtherSortsFollowTheMac() {
+    func testListIsAlwaysThePlayOrderNotTheMacsQueueOrder() {
         let rows = [
-            row("a", title: "Beta", show: "Zed", published: 300, duration: 900),
-            row("b", title: "alpha 10", show: "Amp", published: 100, duration: nil),
-            row("c", title: "Alpha 2", show: "Amp", published: 200, duration: 300),
-            row("d", title: "Gamma", show: "Mid", published: 200, duration: 300),
+            row("a", title: "Beta", published: 300),
+            row("b", title: "alpha 10", published: 100),
+            row("c", title: "Alpha 2", published: 200),
+            row("d", title: "Gamma", published: 200),
         ]
-        let all = ["a", "b", "c", "d"]
-        XCTAssertEqual(list(rows, offered: all, sort: .custom), ["a", "b", "c", "d"])
-        XCTAssertEqual(list(rows, offered: all, sort: .newest), ["a", "c", "d", "b"])
-        XCTAssertEqual(list(rows, offered: all, sort: .oldest), ["b", "c", "d", "a"])
-        XCTAssertEqual(list(rows, offered: all, sort: .shortest), ["c", "d", "a", "b"], "unknown lengths last, ties by id")
-        XCTAssertEqual(list(rows, offered: all, sort: .show), ["b", "c", "d", "a"])
-        XCTAssertEqual(list(rows, offered: all, sort: .title), ["c", "b", "a", "d"], "natural order: Alpha 2 before alpha 10")
+        XCTAssertEqual(list(rows, offered: ["a", "b", "c", "d"]), ["b", "c", "d", "a"], "oldest published first, ties in queue order")
     }
 
     func testFilterSplitsOnPhoneFromAvailable() {
@@ -252,29 +246,22 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertNil(try XCTUnwrap(model.visibleRows.first { $0.id == id("b") }).resumeSeconds, "no checkpoint: start at 0")
     }
 
-    func testSortIsPersistedAndRestoredButFilterAndSearchStartClean() async throws {
+    func testFilterAndSearchStartCleanOnLaunch() async throws {
         let defaults = UserDefaults(suiteName: suite)!
         let model = makeModel(preferences: defaults)
-        XCTAssertEqual(model.sort, .custom, "default is the Mac's queue order")
-        model.sort = .shortest
         model.filter = .onPhone
         model.searchText = "x"
         let reopened = makeModel(preferences: defaults)
-        XCTAssertEqual(reopened.sort, .shortest)
         XCTAssertEqual(reopened.filter, .all)
         XCTAssertEqual(reopened.searchText, "")
-        defaults.set("bogus", forKey: LibrarySortOrder.preferenceKey)
-        XCTAssertEqual(makeModel(preferences: defaults).sort, .custom)
     }
 
-    func testModelSortFilterAndSearchNarrowTheListWithoutAFetch() async throws {
+    func testModelFilterAndSearchNarrowTheListWithoutAFetch() async throws {
         try await seed(["a", "b", "c"])
         for raw in ["a", "b", "c"] { try await offer(raw) }
         let model = makeModel()
         await model.refresh()
         XCTAssertEqual(ids(model.visibleRows), ["a", "b", "c"])
-        model.sort = .newest
-        XCTAssertEqual(ids(model.visibleRows), ["c", "b", "a"])
         model.searchText = "about b"
         XCTAssertEqual(ids(model.visibleRows), ["b"])
         XCTAssertEqual(model.preparedCount, 3, "search does not change what is prepared")
@@ -283,20 +270,35 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertEqual(model.preparedCount, 3)
     }
 
-    func testRemoveFromLarderIsTheOnlyDecisionOnAnUnstartedRowAndReorderNeedsCustomOrder() async throws {
+    func testRemoveFromLarderIsTheOnlyDecisionOnAnUnstartedRow() async throws {
         try await seed(["a", "b"])
         try await offer("a")
         try await offer("b")
         let model = makeModel()
         await model.refresh()
         XCTAssertEqual(model.decisionActions(for: model.visibleRows[0]), [.removeFromLarder])
-        XCTAssertTrue(model.canReorder)
-        model.sort = .oldest
-        XCTAssertFalse(model.canReorder)
     }
 
     func testCheckpointLineSpeaksForThisPhoneOnceItHasTheEpisode() {
         XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: true, position: 252), "Playing on this iPhone at 04:12")
         XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: false, position: 3_725), "Paused on this iPhone at 1:02:05")
+    }
+
+    // MARK: phone row progress
+
+    func testPhoneRowShowsTimeLeftProgressAndPlayedLikeTheCarRows() {
+        let r = row("a", show: "Alpha", published: 0, duration: 600)
+        let date = r.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
+        let started = EpisodeProgress(positionSeconds: 150, lastPlayedAt: Date(timeIntervalSince1970: 5))
+        XCTAssertEqual(LibraryRowView.detail(row: r, progress: started, completed: false), "07:30 left · \(date)")
+        XCTAssertEqual(LibraryRowView.detail(row: r, progress: nil, completed: false), "10:00 · \(date)")
+        XCTAssertEqual(LibraryRowView.detail(row: r, progress: started, completed: true), "Played · \(date)")
+        XCTAssertEqual(CarEpisodeList.fraction(started, duration: 600), 0.25)
+        // The car row carries the same time left for the same data.
+        XCTAssertTrue(CarEpisodeList.detail(r, progress: started).hasSuffix("07:30 left"))
+        let untimed = row("b", duration: nil)
+        XCTAssertEqual(LibraryRowView.detail(row: untimed, progress: started, completed: false), untimed.publishedAt
+            .formatted(.dateTime.month(.abbreviated).day().year()))
+        XCTAssertNil(CarEpisodeList.fraction(started, duration: nil))
     }
 }

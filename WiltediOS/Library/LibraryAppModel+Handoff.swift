@@ -142,17 +142,28 @@ extension LibraryAppModel {
     func attachPlayer(_ player: LibraryPlayer) {
         guard handoffState.player !== player else { return }
         player.onListened = { [phoneStats] wall, rate in phoneStats.recordListening(wall: wall, rate: rate) }
+        player.onFinished = { [weak self] ended, autoPlayNext in
+            Task { @MainActor [weak self] in await self?.episodeFinished(ended, autoPlayNext: autoPlayNext) }
+        }
         handoffState.subscriptions.removeAll()
         handoffState.player = player
         // `@Published` emits on the thread that mutates it, which is always the main actor here.
         player.$status.removeDuplicates().sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.enqueueHandoffSync() }
+            // The status is already visible on the player when its own subscribers run on the next turn.
+            MainActor.assumeIsolated {
+                self?.enqueueHandoffSync()
+                Task { @MainActor [weak self] in self?.refreshProgress() }
+            }
         }.store(in: &handoffState.subscriptions)
         player.$position.sink { [weak self] _ in
             MainActor.assumeIsolated { self?.enqueueHandoffSync() }
         }.store(in: &handoffState.subscriptions)
-        player.$item.sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.enqueueHandoffSync() }
+        player.$item.sink { [weak self] item in
+            // `@Published` emits before the value changes, so hand the new item over rather than re-reading it.
+            MainActor.assumeIsolated {
+                self?.refreshProgress(playingEntry: item?.entryID)
+                self?.enqueueHandoffSync()
+            }
         }.store(in: &handoffState.subscriptions)
     }
 
@@ -174,14 +185,21 @@ extension LibraryAppModel {
         await startCached(row, togglingIfLoaded: false)
     }
 
-    private func startCached(_ row: LibraryRow, togglingIfLoaded: Bool) async {
-        guard let player = handoffState.player, let cached = await mediaCache.cachedEntries()[row.id] else { return }
-        let item = LibraryPlayer.Item(entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url)
+    /// `onlyIf` is checked after the cache lookup, so auto-continue never overrides a command given while
+    /// it looked. Returns true only when this call started the episode on the player.
+    @discardableResult
+    func startCached(
+        _ row: LibraryRow, togglingIfLoaded: Bool, onlyIf: (@MainActor (LibraryPlayer) -> Bool)? = nil
+    ) async -> Bool {
+        guard let player = handoffState.player, let cached = await mediaCache.cachedEntries()[row.id] else { return false }
+        if let onlyIf, !onlyIf(player) { return false }
+        let item = LibraryPlayer.Item(
+            entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url, artworkURL: row.artworkURL)
         guard player.item != item else {
             if togglingIfLoaded { player.togglePlayPause() } else if !player.isPlaying { player.play() }
-            return
+            return false
         }
-        player.start(item, at: resumeStart(for: row.id, cachedRevision: cached.revisionID))
+        return player.start(item, at: resumeStart(for: row.id, cachedRevision: cached.revisionID))
     }
 
     /// Where `entryID` should start: the newest same-revision position, else the start.
@@ -247,6 +265,7 @@ extension LibraryAppModel {
                 }
             } else if hasJumped(to: position, rate: player.rate, at: clock) {
                 try? await coordinator.seeked(to: position)
+                refreshProgress()
             } else {
                 try? await coordinator.positionUpdate(position, rate: player.rate)
             }
@@ -282,12 +301,13 @@ extension LibraryAppModel {
                 await rememberOwnPosition(item.entryID, position: position)
                 await republishUnpublishedPositions()
             }
+            refreshProgress()
         }
     }
 
     /// Keeps this phone's own last position current between device-record fetches, so returning to
     /// an episode after playing another one resumes here rather than at an older record.
-    private func rememberOwnPosition(_ entryID: ItemID, position: Double) async {
+    func rememberOwnPosition(_ entryID: ItemID, position: Double) async {
         // The highest epoch this phone knows for the entry, so its own position outranks an older
         // Mac record when the phone resumes offline.
         let epoch = max(await coordinator.epoch ?? 0, checkpoints[entryID]?.record.epoch ?? 0)
@@ -297,6 +317,7 @@ extension LibraryAppModel {
                   isPlaying: false, epoch: epoch, publishedAt: now()) else { return }
         handoffState.ownPositions[entryID] = ObservedPlayback(
             record: record, serverModifiedAt: now().addingTimeInterval(handoffState.clockOffset))
+        refreshProgress()
     }
 
     /// Publishes positions saved while a write failed, as paused Progress records. Anything the
@@ -466,7 +487,8 @@ extension LibraryAppModel {
             let entry = decisionContent.entries[entryID]
             let item = LibraryPlayer.Item(
                 entryID: entryID, title: entry?.title ?? "Episode",
-                showTitle: entry.flatMap { decisionContent.sources[$0.sourceID]?.title } ?? "", fileURL: cached.url)
+                showTitle: entry.flatMap { decisionContent.sources[$0.sourceID]?.title } ?? "", fileURL: cached.url,
+                artworkURL: LibraryRowBuilder.artworkURL(entry?.artworkRef))
             player.setRate(rate)
             continuation = nil
             player.start(item, at: position)

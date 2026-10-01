@@ -29,6 +29,7 @@ while the intents run in the app process (`openAppWhenRun = false`).
 | | show matched, playing episode is of that show | play the next downloaded episode of that show after it, in Larder order | "Playing <title>." |
 | | ... and it is the last one | none | "That was the last <Show> episode on your phone." |
 | | show matched, playing episode is another show (or nothing) | play the first downloaded episode of that show | "Playing <title>." |
+| (all lists) | order | The shared play order (also the phone list's order): downloaded episodes someone is partway through (here, on the Mac or elsewhere) first, newest play first; then not-started ones, oldest published first (ties keep the Larder order); then completed ones last. "Next", "what's downloaded" and the disambiguation lists follow it; "latest" is still the newest published | |
 | playNext(nil) | nothing downloaded | none | "No episodes are on your phone." |
 | | otherwise | next downloaded episode after the playing one (first when nothing plays or the playing one is not listed); last one -> none | "Playing <title>." / "That was the last episode on your phone." |
 | pause | playing | pause | "Paused." |
@@ -56,8 +57,9 @@ loaded episode, not whether it is audible.
 Siri also handles transport words itself ("pause", "resume", "skip") through the lock-screen remote
 commands `LibraryPlayer` installs on `MPRemoteCommandCenter` when Wilted is the Now Playing app; the
 App Intents below add the phrases that name Wilted and the commands the remote center cannot express.
-An app may declare at most 10 App Shortcuts (the build fails on the 11th), so pause and resume, which the
-remote commands already serve, have intents but no App Shortcut phrase; the other nine each have one.
+An app may declare at most 10 App Shortcuts (the build fails on the 11th), so pause, resume and the two
+skips, which the remote commands already serve, have intents but no App Shortcut phrase (the intents stay
+in the Shortcuts app); the other seven each have one.
 
 | v1 command | Path | Intent | Planner command | Tests |
 |---|---|---|---|---|
@@ -66,7 +68,7 @@ remote commands already serve, have intents but no App Shortcut phrase; the othe
 | play latest | App Intent | `PlayLatestIntent` | `playLatest(show:)` | `VoiceCommandPlannerTests` |
 | pause | remote command (spoken); App Intent in Shortcuts app | `PauseEpisodeIntent` | `pause` | planner, runner, adapter |
 | resume | remote command (spoken); App Intent in Shortcuts app | `ResumeEpisodeIntent` | `resume` | planner, runner, adapter |
-| skip forward / back | App Intent + remote command | `SkipForwardIntent`, `SkipBackIntent` | `skipForward`, `skipBack` | planner, adapter |
+| skip forward / back | remote command (spoken); App Intent in Shortcuts app | `SkipForwardIntent`, `SkipBackIntent` | `skipForward`, `skipBack` | planner, adapter |
 | restart this episode | App Intent | `RestartEpisodeIntent` | `restart` | planner, adapter |
 | mark this episode completed (confirms first) | App Intent | `MarkCompletedIntent` | `markCompleted` | planner, runner, adapter |
 | what's playing | App Intent | `WhatsPlayingIntent` | `whatsPlaying` | planner |

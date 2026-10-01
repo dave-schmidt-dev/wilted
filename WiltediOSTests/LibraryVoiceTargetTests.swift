@@ -160,7 +160,8 @@ final class LibraryVoiceTargetTests: XCTestCase {
         XCTAssertEqual(plan.action, .play(id("b")), "newest published wins over Larder order")
     }
 
-    func testDownloadedFollowsTheLarderSort() async throws {
+    /// Siri uses the shared play order: ties on the published date keep the Mac's queue order.
+    func testDownloadedKeepsLarderOrderOnPublishDateTies() async throws {
         try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
             EpisodeSpec(raw: "a", title: "Zebra", show: "show", sortKey: 0),
             EpisodeSpec(raw: "b", title: "Apple", show: "show", sortKey: 1),
@@ -169,11 +170,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
         let rig = try await makeRig(cached: ["a", "c"])
 
         let custom = await rig.target.voiceSnapshot()
-        XCTAssertEqual(custom.downloaded.map(\.id.rawValue), ["a", "c"], "custom keeps the Mac's queue order")
-
-        rig.model.sort = .title
-        let byTitle = await rig.target.voiceSnapshot()
-        XCTAssertEqual(byTitle.downloaded.map(\.id.rawValue), ["c", "a"], "title order: Mango before Zebra")
+        XCTAssertEqual(custom.downloaded.map(\.id.rawValue), ["a", "c"], "equal publish dates keep the Mac's queue order")
     }
 
     func testTheSnapshotIgnoresTheLardersFilterAndSearch() async throws {

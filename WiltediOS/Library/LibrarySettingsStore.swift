@@ -6,6 +6,8 @@ struct LibraryPlaybackPreferences: Equatable, Sendable {
     var defaultSpeed: Double
     var skipBackSeconds: Int
     var skipForwardSeconds: Int
+    /// Start the next episode on the phone when one finishes.
+    var autoPlayNext = true
 }
 
 /// The phone's own preferences, backed by `UserDefaults` and clamped on every read and write so a
@@ -27,6 +29,7 @@ final class LibrarySettingsStore: ObservableObject {
     nonisolated static let speedKey = "wilted.library.defaultSpeed"
     nonisolated static let skipBackKey = "wilted.library.skipBackSeconds"
     nonisolated static let skipForwardKey = "wilted.library.skipForwardSeconds"
+    nonisolated static let autoPlayNextKey = "wilted.library.autoPlayNext"
 
     @Published var textScale: WiltedTheme.TextScale {
         didSet { if textScale != oldValue { defaults.set(textScale.rawValue, forKey: Self.textScaleKey) } }
@@ -53,6 +56,11 @@ final class LibrarySettingsStore: ObservableObject {
         }
     }
 
+    /// On unless switched off: a finished episode is followed by the next one in the play order.
+    @Published var autoPlayNext: Bool {
+        didSet { if autoPlayNext != oldValue { defaults.set(autoPlayNext, forKey: Self.autoPlayNextKey) } }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -62,11 +70,13 @@ final class LibrarySettingsStore: ObservableObject {
             ? Self.clampSpeed(defaults.double(forKey: Self.speedKey)) : Self.defaultSpeed
         skipBackSeconds = Self.snapSkip(defaults.object(forKey: Self.skipBackKey) as? Int, fallback: Self.defaultSkipBack)
         skipForwardSeconds = Self.snapSkip(defaults.object(forKey: Self.skipForwardKey) as? Int, fallback: Self.defaultSkipForward)
+        autoPlayNext = defaults.object(forKey: Self.autoPlayNextKey) as? Bool ?? true
     }
 
     var playback: LibraryPlaybackPreferences {
         LibraryPlaybackPreferences(
-            defaultSpeed: defaultSpeed, skipBackSeconds: skipBackSeconds, skipForwardSeconds: skipForwardSeconds)
+            defaultSpeed: defaultSpeed, skipBackSeconds: skipBackSeconds, skipForwardSeconds: skipForwardSeconds,
+            autoPlayNext: autoPlayNext)
     }
 
     /// Nearest 0.05 step inside `speedRange`; a non-finite value falls back to the default.

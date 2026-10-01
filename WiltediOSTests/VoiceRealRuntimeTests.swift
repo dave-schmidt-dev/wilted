@@ -116,7 +116,7 @@ final class VoiceRealRuntimeTests: XCTestCase {
 
         _ = try await PlayNextEpisodeIntent().perform()
 
-        XCTAssertEqual(rig.runtime.player.item?.entryID.rawValue, "ep-b", "the first downloaded row; ep-a is not on the phone")
+        XCTAssertEqual(rig.runtime.player.item?.entryID.rawValue, "ep-c", "the first of the play order (oldest published); ep-a is not on the phone")
         XCTAssertTrue(rig.runtime.player.isPlaying)
         XCTAssertTrue(rig.engine.isPlaying, "the real engine is producing audio, not just the model's flag")
         XCTAssertEqual(rig.engine.duration, Double(clipSeconds), accuracy: 0.5)

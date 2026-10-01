@@ -58,8 +58,8 @@ enum PlayMediaCore {
     }
 }
 
-/// Handles `INPlayMediaIntent` in the app itself (no Intents extension), the request behind the
-/// CarPlay Siri assistant cell. Returned from `application(_:handlerFor:)`.
+/// Plays what an `INPlayMediaIntent` asks for, inside the app: the Intents extension answers `.handleInApp`
+/// and the app delegate calls this (also returned from `application(_:handlerFor:)` for in-app handling).
 final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling {
     /// The episode a request resolves to: the one Siri already chose if still downloaded, else the best
     /// match for the search.

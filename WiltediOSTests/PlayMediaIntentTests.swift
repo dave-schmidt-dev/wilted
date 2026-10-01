@@ -5,7 +5,7 @@ import WiltedLibrary
 import XCTest
 @testable import WiltediOS
 
-/// The in-app `INPlayMediaIntent` handler behind the CarPlay Siri assistant cell: what Siri
+/// The in-app `INPlayMediaIntent` handler behind spoken play requests: what Siri
 /// understood maps onto the same planner the App Intents use, and only downloaded episodes play.
 @MainActor
 final class PlayMediaIntentTests: XCTestCase {
@@ -130,4 +130,23 @@ final class PlayMediaIntentTests: XCTestCase {
         XCTAssertTrue(delegate.application(UIApplication.shared, handlerFor: intent(search: nil)) is PlayMediaIntentHandler)
         XCTAssertNil(delegate.application(UIApplication.shared, handlerFor: INSearchForMediaIntent()))
     }
+
+    /// The extension answers .handleInApp; the system then calls this, and the app plays the request.
+    func testHandleInAppDeliveryPlaysTheEpisodeAndAnswersThroughTheCompletion() async throws {
+        let chips = try episode("b", "Chips", "Planet Money")
+        let target = install([try episode("a", "Gold Rush", "Planet Money"), chips])
+        let delegate = LibraryPushAppDelegate()
+        let response: INIntentResponse = await withCheckedContinuation { continuation in
+            delegate.application(UIApplication.shared, handle: intent(search: search(type: .podcastEpisode, name: "Chips"))) {
+                continuation.resume(returning: $0)
+            }
+        }
+        XCTAssertEqual((response as? INPlayMediaIntentResponse)?.code, .success)
+        XCTAssertEqual(target.performed, [.play(chips.id)])
+        let other: INIntentResponse = await withCheckedContinuation { continuation in
+            delegate.application(UIApplication.shared, handle: INSearchForMediaIntent()) { continuation.resume(returning: $0) }
+        }
+        XCTAssertEqual((other as? INPlayMediaIntentResponse)?.code, .failure, "an intent the app does not play is never reported as played")
+    }
 }
+

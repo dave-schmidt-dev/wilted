@@ -15,11 +15,13 @@ final class LibraryRuntime {
     let model: LibraryAppModel
     let player: LibraryPlayer
     let settings: LibrarySettingsStore
+    private let artwork: LibraryArtworkCache?
     private var prepareTask: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
     private var subscriptions: Set<AnyCancellable> = []
 
-    init(model: LibraryAppModel, player: LibraryPlayer, settings: LibrarySettingsStore) {
+    init(model: LibraryAppModel, player: LibraryPlayer, settings: LibrarySettingsStore, artwork: LibraryArtworkCache? = nil) {
+        self.artwork = artwork
         self.model = model
         self.player = player
         self.settings = settings
@@ -27,7 +29,8 @@ final class LibraryRuntime {
 
     /// The production stack: CloudKit-backed model, real audio engine, `UserDefaults` settings.
     static func live() -> LibraryRuntime {
-        LibraryRuntime(model: LibraryEnvironment.makeModel(), player: .live(), settings: LibrarySettingsStore())
+        LibraryRuntime(
+            model: LibraryEnvironment.makeModel(), player: .live(), settings: LibrarySettingsStore(), artwork: .shared)
     }
 
     /// Wires the player to the model and the settings and loads what is already on the phone, with no
@@ -68,5 +71,35 @@ final class LibraryRuntime {
             }
             .store(in: &subscriptions)
         await model.loadLocalState()
+        keepArtworkCached()
+    }
+
+    /// Downloads artwork for the episodes on the phone while the app has a connection, so the car and
+    /// the lock screen can show it from disk later. Runs on the app's own schedule, never on a car path.
+    private func keepArtworkCached() {
+        guard let artwork else { return }
+        let model = model
+        let onPhoneArtwork: @MainActor () -> [URL] = {
+            let onPhone = model.preparedIDs.onPhone
+            return model.queued.filter { onPhone.contains($0.id) }.flatMap { [$0.artworkURL, $0.showArtworkURL].compactMap { $0 } }
+        }
+        var running: Task<Void, Never>?
+        Publishers.Merge3(
+            model.$media.map { _ in () }, model.$queued.map { _ in () }, model.$lastSynchronizedAt.map { _ in () })
+            .receive(on: DispatchQueue.main)
+            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+            .sink { _ in
+                MainActor.assumeIsolated {
+                    running?.cancel()
+                    let urls = onPhoneArtwork().filter { !artwork.isCached($0) }
+                    // Artwork for episodes that left the queue goes; an empty queue (nothing loaded yet) prunes nothing.
+                    let keep = model.queued.flatMap { [$0.artworkURL, $0.showArtworkURL].compactMap { $0 } }
+                    running = Task {
+                        if !urls.isEmpty { await artwork.prefetch(urls) }
+                        if !keep.isEmpty { artwork.prune(keeping: keep) }
+                    }
+                }
+            }
+            .store(in: &subscriptions)
     }
 }

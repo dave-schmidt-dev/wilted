@@ -2,7 +2,7 @@ import SwiftUI
 import WiltedDomain
 import WiltedLibrary
 
-/// The iPhone Larder: episodes the Mac has prepared, in the Mac's order unless sorted. Builds the
+/// The iPhone Larder: episodes the Mac has prepared, in the shared play order. Builds the
 /// production CloudKit environment unless a test or preview injects a model.
 struct LibraryRoot: View {
     private let runtime: LibraryRuntime
@@ -64,6 +64,7 @@ struct LibraryRoot: View {
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
         .environment(\.wiltedTextScale, settings.textScale)
         .task { await runtime.start() }
+        .task { SiriAuthorization.requestIfNeeded() }
         .onChange(of: scenePhase) { _, phase in
             // The refresh also fetches the device records behind "Continue from Mac".
             if phase == .active { Task { await model.refresh() } }
@@ -125,15 +126,14 @@ struct LibraryListView: View {
                             decisionStatus: model.decisionStatus(for: row.id),
                             onDecision: { model.performDecision($0, entryID: row.id) },
                             onCancelDecision: { model.cancelDecision(entryID: row.id) },
-                            player: player)
+                            player: player, progress: model.progress[row.id],
+                            isCompleted: LibraryListing.completionDate(row, finished: model.finished) != nil)
                         .contentShape(Rectangle())
                         .onTapGesture { opened = row.id }
                         .accessibilityAddTraits(.isButton)
                         .accessibilityAction(named: "Open episode") { opened = row.id }
                         .listRowBackground(WiltedTheme.color(.card, scheme: colorScheme))
-                        .moveDisabled(!model.canReorder || model.pendingDecision(for: row.id) != nil)
                     }
-                    .onMove(perform: model.canReorder ? { model.moveQueued(fromOffsets: $0, toOffset: $1) } : nil)
                 } header: {
                     Text(header(count: rows.count))
                         .wiltedFont(.utility)
@@ -147,9 +147,6 @@ struct LibraryListView: View {
         .scrollContentBackground(.hidden)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .overlay { LibraryWatermark() }
-        // The drag handles show exactly when the order can be edited: Custom order, unfiltered,
-        // unsearched. There is no Edit button.
-        .environment(\.editMode, .constant(model.canReorder && rows.count > 1 ? .active : .inactive))
         .refreshable { await model.refresh() }
         .searchable(text: $model.searchText, prompt: "Title, show or notes")
         .navigationBarTitleDisplayMode(.inline)
@@ -165,7 +162,6 @@ struct LibraryListView: View {
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 filterMenu
-                sortMenu
             }
         }
         .navigationDestination(item: $opened) { id in
@@ -176,18 +172,6 @@ struct LibraryListView: View {
 
     private func header(count: Int) -> String {
         model.filter == .all ? "Larder · \(count)" : "\(model.filter.title) · \(count)"
-    }
-
-    private var sortMenu: some View {
-        Menu {
-            Picker("Sort by", selection: $model.sort) {
-                ForEach(LibrarySortOrder.allCases) { Text($0.title).tag($0) }
-            }
-        } label: {
-            Label("Sort: \(model.sort.title)", systemImage: "arrow.up.arrow.down")
-        }
-        .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-        .accessibilityIdentifier("wilted-library-sort")
     }
 
     private var filterMenu: some View {
@@ -244,6 +228,10 @@ struct LibraryRowView: View {
     var onCancelDecision: () -> Void = {}
     /// Lets the checkpoint line speak for this phone once it has the episode loaded.
     var player: LibraryPlayer?
+    /// Where the listener is in the episode on any device (this phone or one synced from the Mac), and
+    /// whether it is finished; the same data the car rows use.
+    var progress: EpisodeProgress?
+    var isCompleted = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -264,6 +252,13 @@ struct LibraryRowView: View {
                     .foregroundStyle(secondary)
                     .lineLimit(1)
                     .accessibilityIdentifier("wilted-library-meta-\(row.id.rawValue)")
+                if !isCompleted, let fraction = CarEpisodeList.fraction(progress, duration: row.durationSeconds) {
+                    ProgressView(value: fraction)
+                        .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+                        .accessibilityLabel("Listened")
+                        .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
+                        .accessibilityIdentifier("wilted-library-progress-\(row.id.rawValue)")
+                }
                 if let removal = row.removalText {
                     Text(removal)
                         .wiltedFont(.utility)
@@ -282,9 +277,21 @@ struct LibraryRowView: View {
         .accessibilityIdentifier("wilted-library-row-\(row.id.rawValue)")
     }
 
-    /// Duration and publication date.
+    /// Time left (or the full length when untouched, or "Played") and publication date.
     private var detail: String {
-        [row.durationText, row.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())]
+        Self.detail(row: row, progress: progress, completed: isCompleted)
+    }
+
+    static func detail(row: LibraryRow, progress: EpisodeProgress?, completed: Bool) -> String {
+        let length: String?
+        if completed {
+            length = "Played"
+        } else if let progress, let duration = row.durationSeconds, duration > 0 {
+            length = "\(LibraryClockFormat.duration(max(0, duration - progress.positionSeconds))) left"
+        } else {
+            length = row.durationText
+        }
+        return [length, row.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())]
             .compactMap { $0 }.joined(separator: " · ")
     }
 

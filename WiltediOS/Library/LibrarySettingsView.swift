@@ -67,6 +67,9 @@ struct LibrarySettingsView: View {
 
     private var playbackCard: some View {
         WiltedSettingsCard(title: "Playback") {
+            Toggle("Auto-play next episode", isOn: $settings.autoPlayNext)
+                .wiltedFont(.utility)
+                .accessibilityIdentifier("wilted-library-settings-auto-play-next")
             iconRow("gauge.with.dots.needle.67percent", "Default speed") {
                 Text(LibrarySettingsFormat.speed(settings.defaultSpeed)).wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

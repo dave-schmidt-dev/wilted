@@ -180,9 +180,10 @@ struct ListDownloadedIntent: AppIntent {
 }
 
 /// The phrases Siri recognizes with no setup. Every phrase names the app, as App Shortcuts require,
-/// and an app may declare at most 10. Pause and resume have no phrase: Siri's own "pause" and
-/// "resume" reach `LibraryPlayer`'s remote commands while Wilted is the Now Playing app, and the two
-/// intents stay available in the Shortcuts app.
+/// and an app may declare at most 10. Pause, resume and the two skips have no phrase: Siri's own
+/// "pause", "resume" and "skip" reach `LibraryPlayer`'s remote commands while Wilted is the Now
+/// Playing app (and the car's skip buttons use them), and the four intents stay available in the
+/// Shortcuts app.
 struct WiltedShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -202,12 +203,6 @@ struct WiltedShortcuts: AppShortcutsProvider {
                 "Play the latest \(.applicationName) episode",
             ],
             shortTitle: "Play latest", systemImageName: "clock.arrow.circlepath")
-        AppShortcut(
-            intent: SkipForwardIntent(), phrases: ["Skip forward in \(.applicationName)"],
-            shortTitle: "Skip forward", systemImageName: "goforward.30")
-        AppShortcut(
-            intent: SkipBackIntent(), phrases: ["Skip back in \(.applicationName)"],
-            shortTitle: "Skip back", systemImageName: "gobackward.15")
         AppShortcut(
             intent: RestartEpisodeIntent(), phrases: ["Restart this episode in \(.applicationName)"],
             shortTitle: "Restart", systemImageName: "arrow.counterclockwise")

@@ -270,15 +270,13 @@ assert_capability_source_contract() {
   assert_target_config WiltediOS "$ios_block" Debug 'CODE_SIGN_ENTITLEMENTS: ""'
   assert_target_config WiltediOS "$ios_block" Debug 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"'
   assert_target_config WiltediOS "$ios_block" Development 'CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements'
-  assert_target_config WiltediOS "$ios_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
+  assert_target_config WiltediOS "$ios_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE WILTED_SIRI"'
   assert_target_config WiltediOS "$ios_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements'
   assert_target_config WiltediOS "$ios_block" Release 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
-  for debug_block in "$(config_block "$mac_block" Debug)" "$(config_block "$ios_block" Debug)"; do
-    if printf '%s\n' "$debug_block" | grep -Fq 'WILTED_CLOUDKIT_LIVE'; then
-      printf '%s\n' 'assertion failed: Debug defines the CloudKit-live compilation condition' >&2
-      exit 1
-    fi
-  done
+  forbid_condition() { local b; b="$(config_block "$1" "$2")"; [[ "$b" != *"$3"* ]] || { printf 'assertion failed: %s defines %s\n' "$2" "$3" >&2; exit 1; }; }
+  forbid_condition "$mac_block" Debug WILTED_CLOUDKIT_LIVE; forbid_condition "$ios_block" Debug WILTED_CLOUDKIT_LIVE
+  # Only the Development profile carries the Siri entitlement.
+  forbid_condition "$ios_block" Debug WILTED_SIRI; forbid_condition "$ios_block" Release WILTED_SIRI
   for wiring in \
     '  WiltedCloudKit:' \
     '    path: CloudSync' \

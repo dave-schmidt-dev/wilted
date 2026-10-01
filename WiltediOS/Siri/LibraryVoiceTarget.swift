@@ -17,7 +17,9 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
     func voiceSnapshot() async -> VoiceSnapshot {
         let rows = downloadedRows()
         var seen = Set<String>()
-        let shows = model.queued.map(\.showTitle).filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+        let shows = InProgressOrdering.orderedShows(
+            model.queued.map(\.showTitle).filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted },
+            progressByShow: Self.lastPlayedByShow(model.queued, progress: model.progress))
         return VoiceSnapshot(
             downloaded: rows.map(Self.episode), knownShowTitles: shows, nowPlaying: nowPlaying())
     }
@@ -63,12 +65,23 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
 
     private static func outcome(_ succeeded: Bool) -> VoiceOutcome { succeeded ? .done : .failed }
 
-    /// On-phone episodes in the Larder's current sort, ignoring whatever filter or search text is
+    /// On-phone episodes in the shared play order, ignoring whatever filter or search text is
     /// showing: a spoken command must not depend on what the screen happens to be narrowed to.
     private func downloadedRows() -> [LibraryRow] {
         let ids = model.preparedIDs
         return LibraryListing.rows(
-            model.queued, offered: ids.offered, onPhone: ids.onPhone, sort: model.sort, filter: .onPhone, query: "")
+            model.queued, offered: ids.offered, onPhone: ids.onPhone, filter: .onPhone, query: "",
+            progress: model.progress, finished: model.finished)
+    }
+
+    /// When each show was last played, for the shows with an in-progress episode.
+    static func lastPlayedByShow(_ rows: [LibraryRow], progress: [ItemID: EpisodeProgress]) -> [String: Date] {
+        var result: [String: Date] = [:]
+        for row in rows {
+            guard let played = progress[row.id]?.lastPlayedAt else { continue }
+            result[row.showTitle] = max(result[row.showTitle] ?? .distantPast, played)
+        }
+        return result
     }
 
     private func nowPlaying() -> VoiceNowPlaying? {

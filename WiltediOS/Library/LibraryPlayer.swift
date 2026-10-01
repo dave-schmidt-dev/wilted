@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import MediaPlayer
 import WiltedDomain
@@ -30,6 +31,8 @@ enum LibraryRemoteCommand: Equatable, Sendable {
     case skipForward(TimeInterval)
     case skipBackward(TimeInterval)
     case seek(to: TimeInterval)
+    /// The speed chosen on a system rate control (CarPlay's speed button, Control Center).
+    case setRate(Double)
 }
 
 @MainActor protocol LibraryRemoteCommands: AnyObject {
@@ -58,6 +61,8 @@ final class LibraryPlayer: ObservableObject {
         let title: String
         let showTitle: String
         let fileURL: URL
+        /// Where the artwork came from; the player reads only its local copy.
+        var artworkURL: URL? = nil
     }
 
     enum Status: Equatable {
@@ -86,6 +91,21 @@ final class LibraryPlayer: ObservableObject {
     @Published private(set) var skipForwardSeconds = Int(LibraryPlayer.skipForwardSeconds)
     /// The speed a newly started item takes; nil leaves the player's current speed alone.
     private var defaultRate: Double?
+    /// Settings: whether a finished item tells `onFinished`, which lets the app pick the next one.
+    private var autoPlayNext = true
+    /// Called with the entry that just played to its end and whether "Auto-play next episode" is on.
+    /// Never called for a pause, a stop, a seek away from the end or a superseded load.
+    var onFinished: ((ItemID, _ autoPlayNext: Bool) -> Void)?
+    /// Counts every transport action (start, play, pause, seek, stop); `isUntouchedSinceEnd` compares it
+    /// with its value when the item finished, so a command given after the end cancels what follows it.
+    private var transportCount = 0
+    private var endedAtTransportCount = -1
+    /// True while the item that just played out is still loaded and nothing has been commanded since.
+    var isUntouchedSinceEnd: Bool { status == .ended && transportCount == endedAtTransportCount }
+    /// Artwork bytes for the loaded item, read once from the local cache when it starts.
+    private var artworkData: Data?
+    private let artwork: LibraryArtworkCache?
+    private var artworkObserver: AnyCancellable?
 
     var isPlaying: Bool { status == .playing }
     /// False for an engine with no speed control, so the UI can hide the picker.
@@ -110,8 +130,10 @@ final class LibraryPlayer: ObservableObject {
         nowPlaying: any ListenerNowPlaying,
         remoteCommands: any LibraryRemoteCommands,
         sessionEvents: any LibrarySessionEvents,
+        artwork: LibraryArtworkCache? = nil,
         tickInterval: Duration = .milliseconds(500)
     ) {
+        self.artwork = artwork
         self.engine = engine
         self.session = session
         self.nowPlaying = nowPlaying
@@ -121,13 +143,24 @@ final class LibraryPlayer: ObservableObject {
             Task { @MainActor in self?.engineFinished(generation: generation) }
         }
         sessionEvents.observe { [weak self] event in self?.handle(event) }
+        // Artwork the app finishes caching after this item started still reaches Now Playing.
+        artworkObserver = NotificationCenter.default.publisher(for: LibraryArtworkCache.didCache)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let item = self.item, self.artworkData == nil,
+                          let url = note.object as? URL, url == item.artworkURL else { return }
+                    self.loadArtwork(for: item)
+                }
+            }
     }
 
     /// The production player: real engine, audio session, Now Playing and system controls.
     static func live() -> LibraryPlayer {
         LibraryPlayer(
             engine: LibraryAudioEngine(), session: AVAudioSessionController(), nowPlaying: MediaPlayerNowPlaying(),
-            remoteCommands: MediaPlayerLibraryRemoteCommands(), sessionEvents: AVAudioSessionEvents())
+            remoteCommands: MediaPlayerLibraryRemoteCommands(), sessionEvents: AVAudioSessionEvents(),
+            artwork: .shared)
     }
 
     // MARK: Transport
@@ -136,6 +169,7 @@ final class LibraryPlayer: ObservableObject {
     /// sets `.failed` when the file cannot be loaded or the session or engine refuses.
     @discardableResult
     func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true) -> Bool {
+        transportCount &+= 1
         stopTicking()
         resumeAfterInterruption = false
         loadGeneration &+= 1
@@ -149,6 +183,8 @@ final class LibraryPlayer: ObservableObject {
             return fail("Could not open the audio file")
         }
         self.item = item
+        artworkData = artwork?.loadedData(for: item.artworkURL)
+        if artworkData == nil { loadArtwork(for: item) }
         duration = engine.duration
         if supportsRate, let defaultRate { rate = Self.clampRate(defaultRate) }
         applyRateToEngine()
@@ -166,6 +202,7 @@ final class LibraryPlayer: ObservableObject {
     /// Starts or resumes; after the end, starts over.
     @discardableResult
     func play() -> Bool {
+        transportCount &+= 1
         guard item != nil else { return false }
         do { try session.activate() } catch { return fail("Could not start the audio session") }
         if status == .ended { engine.currentTime = 0 }
@@ -179,6 +216,7 @@ final class LibraryPlayer: ObservableObject {
     }
 
     func pause() {
+        transportCount &+= 1
         guard item != nil else { return }
         resumeAfterInterruption = false
         accrueListening()
@@ -195,6 +233,7 @@ final class LibraryPlayer: ObservableObject {
     }
 
     func seek(to seconds: TimeInterval) {
+        transportCount &+= 1
         guard item != nil else { return }
         let target = min(max(0, seconds), duration)
         engine.currentTime = target
@@ -211,6 +250,7 @@ final class LibraryPlayer: ObservableObject {
     /// lengths apply at once, to the buttons and to the lock-screen commands.
     func apply(_ preferences: LibraryPlaybackPreferences) {
         defaultRate = preferences.defaultSpeed
+        autoPlayNext = preferences.autoPlayNext
         skipBackSeconds = preferences.skipBackSeconds
         skipForwardSeconds = preferences.skipForwardSeconds
         remoteCommands.setSkipIntervals(back: TimeInterval(skipBackSeconds), forward: TimeInterval(skipForwardSeconds))
@@ -219,6 +259,12 @@ final class LibraryPlayer: ObservableObject {
     /// Within what the picker offers, which is what `AVAudioPlayer` accepts.
     private static func clampRate(_ value: Double) -> Double {
         min(max(value, rates.first ?? 0.5), rates.last ?? 2)
+    }
+
+    /// The next speed up from `current`, wrapping from the fastest to the slowest. `current` need not
+    /// be one of `rates` (a Settings speed the picker lacks): it steps to the next offered one above it.
+    static func nextRate(after current: Double) -> Double {
+        rates.first { $0 > current + 0.001 } ?? rates[0]
     }
 
     func setRate(_ newRate: Double) {
@@ -230,6 +276,7 @@ final class LibraryPlayer: ObservableObject {
 
     /// Stops and forgets the item; the audio session and system controls are released.
     func stop() {
+        transportCount &+= 1
         guard item != nil || status != .idle else { return }
         accrueListening()
         engine.pause()
@@ -298,6 +345,7 @@ final class LibraryPlayer: ObservableObject {
         case let .skipForward(seconds): skip(by: seconds)
         case let .skipBackward(seconds): skip(by: -seconds)
         case let .seek(seconds): seek(to: seconds)
+        case let .setRate(newRate): setRate(newRate)
         }
         return true
     }
@@ -310,6 +358,8 @@ final class LibraryPlayer: ObservableObject {
         position = duration
         status = .ended
         publishNowPlaying()
+        endedAtTransportCount = transportCount
+        if let entryID = item?.entryID { onFinished?(entryID, autoPlayNext) }
     }
 
     @discardableResult
@@ -325,9 +375,25 @@ final class LibraryPlayer: ObservableObject {
         (engine as? LibraryRateAdjustable)?.rate = Float(rate)
     }
 
+    /// Reads the item's cached artwork off the main actor, then republishes. Never blocks the start and
+    /// never reaches the network; no cached image means Now Playing simply has none.
+    private func loadArtwork(for item: Item) {
+        guard let artwork, let url = item.artworkURL else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            guard let data = artwork.data(for: url) else { return }
+            await MainActor.run {
+                guard let self, self.item?.artworkURL == url, self.artworkData == nil else { return }
+                self.artworkData = data
+                self.publishNowPlaying()
+            }
+        }
+    }
+
     private func publishNowPlaying() {
         guard let item else { return }
-        nowPlaying.update(title: item.title, duration: duration, position: position, rate: isPlaying ? rate : 0)
+        nowPlaying.update(ListenerNowPlayingInfo(
+            title: item.title, artist: item.showTitle, duration: duration, position: position,
+            rate: isPlaying ? rate : 0, defaultRate: rate, artworkData: artworkData))
     }
 
     private func startTicking() {
@@ -427,6 +493,13 @@ final class MediaPlayerLibraryRemoteCommands: LibraryRemoteCommands {
         }
         add(center.changePlaybackPositionCommand) { event in
             (event as? MPChangePlaybackPositionCommandEvent).map { .seek(to: $0.positionTime) }
+        }
+        // CarPlay's speed button follows this command (Apple: CPNowPlayingPlaybackRateButton "uses
+        // MPRemoteCommandCenter to observe changes to the playback rate"). Without it enabled and
+        // advertising rates, the button reads 0x even while the episode plays.
+        center.changePlaybackRateCommand.supportedPlaybackRates = LibraryPlayer.rates.map { NSNumber(value: $0) }
+        add(center.changePlaybackRateCommand) { event in
+            (event as? MPChangePlaybackRateCommandEvent).map { .setRate(Double($0.playbackRate)) }
         }
         self.handler = handler
     }

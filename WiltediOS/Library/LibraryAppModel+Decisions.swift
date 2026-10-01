@@ -170,25 +170,6 @@ enum LibraryDecisionOverlay {
     }
 }
 
-/// Turns a List `onMove` into entry-relative reorder requests.
-enum LibraryReorder {
-    /// The requests, in the order to send them, that produce the moved order. Each names the moved
-    /// entry and the entry now before it (nil for the front); a move that changes nothing yields none.
-    static func requests(queue: [ItemID], from: IndexSet, to destination: Int) -> [(entryID: ItemID, afterEntryID: ItemID?)] {
-        let sources = from.filter { queue.indices.contains($0) }.sorted()
-        guard !sources.isEmpty else { return [] }
-        let moving = sources.map { queue[$0] }
-        var rest = queue.enumerated().filter { !sources.contains($0.offset) }.map(\.element)
-        let insertAt = destination - sources.filter { $0 < destination }.count
-        rest.insert(contentsOf: moving, at: max(0, min(insertAt, rest.count)))
-        guard rest != queue else { return [] }
-        return moving.map { id in
-            let position = rest.firstIndex(of: id) ?? 0
-            return (id, position > 0 ? rest[position - 1] : nil)
-        }
-    }
-}
-
 extension LibraryAppModel {
     // MARK: - Reading
 
@@ -224,25 +205,6 @@ extension LibraryAppModel {
     func decide(_ action: LibraryDecisionAction, entryID: ItemID) async {
         guard let decision = begin(action, entryID: entryID) else { return }
         await send(decision)
-    }
-
-    /// Fire-and-forget for the Larder's `onMove`; ignored unless the list shows the Mac's own order.
-    func moveQueued(fromOffsets: IndexSet, toOffset: Int) {
-        guard canReorder else { return }
-        Task { await reorderQueued(fromOffsets: fromOffsets, toOffset: toOffset) }
-    }
-
-    /// Sends one `reorder` intent per moved entry, relative to the entry now before it.
-    func reorderQueued(fromOffsets: IndexSet, toOffset: Int) async {
-        // Offsets index the list as shown; only the prepared rows appear, so hidden ones keep their slots.
-        let requests = LibraryReorder.requests(queue: visibleRows.map(\.id), from: fromOffsets, to: toOffset)
-        var started: [PendingDecision] = []
-        for request in requests {
-            if let decision = begin(.reorder(afterEntryID: request.afterEntryID), entryID: request.entryID) {
-                started.append(decision)
-            }
-        }
-        for decision in started { await send(decision) }
     }
 
     /// Drops local tracking of a decision and reverts its display. The intent is already with the
