@@ -332,7 +332,7 @@ cp "$repo_root/scripts/run-bounded.py" "$repo_root/scripts/check-temp-leaks.py" 
 cp "$repo_root/scripts/lib/test-runner.sh" "$repo_root/scripts/lib/test-temp-state.sh" \
   "$repo_root/scripts/lib/mac-test-parent.sh" "$capture_repo/scripts/lib/"
 printf 'fixture\n' >"$capture_repo/project.yml"
-for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSUITests; do
+for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltediOSUITests; do
   mkdir -p "$capture_repo/$directory"
 done
 for package in WiltedKit Producer CloudSync Listener; do
