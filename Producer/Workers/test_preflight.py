@@ -357,7 +357,11 @@ class PreflightTests(unittest.TestCase):
         stream = io.StringIO()
 
         def delayed(_timeout):
-            time.sleep(0.02)
+            # Finish only once a heartbeat is out (2 s cap), so a slow thread
+            # switch can't let the RPC end before the first progress line.
+            cap = time.monotonic() + 2
+            while "waiting for test RPC" not in stream.getvalue() and time.monotonic() < cap:
+                time.sleep(0.005)
             return "done"
 
         with mock.patch.object(_worker_gpu_admission, "GPU_LOCK_PROGRESS_INTERVAL_S", 0.005), \
@@ -365,7 +369,7 @@ class PreflightTests(unittest.TestCase):
                 redirect_stderr(stream):
             result = wp._speech_rpc_with_progress(  # noqa: SLF001 - direct invariant regression
                 delayed,
-                time.monotonic() + 0.2,
+                time.monotonic() + 5,
                 "waiting for test RPC",
             )
         self.assertEqual(result, "done")
