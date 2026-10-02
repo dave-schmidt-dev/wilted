@@ -26,7 +26,10 @@ EXIT_CLEANUP_FAILED = 125
 EXIT_USAGE = 2
 POLL_SECONDS = 0.05
 GRACE_SECONDS = 0.4
-PS_TIMEOUT_SECONDS = 2.0
+PS_TIMEOUT_SECONDS = 5.0
+# A ps that times out under a busy process table is skipped, not fatal, until
+# this many in a row; any other inspection error still tears down at once.
+MAX_SLOW_INSPECTIONS = 6
 INSPECTION_INTERVAL_SECONDS = 1.0
 HEARTBEAT_SECONDS = 15.0
 WATCHDOG_WAIT_SECONDS = 4.0
@@ -315,6 +318,7 @@ def watchdog(startup_fd: int, control_fd: int) -> int:
     if parent_gone:
         emit("watchdog-parent-gone")
         return 0 if tree.cleanup() else EXIT_CLEANUP_FAILED
+    slow = 0
     while True:
         try:
             readable, _, _ = select.select(
@@ -325,7 +329,14 @@ def watchdog(startup_fd: int, control_fd: int) -> int:
                     return 0 if tree.cleanup() else EXIT_CLEANUP_FAILED
                 emit("watchdog-parent-gone")
                 return 0 if tree.cleanup() else EXIT_CLEANUP_FAILED
-            tree.scan()
+            try:
+                tree.scan()
+                slow = 0
+            except subprocess.TimeoutExpired as error:
+                slow += 1
+                if slow >= MAX_SLOW_INSPECTIONS:
+                    raise
+                emit(f"watchdog-inspection-slow count={slow}: {error}")
         except (OSError, subprocess.SubprocessError) as error:
             emit(f"watchdog-inspection-failed: {error}")
             tree.cleanup()
@@ -431,14 +442,22 @@ def run(timeout: float, argv: list[str]) -> int:
             interval = heartbeat_interval()
             last_heartbeat = time.monotonic()
             next_inspection = last_heartbeat
+            slow = 0
             while True:
                 now = time.monotonic()
                 if now >= next_inspection:
                     known = set(tree.known)
-                    tree.scan()
+                    try:
+                        tree.scan()
+                        slow = 0
+                    except subprocess.TimeoutExpired as error:
+                        slow += 1
+                        if slow >= MAX_SLOW_INSPECTIONS:
+                            raise
+                        emit(f"supervisor-inspection-slow count={slow}: {error}")
                     for pid in sorted(set(tree.known) - known):
                         emit(f"tracked pid={pid}")
-                    next_inspection = now + INSPECTION_INTERVAL_SECONDS
+                    next_inspection = time.monotonic() + INSPECTION_INTERVAL_SECONDS
                 if now - last_heartbeat >= interval:
                     emit(f"running elapsed={now - (deadline - timeout):.0f}s pid={child.pid}")
                     last_heartbeat = now

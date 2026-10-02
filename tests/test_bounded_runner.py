@@ -380,6 +380,39 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertEqual(result, 125)
         self.assertLess(time.monotonic() - started, 4)
 
+    def test_transient_inspection_timeouts_are_skipped_then_bounded(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("run_bounded_slow_ps", RUNNER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        original = module.process_table
+        calls = 0
+
+        def slow_twice():
+            nonlocal calls
+            calls += 1
+            if calls in (2, 3):
+                raise subprocess.TimeoutExpired(module.PROCESS_TABLE_COMMAND, 5)
+            return original()
+
+        with mock.patch.object(module, "process_table", side_effect=slow_twice), \
+             mock.patch.object(module, "INSPECTION_INTERVAL_SECONDS", 0.01):
+            result = module.run(5, [PYTHON, "-c", "import time; time.sleep(.3)"])
+        self.assertEqual(result, 0)
+
+        def always_slow():
+            raise subprocess.TimeoutExpired(module.PROCESS_TABLE_COMMAND, 5)
+
+        started = time.monotonic()
+        with mock.patch.object(module, "process_table", side_effect=always_slow), \
+             mock.patch.object(module, "INSPECTION_INTERVAL_SECONDS", 0.01):
+            result = module.run(5, [PYTHON, "-c", "import time; time.sleep(3)"])
+        self.assertEqual(result, 125)
+        self.assertLess(time.monotonic() - started, 4)
+
     def test_process_table_timeout_reaps_its_probe(self) -> None:
         import importlib.util
 
