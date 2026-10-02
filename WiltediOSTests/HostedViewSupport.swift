@@ -33,6 +33,11 @@ struct HostedElement {
 
 /// SwiftUI builds its accessibility tree only while an assistive technology is running, so a hosted test
 /// switches on the same automation flag XCUITest does (simulator and test target only).
+///
+/// The switch takes effect through work queued on the main queue. An async test runs as a main-queue job,
+/// so `RunLoop.run` inside it cannot drain that work: until the test yields once, every SwiftUI
+/// `ScrollView` hosted afterwards exposes no children, however long it settles. Each hosted-test class
+/// therefore calls `prepare()` from its async `setUp`.
 enum HostedAccessibility {
     @MainActor static let enabled: Bool = {
         guard let handle = dlopen("/usr/lib/libAccessibility.dylib", RTLD_NOW),
@@ -40,6 +45,16 @@ enum HostedAccessibility {
         unsafeBitCast(symbol, to: (@convention(c) (Bool) -> Void).self)(true)
         return true
     }()
+
+    @MainActor private(set) static var isPrepared = false
+
+    /// Switches automation on and yields so the main queue applies it before any view is hosted.
+    @MainActor static func prepare() async {
+        guard !isPrepared else { return }
+        _ = enabled
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        isPrepared = true
+    }
 }
 
 /// Hosts a SwiftUI view in a real window on the hosted-test simulator so its layout and accessibility
@@ -50,6 +65,9 @@ final class HostedView<Content: View> {
     let controller: UIHostingController<Content>
 
     init(_ content: Content, size: CGSize = CGSize(width: 390, height: 844), dark: Bool = false) {
+        if !HostedAccessibility.isPrepared {
+            XCTFail("call `await HostedAccessibility.prepare()` in setUp, or ScrollView content is missing from the tree")
+        }
         _ = HostedAccessibility.enabled
         controller = UIHostingController(rootView: content)
         window = UIWindow(frame: CGRect(origin: .zero, size: size))

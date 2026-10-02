@@ -12,7 +12,10 @@ final class LibraryHitTargetTests: XCTestCase {
     private var fixture: LibraryViewFixture!
     private let minimum = WiltedTheme.Spacing.minimumTouchTarget
 
-    override func setUp() async throws { fixture = try LibraryViewFixture() }
+    override func setUp() async throws {
+        await HostedAccessibility.prepare()
+        fixture = try LibraryViewFixture()
+    }
     override func tearDown() async throws { fixture.tearDown() }
 
     /// a: downloaded and started, b: downloaded, c: not downloaded.
@@ -51,6 +54,13 @@ final class LibraryHitTargetTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(buttons.count, 5, "Play, Delete download and Download on the three rows")
         let width = hosted.window.bounds.width
         XCTAssertTrue(buttons.allSatisfy { $0.frame.minX >= 0 && $0.frame.maxX <= width })
+    }
+
+    /// A ScrollView's content is in the tree even when it is the first hosted view in the process (run alone
+    /// with -only-testing): the detail and Settings both scroll, and both once came back with no elements.
+    func testAScrollViewsContentIsReachableInAFreshHostedView() async throws {
+        let hosted = HostedView(ScrollView { Button("Probe") {}.accessibilityIdentifier("wilted-test-scroll-probe") })
+        XCTAssertNotNil(hosted.element("wilted-test-scroll-probe"))
     }
 
     func testDetailButtonsAreFullTouchTargetsAndOfferWhatTheRowOffers() async throws {

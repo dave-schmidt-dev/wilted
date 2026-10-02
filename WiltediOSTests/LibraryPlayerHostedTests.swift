@@ -14,6 +14,7 @@ final class LibraryPlayerHostedTests: XCTestCase {
     private let artwork = URL(string: "https://example.com/art.png")!
 
     override func setUp() async throws {
+        await HostedAccessibility.prepare()
         fixture = try LibraryViewFixture()
         scratch = FileManager.default.temporaryDirectory.appendingPathComponent("player-art-\(UUID().uuidString)")
     }

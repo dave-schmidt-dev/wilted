@@ -11,7 +11,10 @@ import XCTest
 final class LibraryRowSwipeTests: XCTestCase {
     private var fixture: LibraryViewFixture!
 
-    override func setUp() async throws { fixture = try LibraryViewFixture() }
+    override func setUp() async throws {
+        await HostedAccessibility.prepare()
+        fixture = try LibraryViewFixture()
+    }
     override func tearDown() async throws { fixture.tearDown() }
 
     // MARK: States
