@@ -232,6 +232,7 @@ extension WiltedMacModel {
     }
 
     func cancelPendingTemporaryStateWork() {
+        stopLibrarySync()
         startupTask?.cancel()
         preparationTask?.cancel()
         syncReconciliationTask?.cancel()
@@ -289,6 +290,7 @@ extension WiltedMacModel {
         }
         await waitForAutomationForTemporaryState()
         await syncLifecycle?.close()
+        await waitForLibrarySyncShutdown()
     }
 #endif
 }

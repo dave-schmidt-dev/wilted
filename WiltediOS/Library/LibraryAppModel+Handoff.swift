@@ -112,10 +112,11 @@ final class LibraryHandoffState {
     /// Server clock minus this phone's clock, learned from this device's own record.
     var clockOffset: TimeInterval = 0
     /// The playing position last written to the phone's own store, so the next write waits for
-    /// `LibraryAppModel.localSaveInterval` of listening; and which write is the newest.
+    /// `LibraryAppModel.localSaveInterval` of listening.
     /// nil after the loaded item changes: the first position of an episode is the baseline, not a save.
     var lastLocalSave: Double?
-    var localSaveToken: UInt64 = 0
+    /// A newer save supersedes only an older save for the same episode.
+    var localSaveTokens: [ItemID: UInt64] = [:]
     var refusedRevisions: [ItemID: RevisionID] = [:]
     var continueInFlight = false
     /// Completed observations; lets tests wait for a cycle.
@@ -324,16 +325,18 @@ extension LibraryAppModel {
     /// the next launch then resumed from the last record the server held, usually the start. The
     /// position is also marked unpublished, so a fetch cannot replace it with an older server copy
     /// and the next sync publishes it.
-    func saveLoadedPositionLocally(_ position: Double? = nil) {
-        guard let player = handoffState.player, let entryID = player.item?.entryID else { return }
+    /// Returns the queued save so callers can wait for local persistence.
+    @discardableResult
+    func saveLoadedPositionLocally(_ position: Double? = nil) -> Task<Void, Never>? {
+        guard let player = handoffState.player, let entryID = player.item?.entryID else { return nil }
         let position = position ?? player.position
-        handoffState.localSaveToken &+= 1
-        let token = handoffState.localSaveToken
+        let token = (handoffState.localSaveTokens[entryID] ?? 0) &+ 1
+        handoffState.localSaveTokens[entryID] = token
         handoffState.lastLocalSave = position
-        Task { @MainActor [weak self] in
+        return Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.rememberOwnPosition(entryID, position: position, unless: { self.handoffState.localSaveToken != token })
-            guard self.handoffState.localSaveToken == token, self.handoffState.ownPositions[entryID] != nil else { return }
+            await self.rememberOwnPosition(entryID, position: position, unless: { self.handoffState.localSaveTokens[entryID] != token })
+            guard self.handoffState.localSaveTokens[entryID] == token, self.handoffState.ownPositions[entryID] != nil else { return }
             self.handoffState.unpublished[entryID] = (position, self.now())
         }
     }

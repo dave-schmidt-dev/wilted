@@ -32,7 +32,14 @@ PS_TIMEOUT_SECONDS = 5.0
 MAX_SLOW_INSPECTIONS = 6
 INSPECTION_INTERVAL_SECONDS = 1.0
 HEARTBEAT_SECONDS = 15.0
-WATCHDOG_WAIT_SECONDS = 4.0
+# One in-flight observation plus cleanup's initial, TERM-wait, pre-KILL,
+# KILL-wait and final scans. Each grace loop can overshoot by one probe
+# and poll; each probe can spend two grace waits terminating/reaping ps.
+WATCHDOG_WAIT_SECONDS = (
+    6 * (PS_TIMEOUT_SECONDS + 2 * GRACE_SECONDS)
+    + 2 * (GRACE_SECONDS + POLL_SECONDS)
+    + INSPECTION_INTERVAL_SECONDS
+)
 PROCESS_TABLE_COMMAND = ["/bin/ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart="]
 
 
@@ -66,7 +73,7 @@ def process_table() -> dict[int, Process]:
                 probe.communicate(timeout=GRACE_SECONDS)
             except subprocess.TimeoutExpired:
                 probe.kill()
-                probe.communicate()
+                probe.communicate(timeout=GRACE_SECONDS)
         raise
     if probe.returncode:
         raise subprocess.CalledProcessError(probe.returncode, probe.args, stdout, stderr)
@@ -368,6 +375,39 @@ def heartbeat_interval() -> float:
     return value
 
 
+def finish_watchdog(watcher: subprocess.Popen[object]) -> bool:
+    """Wait within its inspection budget, then kill and reap its owned session."""
+    emit(f"watchdog-cleanup-wait budget={WATCHDOG_WAIT_SECONDS:g}s")
+    deadline = time.monotonic() + WATCHDOG_WAIT_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        try:
+            watcher.wait(timeout=max(0, min(HEARTBEAT_SECONDS, remaining)))
+            break
+        except subprocess.TimeoutExpired:
+            if time.monotonic() < deadline:
+                emit("watchdog-cleanup-running")
+                continue
+            emit("watchdog-cleanup-timeout")
+            # Its ps probes inherit this detached session's group. Kill that
+            # group too, so a timed-out watchdog cannot leave an inspector.
+            try:
+                os.killpg(watcher.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                emit(f"watchdog-cleanup-signal-failed errno={error.errno}")
+            try:
+                watcher.wait(timeout=GRACE_SECONDS)
+            except (OSError, subprocess.SubprocessError) as error:
+                emit(f"watchdog-cleanup-reap-failed error={type(error).__name__}")
+            return False
+    if watcher.returncode != 0:
+        emit(f"watchdog-cleanup-failed status={watcher.returncode}")
+        return False
+    return True
+
+
 def run(timeout: float, argv: list[str]) -> int:
     managed = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     handlers = {sig: signal.getsignal(sig) for sig in managed}
@@ -422,14 +462,14 @@ def run(timeout: float, argv: list[str]) -> int:
         except (OSError, subprocess.SubprocessError):
             os.close(startup_write_fd)
             os.close(control_write_fd)
-            watcher.wait(timeout=WATCHDOG_WAIT_SECONDS)
+            finish_watchdog(watcher)
             raise
         os.close(startup_write_fd)
         start = leader_start(child.pid)
         if start is None:
             result = kill_unidentified_group(child)
             os.close(control_write_fd)
-            watcher.wait(timeout=WATCHDOG_WAIT_SECONDS)
+            finish_watchdog(watcher)
             return result
         os.write(control_write_fd, b"I" + start.encode("ascii") + b"\n")
         tree = OwnedTree(child.pid, start)
@@ -489,15 +529,8 @@ def run(timeout: float, argv: list[str]) -> int:
             outcome = EXIT_CLEANUP_FAILED
         finally:
             os.close(control_write_fd)
-            try:
-                watcher.wait(timeout=WATCHDOG_WAIT_SECONDS)
-            except subprocess.TimeoutExpired:
-                emit("watchdog-cleanup-timeout")
+            if not finish_watchdog(watcher):
                 outcome = EXIT_CLEANUP_FAILED
-            else:
-                if watcher.returncode != 0:
-                    emit(f"watchdog-cleanup-failed status={watcher.returncode}")
-                    outcome = EXIT_CLEANUP_FAILED
         if outcome is None:
             return EXIT_CLEANUP_FAILED
         if outcome < 0:

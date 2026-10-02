@@ -328,6 +328,138 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertEqual(result, 125)
         self.assertLess(time.monotonic() - started, 2)
 
+    def test_slow_watchdog_cleanup_does_not_fail_successful_child(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("run_bounded_watchdog_wait", RUNNER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        # A successful child and completed supervisor cleanup. The watchdog's single
+        # cleanup inspection takes nearly its allowed ps timeout, without real sleeps.
+        child = mock.Mock(pid=12345, returncode=0)
+        child.poll.return_value = 0
+        watcher = mock.Mock(pid=12346, returncode=0)
+        finished = False
+
+        def finish_inspection(timeout):
+            nonlocal finished
+            if timeout < module.PS_TIMEOUT_SECONDS - 0.1:
+                raise subprocess.TimeoutExpired("watchdog", timeout)
+            finished = True
+            return 0
+
+        watcher.wait.side_effect = finish_inspection
+        with (
+            mock.patch.object(module.subprocess, "Popen", side_effect=[watcher, child]),
+            mock.patch.object(module, "leader_start", return_value="child-start"),
+            mock.patch.object(module.OwnedTree, "scan", return_value={}),
+            mock.patch.object(module.OwnedTree, "cleanup", return_value=True),
+            mock.patch.object(module.os, "write"),
+        ):
+            result = module.run(5, ["successful-child"])
+        self.assertEqual(result, 0, "successful cleanup inspection exceeded watchdog wait")
+        self.assertTrue(finished, "watchdog was left alive after return")
+        watcher.kill.assert_not_called()
+
+    def test_watchdog_cleanup_deadline_kills_and_reaps_owned_session(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("run_bounded_watchdog_deadline", RUNNER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        watcher = mock.Mock(pid=12346)
+        watcher.wait.side_effect = [subprocess.TimeoutExpired("watchdog", 1), -signal.SIGKILL]
+        with (
+            mock.patch.object(module, "WATCHDOG_WAIT_SECONDS", 1),
+            mock.patch.object(module.time, "monotonic", side_effect=[0, 0, 1]),
+            mock.patch.object(module.os, "killpg") as killpg,
+        ):
+            self.assertFalse(module.finish_watchdog(watcher))
+        killpg.assert_called_once_with(watcher.pid, signal.SIGKILL)
+        self.assertEqual(watcher.wait.call_args_list, [mock.call(timeout=1), mock.call(timeout=module.GRACE_SECONDS)])
+
+    def test_watchdog_group_permission_failure_returns_cleanup_failed(self) -> None:
+        self._check_watchdog_cleanup_failure("permission")
+
+    def test_watchdog_final_reap_timeout_returns_cleanup_failed(self) -> None:
+        self._check_watchdog_cleanup_failure("reap")
+
+    def _check_watchdog_cleanup_failure(self, failure: str) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("run_bounded_watchdog_" + failure, RUNNER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        child = mock.Mock(pid=12345, returncode=0)
+        child.poll.return_value = 0
+        watcher = mock.Mock(pid=12346, returncode=0)
+        elapsed = 0.0
+        waits = 0
+
+        def wait(timeout):
+            nonlocal elapsed, waits
+            waits += 1
+            if waits == 1:
+                elapsed += timeout
+                raise subprocess.TimeoutExpired("watchdog", timeout)
+            if failure == "reap":
+                raise subprocess.TimeoutExpired("watchdog-reap", timeout)
+            return 0
+
+        watcher.wait.side_effect = wait
+        kill_error = PermissionError("controlled group signal denial") if failure == "permission" else None
+        with (
+            mock.patch.object(module.subprocess, "Popen", side_effect=[watcher, child]),
+            mock.patch.object(module, "leader_start", return_value="child-start"),
+            mock.patch.object(module.OwnedTree, "scan", return_value={}),
+            mock.patch.object(module.OwnedTree, "cleanup", return_value=True),
+            mock.patch.object(module.os, "write"),
+            mock.patch.object(module.os, "killpg", side_effect=kill_error) as killpg,
+            mock.patch.object(module, "WATCHDOG_WAIT_SECONDS", 1),
+            mock.patch.object(module.time, "monotonic", side_effect=lambda: elapsed),
+            mock.patch.object(module, "emit") as emit,
+        ):
+            self.assertEqual(module.run(5, ["successful-child"]), 125)
+        killpg.assert_called_once_with(watcher.pid, signal.SIGKILL)
+        self.assertEqual(watcher.wait.call_args_list, [mock.call(timeout=1), mock.call(timeout=module.GRACE_SECONDS)])
+        diagnostic = "watchdog-cleanup-signal-failed" if failure == "permission" else "watchdog-cleanup-reap-failed"
+        self.assertTrue(any(call.args[0].startswith(diagnostic) for call in emit.call_args_list))
+
+    def test_watchdog_wait_reports_heartbeat_and_nonzero_exit(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("run_bounded_watchdog_progress", RUNNER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        watcher = mock.Mock(returncode=125)
+        elapsed = 0.0
+
+        def wait(timeout):
+            nonlocal elapsed
+            if elapsed == 0:
+                elapsed += timeout
+                raise subprocess.TimeoutExpired("watchdog", timeout)
+            return 125
+
+        watcher.wait.side_effect = wait
+        with (
+            mock.patch.object(module, "WATCHDOG_WAIT_SECONDS", 2),
+            mock.patch.object(module, "HEARTBEAT_SECONDS", 1),
+            mock.patch.object(module.time, "monotonic", side_effect=lambda: elapsed),
+            mock.patch.object(module, "emit") as emit,
+        ):
+            self.assertFalse(module.finish_watchdog(watcher))
+        emit.assert_any_call("watchdog-cleanup-running")
+        emit.assert_any_call("watchdog-cleanup-failed status=125")
+
     def test_owned_groups_exclude_zombies_and_reused_pids(self) -> None:
         import importlib.util
 

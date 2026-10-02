@@ -32,9 +32,11 @@ actor WiltedMacInboundPoller {
     private let onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)?
     private let publishRound: (@Sendable () async -> Void)?
     private let maintenance: (@Sendable () async -> Void)?
+    private let onStop: (@Sendable () async -> Void)?
     private let sleep: Sleep
     private let clock: @Sendable () -> Date
     private var tick: SyncTick?
+    private var lifecycleGeneration: UInt64 = 0
     private var inFlight: Task<Void, Never>?
     private var discovered = false
     private(set) var cycleCount = 0
@@ -54,6 +56,7 @@ actor WiltedMacInboundPoller {
         onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
         publishRound: (@Sendable () async -> Void)? = nil,
         maintenance: (@Sendable () async -> Void)? = nil,
+        onStop: (@Sendable () async -> Void)? = nil,
         clock: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping Sleep = { try await Task.sleep(for: $0) }
     ) {
@@ -66,24 +69,40 @@ actor WiltedMacInboundPoller {
         self.onDeviceRecords = onDeviceRecords
         self.publishRound = publishRound
         self.maintenance = maintenance
+        self.onStop = onStop
         self.sleep = sleep
     }
 
     /// Starts the tick; the first round runs at once. Calling it again while running does nothing.
     func start() async {
         guard tick == nil else { return }
+        lifecycleGeneration &+= 1
+        let generation = lifecycleGeneration
         let sleep = sleep
         let tick = SyncTick(gate: gate, clock: clock, sleep: { try await sleep(.seconds($0)) }, round: { [weak self] _ in
-            await self?.pollNow()
+            await self?.pollFromTick(generation: generation)
         })
         self.tick = tick
         await tick.start()
+        if lifecycleGeneration != generation { await tick.stop() }
     }
 
     func stop() async {
+        lifecycleGeneration &+= 1
         let stopping = tick
         tick = nil
         await stopping?.stop()
+        await onStop?()
+        // SyncTick deliberately lets a round finish. Its maintenance can still
+        // write accounting, so shutdown must join it before the root is removed.
+        await inFlight?.value
+    }
+
+    var isRunning: Bool { tick != nil }
+
+    private func pollFromTick(generation: UInt64) async {
+        guard lifecycleGeneration == generation, tick != nil else { return }
+        await pollNow()
     }
 
     /// A refresh the person asked for: a round now, the timer restarted from it, nothing sent while
@@ -164,6 +183,11 @@ final class WiltedMacInboundRuntime {
     private let gate: TransportGate?
     private let discover: (@Sendable () async throws -> Void)?
     private let onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)?
+    private let maintenance: (@Sendable () async -> Void)?
+    private let beforePollerStart: (@Sendable () async -> Void)?
+    private let onPollerStop: (@Sendable () async -> Void)?
+    private var startup: Task<Void, Never>?
+    private var shutdown: Task<Void, Never>?
     private(set) var poller: WiltedMacInboundPoller?
 
     init(
@@ -174,6 +198,9 @@ final class WiltedMacInboundRuntime {
         gate: TransportGate? = nil,
         discover: (@Sendable () async throws -> Void)? = nil,
         onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
+        maintenance: (@Sendable () async -> Void)? = nil,
+        beforePollerStart: (@Sendable () async -> Void)? = nil,
+        onPollerStop: (@Sendable () async -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
@@ -181,6 +208,9 @@ final class WiltedMacInboundRuntime {
         self.gate = gate
         self.discover = discover
         self.onDeviceRecords = onDeviceRecords
+        self.maintenance = maintenance
+        self.beforePollerStart = beforePollerStart
+        self.onPollerStop = onPollerStop
         ledger = WiltedMacIntentLedger(fileURL: directory.appendingPathComponent("intent-ledger.json"), now: now)
         service = WiltedMacMediaService(
             source: source, transport: transport,
@@ -201,21 +231,45 @@ final class WiltedMacInboundRuntime {
 
     /// Starts the tick; intents reach `sink`, which routes media intents to `consume`. `publishRound`
     /// is the Mac's own batched writes, run in every round after the reads.
-    func start(sink: any LibraryIntentSink, publishRound: (@Sendable () async -> Void)? = nil) {
-        guard poller == nil else { return }
+    @discardableResult
+    func start(sink: any LibraryIntentSink, publishRound: (@Sendable () async -> Void)? = nil) -> Task<Void, Never>? {
+        guard poller == nil else { return nil }
         let service = service
         let poller = WiltedMacInboundPoller(
             transport: transport, sink: sink, deviceID: deviceID, gate: gate, discover: discover,
             onDeviceRecords: onDeviceRecords, publishRound: publishRound,
-            maintenance: { await service.sweepExpired() }
+            maintenance: maintenance ?? { await service.sweepExpired() }, onStop: onPollerStop
         )
         self.poller = poller
-        Task { await poller.start() }
+        let beforePollerStart = beforePollerStart
+        let previousShutdown = shutdown
+        let task = Task {
+            await previousShutdown?.value
+            guard !Task.isCancelled else { return }
+            await beforePollerStart?()
+            guard !Task.isCancelled else { return }
+            await poller.start()
+        }
+        startup = task
+        return task
     }
 
-    func stop() {
-        guard let poller else { return }
+    @discardableResult
+    func stop() -> Task<Void, Never>? {
+        guard let poller else { return shutdown }
         self.poller = nil
-        Task { await poller.stop() }
+        let startup = startup
+        startup?.cancel()
+        let task = Task {
+            // Stop promptly, then settle a startup already suspended on an actor
+            // or injected wait, and stop again to cover its last possible start.
+            await poller.stop()
+            await startup?.value
+            await poller.stop()
+        }
+        shutdown = task
+        return task
     }
+
+    func close() async { await stop()?.value }
 }

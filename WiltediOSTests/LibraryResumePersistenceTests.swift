@@ -140,12 +140,41 @@ final class LibraryResumePersistenceTests: XCTestCase {
 
     // MARK: fixtures
 
-    private func makeModel(transport: any LibraryTransport) -> LibraryAppModel {
+    /// Holds exactly the first cache lookup so a local save can be overtaken deterministically.
+    private actor GatedCache: LibraryMediaCache {
+        let entries: [ItemID: CachedMedia]
+        private var first = true
+        private var pending: CheckedContinuation<Void, Never>?
+        private var arrival: CheckedContinuation<Void, Never>?
+        init(entries: [ItemID: CachedMedia]) { self.entries = entries }
+        func cachedEntries() async -> [ItemID: CachedMedia] {
+            if first {
+                first = false
+                await withCheckedContinuation { continuation in
+                    pending = continuation
+                    arrival?.resume()
+                    arrival = nil
+                }
+            }
+            return entries
+        }
+        func waitUntilBlocked() async {
+            if pending == nil { await withCheckedContinuation { arrival = $0 } }
+        }
+        func release() { pending?.resume(); pending = nil }
+        func cachedFile(for offer: LibraryMediaOffer) async -> URL? { entries[offer.entryID]?.url }
+        func adopt(verifiedFile: URL, for offer: LibraryMediaOffer) async throws -> URL { verifiedFile }
+        func remove(entryID: ItemID) async throws {}
+        func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? { nil }
+        func storeTranscript(_ transcript: LibraryTranscript) async {}
+    }
+
+    private func makeModel(transport: any LibraryTransport, mediaCache: (any LibraryMediaCache)? = nil) -> LibraryAppModel {
         let suite = "wilted.resume.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return LibraryAppModel(
-            transport: transport, deviceID: "phone", mediaCache: cache,
+            transport: transport, deviceID: "phone", mediaCache: mediaCache ?? cache,
             handoffTiming: LibraryHandoffTiming(
                 observeInterval: SyncCadence.phoneObserveInterval, sleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
                 settleSleep: { _ in }),
@@ -187,6 +216,48 @@ final class LibraryResumePersistenceTests: XCTestCase {
     }
 
     // MARK: tests
+
+    func testDifferentEpisodeDoesNotDiscardPendingLocalSave() async throws {
+        let secondID = try ItemID(rawValue: "item-b")
+        let cached = await cache.cachedEntries()
+        let media = try XCTUnwrap(cached[entryID])
+        let gated = GatedCache(entries: [entryID: media, secondID: media])
+        let model = makeModel(transport: UnavailableLibraryTransport(reason: "no signal"), mediaCache: gated)
+        let (player, _) = makePlayer()
+        // Wire only the local-save seam: unrelated player handoff tasks cannot consume the gate.
+        model.handoffState.player = player
+        player.start(try await loadedItem(), at: 0)
+        let pending = try XCTUnwrap(model.saveLoadedPositionLocally(123))
+        await gated.waitUntilBlocked()
+        player.start(.init(entryID: secondID, title: "Second", showTitle: "Show", fileURL: media.url), at: 0)
+        model.saveLoadedPositionLocally(456)
+        try await eventually("the second episode save") { model.handoffState.unpublished[secondID]?.position == 456 }
+        await gated.release()
+        await pending.value
+        XCTAssertEqual(model.handoffState.unpublished[entryID]?.position, 123)
+        let stored = LibraryOwnPositionStore(url: positionsURL).load()
+        XCTAssertEqual(stored.positions[entryID]?.record.positionSeconds, 123)
+        XCTAssertEqual(stored.positions[secondID]?.record.positionSeconds, 456)
+        XCTAssertEqual(stored.unpublished[entryID]?.position, 123)
+        XCTAssertEqual(stored.unpublished[secondID]?.position, 456)
+    }
+
+    func testNewerSameEpisodeSaveWins() async throws {
+        let entries = await cache.cachedEntries()
+        let gated = GatedCache(entries: entries)
+        let model = makeModel(transport: UnavailableLibraryTransport(reason: "no signal"), mediaCache: gated)
+        let (player, _) = makePlayer()
+        model.handoffState.player = player
+        player.start(try await loadedItem(), at: 0)
+        let pending = try XCTUnwrap(model.saveLoadedPositionLocally(123))
+        await gated.waitUntilBlocked()
+        model.saveLoadedPositionLocally(456)
+        try await eventually("the newer same-episode save") { model.handoffState.unpublished[entryID]?.position == 456 }
+        await gated.release()
+        await pending.value
+        XCTAssertEqual(storedPosition(), 456)
+        XCTAssertEqual(model.handoffState.unpublished[entryID]?.position, 456)
+    }
 
     func testAPauseBehindAHangingNetworkCallStillResumesAfterAColdLaunch() async throws {
         let model = makeModel(transport: GatedTransport(inner: InMemoryLibraryTransport(deviceID: "phone", server: server), gate: gate))

@@ -240,6 +240,8 @@ final class WiltedMacLibrarySyncController {
     private var offerReconcileRequested = false
     private var passTail: Task<Bool, Never>?
     private var stopped = false
+    /// Injected lifecycle observation for deterministic shutdown tests.
+    var onShutdownDrain: (@MainActor () async -> Void)?
 
     init(
         model: WiltedMacModel, publisher: WiltedMacLibraryPublisher, sink: WiltedMacLibraryIntentSink,
@@ -268,6 +270,7 @@ final class WiltedMacLibrarySyncController {
     /// The Mac's own work in one sync round, after the round's reads: the library state and
     /// statistics (a request only when one changed), then the playing checkpoint and the stored positions.
     func tickRound() async {
+        guard !stopped else { return }
         _ = await runPass(includesStats: true)
         await handoff?.tickRound()
     }
@@ -279,6 +282,16 @@ final class WiltedMacLibrarySyncController {
         loop?.cancel()
         offerReconcile?.cancel()
         triggers.finish()
+    }
+
+    /// Stops accepting work and drains finite writers before their directory can go away.
+    func close() async {
+        stop()
+        await onShutdownDrain?()
+        await inbound?.close()
+        await loop?.value
+        await offerReconcile?.value
+        _ = await passTail?.value
     }
 
     isolated deinit { stop() }
@@ -315,6 +328,7 @@ final class WiltedMacLibrarySyncController {
 
     /// One pass at a time: an edit and a sync round never publish the same diff twice.
     private func runPass(includesStats: Bool) async -> Bool {
+        guard !stopped else { return true }
         let previous = passTail
         let task = Task { @MainActor [weak self] in
             _ = await previous?.value
@@ -325,7 +339,7 @@ final class WiltedMacLibrarySyncController {
     }
 
     private func performPass(includesStats: Bool) async -> Bool {
-        guard let model, !model.isClosingTemporaryState else { return true }
+        guard !stopped, let model, !model.isClosingTemporaryState else { return true }
         do {
             lastReport = try await publisher.sync(includesStats: includesStats)
             // Offers follow the same triggers as state (the queue and the prepared set) but run on
@@ -349,6 +363,7 @@ final class WiltedMacLibrarySyncController {
 // MARK: - Model integration
 
 private nonisolated(unsafe) var librarySyncControllerKey: UInt8 = 0
+private nonisolated(unsafe) var librarySyncShutdownKey: UInt8 = 0
 
 extension WiltedMacModel {
     static let libraryDeviceIDPreferenceKey = "wilted.library.deviceID"
@@ -358,6 +373,12 @@ extension WiltedMacModel {
         objc_getAssociatedObject(self, &librarySyncControllerKey) as? WiltedMacLibrarySyncController
     }
 
+    /// Retains a draining owner after synchronous stop clears its visible association.
+    private var librarySyncShutdown: Task<Void, Never>? {
+        get { objc_getAssociatedObject(self, &librarySyncShutdownKey) as? Task<Void, Never> }
+        set { objc_setAssociatedObject(self, &librarySyncShutdownKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+
     /// Starts the library publisher when `WILTED_LIBRARY_SYNC=1` and a store is open;
     /// otherwise stops any running one. Returns whether a publisher is running.
     @discardableResult
@@ -365,10 +386,12 @@ extension WiltedMacModel {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         transport: (any LibraryTransport)? = nil,
         mediaRequestConsumer: WiltedMacLibraryIntentSink.Consumer? = nil,
+        inboundMaintenance: (@Sendable () async -> Void)? = nil,
         debounce: Duration = .seconds(2)
     ) -> Bool {
         stopLibrarySync()
-        guard WiltedMacLibraryPublisher.isEnabled(in: environment), !fixtureMode, let store else { return false }
+        guard !isClosingTemporaryState, WiltedMacLibraryPublisher.isEnabled(in: environment), !fixtureMode, let store else { return false }
+        let previousShutdown = librarySyncShutdown
         let deviceID = libraryDeviceID()
         let source = WiltedMacLocalLibraryStateSource(store: store, deviceID: deviceID) { [weak self] in
             await MainActor.run { self?.librarySyncPlaybackSample() }
@@ -393,7 +416,8 @@ extension WiltedMacModel {
             onDeviceRecords: { [weak self] records in
                 await importer.handle(records)
                 await MainActor.run { self?.updatePhonePositions(from: records) }
-            }
+            }, maintenance: inboundMaintenance,
+            beforePollerStart: { await previousShutdown?.value }
         )
         // Decision intents (keep, skip, mark done, remove from Larder, restore, reorder) go to the applier, which shares
         // the media service's ledger; media intents keep their existing route.
@@ -439,11 +463,20 @@ extension WiltedMacModel {
     }
 
     func stopLibrarySync() {
-        librarySyncController?.stop()
+        if let controller = librarySyncController {
+            controller.stop()
+            let previous = librarySyncShutdown
+            librarySyncShutdown = Task {
+                await previous?.value
+                await controller.close()
+            }
+        }
         objc_setAssociatedObject(self, &librarySyncControllerKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         libraryThrottle = nil
         phonePositions = [:]
     }
+
+    func waitForLibrarySyncShutdown() async { await librarySyncShutdown?.value }
 
     /// Everything whose change should republish at once: the queue and removals. Playback is
     /// published by the handoff controller and statistics by the sync round, so neither a position
