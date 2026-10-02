@@ -250,6 +250,23 @@ race_b=$!
 wait "$race_a" || { echo 'first stale-lock owner failed' >&2; exit 1; }
 wait "$race_b" || { echo 'stale recovery deleted a newly acquired live lock' >&2; exit 1; }
 
+# A live owner releasing while an observer is mid-probe must not break the observer. The owner
+# holds the lock until the observer's (slow) ps has started, then exits while the observer is
+# still inside its stale check; release goes through the same guard, so the observer sees a live
+# owner instead of a vanished lock (cat/mv ENOENT).
+slow_bin="$fixture_root/slow-ps-bin"
+slowps_mark="$fixture_root/slow-ps-started"
+mkdir -p "$slow_bin"
+printf '#!/usr/bin/env bash\n: >"$SLOWPS_MARK"\nsleep 1.2\nexec /bin/ps "$@"\n' >"$slow_bin/ps"
+chmod +x "$slow_bin/ps"
+run_full bash -c 'for _ in {1..500}; do [[ -f "$1" ]] && break; sleep .02; done' _ "$slowps_mark" &
+release_owner=$!
+for _ in {1..100}; do [[ -s "$repo/.build/full-run.lock/pid" ]] && break; sleep .02; done
+SLOWPS_MARK="$slowps_mark" PATH="$slow_bin:$PATH" run_full true || { echo 'observer failed when the owner released mid-probe' >&2; exit 1; }
+wait "$release_owner" || { echo 'owner failed while an observer probed it' >&2; exit 1; }
+[[ -f "$slowps_mark" ]] || { echo 'release-race observer never probed the owner' >&2; exit 1; }
+assert_full_run_artifacts_absent release-race
+
 term_script="$fixture_root/term.sh"
 cat >"$term_script" <<'TERM'
 #!/usr/bin/env bash

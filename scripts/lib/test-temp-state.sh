@@ -127,6 +127,7 @@ _wilted_full_run_worker() {
   wilted_full_run_supervisor=""
   wilted_full_run_lock_owned=0
   wilted_full_run_recovery_owned=0
+  wilted_full_run_release_wait=0
   wilted_full_run_launching=0
   wilted_full_run_signal_status=0
   wilted_full_run_recovery=""
@@ -150,6 +151,16 @@ _wilted_full_run_worker() {
       fi
     fi
     if [[ "$wilted_full_run_lock_owned" == 1 ]]; then
+      # Release under the recovery guard: an observer that is judging this lock stale holds the
+      # guard from its pid read to its move, so it can never see the lock vanish (or be replaced
+      # by a new owner's) in between. A guard stuck past 5 s belongs to a crashed observer, whose
+      # waiters give up on their own, so release without it rather than hang.
+      wilted_full_run_release_wait=0
+      until mkdir "$wilted_full_run_recovery" 2>/dev/null; do
+        (( ++wilted_full_run_release_wait <= 250 )) || break
+        sleep .02
+      done
+      (( wilted_full_run_release_wait <= 250 )) && wilted_full_run_recovery_owned=1
       _wilted_full_run_owned_dir "$wilted_full_run_lock" "$wilted_full_run_repo/.build/full-run.lock" && rm -rf -- "$wilted_full_run_lock" || audit_status=1
     fi
     if [[ "$wilted_full_run_recovery_owned" == 1 ]]; then
@@ -177,12 +188,19 @@ _wilted_full_run_worker() {
     if mkdir "$wilted_full_run_recovery" 2>/dev/null; then
       wilted_full_run_recovery_owned=1
       _wilted_full_run_owned_dir "$wilted_full_run_recovery" "$wilted_full_run_repo/.build/full-run.lock.recovery" || exit 1
+      if [[ ! -d "$wilted_full_run_lock" ]]; then
+        # The owner released it before this observer took the guard: acquire at once.
+        rmdir "$wilted_full_run_recovery" || exit 1
+        wilted_full_run_recovery_owned=0
+        continue
+      fi
       if [[ -f "$wilted_full_run_lock/pid" ]]; then
-        wilted_full_run_lock_pid="$(cat "$wilted_full_run_lock/pid")"
+        wilted_full_run_lock_pid="$(cat "$wilted_full_run_lock/pid" 2>/dev/null)" || [[ ! -e "$wilted_full_run_lock/pid" ]] || exit 1
         [[ "$wilted_full_run_lock_pid" =~ ^[1-9][0-9]*$ ]] || exit 1
         if wilted_full_run_lock_probe="$(ps -o pid= -p "$wilted_full_run_lock_pid" 2>&1)"; then wilted_full_run_lock_status=0; else wilted_full_run_lock_status=$?; fi
         if (( wilted_full_run_lock_status == 1 )); then
-          mv "$wilted_full_run_lock" "$wilted_full_run_recovery/abandoned" || exit 1
+          # Gone already means an unguarded release (guard stuck past its 5 s bound) beat us to it.
+          mv "$wilted_full_run_lock" "$wilted_full_run_recovery/abandoned" 2>/dev/null || [[ ! -e "$wilted_full_run_lock" ]] || exit 1
           rm -rf -- "$wilted_full_run_recovery/abandoned" || exit 1
           rmdir "$wilted_full_run_recovery" || exit 1
           wilted_full_run_recovery_owned=0
