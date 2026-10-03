@@ -29,12 +29,18 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertEqual(prepared.presentation.sourceDurationLabel, "Source duration · 1h 02m")
         XCTAssertEqual(prepared.presentation.playableDurationLabel, "Playable duration · 1h 00m")
         XCTAssertEqual(original.presentation.accessibilityFactsLabel, prepared.presentation.accessibilityFactsLabel)
+        let expectedLarder = "Canonical show - 1h 02m - \(publication.formatted(date: .numeric, time: .omitted))"
+        XCTAssertEqual(original.presentation.larderRowLabel, expectedLarder)
+        XCTAssertEqual(prepared.presentation.larderRowLabel, expectedLarder,
+                       "Larder presentation retains total source duration (1h 02m), not playable duration (1h 00m)")
+        XCTAssertEqual(original.presentation.larderPresentationLabel, expectedLarder)
     }
 
     func testUnknownPublicationAndMalformedDurationsRemainExplicitlyUnknown() {
         let unknown = episode(publishedAt: nil, sourceDuration: nil)
         XCTAssertEqual(unknown.presentation.showAndPublicationLabel, "Canonical show · Publication date unknown")
         XCTAssertEqual(unknown.presentation.sourceDurationLabel, "Source duration · Unknown")
+        XCTAssertEqual(unknown.presentation.larderRowLabel, "Canonical show - Unknown - Publication date unknown")
 
         var malformed = unknown
         malformed.sourceDurationSeconds = .greatestFiniteMagnitude
@@ -43,6 +49,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         malformed.preparationState = .prepared(summary: "Ready")
         XCTAssertEqual(malformed.presentation.sourceDurationLabel, "Source duration · Unknown")
         XCTAssertEqual(malformed.presentation.playableDurationLabel, "Playable duration · Unknown")
+        XCTAssertEqual(malformed.presentation.larderRowLabel, "Canonical show - Unknown - Publication date unknown")
     }
 
     func testLegacyConstructorRetainsItsKnownFixtureFacts() {
@@ -138,6 +145,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertNil(tombstone.presentation.sourceDurationSeconds)
         XCTAssertEqual(tombstone.presentation.showAndPublicationLabel, "Show unknown · Publication date unknown")
         XCTAssertEqual(tombstone.presentation.sourceDurationLabel, "Source duration · Unknown")
+        XCTAssertEqual(tombstone.presentation.larderRowLabel, "Show unknown - Unknown - Publication date unknown")
 
     }
 
@@ -159,6 +167,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertTrue(metadata.contains("struct WiltedMacEpisodePresentation"))
         XCTAssertTrue(metadata.contains("Publication date unknown"))
         XCTAssertTrue(metadata.contains("accessibilityFactsLabel"))
+        XCTAssertTrue(metadata.contains("larderRowLabel"))
         XCTAssertTrue(metadata.contains("duration < Double(Int.max)"))
         XCTAssertTrue(views.contains("wilted-feeds-metadata-\\(episode.id)"))
         XCTAssertTrue(views.contains("wilted-menu-metadata-\\(episode.id)"))
@@ -254,6 +263,77 @@ final class WiltedEpisodePresentationTests: XCTestCase {
                 .map(\.id),
             [newest.id, middle.id, oldest.id, unknown.id]
         )
+    }
+
+    func testLarderPresentationRowFieldsOrderUnknownsAndSourceDuration() {
+        let published = Date(timeIntervalSince1970: 1_700_000_000)
+        let publishedDateString = published.formatted(date: .numeric, time: .omitted)
+
+        // Fields in order: Feed - duration - date, separated by literal " - "
+        var ep = episode(publishedAt: published, sourceDuration: 3_723)
+        ep.playableDurationSeconds = 1_800
+        XCTAssertEqual(
+            ep.presentation.larderRowLabel,
+            "Canonical show - 1h 02m - \(publishedDateString)",
+            "Larder row must present feed, total source duration, and date in that order, ignoring playable duration"
+        )
+
+        // Explicit unknowns for missing show, duration, and publication date
+        let emptyShow = WiltedMacEpisode(
+            id: "no-show", title: "No Show", feedTitle: "   ", summary: "",
+            artworkURL: nil, releasedAt: published, publishedAt: nil,
+            sourceDurationSeconds: nil, durationSeconds: nil,
+            playbackSeconds: 0, downloadState: .notDownloaded
+        )
+        XCTAssertEqual(
+            emptyShow.presentation.larderRowLabel,
+            "Show unknown - Unknown - Publication date unknown"
+        )
+    }
+
+    func testVisibleNumberingRestartsAfterRemovingTheFirstSevenRows() {
+        let queue = (1...10).map { episode(id: "episode-\($0)", publishedAt: nil, sourceDuration: 60) }
+        func sections(_ rows: [WiltedMacEpisode]) -> [WiltedMacMenuSection] {
+            [WiltedMacMenuSection(id: "visible", title: "Larder", detail: nil, statusGroup: nil, episodes: rows)]
+        }
+        let initial = WiltedMacEpisodePresentationSections.visibleNumbering(sections(queue))
+        XCTAssertEqual(initial.count, 10)
+        XCTAssertEqual(queue.map { initial.positions[$0.id] }, (1...10).map(Optional.some))
+
+        let remaining = Array(queue.dropFirst(7))
+        let numbered = WiltedMacEpisodePresentationSections.visibleNumbering(sections(remaining))
+        XCTAssertEqual(numbered.count, 3)
+        XCTAssertEqual(numbered.positions, ["episode-8": 1, "episode-9": 2, "episode-10": 3])
+        XCTAssertEqual(queue.map(\.id), (1...10).map { "episode-\($0)" }, "numbering must not rewrite the queue")
+    }
+
+    func testVisibleNumberingUsesTheFilteredSubsetAndItsVisibleCount() {
+        let queue = (1...10).map { episode(id: "episode-\($0)", publishedAt: nil, sourceDuration: 60) }
+        let filtered = [queue[7], queue[9]]
+        let section = WiltedMacMenuSection(id: "filtered", title: "Matches", detail: nil, statusGroup: nil, episodes: filtered)
+        let numbered = WiltedMacEpisodePresentationSections.visibleNumbering([section])
+        XCTAssertEqual(numbered.positions, ["episode-8": 1, "episode-10": 2])
+        XCTAssertEqual(numbered.count, 2, "VoiceOver's X of Y must count only rendered rows")
+        XCTAssertEqual(section.episodes.map(\.id), ["episode-8", "episode-10"])
+        XCTAssertEqual(WiltedMacEpisodePresentationSections.visibleNumbering([]).count, 0)
+    }
+
+    func testVisibleNumberingContinuesAcrossSectionsAfterActiveWorkMovesFirst() {
+        let first = episode(id: "first", publishedAt: nil, sourceDuration: 60)
+        let last = episode(id: "last", publishedAt: nil, sourceDuration: 60)
+        var active = episode(id: "active", publishedAt: nil, sourceDuration: 60)
+        active.downloadState = .downloading(received: 30, expected: 60)
+        let source = [
+            WiltedMacMenuSection(id: "feed-a", title: "A", detail: nil, statusGroup: nil, episodes: [first]),
+            WiltedMacMenuSection(id: "feed-b", title: "B", detail: nil, statusGroup: nil, episodes: [last, active]),
+        ]
+        let displayed = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .feed)
+        XCTAssertEqual(displayed.map(\.id), ["active-work", "feed-a", "feed-b"])
+        let numbered = WiltedMacEpisodePresentationSections.visibleNumbering(displayed)
+        XCTAssertEqual(numbered.positions, ["active": 1, "first": 2, "last": 3])
+        XCTAssertEqual(numbered.count, 3)
+        XCTAssertEqual(displayed.flatMap(\.episodes).map(\.id), ["active", "first", "last"])
+        XCTAssertEqual(source.flatMap(\.episodes).map(\.id), ["first", "last", "active"])
     }
 
     private func episode(

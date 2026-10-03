@@ -108,7 +108,7 @@ extension WiltedMacMenuView {
         case .playable:
             Button("Play the first") {
                 if let first = model.menuEpisodes(in: .playable).first(where: { !model.isEpisodeFinished($0) }) {
-                    model.playEpisode(first)
+                    model.playLarderEpisode(first)
                 }
             }
             .disabled(model.menuEpisodes(in: .playable).allSatisfy { model.isEpisodeFinished($0) }
@@ -164,7 +164,8 @@ extension WiltedMacMenuView {
             sort: model.menuSort,
             isDeferredForOffPeak: { model.isDeferredForOffPeak($0) }
         )
-        let total = model.menuWaitingEpisodes.count
+        let numbering = WiltedMacEpisodePresentationSections.visibleNumbering(sections)
+        let total = numbering.count
         if model.menuFilteredEpisodes.isEmpty {
             Label(model.isSearchingMenu
                   ? (model.isSearchingTranscripts ? "Still reading transcripts…" : "No episodes match this search.")
@@ -198,7 +199,7 @@ extension WiltedMacMenuView {
                         VStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(section.episodes.enumerated()), id: \.element.id) { index, episode in
                                 if index > 0 { Divider() }
-                                let position = (model.menuWaitingEpisodes.firstIndex(of: episode) ?? index) + 1
+                                let position = numbering.positions[episode.id, default: index + 1]
                                 menuRow(
                                     episode,
                                     position: position,
@@ -322,6 +323,21 @@ extension WiltedMacMenuView {
 /// Presentation-only row grouping for the Larder. It never changes the
 /// durable queue, the model's sort fallback, or lifecycle eligibility.
 enum WiltedMacEpisodePresentationSections {
+    struct VisibleNumbering {
+        let positions: [String: Int]
+        let count: Int
+    }
+
+    /// Continuous visible ordinals across the actual rendered sections.
+    /// Only presentation changes: durable queue order and episode values stay intact.
+    static func visibleNumbering(_ sections: [WiltedMacMenuSection]) -> VisibleNumbering {
+        let episodes = sections.flatMap(\.episodes)
+        let positions = Dictionary(uniqueKeysWithValues: episodes.enumerated().map {
+            ($0.element.id, $0.offset + 1)
+        })
+        return VisibleNumbering(positions: positions, count: episodes.count)
+    }
+
     static func displaySections(
         _ sections: [WiltedMacMenuSection],
         grouping: WiltedMacMenuGrouping,

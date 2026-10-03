@@ -305,16 +305,23 @@ struct LibraryRowView: View {
                         ForEach(voiceOverActions, id: \.name) { action in Button(action.name, action: action.perform) }
                     }
                     .accessibilityIdentifier("wilted-library-title-\(row.id.rawValue)")
-                Text(row.showTitle)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(secondary)
-                    .lineLimit(1)
-                    .accessibilityIdentifier("wilted-library-show-\(row.id.rawValue)")
                 Text(detail)
                     .wiltedFont(.utility)
                     .foregroundStyle(secondary)
                     .lineLimit(1)
                     .accessibilityIdentifier("wilted-library-meta-\(row.id.rawValue)")
+                if let status = Self.listeningStatus(row: row, progress: progress, completed: isCompleted) {
+                    Text(status)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(secondary)
+                        .accessibilityIdentifier("wilted-library-listening-status-\(row.id.rawValue)")
+                }
+                if isCompleted {
+                    Text("Played")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(secondary)
+                        .accessibilityIdentifier("wilted-library-completed-\(row.id.rawValue)")
+                }
                 if !isCompleted, let fraction = CarEpisodeList.fraction(progress, duration: row.durationSeconds) {
                     ProgressView(value: fraction)
                         .tint(WiltedTheme.color(.progress, scheme: colorScheme))
@@ -340,22 +347,30 @@ struct LibraryRowView: View {
         .accessibilityIdentifier("wilted-library-row-\(row.id.rawValue)")
     }
 
-    /// Time left (or the full length when untouched, or "Played") and publication date.
+    /// Feed - TOTAL duration - date.
     private var detail: String {
         Self.detail(row: row, progress: progress, completed: isCompleted)
     }
 
-    static func detail(row: LibraryRow, progress: EpisodeProgress?, completed: Bool) -> String {
-        let length: String?
-        if completed {
-            length = "Played"
-        } else if let progress, let duration = row.durationSeconds, duration > 0 {
-            length = "\(LibraryClockFormat.duration(max(0, duration - progress.positionSeconds))) left"
-        } else {
-            length = row.durationText
-        }
-        return [length, row.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())]
-            .compactMap { $0 }.joined(separator: " · ")
+    static func detail(row: LibraryRow, progress: EpisodeProgress? = nil, completed: Bool = false) -> String {
+        let show = row.showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let showLabel = show.isEmpty ? "Show unknown" : show
+        let duration = row.durationText ?? "Unknown"
+        let date = row.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
+        return "\(showLabel) - \(duration) - \(date)"
+    }
+
+    /// Playback status stays separate from the factual metadata line. Nil means duration or
+    /// progress data is not safe to present; completion has its existing, separate Played label.
+    static func listeningStatus(row: LibraryRow, progress: EpisodeProgress?, completed: Bool) -> String? {
+        guard !completed, let duration = row.durationSeconds,
+              duration.isFinite, duration > 0, duration < Double(Int.max / 2) else { return nil }
+        guard let progress else { return "New" }
+        let position = progress.positionSeconds
+        guard position.isFinite, position >= 0 else { return nil }
+        let remaining = max(0, duration - position)
+        guard remaining.isFinite else { return nil }
+        return "\(LibraryClockFormat.duration(remaining)) left"
     }
 
     private var secondary: Color { WiltedTheme.color(.secondaryText, scheme: colorScheme) }

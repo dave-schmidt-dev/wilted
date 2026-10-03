@@ -17,7 +17,10 @@ extension LibraryAppModel {
         playedOut[endedID] = now().addingTimeInterval(handoffState.clockOffset)
         handoffState.unpublished[endedID] = (player.duration, now())
         await rememberOwnPosition(endedID, position: player.duration)
-        // Not awaited: a slow or offline write must not hold up the next episode.
+        // The completion was accepted above, before the first await, so it stays durable even
+        // when a command arrives while the final position was being remembered: the Mac is still
+        // told the episode played out. Only the advance is cancelled, and `autoContinue` does
+        // that on its own.
         Task { await markPlayedOut(endedID) }
         if autoPlayNext { await autoContinue(after: endedID) }
     }
@@ -35,21 +38,60 @@ extension LibraryAppModel {
         }
     }
 
-    /// Starts the next episode after `endedID` finished: the first of the play order that is not
-    /// completed and not the one that just ended, from its saved position, at the speed the listener
-    /// was using. Stops cleanly when none remain. Audio already on the phone only: nothing is fetched.
-    /// A command given meanwhile (pause, play, seek, another start) cancels it.
+    /// Starts the next episode after `endedID` finished: walks the saved forward sequence suffix,
+    /// skipping completed, removed, and cache-missing candidates, without wrapping backwards.
+    /// A candidate whose file disappears between the initial snapshot and the start's own lookup
+    /// is skipped the same way, by trying the one after it. Preserves playback speed and stops
+    /// cleanly when none remain. A command given meanwhile (pause, play, seek, another start)
+    /// cancels it.
     func autoContinue(after endedID: ItemID) async {
         guard let player = handoffState.player, player.item?.entryID == endedID, player.isUntouchedSinceEnd else { return }
         refreshProgress()
-        let next = InProgressOrdering.next(
-            in: playOrderRows, after: endedID, id: \.id,
-            isCompleted: { LibraryListing.completionDate($0, finished: finished) != nil })
-        guard let next else { return }
+        let forward = handoffState.forwardSequenceIDs
+        guard let endedIndex = forward.firstIndex(of: endedID) else { return }
+        let suffixIDs = forward[forward.index(after: endedIndex)...]
+        guard !suffixIDs.isEmpty else { return }
+
+        let cached = await mediaCache.cachedEntries()
+        guard let player = handoffState.player, player.item?.entryID == endedID, player.isUntouchedSinceEnd else { return }
+
+        let queuedByID = Dictionary(uniqueKeysWithValues: queued.map { ($0.id, $0) })
+        // The snapshot only prunes candidates that are already gone; a file can still disappear
+        // before a candidate's own start lookup, so everyone cached here stays in the walk.
+        let candidates = suffixIDs.compactMap { id -> LibraryRow? in
+            guard cached[id] != nil else { return nil }
+            return queuedByID[id]
+        }.filter { LibraryListing.completionDate($0, finished: finished) == nil }
         let rate = player.rate
-        let started = await startCached(next, togglingIfLoaded: false) { player in
-            player.item?.entryID == endedID && player.isUntouchedSinceEnd
+        for candidate in candidates {
+            // Re-read after every await: a command given while the previous candidate was
+            // looked at cancels the whole walk.
+            guard let player = handoffState.player, player.item?.entryID == endedID, player.isUntouchedSinceEnd else { return }
+            let started = await startCached(candidate, togglingIfLoaded: false, isManual: false) { player in
+                // The last look before the start itself: the candidate is still queued and
+                // still unfinished, and nothing has been commanded since the end.
+                player.item?.entryID == endedID && player.isUntouchedSinceEnd
+                    && self.queued.contains { $0.id == candidate.id }
+                    && LibraryListing.completionDate(candidate, finished: self.finished) == nil
+            }
+            if started {
+                player.setRate(rate)
+                return
+            }
+            // A command still cancels the walk. A decision can also make this candidate
+            // ineligible during the start lookup; skip it even when its file remains cached.
+            guard let player = handoffState.player, player.item?.entryID == endedID, player.isUntouchedSinceEnd else { return }
+            if !queued.contains(where: { $0.id == candidate.id })
+                || LibraryListing.completionDate(candidate, finished: finished) != nil { continue }
+
+            let remainingCache = await mediaCache.cachedEntries()
+            // Recheck both playback intent and candidate eligibility after the cache await.
+            guard let player = handoffState.player, player.item?.entryID == endedID, player.isUntouchedSinceEnd else { return }
+            if !queued.contains(where: { $0.id == candidate.id })
+                || LibraryListing.completionDate(candidate, finished: finished) != nil { continue }
+            // A missing file is a stale cache snapshot; an eligible cached candidate that failed
+            // to start for another reason remains the end of this attempt.
+            guard remainingCache[candidate.id] == nil else { return }
         }
-        if started { player.setRate(rate) }
     }
 }

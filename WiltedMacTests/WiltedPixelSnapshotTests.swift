@@ -243,9 +243,13 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 arguments: [
                     "--wilted-ui-fixture-article-flow",
                     "--wilted-ui-fixture-podcasts",
-                    "--wilted-ui-fixture-ready"
+                    "--wilted-ui-fixture-ready",
+                    "--wilted-ui-fixture-prepared"
                 ], stateDirectoryOverride: wiltedTemporaryDirectory("fixture"), preferences: WiltedMacTestPreferences.ephemeral()
             )
+            model.podcastQueueIDs = model.episodes.map(\.id)
+            XCTAssertFalse(model.podcastQueueIDs.isEmpty, "the producer capture must show queued podcasts")
+            XCTAssertFalse(model.larderVisibleEpisodes.isEmpty, "the Larder capture must contain podcast rows")
             let variant = WiltedVisualVariant(
                 appearance: appearance,
                 dynamicType: .standard,

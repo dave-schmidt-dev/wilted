@@ -91,6 +91,7 @@ final class WiltedMacModel {
     static let menuSortPreferenceKey = "wilted.queue.menu.sort"
     static let menuGroupingPreferenceKey = "wilted.queue.menu.grouping"
     static let marksRemovedAdsPreferenceKey = "wilted.playback.marksRemovedAds"
+    static let podcastPlaybackOriginPreferenceKeyPrefix = "wilted.playback.origin."
     /// The highest preparation request sequence issued so far. Persisted on
     /// every issue as a fallback (see `preparationRequestSequencePreferenceKey`
     /// below), but reseeded from the ticket table's own high-water mark at
@@ -432,7 +433,25 @@ final class WiltedMacModel {
     var subscriptionWriteTasks: [UUID: Task<Void, Never>] = [:]
     var audioRouteRecoveryInFlight = false
     var audioRouteRecoveryAttempted = false
-    var isPodcastPlayback = false
+    var isPodcastPlayback = false {
+        didSet {
+            if oldValue && !isPodcastPlayback { clearPodcastPlaybackOrigin() }
+        }
+    }
+    var isRestoringPodcastPlayback = false
+    /// Whether the podcast session now loaded belongs to the Larder's own
+    /// durable queue -- started through `playLarderEpisode`, or restored from
+    /// the queue at launch -- rather than a generic Play.
+    ///
+    /// This is bookkeeping, not a second queue: it decides only what happens
+    /// when the durable queue's suffix runs out. A Larder-origin session stops
+    /// there, because the queue's order is the order the listener chose; a
+    /// generic play keeps the older Larder-wide search, which is how a listen
+    /// started anywhere else has always continued. The mode survives the
+    /// controller's own within-queue advances and pause/resume, changes only
+    /// when a new start succeeds, and is left untouched by a start that
+    /// fails -- the outgoing session keeps its mode.
+    var isLarderQueuePlayback = false
 #endif
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments,

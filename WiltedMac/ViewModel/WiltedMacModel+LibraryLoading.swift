@@ -15,6 +15,66 @@ import CloudKit
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
+    struct PodcastPlaybackOriginRecord: Codable {
+        let libraryPath: String
+        let episodeIDs: [String]
+        let currentEpisodeID: String
+        let origin: String
+    }
+
+    static func podcastPlaybackOriginPreferenceKey(for libraryURL: URL) -> String {
+        let identity = libraryURL.standardizedFileURL.resolvingSymlinksInPath().path
+        return podcastPlaybackOriginPreferenceKeyPrefix + Data(identity.utf8).base64EncodedString()
+    }
+
+    private var podcastPlaybackOriginLibraryPath: String {
+        libraryURL.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    func restoredPodcastPlaybackOrigin(for state: PodcastQueueState) -> Bool? {
+        let key = Self.podcastPlaybackOriginPreferenceKey(for: libraryURL)
+        guard let data = preferences.data(forKey: key),
+              let record = try? JSONDecoder().decode(PodcastPlaybackOriginRecord.self, from: data),
+              record.libraryPath == podcastPlaybackOriginLibraryPath,
+              record.episodeIDs == state.episodeIDs.map(\.rawValue),
+              record.currentEpisodeID == state.currentEpisodeID?.rawValue else {
+            preferences.removeObject(forKey: key)
+            return nil
+        }
+        switch record.origin {
+        case "larder": return true
+        case "generic": return false
+        default:
+            preferences.removeObject(forKey: key)
+            return nil
+        }
+    }
+
+    func persistPodcastPlaybackOrigin(for state: PodcastQueueState) {
+        guard isPodcastPlayback, !isRestoringPodcastPlayback,
+              let currentEpisodeID = currentPodcastEpisodeID,
+              state.currentEpisodeID?.rawValue == currentEpisodeID else { return }
+        persistPodcastPlaybackOrigin(currentEpisodeID: currentEpisodeID, episodeIDs: state.episodeIDs.map(\.rawValue))
+    }
+
+    private func persistPodcastPlaybackOrigin(currentEpisodeID: String, episodeIDs: [String]) {
+        guard isPodcastPlayback, !isRestoringPodcastPlayback,
+              episodeIDs.contains(currentEpisodeID) else { return }
+        let record = PodcastPlaybackOriginRecord(
+            libraryPath: podcastPlaybackOriginLibraryPath,
+            episodeIDs: episodeIDs,
+            currentEpisodeID: currentEpisodeID,
+            origin: isLarderQueuePlayback ? "larder" : "generic"
+        )
+        guard let data = try? JSONEncoder().encode(record) else { return }
+        preferences.set(data, forKey: Self.podcastPlaybackOriginPreferenceKey(for: libraryURL))
+    }
+
+    func clearPodcastPlaybackOrigin() {
+        preferences.removeObject(forKey: Self.podcastPlaybackOriginPreferenceKey(for: libraryURL))
+        isLarderQueuePlayback = false
+    }
+
     /// Array-compatible rows paired with the sequence at which their store
     /// read began. This is transient read provenance, never a second store.
     struct LibraryEpisodeRows: RandomAccessCollection {
@@ -44,6 +104,7 @@ extension WiltedMacModel {
                 episodes.contains(where: { $0.id == id }) ? id : nil
             }
             currentPodcastEpisodeID = state.currentEpisodeID?.rawValue ?? activeEpisodeID
+            persistPodcastPlaybackOrigin(for: state)
         }
     }
 
@@ -71,6 +132,9 @@ extension WiltedMacModel {
            let index = episodes.firstIndex(where: { $0.id == unavailableID.rawValue }) {
             episodes[index].isReadyMediaAvailable = false
         }
+        if movedToAnotherEpisode, playbackOperationStatus == nil, let itemID {
+            persistPodcastPlaybackOrigin(currentEpisodeID: itemID.rawValue, episodeIDs: podcastQueueIDs)
+        }
         playbackOperationStatus = nil
         refreshPlaybackReadout()
         // Continuous playback advances the queue without going through
@@ -85,6 +149,7 @@ extension WiltedMacModel {
                 // and pushed the queue into this one; its Played badge is
                 // otherwise stale until something else happens to reload it.
                 await self.reloadLibraryRows()
+                await self.refreshPodcastQueueState()
             }
         }
     }
@@ -106,10 +171,20 @@ extension WiltedMacModel {
     /// Larder shelf without deleting it, unlike the Skip button's dismissal --
     /// because leaving it there means the owner clears by hand what playing
     /// it to the end already said.
+    ///
+    /// A Larder-origin session -- one started through `playLarderEpisode`, or
+    /// restored from the durable queue at launch -- is exempt from that
+    /// search. Its order is the queue's own, so when the queue's suffix runs
+    /// out the session stops there; the Larder-wide scan orders by the Feeds
+    /// sort, which can place an earlier unfinished episode after the last
+    /// queued one and would restart it.
     func handlePodcastPlaybackFinished() {
         refreshPlaybackReadout()
         guard isPodcastPlayback, let finishedID = currentPodcastEpisodeID,
               playback?.completed == true, !canSelectNextEpisode else { return }
+        // Read before the task: the mode belongs to the session that just
+        // finished, and work the task starts must not reinterpret it.
+        let continuesLarderQueue = isLarderQueuePlayback
         Task { [weak self] in
             guard let self else { return }
             // The completed record was already written by the controller
@@ -121,7 +196,9 @@ extension WiltedMacModel {
             // The successor is chosen before the finished episode goes,
             // because the search walks the ordered rows past the finished one
             // and there is nothing to walk past once it has been taken out.
-            let next = self.nextReadyEpisode(after: finishedID)
+            let next: WiltedMacEpisode? = continuesLarderQueue
+                ? nil
+                : self.nextReadyEpisode(after: finishedID)
             var note: String?
             if let finished, let id = try? ItemID(rawValue: finished.id) {
                 // Finishing is not an accident, so no Undo is offered; and an
@@ -145,7 +222,11 @@ extension WiltedMacModel {
                 // showing as current indefinitely.
                 await self.stopPlaybackForRemovedEpisode()
                 await self.reloadLibraryRows()
-                self.podcastOperationMessage = [note, "No other downloaded, prepared episode is ready to play next."]
+                if continuesLarderQueue { self.isLarderQueuePlayback = false }
+                let stopNote = continuesLarderQueue
+                    ? "The Larder queue reached its end."
+                    : "No other downloaded, prepared episode is ready to play next."
+                self.podcastOperationMessage = [note, stopNote]
                     .compactMap { $0 }.joined(separator: " ")
                 return
             }

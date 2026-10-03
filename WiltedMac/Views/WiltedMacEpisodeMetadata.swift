@@ -27,6 +27,19 @@ struct WiltedMacEpisodePresentation: Equatable, Sendable {
         playableDurationSeconds.map { "Playable duration · \(Self.durationLabel($0))" }
     }
 
+    var larderRowLabel: String {
+        let show = showTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let showLabel = (show?.isEmpty == false ? show! : "Show unknown")
+        let duration = Self.durationLabel(sourceDurationSeconds)
+        let publicationLabel = publishedAt?.formatted(date: .numeric, time: .omitted)
+            ?? "Publication date unknown"
+        return "\(showLabel) - \(duration) - \(publicationLabel)"
+    }
+
+    var larderPresentationLabel: String {
+        larderRowLabel
+    }
+
     /// A stable factual value for native journeys. Lifecycle is intentionally
     /// excluded because it is allowed to change as an episode moves between
     /// Feeds, Off the list, and the Larder. Playable duration is also excluded
@@ -35,7 +48,7 @@ struct WiltedMacEpisodePresentation: Equatable, Sendable {
         [showAndPublicationLabel, sourceDurationLabel].joined(separator: " · ")
     }
 
-    private static func durationLabel(_ duration: TimeInterval?) -> String {
+    static func durationLabel(_ duration: TimeInterval?) -> String {
         guard let duration, duration.isFinite, duration >= 0, duration < Double(Int.max) else {
             return "Unknown"
         }
@@ -55,33 +68,42 @@ struct WiltedMacEpisodeMetadata: View {
     let presentation: WiltedMacEpisodePresentation
     let lifecycleLabel: String?
     let identifier: String
+    let isLarder: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     init(
         episode: WiltedMacEpisode,
         lifecycleLabel: String? = nil,
-        identifier: String
+        identifier: String,
+        isLarder: Bool = false
     ) {
         presentation = episode.presentation
         self.lifecycleLabel = lifecycleLabel
         self.identifier = identifier
+        self.isLarder = isLarder
     }
 
     init(
         presentation: WiltedMacEpisodePresentation,
         lifecycleLabel: String? = nil,
-        identifier: String
+        identifier: String,
+        isLarder: Bool = false
     ) {
         self.presentation = presentation
         self.lifecycleLabel = lifecycleLabel
         self.identifier = identifier
+        self.isLarder = isLarder
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(presentation.showAndPublicationLabel)
-            Text(presentation.sourceDurationLabel)
-            if let playable = presentation.playableDurationLabel { Text(playable) }
+            if isLarder {
+                Text(presentation.larderRowLabel)
+            } else {
+                Text(presentation.showAndPublicationLabel)
+                Text(presentation.sourceDurationLabel)
+                if let playable = presentation.playableDurationLabel { Text(playable) }
+            }
             if let lifecycleLabel { Text(lifecycleLabel) }
         }
         .wiltedFont(.utility)

@@ -121,6 +121,8 @@ final class LibraryHandoffState {
     var continueInFlight = false
     /// Completed observations; lets tests wait for a cycle.
     var observeCycles = 0
+    /// Stable forward sequence captured at manual start to prevent autoContinue from wrapping backwards.
+    var forwardSequenceIDs: [ItemID] = []
 }
 
 /// Lets the transport gate, built before the model exists, report to it afterwards.
@@ -190,30 +192,57 @@ extension LibraryAppModel {
     /// position recorded against a different revision is never used. Starting playback takes over
     /// through the player's status change.
     func playCached(_ row: LibraryRow) async {
-        await startCached(row, togglingIfLoaded: true)
+        await startCached(row, togglingIfLoaded: true, isManual: true)
     }
 
     /// `playCached` for a spoken "play": an episode that is already loaded plays (it is never paused),
     /// checked after the cache lookup so a start from CarPlay or the phone during the await is not undone.
     func playCachedWithoutToggling(_ row: LibraryRow) async {
-        await startCached(row, togglingIfLoaded: false)
+        await startCached(row, togglingIfLoaded: false, isManual: true)
     }
 
     /// `onlyIf` is checked after the cache lookup, so auto-continue never overrides a command given while
     /// it looked. Returns true only when this call started the episode on the player.
     @discardableResult
     func startCached(
-        _ row: LibraryRow, togglingIfLoaded: Bool, onlyIf: (@MainActor (LibraryPlayer) -> Bool)? = nil
+        _ row: LibraryRow, togglingIfLoaded: Bool, isManual: Bool = false,
+        onlyIf: (@MainActor (LibraryPlayer) -> Bool)? = nil
     ) async -> Bool {
         guard let player = handoffState.player, let cached = await mediaCache.cachedEntries()[row.id] else { return false }
         if let onlyIf, !onlyIf(player) { return false }
         let item = LibraryPlayer.Item(
             entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url, artworkURL: row.artworkURL)
         guard player.item != item else {
-            if togglingIfLoaded { player.togglePlayPause() } else if !player.isPlaying { player.play() }
+            var resumed = false
+            if togglingIfLoaded {
+                player.togglePlayPause()
+                resumed = player.isPlaying
+            } else if !player.isPlaying {
+                resumed = player.play()
+            }
+            // A manual resume of the row that is already loaded adopts its forward suffix only
+            // when no valid one exists (empty, or captured around another episode): a suffix
+            // that already holds this row is never rebased because progress reordered the list.
+            if resumed, isManual, !handoffState.forwardSequenceIDs.contains(row.id) {
+                handoffState.forwardSequenceIDs = manualForwardSuffix(from: row.id)
+            }
             return false
         }
-        return player.start(item, at: resumeStart(for: row.id, cachedRevision: cached.revisionID))
+        let forwardSequence: [ItemID] = isManual ? manualForwardSuffix(from: row.id) : []
+        let started = player.start(item, at: resumeStart(for: row.id, cachedRevision: cached.revisionID))
+        if started && isManual {
+            handoffState.forwardSequenceIDs = forwardSequence
+        }
+        return started
+    }
+
+    /// The forward suffix a manual start captures: the shared play order from `entryID` on, so
+    /// auto-continue advances through what the list said when the listener chose the row and
+    /// never wraps backwards. A row the list does not show still captures itself alone.
+    private func manualForwardSuffix(from entryID: ItemID) -> [ItemID] {
+        let order = playOrderRows
+        guard let index = order.firstIndex(where: { $0.id == entryID }) else { return [entryID] }
+        return Array(order[index...].map(\.id))
     }
 
     /// Where `entryID` should start: the newest same-revision position, else the start.
@@ -490,9 +519,19 @@ extension LibraryAppModel {
                 entryID: entryID, title: entry?.title ?? "Episode",
                 showTitle: entry.flatMap { decisionContent.sources[$0.sourceID]?.title } ?? "", fileURL: cached.url,
                 artworkURL: LibraryRowBuilder.artworkURL(entry?.artworkRef))
+            let order = playOrderRows
+            let forwardSequence: [ItemID]
+            if let index = order.firstIndex(where: { $0.id == entryID }) {
+                forwardSequence = Array(order[index...].map(\.id))
+            } else {
+                forwardSequence = [entryID]
+            }
             player.setRate(rate)
             continuation = nil
-            player.start(item, at: position)
+            let started = player.start(item, at: position)
+            if started {
+                handoffState.forwardSequenceIDs = forwardSequence
+            }
         case let .refused(_, reason):
             handoffMessage = reason
             continuation = plan

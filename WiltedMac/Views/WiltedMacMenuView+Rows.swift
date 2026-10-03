@@ -31,7 +31,8 @@ extension WiltedMacMenuView {
                 WiltedMacEpisodeMetadata(
                     episode: episode,
                     lifecycleLabel: showsGroupName ? group.displayName : nil,
-                    identifier: "wilted-menu-metadata-\(episode.id)"
+                    identifier: "wilted-menu-metadata-\(episode.id)",
+                    isLarder: true
                 )
                 // Partway through: how much is heard and how much is left,
                 // worded as the CarPlay rows word it.
@@ -171,7 +172,7 @@ extension WiltedMacMenuView {
                     .accessibilityLabel("Played")
                     .accessibilityIdentifier("wilted-menu-played-\(episode.id)")
             } else {
-                Button { model.playEpisode(episode) } label: {
+                Button { model.playLarderEpisode(episode) } label: {
                     Label("Play now", systemImage: "play.fill")
                 }
                     .labelStyle(.iconOnly)

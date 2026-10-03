@@ -436,16 +436,25 @@ extension WiltedMacModel {
     private func restorePodcastPlayback() async {
         guard let playback else { return }
         playbackOperationStatus = "Restoring Larder…"
+        isRestoringPodcastPlayback = true
         await playback.restorePodcastQueue()
         await refreshPodcastQueueState()
+        let restoredQueueState = try? await store?.podcastQueueState()
+        let restoredOrigin = restoredQueueState.flatMap { restoredPodcastPlaybackOrigin(for: $0) }
         if let itemID = playback.itemID,
            episodes.contains(where: { $0.id == itemID.rawValue }) {
             currentPodcastEpisodeID = itemID.rawValue
             selectedArticleID = nil
             isPodcastPlayback = true
+            // Missing or stale records retain the legacy generic continuation.
+            isLarderQueuePlayback = restoredOrigin ?? false
             isNowPlaying = true
             refreshPlaybackReadout()
             await loadEpisodeTranscript(itemID: itemID)
+            isRestoringPodcastPlayback = false
+            if let restoredQueueState { persistPodcastPlaybackOrigin(for: restoredQueueState) }
+        } else {
+            isRestoringPodcastPlayback = false
         }
         playbackOperationStatus = nil
     }

@@ -56,6 +56,103 @@ private final class AutoNowPlaying: ListenerNowPlaying, @unchecked Sendable {
     func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void) {}
 }
 
+/// Holds cache lookups so a test can act between two of them deterministically, without sleeping.
+/// The wrapper captures the entries before it holds, so what the caller receives was decided
+/// before the hold began and the test's mutation lands strictly after it.
+private actor LookupGate {
+    private enum WaitError: Error { case timedOut }
+    private var armed = false
+    private var heldCount = 0
+    private var heldLookups: [UUID: CheckedContinuation<Void, Never>] = [:]
+    private var heldOrder: [UUID] = []
+    private var observers: [UUID: CheckedContinuation<Void, Error>] = [:]
+
+    func arm() { armed = true }
+
+    /// Called by the cache wrapper after it captured the entries: wakes the test, then waits.
+    func hold() async {
+        guard armed else { return }
+        heldCount += 1
+        observers.values.forEach { $0.resume() }
+        observers.removeAll()
+        let id = UUID()
+        await withCheckedContinuation { continuation in
+            heldLookups[id] = continuation
+            heldOrder.append(id)
+            Task {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                self.releaseHeld(id)
+            }
+        }
+    }
+
+    /// Waits until a lookup is held right now.
+    func waitForHold() async throws {
+        if heldCount > 0 { return }
+        let id = UUID()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            observers[id] = continuation
+            Task {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                self.timeoutWait(id)
+            }
+        }
+    }
+
+    private func timeoutWait(_ id: UUID) {
+        observers.removeValue(forKey: id)?.resume(throwing: WaitError.timedOut)
+    }
+
+    private func releaseHeld(_ id: UUID) {
+        guard let continuation = heldLookups.removeValue(forKey: id) else { return }
+        heldOrder.removeAll { $0 == id }
+        heldCount -= 1
+        continuation.resume()
+    }
+
+    /// Lets the oldest held lookup return, keeping the gate armed.
+    func releaseNext() {
+        guard let id = heldOrder.first else { return }
+        releaseHeld(id)
+    }
+
+    /// Lets every held lookup return and stops holding new ones.
+    func disarm() {
+        armed = false
+        heldOrder.forEach { heldLookups.removeValue(forKey: $0)?.resume() }
+        heldLookups.removeAll()
+        heldOrder.removeAll()
+        heldCount = 0
+    }
+}
+
+/// A `LibraryMediaCache` whose lookups a `LookupGate` can hold.
+private actor AutoContinueGatedMediaCache: LibraryMediaCache {
+    let base: FileMediaCache
+    let gate: LookupGate
+
+    init(base: FileMediaCache, gate: LookupGate) {
+        self.base = base
+        self.gate = gate
+    }
+
+    func cachedEntries() async -> [ItemID: CachedMedia] {
+        let entries = await base.cachedEntries()
+        await gate.hold()
+        return entries
+    }
+
+    func cachedFile(for offer: LibraryMediaOffer) async -> URL? { await base.cachedFile(for: offer) }
+    func adopt(verifiedFile: URL, for offer: LibraryMediaOffer) async throws -> URL {
+        try await base.adopt(verifiedFile: verifiedFile, for: offer)
+    }
+    func remove(entryID: ItemID) async throws { try await base.remove(entryID: entryID) }
+    func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? {
+        await base.cachedTranscript(entryID: entryID, revisionID: revisionID)
+    }
+    func storeTranscript(_ transcript: LibraryTranscript) async { await base.storeTranscript(transcript) }
+}
+
 /// Auto-continue: a finished episode is followed by the next one of the shared play order, on the
 /// real model, player and file cache with an in-memory server standing in for the Mac.
 @MainActor
@@ -93,13 +190,18 @@ final class LibraryAutoContinueTests: XCTestCase {
         for ack in result.acknowledged { versions[ack.key] = ack.version }
     }
 
-    /// Entries "a" to "d", published a first and d last, queued in the order given, all on the phone.
+    /// Entries in the order given, published first to last, queued in the order given, all on the phone.
+    /// `gate` wraps the media cache so a test can hold a cache lookup at a chosen moment.
     private func makeRig(
-        queue: [String] = ["a", "b", "c", "d"], autoPlayNext: Bool = true, feedDuration: Double = 600
+        entries: [String] = ["a", "b", "c", "d"],
+        queue: [String]? = nil, autoPlayNext: Bool = true, feedDuration: Double = 600,
+        gate: LookupGate? = nil
     ) async throws -> Rig {
-        let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
+        let q = queue ?? entries
+        let baseCache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
+        let cache: any LibraryMediaCache = gate.map { AutoContinueGatedMediaCache(base: baseCache, gate: $0) } ?? baseCache
         var changes: [LibraryChange] = [.source(LibrarySource(id: id("show"), kind: .podcastFeed, title: "The Show"))]
-        for (offset, raw) in ["a", "b", "c", "d"].enumerated() {
+        for (offset, raw) in entries.enumerated() {
             changes.append(.entry(try LibraryEntry(
                 id: id(raw), kind: .podcastEpisode, sourceID: id("show"), title: "Title \(raw)", summary: "",
                 publishedAt: Date(timeIntervalSince1970: 1_600_000_000 + Double(offset) * 86_400), durationSeconds: feedDuration,
@@ -113,7 +215,7 @@ final class LibraryAutoContinueTests: XCTestCase {
                     contentHash: MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined(),
                     byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 600))
         }
-        for (position, raw) in queue.enumerated() { changes.append(.slot(try QueueSlot(entryID: id(raw), sortKey: Double(position)))) }
+        for (position, raw) in q.enumerated() { changes.append(.slot(try QueueSlot(entryID: id(raw), sortKey: Double(position)))) }
         try await macPush(changes)
         let engine = AutoEngine()
         let player = LibraryPlayer(
@@ -129,7 +231,7 @@ final class LibraryAutoContinueTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_700_000_000) }, timeZone: TimeZone(identifier: "UTC")!)
         model.attachPlayer(player)
         await model.refresh()
-        for raw in ["a", "b", "c", "d"] { model.media[id(raw)] = .onPhone }
+        for raw in entries { model.media[id(raw)] = .onPhone }
         return Rig(model: model, player: player, engine: engine)
     }
 
@@ -180,8 +282,13 @@ final class LibraryAutoContinueTests: XCTestCase {
         XCTAssertNotNil(CarEpisodeList.fraction(macPosition, duration: try XCTUnwrap(rig.model.queued.first { $0.id == id("c") }?.durationSeconds)))
         XCTAssertEqual(
             carRows.first?.detail.components(separatedBy: " · ").last,
-            LibraryRowView.detail(row: carRows[0].row, progress: macPosition, completed: false).components(separatedBy: " · ").first,
-            "the phone row and the car row read the same time left")
+            "08:20 left",
+            "the car row reads the time left")
+        let phoneDate = carRows[0].row.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
+        XCTAssertEqual(
+            LibraryRowView.detail(row: carRows[0].row, progress: macPosition, completed: false),
+            "The Show - 10:00 - \(phoneDate)",
+            "the phone row retains feed, total duration, and date")
         let siri = await LibraryVoiceTarget(model: rig.model, player: rig.player).voiceSnapshot()
         XCTAssertEqual(siri.downloaded.map(\.id.rawValue), phone)
         await start(rig, "c")
@@ -205,7 +312,7 @@ final class LibraryAutoContinueTests: XCTestCase {
         XCTAssertEqual(rig.player.rate, 1.5, "the speed the listener chose carries over")
     }
 
-    func testInProgressComesFirstThenOldestNotStartedAndItStopsWhenNoneRemain() async throws {
+    func testTheCapturedForwardSuffixDecidesWhatPlaysNextAndItStopsWhenNoneRemain() async throws {
         let rig = try await makeRig()
         try await inProgressOnMac("c")
         await rig.model.refresh()
@@ -221,7 +328,7 @@ final class LibraryAutoContinueTests: XCTestCase {
             guard let next = rig.player.item?.entryID, next != current else { break }
             played.append(next.rawValue)
         }
-        XCTAssertEqual(played, ["b", "c", "a", "d"], "the chain follows the list order, minus the one started with")
+        XCTAssertEqual(played, ["b", "d"], "the chain follows the forward suffix, minus the one started with")
         XCTAssertEqual(rig.player.status, .ended, "after the last one, playback stops cleanly")
         XCTAssertEqual(rig.player.item?.entryID, id("d"))
     }
@@ -403,5 +510,192 @@ final class LibraryAutoContinueTests: XCTestCase {
         XCTAssertFalse(LibrarySettingsStore(defaults: defaults).autoPlayNext)
         XCTAssertFalse(store.playback.autoPlayNext)
         defaults.removePersistentDomain(forName: suite)
+    }
+
+    func testMiddle19AdvancesThrough20And21AndStopsWithoutRestartingEarlierUnfinished() async throws {
+        let rig = try await makeRig(entries: ["18", "19", "20", "21"])
+        try await inProgressOnMac("18", position: 50)
+        await rig.model.refresh()
+        for raw in ["18", "19", "20", "21"] { rig.model.media[id(raw)] = .onPhone }
+        let listed = rig.model.playOrderRows.map(\.id.rawValue)
+        XCTAssertEqual(listed, ["18", "19", "20", "21"])
+
+        await start(rig, "19")
+        var played = ["19"]
+        for _ in 0..<5 {
+            let current = try XCTUnwrap(rig.player.item?.entryID)
+            rig.engine.finishNaturally()
+            await settle()
+            guard let next = rig.player.item?.entryID, next != current else { break }
+            played.append(next.rawValue)
+        }
+        XCTAssertEqual(played, ["19", "20", "21"], "walks 19 -> 20 -> 21 and stops at end without restarting 18")
+        XCTAssertEqual(rig.player.status, .ended)
+        XCTAssertEqual(rig.player.item?.entryID, id("21"))
+    }
+
+    func testMissingLaterCacheSkipAdvancesPastMissingCandidate() async throws {
+        let rig = try await makeRig(entries: ["19", "20", "21"])
+        try await rig.model.mediaCache.remove(entryID: id("20"))
+        await start(rig, "19")
+        rig.engine.finishNaturally()
+        await settle()
+        XCTAssertEqual(rig.player.item?.entryID, id("21"), "skips cache-missing 20 and advances to 21")
+        rig.engine.finishNaturally()
+        await settle()
+        XCTAssertEqual(rig.player.status, .ended)
+        XCTAssertEqual(rig.player.item?.entryID, id("21"))
+    }
+
+    func testCompletionRemovalAndReorderingDoesNotJumpBackwards() async throws {
+        let rig = try await makeRig(entries: ["18", "19", "20", "21"])
+        await start(rig, "19")
+        try await complete("20", at: 1_695_000_000)
+        try await inProgressOnMac("18", position: 200)
+        await rig.model.refresh()
+        for raw in ["18", "19", "20", "21"] { rig.model.media[id(raw)] = .onPhone }
+
+        rig.engine.finishNaturally()
+        await settle()
+        XCTAssertEqual(rig.player.item?.entryID, id("21"), "completion of 20 and earlier progress does not jump back to 18")
+        rig.engine.finishNaturally()
+        await settle()
+        XCTAssertEqual(rig.player.status, .ended)
+        XCTAssertEqual(rig.player.item?.entryID, id("21"))
+    }
+
+    func testSupersedingManualCommandWinsOverAutoContinue() async throws {
+        let rig = try await makeRig(entries: ["19", "20", "21"])
+        await start(rig, "19")
+        rig.engine.finishNaturally()
+        rig.player.pause()
+        await settle()
+        XCTAssertEqual(rig.player.item?.entryID, id("19"))
+        XCTAssertEqual(rig.player.status, .paused)
+
+        await start(rig, "19")
+        rig.engine.finishNaturally()
+        await start(rig, "21")
+        await settle()
+        XCTAssertEqual(rig.player.item?.entryID, id("21"))
+        XCTAssertEqual(rig.player.status, .playing)
+    }
+
+    /// A command given while the final position is being remembered (the cache and coordinator
+    /// lookups inside it) must not lose the completion: it was accepted before the first await,
+    /// so the Mac is still told the episode played out. Only the advance is cancelled.
+    func testACommandDuringTheFinalPositionLookupStillSendsTheCompletionAndStartsNothing() async throws {
+        let gate = LookupGate()
+        let rig = try await makeRig(entries: ["19", "20", "21"], gate: gate)
+        await start(rig, "19")
+        await gate.arm()
+        rig.engine.finishNaturally()
+        // Hold the lookups one at a time until the completion has been accepted; the held
+        // lookup is then inside the final-position remember, before the completion is sent.
+        while true {
+            try await gate.waitForHold()
+            if rig.model.playedOut[id("19")] != nil { break }
+            await gate.releaseNext()
+        }
+        rig.player.pause()   // the intervening command, given while the lookup is held
+        await gate.disarm()
+        try await eventually("the completion") {
+            rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("19") }
+        }
+        let sent = try await mac.listIntents().map(\.action)
+        XCTAssertTrue(sent.contains(.markDone(entryID: id("19"))), "the durable completion still reaches the Mac")
+        XCTAssertEqual(rig.model.handoffState.ownPositions[id("19")]?.record.positionSeconds, 600,
+                       "the end position is still recorded")
+        await settle()
+        XCTAssertEqual(rig.player.item?.entryID, id("19"), "no unintended audio start")
+        XCTAssertEqual(rig.player.status, .ended)
+    }
+
+    /// A file can disappear between the continuation's snapshot and the candidate's own start
+    /// lookup. The walk has to try the next candidate instead of stopping: 20 vanishes between
+    /// the two lookups, 21 plays.
+    func testACandidateThatDisappearsBetweenTheLookupsIsSkippedForTheNextOne() async throws {
+        let gate = LookupGate()
+        let rig = try await makeRig(entries: ["19", "20", "21"], autoPlayNext: false, gate: gate)
+        await start(rig, "19")
+        rig.engine.finishNaturally()
+        try await eventually("the completion") {
+            rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("19") }
+        }
+        await rig.model.waitForHandoff()
+        await settle()
+        // Drive the continuation directly so its snapshot and the start's lookup are the only
+        // lookups in flight; the gate holds the snapshot after it captured the entries.
+        await gate.arm()
+        let advance = Task { await rig.model.autoContinue(after: self.id("19")) }
+        try await gate.waitForHold()
+        try await rig.model.mediaCache.remove(entryID: id("20"))
+        await gate.disarm()
+        await advance.value
+        XCTAssertEqual(rig.player.item?.entryID, id("21"),
+                       "20 disappeared between the lookups; the walk reaches 21")
+        XCTAssertTrue(rig.player.isPlaying)
+    }
+
+    func testRemovedCachedCandidateDuringStartLookupIsSkippedForTheNextOne() async throws {
+        try await assertDecisionDuringCandidateLookupSkipsToNext(.removeFromLarder)
+    }
+
+    func testCompletedCachedCandidateDuringStartLookupIsSkippedForTheNextOne() async throws {
+        try await assertDecisionDuringCandidateLookupSkipsToNext(.markDone)
+    }
+
+    private func assertDecisionDuringCandidateLookupSkipsToNext(_ action: LibraryDecisionAction) async throws {
+        let gate = LookupGate()
+        let rig = try await makeRig(entries: ["19", "20", "21"], autoPlayNext: false, gate: gate)
+        await start(rig, "19")
+        rig.engine.finishNaturally()
+        try await eventually("the completion") {
+            rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("19") }
+        }
+        await rig.model.waitForHandoff()
+        await settle()
+
+        await gate.arm()
+        let advance = Task { await rig.model.autoContinue(after: self.id("19")) }
+        try await gate.waitForHold() // initial candidate snapshot
+        await gate.releaseNext()
+        try await gate.waitForHold() // candidate 20's start lookup
+        await rig.model.decide(action, entryID: id("20"))
+        await gate.disarm()
+        await advance.value
+
+        let cached = await rig.model.mediaCache.cachedEntries()
+        XCTAssertNotNil(cached[id("20")], "the decision does not remove the cached audio")
+        XCTAssertEqual(rig.player.item?.entryID, id("21"), "an ineligible cached candidate is skipped")
+        XCTAssertTrue(rig.player.isPlaying)
+    }
+
+    /// An item the player already holds (a restored session) has no captured suffix. A manual
+    /// resume of its row establishes the row's forward suffix, so the natural end advances within
+    /// it instead of stopping, and never falls back to the global list order at completion.
+    func testAManualResumeOfAnAlreadyLoadedRowAdoptsTheForwardSuffixForItsNaturalEnd() async throws {
+        let rig = try await makeRig(entries: ["19", "20", "21"])
+        let row = try XCTUnwrap(rig.model.queued.first { $0.id == id("20") })
+        let cachedEntries = await rig.model.mediaCache.cachedEntries()
+        let cached = try XCTUnwrap(cachedEntries[id("20")])
+        let preloaded = LibraryPlayer.Item(
+            entryID: row.id, title: row.title, showTitle: row.showTitle,
+            fileURL: cached.url, artworkURL: row.artworkURL)
+        XCTAssertTrue(rig.player.start(preloaded, autoplay: false))
+        await settle()
+        XCTAssertTrue(rig.model.handoffState.forwardSequenceIDs.isEmpty, "the preload captured no suffix")
+
+        await start(rig, "20")   // a manual resume of the row that is already loaded
+        XCTAssertTrue(rig.player.isPlaying)
+        XCTAssertEqual(rig.model.handoffState.forwardSequenceIDs, [id("20"), id("21")],
+                       "the resume establishes the row's forward suffix")
+
+        rig.engine.finishNaturally()
+        try await eventually("21 after 20") { rig.player.item?.entryID == self.id("21") }
+        rig.engine.finishNaturally()
+        await settle()
+        XCTAssertEqual(rig.player.status, .ended, "the suffix runs out and playback stops")
+        XCTAssertEqual(rig.player.item?.entryID, id("21"), "no wrap backwards to 19")
     }
 }

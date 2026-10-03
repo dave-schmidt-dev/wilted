@@ -214,6 +214,7 @@ extension WiltedMacModel {
         cancelSeamMarker()
         currentPodcastEpisodeID = nil
         isPodcastPlayback = false
+        isLarderQueuePlayback = false
         isNowPlaying = true
         playbackError = nil
         currentTranscript = nil
@@ -323,6 +324,18 @@ extension WiltedMacModel {
 
     func playEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
+        performPlaybackStart(for: episode, isLarderIntent: false)
+#endif
+    }
+
+    func playLarderEpisode(_ episode: WiltedMacEpisode) {
+#if canImport(WiltedProducer)
+        performPlaybackStart(for: episode, isLarderIntent: true)
+#endif
+    }
+
+#if canImport(WiltedProducer)
+    private func performPlaybackStart(for episode: WiltedMacEpisode, isLarderIntent: Bool) {
         guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
         playbackOperationStatus = "Opening \(episode.title)…"
         playbackOperationTask = Task { [weak self] in
@@ -336,11 +349,46 @@ extension WiltedMacModel {
                 // publish below is the one that names the new episode.
                 self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
                 await self.refreshPhonePositionBeforePlay()
-                try await playback.playPodcastQueueEpisodeNow(id)
+
+                let isQueued = self.podcastQueueIDs.contains(episode.id)
+                if isLarderIntent && isQueued {
+                    if self.menuSort != .custom {
+                        let displayed = self.sortedMenuEpisodeIDs(self.podcastQueueIDs, by: self.menuSort)
+                        if displayed != self.podcastQueueIDs {
+                            self.podcastQueueIDs = displayed
+                            if let episodeIDs = try? displayed.map({ try ItemID(rawValue: $0) }),
+                               let state = try? PodcastQueueState(
+                                   episodeIDs: episodeIDs,
+                                   currentEpisodeID: self.currentPodcastEpisodeID.flatMap { try? ItemID(rawValue: $0) }
+                               ) {
+                                try await playback.replacePodcastQueue(state)
+                            }
+                        }
+                    }
+                    let queueState = try? await self.store?.podcastQueueState()
+                    let outgoingCurrentID = queueState?.currentEpisodeID
+                        ?? self.currentPodcastEpisodeID.flatMap { try? ItemID(rawValue: $0) }
+                    if let outgoingCurrentID, playback.itemID == outgoingCurrentID, playback.revisionID != nil {
+                        try await playback.checkpoint()
+                    }
+                    try await playback.selectPodcastQueueEpisode(id, autoplay: true)
+                    // The selected row loaded, so the session now belongs to
+                    // the durable queue it was selected from. A load failure
+                    // throws past this line and leaves the outgoing session's
+                    // mode alone.
+                    self.isLarderQueuePlayback = true
+                } else {
+                    try await playback.playPodcastQueueEpisodeNow(id)
+                    self.menuSort = .custom
+                    // A generic Play keeps the Larder-wide continuation
+                    // contract, and it ends any queue-origin mode the
+                    // previous session had.
+                    self.isLarderQueuePlayback = false
+                }
+
                 Self.playbackLog.notice(
                     "playEpisode returned: episode=\(episode.id, privacy: .public) isPlaying=\(playback.liveIsPlaying, privacy: .public) time=\(playback.livePositionSeconds, privacy: .public) rate=\(playback.playbackRate, privacy: .public)"
                 )
-                self.menuSort = .custom
                 self.selectedArticleID = nil
                 self.currentPodcastEpisodeID = episode.id
                 self.isPodcastPlayback = true
@@ -368,8 +416,8 @@ extension WiltedMacModel {
                 self.playbackOperationStatus = nil
             }
         }
-#endif
     }
+#endif
 
     func removeEpisodeFromUpNext(_ episodeID: String) {
 #if canImport(WiltedProducer)

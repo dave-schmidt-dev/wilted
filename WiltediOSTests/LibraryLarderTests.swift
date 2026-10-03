@@ -1,5 +1,7 @@
 import CryptoKit
 import Foundation
+import SwiftUI
+import UIKit
 import WiltedDomain
 import WiltedLibrary
 import XCTest
@@ -290,15 +292,60 @@ final class LibraryLarderTests: XCTestCase {
         let r = row("a", show: "Alpha", published: 0, duration: 600)
         let date = r.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
         let started = EpisodeProgress(positionSeconds: 150, lastPlayedAt: Date(timeIntervalSince1970: 5))
-        XCTAssertEqual(LibraryRowView.detail(row: r, progress: started, completed: false), "07:30 left · \(date)")
-        XCTAssertEqual(LibraryRowView.detail(row: r, progress: nil, completed: false), "10:00 · \(date)")
-        XCTAssertEqual(LibraryRowView.detail(row: r, progress: started, completed: true), "Played · \(date)")
+        let expectedFacts = "Alpha - 10:00 - \(date)"
+        XCTAssertEqual(LibraryRowView.detail(row: r, progress: started, completed: false), expectedFacts)
+        XCTAssertEqual(LibraryRowView.detail(row: r, progress: nil, completed: false), expectedFacts)
+        XCTAssertEqual(LibraryRowView.detail(row: r, progress: started, completed: true), expectedFacts)
+        XCTAssertEqual(LibraryRowView.listeningStatus(row: r, progress: nil, completed: false), "New")
+        XCTAssertEqual(LibraryRowView.listeningStatus(row: r, progress: started, completed: false), "07:30 left")
+        XCTAssertNil(LibraryRowView.listeningStatus(row: r, progress: started, completed: true),
+                     "Played remains the separate completion label")
         XCTAssertEqual(CarEpisodeList.fraction(started, duration: 600), 0.25)
         // The car row carries the same time left for the same data.
         XCTAssertTrue(CarEpisodeList.detail(r, progress: started).hasSuffix("07:30 left"))
         let untimed = row("b", duration: nil)
-        XCTAssertEqual(LibraryRowView.detail(row: untimed, progress: started, completed: false), untimed.publishedAt
-            .formatted(.dateTime.month(.abbreviated).day().year()))
+        let untimedDate = untimed.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
+        XCTAssertEqual(LibraryRowView.detail(row: untimed, progress: started, completed: false), "Show - Unknown - \(untimedDate)")
+        XCTAssertNil(LibraryRowView.listeningStatus(row: untimed, progress: started, completed: false))
         XCTAssertNil(CarEpisodeList.fraction(started, duration: nil))
+
+        XCTAssertEqual(LibraryRowView.listeningStatus(
+            row: r, progress: EpisodeProgress(positionSeconds: 900, lastPlayedAt: started.lastPlayedAt), completed: false),
+            "00:00 left", "remaining time clamps at the end")
+        var invalid = r
+        invalid.durationSeconds = .infinity
+        XCTAssertNil(LibraryRowView.listeningStatus(row: invalid, progress: nil, completed: false))
+        invalid.durationSeconds = .nan
+        XCTAssertNil(LibraryRowView.listeningStatus(row: invalid, progress: nil, completed: false))
     }
+    func testPodcastLarderRowsRenderAtPhoneWidthInLightAndDark() throws {
+        let published = Date(timeIntervalSince1970: 1790942400)
+        let episode = row("render-podcast", title: "A practical guide to everyday listening",
+                          show: "Everyday Listening", published: published.timeIntervalSince1970,
+                          duration: 600)
+        let partial = EpisodeProgress(positionSeconds: 150, lastPlayedAt: published)
+        for scheme in [ColorScheme.light, .dark] {
+            for started in [false, true] {
+                let content = LibraryRowView(row: episode, media: .onPhone, onPlay: {},
+                                             progress: started ? partial : nil)
+                    .padding(16)
+                    .frame(width: 390)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: scheme))
+                    .background(WiltedTheme.color(.page, scheme: scheme))
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.locale, Locale(identifier: "en_US"))
+                let renderer = ImageRenderer(content: content)
+                renderer.scale = 1
+                let image = try XCTUnwrap(renderer.uiImage, "the shipping podcast row must render")
+                XCTAssertEqual(image.size.width, 390, accuracy: 0.1)
+                XCTAssertGreaterThan(image.size.height, 44)
+                XCTAssertNotNil(image.cgImage)
+                let attachment = XCTAttachment(image: image)
+                attachment.name = "larder-podcast-row-\(scheme == .dark ? "dark" : "light")-\(started ? "partial" : "new")"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+    }
+
 }
