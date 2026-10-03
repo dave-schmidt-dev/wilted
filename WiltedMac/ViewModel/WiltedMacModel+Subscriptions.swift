@@ -70,7 +70,6 @@ extension WiltedMacModel {
         case "transcript.stt.failed": "Transcription unavailable."
         case "transcript.glossary.terms", "transcript.glossary.progress", "transcript.glossary.complete":
             "Correcting names from the show notes…"
-        case "transcript.prose.extract", "transcript.prose.accepted": "Reading the episode page…"
         case "transcript.absent": "No transcript available."
         case "transcript.remap": "Resynchronising the transcript…"
         case "ads.model.load": "Loading the advertisement classifier…"

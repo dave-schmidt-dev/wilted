@@ -309,28 +309,6 @@ class PublishedTranscriptTests(unittest.TestCase):
             wp.parse_published_transcript("WEBVTT", "text/vtt", "https://x.test/a.vtt")
         self.assertNotIn("markup-stripped", errors.getvalue())
 
-class ProseTests(unittest.TestCase):
-    def _install_trafilatura(self, text):
-        install_fake_trafilatura(text)
-
-    def test_show_notes_are_rejected_by_the_word_floor(self):
-        self._install_trafilatura("too short")
-        self.assertIsNone(wp.extract_prose("<html></html>"))
-
-    def test_a_real_prose_transcript_is_accepted(self):
-        self._install_trafilatura(" ".join(["word"] * wp.MINIMUM_PROSE_WORDS))
-        self.assertIsNotNone(wp.extract_prose("<html></html>"))
-
-    def test_an_extractor_failure_is_not_a_crash(self):
-        module = types.ModuleType("trafilatura")
-
-        def boom(html):
-            raise RuntimeError("no parser")
-
-        module.extract = boom
-        sys.modules["trafilatura"] = module
-        self.assertIsNone(wp.extract_prose("<html></html>"))
-
 class ProgressTests(unittest.TestCase):
     def test_emits_one_clamped_ndjson_record_per_call(self):
         stream = io.StringIO()

@@ -14,7 +14,7 @@ Protocol, deliberately narrow:
   stdout  one JSON response object
 
 The worker performs no network access. Every document it needs -- the published
-transcript, the episode page -- is fetched by the caller and passed in as text,
+transcript -- is fetched by the caller and passed in as text,
 so the transport policy (HTTPS only, size caps, redirect rules) stays in one
 place on the Swift side and no credentialed feed URL ever reaches this process.
 
@@ -100,7 +100,6 @@ from wilted_worker.constants import EXPLICIT_SPONSOR_SPOKEN_PATH_RE
 from wilted_worker.constants import MAXIMUM_TOTAL_AD_SHARE
 from wilted_worker.constants import MAXIMUM_UNCONFIRMED_AD_SHARE
 from wilted_worker.constants import MINIMUM_PROGRAMME_SHARE
-from wilted_worker.constants import MINIMUM_PROSE_WORDS
 from wilted_worker.constants import NOMINATED_SECONDS_FLOOR
 from wilted_worker.constants import NOMINATED_SHARE_FLOOR
 from wilted_worker.constants import PRODUCED_DISCLAIMER_CUE_PATTERN
@@ -163,7 +162,6 @@ from wilted_worker.transcript_sources import _aligned_cache_directory
 from wilted_worker.transcript_sources import _aligned_cache_path
 from wilted_worker.transcript_sources import _load_cached_aligned_segments
 from wilted_worker.transcript_sources import _store_cached_aligned_segments
-from wilted_worker.transcript_sources import extract_prose
 from wilted_worker.transcript_sources import parse_published_transcript
 from wilted_worker.transcript_sources import published_transcript_matches_audio
 
@@ -259,15 +257,7 @@ def run(request: dict) -> dict:
                     raise
                 raise WorkerError("aligned-stt-unavailable", f"ad removal requires aligned speech-to-text: {type(error).__name__}: {error}") from error
     if not cues:
-        page = request.get("episodePage")
-        if page:
-            _worker_reporting.progress("transcript.prose.extract", "")
-            text = extract_prose(page)
-            if text:
-                _worker_reporting.progress("transcript.prose.accepted", f"{len(text.split())} words")
-
-    if not cues and not text:
-        _worker_reporting.progress("transcript.absent", "no published, aligned, or prose transcript")
+        _worker_reporting.progress("transcript.absent", "no published or aligned transcript")
 
     output_path, ad_spans, keeps, raw_nominations, ad_audit = audio_path, [], [], [], None
     if remove_ads and (strict_v2 or segments):

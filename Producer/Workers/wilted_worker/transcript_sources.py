@@ -21,7 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from . import cue_timing as _worker_cue_timing
 from . import reporting as _worker_reporting
-from .constants import ALIGNED_STT_CACHE_MAXIMUM_ENTRIES, ALIGNED_STT_CACHE_SCHEMA_VERSION, ALIGNED_STT_MODEL, MINIMUM_PROSE_WORDS, PUBLISHED_TRANSCRIPT_GAP_FLOOR_S, PUBLISHED_TRANSCRIPT_GAP_FRACTION, TIMED_MEDIA_TYPES
+from .constants import ALIGNED_STT_CACHE_MAXIMUM_ENTRIES, ALIGNED_STT_CACHE_SCHEMA_VERSION, ALIGNED_STT_MODEL, PUBLISHED_TRANSCRIPT_GAP_FLOOR_S, PUBLISHED_TRANSCRIPT_GAP_FRACTION, TIMED_MEDIA_TYPES
 from .cue_timing import CachedAlignedSegment, in_time_order
 
 CUE_MARKUP_PATTERN = re.compile(r"<[^>]*>")
@@ -147,24 +147,6 @@ def published_transcript_matches_audio(segments, audio_path: Path) -> bool:
         return False
     _worker_reporting.progress("transcript.published.aligned", detail)
     return True
-
-def extract_prose(html: str) -> str | None:
-    """Pull readable prose out of an episode page, or None if it is show notes.
-
-    The result carries no timing and is never presented as if it did. The
-    previous pipeline estimated timestamps here at 150 words per minute; that
-    number is a guess about a page, not a measurement of audio, and it cannot
-    drive a reading position or an audio cut.
-    """
-    import trafilatura
-
-    try:
-        text = trafilatura.extract(html)
-    except Exception:  # noqa: BLE001
-        return None
-    if not text:
-        return None
-    return text if len(text.split()) >= MINIMUM_PROSE_WORDS else None
 
 def _aligned_cache_directory(request: dict) -> Path | None:
     """Return this request's private aligned-STT cache directory, when keyed."""

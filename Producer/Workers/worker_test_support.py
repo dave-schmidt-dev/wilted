@@ -264,21 +264,4 @@ def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=Non
     install_fake_speech_stack()
     return transcribe
 
-def install_fake_trafilatura(text):
-    """Stand in for the prose extractor.
-
-    `extract_prose` imports `trafilatura` at call time, so whatever double was
-    installed last stays in `sys.modules` for every later test. A test that
-    reaches the prose tier must therefore install its own, or it inherits an
-    unrelated case's answer.
-    """
-    module = types.ModuleType("trafilatura")
-    module.extract = lambda html: text
-    sys.modules["trafilatura"] = module
-    return module
-
-def prose_transcript(phrase):
-    """Prose long enough to clear the word floor, carrying a locating phrase."""
-    return " ".join([phrase] * (wp.MINIMUM_PROSE_WORDS // len(phrase.split()) + 1))
-
-__all__ = ['FakeSegment', 'REPO_ROOT', 'RUNTIME_ADS_PATH', 'WORKER_PACKAGE_PATH', 'WORKER_PATH', 'WORKER_SOURCES', '_WORKER_PATCH_MODULES', '_passthrough_detections', '_passthrough_reviewed_detections', '_worker_owned_prompts', 'install_fake_speech_stack', 'install_fake_trafilatura', 'install_fake_wilted', 'load_ad_corpus', 'load_runtime_ads', 'load_worker', 'prose_transcript', 'recording_model_lock', 'worker_namespaces', 'wp']
+__all__ = ['FakeSegment', 'REPO_ROOT', 'RUNTIME_ADS_PATH', 'WORKER_PACKAGE_PATH', 'WORKER_PATH', 'WORKER_SOURCES', '_WORKER_PATCH_MODULES', '_passthrough_detections', '_passthrough_reviewed_detections', '_worker_owned_prompts', 'install_fake_speech_stack', 'install_fake_wilted', 'load_ad_corpus', 'load_runtime_ads', 'load_worker', 'recording_model_lock', 'worker_namespaces', 'wp']

@@ -230,5 +230,3 @@ TIMED_MEDIA_TYPES = {
     "text/srt": "srt",
     "application/json": "podcast-json",
 }
-
-MINIMUM_PROSE_WORDS = 500
