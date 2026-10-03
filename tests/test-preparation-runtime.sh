@@ -9,9 +9,10 @@ fi
 
 # Gate leg for the vendored preparation runtime's Python suite.
 #
-# This is the suite that used to live in the separate wilted-old checkout. It
-# covers the station runtime, the TUI, the nightly pipeline and the scheduler
-# -- everything the Mac producer shells out to.
+# It covers the modules the preparation worker loads (ads, transcribe, llm, the
+# execution-capability gate, feed references, the ffmpeg check and the GGUF
+# repair utility). The Python app that used to sit beside them (CLI, TUI,
+# scheduler, station runtime, database) was retired on 2026-10-03.
 #
 # The suite must run with Producer/Runtime as the working directory: its
 # pyproject pins `testpaths = ["tests"]` and `wilted.PROJECT_ROOT` walks up to
@@ -28,7 +29,7 @@ trap 'rm -f "$output_file"' EXIT
 # additions never touch it, while a collection collapse -- a broken conftest, a
 # wrong working directory, a missing dependency -- still fails loudly instead of
 # reporting a green run of nothing.
-readonly MINIMUM_TESTS=2000
+readonly MINIMUM_TESTS=250
 
 [[ -d "$runtime_root" ]] || { printf 'missing runtime: %s\n' "$runtime_root" >&2; exit 1; }
 [[ -x "$python_bin" ]] || {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -457,3 +458,20 @@ class TestResolveGgufPath:
     def test_malformed_hf_spec_raises(self):
         with pytest.raises(ValueError, match="Invalid HF GGUF spec"):
             _resolve_model_spec("hf:norepoorfilename")
+
+
+# ---------------------------------------------------------------------------
+# Model-download progress stays visible
+# ---------------------------------------------------------------------------
+
+_SRC = Path(__file__).resolve().parent.parent / "src" / "wilted"
+
+
+def test_hf_download_progress_bar_never_disabled():
+    """The huggingface_hub tqdm bar reaches stderr only while it is never disabled."""
+    offenders = [
+        str(p.relative_to(_SRC))
+        for p in _SRC.rglob("*.py")
+        if "disable_progress_bars" in p.read_text() or "HF_HUB_DISABLE_PROGRESS_BARS" in p.read_text()
+    ]
+    assert not offenders, f"model-download progress bar disabled in: {offenders}"

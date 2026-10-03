@@ -209,47 +209,6 @@ class TestClearCache:
         clear_cache(999)  # Should not raise
 
 
-class TestQueueCacheCleanup:
-    """Verify queue operations clean up audio cache."""
-
-    def test_remove_article_clears_cache(self):
-        from wilted.queue import add_article, remove_article
-
-        entry = add_article("Hello world.", title="Test")
-        cache_dir = get_cache_dir(entry["id"])
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "para_000.mp3").write_bytes(b"data")
-
-        remove_article(0)
-        assert not cache_dir.exists()
-
-    def test_mark_completed_retains_cache(self):
-        """mark_completed keeps audio cache; the retention policy handles cleanup."""
-        from wilted.queue import add_article, mark_completed
-
-        entry = add_article("Hello world.", title="Test")
-        cache_dir = get_cache_dir(entry["id"])
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "para_000.mp3").write_bytes(b"data")
-
-        mark_completed(entry)
-        assert cache_dir.exists()
-
-    def test_clear_queue_clears_all_caches(self):
-        from wilted.queue import add_article, clear_queue
-
-        e1 = add_article("Article one.", title="One")
-        e2 = add_article("Article two.", title="Two")
-        for e in [e1, e2]:
-            d = get_cache_dir(e["id"])
-            d.mkdir(parents=True)
-            (d / "para_000.mp3").write_bytes(b"data")
-
-        clear_queue()
-        assert not get_cache_dir(e1["id"]).exists()
-        assert not get_cache_dir(e2["id"]).exists()
-
-
 class TestGenerateArticleCache:
     """Tests for generate_article_cache with mock engine."""
 
