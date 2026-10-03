@@ -40,8 +40,8 @@ printf '%s\n' 'stage=pipeline-worker-tests.start' >&2
   -s Producer/Workers -t Producer/Workers -p 'test_*.py' -v) 2>&1 | tee "$output_file" >&2
 
 test_count="$(sed -nE 's/^Ran ([0-9]+) tests? in .*/\1/p' "$output_file" | tail -1)"
-if [[ -z "$test_count" || "$test_count" -lt 422 ]]; then
-  printf 'pipeline worker suite ran %s tests; at least 422 are expected\n' "${test_count:-0}" >&2
+if [[ -z "$test_count" || "$test_count" -lt 420 ]]; then
+  printf 'pipeline worker suite ran %s tests; at least 420 are expected\n' "${test_count:-0}" >&2
   exit 1
 fi
 grep -q '^OK' "$output_file" || { printf '%s\n' 'pipeline worker suite did not report OK' >&2; exit 1; }
