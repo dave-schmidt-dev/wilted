@@ -19,8 +19,6 @@ TARGETS = {
     "test": ["pytest"],
     "test-unit": ["pytest", "-m", "unit"],
     "test-integration": ["pytest", "-m", "integration"],
-    "test-e2e": ["pytest", "-m", "e2e"],
-    "test-tui": ["pytest", "-m", "tui"],
 }
 
 UV = """#!/usr/bin/env python3
