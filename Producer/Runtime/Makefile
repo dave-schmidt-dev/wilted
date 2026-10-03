@@ -1,4 +1,4 @@
-.PHONY: lint lint-sh deadcode test test-unit test-integration test-e2e test-tui validate install-hooks station station-test install-daemon install-launchd uninstall-launchd
+.PHONY: lint deadcode test test-unit test-integration test-e2e test-tui validate install-hooks station station-test install-daemon
 
 # Well-known path for the A.5.1 manual weather-bulletin test trigger. `touch`
 # this file (from another shell) while the station is running under
@@ -12,14 +12,6 @@ export UV_PROJECT_ENVIRONMENT := $(HOME)/.venvs/wilted
 
 lint:
 	uv run --group dev ruff check .
-
-lint-sh:
-	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck scripts/wilted-nightly.sh && echo "shellcheck: OK"; \
-	else \
-		echo "shellcheck not found — install with: brew install shellcheck"; \
-		exit 1; \
-	fi
 
 # Dead-code detection over src, baselined by vulture_allowlist.py (see the file
 # header and pyproject [tool.vulture]). Fails only on NEW dead code past the
@@ -70,45 +62,3 @@ station-test:
 	@echo "Station arming A.5.1 test trigger. In ANOTHER shell run:  touch $(WEATHER_TEST_TRIGGER)"
 	@echo "to fire a weather bulletin (interrupts within ~30s at the next safe transcript boundary)."
 	WILTED_WEATHER_TEST_TRIGGER=$(WEATHER_TEST_TRIGGER) PYTHONPATH=src uv run --group dev python -m wilted.cli
-
-install-launchd:
-	@# The checked-in plists carry a literal `__HOME__` placeholder rather than an
-	@# absolute path: launchd cannot expand $$HOME itself, and this repository is
-	@# public, so no operator's home directory may live in the source. Substitute
-	@# it on the way into ~/Library/LaunchAgents.
-	@# launchd opens StandardOut/ErrorPath at load and will NOT create missing parent
-	@# dirs, so pre-create the per-agent log dirs before bootstrap. The wrappers'
-	@# own `mkdir -p` runs too late for launchd's own std* capture. See HISTORY.md.
-	mkdir -p $(HOME)/.launchd/scripts
-	mkdir -p $(HOME)/Library/Logs/homelab/wilted-nightly
-	mkdir -p $(HOME)/Library/Logs/homelab/wilted-scheduler
-	ln -sf $(CURDIR)/scripts/wilted-nightly.sh $(HOME)/.launchd/scripts/wilted_nightly.sh
-	sed 's|__HOME__|$(HOME)|g' scripts/local.wilted-nightly.plist > $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist
-	@# `bootstrap` refuses a label that is already loaded, so tear the old
-	@# definition down first. `bootout` exits 3 ("No such process") when nothing
-	@# is loaded; that is the only status we ignore. Every other failure — and
-	@# every bootstrap failure — now stops the target instead of being swallowed
-	@# by `|| true`, which left a stale definition loaded and reported success.
-	launchctl bootout gui/$$(id -u)/local.wilted-nightly 2>/dev/null; \
-	  status=$$?; [ $$status -eq 0 ] || [ $$status -eq 3 ] || exit $$status
-	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist
-	ln -sf $(CURDIR)/scripts/wilted-scheduler.sh $(HOME)/.launchd/scripts/wilted_scheduler.sh
-	sed 's|__HOME__|$(HOME)|g' scripts/local.wilted-scheduler.plist > $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist
-	@# `bootstrap` refuses a label that is already loaded, so tear the old
-	@# definition down first. `bootout` exits 3 ("No such process") when nothing
-	@# is loaded; that is the only status we ignore. Every other failure — and
-	@# every bootstrap failure — now stops the target instead of being swallowed
-	@# by `|| true`, which left a stale definition loaded and reported success.
-	launchctl bootout gui/$$(id -u)/local.wilted-scheduler 2>/dev/null; \
-	  status=$$?; [ $$status -eq 0 ] || [ $$status -eq 3 ] || exit $$status
-	launchctl bootstrap gui/$$(id -u) $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist
-	@echo "Installed: wilted nightly at 2:00 AM and hourly scheduler tick via launchd"
-
-uninstall-launchd:
-	launchctl bootout gui/$$(id -u)/local.wilted-nightly 2>/dev/null || true
-	rm -f $(HOME)/Library/LaunchAgents/local.wilted-nightly.plist
-	rm -f $(HOME)/.launchd/scripts/wilted_nightly.sh
-	launchctl bootout gui/$$(id -u)/local.wilted-scheduler 2>/dev/null || true
-	rm -f $(HOME)/Library/LaunchAgents/local.wilted-scheduler.plist
-	rm -f $(HOME)/.launchd/scripts/wilted_scheduler.sh
-	@echo "Uninstalled: wilted nightly and scheduler launchd agents"

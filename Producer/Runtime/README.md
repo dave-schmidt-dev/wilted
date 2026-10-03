@@ -86,8 +86,8 @@ alias wilted='~/Documents/Projects/wilted/scripts/wilted-runtime.sh'
 
 This ensures the alias always uses the project's managed venv with all
 dependencies (including playwright for browser-based article fetching), kept
-outside iCloud so it never gets re-hidden. The `Makefile` and the nightly
-launchd script set `UV_PROJECT_ENVIRONMENT` to the same path.
+outside iCloud so it never gets re-hidden. The `Makefile` sets
+`UV_PROJECT_ENVIRONMENT` to the same path.
 
 ## Launch Contract
 
@@ -106,7 +106,7 @@ is stopped or unhealthy.
 
 Credentialed podcast feeds are stored as `bws:UPPERCASE_SNAKE_CASE` references
 rather than URLs. Add the URL to Bitwarden Secrets Manager under that name, then run
-Wilted through the alias above (or reinstall the nightly launchd job). The
+Wilted through the alias above. The
 launcher reads its dedicated `wilted-runtime` Keychain token only for the
 outer BWS process, then starts Wilted with exactly the three feed values and
 no BWS credentials or unrelated secrets. Its non-secret allowlist retains
@@ -464,19 +464,13 @@ execution lock and one model coordinator per invocation). Expensive ML construct
 authority; **INV-10** pairs runtime capability gating with an AST guard so production modules outside
 the narrow handler allowlist cannot call gated factories directly.
 
-### Background scheduler
+### Background scheduler (manual ticks only)
 
-Install launchd agents (legacy 2:00 AM email report + hourly bounded scheduler tick):
-
-```bash
-make install-launchd
-```
-
-The hourly agent runs `scripts/wilted-scheduler.sh`, which invokes one bounded tick via the same
-`wilted-runtime.sh` launch chain as interactive use. One tick acquires the Python `fcntl` lock,
-checks persisted due state, and drains at most one batch of due jobs — no shell `flock`, no orphan
-runner process. A live foreground station defers the tick (the runner probes the station lease) so
-background model/TTS work never competes with playback for the audio device.
+The launchd schedule that used to drive this (the 2:00 AM nightly and the hourly tick) is retired and
+its wrappers and plists are removed from this repository, so a tick runs only when invoked by hand. A tick
+acquires the Python `fcntl` lock, checks persisted due state, and drains at most one batch of due jobs --
+no shell `flock`, no orphan runner process. A live foreground station defers the tick (the runner probes
+the station lease) so background model/TTS work never competes with playback for the audio device.
 
 Run a tick manually:
 
@@ -503,27 +497,6 @@ Inspect what the policy would do right now (read-only — claims and writes noth
 wilted queue status
 # e.g. "3 expensive jobs held until 20:00; 1 bypassed (priority)"  — or  "no expensive jobs held"
 ```
-
-Logs: `~/Library/Logs/homelab/wilted-scheduler/` (and `~/Library/Logs/homelab/wilted-nightly/`),
-matching the homelab `ldstatus` convention. Each dir also holds `launchd.stdout.log` /
-`launchd.stderr.log`, where launchd captures any wrapper-level fault that occurs before the wrapper's
-own per-run log redirect lands (a `set -euo pipefail` abort, a TCC exit-126). Uninstall with
-`make uninstall-launchd`.
-
-The nightly wrapper preserves runtime stdout in the per-run log. Ingestion stderr is instead held in
-a mode-0600 temporary file only long enough to recognize an exit-126 `Interrupted system call`/`EINTR`
-diagnostic; that retry is bounded to one attempt, and the temporary file is removed on every path.
-Captured stderr never enters aggregate/per-run logs or failure notifications.
-
-**macOS Full Disk Access (required for the launchd agents).** The wrappers invoke the runtime as
-`/bin/bash "$WILTED_RUNTIME"` (launchd cannot exec a script resident under `~/Documents` — TCC returns
-exit 126), and the runtime runs `uv run --no-sync --frozen` against the dev-provisioned venv at
-`~/.venvs/wilted` (a background tick must never re-resolve/sync deps — that stage stalls under
-launchd's clean environment). Even so, the chain runs under `bws run`, which macOS treats as the TCC
-*responsible process*; because the project source lives under the protected `~/Documents` tree, the
-agents will **stall in a blocked `open()`** until Full Disk Access is granted to `bws` (and, if still
-blocked, `uv` and the venv python) in System Settings → Privacy & Security → Full Disk Access. Until
-then, keep the agents booted out (`launchctl bootout gui/$(id -u)/local.wilted-scheduler`).
 
 ### Database maintenance
 
@@ -567,7 +540,6 @@ enabled = true
 to = "you@example.com"
 ```
 3. Send manually: `wilted report --email`
-4. Or install the launchd schedule: `make install-launchd` (2:00 AM email report + hourly scheduler tick)
 
 ### Re-reviewing a report
 

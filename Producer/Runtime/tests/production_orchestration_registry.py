@@ -10,17 +10,14 @@ from __future__ import annotations
 import ast
 import inspect
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import wilted.cli as cli_module
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-OrchestrationKind = Literal["direct_stage", "chained_pipeline", "mount_worker", "shell_wrapper"]
+OrchestrationKind = Literal["direct_stage", "chained_pipeline", "mount_worker"]
 
 # Omission guard: bump only when intentionally adding/removing a surface.
-EXPECTED_SURFACE_COUNT = 19
+EXPECTED_SURFACE_COUNT = 18
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,13 +158,6 @@ PRODUCTION_ORCHESTRATION_SURFACES: dict[str, OrchestrationSurface] = {
         constructs_model_coordinator=False,
         invokes_expensive_handler=False,
     ),
-    "wrapper.wilted_nightly": OrchestrationSurface(
-        surface_id="wrapper.wilted_nightly",
-        entrypoint="scripts/wilted-nightly.sh",
-        orchestration_kind="shell_wrapper",
-        constructs_model_coordinator=True,
-        invokes_expensive_handler=True,
-    ),
 }
 
 
@@ -208,7 +198,6 @@ _TUI_ORCHESTRATION_METHODS = frozenset(
 )
 
 _QUEUE_ENTRYPOINT = "wilted.cli:cmd_add,cmd_play,cmd_next,cmd_direct"
-_NIGHTLY_SCRIPT = "scripts/wilted-nightly.sh"
 
 _RUN_CLI_PIPELINE_SUBCOMMANDS = frozenset(
     {
@@ -252,46 +241,9 @@ def discover_orchestration_entrypoints() -> frozenset[str]:
     discovered.update(_CLI_PIPELINE_CMD_FUNCS)
     discovered.update(_TUI_ORCHESTRATION_METHODS)
     discovered.add(_QUEUE_ENTRYPOINT)
-    discovered.add(_NIGHTLY_SCRIPT)
     return frozenset(discovered)
 
 
 def registry_entrypoints() -> frozenset[str]:
     """Return the entrypoint strings recorded in the authoritative registry."""
     return frozenset(surface.entrypoint for surface in PRODUCTION_ORCHESTRATION_SURFACES.values())
-
-
-def nightly_script_path(project_root: Path | None = None) -> Path:
-    """Resolve ``scripts/wilted-nightly.sh`` from the project root."""
-    if project_root is None:
-        from wilted import PROJECT_ROOT
-
-        project_root = PROJECT_ROOT
-    return project_root / "scripts" / "wilted-nightly.sh"
-
-
-def scheduler_script_path(project_root: Path | None = None) -> Path:
-    """Resolve ``scripts/wilted-scheduler.sh`` from the project root."""
-    if project_root is None:
-        from wilted import PROJECT_ROOT
-
-        project_root = PROJECT_ROOT
-    return project_root / "scripts" / "wilted-scheduler.sh"
-
-
-def nightly_plist_path(project_root: Path | None = None) -> Path:
-    """Resolve ``scripts/local.wilted-nightly.plist`` from the project root."""
-    if project_root is None:
-        from wilted import PROJECT_ROOT
-
-        project_root = PROJECT_ROOT
-    return project_root / "scripts" / "local.wilted-nightly.plist"
-
-
-def scheduler_plist_path(project_root: Path | None = None) -> Path:
-    """Resolve ``scripts/local.wilted-scheduler.plist`` from the project root."""
-    if project_root is None:
-        from wilted import PROJECT_ROOT
-
-        project_root = PROJECT_ROOT
-    return project_root / "scripts" / "local.wilted-scheduler.plist"

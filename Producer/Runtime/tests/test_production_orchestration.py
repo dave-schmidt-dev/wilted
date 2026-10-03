@@ -21,11 +21,7 @@ from tests.production_orchestration_registry import (
     PRODUCTION_ORCHESTRATION_SURFACES,
     _run_cli_dispatch_subcommands,
     discover_orchestration_entrypoints,
-    nightly_plist_path,
-    nightly_script_path,
     registry_entrypoints,
-    scheduler_plist_path,
-    scheduler_script_path,
 )
 from wilted.cli import (
     cmd_benchmark,
@@ -89,21 +85,6 @@ def _make_selected_item(*, text: str = "Article body for preparation.") -> None:
         status_changed_at=_now(),
         transcript_file=str(transcript),
     )
-
-
-def _install_launchd_target(makefile_text: str) -> str:
-    """Return just the body of the ``install-launchd`` target.
-
-    Both sentinels are asserted rather than assumed: slicing on a marker that is
-    no longer there yields the entire remainder of the file, which turns every
-    ``not in target`` assertion in this module into a vacuous pass.
-    """
-    assert "install-launchd:" in makefile_text, "Makefile has no install-launchd target"
-    assert "\nuninstall-launchd:" in makefile_text, (
-        "install-launchd is no longer bounded by uninstall-launchd; "
-        "update the slice or these assertions become vacuous"
-    )
-    return makefile_text.split("install-launchd:", 1)[1].split("\nuninstall-launchd:", 1)[0]
 
 
 class _CoordinatorInitSpy:
@@ -183,7 +164,7 @@ class TestOrchestrationRegistry:
         surface = PRODUCTION_ORCHESTRATION_SURFACES[surface_id]
         assert surface.surface_id == surface_id
         assert surface.entrypoint
-        assert surface.orchestration_kind in {"direct_stage", "chained_pipeline", "mount_worker", "shell_wrapper"}
+        assert surface.orchestration_kind in {"direct_stage", "chained_pipeline", "mount_worker"}
 
 
 # ---------------------------------------------------------------------------
@@ -501,197 +482,3 @@ class TestTuiMountOrchestration:
 # ---------------------------------------------------------------------------
 # Shell wrapper
 # ---------------------------------------------------------------------------
-
-
-class TestShellWrapperOrchestration:
-    def test_nightly_script_references_ingest_and_report(self) -> None:
-        """``scripts/wilted-nightly.sh`` chains ingest and email report."""
-        script = nightly_script_path()
-        assert script.is_file(), f"Expected nightly wrapper at {script}"
-        content = script.read_text(encoding="utf-8")
-        assert "ingest" in content
-        assert "report --email" in content
-
-    def test_nightly_script_invokes_runtime_for_ingest(self, monkeypatch, tmp_path) -> None:
-        """Nightly wrapper subprocess path calls the runtime ingest command."""
-        script = nightly_script_path()
-        content = script.read_text(encoding="utf-8")
-        assert "WILTED_RUNTIME" in content
-        assert '"$WILTED_RUNTIME" ingest' in content
-
-    def test_nightly_script_routes_runtime_through_bin_bash_not_direct_exec(self) -> None:
-        """Nightly wrapper must invoke wilted-runtime.sh via /bin/bash, not direct-exec.
-
-        Regression: launchd cannot exec a script resident under ~/Documents
-        (macOS TCC blocks it, exit 126). Both the ingest and report --email
-        invocations must be routed through /bin/bash, which holds Full Disk
-        Access, rather than bare ``"$WILTED_RUNTIME" <subcommand>``.
-        """
-        script = nightly_script_path()
-        content = script.read_text(encoding="utf-8")
-
-        assert 'if /bin/bash "$WILTED_RUNTIME" ingest' in content
-        assert 'if "$WILTED_RUNTIME" ingest' not in content
-
-        assert 'if /bin/bash "$WILTED_RUNTIME" report --email' in content
-        assert 'if "$WILTED_RUNTIME" report --email' not in content
-
-    def test_scheduler_script_routes_runtime_through_bin_bash_not_direct_exec(self) -> None:
-        """Scheduler wrapper must invoke wilted-runtime.sh via /bin/bash, not direct-exec.
-
-        Same TCC/exit-126 rationale as the nightly wrapper above.
-        """
-        script = scheduler_script_path()
-        assert script.is_file(), f"Expected scheduler wrapper at {script}"
-        content = script.read_text(encoding="utf-8")
-
-        assert 'if /bin/bash "$WILTED_RUNTIME" scheduler tick' in content
-        assert 'if "$WILTED_RUNTIME" scheduler tick' not in content
-
-
-# ---------------------------------------------------------------------------
-# launchd log capture (per-agent std* logs, not /dev/null)
-# ---------------------------------------------------------------------------
-
-
-class TestLaunchdLogCapture:
-    """Both launchd agents must capture raw launchd-level stdout/stderr to a
-    per-agent log file, not discard it to ``/dev/null``.
-
-    Regression/parity (HISTORY 2026-07-23): the wrappers already redirect
-    *Wilted's own* output to per-run logs, but a fault in the wrapper itself
-    before those redirects land — a ``set -euo pipefail`` abort, a bad
-    ``/bin/bash`` invocation, a TCC exit-126 — went to ``/dev/null`` and left
-    no diagnostic trail. Point ``StandardOutPath``/``StandardErrorPath`` at
-    ``~/Library/Logs/homelab/wilted-<agent>/launchd.std{out,err}.log`` instead.
-    ``make install-launchd`` pre-creates the parent dirs, because launchd opens
-    these paths at load and will not create missing parents.
-    """
-
-    @pytest.mark.parametrize(
-        ("plist_path_fn", "agent_dir"),
-        [
-            (nightly_plist_path, "wilted-nightly"),
-            (scheduler_plist_path, "wilted-scheduler"),
-        ],
-    )
-    def test_plist_captures_std_streams_to_per_agent_log(self, plist_path_fn, agent_dir: str) -> None:
-        import plistlib
-
-        plist_path = plist_path_fn()
-        assert plist_path.is_file(), f"Expected plist at {plist_path}"
-        data = plistlib.loads(plist_path.read_bytes())
-
-        out_path = data["StandardOutPath"]
-        err_path = data["StandardErrorPath"]
-
-        # The regression being locked: no longer discarded.
-        assert out_path != "/dev/null", f"{plist_path.name} still discards stdout to /dev/null"
-        assert err_path != "/dev/null", f"{plist_path.name} still discards stderr to /dev/null"
-
-        # Routed to the per-agent homelab log dir, split by stream. Pin the FULL
-        # path, not just the suffix, so a future edit that drifts the prefix away
-        # from the dir `make install-launchd` pre-creates trips this lock.
-        # launchd cannot expand $HOME, so the installed plist must carry a literal
-        # absolute path -- but this repository is public, so the checked-in source
-        # carries the `__HOME__` placeholder and `make install-launchd` substitutes
-        # it (locked by test_install_launchd_substitutes_the_home_placeholder).
-        expected_dir = f"__HOME__/Library/Logs/homelab/{agent_dir}"
-        assert out_path == f"{expected_dir}/launchd.stdout.log"
-        assert err_path == f"{expected_dir}/launchd.stderr.log"
-
-    @pytest.mark.parametrize(
-        ("plist_path_fn", "agent"),
-        [
-            (nightly_plist_path, "nightly"),
-            (scheduler_plist_path, "scheduler"),
-        ],
-    )
-    def test_install_launchd_substitutes_the_home_placeholder(self, plist_path_fn, agent: str) -> None:
-        """No operator home directory in the source, and none left at install.
-
-        A checked-in `/Users/<someone>` is a privacy leak in a public repo; an
-        installed `__HOME__` is a launchd agent that silently never starts. Lock
-        both ends: the placeholder in the source, the substitution in the target.
-        """
-        source = plist_path_fn().read_text(encoding="utf-8")
-        assert "__HOME__" in source
-        assert "/Users/" not in source
-
-        makefile = plist_path_fn().parent.parent / "Makefile"
-        target = _install_launchd_target(makefile.read_text(encoding="utf-8"))
-
-        substitution = f"sed 's|__HOME__|$(HOME)|g' scripts/local.wilted-{agent}.plist"
-        assert substitution in target, f"install-launchd must expand __HOME__ for the {agent} agent"
-        assert f"cp scripts/local.wilted-{agent}.plist" not in target, (
-            f"the {agent} plist is copied verbatim, so __HOME__ would reach launchd unexpanded"
-        )
-
-    def test_install_launchd_precreates_log_dirs_before_bootstrap(self) -> None:
-        """``make install-launchd`` must ``mkdir -p`` both log dirs before any
-        ``launchctl bootstrap`` — launchd opens the std* paths at load and will
-        not create missing parents, so a fresh install would otherwise drop the
-        capture silently.
-        """
-        makefile = nightly_plist_path().parent.parent / "Makefile"
-        content = makefile.read_text(encoding="utf-8")
-
-        target = _install_launchd_target(content)
-        mkdir_nightly = target.index("mkdir -p $(HOME)/Library/Logs/homelab/wilted-nightly")
-        mkdir_scheduler = target.index("mkdir -p $(HOME)/Library/Logs/homelab/wilted-scheduler")
-        first_bootstrap = target.index("launchctl bootstrap")
-
-        assert mkdir_nightly < first_bootstrap, "nightly log dir must be created before bootstrap"
-        assert mkdir_scheduler < first_bootstrap, "scheduler log dir must be created before bootstrap"
-
-        # Same contract, different directory: the target symlinks the wrappers into
-        # ~/.launchd/scripts, which `ln -sf` will not create. It exists on the
-        # machine this was written on, which is exactly why it went unnoticed.
-        mkdir_launchd = target.index("mkdir -p $(HOME)/.launchd/scripts")
-        first_symlink = target.index("ln -sf")
-        assert mkdir_launchd < first_symlink, (
-            "~/.launchd/scripts must be created before the wrappers are symlinked into it"
-        )
-
-    def test_install_launchd_boots_out_before_each_bootstrap_and_fails_loudly(self) -> None:
-        """Every ``launchctl bootstrap`` must be preceded by a ``bootout`` of the
-        same label, and must not be suffixed with ``|| true``.
-
-        ``bootstrap`` refuses a label that is already loaded. With ``|| true`` the
-        target reported success while the previously loaded — and now stale —
-        definition kept running, so a changed plist never took effect and nothing
-        said so. The only ignorable ``bootout`` status is 3 ("No such process"),
-        which is the nothing-was-loaded case.
-
-        This asserts command construction in the Makefile text only. It does not
-        call ``launchctl``: the suite runs where no agent is installed, so the
-        missing evidence is a ``launchctl print`` of the loaded definition on a
-        host that has the agent. Task 6.3's third clause is unverified here for
-        that reason.
-        """
-        makefile = nightly_plist_path().parent.parent / "Makefile"
-        target = _install_launchd_target(makefile.read_text(encoding="utf-8"))
-
-        lines = [line.strip() for line in target.splitlines()]
-        bootstraps = [i for i, line in enumerate(lines) if line.startswith("launchctl bootstrap")]
-        assert len(bootstraps) == 2, f"expected one bootstrap per agent, found {len(bootstraps)}"
-
-        for index in bootstraps:
-            line = lines[index]
-            assert not line.endswith("|| true"), (
-                f"a swallowed bootstrap failure leaves the stale definition loaded: {line}"
-            )
-            label = line.rsplit("/", 1)[-1].removesuffix(".plist")
-            preceding = lines[:index]
-            assert any(
-                item.startswith("launchctl bootout") and label in item for item in preceding
-            ), f"no bootout of {label} precedes its bootstrap"
-
-        for index, line in enumerate(lines):
-            if not line.startswith("launchctl bootout"):
-                continue
-            guard = " ".join(lines[index : index + 2])
-            assert "-eq 3" in guard, (
-                f"bootout must ignore only status 3 (not loaded), not every failure: {line}"
-            )
-            assert "|| true" not in guard, f"bootout must not swallow every failure: {line}"

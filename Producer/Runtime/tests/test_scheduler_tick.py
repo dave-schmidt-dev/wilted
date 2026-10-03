@@ -185,19 +185,6 @@ class TestSchedulerCliAndWrapper:
         assert exc.value.code == 0
         assert "outcome=nothing_due" in capsys.readouterr().out
 
-    def test_scheduler_wrapper_has_no_shell_flock(self) -> None:
-        script = (_PROJECT_ROOT / "scripts" / "wilted-scheduler.sh").read_text(encoding="utf-8")
-        assert "flock -n" not in script
-        assert "exec 200>" not in script
-        assert "scheduler tick" in script
-
-    def test_scheduler_plist_hourly_and_run_at_load(self) -> None:
-        plist = (_PROJECT_ROOT / "scripts" / "local.wilted-scheduler.plist").read_text(encoding="utf-8")
-        assert "local.wilted-scheduler" in plist
-        assert "<true/>" in plist
-        assert "<key>Minute</key>" in plist
-        assert "<key>Hour</key>" not in plist
-
 
 class TestSchedulerSpeechReadiness:
     def test_non_speech_due_jobs_skip_readiness(self, monkeypatch) -> None:

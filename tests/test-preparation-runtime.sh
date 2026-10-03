@@ -10,8 +10,8 @@ fi
 # Gate leg for the vendored preparation runtime's Python suite.
 #
 # This is the suite that used to live in the separate wilted-old checkout. It
-# covers the station runtime, the TUI, the nightly pipeline, the scheduler and
-# the launchd wrappers -- everything the Mac producer shells out to.
+# covers the station runtime, the TUI, the nightly pipeline and the scheduler
+# -- everything the Mac producer shells out to.
 #
 # The suite must run with Producer/Runtime as the working directory: its
 # pyproject pins `testpaths = ["tests"]` and `wilted.PROJECT_ROOT` walks up to
