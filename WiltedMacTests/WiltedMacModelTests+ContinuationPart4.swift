@@ -334,30 +334,42 @@ extension WiltedMacModelTests {
                     enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
                     directory: directory, store: store, created: created
                 )
+                try await store.replacePodcastQueue(PodcastQueueState(
+                    episodeIDs: [firstID, secondID], currentEpisodeID: firstID
+                ))
                 return store
             }, preferences: WiltedMacTestPreferences.ephemeral()
         )
-        model.startStoreBootstrap()
-        await model.waitForStoreBootstrap()
+        do {
+            model.startStoreBootstrap()
+            await model.waitForStoreBootstrap()
 
-        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
-        model.playEpisode(first)
-        try await settle(model)
+            let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+            model.playEpisode(first)
+            await model.waitForPlaybackOperationForTesting()
+            try await settle(model)
 
-        let phantom = WiltedMacEpisode(
-            id: "phantom-episode", title: "Not really in the store", feedTitle: "Moving",
-            summary: "", artworkURL: nil, releasedAt: created.date, durationSeconds: 60,
-            playbackSeconds: 0, downloadState: .completed
-        )
-        model.installEpisodeForTesting(phantom)
-        XCTAssertTrue(model.episodes.contains { $0.id == phantom.id })
+            let phantom = WiltedMacEpisode(
+                id: "phantom-episode", title: "Not really in the store", feedTitle: "Moving",
+                summary: "", artworkURL: nil, releasedAt: created.date, durationSeconds: 60,
+                playbackSeconds: 0, downloadState: .completed
+            )
+            model.installEpisodeForTesting(phantom)
+            XCTAssertTrue(model.episodes.contains { $0.id == phantom.id })
 
-        model.applyPodcastPlaybackObservationForTesting(itemID: secondID, fault: nil)
-        try await settle(model)
+            let playback = try XCTUnwrap(model.playback)
+            let advanced = try await playback.selectNextPodcastQueueEpisode(autoplay: true)
+            XCTAssertTrue(advanced, "the real controller advances through the seeded queue")
+            try await settle(model)
 
-        XCTAssertEqual(model.currentEpisode?.id, secondID.rawValue)
-        XCTAssertFalse(model.episodes.contains { $0.id == phantom.id },
-                       "moving to another episode has to reload the Larder from the store, not keep stale rows")
+            XCTAssertEqual(model.currentEpisode?.id, secondID.rawValue)
+            XCTAssertFalse(model.episodes.contains { $0.id == phantom.id },
+                           "moving to another episode has to reload the Larder from the store, not keep stale rows")
+        } catch {
+            await model.close()
+            throw error
+        }
+        await model.close()
     }
 
     /// Pure enumeration logic, but it is the one line that decides whether an
