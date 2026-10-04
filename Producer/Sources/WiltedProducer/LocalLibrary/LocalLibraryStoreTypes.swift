@@ -20,8 +20,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v11 = 11
     case v12 = 12
     case v13 = 13
+    case v14 = 14
 
-    public static let current: LocalLibrarySchemaVersion = .v13
+    public static let current: LocalLibrarySchemaVersion = .v14
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -193,6 +194,41 @@ public enum LocalLibraryStoreError: Error, Equatable, Sendable {
     case invalidPodcastState(String)
     case migrationPreflightFailed(String)
     case invalidWorkTicketTransition(from: String, to: String)
+    /// The on-disk store matches no schema this build knows -- typically a
+    /// newer build's store. Nothing was written, checkpointed or copied.
+    case incompatibleStoreVersion(String)
+    /// `migrate: false` was asked to open a store that needs a migration.
+    /// Nothing was written.
+    case migrationRequired(fromVersion: Int)
+    /// A forward migration failed after the backup was taken; the original
+    /// files were restored from `backupURL`, which is retained.
+    case migrationFailedRestored(backupURL: URL, reason: String)
+    /// A forward migration failed and restoring the original also failed.
+    /// The retained backup at `backupURL` is intact; see
+    /// docs/statistics-migration-recovery.md for the manual restore.
+    case migrationRestoreFailed(backupURL: URL, reason: String)
+    /// Only one summary rebuild runs at a time.
+    case statisticsRebuildInProgress
+}
+
+/// One progress report from `rebuildLifetimeStatisticsSummary`.
+public struct LifetimeStatisticsRebuildProgress: Equatable, Sendable {
+    public enum Phase: String, Sendable {
+        case measuredLedger
+        case legacyLedger
+        case published
+    }
+
+    public let phase: Phase
+    /// Ledger rows read so far, across both ledgers.
+    public let processedEvents: Int
+    /// Ledger rows counted when the rebuild started. Rows appended during the
+    /// rebuild can make `processedEvents` exceed it.
+    public let totalEvents: Int
+
+    public init(phase: Phase, processedEvents: Int, totalEvents: Int) {
+        self.phase = phase; self.processedEvents = processedEvents; self.totalEvents = totalEvents
+    }
 }
 
 /// The media files writers own before any record names them.
