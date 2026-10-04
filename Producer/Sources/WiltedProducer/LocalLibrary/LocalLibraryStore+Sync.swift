@@ -359,6 +359,112 @@ extension LocalLibraryStore {
         return try JSONDecoder().decode(SyncRepositoryState.self, from: record.stateData)
     }
 
+    // MARK: Library publisher account binding
+
+    /// Saves which iCloud account owns this device's library publishing.
+    ///
+    /// Kept in its own sync-state row, `LocalLibraryAccountBinding.storageKey`, apart from
+    /// the legacy article engine's `private-zone` state and from any device identifier.
+    public func save(libraryAccountBinding binding: LocalLibraryAccountBinding) throws {
+        try save(syncState: LocalLibrarySyncState(
+            key: LocalLibraryAccountBinding.storageKey, engineState: try JSONEncoder().encode(binding)))
+    }
+
+    /// The persisted library account binding, or nil when no account was ever bound.
+    ///
+    /// - Throws: `LocalLibraryAccountBindingError` when the row is unreadable or holds a
+    ///   token that is not a hash, so a damaged binding is never treated as unbound.
+    public func libraryAccountBinding() throws -> LocalLibraryAccountBinding? {
+        guard let state = try syncState(for: LocalLibraryAccountBinding.storageKey) else { return nil }
+        do { return try JSONDecoder().decode(LocalLibraryAccountBinding.self, from: state.engineState) }
+        catch let error as LocalLibraryAccountBindingError { throw error }
+        catch { throw LocalLibraryAccountBindingError.corrupt }
+    }
+
     // MARK: Podcast catalog and local listening state
 
+}
+
+/// Which iCloud account owns this device's library publishing.
+///
+/// Holds only hashed account tokens (`sha256:` and 64 lowercase hex digits, as produced by
+/// `CloudKitAccountIdentity.token(for:)`), never a raw account identifier. Construction and
+/// decoding both reject anything else.
+public struct LocalLibraryAccountBinding: Codable, Equatable, Sendable {
+    /// The sync-state row that stores the binding.
+    public static let storageKey = "library-account-owner"
+
+    public enum State: String, Codable, Sendable {
+        /// `ownerToken` owns the library. Sending resumes once this launch sees that account.
+        case bound
+        /// A nonempty library that no account had claimed met `candidateToken`; the owner
+        /// must approve before anything is sent.
+        case reviewRequired
+        /// The account changed away from `ownerToken`. Local work stays bound to that owner
+        /// until the owner reviews it; `candidateToken` is the account now seen, if known.
+        case quarantined
+        /// The owner approved after a change that named no account; the next account seen
+        /// becomes the owner.
+        case approved
+    }
+
+    /// Why sending stopped for review.
+    public enum Reason: String, Codable, Sendable {
+        case unboundLibrary
+        case signIn
+        case signOut
+        case switchAccounts
+        case ownerMismatch
+    }
+
+    public let state: State
+    public let ownerToken: String?
+    public let candidateToken: String?
+    public let reason: Reason?
+    public let updatedAt: Timestamp
+
+    public init(state: State, ownerToken: String? = nil, candidateToken: String? = nil,
+                reason: Reason? = nil, updatedAt: Timestamp = Timestamp(Date())) throws {
+        for token in [ownerToken, candidateToken].compactMap({ $0 }) where !Self.isHashedToken(token) {
+            throw LocalLibraryAccountBindingError.unhashedToken
+        }
+        switch state {
+        case .bound where ownerToken == nil:
+            throw LocalLibraryAccountBindingError.invalidState("a bound library needs an owner")
+        case .reviewRequired where candidateToken == nil:
+            throw LocalLibraryAccountBindingError.invalidState("review needs the account to approve")
+        default: break
+        }
+        self.state = state
+        self.ownerToken = ownerToken
+        self.candidateToken = candidateToken
+        self.reason = reason
+        self.updatedAt = updatedAt
+    }
+
+    /// True for `sha256:` followed by exactly 64 lowercase hex digits.
+    public static func isHashedToken(_ token: String) -> Bool {
+        token.range(of: #"^sha256:[0-9a-f]{64}$"#, options: .regularExpression) != nil
+    }
+
+    private enum CodingKeys: String, CodingKey { case state, ownerToken, candidateToken, reason, updatedAt }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            state: try values.decode(State.self, forKey: .state),
+            ownerToken: try values.decodeIfPresent(String.self, forKey: .ownerToken),
+            candidateToken: try values.decodeIfPresent(String.self, forKey: .candidateToken),
+            reason: try values.decodeIfPresent(Reason.self, forKey: .reason),
+            updatedAt: try values.decode(Timestamp.self, forKey: .updatedAt))
+    }
+}
+
+/// A library account binding that cannot be stored or trusted.
+public enum LocalLibraryAccountBindingError: Error, Equatable, Sendable {
+    /// A token was not a hash; raw account identifiers are never stored.
+    case unhashedToken
+    case invalidState(String)
+    /// The stored row could not be decoded.
+    case corrupt
 }

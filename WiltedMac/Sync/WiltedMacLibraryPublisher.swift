@@ -82,6 +82,15 @@ actor WiltedMacLibraryPublisher {
         return report
     }
 
+    /// Forgets what was published, so the next pass seeds its baseline from the account it now
+    /// serves (Task 5.0). A pass suspended across the reset is superseded by the account gate.
+    func resetForAccount() {
+        published = nil
+        versions = [:]
+        publishedStats = nil
+        deliveredIntentIDs = []
+    }
+
     // MARK: - State
 
     private func publishState(_ state: LibraryStateSnapshot, into report: inout LibraryPublishReport) async throws {
