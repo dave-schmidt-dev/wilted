@@ -1,0 +1,829 @@
+{
+  "schemaVersion": 1,
+  "status": "owner-accepted",
+  "ownerAccepted": true,
+  "scope": "Self-contained interactive prototype; no native, live cloud, device, or release evidence",
+  "artifact": "docs/mockups/2026-10-03-core-reliability.html",
+  "runner": "bash tests/test-core-reliability-prototype.sh",
+  "runtime": {
+    "node": "/Users/dave/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node",
+    "NODE_PATH": "/Users/dave/Documents/Projects/todojo/node_modules",
+    "playwright": "1.63.0"
+  },
+  "invocation": "bash tests/test-core-reliability-prototype.sh; optional --grep limits local checks",
+  "scenarioState": "One shared state/fixture across navigation and all player surfaces; elapsed timers are real in browser, controlled by Playwright Clock in tests",
+  "cases": [
+    {
+      "id": "PLAY-IDLE",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "PLAY-IDLE-<width>-*.png"
+    },
+    {
+      "id": "PLAY-DELAY",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "PLAY-DELAY-<width>-*.png"
+    },
+    {
+      "id": "PLAY-FAIL",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "PLAY-FAIL-<width>-*.png"
+    },
+    {
+      "id": "PLAY-RETRY",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "PLAY-RETRY-<width>-*.png"
+    },
+    {
+      "id": "PLAY-RETRY-FAIL",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "PLAY-RETRY-FAIL-<width>-*.png"
+    },
+    {
+      "id": "PLAY-MISSING",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "PLAY-MISSING-<width>-*.png"
+    },
+    {
+      "id": "PLAY-NOTREADY",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "PLAY-NOTREADY-<width>-*.png"
+    },
+    {
+      "id": "SPEED-FAIL",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-speed",
+          "wilted-library-settings-speed"
+        ],
+        "proposed": [
+          "wilted-player-speed-save-status"
+        ],
+        "task": "3.1"
+      },
+      "evidence": "SPEED-FAIL-<width>-*.png"
+    },
+    {
+      "id": "DELETE-ARTICLE",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-article-row-article-001",
+          "wilted-article-actions-article-001"
+        ],
+        "proposed": [
+          "wilted-delete-confirm",
+          "wilted-delete-cancel",
+          "wilted-delete-save-status"
+        ],
+        "task": "4.1"
+      },
+      "evidence": "DELETE-ARTICLE-<width>-*.png"
+    },
+    {
+      "id": "DELETE-FEED",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-article-row-article-001",
+          "wilted-article-actions-article-001"
+        ],
+        "proposed": [
+          "wilted-delete-confirm",
+          "wilted-delete-cancel",
+          "wilted-delete-save-status"
+        ],
+        "task": "4.1"
+      },
+      "evidence": "DELETE-FEED-<width>-*.png"
+    },
+    {
+      "id": "DELETE-FAIL",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-article-row-article-001",
+          "wilted-article-actions-article-001"
+        ],
+        "proposed": [
+          "wilted-delete-confirm",
+          "wilted-delete-cancel",
+          "wilted-delete-save-status"
+        ],
+        "task": "4.1"
+      },
+      "evidence": "DELETE-FAIL-<width>-*.png"
+    },
+    {
+      "id": "ACCOUNT-UNBOUND",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-use-current-account",
+          "wilted-sync-controls"
+        ],
+        "proposed": [
+          "wilted-account-review-confirm",
+          "wilted-account-review-cancel",
+          "wilted-account-review-status"
+        ],
+        "task": "5.0"
+      },
+      "evidence": "ACCOUNT-UNBOUND-<width>-*.png"
+    },
+    {
+      "id": "ACCOUNT-SWITCH",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-use-current-account",
+          "wilted-sync-controls"
+        ],
+        "proposed": [
+          "wilted-account-review-confirm",
+          "wilted-account-review-cancel",
+          "wilted-account-review-status"
+        ],
+        "task": "5.0"
+      },
+      "evidence": "ACCOUNT-SWITCH-<width>-*.png"
+    },
+    {
+      "id": "QUIT-SAVE",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [],
+        "proposed": [
+          "wilted-quit-save-status",
+          "wilted-quit-retry"
+        ],
+        "task": "3.3; isolated AppKit terminateLater fixture test"
+      },
+      "evidence": "QUIT-SAVE-<width>-*.png"
+    },
+    {
+      "id": "QUIT-FAIL",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [],
+        "proposed": [
+          "wilted-quit-save-status",
+          "wilted-quit-retry"
+        ],
+        "task": "3.3; isolated AppKit terminateLater fixture test"
+      },
+      "evidence": "QUIT-FAIL-<width>-*.png"
+    },
+    {
+      "id": "SYNC-WORKING",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-sync-controls",
+          "wilted-library-settings-sync-status",
+          "wilted-library-settings-sync-detail"
+        ],
+        "proposed": [
+          "wilted-sync-now",
+          "wilted-publisher-status",
+          "wilted-phone-last-fetch"
+        ],
+        "task": "5.2"
+      },
+      "evidence": "SYNC-WORKING-<width>-*.png"
+    },
+    {
+      "id": "SYNC-FAIL",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-sync-controls",
+          "wilted-library-settings-sync-status",
+          "wilted-library-settings-sync-detail"
+        ],
+        "proposed": [
+          "wilted-sync-now",
+          "wilted-publisher-status",
+          "wilted-phone-last-fetch"
+        ],
+        "task": "5.2"
+      },
+      "evidence": "SYNC-FAIL-<width>-*.png"
+    },
+    {
+      "id": "SYNC-THROTTLE",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-sync-controls",
+          "wilted-library-settings-sync-status",
+          "wilted-library-settings-sync-detail"
+        ],
+        "proposed": [
+          "wilted-sync-now",
+          "wilted-publisher-status",
+          "wilted-phone-last-fetch"
+        ],
+        "task": "5.2"
+      },
+      "evidence": "SYNC-THROTTLE-<width>-*.png"
+    },
+    {
+      "id": "PHONE-FETCH",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-sync-controls",
+          "wilted-library-settings-sync-status",
+          "wilted-library-settings-sync-detail"
+        ],
+        "proposed": [
+          "wilted-sync-now",
+          "wilted-publisher-status",
+          "wilted-phone-last-fetch"
+        ],
+        "task": "5.2"
+      },
+      "evidence": "PHONE-FETCH-<width>-*.png"
+    },
+    {
+      "id": "STATS",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-lifetime-statistics",
+          "wilted-lifetime-audio-processed",
+          "wilted-lifetime-speech-generated",
+          "wilted-lifetime-ad-time-removed",
+          "wilted-lifetime-speed-time-saved"
+        ],
+        "proposed": [
+          "wilted-lifetime-played",
+          "wilted-lifetime-downloaded",
+          "wilted-lifetime-manually-skipped",
+          "wilted-lifetime-tracking-start",
+          "wilted-lifetime-load-state"
+        ],
+        "task": "8.2"
+      },
+      "evidence": "STATS-<width>-*.png"
+    },
+    {
+      "id": "STATS-EMPTY",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-lifetime-statistics",
+          "wilted-lifetime-audio-processed",
+          "wilted-lifetime-speech-generated",
+          "wilted-lifetime-ad-time-removed",
+          "wilted-lifetime-speed-time-saved"
+        ],
+        "proposed": [
+          "wilted-lifetime-played",
+          "wilted-lifetime-downloaded",
+          "wilted-lifetime-manually-skipped",
+          "wilted-lifetime-tracking-start",
+          "wilted-lifetime-load-state"
+        ],
+        "task": "8.2"
+      },
+      "evidence": "STATS-EMPTY-<width>-*.png"
+    },
+    {
+      "id": "STATS-LOAD",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-lifetime-statistics",
+          "wilted-lifetime-audio-processed",
+          "wilted-lifetime-speech-generated",
+          "wilted-lifetime-ad-time-removed",
+          "wilted-lifetime-speed-time-saved"
+        ],
+        "proposed": [
+          "wilted-lifetime-played",
+          "wilted-lifetime-downloaded",
+          "wilted-lifetime-manually-skipped",
+          "wilted-lifetime-tracking-start",
+          "wilted-lifetime-load-state"
+        ],
+        "task": "8.2"
+      },
+      "evidence": "STATS-LOAD-<width>-*.png"
+    },
+    {
+      "id": "STATS-FAIL",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-lifetime-statistics",
+          "wilted-lifetime-audio-processed",
+          "wilted-lifetime-speech-generated",
+          "wilted-lifetime-ad-time-removed",
+          "wilted-lifetime-speed-time-saved"
+        ],
+        "proposed": [
+          "wilted-lifetime-played",
+          "wilted-lifetime-downloaded",
+          "wilted-lifetime-manually-skipped",
+          "wilted-lifetime-tracking-start",
+          "wilted-lifetime-load-state"
+        ],
+        "task": "8.2"
+      },
+      "evidence": "STATS-FAIL-<width>-*.png"
+    },
+    {
+      "id": "CARPLAY",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [],
+        "proposed": [
+          "CarEpisodeList row completion(result:) exactly once",
+          "CarPlay Now Playing present only for started/resumed/alreadyPlaying"
+        ],
+        "task": "3.2; controller-level fixtures, no car claim"
+      },
+      "evidence": "CARPLAY-<width>-*.png"
+    },
+    {
+      "id": "RACE-rail",
+      "widths": [
+        390,
+        1280
+      ],
+      "assertions": [
+        "primary and Space duplicate coalescing",
+        "explicit Pause cancels pending Play",
+        "seek supersedes pending Play",
+        "new selection wins",
+        "navigation and reload retain chosen record"
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "RACE-rail-<width>-*.png"
+    },
+    {
+      "id": "RACE-side",
+      "widths": [
+        390,
+        1280
+      ],
+      "assertions": [
+        "primary and Space duplicate coalescing",
+        "explicit Pause cancels pending Play",
+        "seek supersedes pending Play",
+        "new selection wins",
+        "navigation and reload retain chosen record"
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "RACE-side-<width>-*.png"
+    },
+    {
+      "id": "RACE-full",
+      "widths": [
+        390,
+        1280
+      ],
+      "assertions": [
+        "primary and Space duplicate coalescing",
+        "explicit Pause cancels pending Play",
+        "seek supersedes pending Play",
+        "new selection wins",
+        "navigation and reload retain chosen record"
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "RACE-full-<width>-*.png"
+    },
+    {
+      "id": "RACE-phone",
+      "widths": [
+        390,
+        1280
+      ],
+      "assertions": [
+        "primary and Space duplicate coalescing",
+        "explicit Pause cancels pending Play",
+        "seek supersedes pending Play",
+        "new selection wins",
+        "navigation and reload retain chosen record"
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "RACE-phone-<width>-*.png"
+    },
+    {
+      "id": "RACE-carplay",
+      "widths": [
+        390,
+        1280
+      ],
+      "assertions": [
+        "primary and Space duplicate coalescing",
+        "explicit Pause cancels pending Play",
+        "seek supersedes pending Play",
+        "new selection wins",
+        "navigation and reload retain chosen record"
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "RACE-carplay-<width>-*.png"
+    },
+    {
+      "id": "FAIL-rail",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "FAIL-rail-<width>-error.png"
+    },
+    {
+      "id": "FAIL-side",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "FAIL-side-<width>-error.png"
+    },
+    {
+      "id": "FAIL-full",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "FAIL-full-<width>-error.png"
+    },
+    {
+      "id": "FAIL-phone",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "FAIL-phone-<width>-error.png"
+    },
+    {
+      "id": "FAIL-carplay",
+      "widths": [
+        390,
+        1280
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-play-pause",
+          "wilted-player-operation-status",
+          "wilted-player-recoverable-error",
+          "wilted-player-scrubber",
+          "wilted-player-item-title"
+        ],
+        "proposed": [
+          "wilted-player-explicit-pause",
+          "wilted-player-start-result"
+        ],
+        "task": "3.1 / 3.2"
+      },
+      "evidence": "FAIL-carplay-<width>-error.png"
+    },
+    {
+      "id": "NAV-SCROLL",
+      "widths": [
+        390
+      ],
+      "assertions": [
+        "Settings scroll survives navigation and reload",
+        "Saved speed survives reload",
+        "Accepted September 28 tokens match exactly"
+      ],
+      "nativeSelectorMapping": {
+        "existing": [
+          "wilted-player-speed"
+        ],
+        "proposed": [
+          "per-destination scroll checkpoint fixture assertion"
+        ],
+        "task": "3.1 / 8.2"
+      }
+    },
+    {
+      "id": "CARPLAY-FAIL-SUPERSEDE",
+      "widths": [
+        390
+      ],
+      "assertions": [
+        "Failed selection callback completes once without opening Now Playing",
+        "Explicit Pause supersedes pending CarPlay start; one completion, no Now Playing"
+      ],
+      "nativeSelectorMapping": {
+        "existing": [],
+        "proposed": [
+          "CarEpisodeList completion(result:)",
+          "Now Playing presented predicate"
+        ],
+        "task": "3.2"
+      }
+    }
+  ],
+  "additionalAssertions": [
+    "CARPLAY failed/superseded completion does not open Now Playing; callback once",
+    "seven Mac totals from canonical measured seconds/bytes fixture; old four preserved",
+    "phone-local totals never display Mac measurements"
+  ],
+  "limitations": [
+    "Native selectors marked proposed do not exist yet; existing identifiers verified in current source, not executed natively",
+    "No real audio route, persistence failure, account binding, AppKit quit, cloud fetch/send, or CarPlay execution",
+    "No assertion of owner approval; silence and elapsed time are not acceptance"
+  ],
+  "ownerAcceptance": {
+    "acceptedAt": "2026-10-03T22:55:00-04:00",
+    "candidateDigest": "c27e6bc9224794acb471725150c8b00dcfedc53fcf833614d81bdcab6dcf04b9",
+    "scope": "Accepted as the interaction contract for Batch 1. The owner noted the prototype shows roughly 20% of the UI; qualification happens on the live app after Batch 1."
+  }
+}
