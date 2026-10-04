@@ -22,8 +22,19 @@ final class WiltedMacModel {
     static let maximumStartupAttempts = 2
 
     var startupState: WiltedMacStartupState = .loading(attempt: 0, step: .openingStore)
-    var urlDraft = ""
-    var podcastFeedDraft = ""
+    /// Feeds selection and disclosure, scroll anchors, Larder filter and search, and the composer
+    /// drafts, as one value persisted through `preferences` (see `+NavigationState`).
+    var navigationState = WiltedMacNavigationState() {
+        didSet { persistNavigationState() }
+    }
+    var urlDraft: String {
+        get { navigationState.urlDraft }
+        set { navigationState.urlDraft = newValue }
+    }
+    var podcastFeedDraft: String {
+        get { navigationState.podcastFeedDraft }
+        set { navigationState.podcastFeedDraft = newValue }
+    }
     /// What the single add box is doing right now. Telling a feed from an
     /// article needs the document, so the button can sit on a network round
     /// trip; an unannounced pause there reads as a control that did nothing.
@@ -77,8 +88,16 @@ final class WiltedMacModel {
     /// reorder every row except the one playing, which holds its place.
     var menuSort: WiltedMacMenuSort = .custom {
         didSet {
-            preferences.set(menuSort.rawValue, forKey: Self.menuSortPreferenceKey)
+            preferences.set(menuSort.canonical.rawValue, forKey: Self.menuSortPreferenceKey)
+            if let direction = menuSort.legacyDirection { menuSortDirection = direction }
             guard oldValue != menuSort else { return }
+            applyMenuSortIfNeeded()
+        }
+    }
+    var menuSortDirection: WiltedMacMenuSortDirection = .ascending {
+        didSet {
+            preferences.set(menuSortDirection.rawValue, forKey: Self.menuSortDirectionPreferenceKey)
+            guard oldValue != menuSortDirection else { return }
             applyMenuSortIfNeeded()
         }
     }
@@ -89,6 +108,7 @@ final class WiltedMacModel {
     }
     static let larderSortPreferenceKey = "wilted.queue.larder.sort"
     static let menuSortPreferenceKey = "wilted.queue.menu.sort"
+    static let menuSortDirectionPreferenceKey = "wilted.queue.menu.sort.direction"
     static let menuGroupingPreferenceKey = "wilted.queue.menu.grouping"
     static let marksRemovedAdsPreferenceKey = "wilted.playback.marksRemovedAds"
     static let podcastPlaybackOriginPreferenceKeyPrefix = "wilted.playback.origin."
@@ -154,6 +174,8 @@ final class WiltedMacModel {
     /// reconstructed, live in the store instead.
     static let lastAutomationRefreshPreferenceKey = "wilted.automation.lastRefreshSuccess"
     let preferences: UserDefaults
+    /// The defaults suite a fixture launch owns; removed when the fixture closes.
+    let fixturePreferencesSuite: String?
     /// Whether a quiet marker identifies each advertisement seam during playback.
     var marksRemovedAds = true {
         didSet {
@@ -189,6 +211,12 @@ final class WiltedMacModel {
             preferences.set(selectedNavigation.rawValue, forKey: Self.selectedNavigationPreferenceKey)
         }
     }
+    /// The reader's explicit choice to show or hide the navigation sidebar.
+    /// Shown by default; `WiltedMacShellLayout` still turns a shown sidebar
+    /// into a rail when the window is narrow.
+    var isSidebarVisible = true {
+        didSet { preferences.set(isSidebarVisible, forKey: Self.sidebarVisiblePreferenceKey) }
+    }
     var articles: [WiltedMacArticle] = []
     var episodes: [WiltedMacEpisode] = []
     var podcastOperationMessage: String?
@@ -202,6 +230,12 @@ final class WiltedMacModel {
     /// episode: nothing was dismissed, so the undo needs no feed check.
     var undoableSkip: WiltedMacEpisode?
     var isRefreshingPodcasts = false
+    /// Per-feed progress of the refresh in flight, keyed by feed ID; a feed that is not here is idle.
+    var feedRefreshStates: [String: WiltedMacFeedRefreshState] = [:]
+    /// The durable write each feed's row is waiting on, set before the write is awaited.
+    var pendingFeedWrites: [String: WiltedMacFeedWrite] = [:]
+    /// The newest enable value asked for while a write was in flight; written once when it finishes.
+    var queuedFeedEnabled: [String: Bool] = [:]
     var selectedLibraryItemID: String?
     var preparation: WiltedMacPreparation?
     var selectedArticleID: String?
@@ -304,6 +338,11 @@ final class WiltedMacModel {
     var feedDecisionBeforeCommitForTesting: (@Sendable () async throws -> Void)?
     var feedDecisionAfterDurableCommitForTesting: (@Sendable () async -> Void)?
     var podcastQueueReadBarrierForTesting: (@Sendable () async -> Void)?
+    /// Runs before each Larder-sort queue write; a test holds it open to delay the
+    /// write, or throws to fail it.
+    var menuSortWriteHookForTesting: (@Sendable () async throws -> Void)?
+    /// Runs before each feed enable write; a test holds it open or throws to fail the write.
+    var subscriptionWriteHookForTesting: (@Sendable () async throws -> Void)?
     /// Nil in production. Regression tests can fail only the episode-admission
     /// step after the real feed and subscription writes have committed.
     var podcastEpisodeAdmissionOperationForTesting: (@Sendable (
@@ -495,7 +534,9 @@ final class WiltedMacModel {
         // Required rather than defaulted to `.standard`: the unit-test host is
         // the app bundle itself, so a defaulted `.standard` let tests write
         // into the daily driver's own preferences.
-        self.preferences = usesFixtureMode ? Self.fixturePreferences() : preferences
+        let fixtureSuite = usesFixtureMode ? Self.fixturePreferencesSuiteName() : nil
+        fixturePreferencesSuite = fixtureSuite
+        self.preferences = fixtureSuite.map { Self.fixturePreferences(suiteName: $0) } ?? preferences
         // Read before the fixture install below, which builds its deferral's
         // policy snapshot from these settings; the rest of the stored
         // preferences are read after it.
@@ -597,6 +638,8 @@ final class WiltedMacModel {
         selectedNavigation = WiltedMacNavigation.restored(
             from: self.preferences.string(forKey: Self.selectedNavigationPreferenceKey)
         )
+        isSidebarVisible = self.preferences.object(forKey: Self.sidebarVisiblePreferenceKey) as? Bool ?? true
+        restoreNavigationState()
         if let stored = self.preferences.string(forKey: Self.larderSortPreferenceKey),
            let sort = WiltedMacLarderSort(rawValue: stored) {
             larderSort = sort
@@ -610,9 +653,14 @@ final class WiltedMacModel {
             self.preferences.set(WiltedMacLarderSort.oldest.rawValue,
                                  forKey: Self.larderSortPreferenceKey)
         }
+        let storedMenuDirection = self.preferences.string(forKey: Self.menuSortDirectionPreferenceKey)
+            .flatMap(WiltedMacMenuSortDirection.init(rawValue:))
         if let stored = self.preferences.string(forKey: Self.menuSortPreferenceKey),
-           let sort = WiltedMacMenuSort(rawValue: stored) {
+           let (sort, migratedDirection) = WiltedMacMenuSort.restored(stored) {
             menuSort = sort
+            menuSortDirection = migratedDirection ?? storedMenuDirection ?? .ascending
+        } else if let direction = storedMenuDirection {
+            menuSortDirection = direction
         }
         if let stored = self.preferences.string(forKey: Self.menuGroupingPreferenceKey),
            let grouping = WiltedMacMenuGrouping(rawValue: stored) {
@@ -657,6 +705,7 @@ final class WiltedMacModel {
         // write.
         isClosingTemporaryState = true
         let temporaryState = temporaryState
+        let fixtureSuite = fixturePreferencesSuite
         let voidTasks = [
             startupTask,
             preparationTask,
@@ -688,7 +737,8 @@ final class WiltedMacModel {
                 voidTasks: voidTasks,
                 downloadTasks: downloadTasks,
                 automation: automation,
-                syncLifecycle: syncLifecycle
+                syncLifecycle: syncLifecycle,
+                preferencesSuite: fixtureSuite
             )
         }
 #endif
@@ -701,14 +751,19 @@ final class WiltedMacModel {
 
 #endif
     /// The selected Menu group filter, or nil for "All waiting".
-    var menuFilter: WiltedMacMenuGroup?
+    var menuFilter: WiltedMacMenuGroup? {
+        get { navigationState.menuFilter.flatMap(WiltedMacMenuGroup.init(rawValue:)) }
+        set { navigationState.menuFilter = newValue?.rawValue }
+    }
 
     /// The Menu's search text. Every change reschedules the transcript
     /// search, which is the one part of matching that cannot be answered from
     /// what the list already carries.
-    var librarySearchQuery = "" {
-        didSet {
-            guard librarySearchQuery != oldValue else { return }
+    var librarySearchQuery: String {
+        get { navigationState.librarySearchQuery }
+        set {
+            guard newValue != navigationState.librarySearchQuery else { return }
+            navigationState.librarySearchQuery = newValue
             scheduleTranscriptSearch()
         }
     }

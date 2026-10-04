@@ -92,7 +92,19 @@ struct WiltedMacApp: App {
                 }
         }
         .commands {
-            SidebarCommands()
+            // The sidebar is a column of the window, not a split view, so the
+            // system's Toggle Sidebar has nothing to act on: this is the
+            // command, with the same ⌃⌘S.
+            CommandGroup(replacing: .sidebar) {
+                Button(model.sidebarToggleTitle) { model.toggleSidebar() }
+                    .keyboardShortcut("s", modifiers: [.control, .command])
+            }
+            // The accepted Clear for retained view state: forget the Feeds selection, the Larder
+            // filter and search, scroll positions and drafts.
+            CommandGroup(after: .sidebar) {
+                Button("Clear Saved View") { model.clearNavigationState() }
+                    .disabled(!model.hasRetainedNavigationState)
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {

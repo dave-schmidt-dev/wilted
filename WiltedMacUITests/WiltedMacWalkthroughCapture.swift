@@ -183,7 +183,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(idleRow.waitForExistence(timeout: 10))
         let sort = element(app, "wilted-menu-sort")
         XCTAssertTrue(sort.waitForExistence(timeout: 5))
-        XCTAssertEqual(sort.label, "Sort Larder: Custom order")
+        XCTAssertEqual(sort.label, "Sort Larder: Custom")
         try write(app, "5.1-menu-idle", into: root)
 
         // The address box moved from the Larder's header to here; the
@@ -216,8 +216,8 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         // an id to that queue. `installPodcastFixture` never seeds
         // `podcastQueueIDs`, so the row has to be kept before it exists on
         // the Menu at all -- confirmed against
-        // `WiltedMacSmokeUITests.testPodcastPlaybackJourneyAcrossDestinations`,
-        // which drives this same launch/keep sequence.
+        // `WiltedMacPlaybackJourneyTests.testPodcastPlaybackJourneyAcrossDestinations`,
+        // which drives this same keep sequence headlessly.
         element(prepared, "wilted-navigation-feeds").click()
         XCTAssertTrue(element(prepared, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
         let keep = prepared.buttons.matching(

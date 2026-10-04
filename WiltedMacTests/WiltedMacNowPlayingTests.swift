@@ -265,6 +265,76 @@ final class WiltedMacNowPlayingTests: XCTestCase {
                       "the widget is told these speeds, so the default has to be one of them")
     }
 
+    // MARK: - Sharing
+
+    private let waveformFeed = URL(string: "https://feeds.example.test/waveform.xml")!
+    private let waveformPage = URL(string: "https://waveform.example.test/episodes/the-cost-of-everything")!
+
+    /// A Waveform-style episode: a feed with a published page for every episode.
+    func testAnEpisodeSharesItsOwnPageAndNeverItsFeed() {
+        let (model, _, _) = makeModel()
+        var linked = episode()
+        linked.feedURL = waveformFeed
+        linked.episodeLink = waveformPage
+        model.installPlaybackStateForTesting(episode: linked, isPlaying: false, position: 0, duration: 1_800)
+
+        XCTAssertEqual(model.currentPlaybackShareURL, waveformPage)
+        XCTAssertNotEqual(model.currentPlaybackShareURL, waveformFeed)
+        XCTAssertEqual(model.currentPlaybackShareTitle, "The Cost of Everything")
+        XCTAssertEqual(model.currentPlaybackShareMessage, "The Cost of Everything · Quarterly")
+    }
+
+    /// A feed that publishes no per-episode page shares what it honestly has.
+    func testAnEpisodeWithNoPageSharesTitleAndShowAndSaysSo() {
+        let (model, _, _) = makeModel()
+        var linkless = episode()
+        linkless.feedURL = waveformFeed
+        model.installPlaybackStateForTesting(episode: linkless, isPlaying: false, position: 0, duration: 1_800)
+
+        XCTAssertNil(model.currentPlaybackShareURL, "the feed address is not the episode's page")
+        XCTAssertEqual(model.currentPlaybackShareText, "The Cost of Everything — Quarterly")
+        XCTAssertEqual(model.currentPlaybackShareMessage, "No episode page")
+        XCTAssertFalse((model.currentPlaybackShareText ?? "").contains(waveformFeed.absoluteString))
+    }
+
+    /// The fallback is said where it is seen: the two renders differ, not just the tooltip.
+    func testTheNoPageFallbackIsVisibleTextAndAPageIsNot() throws {
+        let (model, _, _) = makeModel()
+        var linked = episode()
+        linked.episodeLink = waveformPage
+        model.installPlaybackStateForTesting(episode: linked, isPlaying: false, position: 0, duration: 1_800)
+        let withPage = try WiltedMacHeadless.recognizedText(
+            WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 320, height: 90))
+        XCTAssertFalse(withPage.contains { $0.contains("No episode page") })
+
+        let linkless = episode(id: "linkless-share")
+        model.installPlaybackStateForTesting(episode: linkless, isPlaying: false, position: 0, duration: 1_800)
+        let without = try WiltedMacHeadless.recognizedText(
+            WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 320, height: 90))
+        XCTAssertTrue(without.contains { $0.contains("No episode page") }, "got \(without)")
+        XCTAssertNotEqual(withPage, without, "the two controls read differently")
+    }
+
+    func testAnArticleKeepsItsCanonicalURL() {
+        let (model, _, _) = makeModel()
+        model.installPlaybackStateForTesting(article: article(), isPlaying: false, position: 0, duration: 300)
+        XCTAssertEqual(model.currentPlaybackShareURL, URL(string: "https://example.com/read"))
+        XCTAssertEqual(model.currentPlaybackShareMessage, "A Long Read · example.com")
+    }
+
+    /// The pane and the full player share one control, so neither can disagree about the fallback.
+    func testBothPlayersUseTheSameShareControl() throws {
+        for view in ["WiltedMacNowPlayingPane.swift", "WiltedMacPlayerContent.swift"] {
+            let source = try WiltedMacHeadless.viewSource(view)
+            XCTAssertTrue(source.contains("WiltedMacPlaybackShareLink(model: model)"), view)
+        }
+        let pane = try WiltedMacHeadless.viewSource("WiltedMacNowPlayingPane.swift")
+        XCTAssertFalse(pane.contains("currentPlaybackShareURL"), "the pane must not build its own share")
+        let player = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "currentPlaybackShareURL", in: player), 1,
+                       "only the shared control reads it")
+    }
+
     // MARK: - Fixtures
 
     /// A one-pixel PNG, so the decode is real without a fixture file.

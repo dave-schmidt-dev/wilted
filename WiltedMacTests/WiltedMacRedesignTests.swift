@@ -177,8 +177,8 @@ final class WiltedMacRedesignTests: XCTestCase {
         XCTAssertEqual(state.tab, .transcript)
         let views = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WiltedMac/Views")
-        let menu = try String(contentsOf: views.appendingPathComponent("WiltedMacMenuView.swift"), encoding: .utf8)
-        XCTAssertTrue(menu.contains("paneState.collapsed(to: section)"))
+        let root = try String(contentsOf: views.appendingPathComponent("WiltedMacRootView.swift"), encoding: .utf8)
+        XCTAssertTrue(root.contains("paneState.collapsed(to: section)"))
     }
 
     /// The state's owner, which outlives the pane, watches the episode; the
@@ -186,9 +186,9 @@ final class WiltedMacRedesignTests: XCTestCase {
     func testEpisodeChangeIsObservedByTheStateOwnerNotThePane() throws {
         let views = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WiltedMac/Views")
-        let menu = try String(contentsOf: views.appendingPathComponent("WiltedMacMenuView.swift"), encoding: .utf8)
+        let root = try String(contentsOf: views.appendingPathComponent("WiltedMacRootView.swift"), encoding: .utf8)
         let pane = try String(contentsOf: views.appendingPathComponent("WiltedMacNowPlayingPane.swift"), encoding: .utf8)
-        XCTAssertTrue(menu.contains("paneState.episodeChanged()"))
+        XCTAssertTrue(root.contains("paneState.episodeChanged()"))
         XCTAssertFalse(pane.contains("state.episodeChanged()"))
     }
 
@@ -221,7 +221,12 @@ final class WiltedMacRedesignTests: XCTestCase {
         XCTAssertEqual(source.components(separatedBy: "WiltedMacDestination(").count - 1, 1,
                        "one list destination, not one per layout")
         XCTAssertFalse(source.contains("switch paneMode"))
-        XCTAssertTrue(source.contains("WiltedMacNowPlayingPane(model: model, state: $paneState)"))
+        XCTAssertFalse(source.contains("WiltedMacNowPlayingPane("))
+        let root = try String(contentsOf: url.deletingLastPathComponent().appendingPathComponent("WiltedMacRootView.swift"), encoding: .utf8)
+        XCTAssertEqual(root.components(separatedBy: "WiltedMacNowPlayingPane(model: model, state: $paneState)").count - 1, 1)
+        XCTAssertTrue(root.contains("@State private var paneState = WiltedMacPaneState()"))
+        XCTAssertTrue(root.contains("playerPresentation == nil && shell.pane == .bottom"))
+        XCTAssertFalse(root.contains("model.selectedNavigation != .menu"))
     }
 
     // MARK: Row progress

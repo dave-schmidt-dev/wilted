@@ -61,8 +61,8 @@ validate_pixel_snapshot_baselines() {
     "$root/WiltedMacTests/WiltedVisualSystemTests.swift" ||
     fail 'Mac podcast/article sync-isolation model selector is missing'
   grep -Fq 'testPodcastPlaybackJourneyAcrossDestinations' \
-    "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift" ||
-    fail 'Mac persistent compact-player real-window selector is missing'
+    "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
+    fail 'Mac persistent compact-player journey selector is missing'
 
   expected_count=162
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
@@ -246,8 +246,8 @@ assert_mac_ui_selector_floor_contract() {
   # suite above it while a named one quietly disappears. Tests whose absence
   # would not be caught by the count alone are asserted by identifier.
   grep -q 'testMenuOverridesAnOffPeakDeferralWithPrepareNow' \
-    "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift" ||
-    fail 'the off-peak Prepare now journey must stay in the Mac UI suite'
+    "$repo_root/WiltedMacTests/WiltedMacSettingsJourneyTests.swift" ||
+    fail 'the off-peak Prepare now journey must stay in the Mac journey tests'
   # `fail` exits, so the rejecting probe runs in a subshell: the contract is
   # that an invalid selector must not SUCCEED here, not that it must return.
   if ( WILTED_MAC_UI_SELECTOR='WiltedMacUITests/OtherTests/testNope' \

@@ -18,44 +18,20 @@ struct WiltedMacMenuView: View {
     /// Where the Now Playing pane sits, decided from the window's width by
     /// the root: beside the list, or in the bar the root draws beneath it.
     let paneMode: WiltedMacPaneMode
-    /// The section the full-window player last collapsed to, if any.
-    let collapsedSection: WiltedMacPlayerSection?
-    @State private var paneState = WiltedMacPaneState()
     @Environment(\.colorScheme) var colorScheme
     @State var dropTargetID: String?
 
     var body: some View {
-        // One list view in both compositions, at the same place in the
-        // hierarchy: only its header and the pane beside it come and go.
-        // Two separate subtrees would be torn down and rebuilt each time
-        // the window crossed the threshold, resetting the list's scroll
-        // position. The pane's own state lives on this view for the same
-        // reason -- the pane is unmounted whenever it is at the bottom.
-        GeometryReader { geometry in
-            HStack(spacing: 0) {
-                WiltedMacDestination(
-                    title: "Larder",
-                    identifier: "wilted-mac-menu-detail",
-                    contentWidth: paneMode == .side ? nil : 760,
-                    inset: paneMode == .side ? WiltedTheme.Spacing.large : WiltedTheme.Spacing.section,
-                    watermark: true
-                ) {
-                    if paneMode == .bottom { bottomModeHeader }
-                    larderList
-                }
-                if paneMode == .side {
-                    Divider()
-                    WiltedMacNowPlayingPane(model: model, state: $paneState)
-                        .frame(width: WiltedMacLarderLayout.paneColumnWidth(detailWidth: geometry.size.width))
-                }
-            }
-        }
-        // A new episode starts at its own line, not wherever the last was.
-        // Observed here because this view owns the state and outlives the
-        // pane, which is unmounted whenever it is at the bottom.
-        .onChange(of: model.currentPodcastEpisodeID) { paneState.episodeChanged() }
-        .onChange(of: collapsedSection) { _, section in
-            if let section { paneState.collapsed(to: section) }
+        WiltedMacDestination(
+            title: "Larder",
+            identifier: "wilted-mac-menu-detail",
+            contentWidth: paneMode == .side ? nil : 760,
+            inset: paneMode == .side ? WiltedTheme.Spacing.large : WiltedTheme.Spacing.section,
+            watermark: true,
+            scrollAnchor: model.scrollAnchor(for: .menu)
+        ) {
+            if paneMode == .bottom { bottomModeHeader }
+            larderList
         }
         .searchable(text: $model.librarySearchQuery, prompt: "Search episodes")
     }
@@ -81,6 +57,10 @@ struct WiltedMacMenuView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-menu-waiting-count")
+                // Absent before the first refresh, so a Larder that has never refreshed reads as it did.
+                if model.lastPodcastRefreshAt != nil {
+                    WiltedMacLastRefreshedLabel(model: model, identifier: "wilted-menu-last-refreshed")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             WiltedMacFlowLayout {
@@ -106,15 +86,14 @@ struct WiltedMacMenuView: View {
                 .accessibilityIdentifier("wilted-menu-grouping")
                 Menu {
                     // A Picker nested inside this Menu creates a second
-                    // submenu on macOS. Choosing Custom order dismisses that
-                    // submenu before the listener can reach Oldest. Direct
-                    // menu buttons keep every order in one click target while
+                    // submenu on macOS. Direct menu buttons keep every order
+                    // in one click target while
                     // retaining the same persisted model binding.
-                    ForEach(Array(WiltedMacMenuSort.allCases), id: \.id) { option in
+                    ForEach(WiltedMacMenuSort.presentationOptions, id: \.id) { option in
                         Button {
                             model.menuSort = option
                         } label: {
-                            if model.menuSort == option {
+                            if model.menuSort.canonical == option {
                                 Label(option.displayName, systemImage: "checkmark")
                             } else {
                                 Text(option.displayName)
@@ -129,6 +108,21 @@ struct WiltedMacMenuView: View {
                 .controlSize(.regular)
                 .accessibilityLabel("Sort Larder: \(model.menuSort.displayName)")
                 .accessibilityIdentifier("wilted-menu-sort")
+                if model.menuSort != .custom {
+                    Button {
+                        let direction = model.menuSortDirection.reversed
+                        model.menuSort = model.menuSort.canonical
+                        model.menuSortDirection = direction
+                    } label: {
+                        Image(systemName: model.menuSortDirection == .ascending ? "arrow.up" : "arrow.down")
+                            .wiltedFont(.utility)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .help("Sort direction: \(model.menuSortDirection.displayName)")
+                    .accessibilityLabel("Larder sort direction: \(model.menuSortDirection.displayName)")
+                    .accessibilityIdentifier("wilted-menu-sort-direction")
+                }
             }
         }
 

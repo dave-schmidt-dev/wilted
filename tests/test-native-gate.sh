@@ -367,13 +367,12 @@ assert_macos_ui_leg_is_executed() {
   # test holds the count up. The gate asserts this one by identifier too.
   assert_validation_contains 'testMenuOverridesAnOffPeakDeferralWithPrepareNow'
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
-  for method in \
-    testIntakeJourneyAcrossLarderFeedsAndSettings \
-    testEpisodeDecisionJourneyFromFeedsToLarder \
-    testPodcastPlaybackJourneyAcrossDestinations \
-    testSettingsAutomationAndSyncRecoveryJourney; do
+  for method in testIntakeJourneyAcrossLarderFeedsAndSettings testEpisodeDecisionJourneyFromFeedsToLarder; do
     assert_contains "$method" "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift"
   done
+  # The other journeys run headless in the Mac unit leg.
+  assert_contains testPodcastPlaybackJourneyAcrossDestinations "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift"
+  assert_contains testSettingsAutomationAndSyncRecoveryJourney "$repo_root/WiltedMacTests/WiltedMacSettingsJourneyTests.swift"
 }
 
 assert_macos_ui_leg_is_executed

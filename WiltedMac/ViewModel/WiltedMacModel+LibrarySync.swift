@@ -61,7 +61,8 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
                 removal: removal(of: episode.itemID, in: snapshot),
                 removedAt: snapshot.retiredAtByEpisode[episode.itemID]?.date,
                 payload: try payloadBytes(PodcastEpisodePayload(
-                    enclosureURL: episode.enclosureURL, feedURL: episode.feedURL, rssGUID: episode.rssGUID
+                    enclosureURL: episode.enclosureURL, feedURL: episode.feedURL, rssGUID: episode.rssGUID,
+                    episodeLink: episode.episodeLink
                 ))
             ))
         }

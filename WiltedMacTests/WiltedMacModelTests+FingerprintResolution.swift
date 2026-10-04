@@ -344,7 +344,8 @@ extension WiltedMacModelTests {
         XCTAssertTrue(view.contains("model.skippedFeedEpisodes"))
         XCTAssertTrue(view.contains("model.dismissedEpisodes"))
         XCTAssertTrue(view.contains("wilted-feeds-restorable"))
-        XCTAssertTrue(view.contains("@State private var isOffListExpanded = false"))
+        XCTAssertFalse(WiltedMacNavigationState.empty.isOffListExpanded, "Off the list starts collapsed")
+        XCTAssertTrue(view.contains("model.navigationState.isOffListExpanded"), "the disclosure is retained on the model")
         XCTAssertTrue(view.contains("wilted-feeds-off-list-toggle"))
         XCTAssertTrue(view.contains("if isOffListExpanded"))
     }

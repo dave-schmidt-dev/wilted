@@ -9,7 +9,8 @@ wilted_temp_snapshot() {
 
 wilted_temp_compare() {
   local before="$1" after="$2" label="$3"
-  python3 "$WILTED_TEMP_LEAK_CHECKER" compare "$before" "$after" --label "$label"
+  # $$ is the pid wilted_temp_mark_owned records, so only other live runs' roots are exempt.
+  python3 "$WILTED_TEMP_LEAK_CHECKER" compare "$before" "$after" --label "$label" --owner-pid "$$"
 }
 
 wilted_temp_mark_owned() {

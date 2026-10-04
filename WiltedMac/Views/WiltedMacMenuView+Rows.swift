@@ -24,10 +24,7 @@ extension WiltedMacMenuView {
                 .accessibilityHidden(true)
             rowArtwork(episode)
             VStack(alignment: .leading, spacing: 2) {
-                Text(episode.title)
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .lineLimit(1)
+                WiltedMacLarderEpisodeNotesTitle(episode: episode)
                 WiltedMacEpisodeMetadata(
                     episode: episode,
                     lifecycleLabel: showsGroupName ? group.displayName : nil,
@@ -129,8 +126,7 @@ extension WiltedMacMenuView {
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .dropDestination(for: String.self) { draggedIDs, _ in
-            guard let draggedID = draggedIDs.first else { return false }
-            return model.moveMenuEpisode(draggedID, before: episode.id)
+            model.dropMenuEpisodes(draggedIDs, before: episode.id)
         } isTargeted: { targeted in
             dropTargetID = targeted ? episode.id : nil
         }

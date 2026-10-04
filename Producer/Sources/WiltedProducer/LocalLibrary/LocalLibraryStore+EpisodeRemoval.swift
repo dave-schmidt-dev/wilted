@@ -128,6 +128,7 @@ extension LocalLibraryStore {
                 .filter { $0.feedID == feed }
             let episodeIDs = Set(episodes.map(\.id))
             for record in episodes { remove(record) }
+            staged += try stageEpisodeLinkRemoval(for: episodeIDs, in: context)
             try Self.reachRemovalStage(.episodes)
 
             stage = .queue

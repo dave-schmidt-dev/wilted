@@ -40,6 +40,8 @@ extension WiltedMacModel {
         var successfulFeedTitles: [String] = []
         var successfulFeedCount = 0
         var failedFeedCount = 0
+        /// How each refreshed feed ended, keyed by the URL it was loaded from.
+        var feedOutcomes: [URL: WiltedMacFeedRefreshState] = [:]
     }
 
     private struct PodcastRefreshAllFeedsFailed: Error {}
@@ -54,8 +56,16 @@ extension WiltedMacModel {
         guard let store else { throw CancellationError() }
         var withheld = 0
         var result = PodcastRefreshResult()
+        // Every row is queued before the first request, so none waits unmarked behind the network. A cancel that
+        // landed while the caller was reading its subscriptions already settled the rows and cleared the
+        // operation, so the cancelled task's cleanup will not settle them again: it must not queue any.
+        if !subscribing {
+            try Task.checkCancellation()
+            queueFeedRefresh(for: urls)
+        }
         for url in urls {
             try Task.checkCancellation()
+            if !subscribing { markFeedRefresh(forURL: url, .refreshing) }
             var persistedSubscriptionTitle: String?
             var wasAlreadySubscribed = false
             do {
@@ -100,6 +110,8 @@ extension WiltedMacModel {
                 result.newEpisodeIDs.append(contentsOf: admission.newlyAdmitted)
                 result.successfulFeedTitles.append(loaded.feed.title)
                 result.successfulFeedCount += 1
+                result.feedOutcomes[url] = .done
+                if !subscribing { markFeedRefresh(forURL: url, .done) }
             } catch is CancellationError {
                 if subscribing, let persistedSubscriptionTitle {
                     throw PodcastSubscriptionPartialFailure(
@@ -116,7 +128,11 @@ extension WiltedMacModel {
                     )
                 }
                 guard !subscribing else { throw error }
+                // A cancelled refresh settles its rows itself; a late failure must not repaint them.
+                try Task.checkCancellation()
                 result.failedFeedCount += 1
+                result.feedOutcomes[url] = .failed
+                markFeedRefresh(forURL: url, .failed)
             }
         }
         if !subscribing, result.successfulFeedCount == 0, result.failedFeedCount > 0 {
@@ -315,20 +331,17 @@ extension WiltedMacModel {
     }
 
     /// The native URL payload for Now Playing. Articles share their canonical
-    /// URL; podcasts share the subscription feed URL when the source record
-    /// has one. URL values stay URL values so the share sheet receives link
-    /// semantics instead of an ordinary string.
+    /// URL; podcasts share the episode's own page when its feed published one,
+    /// and never the subscription feed. URL values stay URL values so the share
+    /// sheet receives link semantics instead of an ordinary string.
     var currentPlaybackShareURL: URL? {
         if let article = currentArticle {
             return article.url
         }
-        if let episode = currentEpisode {
-            return episode.feedURL
-        }
-        return nil
+        return currentEpisode?.episodeLink
     }
 
-    /// Honest text payload used when the current podcast has no feed URL.
+    /// What a podcast without an episode page shares instead: its title and show.
     var currentPlaybackShareText: String? {
         if let article = currentArticle {
             return article.title + " · " + article.source
@@ -339,6 +352,9 @@ extension WiltedMacModel {
         return nil
     }
 
+    /// Said beside the title and show when there is no page to link to.
+    static let noEpisodePageText = "No episode page"
+
     var currentPlaybackShareTitle: String {
         currentArticle?.title ?? currentEpisode?.title ?? "Now Playing"
     }
@@ -348,7 +364,9 @@ extension WiltedMacModel {
             return article.title + " · " + article.source
         }
         if let episode = currentEpisode {
-            return episode.title + " · " + episode.feedTitle
+            return episode.episodeLink == nil
+                ? Self.noEpisodePageText
+                : episode.title + " · " + episode.feedTitle
         }
         return "Now Playing"
     }

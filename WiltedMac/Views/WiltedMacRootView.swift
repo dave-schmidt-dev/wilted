@@ -16,22 +16,24 @@ enum WiltedMacStartupAccessibility {
 /// detail already showed, and "Add an article" stayed in the middle of the
 /// window no matter what was selected. Owner acceptance rejected that on
 /// 2026-08-25. Playback no longer needs to sit beside the producer surface to
-/// stay reachable: the bottom rail persists beneath every work destination.
+/// stay reachable: the player shares one placement across every destination.
 struct WiltedMacRootView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
     @State private var playerPresentation: WiltedMacPlayerSection?
     @State private var playerFocusRequest: WiltedMacPlayerSection?
     @State private var windowWidth: CGFloat = 0
+    @State private var paneState = WiltedMacPaneState()
 
     /// What the window's width gives the sidebar and the Now Playing pane.
     private var shell: WiltedMacShellLayout {
-        WiltedMacShellLayout.resolve(windowWidth: windowWidth, scale: model.textScale)
+        WiltedMacShellLayout.resolve(
+            for: model.selectedNavigation, windowWidth: windowWidth,
+            scale: model.textScale, sidebarVisible: model.isSidebarVisible)
     }
-    /// The bar beneath the destination: for the work destinations always, and
-    /// for the Larder once its pane has left the side.
+    /// All destinations share the same placement at the same window width.
     private var showsBottomBar: Bool {
-        playerPresentation == nil && (model.selectedNavigation != .menu || shell.pane == .bottom)
+        playerPresentation == nil && shell.pane == .bottom
     }
 
     init(model: WiltedMacModel) {
@@ -79,14 +81,23 @@ struct WiltedMacRootView: View {
     private var detail: some View {
         ZStack {
             VStack(spacing: 0) {
-                Group {
-                    switch model.selectedNavigation {
-                    case .feeds:
-                        WiltedMacFeedsView(model: model)
-                    case .menu:
-                        WiltedMacMenuView(model: model, paneMode: shell.pane, collapsedSection: playerFocusRequest)
-                    case .settings:
-                        WiltedMacSettingsView(model: model)
+                GeometryReader { geometry in
+                    HStack(spacing: 0) {
+                        Group {
+                            switch model.selectedNavigation {
+                            case .feeds:
+                                WiltedMacFeedsView(model: model)
+                            case .menu:
+                                WiltedMacMenuView(model: model, paneMode: shell.pane)
+                            case .settings:
+                                WiltedMacSettingsView(model: model)
+                            }
+                        }
+                        if shell.pane == .side {
+                            Divider()
+                            WiltedMacNowPlayingPane(model: model, state: $paneState)
+                                .frame(width: WiltedMacLarderLayout.paneColumnWidth(detailWidth: geometry.size.width))
+                        }
                     }
                 }
                 if showsBottomBar {
@@ -102,9 +113,8 @@ struct WiltedMacRootView: View {
             // the same scroll position, but make its controls unavailable
             // while the full-window player is presented. Otherwise the
             // overlay would leave duplicate live controls in the AX tree.
-            // Every destination, the Larder included, uses the bar below
-            // and the full-window presentation here: the Larder's pane
-            // is either beside the list or in that bar.
+            // Every destination shares the side pane or the bottom bar,
+            // plus the full-window presentation here.
             .allowsHitTesting(playerPresentation == nil)
             .accessibilityHidden(playerPresentation != nil)
             .disabled(playerPresentation != nil)
@@ -117,6 +127,7 @@ struct WiltedMacRootView: View {
                     onCollapse: { section in
                         playerPresentation = nil
                         playerFocusRequest = section
+                        paneState.collapsed(to: section)
                     }
                 )
             }
@@ -130,6 +141,7 @@ struct WiltedMacRootView: View {
         .onChange(of: model.selectedNavigation) {
             playerPresentation = nil
         }
+        .onChange(of: model.currentPodcastEpisodeID) { paneState.episodeChanged() }
     }
 
     /// The sidebar is a column of this view rather than a NavigationSplitView
@@ -138,16 +150,17 @@ struct WiltedMacRootView: View {
     /// sidebar already draws its own page background, so nothing native is lost.
     private var splitView: some View {
         HStack(spacing: 0) {
-            WiltedMacSidebar(model: model, mode: shell.sidebar) {
-                playerFocusRequest = nil
-                model.selectedNavigation = $0
+            if shell.sidebar != .hidden {
+                WiltedMacSidebar(model: model, mode: shell.sidebar) {
+                    model.selectedNavigation = $0
+                }
+                .frame(width: sidebarColumnWidth)
+                Divider()
             }
-            .frame(width: sidebarColumnWidth)
-            Divider()
             detail
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-        .toolbar { wordmark }
+        .toolbar { wordmark; sidebarToggle }
         // One place the chosen size enters the window. Every typographic
         // site reads it back out through `wiltedFont`.
         .environment(\.wiltedTextScale, model.textScale)
@@ -234,6 +247,21 @@ struct WiltedMacRootView: View {
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(WiltedMacStartupAccessibility.recovery)
+    }
+
+    /// Hide or show the sidebar. ⌃⌘S does the same from the View menu.
+    @ToolbarContentBuilder
+    private var sidebarToggle: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                model.toggleSidebar()
+            } label: {
+                Image(systemName: "sidebar.leading")
+            }
+            .help(model.sidebarToggleTitle)
+            .accessibilityLabel(model.sidebarToggleTitle)
+            .accessibilityIdentifier("wilted-sidebar-toggle")
+        }
     }
 
     /// The wordmark states the brand at the top of the window. macOS 26 gives
@@ -323,10 +351,14 @@ struct WiltedMacDestination<Content: View>: View {
     /// The lettuce over the page, as on iOS's Larder and Settings. It sits over
     /// the scroll view's frame, so it never moves with the text or under the pane.
     var watermark = false
+    /// Where the page was scrolled to, by the id of the top visible block. The blocks of `content`
+    /// carry `.id`s; an id the page no longer has scrolls nowhere.
+    var scrollAnchor: Binding<String?>?
     @ViewBuilder let content: Content
     /// Where the destination's rows begin, as the content reports it: the
     /// lettuce sits below everything above them.
     @State private var rowsTop: CGFloat = 0
+    static var topAnchor: String { "destination-top" }
 
     var body: some View {
         ScrollView {
@@ -334,14 +366,17 @@ struct WiltedMacDestination<Content: View>: View {
                 Text(title)
                     .wiltedFont(.display)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .id(Self.topAnchor)
                 content
             }
+            .scrollTargetLayout()
             .frame(maxWidth: contentWidth ?? .infinity, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(inset)
             .coordinateSpace(name: WiltedMacRowsTopKey.space)
             .onPreferenceChange(WiltedMacRowsTopKey.self) { rowsTop = $0 }
         }
+        .scrollPosition(id: scrollAnchor ?? .constant(nil), anchor: .top)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         // Over the rows, as on iOS, whose list rows are opaque cards: behind

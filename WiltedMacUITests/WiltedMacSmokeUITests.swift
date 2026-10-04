@@ -7,12 +7,11 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// Absorbs:
     /// - testEachDestinationExclusivelyOccupiesTheDetailRegion
     /// - testSidebarListsDestinationsOnlyAndNotTheArticleList (sidebar assertion only)
-    /// - testLarderSortControlNamesItselfAndExposesEveryOrder
     /// - testFeedsPageOwnsSubscribingAndTheMenuAsksForAnArticle
     /// - testMenuArticleRowOffersRemoval
     /// - testFeedsPageListsPodcastFeedsWithPerFeedControls
     func testIntakeJourneyAcrossLarderFeedsAndSettings() {
-        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-window-width", "900"])
 
         let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
         let navMenu = app.descendants(matching: .any)["wilted-navigation-menu"]
@@ -51,17 +50,6 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let duplicateRows = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-sidebar-article-'"))
         XCTAssertEqual(duplicateRows.count, 0)
-
-        let sort = app.descendants(matching: .any)["wilted-menu-sort"]
-        XCTAssertTrue(sort.waitForExistence(timeout: 5))
-        XCTAssertTrue(visibleText(of: sort).contains("Sort Larder: Custom order"), visibleText(of: sort))
-
-        sort.click()
-        for choice in ["Custom order", "Newest", "Oldest", "Length · shortest", "Show · A–Z", "Title · A–Z"] {
-            XCTAssertTrue(app.menuItems[choice].exists, "missing Larder sort choice: \(choice)")
-        }
-        app.menuItems["Oldest"].click()
-        XCTAssertTrue(visibleText(of: sort).contains("Sort Larder: Oldest"), visibleText(of: sort))
 
         // The box is behind a button now, so opening it is part of the
         // journey: a trigger that draws but opens nothing would otherwise
@@ -188,6 +176,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         navSettings.click()
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
         XCTAssertTrue(compact.exists)
+        app.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -600)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-mac-feeds-detail"].exists)
 
         navMenu.click()
@@ -263,7 +252,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(feedRow.waitForExistence(timeout: 5), "Restore returns the row to Feeds")
 
         // Keep is the other half of the one decision Feeds owns.
-        // It is made from the notes popover; the row's Keep is driven by testPodcastPlaybackJourneyAcrossDestinations.
+        // It is made from the notes popover; the row's Keep is driven headlessly by WiltedMacPlaybackJourneyTests.
         showNotes.click()
         let keep = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-decide-keep-'")
@@ -306,396 +295,6 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(menuRow.waitForExistence(timeout: 5))
     }
 
-    /// Absorbs:
-    /// - testThePlayingFixtureComesUpWithoutAnAudioFault
-    /// - testMenuSurfacesReadyEpisodesAndBulkActions
-    /// - testPodcastCompactPlayerPersistsAcrossDestinationsAndExposesCompleteControls
-    /// - testInlineTranscriptFollowsAnOffscreenActiveCueAcrossABoundary
-    /// - testNavigationChangeClearsTheFullWindowPlayer
-    /// - testTheMenuNavigatesToNowPlayingControls (podcast-applicable assertions)
-    /// - testPlayerReportsProgressAndStatusLikeTheListener (podcast-applicable assertions)
-    /// - testPlaybackSurvivesDestinationSwitchesAndProducerStaysOneClickAway (podcast-applicable assertions)
-    ///
-    /// The playing fixture once launched already showing "Audio route recovery
-    /// failed." because a playback toggle beat the load, so the walkthrough
-    /// documented a faulted player; the first step guards that. A second
-    /// finding from the same capture is still open and is probably not an app
-    /// defect: after Transcript was expanded and collapsed, a click on a
-    /// waiting row did not land. Expanding replaces the pane with the
-    /// full-window player, where those rows are correctly disabled, so the
-    /// likeliest reading is that the capture never got back to the destination.
-    func testPodcastPlaybackJourneyAcrossDestinations() {
-        let app = launch(arguments: [
-            "--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
-            "--wilted-ui-fixture-prepared", "--wilted-ui-fixture-long-transcript"
-        ])
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-player-play-pause"]
-            .waitForExistence(timeout: 15))
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-player-recoverable-error"]
-            .waitForExistence(timeout: 3),
-                       "a fixture that starts faulted documents a broken player")
-
-        // The handoff itself works, which is what separates the fault above
-        // from the click problem tracked separately. Keeping the episode in
-        // Feeds and starting it from the Menu takes the player over.
-        app.descendants(matching: .any)["wilted-navigation-feeds"].click()
-        let keep = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
-        ).firstMatch
-        XCTAssertTrue(keep.waitForExistence(timeout: 15))
-        keep.click()
-        app.descendants(matching: .any)["wilted-navigation-menu"].click()
-
-        let menuRow = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'")
-        ).firstMatch
-        XCTAssertTrue(menuRow.waitForExistence(timeout: 8))
-        // The Menu's own playable group, by identifier rather than by copy.
-        // The sidebar's "Ready to play" row combines its children into one
-        // element, so its label is never that string on its own.
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-menu-ready-count"].waitForExistence(timeout: 5)
-        )
-        XCTAssertTrue(app.buttons["wilted-menu-play-first"].exists)
-        XCTAssertTrue(app.buttons["wilted-menu-prepare-all"].exists)
-        XCTAssertTrue(app.buttons["wilted-menu-play-first"].isEnabled)
-
-        let menu = app.descendants(matching: .any)["wilted-mac-menu-detail"]
-        XCTAssertTrue(menu.waitForExistence(timeout: 5))
-        let playEpisode = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-play-'")
-        ).firstMatch
-        XCTAssertTrue(playEpisode.waitForExistence(timeout: 8))
-        playEpisode.click()
-
-        let compact = app.descendants(matching: .any)["wilted-compact-player"]
-        XCTAssertTrue(compact.waitForExistence(timeout: 8))
-        XCTAssertTrue(menu.isHittable)
-        for identifier in [
-            "wilted-player-speed", "wilted-player-rewind", "wilted-player-play-pause",
-            "wilted-player-forward", "wilted-player-transcript",
-            "wilted-player-notes", "wilted-player-volume",
-            "wilted-player-scrubber", "wilted-player-previous", "wilted-player-next",
-            "wilted-player-restart", "wilted-player-keyboard-transports"
-        ] {
-            XCTAssertEqual(
-                app.descendants(matching: .any).matching(identifier: identifier).count, 1,
-                "missing or duplicate \(identifier)"
-            )
-        }
-
-        XCTAssertEqual(
-            app.descendants(matching: .any).matching(identifier: "wilted-player-menu").count, 0,
-            "on the Menu the player offers no shortcut back to the Menu"
-        )
-
-        let playPause = app.descendants(matching: .any)["wilted-player-play-pause"]
-        XCTAssertEqual(playPause.label, "Pause")
-        app.typeKey(.space, modifierFlags: [])
-        XCTAssertEqual(playPause.label, "Play", "Space must invoke the compact player's primary shortcut")
-        app.typeKey(.space, modifierFlags: [])
-        XCTAssertEqual(playPause.label, "Pause")
-
-        let itemTitle = app.descendants(matching: .any)["wilted-player-item-title"]
-        XCTAssertTrue(itemTitle.waitForExistence(timeout: 5))
-        let itemTitleBeforeExpansion = visibleText(of: itemTitle)
-        XCTAssertTrue(itemTitleBeforeExpansion.contains("Quiet Machines"))
-
-        XCTAssertEqual(
-            app.descendants(matching: .any)["wilted-player-rewind"].label,
-            "Rewind 15 seconds"
-        )
-        XCTAssertEqual(
-            app.descendants(matching: .any)["wilted-player-forward"].label,
-            "Skip forward 30 seconds"
-        )
-        XCTAssertEqual(
-            app.descendants(matching: .any)["wilted-player-scrubber"].label,
-            "Playback position"
-        )
-        XCTAssertFalse(
-            app.descendants(matching: .any)["wilted-player-status"].exists,
-            "Plain playback state is conveyed by the play/pause transport"
-        )
-        XCTAssertFalse(
-            app.descendants(matching: .any)["wilted-player-route-recovery"].exists,
-            "Recover audio appears only after automatic route recovery fails"
-        )
-
-        let scrubber = app.descendants(matching: .any)["wilted-player-scrubber"]
-        XCTAssertTrue(scrubber.waitForExistence(timeout: 15))
-        scrubber.adjust(toNormalizedSliderPosition: 0.685)
-
-        // The Menu's inline expansion keeps the same player implementation.
-        let transcript = app.descendants(matching: .any)["wilted-player-transcript"]
-        transcript.click()
-        let transcriptExpansion = app.descendants(matching: .any)["wilted-player-transcript-expanded"]
-        XCTAssertTrue(transcriptExpansion.waitForExistence(timeout: 5))
-        XCTAssertEqual(transcript.value as? String, "Expanded")
-
-        let prefix = "wilted-now-playing-synced-transcript-"
-        let startingCue = app.descendants(matching: .any)["\(prefix)cue-67"]
-        XCTAssertTrue(startingCue.waitForExistence(timeout: 10))
-        XCTAssertTrue(waitForHittable(startingCue),
-                      "the active cue must be visible when the inline transcript mounts")
-        let nearbyMarker = app.descendants(matching: .any)["\(prefix)removed-5"]
-        XCTAssertTrue(nearbyMarker.waitForExistence(timeout: 10))
-        XCTAssertTrue(waitForHittable(nearbyMarker),
-                      "prepared cuts stay in the synchronized transcript's visible rows")
-
-        scrubber.adjust(toNormalizedSliderPosition: 0.81)
-        let advancedCue = app.descendants(matching: .any)["\(prefix)cue-79"]
-        XCTAssertTrue(advancedCue.waitForExistence(timeout: 10))
-        XCTAssertTrue(waitForHittable(advancedCue),
-                      "the next active cue must become visible after the cue boundary")
-
-        XCTAssertEqual(visibleText(of: itemTitle), itemTitleBeforeExpansion)
-        transcript.click()
-        XCTAssertTrue(transcriptExpansion.waitForNonExistence(timeout: 5))
-        XCTAssertEqual(transcript.value as? String, "Collapsed")
-
-        // The same live player follows the reader to every other destination.
-        let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
-        navFeeds.click()
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-mac-feeds-detail"].waitForExistence(timeout: 5))
-        // The player's way back to the Menu exists only off the Menu: on the
-        // Menu itself the shortcut would point at the page already showing.
-        XCTAssertEqual(
-            app.descendants(matching: .any).matching(identifier: "wilted-player-menu").count, 1,
-            "the player offers one way back to the Menu from another destination"
-        )
-        XCTAssertTrue(compact.exists)
-        XCTAssertTrue(compact.isHittable)
-        XCTAssertEqual(playPause.label, "Pause")
-        XCTAssertEqual(visibleText(of: itemTitle), itemTitleBeforeExpansion)
-
-        XCTAssertTrue(transcript.waitForExistence(timeout: 10),
-                      "the rail player must be live off-Menu while the fixture plays")
-        transcript.click()
-        let fullWindow = app.descendants(matching: .any)["wilted-player-full-window"]
-        XCTAssertTrue(fullWindow.waitForExistence(timeout: 10),
-                      "expanding from the rail presents the full-window player")
-
-        let settings = app.descendants(matching: .any)["wilted-navigation-settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 10))
-        settings.click()
-
-        let settingsDetail = app.descendants(matching: .any)["wilted-mac-settings"]
-        XCTAssertTrue(settingsDetail.waitForExistence(timeout: 10))
-        XCTAssertTrue(settingsDetail.isHittable,
-                      "the destination must accept hits once navigation retires the player")
-        XCTAssertTrue(fullWindow.waitForNonExistence(timeout: 10),
-                      "no overlay may still contain the player after a navigation change")
-
-        XCTAssertTrue(compact.exists)
-        XCTAssertEqual(playPause.label, "Pause")
-        XCTAssertTrue(menu.waitForNonExistence(timeout: 5))
-
-        app.descendants(matching: .any)["wilted-navigation-menu"].click()
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-mac-menu-detail"].waitForExistence(timeout: 5)
-        )
-        XCTAssertTrue(compact.exists)
-        XCTAssertEqual(playPause.label, "Pause")
-
-        let notes = app.descendants(matching: .any)["wilted-player-notes"]
-        XCTAssertTrue(notes.waitForExistence(timeout: 15),
-                      "an episode started while an article plays takes the player over")
-        notes.click()
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-player-notes-expanded"]
-            .waitForExistence(timeout: 10))
-    }
-
-    /// Absorbs:
-    /// - testSelectingEmptyNowPlayingDoesNotResizeWindow
-    /// - testSettingsAutomationControlsRevealOnlyTheRelevantOffPeakWindow
-    /// - testQuarantinedSyncOffersAccountReviewAndRecoversFromSettings
-    func testSettingsAutomationAndSyncRecoveryJourney() {
-        let app = launch(arguments: ["--wilted-ui-fixture-quarantined"])
-
-        let window = app.windows.firstMatch
-        XCTAssertTrue(window.waitForExistence(timeout: 5))
-        let before = window.frame
-        let compact = app.descendants(matching: .any)["wilted-compact-player"]
-        XCTAssertTrue(compact.waitForExistence(timeout: 5))
-        let idle = app.descendants(matching: .any)["wilted-player-idle"]
-        XCTAssertTrue(idle.waitForExistence(timeout: 5))
-        XCTAssertEqual(idle.label, "Nothing is playing")
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-navigation-nowPlaying"].exists)
-
-        app.descendants(matching: .any)["wilted-navigation-feeds"].click()
-        XCTAssertTrue(compact.exists)
-        app.descendants(matching: .any)["wilted-navigation-settings"].click()
-        XCTAssertTrue(compact.exists)
-        let after = window.frame
-
-        XCTAssertEqual(after.width, before.width, accuracy: 1)
-        XCTAssertLessThanOrEqual(after.height, before.height + 1)
-
-        let controls = app.descendants(matching: .any)["wilted-automation-controls"]
-        XCTAssertTrue(controls.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-refresh-policy"].exists)
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-download-policy"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-feeds-admission-policy"].exists)
-        let processing = app.descendants(matching: .any)["wilted-automation-processing-policy"]
-        XCTAssertTrue(processing.exists)
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-transcript-policy"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-remove-ads"].exists)
-
-        // The fixture starts at immediate processing. No dormant time controls
-        // or stop action should occupy the Settings card while automation is idle,
-        // but the status must still say that nothing is running.
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-start"].exists)
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-end"].exists)
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-explanation"].exists)
-        let status = app.descendants(matching: .any)["wilted-automation-status"]
-        XCTAssertTrue(status.exists)
-        XCTAssertTrue(status.label.localizedCaseInsensitiveContains("idle"))
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-stop"].exists)
-
-        processing.click()
-        let manual = app.menuItems["Manual"]
-        XCTAssertTrue(manual.waitForExistence(timeout: 5))
-        manual.click()
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-start"].exists)
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-automation-off-peak-end"].exists)
-
-        processing.click()
-        let offPeak = app.menuItems["Off-peak"]
-        XCTAssertTrue(offPeak.waitForExistence(timeout: 5))
-        offPeak.click()
-
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-off-peak-start"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-automation-off-peak-end"].exists)
-        let explanation = app.descendants(matching: .any)["wilted-automation-off-peak-explanation"]
-        XCTAssertTrue(explanation.exists)
-        XCTAssertTrue(visibleText(of: explanation).localizedCaseInsensitiveContains("local time"))
-        XCTAssertTrue(visibleText(of: explanation).localizedCaseInsensitiveContains("overnight"))
-
-        let syncStatus = app.descendants(matching: .any)["wilted-sync-status"]
-        XCTAssertTrue(syncStatus.waitForExistence(timeout: 5))
-        let quarantined = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", "Quarantined"), object: syncStatus
-        )
-        XCTAssertEqual(XCTWaiter().wait(for: [quarantined], timeout: 5), .completed)
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-sync-producer-identity"].exists,
-                       "the producer-identity placeholder is gone")
-
-        let review = app.descendants(matching: .any)["wilted-sync-use-current-account"]
-        XCTAssertTrue(review.waitForExistence(timeout: 5))
-        XCTAssertTrue(review.isEnabled)
-        review.click()
-
-        let recovered = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", "Disabled"), object: syncStatus
-        )
-        XCTAssertEqual(XCTWaiter().wait(for: [recovered], timeout: 5), .completed)
-        XCTAssertFalse(review.exists)
-    }
-
-    /// The library publisher's Sync card on its own no-network fixture: a library held for account
-    /// review until the owner approves it, one Sync now that reports this Mac's own send (never the
-    /// phone's fetch), and a failed send that keeps its changes for retry.
-    func testLibraryPublisherSyncReviewAndSyncNowJourney() {
-        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-library-sync", "switched"])
-        let status = openLibrarySyncCard(app)
-        let held = "Account changed. Library changes are held for review"
-        XCTAssertEqual(status.value as? String, held)
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-sync-producer-identity"].exists)
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-sync-refresh"].exists, "no legacy actions")
-        XCTAssertFalse(app.descendants(matching: .any)["wilted-sync-use-current-account"].exists)
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-sync-scope-note"].exists)
-        let syncNow = app.descendants(matching: .any)["wilted-sync-now"]
-        XCTAssertTrue(syncNow.exists)
-        XCTAssertFalse(syncNow.isEnabled, "a held library has no Sync now")
-
-        let review = app.descendants(matching: .any)["wilted-sync-review-account"]
-        XCTAssertTrue(review.exists)
-        review.click()
-        let keepHeld = app.buttons["Keep held"]
-        XCTAssertTrue(keepHeld.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts.containing(
-            NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "previous account", "previous account")
-        ).firstMatch.exists, "the dialog says why the library is held")
-        keepHeld.click()
-        XCTAssertEqual(status.value as? String, held, "Keep held changes nothing")
-
-        review.click()
-        let approve = app.buttons["Use reviewed account"]
-        XCTAssertTrue(approve.waitForExistence(timeout: 5))
-        approve.click()
-        waitForValue(status, "value == %@", "Account reviewed. 2 library changes waiting to send")
-        XCTAssertFalse(review.exists)
-        XCTAssertTrue(syncNow.isEnabled)
-        syncNow.click()
-        waitForValue(status, "value BEGINSWITH %@", "Local changes sent at ")
-        XCTAssertTrue((status.value as? String ?? "").hasSuffix("Phone fetch is separate."))
-        XCTAssertNotEqual(app.descendants(matching: .any)["wilted-sync-last-send"].value as? String, "Not yet this launch")
-        app.terminate()
-
-        let failing = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-library-sync", "failure"])
-        let failingStatus = openLibrarySyncCard(failing)
-        XCTAssertEqual(failingStatus.value as? String, "2 library changes waiting to send")
-        failing.descendants(matching: .any)["wilted-sync-now"].click()
-        waitForValue(failingStatus, "value == %@", "Send failed. 2 library changes kept for retry.")
-        XCTAssertTrue(failing.descendants(matching: .any)["wilted-sync-now"].isEnabled, "a failure is retried by Sync now")
-        failing.terminate()
-    }
-
-    private func openLibrarySyncCard(_ app: XCUIApplication) -> XCUIElement {
-        app.descendants(matching: .any)["wilted-navigation-settings"].click()
-        let settings = app.descendants(matching: .any)["wilted-mac-settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 10))
-        for _ in 0..<4 { settings.swipeUp() }
-        let status = app.descendants(matching: .any)["wilted-sync-status"]
-        XCTAssertTrue(status.waitForExistence(timeout: 10))
-        return status
-    }
-
-    private func waitForValue(_ element: XCUIElement, _ format: String, _ value: String) {
-        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format, value), object: element)
-        XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: 10), .completed, "\(format) \(value)")
-    }
-
-    /// A deferred episode's only way forward is the override, so the leg has
-    /// to prove the control exists and that pressing it actually starts the
-    /// work rather than just changing the copy.
-    ///
-    /// The deferred state is stored as `.preparing(stage: "Queued")`, so
-    /// asserting on "Preparing…" alone would pass whether or not the override
-    /// did anything. The assertion is that the deferral is gone: the row stops
-    /// offering "Prepare now".
-    func testMenuOverridesAnOffPeakDeferralWithPrepareNow() {
-        let app = launch(arguments: [
-            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-deferred"
-        ])
-        let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
-        XCTAssertTrue(navFeeds.waitForExistence(timeout: 8))
-        navFeeds.click()
-        let keep = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
-        ).firstMatch
-        XCTAssertTrue(keep.waitForExistence(timeout: 8))
-        keep.click()
-
-        let navMenu = app.descendants(matching: .any)["wilted-navigation-menu"]
-        XCTAssertTrue(navMenu.waitForExistence(timeout: 5))
-        navMenu.click()
-
-        let prepareNow = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-prepare-now-'")
-        ).firstMatch
-        XCTAssertTrue(prepareNow.waitForExistence(timeout: 8),
-                      "a deferred episode must offer a way past its off-peak window")
-        prepareNow.click()
-
-        let expectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"), object: prepareNow
-        )
-        XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: 10), .completed,
-                       "pressing Prepare now left the episode deferred")
-    }
-
     /// The words an element shows. macOS puts a Text's words in its value, not
     /// its label, and a Text with links can hand each run to a child, so the
     /// element and its static-text descendants are read together.
@@ -706,14 +305,6 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let confirm = byIdentifier.waitForExistence(timeout: 5) ? byIdentifier : app.buttons[label]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "the removal dialog must offer \(label)")
         confirm.click()
-    }
-
-    private func visibleText(of element: XCUIElement) -> String {
-        // macOS 27 can leave a menu button's label empty and carry its name in the title.
-        let own = [element.value as? String, element.label, element.title].compactMap { $0 }
-        let children = element.descendants(matching: .staticText).allElementsBoundByIndex
-            .map { $0.value as? String ?? $0.label }
-        return (own + children).joined(separator: " ")
     }
 
     private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {

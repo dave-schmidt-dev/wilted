@@ -51,13 +51,38 @@ extension WiltedMacModel {
 #endif
 
     /// Fixture launches share the daily driver's bundle identifier, so they
-    /// get their own defaults domain, emptied on every launch: a UI test must
-    /// neither inherit the owner's choices nor leave its own behind.
-    static func fixturePreferences() -> UserDefaults {
-        let suite = "com.zerodelta.wilted.mac.ui-fixture"
-        let defaults = UserDefaults(suiteName: suite) ?? .standard
-        defaults.removePersistentDomain(forName: suite)
+    /// get their own defaults domain, emptied on first use: a UI test must
+    /// neither inherit the owner's choices nor leave its own behind. The
+    /// suite is named by process and model, so Mac test hosts running in
+    /// sibling worktrees at the same time cannot wipe each other's state.
+    static func fixturePreferences(suiteName: String = fixturePreferencesSuiteName()) -> UserDefaults {
+        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+        defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    static let fixturePreferencesSuitePrefix = "com.zerodelta.wilted.mac.ui-fixture"
+
+    static func fixturePreferencesSuiteName() -> String {
+        "\(fixturePreferencesSuitePrefix).\(ProcessInfo.processInfo.processIdentifier).\(UUID().uuidString)"
+    }
+
+    /// Removes the suites (and their plists) of fixture processes that are gone. A suite whose owner
+    /// is live, or whose owner cannot be told, is left alone.
+    static func sweepStaleFixturePreferenceSuites(
+        in directory: URL? = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Preferences", isDirectory: true)
+    ) {
+        guard let directory,
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
+        let prefix = fixturePreferencesSuitePrefix + "."
+        for entry in entries where entry.hasPrefix(prefix) && entry.hasSuffix(".plist") {
+            let suite = String(entry.dropLast(".plist".count))
+            guard let owner = suite.dropFirst(prefix.count).split(separator: ".").first.flatMap({ Int32($0) }),
+                  owner > 0, kill(owner, 0) != 0, errno == ESRCH else { continue }
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(entry))
+        }
     }
 
     /// The durable episode records the shelf retains. Hidden and retired
@@ -345,6 +370,8 @@ extension WiltedMacModel {
                 }
             } catch is CancellationError {
                 outcome = .cancelled
+            } catch let error as PodcastCatalogLookupError {
+                outcome = error == .cancelled ? .cancelled : .lookupFailed(error)
             } catch let error as PastedLinkClassifierError {
                 if error == .invalidURL {
                     outcome = .invalid
@@ -370,6 +397,8 @@ extension WiltedMacModel {
         case confirm(URL, String? = nil)
         case notAFeed
         case cancelled, invalid, unreachable
+        /// Apple's show lookup failed in a way worth naming.
+        case lookupFailed(PodcastCatalogLookupError)
     }
 
     private func apply(_ outcome: PodcastSubscriptionCheckOutcome) {
@@ -393,8 +422,27 @@ extension WiltedMacModel {
             podcastFeedDraftStatus = "Enter a complete HTTPS podcast feed or supported Apple show address."
         case .unreachable:
             podcastFeedDraftStatus = "Wilted could not reach that address. Check it, or retry when online."
+        case let .lookupFailed(error):
+            podcastFeedDraftStatus = Self.appleLookupFailureStatus(error)
         }
 #endif
+    }
+
+    /// What a failed Apple show lookup says. Each names the cause and what to do, rather than
+    /// blaming the connection for a link that simply has no show behind it.
+    static func appleLookupFailureStatus(_ error: PodcastCatalogLookupError) -> String {
+        switch error {
+        case .invalidCollectionID:
+            "That Apple Podcasts address is not a supported show link."
+        case .resultNotFound:
+            "Apple Podcasts has no show at that link, or it has no public feed. Check the link or paste the feed address."
+        case .timedOut:
+            "Apple Podcasts took too long to answer. Retry when online."
+        case .invalidResponse, .responseTooLarge, .unsafeRedirect:
+            "Apple Podcasts gave an answer Wilted could not use. Retry later or paste the feed address."
+        case .cancelled:
+            podcastCheckCancelledStatus
+        }
     }
 
     func cancelPodcastSubscriptionCheck() {
@@ -409,6 +457,7 @@ extension WiltedMacModel {
         if ownsRefresh {
             podcastRefreshTask?.cancel(); podcastRefreshOperationID = nil
             podcastRefreshTask = nil; isRefreshingPodcasts = false
+            settleFeedRefreshStates()
         }
         isCheckingPodcastSubscription = false
         podcastFeedDraftStatus = Self.podcastCheckCancelledStatus
@@ -454,6 +503,7 @@ extension WiltedMacModel {
                     self.isRefreshingPodcasts = false
                     self.podcastRefreshTask = nil
                     self.podcastRefreshOperationID = nil
+                    self.settleFeedRefreshStates()
                 }
             }
             do {
@@ -494,6 +544,7 @@ extension WiltedMacModel {
         podcastRefreshOperationID = nil
         podcastRefreshTask = nil
         isRefreshingPodcasts = false
+        settleFeedRefreshStates()
         podcastOperationMessage = "Podcast refresh cancelled."
     }
 

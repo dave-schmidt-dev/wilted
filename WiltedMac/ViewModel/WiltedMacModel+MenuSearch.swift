@@ -109,67 +109,83 @@ extension WiltedMacModel {
     private func menuSortPrecedes(_ lhsID: String, _ rhsID: String, by sort: WiltedMacMenuSort) -> Bool {
         let lhs = episodes.first(where: { $0.id == lhsID })
         let rhs = episodes.first(where: { $0.id == rhsID })
-        switch sort {
-        case .custom:
-            return false
-        case .newest:
-            if let lhs, let rhs, lhs.releasedAt != rhs.releasedAt {
-                return lhs.releasedAt > rhs.releasedAt
-            }
-        case .oldest:
-            if let lhs, let rhs, lhs.releasedAt != rhs.releasedAt {
-                return lhs.releasedAt < rhs.releasedAt
-            }
-        case .shortest:
-            switch (lhs?.durationSeconds, rhs?.durationSeconds) {
+        let ascending = (sort.legacyDirection ?? menuSortDirection) == .ascending
+        switch sort.canonical {
+        case .length, .age:
+            let left: Double? = sort.canonical == .length ? lhs?.durationSeconds : lhs?.publishedAt?.timeIntervalSince1970
+            let right: Double? = sort.canonical == .length ? rhs?.durationSeconds : rhs?.publishedAt?.timeIntervalSince1970
+            switch (left, right) {
             case let (left?, right?) where left != right:
-                return left < right
+                // Age ascending means younger first; length ascending means shortest first.
+                return sort.canonical == .age ? (ascending ? left > right : left < right) : (ascending ? left < right : left > right)
             case (nil, .some): return false
             case (.some, nil): return true
             default: break
             }
-        case .show:
-            let comparison = (lhs?.feedTitle ?? "").localizedStandardCompare(rhs?.feedTitle ?? "")
-            if comparison != .orderedSame { return comparison == .orderedAscending }
-        case .title:
+        case .alphabetical:
             let comparison = (lhs?.title ?? "").localizedStandardCompare(rhs?.title ?? "")
-            if comparison != .orderedSame { return comparison == .orderedAscending }
+            if comparison != .orderedSame { return comparison == (ascending ? .orderedAscending : .orderedDescending) }
+        default: break
         }
         return lhsID < rhsID
     }
 
     /// Applies a non-custom Menu sort to the durable queue without moving the
     /// current item. The local snapshot changes first so the picker never
-    /// appears to do nothing while SwiftData catches up.
+    /// appears to do nothing while SwiftData catches up. A request that
+    /// arrives while a write is in flight updates the snapshot and nothing
+    /// else: the running writer persists the newest order before it settles.
     func applyMenuSortIfNeeded() {
-        guard !isApplyingMenuSort, menuSort != .custom else { return }
+        guard menuSort != .custom else { return }
         let sorted = sortedMenuEpisodeIDs(podcastQueueIDs, by: menuSort)
         guard sorted != podcastQueueIDs else { return }
         podcastQueueIDs = sorted
 #if canImport(WiltedProducer)
-        guard let playback,
-              let episodeIDs = try? sorted.map({ try ItemID(rawValue: $0) }),
-              let state = try? PodcastQueueState(
-                episodeIDs: episodeIDs,
-                currentEpisodeID: currentPodcastEpisodeID.flatMap { try? ItemID(rawValue: $0) }
-              ) else {
-            return
-        }
+        guard playback != nil, !isApplyingMenuSort else { return }
         isApplyingMenuSort = true
-        Task { [weak self] in
-            do {
-                try await playback.replacePodcastQueue(state)
-            } catch {
-                // Reported rather than swallowed: the old code retried forever
-                // and said nothing, so a queue that would not accept the sort
-                // looked like a Menu that simply ignored the picker.
-                self?.podcastOperationMessage = "The Larder order could not be saved."
-            }
-            await self?.refreshPodcastQueueState()
-            self?.isApplyingMenuSort = false
-        }
+        Task { [weak self] in await self?.persistMenuOrder() }
 #endif
     }
+
+#if canImport(WiltedProducer)
+    /// Writes the local Larder order until the store holds the newest request.
+    ///
+    /// `isApplyingMenuSort` stays set across the refresh that follows each
+    /// write, so that refresh updates the snapshot without starting a second
+    /// writer. Only a changed request, never a store that disagrees with the
+    /// order it was given, starts another pass. A failed write keeps the
+    /// durable order, says so, and does not retry; the sort falls back to
+    /// Custom so the caption names the order the list shows.
+    private func persistMenuOrder() async {
+        defer { isApplyingMenuSort = false }
+        var lastWritten: [String]?
+        var settled: (WiltedMacMenuSort, WiltedMacMenuSortDirection)
+        repeat {
+            settled = (menuSort, menuSortDirection)
+            while let playback, podcastQueueIDs != lastWritten {
+                let order = podcastQueueIDs
+                guard let episodeIDs = try? order.map({ try ItemID(rawValue: $0) }),
+                      let state = try? PodcastQueueState(
+                        episodeIDs: episodeIDs,
+                        currentEpisodeID: currentPodcastEpisodeID.flatMap { try? ItemID(rawValue: $0) }
+                      ) else {
+                    return
+                }
+                do {
+                    try await menuSortWriteHookForTesting?()
+                    try await playback.replacePodcastQueue(state)
+                    lastWritten = order
+                } catch {
+                    podcastOperationMessage = "The Larder order could not be saved."
+                    menuSort = .custom
+                    await refreshPodcastQueueState()
+                    return
+                }
+            }
+            await refreshPodcastQueueState()
+        } while settled != (menuSort, menuSortDirection)
+    }
+#endif
 
     func canPlayEpisode(_ episode: WiltedMacEpisode) -> Bool {
         !hiddenEpisodeIDs.contains(episode.id) &&

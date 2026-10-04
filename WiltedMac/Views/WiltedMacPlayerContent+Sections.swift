@@ -98,7 +98,7 @@ extension WiltedMacPlayerContent {
 
     var detail: String {
         if let episode = model.currentEpisode {
-            return "\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .abbreviated, time: .omitted))"
+            return episode.presentation.playerSubtitleLabel
         }
         return model.currentArticle?.source ?? WiltedScreenCopy.nowPlayingEmptyDetailProducer
     }

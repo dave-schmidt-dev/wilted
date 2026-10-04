@@ -17,10 +17,112 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// The pure part of the Larder list: which queued rows appear and in what order. The order is always
+/// How the Larder list is laid out on screen. A display choice only: it never changes what plays next.
+enum LibrarySortOption: String, CaseIterable, Identifiable, Sendable {
+    case playOrder, newest, oldest, shortest, title
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .playOrder: "Play order"
+        case .newest: "Newest"
+        case .oldest: "Oldest"
+        case .shortest: "Shortest"
+        case .title: "Title"
+        }
+    }
+
+    /// A stored value this build does not know (hand-edited, or from a later build) is the play order.
+    static func stored(_ rawValue: String?) -> LibrarySortOption {
+        rawValue.flatMap(LibrarySortOption.init(rawValue:)) ?? .playOrder
+    }
+}
+
+enum LibraryGroupOption: String, CaseIterable, Identifiable, Sendable {
+    case none, feed
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .none: "None"
+        case .feed: "Feed"
+        }
+    }
+
+    static func stored(_ rawValue: String?) -> LibraryGroupOption {
+        rawValue.flatMap(LibraryGroupOption.init(rawValue:)) ?? .none
+    }
+}
+
+/// One run of rows under an optional heading; a single untitled section when nothing is grouped.
+struct LibraryRowSection: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String?
+    let rows: [LibraryRow]
+}
+
+/// The pure part of the Larder list: which queued rows appear and in what order. `rows` is always
 /// the shared play order (`InProgressOrdering.playOrder`), the same one CarPlay, Siri and auto-continue
-/// use; the phone has no sort choice and no drag-reorder (the Mac keeps its own custom order).
+/// use. `organize` is a display transform over those rows (Sort and Group); it feeds nothing back, so
+/// playback keeps following the play order whatever the list shows. No drag-reorder on the phone
+/// (the Mac keeps its own custom order).
 enum LibraryListing {
+    /// `rows` laid out for display. Every sort is stable against the incoming play order, so ties keep
+    /// it; rows with no duration sort last under Shortest. Grouping by feed keeps the sorted order
+    /// inside each group and orders the groups by their first row.
+    static func organize(
+        _ rows: [LibraryRow], sort: LibrarySortOption, group: LibraryGroupOption
+    ) -> [LibraryRowSection] {
+        let ordered = sorted(rows, by: sort)
+        switch group {
+        case .none:
+            return [LibraryRowSection(id: "all", title: nil, rows: ordered)]
+        case .feed:
+            var order: [String] = []
+            var byFeed: [String: [LibraryRow]] = [:]
+            for row in ordered {
+                let name = feedName(row)
+                if byFeed[name] == nil { order.append(name) }
+                byFeed[name, default: []].append(row)
+            }
+            return order.map { LibraryRowSection(id: "feed|\($0)", title: $0, rows: byFeed[$0] ?? []) }
+        }
+    }
+
+    static func feedName(_ row: LibraryRow) -> String {
+        let show = row.showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return show.isEmpty ? "Show unknown" : show
+    }
+
+    private static func sorted(_ rows: [LibraryRow], by sort: LibrarySortOption) -> [LibraryRow] {
+        guard sort != .playOrder else { return rows }
+        let precedes: (LibraryRow, LibraryRow) -> Bool? = { left, right in
+            switch sort {
+            case .playOrder: nil
+            case .newest: left.publishedAt == right.publishedAt ? nil : left.publishedAt > right.publishedAt
+            case .oldest: left.publishedAt == right.publishedAt ? nil : left.publishedAt < right.publishedAt
+            case .shortest:
+                switch (left.durationSeconds, right.durationSeconds) {
+                case let (l?, r?): l == r ? nil : l < r
+                case (.some, nil): true
+                case (nil, .some): false
+                case (nil, nil): nil
+                }
+            case .title:
+                switch left.title.localizedStandardCompare(right.title) {
+                case .orderedAscending: true
+                case .orderedDescending: false
+                case .orderedSame: nil
+                }
+            }
+        }
+        return rows.enumerated().sorted { left, right in
+            precedes(left.element, right.element) ?? (left.offset < right.offset)
+        }.map(\.element)
+    }
+
     /// Queued rows the Mac has prepared: a ready offer (or a transfer already under way) or audio
     /// already on the phone, narrowed by `filter` and `query`, in the play order: episodes someone is
     /// partway through first (newest play first), then not-started ones oldest published first (ties keep

@@ -100,7 +100,8 @@ extension LocalLibraryStore {
         podcastLibrarySnapshotFetchCount += 1
         let episodeRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }
-        let episodeValues = episodeRecords.compactMap(Self.decodePodcastEpisode)
+        let links = try episodeLinks(in: context)
+        let episodeValues = episodeRecords.compactMap { Self.decodePodcastEpisode($0, link: links[$0.id]) }
         var retiredAtByEpisode: [ItemID: Timestamp] = [:]
         var removalKindByEpisode: [ItemID: PodcastEpisodeRemovalKind] = [:]
         for record in episodeRecords {

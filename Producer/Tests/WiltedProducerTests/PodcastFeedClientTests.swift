@@ -119,6 +119,77 @@ struct PodcastFeedClientTests {
         #expect(notes.hasPrefix("word word"))
     }
 
+    /// The item's `<link>` is the episode's own page. It is an optional extra:
+    /// an unsafe, missing, or self-referential one costs the link, never the feed.
+    @Test func capturesTheEpisodePageLinkAndResolvesRelativeOnes() async throws {
+        let enclosure = #"<enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />"#
+        let absolute = try await client(xml: feed(item: "<link> https://show.example.test/episodes/1 </link>\(enclosure)")).load(sourceURL)
+        #expect(absolute.episodes[0].episodeLink?.absoluteString == "https://show.example.test/episodes/1")
+        let relative = try await client(xml: feed(item: "<link>/episodes/2?x=1</link>\(enclosure)")).load(sourceURL)
+        #expect(relative.episodes[0].episodeLink?.absoluteString == "https://podcasts.example.test/episodes/2?x=1")
+        let plainHTTP = try await client(xml: feed(item: "<link>http://show.example.test/3</link>\(enclosure)")).load(sourceURL)
+        #expect(plainHTTP.episodes[0].episodeLink?.scheme == "http")
+    }
+
+    @Test func dropsUnsafeMissingAndSelfReferentialEpisodeLinks() async throws {
+        let enclosure = #"<enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" />"#
+        let unusable = [
+            "javascript:alert(1)", "file:///etc/passwd", "ftp://show.example.test/1", "data:text/html,hi",
+            "https://user:secret@show.example.test/1", "https:///nohost", "not a url at all", "   ",
+            "https://cdn.example.test/one.mp3", "https://podcasts.example.test/feed.xml#top",
+            "/feed.xml", "https://show.example.test/" + String(repeating: "a", count: 2_100),
+        ]
+        for link in unusable {
+            let result = try await client(xml: feed(item: "<link>\(link)</link>\(enclosure)")).load(sourceURL)
+            #expect(result.episodes.count == 1, "\(link) must not cost the episode")
+            #expect(result.episodes[0].episodeLink == nil, "\(link) is not a usable episode page")
+        }
+        let missing = try await client(xml: feed(item: enclosure)).load(sourceURL)
+        #expect(missing.episodes[0].episodeLink == nil)
+    }
+
+    private func linkItem(_ n: Int, link: String) -> String {
+        "<item><title>Episode \(n)</title><link>\(link)</link>"
+            + #"<enclosure url="https://cdn.example.test/\#(n).mp3" type="audio/mpeg" /></item>"#
+    }
+
+    private func links(of result: LoadedPodcastFeed) -> [String: String?] {
+        Dictionary(uniqueKeysWithValues: result.episodes.map { ($0.title, $0.episodeLink?.absoluteString) })
+    }
+
+    /// The link is checked after it is resolved against the feed: a root-relative link of 2,047
+    /// characters is within bounds as written and over the episode's 2,048 once the feed's origin is
+    /// added. That costs the link, not the episode or the feed.
+    @Test func aLinkThatResolvesPastTheEpisodeLimitCostsOnlyThatLink() async throws {
+        let xml = "<rss><channel><title>Show</title>"
+            + linkItem(1, link: "/" + String(repeating: "a", count: 2_047))
+            + linkItem(2, link: "https://show.example.test/episodes/2") + "</channel></rss>"
+        let found = links(of: try await client(xml: xml).load(sourceURL))
+        #expect(found["Episode 1"] == .some(nil))
+        #expect(found["Episode 2"] == "https://show.example.test/episodes/2")
+    }
+
+    /// A link past the 4,096-byte text limit that fails a feed is discarded, not fatal.
+    @Test func aLinkPastTheTextFieldLimitIsDiscardedNotFatal() async throws {
+        let xml = "<rss><channel><title>Show</title>"
+            + linkItem(1, link: "https://show.example.test/" + String(repeating: "b", count: 10_000))
+            + linkItem(2, link: "https://show.example.test/episodes/2") + "</channel></rss>"
+        let found = links(of: try await client(xml: xml).load(sourceURL))
+        #expect(found["Episode 1"] == .some(nil))
+        #expect(found["Episode 2"] == "https://show.example.test/episodes/2")
+    }
+
+    @Test func atomLinksAndChannelLinksAreNotEpisodePages() async throws {
+        let result = try await client(xml: """
+        <rss xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Show</title>
+          <link>https://show.example.test/</link><atom:link rel="self" href="https://podcasts.example.test/feed.xml" />
+          <item><title>Episode</title><atom:link rel="alternate" href="https://show.example.test/atom-page" />
+            <enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" /></item>
+        </channel></rss>
+        """).load(sourceURL)
+        #expect(result.episodes[0].episodeLink == nil)
+    }
+
     /// A transcript is an optional extra. One bad entry must cost that entry
     /// and nothing else -- refusing the feed would cost every episode in it.
     @Test func skipsUnusableTranscriptEntriesWithoutFailingTheFeed() async throws {

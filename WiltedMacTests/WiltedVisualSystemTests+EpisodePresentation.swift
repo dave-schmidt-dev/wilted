@@ -335,7 +335,7 @@ extension WiltedVisualSystemTests {
         // The sidebar no longer clears the presentation itself: every
         // navigation change is retired by the detail's onChange, while
         // collapsing keeps its own clear.
-        XCTAssertTrue(source.contains("playerFocusRequest = nil\n                model.selectedNavigation = $0"))
+        XCTAssertTrue(source.contains("model.selectedNavigation = $0"))
         XCTAssertTrue(source.contains(".onChange(of: model.selectedNavigation) {"))
         XCTAssertTrue(source.contains("playerPresentation = nil\n                        playerFocusRequest = section"))
         XCTAssertTrue(source.contains("case .menu:"))
@@ -428,13 +428,48 @@ extension WiltedVisualSystemTests {
         let end = try XCTUnwrap(source.range(of: "\n}\n", range: start..<source.endIndex)?.upperBound)
         let row = source[start..<end]
 
-        XCTAssertTrue(row.contains(".popover(isPresented: $isShowingNotes"))
-        XCTAssertTrue(row.contains("WiltedShowNotes.linked("))
-        XCTAssertTrue(row.contains("wilted-feeds-show-notes-\\(episode.id)"))
-        XCTAssertTrue(row.contains("This episode's feed did not include show notes."))
+        let notes = try String(contentsOf: root.appendingPathComponent("WiltedMac/Views/WiltedMacEpisodeNotes.swift"), encoding: .utf8)
+        XCTAssertTrue(row.contains("WiltedMacEpisodeNotesTitle("))
+        XCTAssertTrue(row.contains("isPresented: $isShowingNotes"))
+        XCTAssertTrue(notes.contains("WiltedShowNotes.linked("))
+        XCTAssertTrue(row.contains("prefix: \"wilted-feeds\""))
+        XCTAssertTrue(notes.contains("This episode's feed did not include show notes."))
         XCTAssertTrue(row.contains("wilted-feeds-decide-"))
         XCTAssertEqual(row.components(separatedBy: "ForEach(WiltedMacFeedsAction.allCases)").count - 1, 2)
         XCTAssertFalse(source.contains("private func feedsEpisodeRow"))
+    }
+
+    func testSharedEpisodeNotesUsesExactEpisodeAndEmptyState() throws {
+        var episode = WiltedMacEpisode(id: "notes-exact", title: "Exact episode", feedTitle: "Show",
+            summary: "", artworkURL: nil, releasedAt: Date(), durationSeconds: 60,
+            playbackSeconds: 0, downloadState: .completed, preparationState: .prepared(summary: "Ready"))
+        episode.notes = "Exact notes https://example.com/episode"
+        let linked = try XCTUnwrap(WiltedMacEpisodeNotes<EmptyView>.linkedNotes(for: episode))
+        XCTAssertEqual(String(linked.characters), episode.notes)
+        XCTAssertTrue(linked.runs.contains { $0.link == URL(string: "https://example.com/episode") })
+        episode.notes = ""
+        XCTAssertNil(WiltedMacEpisodeNotes<EmptyView>.linkedNotes(for: episode))
+        episode.notes = nil
+        XCTAssertNil(WiltedMacEpisodeNotes<EmptyView>.linkedNotes(for: episode))
+    }
+
+    func testEpisodeCountControlsOnlyExposeNumericInputForCustomAndKeepValidation() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        // Settings keeps the saved default's long label; the add-feed popover names the control "Episodes listed".
+        for (name, label) in [
+            ("WiltedMacSettingsView.swift", "Episodes to list when adding a feed"),
+            ("WiltedMacFeedsView.swift", "Episodes listed"),
+        ] {
+            let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/Views/\(name)"), encoding: .utf8)
+            XCTAssertTrue(source.contains("Picker(\"\(label)\""))
+            XCTAssertTrue(source.contains("Text(\"Custom\").tag(0)"))
+            XCTAssertTrue(source.contains("if initialMetadataPreset.wrappedValue == 0"))
+            XCTAssertTrue(source.contains("Titles and notes only; audio follows your download settings."))
+            XCTAssertTrue(source.contains("validInitialEpisodeMetadataCount(value)"))
+        }
+        XCTAssertNil(WiltedAutomationSettings.validInitialEpisodeMetadataCount(0))
+        XCTAssertNil(WiltedAutomationSettings.validInitialEpisodeMetadataCount(101))
+        XCTAssertEqual(WiltedAutomationSettings.validInitialEpisodeMetadataCount(7), 7)
     }
 
     func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {

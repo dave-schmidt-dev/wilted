@@ -156,6 +156,11 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
     /// preparation as the glossary for correcting the transcript. Outside
     /// `itemID` derivation for the same reason transcript sources are.
     public let notes: String?
+    /// The episode's own web page, from the feed item's `<link>`; nil when the
+    /// feed publishes none or publishes something unsafe. Outside `itemID`
+    /// derivation: a publisher fixing a page address must not re-identify an
+    /// episode already in the Larder.
+    public let episodeLink: URL?
     public let createdAt: Timestamp
 
     /// The most useful published transcript for synchronising with audio, or
@@ -167,6 +172,19 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
     }
 
     public static let maximumTranscriptSources = 8
+
+    /// The most characters an episode's own page address may have.
+    public static let maximumEpisodeLinkLength = 2_048
+
+    /// Whether `url` can be an episode's own page: http or https with a host, no credentials, and
+    /// within `maximumEpisodeLinkLength`. The one rule for the initialiser, the feed parser and every
+    /// reader of a decoded payload, so none of them can accept what another refuses.
+    public static func isValidEpisodeLink(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
+        return url.host?.isEmpty == false && url.user == nil && url.password == nil
+            && url.absoluteString.count <= maximumEpisodeLinkLength
+    }
+
     /// Generous for show notes (TWiT's run about 3,000 characters) and small
     /// enough that a feed cannot turn the episode table into a blob store.
     public static let maximumNotesLength = 32_768
@@ -186,6 +204,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
         artworkURL: URL? = nil,
         transcriptSources: [PodcastTranscriptSource] = [],
         notes: String? = nil,
+        episodeLink: URL? = nil,
         createdAt: Timestamp
     ) throws {
         let normalizedFeedURL = try validatePodcastURL(feedURL, field: "feedURL")
@@ -215,6 +234,11 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
             throw DomainError.invalidValue(field: "durationSeconds", reason: "must be finite and greater than zero")
         }
         let normalizedArtworkURL = try artworkURL.map { try validatePodcastURL($0, field: "artworkURL") }
+        if let episodeLink {
+            guard Self.isValidEpisodeLink(episodeLink) else {
+                throw DomainError.invalidValue(field: "episodeLink", reason: "must be a bounded http or https address without credentials")
+            }
+        }
         guard transcriptSources.count <= Self.maximumTranscriptSources else {
             throw DomainError.invalidValue(field: "transcriptSources", reason: "must not exceed 8 published transcripts")
         }
@@ -244,12 +268,14 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
         self.durationSeconds = durationSeconds
         self.artworkURL = normalizedArtworkURL
         self.transcriptSources = transcriptSources
+        self.episodeLink = episodeLink
         self.createdAt = createdAt
     }
 
     private enum CodingKeys: CodingKey {
         case itemID, feedID, feedURL, rssGUID, title, author, publishedTime, enclosureURL
-        case enclosureMediaType, enclosureByteCount, durationSeconds, artworkURL, transcriptSources, notes, createdAt
+        case enclosureMediaType, enclosureByteCount, durationSeconds, artworkURL, transcriptSources, notes
+        case episodeLink, createdAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -269,6 +295,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
             artworkURL: container.decodeIfPresent(URL.self, forKey: .artworkURL),
             transcriptSources: container.decodeIfPresent([PodcastTranscriptSource].self, forKey: .transcriptSources) ?? [],
             notes: container.decodeIfPresent(String.self, forKey: .notes),
+            episodeLink: container.decodeIfPresent(URL.self, forKey: .episodeLink),
             createdAt: container.decode(Timestamp.self, forKey: .createdAt)
         )
     }

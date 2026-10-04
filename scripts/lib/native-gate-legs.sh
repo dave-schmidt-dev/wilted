@@ -31,7 +31,20 @@ wilted_gate_legs_validate() {
 
 wilted_gate_leg_selected() {
   [[ -n "${WILTED_GATE_LEGS+x}" ]] || return 0
-  [[ ",$WILTED_GATE_LEGS," == *",$1,"* ]]
+  [[ ",$WILTED_GATE_LEGS," == *",$1,"* ]] && return 0
+  # The app legs build from the project the XcodeGen leg generates, so
+  # selecting one brings that leg along (a deferred Mac UI leg needs none).
+  [[ "$1" == xcodegen-reproducible ]] || return 1
+  local leg
+  for leg in macos-unit-tests ios-unit-tests ios-pixel-snapshot-tests macos-ui-tests; do
+    [[ ",$WILTED_GATE_LEGS," == *",$leg,"* ]] || continue
+    if [[ "$leg" == macos-ui-tests ]] && declare -F is_deferred_leg >/dev/null &&
+      is_deferred_leg macos-ui-tests; then
+      continue
+    fi
+    return 0
+  done
+  return 1
 }
 
 # Runs every selected leg in order; relies on the gate's `leg_names`,

@@ -110,8 +110,8 @@ struct WiltedMacNotesPanel: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Text("Show Notes")
                     .wiltedFont(.title)
-                if let notes = model.currentEpisode?.notes {
-                    Text(WiltedShowNotes.linked(notes))
+                if let notes = model.currentEpisode.flatMap(WiltedMacEpisodeNotes<EmptyView>.linkedNotes(for:)) {
+                    Text(notes)
                         .wiltedFont(.body)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)

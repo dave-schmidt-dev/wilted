@@ -107,17 +107,43 @@ enum WiltedMacLarderSort: String, CaseIterable, Identifiable, Sendable {
 /// Menu ordering. `custom` is the explicit listening order; every other
 /// choice reorders every row except the one playing, which holds its place.
 enum WiltedMacMenuSort: String, CaseIterable, Identifiable, Sendable {
+    case length = "Length"
+    case age = "Age"
+    case alphabetical = "Alphabetical"
     case custom = "Listening order"
-    case newest = "Newest"
+    // The oldest caller also carries an implicit descending Age direction.
     case oldest = "Oldest"
-    case shortest = "Length · shortest"
-    case show = "Show · A–Z"
-    case title = "Title · A–Z"
+    static let newest: Self = .age
+    static let shortest: Self = .length
+    static let show: Self = .alphabetical
+    static let title: Self = .alphabetical
 
     var id: Self { self }
 
-    /// Keep the persisted raw value stable while presenting the accepted name.
-    var displayName: String { self == .custom ? "Custom order" : rawValue }
+    /// Only canonical modes appear in the control; legacy storage migrates on restore.
+    var displayName: String { canonical == .custom ? "Custom" : canonical.rawValue }
+
+    static let presentationOptions: [Self] = [.length, .age, .alphabetical, .custom]
+    var canonical: Self {
+        self == .oldest ? .age : self
+    }
+    var legacyDirection: WiltedMacMenuSortDirection? { self == .oldest ? .descending : nil }
+
+    static func restored(_ raw: String) -> (Self, WiltedMacMenuSortDirection?)? {
+        switch raw {
+        case "Newest": return (.age, .ascending)
+        case "Oldest": return (.age, .descending)
+        case "Length · shortest": return (.length, .ascending)
+        case "Show · A–Z", "Title · A–Z": return (.alphabetical, .ascending)
+        default: return Self(rawValue: raw).map { ($0, nil) }
+        }
+    }
+}
+
+enum WiltedMacMenuSortDirection: String, Sendable {
+    case ascending, descending
+    var displayName: String { self == .ascending ? "Ascending" : "Descending" }
+    var reversed: Self { self == .ascending ? .descending : .ascending }
 }
 
 /// How the Larder draws section boundaries. Grouping is presentation only;

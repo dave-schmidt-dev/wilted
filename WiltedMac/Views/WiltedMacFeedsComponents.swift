@@ -37,7 +37,6 @@ struct WiltedMacFeedsEpisodeRow: View {
     let setSelected: (Bool) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingNotes = false
-    @State private var isHoveringTitle = false
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
@@ -47,21 +46,9 @@ struct WiltedMacFeedsEpisodeRow: View {
                 .disabled(model.pendingFeedDecisionIDs.contains(episode.id))
                 .accessibilityIdentifier("wilted-feeds-select-\(episode.id)")
             VStack(alignment: .leading, spacing: 2) {
-                Button {
-                    isShowingNotes = true
-                } label: {
-                    Text(episode.title)
-                        .wiltedFont(.body)
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .lineLimit(1)
-                        .underline(isHoveringTitle)
-                }
-                .buttonStyle(.plain)
-                .onHover { isHoveringTitle = $0 }
-                .help("Show notes for \(episode.title)")
-                .accessibilityLabel("Show notes for \(episode.title)")
-                .accessibilityIdentifier("wilted-feeds-show-notes-\(episode.id)")
-                .popover(isPresented: $isShowingNotes, arrowEdge: .bottom) {
+                WiltedMacEpisodeNotesTitle(
+                    episode: episode, prefix: "wilted-feeds", isPresented: $isShowingNotes
+                ) {
                     notesPopover
                 }
                 WiltedMacEpisodeMetadata(
@@ -99,32 +86,7 @@ struct WiltedMacFeedsEpisodeRow: View {
     }
 
     private var notesPopover: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text(episode.title)
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-            WiltedMacEpisodeMetadata(
-                episode: episode,
-                identifier: "wilted-feeds-notes-metadata-\(episode.id)"
-            )
-            Divider()
-            ScrollView {
-                if let notes = episode.notes, !notes.isEmpty {
-                    Text(WiltedShowNotes.linked(notes))
-                        .wiltedFont(.body)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("wilted-feeds-notes-text-\(episode.id)")
-                } else {
-                    Text("This episode's feed did not include show notes.")
-                        .wiltedFont(.body)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-feeds-notes-unavailable-\(episode.id)")
-                }
-            }
-            .frame(maxHeight: .infinity)
+        WiltedMacEpisodeNotes(episode: episode, prefix: "wilted-feeds") {
             // The popover repeats the row's two answers from the same enum, so
             // reading notes and deciding stays in one place. A popover, rather
             // than inline disclosure, keeps long notes from reflowing the list
@@ -141,11 +103,7 @@ struct WiltedMacFeedsEpisodeRow: View {
                 }
             }
         }
-        .padding(WiltedTheme.Spacing.large)
-        .frame(width: 420, height: 360)
-        .background(WiltedTheme.color(.card, scheme: colorScheme))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-feeds-notes-popover-\(episode.id)")
+
     }
 
     private func decide(_ action: WiltedMacFeedsAction) {
@@ -168,7 +126,7 @@ struct WiltedMacFeedsEpisodeRow: View {
                 .disabled(model.pendingFeedDecisionIDs.contains(episode.id))
         } else {
             Button(action.rawValue) { decide(action) }
-                .buttonStyle(.bordered)
+                .buttonStyle(WiltedMacOutlinedButtonStyle())
                 .accessibilityLabel("\(action.rawValue) \(episode.title)")
                 .accessibilityIdentifier(identifier)
                 .disabled(model.pendingFeedDecisionIDs.contains(episode.id))
@@ -372,5 +330,42 @@ struct WiltedMacArticleRow: View {
         }
         if !article.isReady { parts.append("Preparing") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The quieter of a pair of answers: the label and a thin outline, with no fill, so the filled
+/// answer beside it reads as the primary one.
+struct WiltedMacOutlinedButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let leaf = WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
+        configuration.label
+            .padding(.horizontal, WiltedTheme.Spacing.small)
+            .padding(.vertical, 3)
+            .foregroundStyle(leaf)
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(leaf, lineWidth: 1))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
+            .contentShape(Rectangle())
+    }
+}
+
+/// The one "Last refreshed" value, shared by Feeds and the Larder: relative on screen, with the exact
+/// date as its accessibility label and hover help. It re-reads the clock each minute.
+struct WiltedMacLastRefreshedLabel: View {
+    let model: WiltedMacModel
+    let identifier: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            Text("Last refreshed: \(model.lastPodcastRefreshRelativeText(now: context.date))")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .help(model.lastPodcastRefreshExactText)
+                .accessibilityLabel(model.lastPodcastRefreshExactText)
+                .accessibilityIdentifier(identifier)
+        }
     }
 }

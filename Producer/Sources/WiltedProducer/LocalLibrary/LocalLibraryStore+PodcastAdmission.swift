@@ -309,6 +309,7 @@ extension LocalLibraryStore {
                 byID[episode.itemID.rawValue] = record
             }
         }
+        try syncEpisodeLinks(episodes, in: context)
     }
 
     /// How far back the load that creates a subscription reaches.

@@ -15,6 +15,27 @@ WILTED_TEMP_LEAK_CHECKER="$repo_root/scripts/check-temp-leaks.py"
 source "$repo_root/scripts/lib/test-temp-state.sh"
 fixture_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-full-run-test.XXXXXX")"
 trap 'rm -rf "$fixture_root"' EXIT
+
+# A sibling worktree's live, marked gate root is not this run's leak; this run's own
+# marked root still is (wilted_temp_compare passes the $$ that wilted_temp_mark_owned records).
+shared="$fixture_root/shared"
+mkdir -p "$shared"
+wilted_temp_snapshot "$shared" "$fixture_root/shared-before.json"
+bash -c 'source "$1"; mkdir "$2"; wilted_temp_mark_owned "$2"; touch "$2/ready"; sleep 60' _ \
+  "$repo_root/scripts/lib/test-temp-state.sh" "$shared/wilted-native-gate.neighb" &
+neighbour_pid=$!
+for _ in $(seq 100); do [[ -e "$shared/wilted-native-gate.neighb/ready" ]] && break; sleep .1; done
+wilted_temp_snapshot "$shared" "$fixture_root/shared-after.json"
+wilted_temp_compare "$fixture_root/shared-before.json" "$fixture_root/shared-after.json" neighbour-parent || {
+  kill "$neighbour_pid"; echo 'live neighbour root counted as a leak' >&2; exit 1;
+}
+kill "$neighbour_pid"; wait "$neighbour_pid" 2>/dev/null || true
+mkdir "$shared/wilted-native-gate.own"; wilted_temp_mark_owned "$shared/wilted-native-gate.own"
+wilted_temp_snapshot "$shared" "$fixture_root/shared-own.json"
+if wilted_temp_compare "$fixture_root/shared-before.json" "$fixture_root/shared-own.json" own-parent; then
+  echo "this run's own root or a dead neighbour's was exempted" >&2; exit 1
+fi
+
 repo="$fixture_root/repo"
 parent="$fixture_root/parent"
 mkdir -p "$repo/scripts" "$repo/.logs" "$parent"

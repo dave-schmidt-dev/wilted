@@ -19,6 +19,15 @@ struct WiltedMacEpisodePresentation: Equatable, Sendable {
         return "\(showLabel) · \(publicationLabel)"
     }
 
+    /// The one-line subtitle the players share. A missing publication date is
+    /// stated, never replaced by the date the episode reached the Larder.
+    var playerSubtitleLabel: String {
+        let show = showTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let showLabel = (show?.isEmpty == false ? show! : "Show unknown")
+        let dateLabel = publishedAt?.formatted(date: .abbreviated, time: .omitted) ?? "Date unknown"
+        return "\(showLabel) · \(dateLabel)"
+    }
+
     var sourceDurationLabel: String {
         "Source duration · \(Self.durationLabel(sourceDurationSeconds))"
     }

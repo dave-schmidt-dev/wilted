@@ -289,7 +289,7 @@ extension LocalLibraryStoreTests {
                                                        playback: try playback(for: item, revision: rev, position: 23))
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v14)
+        XCTAssertEqual(inspection.schemaVersion, .v15)
         XCTAssertEqual(inspection.articleCount, 1)
         XCTAssertEqual(inspection.revisionCount, 1)
         XCTAssertEqual(inspection.transcriptCount, 1)

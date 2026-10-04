@@ -1,6 +1,7 @@
 import Foundation
 import WiltedDomain
 import WiltedLibrary
+import WiltedProducer
 import XCTest
 @testable import WiltedMac
 
@@ -196,5 +197,45 @@ final class WiltedMacLibraryPublisherTests: XCTestCase {
         XCTAssertEqual(delivered.intentsDelivered, 1)
         XCTAssertEqual(redelivered.intentsDelivered, 0)
         XCTAssertEqual(received, ["intent-1"])
+    }
+    /// The link lives in a store table beside the episode row, so this goes
+    /// through a real store: refresh writes it, the state source reads it, and
+    /// the payload the differ sends carries it.
+    func testPublishedPayloadCarriesTheEpisodeLinkWrittenByARefresh() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-publisher-link-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let feedURL = URL(string: "https://podcasts.example.test/publisher/feed.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        try await store.save(feed: PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Show", createdAt: created))
+        try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+        func parsed(link: URL?) throws -> PodcastEpisode {
+            let enclosure = URL(string: "https://cdn.example.test/publisher/one.mp3")!
+            return try PodcastEpisode(
+                itemID: ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "one", enclosureURL: enclosure),
+                feedID: feedID, feedURL: feedURL, rssGUID: "one", title: "One", publishedTime: created,
+                enclosureURL: enclosure, enclosureMediaType: "audio/mpeg", episodeLink: link, createdAt: created
+            )
+        }
+        let existing = try parsed(link: nil)
+        _ = try await store.savePodcastEpisodes([existing], admission: .backfill)
+
+        let source = WiltedMacLocalLibraryStateSource(store: store, deviceID: "mac", playback: { nil })
+        let before = try await source.currentState()
+        XCTAssertNil(try before.episodes[0].podcastEpisodePayload().episodeLink)
+
+        let page = try XCTUnwrap(URL(string: "https://show.example.test/episodes/one"))
+        _ = try await store.savePodcastEpisodes([try parsed(link: page)], admission: .incremental)
+        let after = try await source.currentState()
+        XCTAssertEqual(try after.episodes[0].podcastEpisodePayload().episodeLink, page)
+        XCTAssertNotEqual(before.episodes[0].payload, after.episodes[0].payload, "the changed payload is re-sent")
+
+        let server = makeServer()
+        _ = try await publisher(FakeStateSource(after), server: server).sync()
+        let published = await server.currentSnapshot
+        XCTAssertEqual(try published.entries[existing.itemID]?.podcastEpisodePayload().episodeLink, page)
     }
 }

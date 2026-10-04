@@ -32,7 +32,9 @@ struct LibraryRoot: View {
         NavigationStack {
             LibraryListView(
                 model: model, playingID: player.status == .playing ? player.item?.entryID : nil,
-                onPlay: { row in Task { await model.playCached(row) } }, player: player)
+                onPlay: { row in Task { await model.playCached(row) } }, player: player,
+                sort: settings.listSort, group: settings.listGroup,
+                onOrganize: { sort, group in settings.listSort = sort; settings.listGroup = group })
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button { isSettingsPresented = true } label: { Label("Settings", systemImage: "gearshape") }
@@ -92,9 +94,15 @@ struct LibraryListView: View {
     var onPlay: ((LibraryRow) -> Void)?
     /// Lets the episode detail's transcript follow playback.
     var player: LibraryPlayer?
+    /// How the list is laid out; display only, playback keeps the play order.
+    var sort: LibrarySortOption = .playOrder
+    var group: LibraryGroupOption = .none
+    /// Changes the layout; nil hides the Sort and Group menu (previews).
+    var onOrganize: ((LibrarySortOption, LibraryGroupOption) -> Void)?
 
     var body: some View {
         let rows = model.visibleRows
+        let sections = LibraryListing.organize(rows, sort: sort, group: group)
         List {
             if let banner = model.syncBanner {
                 Section {
@@ -104,14 +112,20 @@ struct LibraryListView: View {
             if rows.isEmpty {
                 emptyState
             } else {
-                Section {
-                    ForEach(rows) { row in episodeRow(row) }
-                } header: {
-                    Text(header(count: rows.count))
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .textCase(nil)
-                        .accessibilityIdentifier("wilted-library-count")
+                if sort != .playOrder {
+                    Section {
+                        Text("Sorted by \(sort.label). Playback and Next still follow the play order.")
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .accessibilityIdentifier("wilted-library-order-note")
+                    }
+                }
+                ForEach(sections) { section in
+                    Section {
+                        ForEach(section.rows) { row in episodeRow(row) }
+                    } header: {
+                        sectionHeader(section, total: rows.count)
+                    }
                 }
             }
         }
@@ -133,6 +147,7 @@ struct LibraryListView: View {
                 .accessibilityAddTraits(.isHeader)
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if onOrganize != nil { organizeMenu }
                 filterMenu
             }
         }
@@ -226,8 +241,33 @@ struct LibraryListView: View {
         }
     }
 
+    /// "Larder · N" over an ungrouped list; the feed's name and its own count over each group.
+    @ViewBuilder
+    private func sectionHeader(_ section: LibraryRowSection, total: Int) -> some View {
+        Text(section.title.map { "\($0) · \(section.rows.count)" } ?? header(count: total))
+            .wiltedFont(.utility)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            .textCase(nil)
+            .accessibilityIdentifier(section.title == nil ? "wilted-library-count" : "wilted-library-group-\(section.title ?? "")")
+    }
+
     private func header(count: Int) -> String {
         model.filter == .all ? "Larder · \(count)" : "\(model.filter.title) · \(count)"
+    }
+
+    private var organizeMenu: some View {
+        Menu {
+            Picker("Sort", selection: Binding(get: { sort }, set: { onOrganize?($0, group) })) {
+                ForEach(LibrarySortOption.allCases) { Text($0.label).tag($0) }
+            }
+            Picker("Group", selection: Binding(get: { group }, set: { onOrganize?(sort, $0) })) {
+                ForEach(LibraryGroupOption.allCases) { Text($0.label).tag($0) }
+            }
+        } label: {
+            Label("Sort and group", systemImage: "arrow.up.arrow.down.circle")
+        }
+        .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+        .accessibilityIdentifier("wilted-library-organize")
     }
 
     private var filterMenu: some View {

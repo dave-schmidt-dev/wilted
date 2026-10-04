@@ -98,6 +98,45 @@ struct PastedLinkClassifierTests {
         )))
     }
 
+    @Test func appleLinksWithoutAUsableIDAreRefusedBeforeAnyLookup() async {
+        let lookup = PodcastCatalogLookupClient(loader: RefusingLoader())
+        let classifier = PastedLinkClassifier(loader: RefusingLoader(), catalogLookupClient: lookup)
+        for address in [
+            "https://podcasts.apple.com/us/podcast/the-ai-daily-brief/id16806x3614",
+            "https://podcasts.apple.com/us/podcast/the-ai-daily-brief/idnope",
+            "https://podcasts.apple.com/us/podcast/the-ai-daily-brief",
+        ] {
+            await expectInvalidURL(classifier, URL(string: address)!)
+        }
+    }
+
+    @Test func aSpoofedAppleHostNeverReachesTheCatalogLookup() async throws {
+        let lookup = PodcastCatalogLookupClient(loader: RefusingLoader())
+        let spoofed = URL(string: "https://podcasts.apple.com.evil.test/us/podcast/the-ai-daily-brief/id1680633614")!
+        let classifier = PastedLinkClassifier(
+            loader: BodyLoader(body: Data("<html><body>hi</body></html>".utf8), url: spoofed), catalogLookupClient: lookup
+        )
+        #expect(try await classifier.classify(spoofed) == .article)
+    }
+
+    @Test func catalogLookupFailuresSurfaceAsTypedErrorsNeverAShow() async {
+        let showURL = URL(string: "https://podcasts.apple.com/us/podcast/the-ai-daily-brief/id1680633614")!
+        let lookupURL = PodcastCatalogLookupClient.lookupURL(collectionID: 1_680_633_614)
+        let bodies: [(Data, PodcastCatalogLookupError)] = [
+            (Data(#"{"results":[]}"#.utf8), .resultNotFound),
+            (Data(#"{"results":[{"collectionId":1680633614,"kind":"music","collectionName":"X","feedUrl":"https://f.test/rss"}]}"#.utf8), .resultNotFound),
+            (Data(#"{"results":[{"collectionId":1680633614,"kind":"podcast","collectionName":"X","feedUrl":"http://f.test/rss"}]}"#.utf8), .resultNotFound),
+            (Data("garbage".utf8), .invalidResponse),
+        ]
+        for (body, expected) in bodies {
+            let lookup = PodcastCatalogLookupClient(loader: BodyLoader(body: body, url: lookupURL))
+            let classifier = PastedLinkClassifier(loader: RefusingLoader(), catalogLookupClient: lookup)
+            await #expect(throws: expected) { try await classifier.classify(showURL) }
+        }
+        let timedOut = PastedLinkClassifier(loader: RefusingLoader(), catalogLookupClient: PodcastCatalogLookupClient(loader: HangingLoader(), timeout: .milliseconds(1)))
+        await #expect(throws: PodcastCatalogLookupError.timedOut) { try await timedOut.classify(showURL) }
+    }
+
     @Test func reportsAnUnreachableAddressRatherThanGuessing() async {
         let classifier = PastedLinkClassifier(loader: StatusLoader(statusCode: 404))
         do {
@@ -155,6 +194,13 @@ private struct BodyLoader: PodcastFeedLoading {
     let url: URL
     func load(_ requested: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
         PodcastFeedHTTPResponse(url: url, statusCode: 200, data: body)
+    }
+}
+
+private struct HangingLoader: PodcastFeedLoading {
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        try await Task.sleep(for: .seconds(30))
+        return PodcastFeedHTTPResponse(url: url, statusCode: 200, data: Data())
     }
 }
 

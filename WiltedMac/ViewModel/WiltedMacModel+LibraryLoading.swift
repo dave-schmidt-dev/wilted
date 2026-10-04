@@ -280,6 +280,7 @@ extension WiltedMacModel {
         guard applyEpisodes(values.episodes) else { return }
         articles = values.articles
         subscriptions = values.subscriptions
+        pruneNavigationState()
     }
 
     func loadLibrary(from store: LocalLibraryStore) async throws
@@ -399,7 +400,8 @@ extension WiltedMacModel {
                 ),
                 isReadyMediaAvailable: isReadyMediaAvailable,
                 feedID: episode.feedID.rawValue,
-                feedURL: episode.feedURL
+                feedURL: episode.feedURL,
+                episodeLink: episode.episodeLink
             ))
         }
         return (articleValues, LibraryEpisodeRows(values: episodeValues, readEpoch: readEpoch), subscriptionValues)

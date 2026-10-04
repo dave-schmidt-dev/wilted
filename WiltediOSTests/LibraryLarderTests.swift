@@ -272,6 +272,23 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertEqual(model.preparedCount, 3)
     }
 
+    /// Sort and Group are display only: from a list sorted newest-first and grouped by feed, starting 19
+    /// still continues 20 then 21 in the play order and never wraps back to 18.
+    func testASortedAndGroupedListLeavesThePlayOrderUnchanged() async throws {
+        try await seed(["18", "19", "20", "21"])
+        for raw in ["18", "19", "20", "21"] { try await offer(raw) }
+        let model = makeModel()
+        await model.refresh()
+        for raw in ["18", "19", "20", "21"] { model.media[id(raw)] = .onPhone }
+
+        let displayed = LibraryListing.organize(model.visibleRows, sort: .newest, group: .feed).flatMap(\.rows)
+        XCTAssertEqual(ids(displayed), ["21", "20", "19", "18"], "the list shows the newest first")
+        XCTAssertEqual(ids(model.playOrderRows), ["18", "19", "20", "21"])
+        XCTAssertEqual(model.manualForwardSuffix(from: id("19")).map(\.rawValue), ["19", "20", "21"],
+                       "a start from the sorted list advances 19, 20, 21 and has no 18 to wrap to")
+        XCTAssertEqual(ids(model.visibleRows), ["18", "19", "20", "21"], "the model's own list stays in the play order")
+    }
+
     func testRemoveFromLarderIsTheOnlyDecisionOnAnUnstartedRow() async throws {
         try await seed(["a", "b"])
         try await offer("a")

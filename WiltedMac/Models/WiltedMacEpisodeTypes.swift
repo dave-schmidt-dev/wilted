@@ -258,6 +258,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     /// The feed's canonical subscription URL, when the source record carries
     /// it. Hand-built rows may leave it absent.
     var feedURL: URL? = nil
+    /// The episode's own web page from the feed's `<link>`, when it published one. Never the feed.
+    var episodeLink: URL? = nil
 
     /// Compatibility constructor for existing fixtures and previews. Their
     /// long-standing `releasedAt` and `durationSeconds` arguments were the
@@ -280,7 +282,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         preparationState: WiltedMacEpisodePreparationState = .notPrepared,
         isReadyMediaAvailable: Bool = true,
         feedID: String? = nil,
-        feedURL: URL? = nil
+        feedURL: URL? = nil,
+        episodeLink: URL? = nil
     ) {
         self.init(
             id: id, title: title, feedTitle: feedTitle, summary: summary, notes: notes,
@@ -289,7 +292,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             durationSeconds: durationSeconds, playbackSeconds: playbackSeconds, isPlayed: isPlayed,
             retiredAt: retiredAt, removalKind: removalKind, downloadState: downloadState,
             preparationState: preparationState, isReadyMediaAvailable: isReadyMediaAvailable,
-            feedID: feedID, feedURL: feedURL
+            feedID: feedID, feedURL: feedURL, episodeLink: episodeLink
         )
     }
 
@@ -316,7 +319,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         preparationState: WiltedMacEpisodePreparationState = .notPrepared,
         isReadyMediaAvailable: Bool = true,
         feedID: String? = nil,
-        feedURL: URL? = nil
+        feedURL: URL? = nil,
+        episodeLink: URL? = nil
     ) {
         self.id = id
         self.title = title
@@ -338,6 +342,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         self.isReadyMediaAvailable = isReadyMediaAvailable
         self.feedID = feedID
         self.feedURL = feedURL
+        self.episodeLink = episodeLink
     }
 
     var lifecyclePresentation: WiltedMacEpisodeLifecyclePresentation {
@@ -367,7 +372,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt && lhs.removalKind == rhs.removalKind &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState &&
             lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable && lhs.feedID == rhs.feedID &&
-            lhs.feedURL == rhs.feedURL
+            lhs.feedURL == rhs.feedURL && lhs.episodeLink == rhs.episodeLink
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }

@@ -165,7 +165,7 @@ extension LocalLibraryStoreTests {
 
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v14, "the migration plan must carry a V9 store all the way to V14")
+        XCTAssertEqual(inspection.schemaVersion, .v15, "the migration plan must carry a V9 store all the way to V15")
 
         // Fix 4: prove the migrated store's live call sites actually see the
         // V9 fixture's rows through the new V10 classes end-to-end, not just

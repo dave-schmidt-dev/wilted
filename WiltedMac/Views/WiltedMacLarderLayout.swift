@@ -25,9 +25,10 @@ enum WiltedMacLarderLayout {
     }
 }
 
-/// How much of the navigation sidebar shows: its labelled form, or an
-/// icon-only rail. It is never hidden.
-enum WiltedMacSidebarMode: Equatable { case full, rail }
+/// How much of the navigation sidebar shows: its labelled form, an
+/// icon-only rail, or nothing because the reader hid it. Only the reader
+/// hides it; a narrow window gives up the labels, never the column.
+enum WiltedMacSidebarMode: Equatable { case full, rail, hidden }
 
 /// Where the Now Playing pane sits: beside the list, or in the bar beneath
 /// it. It is never hidden.
@@ -77,7 +78,23 @@ struct WiltedMacShellLayout: Equatable {
             + WiltedMacLarderLayout.dividerWidth + slack
     }
 
-    static func resolve(windowWidth: CGFloat, scale: WiltedTheme.TextScale = .standard) -> WiltedMacShellLayout {
+    /// Below this window width the pane drops to the bottom bar once the
+    /// reader has hidden the sidebar: no column is left to give up.
+    static func hiddenSidebarSidePaneMinimumWidth(scale: WiltedTheme.TextScale = .standard) -> CGFloat {
+        sideContentWidth(scale: scale)
+    }
+
+    /// The reader's choice sits over the automatic rule: a hidden sidebar
+    /// stays hidden at every width, and a shown one is full or a rail by
+    /// width as before. The pane follows the room the sidebar leaves.
+    static func resolve(
+        windowWidth: CGFloat, scale: WiltedTheme.TextScale = .standard, sidebarVisible: Bool = true
+    ) -> WiltedMacShellLayout {
+        guard sidebarVisible else {
+            return WiltedMacShellLayout(
+                sidebar: .hidden,
+                pane: windowWidth >= hiddenSidebarSidePaneMinimumWidth(scale: scale) ? .side : .bottom)
+        }
         if windowWidth >= fullSidebarMinimumWidth(scale: scale) {
             return WiltedMacShellLayout(sidebar: .full, pane: .side)
         }
@@ -85,6 +102,18 @@ struct WiltedMacShellLayout: Equatable {
             return WiltedMacShellLayout(sidebar: .rail, pane: .side)
         }
         return WiltedMacShellLayout(sidebar: .rail, pane: .bottom)
+    }
+
+    /// The one placement rule: every destination places the player and the
+    /// sidebar identically at the same window width. The destination is a
+    /// parameter so the rule is a tested contract the root view calls, not an
+    /// assumption spread over three call sites.
+    static func resolve(
+        for destination: WiltedMacNavigation, windowWidth: CGFloat,
+        scale: WiltedTheme.TextScale = .standard, sidebarVisible: Bool = true
+    ) -> WiltedMacShellLayout {
+        _ = destination
+        return resolve(windowWidth: windowWidth, scale: scale, sidebarVisible: sidebarVisible)
     }
 }
 

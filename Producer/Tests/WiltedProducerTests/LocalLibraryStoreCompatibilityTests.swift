@@ -8,7 +8,7 @@ import WiltedSync
 
 final class LocalLibraryStoreCompatibilityTests: XCTestCase {
     /// SHA-256 of the checked-in V13 fixture. The fixture is frozen: this
-    /// build writes V14 stores, so it can no longer be regenerated, and every
+    /// build writes V15 stores, so it can no longer be regenerated, and every
     /// test below works on a copy.
     static let v13FixtureSHA256 = "3be8dc8875963cdc840443bf310dcdca0fd78c7ade5c04d55d42e605b2a8aeb3"
 
@@ -17,7 +17,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: fixtureURL), .known(13))
     }
 
-    func testV13FixtureMigratesToV14WithRetainedBackupAndReopens() async throws {
+    func testV13FixtureMigratesToV15WithRetainedBackupAndReopens() async throws {
         let copied = try copiedFixture()
         defer { try? FileManager.default.removeItem(at: copied.deletingLastPathComponent()) }
 
@@ -26,7 +26,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
             let store = try LocalLibraryStore(url: copied)
             try await assertFixtureValues(in: store)
             let retained = await store.migrationBackupURL
-            backupURL = try XCTUnwrap(retained, "a V13 store must be backed up before it opens as V14")
+            backupURL = try XCTUnwrap(retained, "a V13 store must be backed up before it opens as V15")
             let summary = try await store.lifetimeStatisticsSummary()
             XCTAssertEqual(summary.state, .rebuildRequired, "opening must not rebuild the summary")
             XCTAssertNotNil(summary.trackingStartedAt)
@@ -34,7 +34,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         }
         XCTAssertEqual(try Self.sha256(of: backupURL), Self.v13FixtureSHA256, "the backup is the untouched V13 store")
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: backupURL), .known(13))
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(14))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(15))
 
         let reopened = try LocalLibraryStore(url: copied)
         let secondBackup = await reopened.migrationBackupURL
@@ -64,7 +64,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
 
         let hooks = LocalLibraryOpenHooks(afterMigration: {
             // The source really was migrated before this failure.
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(14))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(15))
             throw InjectedMigrationFailure()
         })
         var backupURL: URL?
@@ -134,7 +134,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         let url = directory.appendingPathComponent("library.sqlite")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Keep the newer build's connection open so its sidecars are live.
-        let schema = Schema(LocalLibrarySchemaV14.models + [FutureSchemaRecord.self])
+        let schema = Schema(LocalLibrarySchemaV15.models + [FutureSchemaRecord.self])
         let futureWriter = try ModelContainer(for: schema, configurations: [
             ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none),
         ])
@@ -147,7 +147,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         XCTAssertGreaterThan(walBytes?.intValue ?? 0, 0, "the newer store's latest commit is still in its WAL")
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-shm"))
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url),
-                       .unrecognized("store matches no schema from V1 through V14"))
+                       .unrecognized("store matches no schema from V1 through V15"))
         let before = try Self.directorySnapshot(directory)
 
         for migrate in [true, false] {
@@ -246,7 +246,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
             requestedAt: values.timestamp, updatedAt: values.timestamp
         ))
         XCTAssertEqual(inspection, LocalLibraryInspection(
-            schemaVersion: .v14, articleCount: 1, revisionCount: 2, preparationCount: 1,
+            schemaVersion: .v15, articleCount: 1, revisionCount: 2, preparationCount: 1,
             playbackCount: 1, transcriptCount: 1
         ))
     }

@@ -71,6 +71,16 @@ if grep -Eq '^native\.passed count=[0-9]+$' "$log"; then
   exit 1
 fi
 
+# A failing unit leg keeps its xcresult in .logs, as the UI legs always have.
+assert_contains 'if [[ "$name" == macos-* || "$name" == ios-* ]]; then' "$gate"
+
+# An app leg brings the XcodeGen leg that generates its project.
+log="$tmp_dir/app-leg.log"
+[[ "$(run_case app-leg "$log" WILTED_GATE_LEGS=macos-unit-tests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
+assert_contains 'native.leg.start name=xcodegen-reproducible' "$log"
+assert_contains 'native.leg.start name=macos-unit-tests' "$log"
+assert_contains 'native.complete failed_legs=0 total_legs=2 deferred_legs=0' "$log"
+
 # Selecting the screen-seizing leg without the opt-in still defers it, and says so.
 log="$tmp_dir/deferred.log"
 [[ "$(run_case deferred "$log" WILTED_GATE_LEGS=listener-tests,macos-ui-tests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
@@ -85,5 +95,25 @@ assert_contains 'native.complete failed_legs=0 total_legs=9 deferred_legs=0' "$l
 assert_contains 'native.passed count=9' "$log"
 assert_absent 'native.filtered' "$log"
 assert_absent 'native.leg.skipped' "$log"
+
+# A failing leg that re-enables errexit before returning (xcode_test_leg does) must
+# still reach retention and native.leg.complete instead of ending the gate. Runs the
+# real run_leg body with its collaborators stubbed.
+harness="$tmp_dir/run-leg-harness.sh"
+{
+  printf '%s\n' 'set -Eeuo pipefail' 'tmp_root="$1"; native_self_test=0; declare -i completed_legs=0 failed_legs=0'
+  printf '%s\n' 'status() { printf "%s\n" "$*"; }' 'wilted_temp_prepare_leg() { WILTED_TEMP_LEG_WORK="$tmp_root"; }'
+  printf '%s\n' 'is_deferred_leg() { return 1; }' 'is_forced_failure() { return 1; }' 'is_forced_zero() { return 1; }'
+  printf '%s\n' 'wilted_start_logger() { exec 9>"$1"; }' 'wilted_finish_logger() { exec 9>&-; }'
+  printf '%s\n' 'wilted_temp_audit_leg() { return 0; }' 'clear_ui_failure_bundle() { echo "cleared $1"; }'
+  printf '%s\n' 'retain_ui_failure_bundle() { echo "retained $1"; }' 'errexit_leg() { set -e; return 3; }'
+  sed -n '/^run_leg() {/,/^}/p' "$gate"
+  printf '%s\n' 'run_leg macos-unit-tests none errexit_leg' 'echo "after failed_legs=$failed_legs"'
+} >"$harness"
+mkdir -p "$tmp_dir/run-leg-root"
+bash "$harness" "$tmp_dir/run-leg-root" >"$tmp_dir/run-leg.log" 2>&1 || { cat "$tmp_dir/run-leg.log" >&2; exit 1; }
+assert_contains 'retained macos-unit-tests' "$tmp_dir/run-leg.log"
+assert_contains 'native.leg.complete name=macos-unit-tests status=3' "$tmp_dir/run-leg.log"
+assert_contains 'after failed_legs=1' "$tmp_dir/run-leg.log"
 
 printf '%s\n' 'native gate leg filter test passed'

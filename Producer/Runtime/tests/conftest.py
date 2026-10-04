@@ -10,7 +10,6 @@ _TEST_MARKERS = {
     "test_cache.py": ("integration",),
     "test_edge_cases.py": ("integration",),
     "test_execution_capability.py": ("integration",),
-    "test_feed_refs.py": ("integration",),
     "test_llm.py": ("unit",),
     "test_llm_metal.py": ("integration",),
     "test_text.py": ("unit",),

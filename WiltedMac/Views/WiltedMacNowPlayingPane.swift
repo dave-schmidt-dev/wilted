@@ -163,7 +163,7 @@ struct WiltedMacNowPlayingPane: View {
 
     private var detail: String {
         if let episode = model.currentEpisode {
-            return "\(episode.feedTitle) · \(episode.releasedAt.formatted(date: .abbreviated, time: .omitted))"
+            return episode.presentation.playerSubtitleLabel
         }
         return model.currentArticle?.source ?? WiltedScreenCopy.nowPlayingEmptyDetailProducer
     }
@@ -208,59 +208,46 @@ struct WiltedMacNowPlayingPane: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-player-keyboard-transports")
 
-            HStack(spacing: WiltedTheme.Spacing.medium) {
-                Picker("Speed", selection: Binding(
-                    get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
-                )) {
-                    ForEach(PlaybackSpeeds.all, id: \.self) {
-                        Text("\($0, specifier: "%g")×").tag($0)
-                    }
-                }
-                .labelsHidden()
-                .fixedSize()
-                .accessibilityLabel("Speed")
-                .accessibilityIdentifier("wilted-player-speed")
-                WiltedMacSpeedSaveLine(model: model)
-
-                Button("Restart") { model.restartPlayback() }
-                    .keyboardShortcut("r", modifiers: .command)
-                    .accessibilityIdentifier("wilted-player-restart")
-                Button(model.playbackCompletionIsSettled ? "Completed" : "Mark completed") {
-                    model.markCurrentPlaybackCompleted()
-                }
-                .disabled(model.playbackCompletionIsSettled)
-                .accessibilityIdentifier("wilted-player-mark-completed")
-                if model.audioRouteFault {
-                    Button("Recover audio") { model.recoverAudioRoute() }
-                        .accessibilityIdentifier("wilted-player-route-recovery")
-                }
-                share
+            // One line when the pane has the room; the share control says "No episode page" in
+            // words, which can push the row past a narrow pane, so it then wraps.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: WiltedTheme.Spacing.medium) { actionItems }
+                WiltedMacFlowLayout(spacing: WiltedTheme.Spacing.medium) { actionItems }
             }
             .controlSize(.regular)
         }
     }
 
-    @ViewBuilder private var share: some View {
-        if let shareURL = model.currentPlaybackShareURL {
-            ShareLink(
-                item: shareURL,
-                subject: Text(model.currentPlaybackShareTitle),
-                message: Text(model.currentPlaybackShareMessage)
-            ) { Image(systemName: "square.and.arrow.up") }
-            .help("Share")
-            .accessibilityLabel("Share")
-            .accessibilityIdentifier("wilted-player-share")
-        } else if let shareText = model.currentPlaybackShareText {
-            ShareLink(
-                item: shareText,
-                subject: Text(model.currentPlaybackShareTitle),
-                message: Text(model.currentPlaybackShareMessage)
-            ) { Image(systemName: "square.and.arrow.up") }
-            .help("Share")
-            .accessibilityLabel("Share")
-            .accessibilityIdentifier("wilted-player-share")
+    @ViewBuilder private var actionItems: some View {
+        Picker("Speed", selection: Binding(
+            get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
+        )) {
+            ForEach(PlaybackSpeeds.all, id: \.self) {
+                Text("\($0, specifier: "%g")×").tag($0)
+            }
         }
+        .labelsHidden()
+        .fixedSize()
+        .accessibilityLabel("Speed")
+        .accessibilityIdentifier("wilted-player-speed")
+        WiltedMacSpeedSaveLine(model: model)
+
+        Button("Restart") { model.restartPlayback() }
+            .keyboardShortcut("r", modifiers: .command)
+            .accessibilityIdentifier("wilted-player-restart")
+        Button(model.playbackCompletionIsSettled ? "Completed" : "Mark completed") {
+            model.markCurrentPlaybackCompleted()
+        }
+        .disabled(model.playbackCompletionIsSettled)
+        .accessibilityIdentifier("wilted-player-mark-completed")
+        if model.audioRouteFault {
+            Button("Recover audio") { model.recoverAudioRoute() }
+                .accessibilityIdentifier("wilted-player-route-recovery")
+        }
+        share
     }
+
+    private var share: some View { WiltedMacPlaybackShareLink(model: model) }
 
     private func transport(
         _ symbol: String, label: String, id: String, size: CGFloat = 24, action: @escaping () -> Void

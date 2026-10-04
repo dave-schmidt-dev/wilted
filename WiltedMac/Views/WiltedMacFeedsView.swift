@@ -13,8 +13,16 @@ import WiltedDomain
 struct WiltedMacFeedsView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
-    @State private var isOffListExpanded = false
-    @State private var selectedFeedEpisodeIDs: Set<String> = []
+    @State private var choosesCustomMetadataCount = false
+    /// Kept on the model, so leaving Feeds and coming back (or relaunching) finds both as they were.
+    private var isOffListExpanded: Bool {
+        get { model.navigationState.isOffListExpanded }
+        nonmutating set { model.navigationState.isOffListExpanded = newValue }
+    }
+    private var selectedFeedEpisodeIDs: Set<String> {
+        get { model.navigationState.selectedFeedEpisodeIDs }
+        nonmutating set { model.navigationState.selectedFeedEpisodeIDs = newValue }
+    }
     /// This changes one request only; Settings remains the saved default.
     @State private var subscriptionInitialMetadataOverride: Int?
     @State private var feedRemoval = WiltedMacRemovalFlow()
@@ -24,16 +32,24 @@ struct WiltedMacFeedsView: View {
     }
 
     var body: some View {
-        WiltedMacDestination(title: WiltedScreenCopy.feeds, identifier: "wilted-mac-feeds-detail") {
-            refreshHeader
+        WiltedMacDestination(
+            title: WiltedScreenCopy.feeds, identifier: "wilted-mac-feeds-detail",
+            scrollAnchor: model.scrollAnchor(for: .feeds)
+        ) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                refreshHeader
+                // The one place an operation's message and its Undo appear.
+                WiltedMacPodcastOperationMessage(model: model)
+            }
+            .id("feeds-refresh")
             Text("New episodes from your subscriptions are undecided. Refresh only admits metadata; Keep moves an episode to Larder, where its next step becomes available.")
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
-            addFeedControl
-            inbox
-            feedManagement
-            restorableEpisodes
+            addFeedControl.id("feeds-add")
+            inbox.id("feeds-inbox")
+            feedManagement.id("feeds-subscriptions")
+            restorableEpisodes.id("feeds-off-list")
         }
     }
 
@@ -156,7 +172,6 @@ struct WiltedMacFeedsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-count")
             }
-            WiltedMacPodcastOperationMessage(model: model)
             if visible.isEmpty {
                 Text("Nothing new. Every episode from your feeds is already in Larder.")
                     .wiltedFont(.body)
@@ -217,6 +232,7 @@ struct WiltedMacFeedsView: View {
             Spacer()
             Button {
                 subscriptionInitialMetadataOverride = nil
+        choosesCustomMetadataCount = false
                 model.isPresentingSubscribeComposer = true
             } label: {
                 Label(WiltedScreenCopy.subscribeToPodcast, systemImage: "plus")
@@ -243,15 +259,18 @@ struct WiltedMacFeedsView: View {
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: WiltedTheme.Spacing.medium) {
-                Picker("Initial metadata", selection: subscriptionInitialMetadataCount) {
-                    Text("5 latest").tag(5)
-                    Text("10 latest").tag(10)
+                Picker("Episodes listed", selection: initialMetadataPreset) {
+                    Text("5").tag(5)
+                    Text("10").tag(10)
+                    Text("Custom").tag(0)
                 }
                 .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-count")
-                TextField("Custom 1–100", value: subscriptionInitialMetadataCount, format: .number)
-                    .frame(width: 120)
-                    .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-custom")
-                Text("Metadata only")
+                if initialMetadataPreset.wrappedValue == 0 {
+                    TextField("Custom episodes (1–100)", value: subscriptionInitialMetadataCount, format: .number)
+                        .frame(width: 120)
+                        .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-custom")
+                }
+                Text("Titles and notes only; audio follows your download settings.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-note")
@@ -292,6 +311,19 @@ struct WiltedMacFeedsView: View {
         .accessibilityIdentifier("wilted-podcast-subscribe-composer")
     }
 
+    private var initialMetadataPreset: Binding<Int> {
+        Binding(
+            get: {
+                let count = subscriptionInitialMetadataCount.wrappedValue
+                return choosesCustomMetadataCount || ![5, 10].contains(count) ? 0 : count
+            },
+            set: { preset in
+                choosesCustomMetadataCount = preset == 0
+                if preset != 0 { subscriptionInitialMetadataCount.wrappedValue = preset }
+            }
+        )
+    }
+
     private var subscriptionInitialMetadataCount: Binding<Int> {
         Binding(
             get: { subscriptionInitialMetadataOverride ?? model.automationSettings.initialEpisodeMetadataCount },
@@ -306,16 +338,15 @@ struct WiltedMacFeedsView: View {
         let initialMetadataCount = subscriptionInitialMetadataOverride
         model.addPodcastFeedDraft(initialMetadataCount: initialMetadataCount)
         subscriptionInitialMetadataOverride = nil
+        choosesCustomMetadataCount = false
     }
 
     /// Feeds owns its refresh action at the page header, ahead of either list.
     /// The same location remains live while network work is in flight.
     private var refreshHeader: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
-            Text("Feeds")
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // The destination's own title is the page's one "Feeds" heading.
+            Spacer()
             if model.isRefreshingPodcasts {
                 ProgressView().controlSize(.small).accessibilityIdentifier("wilted-podcast-refresh-progress")
                 Text("Refreshing")
@@ -324,10 +355,7 @@ struct WiltedMacFeedsView: View {
                 Button("Cancel") { model.cancelPodcastRefresh() }
                     .accessibilityIdentifier("wilted-podcast-refresh-cancel")
             } else {
-                Text("Last updated: \(model.lastPodcastRefreshText)")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-podcast-last-updated")
+                WiltedMacLastRefreshedLabel(model: model, identifier: "wilted-podcast-last-updated")
                 Button("Refresh") { model.refreshPodcastFeeds() }
                     .accessibilityIdentifier("wilted-podcast-refresh")
             }
@@ -370,7 +398,6 @@ struct WiltedMacFeedsView: View {
                 }
             }
             WiltedMacRemovalStatusLine(flow: feedRemoval, model: model)
-            WiltedMacPodcastOperationMessage(model: model)
         }
         .wiltedRemovalConfirmation(feedRemoval, model: model)
         .wiltedCard(colorScheme)
@@ -418,6 +445,12 @@ struct WiltedMacFeedsView: View {
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
+                if let status = model.feedRowStatus(subscription.id) {
+                    Text(status)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-podcast-feed-status-\(subscription.id)")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Toggle("Show episodes", isOn: Binding(
@@ -425,10 +458,11 @@ struct WiltedMacFeedsView: View {
                 set: { model.setSubscription(subscription, enabled: $0) }
             ))
             .labelsHidden()
+            .disabled(model.isFeedWritePending(subscription.id))
             .accessibilityLabel("Show episodes from \(subscription.title)")
             .accessibilityIdentifier("wilted-podcast-feed-enabled-\(subscription.id)")
             Button("Unsubscribe…") { feedRemoval.request(.feed(subscription)) }
-                .disabled(feedRemoval.isSaving)
+                .disabled(feedRemoval.isSaving || model.isFeedWritePending(subscription.id))
                 .accessibilityIdentifier("wilted-podcast-feed-unsubscribe-\(subscription.id)")
         }
         .padding(.vertical, WiltedTheme.Spacing.small)

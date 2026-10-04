@@ -95,7 +95,7 @@ extension WiltedMacModelTests {
                        "article playback must not lend its live position to a podcast row")
     }
 
-    func testCurrentPlaybackShareUsesCanonicalOrFeedURLWithTextFallback() {
+    func testCurrentPlaybackShareUsesCanonicalOrEpisodePageWithTextFallback() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let articleURL = URL(string: "https://example.test/article")!
         let article = WiltedMacArticle(
@@ -110,15 +110,17 @@ extension WiltedMacModelTests {
             id: "share-episode", title: "An episode", feedTitle: "A show", summary: "",
             artworkURL: nil, releasedAt: Date(), durationSeconds: 100, playbackSeconds: 12,
             downloadState: .completed, preparationState: .prepared(summary: "Ready"),
-            feedURL: feedURL
+            feedURL: feedURL, episodeLink: URL(string: "https://example.test/show/episode-1")
         )
         model.installPlaybackStateForTesting(episode: episode, isPlaying: false, position: 12, duration: 100)
-        XCTAssertEqual(model.currentPlaybackShareURL, feedURL)
+        XCTAssertEqual(model.currentPlaybackShareURL, URL(string: "https://example.test/show/episode-1"))
+        XCTAssertNotEqual(model.currentPlaybackShareURL, feedURL, "the feed is never the episode's page")
 
         let fallback = WiltedMacEpisode(
             id: "fallback-episode", title: "An episode", feedTitle: "A show", summary: "",
             artworkURL: nil, releasedAt: Date(), durationSeconds: 100, playbackSeconds: 12,
-            downloadState: .completed, preparationState: .prepared(summary: "Ready")
+            downloadState: .completed, preparationState: .prepared(summary: "Ready"),
+            feedURL: feedURL
         )
         model.installPlaybackStateForTesting(episode: fallback, isPlaying: false, position: 12, duration: 100)
         XCTAssertNil(model.currentPlaybackShareURL)

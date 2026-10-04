@@ -236,8 +236,8 @@ run_leg() {
   else
     wilted_start_logger "$output_file" "$stream_file"
     set +e
-    TMPDIR="$WILTED_TEMP_LEG_WORK" "$@" >&9 2>&1
-    command_status=$?
+    TMPDIR="$WILTED_TEMP_LEG_WORK" "$@" >&9 2>&1 || command_status=$?
+    set +e # a leg can re-enable errexit (xcode_test_leg); `||` keeps its failure from ending the gate
     wilted_finish_logger
     logger_status=$?
     set -e
@@ -271,7 +271,8 @@ run_leg() {
     fi
   fi
 
-  if [[ "$name" == "macos-ui-tests" || "$name" == "ios-pixel-snapshot-tests" ]]; then
+  # Every app leg keeps its failing result bundle; the temp root does not survive.
+  if [[ "$name" == macos-* || "$name" == ios-* ]]; then
     if [[ "$command_status" -ne 0 ]]; then
       retain_ui_failure_bundle "$name" "$result_bundle"
     else

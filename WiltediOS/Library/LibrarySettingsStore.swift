@@ -28,6 +28,8 @@ final class LibrarySettingsStore: ObservableObject {
     nonisolated static let skipBackKey = "wilted.library.skipBackSeconds"
     nonisolated static let skipForwardKey = "wilted.library.skipForwardSeconds"
     nonisolated static let autoPlayNextKey = "wilted.library.autoPlayNext"
+    nonisolated static let listSortKey = "wilted.library.listSort"
+    nonisolated static let listGroupKey = "wilted.library.listGroup"
 
     @Published var textScale: WiltedTheme.TextScale {
         didSet { if textScale != oldValue { defaults.set(textScale.rawValue, forKey: Self.textScaleKey) } }
@@ -59,6 +61,15 @@ final class LibrarySettingsStore: ObservableObject {
         didSet { if autoPlayNext != oldValue { defaults.set(autoPlayNext, forKey: Self.autoPlayNextKey) } }
     }
 
+    /// How the Larder list is sorted and grouped. Display only: playback, auto-continue, CarPlay and
+    /// Siri keep the play order. An unknown stored value reads as the play order / no grouping.
+    @Published var listSort: LibrarySortOption {
+        didSet { if listSort != oldValue { defaults.set(listSort.rawValue, forKey: Self.listSortKey) } }
+    }
+    @Published var listGroup: LibraryGroupOption {
+        didSet { if listGroup != oldValue { defaults.set(listGroup.rawValue, forKey: Self.listGroupKey) } }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -69,6 +80,8 @@ final class LibrarySettingsStore: ObservableObject {
         skipBackSeconds = Self.snapSkip(defaults.object(forKey: Self.skipBackKey) as? Int, fallback: Self.defaultSkipBack)
         skipForwardSeconds = Self.snapSkip(defaults.object(forKey: Self.skipForwardKey) as? Int, fallback: Self.defaultSkipForward)
         autoPlayNext = defaults.object(forKey: Self.autoPlayNextKey) as? Bool ?? true
+        listSort = LibrarySortOption.stored(defaults.string(forKey: Self.listSortKey))
+        listGroup = LibraryGroupOption.stored(defaults.string(forKey: Self.listGroupKey))
     }
 
     var playback: LibraryPlaybackPreferences {

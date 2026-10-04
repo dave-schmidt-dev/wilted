@@ -10,13 +10,17 @@ import WiltedDomain
 struct WiltedMacSettingsView: View {
     let model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
+    @State private var choosesCustomMetadataCount = false
 
     var body: some View {
-        WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings", watermark: true) {
-            appearanceCard
-            WiltedMacLifetimeStatisticsCard(model: model)
-            automationCard
-            syncCard
+        WiltedMacDestination(
+            title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings", watermark: true,
+            scrollAnchor: model.scrollAnchor(for: .settings)
+        ) {
+            appearanceCard.id("settings-appearance")
+            WiltedMacLifetimeStatisticsCard(model: model).id("settings-statistics")
+            automationCard.id("settings-automation")
+            syncCard.id("settings-sync")
         }
     }
 
@@ -76,14 +80,18 @@ struct WiltedMacSettingsView: View {
                 }
                 .accessibilityIdentifier("wilted-automation-refresh-policy")
 
-                Picker("Initial episode metadata", selection: initialMetadataCountBinding) {
-                    Text("5 latest").tag(5)
-                    Text("10 latest").tag(10)
+                Picker("Episodes to list when adding a feed", selection: initialMetadataPreset) {
+                    Text("5").tag(5)
+                    Text("10").tag(10)
+                    Text("Custom").tag(0)
                 }
                 .accessibilityIdentifier("wilted-automation-initial-metadata-count")
-                TextField("Custom initial episodes (1–100)", value: initialMetadataCountBinding, format: .number)
-                    .accessibilityIdentifier("wilted-automation-initial-metadata-custom")
-                Text("This limits initial episode metadata only. It never downloads audio or keeps episodes.")
+                if initialMetadataPreset.wrappedValue == 0 {
+                    TextField("Custom episodes (1–100)", value: initialMetadataCountBinding, format: .number)
+                        .frame(width: 120)
+                        .accessibilityIdentifier("wilted-automation-initial-metadata-custom")
+                }
+                Text("Titles and notes only; audio follows your download settings.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
 
@@ -187,6 +195,19 @@ struct WiltedMacSettingsView: View {
             set: { label in
                 guard let policy = WiltedAutomationRefreshPolicy.fromSettingsControlLabel(label) else { return }
                 replaceAutomationSettings(refreshPolicy: policy)
+            }
+        )
+    }
+
+    private var initialMetadataPreset: Binding<Int> {
+        Binding(
+            get: {
+                let count = initialMetadataCountBinding.wrappedValue
+                return choosesCustomMetadataCount || ![5, 10].contains(count) ? 0 : count
+            },
+            set: { preset in
+                choosesCustomMetadataCount = preset == 0
+                if preset != 0 { initialMetadataCountBinding.wrappedValue = preset }
             }
         )
     }

@@ -40,6 +40,7 @@ extension LocalLibraryStore {
         if let existing = records.first(where: { $0.id == episode.itemID.rawValue }) {
             try Self.apply(episode, to: existing)
         } else { context.insert(try LocalLibrarySchemaV13Models.PodcastEpisodeRecord(episode)) }
+        try syncEpisodeLinks([episode], in: context)
         try context.save()
     }
 
@@ -56,18 +57,22 @@ extension LocalLibraryStore {
                                   enclosureByteCount: record.enclosureByteCount, durationSeconds: record.durationSeconds,
                                   artworkURL: record.artworkURL.flatMap(URL.init),
                                   transcriptSources: try LocalLibrarySchemaV13Models.PodcastEpisodeRecord.decode(record.transcriptSources),
-                                  notes: record.notes, createdAt: Timestamp(record.createdAt))
+                                  notes: record.notes, episodeLink: try episodeLinks(in: context)[episodeID.rawValue],
+                                  createdAt: Timestamp(record.createdAt))
     }
 
     public func podcastEpisodes(for feedID: ItemID? = nil) throws -> [PodcastEpisode] {
         let context = ModelContext(container)
+        let links = try episodeLinks(in: context)
         return try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .filter { feedID == nil || $0.feedID == feedID!.rawValue }
             .sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }
-            .compactMap(Self.decodePodcastEpisode)
+            .compactMap { Self.decodePodcastEpisode($0, link: links[$0.id]) }
     }
 
-    static func decodePodcastEpisode(_ record: LocalLibrarySchemaV13Models.PodcastEpisodeRecord) -> PodcastEpisode? {
+    static func decodePodcastEpisode(
+        _ record: LocalLibrarySchemaV13Models.PodcastEpisodeRecord, link: URL? = nil
+    ) -> PodcastEpisode? {
         guard let id = try? ItemID(rawValue: record.id), let fid = try? ItemID(rawValue: record.feedID),
               let feedURL = URL(string: record.feedURL), let enclosureURL = URL(string: record.enclosureURL) else { return nil }
         return try? PodcastEpisode(itemID: id, feedID: fid, feedURL: feedURL, rssGUID: record.rssGUID, title: record.title,
@@ -75,7 +80,7 @@ extension LocalLibraryStore {
                                    enclosureMediaType: record.enclosureMediaType, enclosureByteCount: record.enclosureByteCount,
                                    durationSeconds: record.durationSeconds, artworkURL: record.artworkURL.flatMap(URL.init),
                                    transcriptSources: (try? LocalLibrarySchemaV13Models.PodcastEpisodeRecord.decode(record.transcriptSources)) ?? [],
-                                   notes: record.notes, createdAt: Timestamp(record.createdAt))
+                                   notes: record.notes, episodeLink: link, createdAt: Timestamp(record.createdAt))
     }
 
     public func save(subscription: PodcastSubscription) throws {

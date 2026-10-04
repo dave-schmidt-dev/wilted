@@ -181,6 +181,52 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         assertNoLiveTransport(in: app)
     }
 
+    /// Sort and Group are display only: choosing them says playback still follows the play order, groups
+    /// the list under its feed, and an episode still plays from the changed list. Every menu step comes
+    /// before the play tap: while audio plays the UI never goes idle, and each later step waits out
+    /// XCUITest's 60 s animation timeout.
+    func testLibraryRootSortAndGroupAreDisplayOnly() {
+        let app = launchLibraryRoot(.normal)
+        let organize = app.buttons["wilted-library-organize"]
+        XCTAssertTrue(organize.waitForExistence(timeout: 10))
+        let note = app.descendants(matching: .any)["wilted-library-order-note"].firstMatch
+        let group = app.descendants(matching: .any)["wilted-library-group-Fixture Show"].firstMatch
+        let count = app.descendants(matching: .any)["wilted-library-count"].firstMatch
+        XCTAssertFalse(note.exists, "the default is the play order, with nothing to explain")
+
+        organize.tap()
+        app.buttons["Newest"].tap()
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        XCTAssertTrue(note.label.contains("Sorted by Newest"), note.label)
+        XCTAssertTrue(note.label.contains("play order"), note.label)
+        organize.tap()
+        app.buttons["Play order"].tap()
+        XCTAssertTrue(waitForDisappearance(of: note))
+
+        organize.tap()
+        app.buttons["Feed"].tap()
+        XCTAssertTrue(group.waitForExistence(timeout: 5))
+        organize.tap()
+        app.buttons["None"].tap()
+        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        XCTAssertFalse(group.exists)
+
+        organize.tap()
+        app.buttons["Newest"].tap()
+        organize.tap()
+        app.buttons["Feed"].tap()
+        XCTAssertTrue(group.waitForExistence(timeout: 5))
+        XCTAssertTrue(note.exists)
+
+        let play = app.buttons["wilted-library-play-\(Self.firstEpisode)"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        play.tap()
+        let toggle = app.buttons["wilted-player-mini-toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForLabel("Pause", on: toggle))
+        assertNoLiveTransport(in: app)
+    }
+
     func testLibraryRootSyncStatusNamesThePhoneFetchAfterTheFixtureFetch() {
         let app = launchLibraryRoot(.normal)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-library-throttle"].exists)
@@ -276,6 +322,11 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
             predicate: NSPredicate(format: "value == %@", value),
             object: element
         )
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval = 5) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 

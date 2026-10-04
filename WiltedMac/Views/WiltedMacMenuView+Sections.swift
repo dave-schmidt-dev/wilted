@@ -212,9 +212,11 @@ extension WiltedMacMenuView {
                     }
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier(menuSectionIdentifier(section))
+                    .id("menu-section-\(section.id)")
                 }
                 tailDropTarget
             }
+            .scrollTargetLayout()
         }
     }
 
@@ -275,8 +277,7 @@ extension WiltedMacMenuView {
         .frame(maxWidth: .infinity, minHeight: 28)
         .contentShape(Rectangle())
         .dropDestination(for: String.self) { draggedIDs, _ in
-            guard let draggedID = draggedIDs.first else { return false }
-            return model.moveMenuEpisodeToEnd(draggedID)
+            model.dropMenuEpisodes(draggedIDs, before: nil)
         } isTargeted: { targeted in
             dropTargetID = targeted ? Self.tailDropTargetID : nil
         }

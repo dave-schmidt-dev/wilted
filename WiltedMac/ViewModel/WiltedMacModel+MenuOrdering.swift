@@ -90,6 +90,20 @@ extension WiltedMacModel {
 #endif
     }
 
+    /// The one drop entry point for the Larder: a row passes its own ID, the
+    /// strip after the last row passes nil. A drop is accepted only when every
+    /// payload is a queued episode and they name one episode (the row's drag
+    /// vends exactly one); arbitrary text, unknown IDs and mixed payloads are
+    /// refused with the order untouched.
+    @discardableResult
+    func dropMenuEpisodes(_ payload: [String], before destinationID: String?) -> Bool {
+        let dragged = Set(payload)
+        guard dragged.count == 1, let draggedID = dragged.first,
+              podcastQueueIDs.contains(draggedID) else { return false }
+        guard let destinationID else { return moveMenuEpisodeToEnd(draggedID) }
+        return moveMenuEpisode(draggedID, before: destinationID)
+    }
+
     /// Moves a durable entry before another. Returns false for a payload
     /// that is not one of the Menu's episodes or a no-op destination, so the
     /// drop handler can refuse it rather than claiming a move that never

@@ -29,6 +29,9 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     var showArtworkURL: URL?
     /// Where Play should begin: the Mac's last observed position, nil to begin at the start.
     var resumeSeconds: Double?
+    /// The episode's own web page, as the Mac published it from the feed's `<link>`; nil when the
+    /// feed had none. Never the feed address.
+    var episodeLink: URL?
 }
 
 /// Fixed-format clock and duration text, so labels do not shift with the device locale.
@@ -87,14 +90,20 @@ enum LibraryRowBuilder {
             summary: entry.summary,
             artworkURL: artworkURL(entry.artworkRef),
             showArtworkURL: artworkURL(content.sources[entry.sourceID]?.artworkRef),
-            resumeSeconds: resumeSeconds(checkpoints[entry.id], duration: entry.durationSeconds)
+            resumeSeconds: resumeSeconds(checkpoints[entry.id], duration: entry.durationSeconds),
+            episodeLink: (try? entry.podcastEpisodePayload().episodeLink)
+                .flatMap { PodcastEpisode.isValidEpisodeLink($0) ? $0 : nil }
         )
     }
 
     /// Only web addresses load; anything else the Mac might publish shows the placeholder.
     static func artworkURL(_ reference: String?) -> URL? {
-        guard let reference, let url = URL(string: reference), let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http" else { return nil }
+        reference.flatMap(URL.init(string:)).flatMap(webURL)
+    }
+
+    /// The address when it is http or https, otherwise nil.
+    static func webURL(_ url: URL) -> URL? {
+        guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else { return nil }
         return url
     }
 

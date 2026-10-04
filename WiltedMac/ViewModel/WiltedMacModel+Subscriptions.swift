@@ -127,24 +127,48 @@ extension WiltedMacModel {
     }
 
     /// Turns a feed's episodes on or off in the Larder without unsubscribing.
+    ///
+    /// The row is marked pending before the write is awaited. A repeat of the value being saved is
+    /// acknowledged and dropped; a different value is held and written once, after the one in flight.
     func setSubscription(_ subscription: WiltedMacSubscription, enabled: Bool) {
 #if canImport(WiltedProducer)
-        guard let store, let feedID = try? ItemID(rawValue: subscription.id) else { return }
+        guard let store, !isClosingTemporaryState else { return }
+        let feedID = subscription.id
+        switch pendingFeedWrites[feedID] {
+        case .removing: return
+        case let .updating(inFlight):
+            queuedFeedEnabled[feedID] = enabled == inFlight ? nil : enabled
+            return
+        case nil: break
+        }
+        pendingFeedWrites[feedID] = .updating(enabled: enabled)
         trackSubscriptionWrite { [weak self] in
             guard let self else { return }
-            do {
-                try await store.save(subscription: PodcastSubscription(
-                    feedID: feedID, subscribedAt: Timestamp(subscription.subscribedAt), enabled: enabled
-                ))
-                let values = try await self.loadLibrary(from: store)
-                self.articles = values.articles
-                self.applyEpisodes(values.episodes)
-                self.subscriptions = values.subscriptions
-                self.podcastOperationMessage = enabled
-                    ? "\(subscription.title) is showing in Larder again."
-                    : "\(subscription.title) is hidden from Larder. Wilted still keeps its episodes."
-            } catch {
-                self.podcastOperationMessage = "\(subscription.title) could not be updated."
+            defer { self.pendingFeedWrites[feedID] = nil; self.queuedFeedEnabled[feedID] = nil }
+            var target = enabled
+            var row = subscription
+            while true {
+                do {
+                    try await self.subscriptionWriteHookForTesting?()
+                    try await store.save(subscription: PodcastSubscription(
+                        feedID: try ItemID(rawValue: row.id), subscribedAt: Timestamp(row.subscribedAt), enabled: target
+                    ))
+                    let values = try await self.loadLibrary(from: store)
+                    self.articles = values.articles
+                    self.applyEpisodes(values.episodes)
+                    self.subscriptions = values.subscriptions
+                    self.podcastOperationMessage = target
+                        ? "\(row.title) is showing in Larder again."
+                        : "\(row.title) is hidden from Larder. Wilted still keeps its episodes."
+                } catch {
+                    self.podcastOperationMessage = "\(row.title) could not be updated."
+                    return
+                }
+                guard let next = self.queuedFeedEnabled.removeValue(forKey: feedID), next != target,
+                      let latest = self.subscriptions.first(where: { $0.id == feedID }) else { return }
+                target = next
+                row = latest
+                self.pendingFeedWrites[feedID] = .updating(enabled: next)
             }
         }
 #endif
@@ -162,8 +186,10 @@ extension WiltedMacModel {
     /// way back.
     @discardableResult
     func commitUnsubscribe(_ subscription: WiltedMacSubscription) async throws -> Int {
-        guard let store else { throw WiltedMacRemovalUnavailable() }
+        guard let store, pendingFeedWrites[subscription.id] == nil else { throw WiltedMacRemovalUnavailable() }
         let feedID = try ItemID(rawValue: subscription.id)
+        pendingFeedWrites[subscription.id] = .removing
+        defer { pendingFeedWrites[subscription.id] = nil }
         // Episode rows carry no feed identity, so the feed's members are read
         // before the cascade deletes them.
         let owned = Set(try await store.podcastEpisodes(for: feedID).map(\.itemID.rawValue))
@@ -468,6 +494,7 @@ extension WiltedMacModel {
                     self.isRefreshingPodcasts = false
                     self.podcastRefreshTask = nil
                     self.podcastRefreshOperationID = nil
+                    self.settleFeedRefreshStates()
                     if subscribing {
                         self.isCheckingPodcastSubscription = false
                         self.podcastSubscriptionRequestID = nil

@@ -165,7 +165,8 @@ func closeOwnedTemporaryStateAfterDeinit(
     voidTasks: [Task<Void, Never>],
     downloadTasks: [Task<PodcastDownloadResult, Error>],
     automation: WiltedAutomationCoordinator?,
-    syncLifecycle: WiltedMacSyncLifecycle?
+    syncLifecycle: WiltedMacSyncLifecycle?,
+    preferencesSuite: String? = nil
 ) async {
     for task in voidTasks {
         await task.value
@@ -176,6 +177,7 @@ func closeOwnedTemporaryStateAfterDeinit(
     await automation?.cancel()
     await syncLifecycle?.close()
     temporaryState?.closeSynchronously()
+    if let preferencesSuite { UserDefaults().removePersistentDomain(forName: preferencesSuite) }
 }
 #endif
 
@@ -186,6 +188,7 @@ extension WiltedMacModel {
         markerWriter: @escaping WiltedMacTemporaryState.OwnerMarkerWriter = WiltedMacTemporaryState.writeOwnerMarker
     ) -> WiltedMacTemporaryState {
         sweepStaleFixtureDirectories(in: root)
+        sweepStaleFixturePreferenceSuites()
         let directory = root.appendingPathComponent(
             "wilted-ui-fixture-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
             isDirectory: true
@@ -228,6 +231,7 @@ extension WiltedMacModel {
             WiltedMacTemporaryState.unregister(self, forTestRoot: registeredTestRoot)
         }
         temporaryState?.closeSynchronously()
+        if let fixturePreferencesSuite { UserDefaults().removePersistentDomain(forName: fixturePreferencesSuite) }
         temporaryStateCloseTask = nil
     }
 

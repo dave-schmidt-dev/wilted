@@ -265,7 +265,73 @@ extension WiltedMacModelTests {
         first.menuSort = .oldest
 
         let rebuilt = WiltedMacModel(arguments: [], preferences: preferences)
-        XCTAssertEqual(rebuilt.menuSort, .oldest)
+        XCTAssertEqual(rebuilt.menuSort, .age)
+        XCTAssertEqual(rebuilt.menuSortDirection, .descending)
+    }
+
+    func testLarderSortModesDirectionsUnknownsAndDeterministicTies() {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        func episode(_ id: String, _ title: String, _ duration: Double?, _ publication: Double?) -> WiltedMacEpisode {
+            var value = WiltedMacEpisode(
+                id: id, title: title, feedTitle: "Show", summary: "", artworkURL: nil,
+                releasedAt: Date(timeIntervalSince1970: 999), durationSeconds: duration,
+                playbackSeconds: 0, downloadState: .completed, preparationState: .prepared(summary: "Ready")
+            )
+            value.publishedAt = publication.map { Date(timeIntervalSince1970: $0) }
+            return value
+        }
+        for value in [episode("a", "Alpha", 10, 100), episode("b", "Beta", 20, 200),
+                      episode("c", "Beta", 20, 200), episode("z", "Zulu", nil, nil)] {
+            model.installEpisodeForTesting(value)
+        }
+        let ids = ["z", "c", "b", "a"]
+        XCTAssertEqual(WiltedMacMenuSort.presentationOptions, [.length, .age, .alphabetical, .custom])
+        model.menuSortDirection = .ascending
+        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .length), ["a", "b", "c", "z"])
+        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .age), ["b", "c", "a", "z"])
+        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .alphabetical), ["a", "b", "c", "z"])
+        model.menuSortDirection = .descending
+        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .length), ["b", "c", "a", "z"])
+        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .age), ["a", "b", "c", "z"])
+        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .alphabetical), ["z", "b", "c", "a"])
+        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .custom), ids)
+    }
+
+    func testLarderCanonicalSortDirectionPersistsAndLegacyModesMigrate() throws {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        for (raw, mode, direction) in [
+            ("Newest", WiltedMacMenuSort.age, WiltedMacMenuSortDirection.ascending),
+            ("Oldest", .age, .descending), ("Length · shortest", .length, .ascending),
+            ("Title · A–Z", .alphabetical, .ascending), ("Show · A–Z", .alphabetical, .ascending)
+        ] {
+            preferences.set(raw, forKey: WiltedMacModel.menuSortPreferenceKey)
+            let model = WiltedMacModel(arguments: [], preferences: preferences)
+            XCTAssertEqual(model.menuSort.canonical, mode)
+            XCTAssertEqual(model.menuSortDirection, direction)
+        }
+        let first = WiltedMacModel(arguments: [], preferences: preferences)
+        first.menuSort = .length
+        first.menuSortDirection = .descending
+        let restored = WiltedMacModel(arguments: [], preferences: preferences)
+        XCTAssertEqual(restored.menuSort, .length)
+        XCTAssertEqual(restored.menuSortDirection, .descending)
+        restored.menuSort = .custom
+        XCTAssertEqual(restored.menuSortDirection, .descending)
+    }
+
+    func testEveryLarderSortDirectionAnchorsCurrentEpisode() {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let current = WiltedMacEpisode(id: "current", title: "Current", feedTitle: "Show", summary: "",
+            artworkURL: nil, releasedAt: Date(), durationSeconds: 600, playbackSeconds: 0,
+            downloadState: .completed, preparationState: .prepared(summary: "Ready"))
+        model.installPlaybackStateForTesting(episode: current, isPlaying: true, position: 12,
+            duration: 600, queue: ["z", current.id, "a"])
+        for direction in [WiltedMacMenuSortDirection.ascending, .descending] {
+            model.menuSortDirection = direction
+            for mode in WiltedMacMenuSort.presentationOptions {
+                XCTAssertEqual(model.sortedMenuEpisodeIDs(["z", current.id, "a"], by: mode)[1], current.id)
+            }
+        }
     }
 
     /// 1.5: a drop past the last row appends. The index the helper answers

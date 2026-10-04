@@ -155,6 +155,8 @@ extension WiltedMacModel {
             announceStartupStep(.restoringPlayback)
             await restorePodcastPlayback()
             startupState = .ready
+            // The query restored at launch could not search transcripts before the store existed.
+            scheduleTranscriptSearch()
             // After `.ready`: the summary is observed state, so a slow, failed
             // or rebuilding one never holds the larder closed or fails it.
             beginLifetimeStatisticsLoad()

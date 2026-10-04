@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -56,6 +58,38 @@ class TempLeakChecks(unittest.TestCase):
         self.assertEqual(module.compare(before, after, "symlink"), 1)
         payload = json.loads(after.read_text())
         self.assertTrue(payload["entries"][0]["symlink"])
+
+    def marked_root(self, name: str, pid: str, started: str) -> None:
+        root = self.root / name
+        root.mkdir()
+        (root / module.OWNER_MARKER).write_text(f"pid={pid}\nstarted={started}\npath={root}\n")
+
+    def test_live_neighbour_root_is_exempt_but_not_unmarked_dead_or_own(self) -> None:
+        neighbour = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(neighbour.wait)
+        self.addCleanup(neighbour.kill)
+        started = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(neighbour.pid)], capture_output=True, text=True, check=True
+        ).stdout
+        own = str(os.getpid())
+        before = self.save("before.json")
+        self.marked_root("wilted-native-gate.neighb", str(neighbour.pid), started)
+        after = self.save("after.json")
+        self.assertEqual(module.compare(before, after, "parent", own), 0)
+        # Without an owner pid the audit stays strict.
+        self.assertEqual(module.compare(before, after, "parent"), 1)
+        for name, pid, stamp in (
+            ("wilted-unmarked", None, None),
+            ("wilted-own.root", own, started),
+            ("wilted-reused.pid", str(neighbour.pid), "Thu Jan  1 00:00:00 1970"),
+        ):
+            if pid is None:
+                (self.root / name).mkdir()
+            else:
+                self.marked_root(name, pid, stamp)
+            after = self.save("after.json")
+            self.assertEqual(module.compare(before, after, "parent", own), 1, name)
+            shutil.rmtree(self.root / name)
 
     def test_missing_root_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "root-unverifiable"):

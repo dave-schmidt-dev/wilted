@@ -159,8 +159,3 @@ enum LocalLibraryV14MigrationPlan: SchemaMigrationPlan {
         ]
     }
 }
-
-/// The current schema the store opens. Every seam that names "the current
-/// schema" goes through these two aliases.
-typealias LocalLibraryCurrentSchema = LocalLibrarySchemaV14
-typealias LocalLibraryCurrentMigrationPlan = LocalLibraryV14MigrationPlan

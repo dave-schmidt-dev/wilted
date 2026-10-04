@@ -29,8 +29,6 @@ import trafilatura  # noqa: TCH002 — used at runtime in extract_transcript_fro
 # Tests patch ``wilted.transcribe.client.stt_path`` / ``client.evict``.
 from speech_stack import client, isolated
 
-from wilted.feed_refs import guid_matches_reference
-
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -308,7 +306,7 @@ def fetch_transcript_from_rss(
         guid_el = item.find("guid")
         if guid_el is None:
             guid_el = item.find("{http://www.w3.org/2005/Atom}id")
-        if guid_el is None or not guid_matches_reference(guid_el.text or "", guid):
+        if guid_el is None or (guid_el.text or "").strip() != guid:
             continue
 
         # Found the matching item — look for podcast:transcript

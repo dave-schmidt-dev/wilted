@@ -78,30 +78,7 @@ struct WiltedMacPlayerContent: View {
                 .accessibilityLabel("Speed")
                 .accessibilityIdentifier("wilted-player-speed")
 
-                if let shareURL = model.currentPlaybackShareURL {
-                    ShareLink(
-                        item: shareURL,
-                        subject: Text(model.currentPlaybackShareTitle),
-                        message: Text(model.currentPlaybackShareMessage)
-                    ) {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .help("Share")
-                    .accessibilityLabel("Share")
-                    .accessibilityIdentifier("wilted-player-share")
-                } else if let shareText = model.currentPlaybackShareText {
-                    ShareLink(
-                        item: shareText,
-                        subject: Text(model.currentPlaybackShareTitle),
-                        message: Text(model.currentPlaybackShareMessage)
-                    ) {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .help("Share")
-                    .accessibilityLabel("Share")
-                    .accessibilityIdentifier("wilted-player-share")
-                }
-
+                WiltedMacPlaybackShareLink(model: model)
             }
             WiltedMacSpeedSaveLine(model: model)
 
@@ -162,48 +139,26 @@ struct WiltedMacPlayerContent: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-player-keyboard-transports")
 
-            HStack {
-                Slider(value: Binding(
-                    get: { model.playbackPositionSeconds }, set: { model.scrub(to: $0) }
-                ), in: 0...max(1, model.playbackDurationSeconds)) {
-                    Text("Playback position")
+            // One row where the window has the room; below that the scrubber keeps its own line and
+            // the section buttons and volume wrap beneath it, so nothing runs past the window at
+            // `WiltedMacShellLayout.windowMinimumWidth`.
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    scrubber.frame(minWidth: Self.scrubberMinimumWidth)
+                    progressReadout
+                    sectionButtons
+                    volumeControl
                 }
-                .disabled(!model.hasCurrentPlayback)
-                .accessibilityLabel("Playback position")
-                .accessibilityValue(model.playbackProgressSpokenLabel)
-                .accessibilityIdentifier("wilted-player-scrubber")
-
-                Text(model.playbackProgressLabel)
-                    .wiltedFont(.utility)
-
-                expansionButton("Transcript", expansion: .transcript, id: "wilted-player-transcript")
-                // Show notes belong to episodes; an article has its own text.
-                if model.currentEpisode != nil {
-                    expansionButton("Notes", expansion: .notes, id: "wilted-player-notes")
-                }
-                if model.selectedNavigation != .menu {
-                    Button("Larder (\(model.menuUpcomingEpisodeIDs.count))") {
-                        presentation = nil
-                        model.openMenu()
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                    HStack {
+                        scrubber
+                        progressReadout
                     }
-                        .accessibilityLabel("Open Larder with \(model.menuUpcomingEpisodeIDs.count) episodes")
-                        .accessibilityIdentifier("wilted-player-menu")
+                    WiltedMacFlowLayout {
+                        sectionButtons
+                        volumeControl
+                    }
                 }
-
-                if model.audioRouteFault {
-                    Button("Recover audio") { model.recoverAudioRoute() }
-                        .accessibilityIdentifier("wilted-player-route-recovery")
-                }
-
-                Image(systemName: "speaker.fill")
-                    .accessibilityHidden(true)
-                Slider(value: Binding(
-                    get: { model.playbackVolume }, set: { model.setPlaybackVolume($0) }
-                ), in: 0...1)
-                .frame(width: 90)
-                .disabled(!model.hasCurrentPlayback)
-                .accessibilityLabel("Volume")
-                .accessibilityIdentifier("wilted-player-volume")
             }
 
             if model.playbackError != nil {
@@ -253,6 +208,66 @@ struct WiltedMacPlayerContent: View {
             guard layout == .rail, let focusRequest else { return }
             await Task.yield()
             keyboardFocus = focusRequest
+        }
+    }
+
+    /// The least the scrubber is given on the one-row form; below it the row wraps instead.
+    static let scrubberMinimumWidth: CGFloat = 140
+
+    // The slider's label is for assistive technology only. Left visible, it drew "Playback position"
+    // beside the control and took width the scrubber needs.
+    private var scrubber: some View {
+        Slider(value: Binding(
+            get: { model.playbackPositionSeconds }, set: { model.scrub(to: $0) }
+        ), in: 0...max(1, model.playbackDurationSeconds)) {
+            Text("Playback position")
+        }
+        .labelsHidden()
+        .disabled(!model.hasCurrentPlayback)
+        .accessibilityLabel("Playback position")
+        .accessibilityValue(model.playbackProgressSpokenLabel)
+        .accessibilityIdentifier("wilted-player-scrubber")
+    }
+
+    private var progressReadout: some View {
+        Text(model.playbackProgressLabel)
+            .wiltedFont(.utility)
+            .lineLimit(1)
+            .fixedSize()
+    }
+
+    @ViewBuilder private var sectionButtons: some View {
+        expansionButton("Transcript", expansion: .transcript, id: "wilted-player-transcript")
+        // Show notes belong to episodes; an article has its own text.
+        if model.currentEpisode != nil {
+            expansionButton("Notes", expansion: .notes, id: "wilted-player-notes")
+        }
+        if model.selectedNavigation != .menu {
+            Button("Larder (\(model.menuUpcomingEpisodeIDs.count))") {
+                presentation = nil
+                model.openMenu()
+            }
+                .accessibilityLabel("Open Larder with \(model.menuUpcomingEpisodeIDs.count) episodes")
+                .accessibilityIdentifier("wilted-player-menu")
+        }
+
+        if model.audioRouteFault {
+            Button("Recover audio") { model.recoverAudioRoute() }
+                .accessibilityIdentifier("wilted-player-route-recovery")
+        }
+    }
+
+    private var volumeControl: some View {
+        HStack {
+            Image(systemName: "speaker.fill")
+                .accessibilityHidden(true)
+            Slider(value: Binding(
+                get: { model.playbackVolume }, set: { model.setPlaybackVolume($0) }
+            ), in: 0...1)
+            .frame(width: 90)
+            .disabled(!model.hasCurrentPlayback)
+            .accessibilityLabel("Volume")
+            .accessibilityIdentifier("wilted-player-volume")
         }
     }
 
@@ -312,4 +327,38 @@ struct WiltedMacPlayerContent: View {
         }
     }
 
+}
+
+/// Share for what is playing: an article's or an episode's own page when there is one, otherwise
+/// the title and show, which says so. Never the subscription feed.
+struct WiltedMacPlaybackShareLink: View {
+    let model: WiltedMacModel
+
+    var body: some View {
+        if let shareURL = model.currentPlaybackShareURL {
+            ShareLink(
+                item: shareURL,
+                subject: Text(model.currentPlaybackShareTitle),
+                message: Text(model.currentPlaybackShareMessage)
+            ) { Image(systemName: "square.and.arrow.up") }
+            .help("Share")
+            .accessibilityLabel("Share")
+            .accessibilityIdentifier("wilted-player-share")
+        } else if let shareText = model.currentPlaybackShareText {
+            ShareLink(
+                item: shareText,
+                subject: Text(model.currentPlaybackShareTitle),
+                message: Text(model.currentPlaybackShareMessage)
+            ) {
+                // Said where it is seen, not only in the tooltip: what goes out is the title and
+                // show, and the control says why.
+                Label(WiltedMacModel.noEpisodePageText, systemImage: "square.and.arrow.up")
+                    .lineLimit(1)
+            }
+            .help("Share title and show: \(WiltedMacModel.noEpisodePageText)")
+            .accessibilityLabel("Share title and show")
+            .accessibilityHint(WiltedMacModel.noEpisodePageText)
+            .accessibilityIdentifier("wilted-player-share")
+        }
+    }
 }
