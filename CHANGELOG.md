@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Running the Mac unit tests (including the pre-push check) no longer opens or writes the real Wilted library: the test host now uses its own temporary library and deletes it when the tests finish.
 - Cancelling a Mac feed refresh right after starting it no longer leaves feed rows reading "Waiting to refresh", and a search typed before quitting the Mac app finds transcript-only matches again after relaunch.
 - A feed with an over-long episode page address (resolved length past 2,048 characters, or a `<link>` past the 4,096-byte text limit) now loses only that link instead of the whole feed, and the iPhone applies the same address rules as the Mac, so an address with credentials or no host is never shared: Share falls back to "No episode page".
 - The Mac player bar fits the window from its minimum width: the scrubber row wraps instead of running past the right edge, so the position readout, Transcript, Notes, the volume and Share stay reachable; the Now Playing action row wraps the same way. With no episode page, Share reads "No episode page" beside its icon, and the scrubber's "Playback position" label is for VoiceOver only.
