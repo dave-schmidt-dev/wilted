@@ -698,4 +698,56 @@ final class LibraryAutoContinueTests: XCTestCase {
         XCTAssertEqual(rig.player.status, .ended, "the suffix runs out and playback stops")
         XCTAssertEqual(rig.player.item?.entryID, id("21"), "no wrap backwards to 19")
     }
+
+    /// A continuation still in its candidate's start lookup is superseded by the listener's command:
+    /// it never starts its candidate over a reselected episode, and never resumes a paused one.
+    func testASupersededContinuationNeverStartsOverAReselectedItem() async throws {
+        let rig = try await continuationHeldInItsStartLookup()
+        let pick = Task { await self.start(rig, "21") }   // the listener reselects meanwhile
+        try await eventually("the pick to own playback") { rig.model.playbackCommand?.entryID == self.id("21") }
+        try await finishHeldContinuation(rig)
+        await pick.value
+        XCTAssertEqual(rig.player.item?.entryID, id("21"), "the superseded continuation never started 20")
+        rig.player.pause()
+        await settle()
+        XCTAssertEqual(rig.player.item?.entryID, id("21"))
+        XCTAssertEqual(rig.player.status, .paused, "nothing resumes the reselected episode after its pause")
+    }
+
+    func testASupersededContinuationNeverResumesAfterAPause() async throws {
+        let rig = try await continuationHeldInItsStartLookup()
+        rig.player.pause()   // the lock screen, while candidate 20's file is looked up
+        try await finishHeldContinuation(rig)
+        XCTAssertEqual(rig.player.item?.entryID, id("19"))
+        XCTAssertEqual(rig.player.status, .ended, "the paused, finished episode stays where it was")
+    }
+
+    private var heldAdvance: Task<Void, Never>?
+    private var heldGate: LookupGate?
+
+    /// 19 played out; the continuation's start for 20 is pending inside its own cache lookup.
+    private func continuationHeldInItsStartLookup() async throws -> Rig {
+        let gate = LookupGate()
+        let rig = try await makeRig(entries: ["19", "20", "21"], autoPlayNext: false, gate: gate)
+        await start(rig, "19")
+        rig.engine.finishNaturally()
+        try await eventually("the completion") {
+            rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("19") }
+        }
+        await rig.model.waitForHandoff()
+        await settle()
+        await gate.arm()
+        heldAdvance = Task { await rig.model.autoContinue(after: self.id("19")) }
+        heldGate = gate
+        try await gate.waitForHold()   // the candidate snapshot
+        await gate.releaseNext()
+        try await eventually("20's start to be pending") { rig.model.playbackCommand?.entryID == self.id("20") }
+        return rig
+    }
+
+    private func finishHeldContinuation(_ rig: Rig) async throws {
+        await heldGate?.disarm()
+        await heldAdvance?.value
+        await settle()
+    }
 }

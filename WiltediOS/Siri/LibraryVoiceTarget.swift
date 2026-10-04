@@ -36,9 +36,11 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
         case let .play(entryID):
             guard let row = model.queued.first(where: { $0.id == entryID }) else { return .failed }
             // Never toggles: a spoken "play" resumes a loaded episode, also when something else loaded it
-            // while the cache was being read.
-            await IntentDonor.shared.withoutDonatingPlay(of: entryID) { await model.playCachedWithoutToggling(row) }
-            return Self.outcome(player.item?.entryID == entryID && player.isPlaying)
+            // while the cache was being read. A start superseded by another command for the same episode
+            // (CarPlay or the phone during the lookup) still succeeds when that episode plays.
+            var outcome = LibraryStartOutcome.superseded
+            await IntentDonor.shared.withoutDonatingPlay(of: entryID) { outcome = await model.playCachedWithoutToggling(row) }
+            return Self.outcome(outcome.opensNowPlaying || (player.item?.entryID == entryID && player.isPlaying))
         case .pause:
             player.pause()
             return .done

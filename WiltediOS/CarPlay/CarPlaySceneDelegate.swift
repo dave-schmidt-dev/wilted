@@ -155,7 +155,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 
     private func listItem(for row: CarEpisodeRow) -> CPListItem {
-        let item = CPListItem(text: row.title, detailText: row.detail)
+        let item = CPListItem(text: row.title, detailText: commandDetail(for: row) ?? row.detail)
         item.isPlaying = row.isPlaying
         if let fraction = row.listenedFraction { item.playbackProgress = CGFloat(fraction) }
         // Local cache only, and never a disk read here: what is already in memory shows at once, the
@@ -168,17 +168,27 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             // CarPlay calls item handlers on the main thread; the runtime is main-actor isolated.
             MainActor.assumeIsolated {
                 guard let self else { completion(); return }
-                Task { await self.play(row, then: completion) }
+                Task { await self.select(row, then: completion) }
             }
         }
         return item
     }
 
-    /// Starts the episode, shows Now Playing, and always ends the item's spinner.
-    private func play(_ row: CarEpisodeRow, then completion: @escaping () -> Void) async {
-        await model?.playCached(row.row)
-        showNowPlaying()
-        completion()
+    /// An explicit play of the row, never a toggle: a paused current row resumes, a playing one keeps
+    /// playing. Now Playing opens only when the episode plays, a failure shows on the row (selecting
+    /// it again retries), and the item's spinner ends exactly once whatever happened.
+    private func select(_ row: CarEpisodeRow, then completion: @escaping () -> Void) async {
+        await CarRowSelection.run(
+            row.row, model: model, openNowPlaying: { showNowPlaying() },
+            presentFailure: { _ in render() }, completion: completion)
+    }
+
+    /// The shared start state for this row, the same words the phone shows: pending, or the failure
+    /// with how to retry. Audio apps get list and Now Playing templates only, so the row carries it.
+    private func commandDetail(for row: CarEpisodeRow) -> String? {
+        guard let command = model?.playbackCommand, command.entryID == row.id else { return nil }
+        guard case let .failed(_, _, failure) = command, failure != .missingMedia else { return command.text }
+        return "\(command.text) Select to retry."
     }
 
     /// Reads `url`'s cached image off the main actor and sets it on the rows showing it.
@@ -209,6 +219,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             model.$lastSynchronizedAt.map { _ in () }.eraseToAnyPublisher(),
             model.$isRefreshing.map { _ in () }.eraseToAnyPublisher(),
             player.$item.map { _ in () }.eraseToAnyPublisher(),
+            model.$playbackCommand.map { _ in () }.eraseToAnyPublisher(),
         ]
         Publishers.MergeMany(changes)
             .receive(on: DispatchQueue.main)

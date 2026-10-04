@@ -125,6 +125,11 @@ final class LibraryPlayer: ObservableObject {
     private var lastAccrual: ContinuousClock.Instant?
     /// Told how many real seconds were just played and at what speed, for the phone's own totals.
     var onListened: (@MainActor (_ wall: TimeInterval, _ rate: Double) -> Void)?
+    /// Told before every transport command (start, play, pause, seek, stop), so a start still
+    /// waiting on its cache lookup knows a newer command replaced it.
+    var onCommand: (@MainActor () -> Void)?
+    /// Why the last start or play failed; nil once one succeeds.
+    private(set) var lastFailure: LibraryStartFailure?
 
     init(
         engine: any ListenerAudioEngine,
@@ -171,6 +176,7 @@ final class LibraryPlayer: ObservableObject {
     /// sets `.failed` when the file cannot be loaded or the session or engine refuses.
     @discardableResult
     func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true) -> Bool {
+        onCommand?()
         transportCount &+= 1
         stopTicking()
         resumeAfterInterruption = false
@@ -184,7 +190,7 @@ final class LibraryPlayer: ObservableObject {
             position = 0
             duration = 0
             remoteCommands.uninstall()
-            return fail("Could not open the audio file")
+            return fail(.unreadableFile)
         }
         self.item = item
         artworkData = artwork?.loadedData(for: item.artworkURL)
@@ -206,11 +212,13 @@ final class LibraryPlayer: ObservableObject {
     /// Starts or resumes; after the end, starts over.
     @discardableResult
     func play() -> Bool {
+        onCommand?()
         transportCount &+= 1
         guard item != nil else { return false }
-        do { try session.activate() } catch { return fail("Could not start the audio session") }
+        do { try session.activate() } catch { return fail(.audioSession) }
         if status == .ended { engine.currentTime = 0 }
-        guard engine.play() else { return fail("The audio engine refused to play") }
+        guard engine.play() else { return fail(.engineRefused) }
+        lastFailure = nil
         status = .playing
         lastAccrual = .now
         position = engine.currentTime
@@ -220,6 +228,7 @@ final class LibraryPlayer: ObservableObject {
     }
 
     func pause() {
+        onCommand?()
         transportCount &+= 1
         guard item != nil else { return }
         resumeAfterInterruption = false
@@ -237,6 +246,7 @@ final class LibraryPlayer: ObservableObject {
     }
 
     func seek(to seconds: TimeInterval) {
+        onCommand?()
         transportCount &+= 1
         guard item != nil else { return }
         let target = min(max(0, seconds), duration)
@@ -282,6 +292,7 @@ final class LibraryPlayer: ObservableObject {
 
     /// Stops and forgets the item; the audio session and system controls are released.
     func stop() {
+        onCommand?()
         transportCount &+= 1
         stopsAfterCurrentItem = false
         guard item != nil || status != .idle else { return }
@@ -372,10 +383,11 @@ final class LibraryPlayer: ObservableObject {
     }
 
     @discardableResult
-    private func fail(_ message: String) -> Bool {
+    private func fail(_ failure: LibraryStartFailure) -> Bool {
         stopTicking()
         engine.pause()
-        status = .failed(message)
+        lastFailure = failure
+        status = .failed(failure.playerReason)
         nowPlaying.clear()
         return false
     }

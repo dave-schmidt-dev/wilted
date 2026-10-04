@@ -98,6 +98,10 @@ final class LibraryAppModel: ObservableObject {
     let tickState = LibraryTickState()
     /// Mutable handoff bookkeeping, owned by `LibraryAppModel+Handoff`.
     let handoffState = LibraryHandoffState()
+    /// Which start command owns playback right now, owned by `LibraryPlaybackCommand`.
+    let commandState = LibraryStartCommandState()
+    /// The start the listener is waiting on, or the one that just failed; nil when neither.
+    @Published var playbackCommand: LibraryPlaybackCommandStatus?
     /// Entry durations from the last sync, to clamp a resumed position.
     var entryDurations: [ItemID: Double] = [:]
     /// One live request per entry; the run id lets a cancelled run detect that it was replaced.

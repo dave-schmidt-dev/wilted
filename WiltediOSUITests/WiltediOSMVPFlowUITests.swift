@@ -97,7 +97,9 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         assertNoLiveTransport(in: app)
     }
 
-    func testLibraryRootDelayedStartPlaysOnlyAfterTheCacheLookupReturns() {
+    /// PLAY-DELAY on the production root: while the held cache lookup runs, the mini-player already
+    /// says the start is pending, and nothing is loaded; then the episode plays.
+    func testLibraryRootDelayedStartShowsStartingPlaybackUntilTheLookupReturns() {
         let app = launchLibraryRoot(.delayedStart)
         let play = app.buttons["wilted-library-play-\(Self.firstEpisode)"]
         // Every cache lookup is held three seconds, the one that lists the audio as on the phone too.
@@ -107,29 +109,56 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         let tappedAt = Date()
         play.tap()
 
-        // The start waits on the held lookup, which begins only after the tap, so the engine (and with it
-        // the mini player) cannot be reached sooner than the hold. A loaded host only makes this later, so
-        // the bound holds where an immediate "not there yet" check would race the hold.
-        XCTAssertTrue(mini.waitForExistence(timeout: 15))
+        // The held lookup begins only after the tap. The pending start is checked only while the hold is
+        // certainly still running (a loaded host can reach this line late), and the engine (the Pause label)
+        // can never be reached sooner than the hold, however loaded the host is.
+        let expand = app.buttons["wilted-player-expand"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 2))
+        if Date().timeIntervalSince(tappedAt) < Self.pendingCheckWindow {
+            XCTAssertEqual(expand.value as? String, Self.starting, "the pending start is shown while the file is looked up")
+        }
+        XCTAssertTrue(waitForLabel("Pause", on: app.buttons["wilted-player-mini-toggle"], timeout: 15))
         let startedAfter = Date().timeIntervalSince(tappedAt)
         XCTAssertGreaterThanOrEqual(startedAfter, Self.delayedStartHold, "the start did not wait for the held lookup")
-        XCTAssertTrue(waitForLabel("Pause", on: app.buttons["wilted-player-mini-toggle"], timeout: 5))
         XCTAssertEqual(fullPlayerStatus(in: app), "Playing")
         assertNoLiveTransport(in: app)
     }
 
+    /// RACE phone on the production root: a second press while the start is pending joins it. Before
+    /// Task 3.2 the second press made its own lookup and toggled the fresh start back to paused.
+    func testLibraryRootDuplicatePressWhileStartingMakesOneStart() {
+        let app = launchLibraryRoot(.delayedStart)
+        let play = app.buttons["wilted-library-play-\(Self.firstEpisode)"]
+        XCTAssertTrue(play.waitForExistence(timeout: 20))
+        play.tap()
+        play.tap()
+
+        let toggle = app.buttons["wilted-player-mini-toggle"]
+        XCTAssertTrue(waitForLabel("Pause", on: toggle, timeout: 15))
+        // Past any second lookup the old code would have made, it never flips to paused.
+        XCTAssertFalse(waitForLabel("Play", on: toggle, timeout: 4), "a duplicate start toggled the episode off")
+        XCTAssertEqual(fullPlayerStatus(in: app), "Playing")
+        assertNoLiveTransport(in: app)
+    }
+
+    /// PLAY-FAIL / FAIL phone on the production root: a refused engine reads as the canonical failure
+    /// with Retry, and a refused Retry keeps it.
     func testLibraryRootRejectedEngineStartShowsTheFailure() {
         let app = launchLibraryRoot(.startError)
         let play = app.buttons["wilted-library-play-\(Self.firstEpisode)"]
         XCTAssertTrue(play.waitForExistence(timeout: 10))
         play.tap()
 
-        let mini = app.descendants(matching: .any)["wilted-player-mini"]
-        XCTAssertTrue(mini.waitForExistence(timeout: 5))
-        let toggle = app.buttons["wilted-player-mini-toggle"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
-        XCTAssertEqual(toggle.label, "Play")
-        XCTAssertEqual(fullPlayerStatus(in: app), "Could not play: The audio engine refused to play")
+        let expand = app.buttons["wilted-player-expand"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForValue(Self.refused, on: expand), String(describing: expand.value))
+        let retry = app.buttons["wilted-player-mini-retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertEqual(retry.label, "Retry playback")
+        retry.tap()
+        XCTAssertTrue(waitForValue(Self.refused, on: expand), "the fixture engine refuses every play")
+        XCTAssertEqual(fullPlayerStatus(in: app), Self.refused)
+        XCTAssertTrue(app.buttons["wilted-player-retry"].waitForExistence(timeout: 5))
         assertNoLiveTransport(in: app)
     }
 
@@ -161,6 +190,10 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
     private static let firstEpisode = "fixture-episode-1"
     /// `LibraryUITestFixture.startDelay` (3 s) less a margin for the two processes' clocks.
     private static let delayedStartHold: TimeInterval = 2.5
+    /// How soon after the tap the pending label is still certainly showing inside the 3 s hold.
+    private static let pendingCheckWindow: TimeInterval = 1.5
+    private static let starting = "Starting playback…"
+    private static let refused = "Playback refused. Your position is kept."
 
     private enum RootScenario: String {
         case normal
@@ -233,6 +266,14 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
             object: element
         )
         return XCTWaiter().wait(for: [expectation], timeout: 10) == .completed
+    }
+
+    private func waitForValue(_ value: String, on element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", value),
+            object: element
+        )
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
     private func waitForLabel(_ label: String, on element: XCUIElement, timeout: TimeInterval = 5) -> Bool {

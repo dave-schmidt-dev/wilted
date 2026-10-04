@@ -7,6 +7,10 @@ import WiltedLibrary
 struct LibraryMiniPlayer: View {
     @ObservedObject var player: LibraryPlayer
     let onExpand: () -> Void
+    /// A start still looking up its file, or one that just failed; it speaks over the player's own state.
+    var command: LibraryPlaybackCommandStatus? = nil
+    /// Retries a failed start; nil hides Retry.
+    var onRetry: (() -> Void)? = nil
     @State private var scrubPosition: Double?
     @Environment(\.colorScheme) private var colorScheme
 
@@ -29,22 +33,27 @@ struct LibraryMiniPlayer: View {
             HStack(spacing: WiltedTheme.Spacing.medium) {
                 Button(action: onExpand) {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                        Text(player.item?.title ?? "Nothing playing")
+                        Text(command?.title ?? player.item?.title ?? "Nothing playing")
                             .wiltedFont(.body)
                             .lineLimit(1)
-                        Text(LibraryPlayerText.summary(for: player))
+                        Text(summary)
                             .wiltedFont(.utility)
-                            .foregroundStyle(LibraryPlayerText.tone(for: player.status).color(colorScheme))
-                            .lineLimit(1)
+                            .foregroundStyle(LibraryPlayerText.tone(for: player.status, command: command).color(colorScheme))
+                            .lineLimit(2)
                     }
                     .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open player")
+                .accessibilityValue(summary)
                 .accessibilityIdentifier("wilted-player-expand")
 
-                if player.item != nil {
+                if command?.isFailure == true, let onRetry {
+                    Button(action: onRetry) { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel(LibraryPlayerText.retry)
+                        .accessibilityIdentifier("wilted-player-mini-retry")
+                } else if player.item != nil {
                     Button { player.skipBack() } label: { Image(systemName: "gobackward.\(player.skipBackSeconds)") }
                         .accessibilityLabel("Back \(player.skipBackSeconds) seconds")
                         .accessibilityIdentifier("wilted-player-mini-back")
@@ -66,6 +75,8 @@ struct LibraryMiniPlayer: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-player-mini")
     }
+
+    private var summary: String { command?.text ?? LibraryPlayerText.summary(for: player) }
 }
 
 /// "Continue from Mac": shown above the mini-player when another device outranks this phone.
@@ -142,6 +153,10 @@ struct LibraryPlayerView: View {
     /// Where the backdrop reads artwork from; tests give it their own folder.
     var artworkCache: LibraryArtworkCache = LibraryArtworkCache.shared
     let onClose: () -> Void
+    /// A start still looking up its file, or one that just failed.
+    var command: LibraryPlaybackCommandStatus? = nil
+    /// Retries a failed start; nil hides Retry.
+    var onRetry: (() -> Void)? = nil
     @State private var scrubPosition: Double?
     @Environment(\.colorScheme) private var colorScheme
 
@@ -154,7 +169,7 @@ struct LibraryPlayerView: View {
                     .accessibilityIdentifier("wilted-player-done")
             }
             VStack(spacing: WiltedTheme.Spacing.small) {
-                Text(player.item?.title ?? "Nothing playing")
+                Text(command?.title ?? player.item?.title ?? "Nothing playing")
                     .wiltedFont(.title)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("wilted-player-title")
@@ -163,10 +178,17 @@ struct LibraryPlayerView: View {
                         .wiltedFont(.body)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
-                Text(LibraryPlayerText.statusLine(for: player.status))
+                Text(command?.text ?? LibraryPlayerText.statusLine(for: player.status))
                     .wiltedFont(.utility)
-                    .foregroundStyle(LibraryPlayerText.tone(for: player.status).color(colorScheme))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(LibraryPlayerText.tone(for: player.status, command: command).color(colorScheme))
                     .accessibilityIdentifier("wilted-player-status")
+                if command?.isFailure == true, let onRetry {
+                    Button(LibraryPlayerText.retry, action: onRetry)
+                        .wiltedFont(.body)
+                        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                        .accessibilityIdentifier("wilted-player-retry")
+                }
             }
             scrubber
             transport
@@ -334,6 +356,14 @@ private struct LibraryPlayerButtonStyle: ButtonStyle {
 
     static func rate(_ rate: Double) -> String {
         rate == rate.rounded() ? "\(Int(rate))x" : String(format: "%gx", rate)
+    }
+
+    static let retry = "Retry playback"
+
+    /// A pending start reads as activity, a failed one as a failure; otherwise the player's own tone.
+    static func tone(for status: LibraryPlayer.Status, command: LibraryPlaybackCommandStatus?) -> WiltedStatusTone {
+        guard let command else { return tone(for: status) }
+        return command.isFailure ? .failure : .active
     }
 
     static func tone(for status: LibraryPlayer.Status) -> WiltedStatusTone {

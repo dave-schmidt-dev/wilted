@@ -44,13 +44,17 @@ struct LibraryRoot: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if LibraryContinueBanner.isVisible(model) { LibraryContinueBanner(model: model) }
-                if player.item != nil || player.status != .idle {
-                    LibraryMiniPlayer(player: player) { isPlayerPresented = true }
+                if player.item != nil || player.status != .idle || model.playbackCommand != nil {
+                    LibraryMiniPlayer(
+                        player: player, onExpand: { isPlayerPresented = true }, command: model.playbackCommand,
+                        onRetry: { Task { await model.retryFailedStart() } })
                 }
             }
         }
         .sheet(isPresented: $isPlayerPresented) {
-            LibraryPlayerView(player: player, model: model) { isPlayerPresented = false }
+            LibraryPlayerView(
+                player: player, model: model, onClose: { isPlayerPresented = false }, command: model.playbackCommand,
+                onRetry: { Task { await model.retryFailedStart() } })
                 .environment(\.wiltedTextScale, settings.textScale)
                 .presentationDetents([.large])
         }

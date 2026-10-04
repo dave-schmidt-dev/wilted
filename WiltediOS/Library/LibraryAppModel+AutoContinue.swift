@@ -43,7 +43,8 @@ extension LibraryAppModel {
     /// A candidate whose file disappears between the initial snapshot and the start's own lookup
     /// is skipped the same way, by trying the one after it. Preserves playback speed and stops
     /// cleanly when none remain. A command given meanwhile (pause, play, seek, another start)
-    /// cancels it.
+    /// cancels it, also one still waiting on its own cache lookup: an automatic start never
+    /// supersedes a pending command of the listener's.
     func autoContinue(after endedID: ItemID) async {
         guard let player = handoffState.player, player.item?.entryID == endedID, player.isUntouchedSinceEnd else { return }
         refreshProgress()
@@ -67,16 +68,22 @@ extension LibraryAppModel {
             // Re-read after every await: a command given while the previous candidate was
             // looked at cancels the whole walk.
             guard let player = handoffState.player, player.item?.entryID == endedID, player.isUntouchedSinceEnd else { return }
-            let started = await startCached(candidate, togglingIfLoaded: false, isManual: false) { player in
+            let outcome = await startCached(candidate, kind: .automatic) { player in
                 // The last look before the start itself: the candidate is still queued and
                 // still unfinished, and nothing has been commanded since the end.
                 player.item?.entryID == endedID && player.isUntouchedSinceEnd
                     && self.queued.contains { $0.id == candidate.id }
                     && LibraryListing.completionDate(candidate, finished: self.finished) == nil
             }
-            if started {
+            switch outcome {
+            case .started, .resumed:
                 player.setRate(rate)
                 return
+            case .superseded, .alreadyPlaying, .paused:
+                // A newer command owns playback (or nothing is left to start): the walk ends here.
+                return
+            case .failed, .declined:
+                break
             }
             // A command still cancels the walk. A decision can also make this candidate
             // ineligible during the start lookup; skip it even when its file remains cached.
