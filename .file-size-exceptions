@@ -9,7 +9,6 @@ Producer/Runtime/src/wilted/ads.py legacy 2026-09-25: over 800 lines when the ru
 Producer/Runtime/src/wilted/transcribe.py legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Runtime/tests/test_ads.py legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Runtime/tests/test_transcribe.py legacy 2026-09-25: over 800 lines when the rule was adopted
-Producer/Sources/WiltedProducer/PlaybackController.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Tests/WiltedProducerTests/LocalLibrarySyncRepositoryTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Tests/WiltedProducerTests/PlaybackControllerTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 WiltedKit/Tests/WiltedSyncTests/SyncSmokeTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
