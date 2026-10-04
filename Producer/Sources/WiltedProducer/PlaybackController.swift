@@ -295,7 +295,14 @@ public final class PlaybackController {
     /// place in the listening sequence. This is the Mac "Play Now" operation;
     /// ordinary Previous/Next selection intentionally keeps its existing
     /// current-marker-only semantics.
-    public func playPodcastQueueEpisodeNow(_ episodeID: ItemID) async throws {
+    ///
+    /// `startsIf` is asked at the moment the loaded episode would start, after
+    /// the last await, so a caller that owns start intent can decline when a
+    /// newer command (a Pause) arrived while the media loaded. Declining
+    /// still loads the episode and moves the queue.
+    public func playPodcastQueueEpisodeNow(
+        _ episodeID: ItemID, startsIf shouldStart: () -> Bool = { true }
+    ) async throws {
         guard try await isEpisodeEligible(episodeID) else {
             recoverableFault = .podcastMediaUnavailable(episodeID)
             throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
@@ -303,9 +310,9 @@ public final class PlaybackController {
         let state = try await store.podcastQueueState()
         if state.currentEpisodeID == episodeID {
             if itemID == episodeID, loadedIsPodcastEpisode {
-                if !backend.isPlaying { try play() }
+                if !backend.isPlaying, shouldStart() { try play() }
             } else {
-                try await loadQueuedEpisode(episodeID, playAfterLoad: true)
+                try await loadQueuedEpisode(episodeID, playAfterLoad: true, startsIf: shouldStart)
             }
             podcastStateHandler?(episodeID, nil)
             return
@@ -318,7 +325,7 @@ public final class PlaybackController {
         if itemID == state.currentEpisodeID, currentRevision != nil {
             try await checkpoint()
         }
-        try await loadQueuedEpisode(episodeID, playAfterLoad: true)
+        try await loadQueuedEpisode(episodeID, playAfterLoad: true, startsIf: shouldStart)
 
         var episodeIDs = state.episodeIDs
         episodeIDs.removeAll { $0 == episodeID }

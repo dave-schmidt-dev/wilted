@@ -362,7 +362,7 @@ extension WiltedMacModel {
                 : playback.selectNextPodcastQueueEpisode(autoplay: false))
             try self.ensureNewestSelection(command)
             guard selected else { return }
-            if self.isCurrentPlaybackCommand(command) { _ = try playback.start() }
+            try self.startIfCurrent(playback, for: command)
             self.isPlaying = playback.isPlaying
             await self.refreshPodcastQueueState()
             self.refreshPlaybackReadout()

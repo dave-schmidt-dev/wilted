@@ -109,7 +109,7 @@ extension WiltedMacModel {
         guard let playback else { return }
         // A command issued while this runs (a selection, Pause, seek) owns
         // what plays next, so the advance below only runs if none was.
-        let issuedAt = playbackCommands.generation
+        let advance = beginAutomaticAdvance()
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -128,7 +128,7 @@ extension WiltedMacModel {
                     await self.reloadLibraryRows()
                 }
                 await self.retireFinishedEpisode()
-                guard self.playbackCommands.generation == issuedAt else { return }
+                guard self.claimAutomaticAdvance(advance) == .owns else { return }
                 self.advanceToNextMenuEpisode()
             } catch { self.playbackError = "This episode could not be marked completed." }
         }
@@ -296,7 +296,12 @@ extension WiltedMacModel {
 
     func waitForPlaybackOperationForTesting() async {
 #if canImport(WiltedProducer)
-        await playbackOperationTask?.value
+        // A command issued while an earlier one ran extends the tail, so
+        // drain until the tail stops moving.
+        while let task = playbackOperationTask {
+            await task.value
+            if playbackOperationTask == task { break }
+        }
 #endif
     }
 

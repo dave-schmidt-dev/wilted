@@ -62,6 +62,22 @@ struct WiltedMacPlaybackRecoveryScope: Equatable, Sendable {
 struct WiltedMacPlaybackSuperseded: Error {}
 
 /// The command owner's state, held in one stored property on the model.
+/// An automatic advance owed from one generation.
+struct WiltedMacAutomaticAdvance: Equatable {
+    let serial: UInt64
+    let generation: UInt64
+}
+
+/// What an automatic advance may do when its awaits finish.
+enum WiltedMacAdvanceClaim: Equatable {
+    /// Nothing newer happened: start the next episode.
+    case owns
+    /// An explicit Pause cancelled it: play nothing next.
+    case paused
+    /// A newer command or advance owns the player: touch nothing.
+    case superseded
+}
+
 struct WiltedMacPlaybackCommandState {
     var generation: UInt64 = 0
     /// The newest selection's token, so a selection can tell a newer selection
@@ -71,6 +87,12 @@ struct WiltedMacPlaybackCommandState {
     var failure: WiltedMacPlaybackFailure?
     var tail: Task<Void, Never>?
     var recoveryScope: WiltedMacPlaybackRecoveryScope?
+    /// The owed automatic advance (an episode ending, Mark finished); nil
+    /// once claimed, superseded or cancelled by Pause.
+    var automaticAdvance: UInt64?
+    var advanceSerial: UInt64 = 0
+    /// The advance an explicit Pause cancelled, so its owner can unload.
+    var pausedAdvance: UInt64?
     var speedOperation: UInt64 = 0
     var speedSave: WiltedMacSpeedSaveStatus?
     /// Speed saves that have finished, current or stale; lets a caller
@@ -121,6 +143,11 @@ extension WiltedMacModel {
         failureMessage: String = WiltedMacPlaybackCopy.unavailable,
         effect: @escaping @MainActor (WiltedMacPlaybackCommand) async throws -> Void
     ) -> WiltedMacPlaybackCommand {
+        // While the app is closing (a quit draining, a fixture tearing down)
+        // only Pause and Stop are admitted; anything else is a dead command.
+        if isClosingTemporaryState, kind != .pause, kind != .stop {
+            return WiltedMacPlaybackCommand(token: .max, kind: kind, itemID: itemID, revisionID: nil)
+        }
         playbackCommands.generation &+= 1
         let command = WiltedMacPlaybackCommand(
             token: playbackCommands.generation, kind: kind,
@@ -207,10 +234,15 @@ extension WiltedMacModel {
 
     // MARK: Transport commands
 
-    /// The primary control and the space bar. A press while any command is
-    /// pending coalesces into it, so a repeat never reads as Pause.
+    /// The primary control and the space bar. A press while a command is
+    /// pending coalesces into it, so a repeat never reads as Pause -- unless
+    /// audio is already audible, in which case the press means Pause.
     func togglePlayback() {
-        guard let playback, playbackCommands.pending == nil else { return }
+        guard let playback else { return }
+        if let pending = playbackCommands.pending {
+            if pending.command.kind.startsAudio, playback.liveIsPlaying { pausePlayback() }
+            return
+        }
         if playback.liveIsPlaying || isPlaying { pausePlayback() } else { startPlayback() }
     }
 
@@ -231,6 +263,9 @@ extension WiltedMacModel {
     /// Explicit or system Pause. It supersedes a pending start, so the start
     /// never reaches the backend, and it is honoured with nothing loaded yet.
     func pausePlayback() {
+        // An explicit Pause also means "do not move on to the next episode".
+        if let owed = playbackCommands.automaticAdvance { playbackCommands.pausedAdvance = owed }
+        playbackCommands.automaticAdvance = nil
         guard let playback else { return }
         let startPending = playbackCommands.pending?.command.kind.startsAudio == true
         guard startPending || playback.liveIsPlaying || isPlaying,
@@ -246,8 +281,39 @@ extension WiltedMacModel {
         }
     }
 
+    /// Records that an automatic advance is owed from the current
+    /// generation. A later command, a later advance, or an explicit Pause
+    /// supersedes it.
+    func beginAutomaticAdvance() -> WiltedMacAutomaticAdvance {
+        playbackCommands.advanceSerial &+= 1
+        playbackCommands.automaticAdvance = playbackCommands.advanceSerial
+        return WiltedMacAutomaticAdvance(serial: playbackCommands.advanceSerial,
+                                         generation: playbackCommands.generation)
+    }
+
+    /// Whether `advance` still owns what plays next. Claiming consumes it, so
+    /// it can start at most one episode.
+    func claimAutomaticAdvance(_ advance: WiltedMacAutomaticAdvance) -> WiltedMacAdvanceClaim {
+        guard playbackCommands.generation == advance.generation else { return .superseded }
+        if playbackCommands.automaticAdvance == advance.serial {
+            playbackCommands.automaticAdvance = nil
+            return .owns
+        }
+        return playbackCommands.pausedAdvance == advance.serial ? .paused : .superseded
+    }
+
     /// The idle and refusal retry: a fresh explicit start.
     func retryPlayback() { startPlayback() }
+
+    /// A selection's start: only the newest command starts audio, and once
+    /// the backend has answered the press is answered too, so a toggle made
+    /// while the selection finishes its bookkeeping reads as Pause.
+    func startIfCurrent(_ playback: PlaybackController, for command: WiltedMacPlaybackCommand) throws {
+        guard isCurrentPlaybackCommand(command) else { return }
+        _ = try playback.start()
+        isPlaying = playback.isPlaying
+        if playbackCommands.pending?.command.token == command.token { playbackCommands.pending = nil }
+    }
 
     /// Starts the loaded media and mirrors only what the backend reports.
     func startLoadedPlayback(_ playback: PlaybackController) async throws {
@@ -398,60 +464,6 @@ extension WiltedMacModel {
             isPlaying = playback.liveIsPlaying
             markAudioRouteRecoveryFailed(itemID: command.itemID)
         }
-    }
-
-    // MARK: Speed
-
-    /// Persists the chosen speed for the loaded episode. The live speed is
-    /// already applied and is never rolled back; only the newest save may
-    /// settle the status, and it never touches any other status line.
-    func savePlaybackSpeed(_ speed: Double, for itemID: ItemID) {
-        guard let store else { return }
-        playbackCommands.speedOperation &+= 1
-        let operation = playbackCommands.speedOperation
-        playbackCommands.speedSave = WiltedMacSpeedSaveStatus(
-            operation: operation, itemID: itemID.rawValue, speed: speed,
-            phase: .saving, message: WiltedMacPlaybackCopy.speedSaving
-        )
-        let override = playbackCommands.speedSaveForTesting
-        Task { [weak self] in
-            defer { self?.playbackCommands.settledSpeedSaves += 1 }
-            do {
-                if let override {
-                    try await override(speed)
-                } else {
-                    try await store.save(playbackSpeed: PodcastPlaybackSpeed(
-                        itemID: itemID, speed: speed, updatedAt: Timestamp(Date())
-                    ))
-                }
-                guard let self, self.playbackCommands.speedOperation == operation else { return }
-                self.playbackCommands.speedSave = WiltedMacSpeedSaveStatus(
-                    operation: operation, itemID: itemID.rawValue, speed: speed,
-                    phase: .saved, message: WiltedMacPlaybackCopy.speedSaved
-                )
-            } catch {
-                let stored = try? await store.playbackSpeed(for: itemID)
-                guard let self, self.playbackCommands.speedOperation == operation else { return }
-                let restart = stored?.speed ?? Double(self.playback?.defaultRate ?? 1)
-                self.playbackCommands.speedSave = WiltedMacSpeedSaveStatus(
-                    operation: operation, itemID: itemID.rawValue, speed: speed, phase: .failed,
-                    message: WiltedMacPlaybackCopy.speedFailed(current: speed, restart: restart)
-                )
-            }
-        }
-    }
-
-    /// The speed-save line for the loaded episode only.
-    var currentSpeedSaveStatus: WiltedMacSpeedSaveStatus? {
-        guard let status = playbackCommands.speedSave,
-              status.itemID == playback?.itemID?.rawValue else { return nil }
-        return status
-    }
-
-    func retrySpeedSave() {
-        guard let status = currentSpeedSaveStatus, status.phase == .failed,
-              let itemID = try? ItemID(rawValue: status.itemID) else { return }
-        savePlaybackSpeed(playbackRate, for: itemID)
     }
 }
 #endif

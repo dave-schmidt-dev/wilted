@@ -193,7 +193,7 @@ extension WiltedMacModel {
             try self.ensureCurrentPlaybackCommand(command)
             try await playback.load(stored)
             try self.ensureNewestSelection(command)
-            if autoplay, self.isCurrentPlaybackCommand(command) { _ = try playback.start() }
+            if autoplay { try self.startIfCurrent(playback, for: command) }
             self.isPlaying = playback.isPlaying
             self.refreshPlaybackReadout()
             if let itemID { await self.loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID) }
@@ -380,7 +380,10 @@ extension WiltedMacModel {
                     // mode alone.
                     self.isLarderQueuePlayback = true
                 } else {
-                    try await playback.playPodcastQueueEpisodeNow(id)
+                    try self.ensureCurrentPlaybackCommand(command)
+                    // The controller asks at its own start point, after the
+                    // load's last await, so a Pause issued meanwhile wins.
+                    try await playback.playPodcastQueueEpisodeNow(id, startsIf: { self.isCurrentPlaybackCommand(command) })
                     try self.ensureNewestSelection(command)
                     self.menuSort = .custom
                     // A generic Play keeps the Larder-wide continuation
@@ -390,7 +393,7 @@ extension WiltedMacModel {
                 }
                 // Only the newest command starts audio: a Pause or seek issued
                 // meanwhile keeps the selection but not the start.
-                if self.isCurrentPlaybackCommand(command) { _ = try playback.start() }
+                try self.startIfCurrent(playback, for: command)
                 self.isPlaying = playback.isPlaying
 
                 Self.playbackLog.notice(

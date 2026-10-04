@@ -372,6 +372,35 @@ extension PlaybackControllerTests {
         XCTAssertEqual(backend.playCount, 1)
     }
 
+    /// Play Now whose start gate declines moves the queue and loads, but only
+    /// an explicit `start()` asks the backend to play.
+    func testPlayNowDeclinedByStartGateMovesQueueAndNeverStarts() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 21, root: root, store: store)
+        let second = try await queueRevision(index: 22, root: root, store: store)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID], currentEpisodeID: first.revision.itemID
+        ))
+        let backend = RefusingBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        await controller.restorePodcastQueue()
+
+        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID, startsIf: { false })
+        XCTAssertEqual(controller.itemID, second.revision.itemID)
+        let state = try await store.podcastQueueState()
+        XCTAssertEqual(state.currentEpisodeID, second.revision.itemID)
+        XCTAssertEqual(backend.playCount, 0, "nothing starts without the caller's start()")
+        XCTAssertFalse(controller.isPlaying)
+
+        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID, startsIf: { false })
+        XCTAssertEqual(backend.playCount, 0, "re-selecting the loaded current episode does not start it either")
+        XCTAssertEqual(try controller.start(), .started)
+        XCTAssertEqual(backend.playCount, 1)
+    }
+
     func testBackendRebuildFailuresAreTypedRouteFaults() async throws {
         let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)

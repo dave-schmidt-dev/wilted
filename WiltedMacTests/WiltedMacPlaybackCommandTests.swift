@@ -66,6 +66,46 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         XCTAssertNil(model.playbackCommands.failure)
     }
 
+    // RACE system pause mid-load: Play Now loads without autoplay, so a Pause
+    // that lands while the media is loading means the backend never starts.
+    func testPauseWhilePlayNowIsLoadingNeverStartsTheBackend() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        await model.waitForFixturePodcastInstallForTesting()
+        backend.onLoad = { [weak model] in
+            backend.onLoad = nil
+            model?.pausePlayback()
+        }
+
+        model.playEpisode(episode)
+        await model.waitForPlaybackOperationForTesting()
+
+        XCTAssertEqual(backend.loadCount, 1)
+        XCTAssertEqual(backend.playCount, 0, "a Pause during the load wins without a brief start")
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertEqual(model.currentPodcastEpisodeID, episode.id, "the selection itself still lands")
+        XCTAssertNil(model.playbackCommands.pending)
+    }
+
+    // A toggle pressed once audio has started reads as Pause, even while the
+    // selection is still finishing its queue and transcript work.
+    func testToggleAfterSelectionStartsAudioPausesInsteadOfCoalescing() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        await model.waitForFixturePodcastInstallForTesting()
+        backend.onPlay = { [weak model] in
+            backend.onPlay = nil
+            // Runs at the selection's next suspension, after its start.
+            Task { @MainActor in model?.togglePlayback() }
+        }
+
+        model.playEpisode(episode)
+        await model.waitForPlaybackOperationForTesting()
+
+        XCTAssertEqual(backend.playCount, 1)
+        XCTAssertEqual(backend.pauseCount, 1, "the toggle paused the started audio")
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertEqual(model.currentPodcastEpisodeID, episode.id)
+    }
+
     // RACE system pause; Done-when 4.
     func testExplicitPauseDuringPendingStartWinsAndDuplicateToggleIsNotPause() async throws {
         let (model, backend, episode) = makePlaybackCommandModel()
@@ -270,6 +310,10 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         backend.finish(successfully: false)
         for _ in 0..<200 where playing.recoverableFault == nil { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertNotNil(playing.recoverableFault)
+        // The controller reports the fault through its observation too; let
+        // that land first so it cannot overwrite the command's own answer.
+        for _ in 0..<200 where model.playbackError == nil { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertNotNil(model.playbackError)
         model.refreshPlaybackReadout()
         backend.resetCounts()
     }
@@ -318,6 +362,10 @@ final class WiltedMacScriptedBackend: PlaybackBackend {
     private(set) var playCount = 0
     private(set) var pauseCount = 0
     private(set) var loadCount = 0
+    /// Runs inside `load(url:)`, i.e. while a selection is mid-flight.
+    var onLoad: (() -> Void)?
+    /// Runs inside `play()`, i.e. at the moment a start reaches the backend.
+    var onPlay: (() -> Void)?
 
     func load(url: URL) throws {
         if failNextLoads > 0 {
@@ -328,10 +376,12 @@ final class WiltedMacScriptedBackend: PlaybackBackend {
         loadedGeneration += 1
         currentTime = 0
         isPlaying = false
+        onLoad?()
     }
 
     func play() -> Bool {
         playCount += 1
+        onPlay?()
         isPlaying = !refusesPlay
         return isPlaying
     }

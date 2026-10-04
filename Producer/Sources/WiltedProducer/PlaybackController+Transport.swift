@@ -44,7 +44,8 @@ extension PlaybackController {
 
     @discardableResult
     func loadQueuedEpisode(
-        _ episodeID: ItemID, playAfterLoad: Bool, expectedGeneration: UInt64? = nil
+        _ episodeID: ItemID, playAfterLoad: Bool, expectedGeneration: UInt64? = nil,
+        startsIf shouldStart: () -> Bool = { true }
     ) async throws -> UInt64 {
         if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
             throw CancellationError()
@@ -84,7 +85,7 @@ extension PlaybackController {
         // Queue operations keep their silent autoplay: the queue move must
         // complete whether or not the backend agreed to start. A caller that
         // needs a typed answer follows the operation with `start()`.
-        if playAfterLoad { isPlaying = backend.play(); meterListening() }
+        if playAfterLoad, shouldStart() { isPlaying = backend.play(); meterListening() }
         return loadedGeneration
     }
 
