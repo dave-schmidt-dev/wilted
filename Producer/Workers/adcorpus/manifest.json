@@ -500,7 +500,26 @@
       "kind": "judgement",
       "reported": "A nine-minute-twenty-three-second episode was overcut: two reads bracketed almost the whole news programme.",
       "missing": "The original short episode's input is unavailable. Other TechCrunch entries in the local cache are different episodes and cannot stand in for it; using one would be inventing the case.",
-      "closes": "Proportional rejection and bounded resize cover the mechanism under synthetic cues. A labelled case needs a retained copy of the original nine-minute-twenty-three-second episode with its own provenance and hand-timed boundaries; the TechCrunch entries still in the local cache are different episodes and would be inventing the case. That episode is known only by its duration, and no sourceHash or itemID for it is recorded, so no specific input can be named."
+      "closes": "Proportional rejection and bounded resize cover the mechanism under synthetic cues. A labelled case needs a retained copy of the original nine-minute-twenty-three-second episode with its own provenance and hand-timed boundaries; the TechCrunch entries still in the local cache are different episodes and would be inventing the case. That episode is known only by its duration, and no sourceHash or itemID for it is recorded, so no specific input can be named.",
+      "acquiredInputs": [
+        {
+          "sourceHash": "sha256:a645503890c78aac967db83b4ee20180774cda837c7476819af6d35fe9ce617b",
+          "byteCount": 20739813,
+          "durationSeconds": 518.034,
+          "segmentCount": 31,
+          "sttModel": "mlx-community/parakeet-tdt-1.1b",
+          "acquiredOn": "2026-10-04",
+          "source": {
+            "feed": "https://feeds.megaphone.fm/techcrunch-daily-crunch",
+            "episodeTitle": "What to expect from the upcoming Apple launch",
+            "published": "Wed, 09 Sep 2026 11:00:00 -0000"
+          },
+          "status": "awaiting labels",
+          "pointerRendering": "no owner time pointers exist; the original is known only as a 9:23 episode.",
+          "substitution": "representative short TechCrunch Daily Crunch episode (\"What to expect from the upcoming Apple launch\", 2026-09-09): the original 9:23 episode cannot be identified (declared feed durations exclude dynamically inserted ads, so no feed entry matches 563s). Chosen as a recent short episode from the report's week. It is a stand-in, not the failing input.",
+          "note": "Acquired by Producer/Workers/ad_corpus_acquire.py from the public feed into a scratch directory with the worker's own transcription and alignment; the entry is not yet pinned because `ad_corpus.adopt` reads `cases`, not `gaps`."
+        }
+      ]
     },
     {
       "id": "mixed-cue-and-partial-postroll",
@@ -548,7 +567,155 @@
       "kind": "judgement",
       "reported": "David, 2026-09-24: the prepared Jonathan Swan episode opens with Shopify and then ChatGPT advertising, has a Ground News read near prepared 19:00, a Bombas read near prepared 56:30, and a Smalls cat-food read near prepared 1:18:24. A current-detector replay over retained prepared cues left 26.4 seconds of the intro and 54.8 seconds of the Ground News read while preserving adjacent labelled programme; its cuts also miss the retained Bombas and Smalls reads.",
       "missing": "The original downloaded audio and its aligned-STT cache input keyed to sha256:936fc1e43f07eb63a4d8c1f54ba08779556602cc36ad555e4f04e149589ef472 were evicted. A separate 2026-09-24 download yielded sha256:1311ec279100b71e67c1992e7921bc125595001291ab387fd37d5bbd9f8ba390, so the feed audio has changed and this is not a byte-identical substitute. The retained prepared revision and its 824 polished cues are pinned locally under gitignored .logs/ad-review-20260924, but they are a post-cut diagnostic input, not the original input to the reported preparation. Exact original-source corpus replay cannot be scored from them.",
-      "closes": "A retained original-source aligned-STT input keyed to sha256:936fc1e43f07eb63a4d8c1f54ba08779556602cc36ad555e4f04e149589ef472, with the owner-reported sponsor and adjacent programme spans labelled on that input, would close this corpus gap. Until then, focused synthetic regressions and the separately marked prepared-cue replay measure a narrower detector property."
+      "closes": "A retained original-source aligned-STT input keyed to sha256:936fc1e43f07eb63a4d8c1f54ba08779556602cc36ad555e4f04e149589ef472, with the owner-reported sponsor and adjacent programme spans labelled on that input, would close this corpus gap. Until then, focused synthetic regressions and the separately marked prepared-cue replay measure a narrower detector property.",
+      "acquiredInputs": [
+        {
+          "sourceHash": "sha256:f534d892609e8ebfdbc449a462e878f8b18060c7076d164aca1ec6752ddfd6d6",
+          "byteCount": 93303070,
+          "durationSeconds": 5827.997,
+          "segmentCount": 845,
+          "sttModel": "mlx-community/parakeet-tdt-1.1b",
+          "acquiredOn": "2026-10-04",
+          "source": {
+            "feed": "https://feeds.megaphone.fm/BVLLC2163264914",
+            "episodeTitle": "Jonathan Swan’s Dive into Trump’s Reality",
+            "published": "Thu, 10 Sep 2026 07:30:00 -0000"
+          },
+          "status": "awaiting labels",
+          "ownerPointers": {
+            "unit": "original seconds, from the owner-reported rendering (hash recorded in `missing`)",
+            "shopify": [
+              0.32,
+              96.2
+            ],
+            "chatgpt": [
+              96.8,
+              126.3
+            ],
+            "programmeStart": 134.9,
+            "groundNews": [
+              1117,
+              1190
+            ],
+            "bombas": [
+              3384,
+              3468
+            ],
+            "smalls": [
+              4695,
+              4815
+            ]
+          },
+          "pointerRendering": "different: the pointers come from the original download, whose audio this fresh download does not reproduce; they locate the ads only approximately here and must be re-read on this input before labelling.",
+          "note": "Acquired by Producer/Workers/ad_corpus_acquire.py from the public feed into a scratch directory with the worker's own transcription and alignment; the entry is not yet pinned because `ad_corpus.adopt` reads `cases`, not `gaps`."
+        }
+      ]
+    },
+    {
+      "id": "waveform-fresh-rendering-awaiting-labels",
+      "show": "Waveform: The MKBHD Podcast",
+      "kind": "judgement",
+      "reported": "Same episode as waveform-two-preroll-sponsor-reads (\"Apple M6? S27 Leaked? It's Gadget Season!\"): David, 2026-09-05, opening Deepgram and Gemini spots not removed; 2026-09-07, a Granola host read not removed.",
+      "missing": "The original download's input is not recoverable; a fresh download of the same episode from the public feed is a different rendering (dynamically inserted breaks are re-rolled per download), so the case's labels do not transfer. This input needs its own hand-timed labels. Acquired input, awaiting labels: sha256:b6c98595e7ef17befaf3479e9a6fe08b753256c91888787671341e4591baff59.",
+      "closes": "Hand-timed must-cut and must-keep labels read off this input's own transcript, then a promotion from `gaps` to `cases` and adoption of the pinned entry.",
+      "acquiredInputs": [
+        {
+          "sourceHash": "sha256:b6c98595e7ef17befaf3479e9a6fe08b753256c91888787671341e4591baff59",
+          "byteCount": 125391010,
+          "durationSeconds": 5222.374,
+          "segmentCount": 618,
+          "sttModel": "mlx-community/parakeet-tdt-1.1b",
+          "acquiredOn": "2026-10-04",
+          "source": {
+            "feed": "https://feeds.megaphone.fm/STU4418364045",
+            "episodeTitle": "Apple M6? S27 Leaked? It's Gadget Season!",
+            "published": "Fri, 28 Aug 2026 08:00:00 -0000"
+          },
+          "status": "awaiting labels",
+          "ownerPointers": {
+            "unit": "original seconds, from the earlier rendering",
+            "deepgramSpot": [
+              0.24,
+              32.88
+            ],
+            "geminiSpot": [
+              33.52,
+              66.08
+            ],
+            "granolaHostRead": [
+              4066.16,
+              4122.76
+            ]
+          },
+          "pointerRendering": "different: the original input measured 5337.26s; this one measures 5222.37s, so every pointer must be re-read.",
+          "note": "Acquired by Producer/Workers/ad_corpus_acquire.py from the public feed into a scratch directory with the worker's own transcription and alignment; the entry is not yet pinned because `ad_corpus.adopt` reads `cases`, not `gaps`."
+        }
+      ]
+    },
+    {
+      "id": "pchh-fresh-rendering-awaiting-labels",
+      "show": "Pop Culture Happy Hour",
+      "kind": "judgement",
+      "reported": "Same episode as pchh-preroll-swallowed-the-premise (\"Coyote vs. Acme and Dolly Parton\"): David, 2026-09-05, the episode listed two ads removed.",
+      "missing": "The original input is not recoverable. This rendering comes from the public Pop Culture Happy Hour feed, not the subscribed Plus feed (its URL carries a private token and was deliberately not fetched), and measures 1686.18s against the original's 1545.93s. The case's 'sponsor-free' premise was observed on the other rendering and is unverified here. Acquired input, awaiting labels: sha256:595807f8d9628316dc4ed47d2b44a293e6c1be47a72a43c9cf6def4dd319d171.",
+      "closes": "Hand-timed labels on this input once its sponsor content, if any, is read off its own transcript; or the owner's Plus-feed rendering if the owner authorises acquiring it.",
+      "acquiredInputs": [
+        {
+          "sourceHash": "sha256:595807f8d9628316dc4ed47d2b44a293e6c1be47a72a43c9cf6def4dd319d171",
+          "byteCount": 26978899,
+          "durationSeconds": 1686.178,
+          "segmentCount": 127,
+          "sttModel": "mlx-community/parakeet-tdt-1.1b",
+          "acquiredOn": "2026-10-04",
+          "source": {
+            "feed": "https://feeds.npr.org/510282/podcast.xml",
+            "episodeTitle": "Coyote vs. Acme and Dolly Parton",
+            "published": "Fri, 28 Aug 2026 07:00:00 +0000"
+          },
+          "status": "awaiting labels",
+          "ownerPointers": {
+            "unit": "original seconds, from the earlier rendering",
+            "recordedCut": [
+              0.0,
+              51.52
+            ],
+            "housePromo": [
+              0.4,
+              26.48
+            ]
+          },
+          "pointerRendering": "different: public feed rendering, not the Plus feed the case was observed on; the owner reported no time pointer, only the two recorded cuts.",
+          "substitution": "rendering",
+          "note": "Acquired by Producer/Workers/ad_corpus_acquire.py from the public feed into a scratch directory with the worker's own transcription and alignment; the entry is not yet pinned because `ad_corpus.adopt` reads `cases`, not `gaps`."
+        }
+      ]
+    },
+    {
+      "id": "confirmed-oversized-span-total-share",
+      "show": "TechCrunch Daily Crunch",
+      "kind": "judgement",
+      "reported": "Q021: a confirmed oversized ad span is exempt from both share ceilings. Found while investigating real TechCrunch Daily Crunch preparation failures of 2026-09-17, one of which is the library episode \"Meta expands subscription push with new AI-focused plans\" (item id prefix b4b20308).",
+      "missing": "The 2026-09-17 input is not recoverable. This fresh download of the same episode is a different rendering, so it is a candidate input rather than the failing one, and carries no labels. Acquired input, awaiting labels: sha256:eb2da142e24b1496b94c92a4d48ab3e6e19d8bc0a31a15febf956a0e6c5c714e.",
+      "closes": "Hand-timed labels on this input, then a case that exercises an oversized confirmed span against the total-share ceiling.",
+      "acquiredInputs": [
+        {
+          "sourceHash": "sha256:eb2da142e24b1496b94c92a4d48ab3e6e19d8bc0a31a15febf956a0e6c5c714e",
+          "byteCount": 20141056,
+          "durationSeconds": 503.066,
+          "segmentCount": 29,
+          "sttModel": "mlx-community/parakeet-tdt-1.1b",
+          "acquiredOn": "2026-10-04",
+          "source": {
+            "feed": "https://feeds.megaphone.fm/techcrunch-daily-crunch",
+            "episodeTitle": "Meta expands subscription push with new AI-focused plans",
+            "published": "Wed, 16 Sep 2026 11:00:00 -0000"
+          },
+          "status": "awaiting labels",
+          "pointerRendering": "no owner time pointers exist for this defect; the episode was identified by title from the failing preparation records.",
+          "substitution": "same episode, fresh rendering",
+          "note": "Acquired by Producer/Workers/ad_corpus_acquire.py from the public feed into a scratch directory with the worker's own transcription and alignment; the entry is not yet pinned because `ad_corpus.adopt` reads `cases`, not `gaps`."
+        }
+      ]
     }
   ]
 }
