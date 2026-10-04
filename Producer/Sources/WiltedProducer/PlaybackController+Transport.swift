@@ -84,7 +84,7 @@ extension PlaybackController {
         // Queue operations keep their silent autoplay: the queue move must
         // complete whether or not the backend agreed to start. A caller that
         // needs a typed answer follows the operation with `start()`.
-        if playAfterLoad { isPlaying = backend.play() }
+        if playAfterLoad { isPlaying = backend.play(); meterListening() }
         return loadedGeneration
     }
 
@@ -106,6 +106,7 @@ extension PlaybackController {
             positionSeconds = position
         }
         isPlaying = backend.play()
+        meterListening()
         guard isPlaying else { throw PlaybackTransportError.backendRefused(loadedItemID) }
         recoverableFault = nil
     }
@@ -117,6 +118,7 @@ extension PlaybackController {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         if backend.isPlaying {
             isPlaying = true
+            meterListening()
             return .alreadyPlaying
         }
         try play()
@@ -127,6 +129,7 @@ extension PlaybackController {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         backend.pause()
         isPlaying = false
+        meterListening()
         try await checkpoint()
     }
 
@@ -158,6 +161,10 @@ extension PlaybackController {
             speedSavingsBaselineSeconds = target
             completed = target >= durationSeconds
             intent = .progress
+            // Every caller is an explicit listener seek (scrub, transcript
+            // cue, skip-forward). The jump is clamped to the item, so it never
+            // exceeds the remaining duration.
+            recordManualSkip(seconds: target - current)
             try await checkpoint()
         }
     }
@@ -175,7 +182,12 @@ extension PlaybackController {
 
     public func manualCheckpoint() async throws { try await checkpoint() }
     public func pauseAndCheckpoint() async throws { try await pause() }
-    public func handlePauseOrQuit() async throws { backend.pause(); isPlaying = false; try await checkpoint() }
+    public func handlePauseOrQuit() async throws {
+        backend.pause()
+        isPlaying = false
+        meterListening()
+        try await checkpoint()
+    }
 
     /// Rebuilds the backend after an audio route/configuration change. The
     /// exact playhead and whether it was playing are captured before reload.
@@ -190,6 +202,7 @@ extension PlaybackController {
         backend.currentTime = position
         positionSeconds = position
         isPlaying = wasPlaying && backend.play()
+        meterListening()
     }
 
     private func beginNewSession(
@@ -216,6 +229,7 @@ extension PlaybackController {
         positionSeconds = target
         speedSavingsBaselineSeconds = target
         isPlaying = wasPlaying && backend.play()
+        meterListening()
         try await checkpoint()
     }
 

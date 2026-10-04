@@ -96,41 +96,86 @@ extension LocalLibraryStore {
     ///
     /// Records only. Downloaded media files stay on disk because revision-aware
     /// reclamation is a separate job; unsubscribe does not guess whether a
-    /// namespaced or same-item legacy revision is still referenced.
+    /// namespaced or same-item legacy revision is still referenced. There is
+    /// no undo: resubscribing admits the feed again from scratch.
+    ///
+    /// Every deletion is staged in one `ModelContext` and committed by one
+    /// save, so the cascade commits whole or not at all. A feed with nothing
+    /// left to delete writes nothing, so a duplicate confirm coalesces and
+    /// returns 0.
+    ///
+    /// - Throws: `LocalLibraryRemovalError` naming the stage reached; no
+    ///   record changed.
     @discardableResult
     public func unsubscribeFromPodcast(feedID: ItemID) throws -> Int {
-        let context = ModelContext(container)
-        let feed = feedID.rawValue
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
-        where record.feedID == feed { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
-        where record.id == feed { context.delete(record) }
+        try Self.performRemoval(.unsubscribe, startingAt: .subscription) { stage in
+            let context = ModelContext(container)
+            let feed = feedID.rawValue
+            var staged = 0
+            func remove(_ record: some PersistentModel) { context.delete(record); staged += 1 }
 
-        let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-            .filter { $0.feedID == feed }
-        let episodeIDs = Set(episodes.map(\.id))
-        for record in episodes { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
-        where episodeIDs.contains(record.episodeID) { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
-        where episodeIDs.contains(record.episodeID) { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
-        where episodeIDs.contains(record.itemID) { context.delete(record) }
-        // Artwork is owned by the feed as well as by its episodes.
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
-        where episodeIDs.contains(record.ownerID) || record.ownerID == feed { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
-        where episodeIDs.contains(record.itemID) { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
-        where episodeIDs.contains(record.itemID) { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
-        where episodeIDs.contains(record.itemID) { context.delete(record) }
-        // A dismissal is now a state on the episode row itself, deleted with
-        // it above, so resubscribing starts clean rather than inheriting a
-        // blocklist the listener can no longer see anywhere -- no separate
-        // tombstone table to sweep here any more.
-        try context.save()
-        return episodeIDs.count
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+            where record.feedID == feed { remove(record) }
+            try Self.reachRemovalStage(.subscription)
+
+            stage = .feed
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
+            where record.id == feed { remove(record) }
+            try Self.reachRemovalStage(.feed)
+
+            stage = .episodes
+            let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+                .filter { $0.feedID == feed }
+            let episodeIDs = Set(episodes.map(\.id))
+            for record in episodes { remove(record) }
+            try Self.reachRemovalStage(.episodes)
+
+            stage = .queue
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+            where episodeIDs.contains(record.episodeID) { remove(record) }
+            try Self.reachRemovalStage(.queue)
+
+            stage = .downloads
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
+            where episodeIDs.contains(record.episodeID) { remove(record) }
+            try Self.reachRemovalStage(.downloads)
+
+            stage = .playbackSpeeds
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
+            where episodeIDs.contains(record.itemID) { remove(record) }
+            try Self.reachRemovalStage(.playbackSpeeds)
+
+            // Artwork is owned by the feed as well as by its episodes.
+            stage = .artwork
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
+            where episodeIDs.contains(record.ownerID) || record.ownerID == feed { remove(record) }
+            try Self.reachRemovalStage(.artwork)
+
+            stage = .revisions
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+            where episodeIDs.contains(record.itemID) { remove(record) }
+            try Self.reachRemovalStage(.revisions)
+
+            stage = .transcripts
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
+            where episodeIDs.contains(record.itemID) { remove(record) }
+            try Self.reachRemovalStage(.transcripts)
+
+            stage = .playback
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+            where episodeIDs.contains(record.itemID) { remove(record) }
+            try Self.reachRemovalStage(.playback)
+
+            // A dismissal is now a state on the episode row itself, deleted with
+            // it above, so resubscribing starts clean rather than inheriting a
+            // blocklist the listener can no longer see anywhere -- no separate
+            // tombstone table to sweep here any more.
+            guard staged > 0 else { return 0 }
+            stage = .save
+            try Self.reachRemovalStage(.save)
+            try context.save()
+            return episodeIDs.count
+        }
     }
 
     static func apply(

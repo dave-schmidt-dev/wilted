@@ -262,7 +262,7 @@ final class LocalLibraryStoreTests: XCTestCase {
         let migratedTranscript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let migratedInspection = try await migrated.inspect()
         XCTAssertNil(migratedTranscript)
-        XCTAssertEqual(migratedInspection.schemaVersion, .v13)
+        XCTAssertEqual(migratedInspection.schemaVersion, .v14)
     }
 
     /// The V4 -> V5 stage renames the deletion column. A read-back inside one

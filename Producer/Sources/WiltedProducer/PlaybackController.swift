@@ -183,6 +183,13 @@ public final class PlaybackController {
     /// idle checkpoint, such as the one taken when the app goes to the background, would look
     /// newer than a position another device saved in the meantime.
     var lastWritten: (sessionID: String, position: TimeInterval, completed: Bool, intent: PlaybackIntent, at: Date)?
+    /// Measured lifetime totals (played and manually skipped time) for the
+    /// loaded attempt, plus amounts still waiting to be admitted to the store.
+    @ObservationIgnored var lifetimeMeter = PlaybackLifetimeMeter()
+    /// Monotonic seconds used to measure active listening. System uptime
+    /// stops while the Mac sleeps, so sleep is never counted as listening.
+    /// Tests replace it with a fake clock.
+    @ObservationIgnored var listeningClock: @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
 
     public init(
         store: LocalLibraryStore,
@@ -203,6 +210,10 @@ public final class PlaybackController {
     func loadRevision(
         _ revision: AudioRevision, mediaURL: URL, expectedGeneration: UInt64? = nil, isPodcast: Bool = false
     ) async throws -> UInt64 {
+        // Admit the outgoing attempt's measured time before it is replaced, so
+        // switching items never leaves more than the crash-tail bound unsaved.
+        // A statistics failure must not block loading; the amount stays pending.
+        try? await flushLifetimeMeasures()
         let persisted = try await store.playbackState(
             for: revision.itemID,
             revisionID: revision.revisionID
@@ -211,6 +222,7 @@ public final class PlaybackController {
             throw CancellationError()
         }
         try backend.load(url: mediaURL)
+        beginLifetimeAttempt(itemID: revision.itemID, revisionID: revision.revisionID)
         checkpointTask?.cancel()
         pendingSpeedIntervals.removeAll()
         loadedBackendGeneration = backend.loadedGeneration
@@ -416,11 +428,13 @@ public final class PlaybackController {
             try await checkpoint(markCompletedAtEnd: false)
         }
         let completion = manualNextCompletionCandidate(currentQueueItem: state.currentEpisodeID)
+        let skipped = manualNextSkip(currentQueueItem: state.currentEpisodeID)
 
         // Loading precedes both the durable queue move and the completion
         // write. A missing or corrupt successor therefore leaves the current
         // item, its queue identity, and its resumable checkpoint intact.
         try await loadQueuedEpisode(next, playAfterLoad: autoplay)
+        if let skipped { recordManualNextSkip(skipped) }
         try await store.addPodcastQueueEpisode(next)
         try await store.setCurrentPodcastQueueEpisode(next)
         if let completion {
@@ -466,6 +480,7 @@ public final class PlaybackController {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         backend.pause()
         isPlaying = false
+        meterListening()
         completionHandledGeneration = loadedBackendGeneration
         recoverableFault = nil
         try await checkpointCompletedRevision(accountPlaybackToEnd: false)
@@ -516,6 +531,7 @@ public final class PlaybackController {
         if successfully {
             backend.pause()
             isPlaying = false
+            meterListening()
             let completedIsPodcastEpisode = loadedIsPodcastEpisode
             do { try await checkpointCompletedRevision(accountPlaybackToEnd: true) }
             catch {
@@ -559,6 +575,7 @@ public final class PlaybackController {
                 guard loadedBackendGeneration == activeGeneration, itemID == activeItemID else { return }
                 backend.pause()
                 isPlaying = false
+                meterListening()
                 if let fault = recoverableFault,
                    fault == .podcastMediaUnavailable(next) || fault == .podcastMediaUnreadable(next) {
                     podcastStateHandler?(completedItemID, fault)
@@ -570,6 +587,7 @@ public final class PlaybackController {
             // explicit retry or reload can allow another completion.
             backend.pause()
             isPlaying = false
+            meterListening()
             if let itemID { recoverableFault = .playbackFailed(itemID) }
             // Keep the interrupted playhead, including failure at the final
             // frame, without turning it into a completed revision. A store
