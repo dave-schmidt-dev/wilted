@@ -107,7 +107,6 @@ extension WiltedMacModel {
             articles = library.articles
             applyEpisodes(library.episodes, allowsAutomaticAdmissions: false)
             subscriptions = library.subscriptions
-            lifetimeStatistics = try await configuredStore.lifetimeStatistics()
             dismissedEpisodes = try await loadDismissedEpisodes(from: configuredStore)
             // A deferred job predating a forced redownload must never start on
             // the stale prepared file while its replacement is being fetched.
@@ -156,6 +155,9 @@ extension WiltedMacModel {
             announceStartupStep(.restoringPlayback)
             await restorePodcastPlayback()
             startupState = .ready
+            // After `.ready`: the summary is observed state, so a slow, failed
+            // or rebuilding one never holds the larder closed or fails it.
+            beginLifetimeStatisticsLoad()
             if pendingSyncReconciliation {
                 pendingSyncReconciliation = false
                 reconcileSyncOnLaunchOrForeground()

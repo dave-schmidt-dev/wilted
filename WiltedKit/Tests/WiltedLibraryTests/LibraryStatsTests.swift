@@ -6,6 +6,33 @@ import XCTest
 final class LibraryStatsTests: XCTestCase {
     private let stamp = Date(timeIntervalSince1970: 2_000)
 
+    /// Task 8.2: the Mac-only measured totals (minutes, GB, skipped minutes) never
+    /// reach the wire. Projecting the same summary leaves the reserved optionals
+    /// nil and unwritten, so no new periodic metric write is created.
+    func testMeasuredTotalsStayOffTheWireProjection() throws {
+        let summary = LifetimeStatisticsSummary(
+            state: .ready,
+            legacy: LifetimeStatistics(audioProcessedSeconds: 10, speechGeneratedSeconds: 20,
+                                       confirmedAdTimeRemovedSeconds: 30, fasterPlaybackTimeSavedSeconds: 40),
+            measured: LifetimeMeasuredTotals(playedMilliseconds: 60_000, receivedBytes: 2_000_000_000,
+                                             manuallySkippedMilliseconds: 120_000)
+        )
+        let stats = LibraryStats(summary.legacy)
+        XCTAssertNil(stats.minutesPlayed)
+        XCTAssertNil(stats.gigabytesDownloaded)
+        XCTAssertNil(stats.minutesSkipped)
+        XCTAssertEqual(stats, LibraryStats(audioProcessedSeconds: 10, speechGeneratedSeconds: 20,
+                                           confirmedAdTimeRemovedSeconds: 30, fasterPlaybackTimeSavedSeconds: 40))
+        let json = String(decoding: try JSONEncoder().encode(stats), as: UTF8.self)
+        for key in ["minutesPlayed", "gigabytesDownloaded", "minutesSkipped"] {
+            XCTAssertFalse(json.contains(key), "\(key) is not written")
+        }
+        // A change in measured totals alone is not a publishable change.
+        var moved = summary
+        moved.measured.playedMilliseconds += 60_000
+        XCTAssertTrue(LibraryStats(moved.legacy).hasSameMetrics(as: stats))
+    }
+
     func testMapsTheFourLifetimeMetricsAndLeavesReservedFieldsNil() {
         let lifetime = LifetimeStatistics(
             audioProcessedSeconds: 10, speechGeneratedSeconds: 20,
