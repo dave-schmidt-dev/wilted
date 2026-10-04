@@ -191,6 +191,37 @@ class AdCorpusInputStoreTests(unittest.TestCase):
         ])
         self.assertNotIn("unsatisfied  ", stdout.getvalue())
 
+    def test_adopt_pins_acquired_gap_inputs_without_making_them_cases(self):
+        acquired_hash = "sha256:acquired-gap-input"
+        gap_id = "weekly-show-five-sponsor-spots-survived"
+        manifest = self.directory("manifest.json")
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({
+            "cases": [self.waveform, self.pchh],
+            "gaps": [
+                {"id": gap_id, "acquiredInputs": [{"sourceHash": acquired_hash}]},
+                {"id": "gap-without-acquired-inputs"},
+            ],
+        }))
+        source = self.directory("snapshot")
+        source.mkdir()
+        (source / "gap.json").write_text(json.dumps({
+            "sourceHash": acquired_hash,
+            "segments": [{"text": "gap input", "start_s": 0.0, "end_s": 1.0}],
+        }))
+        (source / "unrelated.json").write_text(json.dumps({
+            "sourceHash": "sha256:not-in-the-manifest",
+            "segments": [{"text": "other", "start_s": 0.0, "end_s": 1.0}],
+        }))
+        store = self.directory("adcorpus-inputs")
+
+        adopted, unsatisfied = self.corpus.adopt(source, store=store, manifest=manifest)
+
+        self.assertEqual([entry_id for entry_id, _ in adopted], [gap_id])
+        self.assertTrue((store / self.corpus._pinned_input_name(acquired_hash)).is_file())
+        self.assertFalse((store / self.corpus._pinned_input_name("sha256:not-in-the-manifest")).exists())
+        self.assertEqual(unsatisfied, [self.waveform["id"], self.pchh["id"]])
+
     def test_the_store_lives_outside_the_repository_and_is_gitignored(self):
         root = Path(__file__).resolve().parents[2]
         store = self.corpus.DEFAULT_AD_CORPUS_INPUTS

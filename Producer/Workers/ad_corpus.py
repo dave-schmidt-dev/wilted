@@ -623,17 +623,23 @@ def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPU
 
 
 def adopt(source: Path, *, store: Path, manifest: Path = MANIFEST):
-    """Pin every manifest-named cache entry in `source` into the store.
+    """Pin manifest cases and acquired gap inputs from `source` into the store.
 
-    Returns `(adopted, unsatisfied)`: `adopted` is `(case_id, destination)` for
-    each case copied, and `unsatisfied` names every manifest case the source
-    did not supply. The source is expected to be a snapshot of the aligned-STT
-    cache, but any directory of the same JSON shape works; entries the manifest
-    does not name, and entries with no segments, are ignored rather than
-    copied, because the store is not a second cache.
+    Returns `(adopted, unsatisfied)`: `adopted` is `(case_or_gap_id, destination)`
+    for each copied input, and `unsatisfied` names only manifest cases the
+    source did not supply. The source is expected to be a snapshot of the
+    aligned-STT cache, but any directory of the same JSON shape works; entries
+    the manifest does not name, and entries with no segments, are ignored rather
+    than copied, because the store is not a second cache.
     """
-    cases = load_manifest(manifest)["cases"]
-    by_hash = {case["sourceHash"]: case for case in cases}
+    contents = load_manifest(manifest)
+    cases = contents["cases"]
+    by_hash = {case["sourceHash"]: case["id"] for case in cases}
+    for gap in contents.get("gaps", []):
+        for acquired_input in gap.get("acquiredInputs", []):
+            source_hash = acquired_input.get("sourceHash")
+            if source_hash:
+                by_hash[source_hash] = gap["id"]
     adopted: list[tuple[str, Path]] = []
     seen: set[str] = set()
     store.mkdir(parents=True, exist_ok=True)
@@ -645,12 +651,12 @@ def adopt(source: Path, *, store: Path, manifest: Path = MANIFEST):
         source_hash = payload.get("sourceHash")
         if source_hash in seen or not payload.get("segments"):
             continue
-        case = by_hash.get(source_hash)
-        if case is None:
+        entry_id = by_hash.get(source_hash)
+        if entry_id is None:
             continue
         destination = store / _pinned_input_name(source_hash)
         shutil.copyfile(path, destination)
-        adopted.append((case["id"], destination))
+        adopted.append((entry_id, destination))
         seen.add(source_hash)
     unsatisfied = [case["id"] for case in cases if case["sourceHash"] not in seen]
     return adopted, unsatisfied
