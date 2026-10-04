@@ -19,6 +19,8 @@ final class WiltedMacRemotePositionTests: XCTestCase {
     override func setUp() async throws {
         let directory = wiltedTemporaryDirectory("remote-position")
         store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        // The store keeps a checkpoint only for an item it still holds.
+        try await store.saveReadyRevision(revision, mediaURL: mediaURL)
         makeController()
     }
 

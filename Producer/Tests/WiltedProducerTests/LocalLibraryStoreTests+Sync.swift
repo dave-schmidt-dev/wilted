@@ -47,6 +47,7 @@ extension LocalLibraryStoreTests {
         let incomingSidecar = PlaybackSystemFieldsSidecar(
             encodedSystemFields: Data([8, 9]), changeTag: "change-tag-new")
         let store = try LocalLibraryStore(url: url)
+        try await store.save(article: item)
         try await store.save(playback: current)
         try await store.save(
             playbackSidecar: PlaybackSystemFieldsSidecar(encodedSystemFields: Data([4, 5]), changeTag: "change-tag-old"),
@@ -112,6 +113,7 @@ extension LocalLibraryStoreTests {
         let pendingChange = try SyncPendingChange(
             operation: .update, recordID: pendingEnvelope.id, record: pendingEnvelope)
         let store = try LocalLibraryStore(url: url)
+        try await store.save(article: item)
         try await store.save(playback: pendingLocal)
         try await store.save(
             playbackSidecar: localSidecar, for: item.itemID, revisionID: rev.revisionID)

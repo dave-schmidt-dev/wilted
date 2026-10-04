@@ -4,12 +4,28 @@ import SwiftData
 import WiltedDomain
 import WiltedSync
 
+/// What a playback checkpoint write did.
+public enum PlaybackSaveOutcome: Equatable, Sendable {
+    case saved
+    /// Nothing was written: the item has no episode row, no article row and
+    /// no stored audio for that revision, so a new playback record would
+    /// outlive the removal that deleted them.
+    case skippedMissingItem
+}
+
 extension LocalLibraryStore {
-    public func save(playback state: PlaybackState) throws {
+    /// Upserts a playback checkpoint. A first record for an item that no
+    /// longer exists is skipped rather than inserted: a pause that lands
+    /// after an unsubscribe cascade would otherwise re-create the position
+    /// the cascade just deleted.
+    @discardableResult
+    public func save(playback state: PlaybackState) throws -> PlaybackSaveOutcome {
         let context = ModelContext(container)
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
         let id = "\(state.itemID.rawValue)|\(state.revisionID.rawValue)"
-        if let existing = records.first(where: { $0.id == id }) {
+        let existingRecord = records.first(where: { $0.id == id })
+        if existingRecord == nil, try !playbackOwnerExists(state, in: context) { return .skippedMissingItem }
+        if let existing = existingRecord {
             existing.sessionID = state.sessionID; existing.sequence = state.sequence; existing.positionSeconds = state.positionSeconds
             existing.durationSeconds = state.durationSeconds; existing.completed = state.completed; existing.intent = state.intent.rawValue
             existing.deviceID = state.deviceID
@@ -19,17 +35,22 @@ extension LocalLibraryStore {
             existing.updatedAt = state.updatedAt.date
         } else { context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(state)) }
         try context.save()
+        return .saved
     }
 
     /// Writes the completed playback checkpoint and the "finished listening"
     /// fact in one `ModelContext`/one save, so a crash between the two never
     /// leaves the checkpoint durable without the listening record, or vice
-    /// versa.
-    public func save(playback: PlaybackState, listening: PodcastListeningState) throws {
+    /// versa. Skipped as a whole, like `save(playback:)`, when the item no
+    /// longer exists and has no playback record yet.
+    @discardableResult
+    public func save(playback: PlaybackState, listening: PodcastListeningState) throws -> PlaybackSaveOutcome {
         let context = ModelContext(container)
         let playbackRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
         let playbackID = "\(playback.itemID.rawValue)|\(playback.revisionID.rawValue)"
-        if let existing = playbackRecords.first(where: { $0.id == playbackID }) {
+        let existingRecord = playbackRecords.first(where: { $0.id == playbackID })
+        if existingRecord == nil, try !playbackOwnerExists(playback, in: context) { return .skippedMissingItem }
+        if let existing = existingRecord {
             existing.sessionID = playback.sessionID; existing.sequence = playback.sequence; existing.positionSeconds = playback.positionSeconds
             existing.durationSeconds = playback.durationSeconds; existing.completed = playback.completed; existing.intent = playback.intent.rawValue
             existing.deviceID = playback.deviceID
@@ -48,6 +69,25 @@ extension LocalLibraryStore {
             context.insert(LocalLibrarySchemaV10Models.PodcastListeningRecord(listening))
         }
         try context.save()
+        return .saved
+    }
+
+    /// Whether the checkpoint's item still has an episode row, an article row
+    /// or stored audio for that exact revision to own a new playback record.
+    /// An unsubscribe deletes all three in one save. A removed article keeps
+    /// its flagged row, so it still counts.
+    private func playbackOwnerExists(_ state: PlaybackState, in context: ModelContext) throws -> Bool {
+        let identifier = state.itemID.rawValue
+        let revisionIdentifier = state.revisionID.rawValue
+        let episodes = FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>(
+            predicate: #Predicate { $0.id == identifier })
+        if try context.fetchCount(episodes) > 0 { return true }
+        let articles = FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>(
+            predicate: #Predicate { $0.id == identifier })
+        if try context.fetchCount(articles) > 0 { return true }
+        let revisions = FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>(
+            predicate: #Predicate { $0.id == revisionIdentifier && $0.itemID == identifier })
+        return try context.fetchCount(revisions) > 0
     }
 
     public func playbackState(for itemID: ItemID, revisionID: RevisionID) throws -> PlaybackState? {

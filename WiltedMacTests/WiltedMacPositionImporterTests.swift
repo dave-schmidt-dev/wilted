@@ -169,6 +169,8 @@ final class WiltedMacPositionImporterTests: XCTestCase {
     private func makeRig(macPosition: Double) async throws -> Rig {
         let directory = wiltedTemporaryDirectory("position-importer")
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        // The store keeps a checkpoint only for an item it still holds.
+        try await store.saveReadyRevision(revision, mediaURL: URL(fileURLWithPath: "/tmp/podcast-a.m4a"))
         try await store.save(playback: PlaybackState(
             itemID: episode, revisionID: revisionA, sessionID: "session-mac", sequence: 3, positionSeconds: macPosition,
             durationSeconds: 1_482, completed: false, intent: .progress, deviceID: macID,

@@ -13,6 +13,8 @@ import WiltedSync
 import CloudKit
 #endif
 
+private let removalLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Removal")
+
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
     /// The episode the Menu should start once the current one is finished:
@@ -148,32 +150,50 @@ extension WiltedMacModel {
 #endif
     }
 
-    /// Unsubscribes and clears every record the feed owned.
-    ///
-    /// Audio already downloaded stays on disk: an audio revision is identified
-    /// by its content, so removing files here could break an episode from
-    /// another feed that happens to share them.
-    func unsubscribe(_ subscription: WiltedMacSubscription) {
 #if canImport(WiltedProducer)
-        guard let store, let feedID = try? ItemID(rawValue: subscription.id) else { return }
-        undoableRemoval = nil
-        trackSubscriptionWrite { [weak self] in
-            guard let self else { return }
-            do {
-                let removed = try await store.unsubscribeFromPodcast(feedID: feedID)
-                let values = try await self.loadLibrary(from: store)
-                self.articles = values.articles
-                self.applyEpisodes(values.episodes)
-                self.subscriptions = values.subscriptions
-                self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
-                self.podcastOperationMessage =
-                    "Unsubscribed from \(subscription.title) and removed \(removed) episode\(removed == 1 ? "" : "s")."
-            } catch {
-                self.podcastOperationMessage = "\(subscription.title) could not be unsubscribed."
-            }
+    /// Unsubscribes and clears every record the feed owned, committing before
+    /// anything on screen changes.
+    ///
+    /// The store's cascade is one save, so a throw means nothing was removed
+    /// and the row, selection and player stay as they were for a retry. Audio
+    /// already downloaded stays on disk: an audio revision is identified by
+    /// its content, so removing files here could break an episode from another
+    /// feed that happens to share them. There is no Undo; resubscribing is the
+    /// way back.
+    @discardableResult
+    func commitUnsubscribe(_ subscription: WiltedMacSubscription) async throws -> Int {
+        guard let store else { throw WiltedMacRemovalUnavailable() }
+        let feedID = try ItemID(rawValue: subscription.id)
+        // Episode rows carry no feed identity, so the feed's members are read
+        // before the cascade deletes them.
+        let owned = Set(try await store.podcastEpisodes(for: feedID).map(\.itemID.rawValue))
+        let removed = try await store.unsubscribeFromPodcast(feedID: feedID)
+        let loaded = isPodcastPlayback ? playback?.itemID?.rawValue : nil
+        if [currentPodcastEpisodeID, loaded].contains(where: { $0.map(owned.contains) == true }) {
+            stopPlaybackAfterCommittedRemoval()
         }
-#endif
+        if let selected = selectedLibraryItemID, owned.contains(selected) { selectedLibraryItemID = nil }
+        // Undo records for this feed's episodes would restore rows that no
+        // longer exist; any other episode's undo is left alone.
+        if undoableRemoval?.feedID == subscription.id { undoableRemoval = nil }
+        if let skipped = undoableSkip, owned.contains(skipped.id) { undoableSkip = nil }
+        subscriptions.removeAll { $0.id == subscription.id }
+        // The cascade has committed, so a failed reload must not read as a
+        // failed removal: the rows above are already gone, and the error is
+        // logged rather than thrown.
+        do {
+            let values = try await loadLibrary(from: store)
+            articles = values.articles
+            applyEpisodes(values.episodes)
+            subscriptions = values.subscriptions
+            dismissedEpisodes = try await loadDismissedEpisodes(from: store)
+        } catch {
+            removalLog.error("Library reload after unsubscribe failed: \(String(describing: error), privacy: .public)")
+        }
+        await refreshPodcastQueueState()
+        return removed
     }
+#endif
 
     /// Marks an episode the listener has started completed, deleting nothing.
     ///

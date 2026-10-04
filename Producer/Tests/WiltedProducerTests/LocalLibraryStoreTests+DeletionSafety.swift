@@ -164,6 +164,25 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(recorder.count(of: .save), 1, "three confirms, one write")
     }
 
+    func testLateCheckpointForAnUnsubscribedEpisodeWritesNothing() async throws {
+        let fixture = try await makeCascadeFixture(); defer { removeStore(fixture.url) }
+        let episode = fixture.targetEpisodes[0]
+        let revision = try RevisionID(rawValue: "rev-\(episode.rawValue)")
+        try await fixture.store.unsubscribeFromPodcast(feedID: fixture.target)
+        let late = try PlaybackState(
+            itemID: episode, revisionID: revision, sessionID: "session-late", sequence: 2,
+            positionSeconds: 95, durationSeconds: 180, completed: true, intent: .progress,
+            deviceID: "device-mac", updatedAt: Timestamp(Date()))
+        let paused = try await fixture.store.save(playback: late)
+        let finished = try await fixture.store.save(playback: late, listening: PodcastListeningState(
+            episodeID: episode, completedAt: Timestamp(Date()), lastRevisionID: revision, updatedAt: Timestamp(Date())))
+        XCTAssertEqual([paused, finished], [.skippedMissingItem, .skippedMissingItem])
+        let position = try await fixture.store.playbackState(for: episode, revisionID: revision)
+        XCTAssertNil(position, "a pause after the cascade must not re-create the deleted position")
+        let listening = try await fixture.store.listeningState(for: episode)
+        XCTAssertNil(listening, "nor its listening fact")
+    }
+
     // MARK: - Fixture
 
     /// Tables a cascade must leave whole: history, articles and their tombstones.
