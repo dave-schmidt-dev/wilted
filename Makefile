@@ -52,9 +52,10 @@ app-icon:
 	@bash scripts/generate-app-icon.sh
 
 # Builds the Mac app and replaces the locally installed copy in /Applications,
-# so the app being daily-driven is the app in the working tree. Debug, because
-# Release needs a Developer ID identity and profile this machine is not
-# required to hold; see the script for why that also protects the TCC grant.
+# so the app being daily-driven is the app in the working tree. Development,
+# the live build that runs the library publisher against Development CloudKit;
+# Debug has no live transport and Release needs a Developer ID identity this
+# machine is not required to hold. See the script for the signing and TCC grant.
 install:
 	@bash scripts/install-mac-app.sh
 

@@ -52,17 +52,17 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
         var episodes: [LibraryEntry] = []
         for episode in snapshot.episodes {
             let feed = snapshot.feeds[episode.feedID]
-            episodes.append(try LibraryEntry.podcastEpisode(
-                id: episode.itemID, sourceID: episode.feedID, title: episode.title,
+            episodes.append(try LibraryEntry(
+                id: episode.itemID, kind: .podcastEpisode, sourceID: episode.feedID, title: episode.title,
                 summary: String((episode.notes ?? "").prefix(summaryLimit)),
                 publishedAt: (episode.publishedTime ?? episode.createdAt).date,
                 durationSeconds: episode.durationSeconds,
                 artworkRef: (episode.artworkURL ?? feed?.artworkURL)?.absoluteString,
                 removal: removal(of: episode.itemID, in: snapshot),
                 removedAt: snapshot.retiredAtByEpisode[episode.itemID]?.date,
-                payload: PodcastEpisodePayload(
+                payload: try payloadBytes(PodcastEpisodePayload(
                     enclosureURL: episode.enclosureURL, feedURL: episode.feedURL, rssGUID: episode.rssGUID
-                )
+                ))
             ))
         }
         let active = Set(episodes.filter { $0.removal == .none }.map(\.id))
@@ -74,6 +74,15 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
             feeds: feeds, episodes: episodes, queue: queue.filter(active.contains), listening: listening,
             currentPlayback: try position(of: playback, in: snapshot, known: known, deviceID: deviceID)
         )
+    }
+
+    /// The payload with its keys in a fixed order. `JSONEncoder`'s default key order varies between
+    /// encodes, and the differ compares payload bytes, so an unsorted payload re-sent every unchanged
+    /// episode on every pass (Task 5.2 duplicate-send fix).
+    static func payloadBytes(_ payload: PodcastEpisodePayload) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(payload)
     }
 
     private static func removal(of id: ItemID, in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> LibraryRemoval {
@@ -175,6 +184,8 @@ final class WiltedMacLibrarySyncController {
     private var offerReconcile: Task<Void, Never>?
     private var offerReconcileRequested = false
     private var passTail: Task<Bool, Never>?
+    private var syncNowTask: Task<Void, Never>?
+    private(set) var syncNowRuns = 0
     private var stopped = false
     /// Injected lifecycle observation for deterministic shutdown tests.
     var onShutdownDrain: (@MainActor () async -> Void)?
@@ -203,6 +214,28 @@ final class WiltedMacLibrarySyncController {
     /// Asks for a publisher pass now (still coalesced and debounced), e.g. after a phone decision.
     func requestPublish() { triggers.yield() }
 
+    /// Sync now: one round at once (the reads, then this Mac's sends), or one publisher pass while
+    /// the poller is not running. A press while one runs joins it, so a burst costs one round.
+    func syncNow() -> Task<Void, Never> {
+        if let syncNowTask { return syncNowTask }
+        syncNowRuns += 1
+        model?.librarySyncActivity.isSyncing = true
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let poller = self.inbound?.poller, await poller.isRunning {
+                // The round's own `publishRound` runs the pass; a closed gate shows as the throttle.
+                _ = await poller.refreshNow()
+            } else {
+                _ = await self.runPass(includesStats: false)
+            }
+            // A stopped owner's activity was already cleared; a successor's must not be touched.
+            if !self.stopped { self.model?.librarySyncActivity.isSyncing = false }
+            self.syncNowTask = nil
+        }
+        syncNowTask = task
+        return task
+    }
+
     /// The Mac's own work in one sync round, after the round's reads: the library state and
     /// statistics (a request only when one changed), then the playing checkpoint and the stored positions.
     func tickRound() async {
@@ -229,6 +262,7 @@ final class WiltedMacLibrarySyncController {
         await inbound?.close()
         await loop?.value
         await offerReconcile?.value
+        await syncNowTask?.value
         _ = await passTail?.value
     }
 
@@ -281,7 +315,11 @@ final class WiltedMacLibrarySyncController {
         // Paused for the account: nothing to send, and nothing to report as a failure.
         if let account, !account.gate.isOpen { return true }
         do {
-            lastReport = try await publisher.sync(includesStats: includesStats)
+            let report = try await publisher.sync(includesStats: includesStats)
+            lastReport = report
+            // What this pass diffed but iCloud did not acknowledge (conflicts and retries).
+            let unsent = max(0, report.pushed - report.acknowledged)
+            updateActivity { $0.recordSend(acknowledged: report.acknowledged, unsent: unsent, at: Date()) }
             // Offers follow the same triggers as state (the queue and the prepared set) but run on
             // their own task: the media service serializes behind an upload in flight, and a long
             // upload must not hold up state publishing.
@@ -292,11 +330,26 @@ final class WiltedMacLibrarySyncController {
         } catch {
             lastFailure = String(describing: error)
             // A closed gate reports itself (the Sync card); only a new kind of failure is an error.
-            if !(error is TransportThrottled), !Self.isAccountPause(error) {
+            if !Self.isPause(error) {
                 librarySyncLog.error("Library publish failed: \(String(describing: error), privacy: .public)")
+                // A thrown pass reports no count, so the card names none.
+                updateActivity { $0.recordSendFailure(unsent: nil) }
             }
             return false
         }
+    }
+
+    /// Writes the model's activity only when it changed, so an idle round wakes no view.
+    private func updateActivity(_ change: (inout WiltedMacLibrarySyncActivity) -> Void) {
+        guard let model else { return }
+        var next = model.librarySyncActivity
+        change(&next)
+        if next != model.librarySyncActivity { model.librarySyncActivity = next }
+    }
+
+    /// A rate limit or an account hold: each has its own status, so neither is a send failure.
+    static func isPause(_ error: any Error) -> Bool {
+        error is TransportThrottled || isAccountPause(error)
     }
 
     /// A call refused or superseded by the account gate; the account status reports it.
@@ -384,7 +437,8 @@ extension WiltedMacModel {
                 await importer.handle(records)
                 await MainActor.run { self?.updatePhonePositions(from: records) }
             }, maintenance: inboundMaintenance,
-            beforePollerStart: { await previousShutdown?.value }
+            beforePollerStart: { await previousShutdown?.value },
+            onRoundFinished: { [weak self] error in await MainActor.run { self?.recordLibraryCheck(error) } }
         )
         // Decision intents (keep, skip, mark done, remove from Larder, restore, reorder) go to the applier, which shares
         // the media service's ledger; media intents keep their existing route.
@@ -456,8 +510,11 @@ extension WiltedMacModel {
             }
         }
         objc_setAssociatedObject(self, &librarySyncControllerKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        // A UI fixture's scripted state is not a running publisher's, so stopping keeps it.
+        guard librarySyncFixture == nil else { return }
         libraryThrottle = nil
         libraryAccountStatus = nil
+        librarySyncActivity = WiltedMacLibrarySyncActivity()
         phonePositions = [:]
     }
 

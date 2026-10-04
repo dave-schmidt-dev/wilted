@@ -277,6 +277,8 @@ final class WiltedMacModel {
     var libraryThrottle: TransportGateState?
     /// Whether library sync may send for the signed-in iCloud account (Task 5.0); nil while off.
     var libraryAccountStatus: WiltedMacLibraryAccountStatus?
+    /// The library publisher's and inbound poller's own results on this Mac (Task 5.2).
+    var librarySyncActivity = WiltedMacLibrarySyncActivity()
     /// Episodes whose newest listen was on the phone, from the latest device records.
     var phonePositions: [ItemID: WiltedMacPhonePosition] = [:]
     /// Podcast feeds Wilted follows, newest subscription first.
@@ -565,6 +567,9 @@ final class WiltedMacModel {
             if fixtureLarderDemo, let first = episodes.first { playEpisode(first) }
             if arguments.contains("--wilted-ui-fixture-quarantined") {
                 syncLifecycle?.quarantineAccount()
+            }
+            if let scenario = WiltedMacLibrarySyncFixtureScenario.scenario(in: arguments) {
+                installLibrarySyncFixture(scenario)
             }
             if arguments.contains("--wilted-ui-fixture-playing"), let firstArticle = articles.first(where: { $0.isReady }) {
                 // Not `openNowPlaying` followed by `togglePlayback()`: the

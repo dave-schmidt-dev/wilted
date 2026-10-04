@@ -578,6 +578,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
             predicate: NSPredicate(format: "value == %@", "Quarantined"), object: syncStatus
         )
         XCTAssertEqual(XCTWaiter().wait(for: [quarantined], timeout: 5), .completed)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-sync-producer-identity"].exists,
+                       "the producer-identity placeholder is gone")
 
         let review = app.descendants(matching: .any)["wilted-sync-use-current-account"]
         XCTAssertTrue(review.waitForExistence(timeout: 5))
@@ -589,6 +591,70 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter().wait(for: [recovered], timeout: 5), .completed)
         XCTAssertFalse(review.exists)
+    }
+
+    /// The library publisher's Sync card on its own no-network fixture: a library held for account
+    /// review until the owner approves it, one Sync now that reports this Mac's own send (never the
+    /// phone's fetch), and a failed send that keeps its changes for retry.
+    func testLibraryPublisherSyncReviewAndSyncNowJourney() {
+        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-library-sync", "switched"])
+        let status = openLibrarySyncCard(app)
+        let held = "Account changed. Library changes are held for review"
+        XCTAssertEqual(status.value as? String, held)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-sync-producer-identity"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-sync-refresh"].exists, "no legacy actions")
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-sync-use-current-account"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-sync-scope-note"].exists)
+        let syncNow = app.descendants(matching: .any)["wilted-sync-now"]
+        XCTAssertTrue(syncNow.exists)
+        XCTAssertFalse(syncNow.isEnabled, "a held library has no Sync now")
+
+        let review = app.descendants(matching: .any)["wilted-sync-review-account"]
+        XCTAssertTrue(review.exists)
+        review.click()
+        let keepHeld = app.buttons["Keep held"]
+        XCTAssertTrue(keepHeld.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.containing(
+            NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "previous account", "previous account")
+        ).firstMatch.exists, "the dialog says why the library is held")
+        keepHeld.click()
+        XCTAssertEqual(status.value as? String, held, "Keep held changes nothing")
+
+        review.click()
+        let approve = app.buttons["Use reviewed account"]
+        XCTAssertTrue(approve.waitForExistence(timeout: 5))
+        approve.click()
+        waitForValue(status, "value == %@", "Account reviewed. 2 library changes waiting to send")
+        XCTAssertFalse(review.exists)
+        XCTAssertTrue(syncNow.isEnabled)
+        syncNow.click()
+        waitForValue(status, "value BEGINSWITH %@", "Local changes sent at ")
+        XCTAssertTrue((status.value as? String ?? "").hasSuffix("Phone fetch is separate."))
+        XCTAssertNotEqual(app.descendants(matching: .any)["wilted-sync-last-send"].value as? String, "Not yet this launch")
+        app.terminate()
+
+        let failing = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-library-sync", "failure"])
+        let failingStatus = openLibrarySyncCard(failing)
+        XCTAssertEqual(failingStatus.value as? String, "2 library changes waiting to send")
+        failing.descendants(matching: .any)["wilted-sync-now"].click()
+        waitForValue(failingStatus, "value == %@", "Send failed. 2 library changes kept for retry.")
+        XCTAssertTrue(failing.descendants(matching: .any)["wilted-sync-now"].isEnabled, "a failure is retried by Sync now")
+        failing.terminate()
+    }
+
+    private func openLibrarySyncCard(_ app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any)["wilted-navigation-settings"].click()
+        let settings = app.descendants(matching: .any)["wilted-mac-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        for _ in 0..<4 { settings.swipeUp() }
+        let status = app.descendants(matching: .any)["wilted-sync-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        return status
+    }
+
+    private func waitForValue(_ element: XCUIElement, _ format: String, _ value: String) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: format, value), object: element)
+        XCTAssertEqual(XCTWaiter().wait(for: [expectation], timeout: 10), .completed, "\(format) \(value)")
     }
 
     /// A deferred episode's only way forward is the override, so the leg has

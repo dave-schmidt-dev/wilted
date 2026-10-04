@@ -23,6 +23,8 @@ actor WiltedMacInboundPoller {
     static let rediscoverEveryCyclesWithPeers = SyncCadence.rediscoverEveryCyclesWithPeers
 
     typealias Sleep = @Sendable (Duration) async throws -> Void
+    /// The round's first error (discovery or the read), or nil when the round's reads succeeded.
+    typealias RoundFinished = @Sendable ((any Error)?) async -> Void
 
     private let transport: any LibraryTransport
     private let sink: any LibraryIntentSink
@@ -33,6 +35,7 @@ actor WiltedMacInboundPoller {
     private let publishRound: (@Sendable () async -> Void)?
     private let maintenance: (@Sendable () async -> Void)?
     private let onStop: (@Sendable () async -> Void)?
+    private let onRoundFinished: RoundFinished?
     private let sleep: Sleep
     private let clock: @Sendable () -> Date
     private var tick: SyncTick?
@@ -47,6 +50,7 @@ actor WiltedMacInboundPoller {
     ///   - deviceID: this Mac, to tell its own records from a peer's when choosing how often to rescan.
     ///   - gate: the device's shared gate; a closed gate holds the whole tick until its retry time.
     ///   - publishRound: the Mac's own writes for this round, run after the reads.
+    ///   - onRoundFinished: told how the round's reads went, for the Sync card.
     init(
         transport: any LibraryTransport,
         sink: any LibraryIntentSink,
@@ -57,9 +61,11 @@ actor WiltedMacInboundPoller {
         publishRound: (@Sendable () async -> Void)? = nil,
         maintenance: (@Sendable () async -> Void)? = nil,
         onStop: (@Sendable () async -> Void)? = nil,
+        onRoundFinished: RoundFinished? = nil,
         clock: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping Sleep = { try await Task.sleep(for: $0) }
     ) {
+        self.onRoundFinished = onRoundFinished
         self.clock = clock
         self.transport = transport
         self.sink = sink
@@ -129,6 +135,7 @@ actor WiltedMacInboundPoller {
 
     private func cycle() async {
         var failure: String?
+        var firstError: (any Error)?
         var received = 0
         var scanned = false
         let every = knowsAPeer ? Self.rediscoverEveryCyclesWithPeers : Self.rediscoverEveryCycles
@@ -141,6 +148,7 @@ actor WiltedMacInboundPoller {
                 scanned = true
             } catch {
                 failure = "discovery: \(error)"
+                firstError = error
             }
         }
         do {
@@ -157,10 +165,12 @@ actor WiltedMacInboundPoller {
             }
         } catch {
             failure = failure ?? "poll: \(error)"
+            firstError = firstError ?? error
         }
         await publishRound?()
         await maintenance?()
         cycleCount += 1
+        await onRoundFinished?(firstError)
         // A failure repeats every cycle while offline, so only a change is logged. A closed gate is
         // reported by its own status, not once per cycle here.
         if let failure, failure != lastFailure, !failure.contains("throttled until") {
@@ -186,6 +196,7 @@ final class WiltedMacInboundRuntime {
     private let maintenance: (@Sendable () async -> Void)?
     private let beforePollerStart: (@Sendable () async -> Void)?
     private let onPollerStop: (@Sendable () async -> Void)?
+    private let onRoundFinished: WiltedMacInboundPoller.RoundFinished?
     private var startup: Task<Void, Never>?
     private var shutdown: Task<Void, Never>?
     private(set) var poller: WiltedMacInboundPoller?
@@ -201,8 +212,10 @@ final class WiltedMacInboundRuntime {
         maintenance: (@Sendable () async -> Void)? = nil,
         beforePollerStart: (@Sendable () async -> Void)? = nil,
         onPollerStop: (@Sendable () async -> Void)? = nil,
+        onRoundFinished: WiltedMacInboundPoller.RoundFinished? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.onRoundFinished = onRoundFinished
         self.transport = transport
         self.deviceID = deviceID
         self.gate = gate
@@ -238,7 +251,8 @@ final class WiltedMacInboundRuntime {
         let poller = WiltedMacInboundPoller(
             transport: transport, sink: sink, deviceID: deviceID, gate: gate, discover: discover,
             onDeviceRecords: onDeviceRecords, publishRound: publishRound,
-            maintenance: maintenance ?? { await service.sweepExpired() }, onStop: onPollerStop
+            maintenance: maintenance ?? { await service.sweepExpired() }, onStop: onPollerStop,
+            onRoundFinished: onRoundFinished
         )
         self.poller = poller
         let beforePollerStart = beforePollerStart

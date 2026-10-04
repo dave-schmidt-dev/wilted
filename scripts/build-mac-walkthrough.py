@@ -349,11 +349,12 @@ def build(captures, commit, date_iso, date_human, previous):
             "(<code>wilted-automation-ad-marker</code>) is on by default and takes effect without "
             "re-preparation; the off-peak window "
             "(<code>wilted-automation-off-peak-start</code>, <code>wilted-automation-off-peak-end</code>) "
-            "appears only for that processing choice. Sync (<code>wilted-sync-controls</code>) reads Disabled "
-            "with the detail &ldquo;Sync is not configured.&rdquo; at <code>wilted-sync-detail</code>, producer "
-            "identity Unavailable (<code>wilted-sync-producer-identity</code>), and last fetch and last send Not "
-            "yet. Refresh (<code>wilted-sync-refresh</code>) and Upload (<code>wilted-sync-upload</code>) are "
-            "rendered disabled in this state.",
+            "appears only for that processing choice. Sync (<code>wilted-sync-controls</code>) is the library "
+            "publisher&rsquo;s card: its status (<code>wilted-sync-status</code>) reads &ldquo;Local changes sent "
+            "at 10:15 AM. Phone fetch is separate.&rdquo;, Sent from this Mac "
+            "(<code>wilted-sync-last-send</code>) and Phone changes read (<code>wilted-sync-last-check</code>) "
+            "are this Mac&rsquo;s own times, which the scope note (<code>wilted-sync-scope-note</code>) says, and "
+            "one Sync now (<code>wilted-sync-now</code>) runs a round at once.",
             captures),
         "settings-conflict": figure(
             "fig-settings-transcript-conflict", "7.2-settings-transcript-conflict",
@@ -383,12 +384,12 @@ def build(captures, commit, date_iso, date_human, previous):
             captures),
         "recovery-quarantine": figure(
             "fig-recovery-quarantine", "8.2-recovery-sync-quarantine",
-            "Settings showing sync quarantined with an account-review recovery control",
-            "<strong>8.2 Sync quarantine and account recovery.</strong> The quarantined fixture puts sync into "
-            "its blocked state: status (<code>wilted-sync-status</code>) reads Quarantined in amber and the "
-            "detail (<code>wilted-sync-detail</code>) explains that sync is held until the current iCloud "
-            "account is reviewed. <code>wilted-sync-use-current-account</code> is the recovery control, and "
-            "Refresh and Upload are disabled alongside it &mdash; it is the only enabled action in that state.",
+            "Settings showing library sync held after an account change, with an account-review control",
+            "<strong>8.2 Library sync held for account review.</strong> After an account change the library "
+            "publisher sends nothing: status (<code>wilted-sync-status</code>) reads &ldquo;Account changed. "
+            "Library changes are held for review&rdquo; in amber and Sync now (<code>wilted-sync-now</code>) is "
+            "disabled. Review account&hellip; (<code>wilted-sync-review-account</code>) opens Review this "
+            "library, where Use reviewed account deliberately allows the library and Keep held leaves it paused.",
             captures),
     }
 

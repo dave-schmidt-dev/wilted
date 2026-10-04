@@ -364,7 +364,9 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
     /// Settings: appearance, podcast automation, sync, and the one
     /// automation pair that refuses to run.
     private func captureSettings(into root: URL) throws {
-        let app = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts"])
+        // The library publisher's card, as a Development build shows it, from its no-network fixture.
+        let app = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
+                          "--wilted-ui-fixture-library-sync", "sent"])
         XCTAssertTrue(element(app, "wilted-mac-menu-detail").waitForExistence(timeout: 15))
         element(app, "wilted-navigation-settings").click()
         XCTAssertTrue(element(app, "wilted-mac-settings").waitForExistence(timeout: 10))
@@ -391,7 +393,7 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
     }
 
     /// Recovery: a failed download offering retry from the Menu's Available
-    /// group, and sync held in quarantine with its account-review control.
+    /// group, and library sync held for account review with its review control.
     private func captureRecovery(into root: URL) throws {
         let failure = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
                               "--wilted-ui-fixture-download-failure"])
@@ -426,14 +428,18 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         try write(failure, "8.1-recovery-download-retry", into: root)
         failure.terminate()
 
-        let quarantined = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-quarantined"])
+        // The library publisher holding a library after an account change, from its own fixture.
+        let quarantined = launch(["--wilted-ui-fixture-ready", "--wilted-ui-fixture-library-sync", "switched"])
         let settings = element(quarantined, "wilted-navigation-settings")
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.click()
         let settingsRoot = element(quarantined, "wilted-mac-settings")
         XCTAssertTrue(settingsRoot.waitForExistence(timeout: 10))
         for _ in 0..<4 { settingsRoot.swipeUp() }
-        XCTAssertTrue(element(quarantined, "wilted-sync-use-current-account").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(quarantined, "wilted-sync-review-account").waitForExistence(timeout: 10))
+        XCTAssertEqual(element(quarantined, "wilted-sync-status").value as? String,
+                       "Account changed. Library changes are held for review")
+        XCTAssertFalse(element(quarantined, "wilted-sync-now").isEnabled)
         try write(quarantined, "8.2-recovery-sync-quarantine", into: root)
         quarantined.terminate()
     }

@@ -356,7 +356,16 @@ struct WiltedMacSettingsView: View {
         }
     }
 
-    private var syncCard: some View {
+    /// The selected engine's card: the library publisher never falls back to the legacy "Disabled".
+    @ViewBuilder private var syncCard: some View {
+        if model.showsLibraryPublisherSync {
+            WiltedMacLibrarySyncCard(model: model)
+        } else {
+            legacySyncCard
+        }
+    }
+
+    private var legacySyncCard: some View {
         WiltedSettingsCard(title: WiltedScreenCopy.sync) {
             WiltedSettingsRow(
                 "Status",
@@ -364,30 +373,11 @@ struct WiltedMacSettingsView: View {
                 identifier: "wilted-sync-status",
                 tone: model.syncStatus.phase.tone
             )
-            if let throttle = model.libraryThrottle {
-                Divider()
-                // The phone's line: the retry time while it is ahead, "Retrying now…" once it has passed
-                // (never a time that has gone by); cleared by the next call that succeeds.
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    WiltedSettingsRow(
-                        "iCloud",
-                        value: throttle.noticeWithResumeTime(now: context.date, retrying: false),
-                        identifier: "wilted-sync-throttle",
-                        tone: .caution
-                    )
-                }
-            }
             Divider()
             WiltedSettingsRow(
                 "Detail",
                 value: model.syncStatus.detail,
                 identifier: "wilted-sync-detail"
-            )
-            Divider()
-            WiltedSettingsRow(
-                "Producer identity",
-                value: model.syncObservability.producerIdentity.label,
-                identifier: "wilted-sync-producer-identity"
             )
             Divider()
             WiltedSettingsRow("Last fetch", value: lastFetchLabel, identifier: "wilted-sync-last-fetch")
@@ -432,5 +422,64 @@ struct WiltedMacSettingsView: View {
     private var lastSendLabel: String {
         model.syncObservability.lastSuccessfulSendAt
             .map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet"
+    }
+}
+
+/// The library publisher's Sync card (Task 5.2): one status line, this Mac's own send and read
+/// times, one Sync now, and the account review. Times are local; the phone reports its own fetch.
+private struct WiltedMacLibrarySyncCard: View {
+    let model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isReviewing = false
+
+    var body: some View {
+        let status = model.librarySyncStatus
+        let activity = model.librarySyncActivity
+        WiltedSettingsCard(title: WiltedScreenCopy.sync) {
+            WiltedSettingsRow("Status", value: status.headline, identifier: "wilted-sync-status", tone: status.tone)
+            if let throttle = model.libraryThrottle {
+                Divider()
+                // The retry time while it is ahead, "Retrying now…" once it has passed (never a time
+                // that has gone by); cleared by the next call that succeeds.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    WiltedSettingsRow(
+                        "iCloud", value: throttle.noticeWithResumeTime(now: context.date, retrying: false),
+                        identifier: "wilted-sync-throttle", tone: .caution)
+                }
+            }
+            Divider()
+            WiltedSettingsRow(
+                "Sent from this Mac", value: WiltedMacLibrarySyncStatus.timeLabel(activity.lastSentAt),
+                identifier: "wilted-sync-last-send")
+            Divider()
+            WiltedSettingsRow(
+                "Phone changes read", value: WiltedMacLibrarySyncStatus.timeLabel(activity.lastCheckedAt),
+                identifier: "wilted-sync-last-check")
+            Text(WiltedMacLibrarySyncStatus.scopeNote)
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-sync-scope-note")
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Button("Sync now") { model.syncLibraryNow() }
+                    .disabled(!status.canSyncNow)
+                    .accessibilityIdentifier("wilted-sync-now")
+                if status.reviewContext != nil {
+                    Button("Review account…") { isReviewing = true }
+                        .accessibilityIdentifier("wilted-sync-review-account")
+                }
+            }
+            .padding(.top, WiltedTheme.Spacing.xSmall)
+        }
+        .alert(WiltedMacLibrarySyncStatus.reviewTitle, isPresented: $isReviewing) {
+            Button(WiltedMacLibrarySyncStatus.approveReview) { model.reviewLibraryAccount() }
+                .accessibilityIdentifier("wilted-sync-review-approve")
+            Button(WiltedMacLibrarySyncStatus.keepHeld, role: .cancel) {}
+                .accessibilityIdentifier("wilted-sync-review-keep-held")
+        } message: {
+            Text("\(status.reviewContext ?? "") \(WiltedMacLibrarySyncStatus.reviewExplanation)")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-sync-controls")
     }
 }
