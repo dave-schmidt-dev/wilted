@@ -98,6 +98,12 @@ assert_install_output_and_config() {
 [[ -x "$repo_root/.githooks/pre-push" ]] || exit 1
 run_hook pre-commit check-fast 0
 run_hook pre-commit check-fast 23
+for hook in pre-commit pre-push; do
+  grep -Fqx 'unset $(git rev-parse --local-env-vars)' "$repo_root/.githooks/$hook" || {
+    printf '%s\n' "assertion failed: $hook does not clear git's local environment before running tests" >&2
+    exit 1
+  }
+done
 run_hook pre-push validate 0
 run_hook pre-push validate 29
 # Pre-push runs `make validate` and nothing else: the Mac UI receipt is checked

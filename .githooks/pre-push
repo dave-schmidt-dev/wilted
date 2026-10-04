@@ -2,6 +2,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Git exports GIT_DIR and friends to hooks; the tests below create their own
+# repositories and would otherwise write into this one (it set core.bare once).
+unset $(git rev-parse --local-env-vars)
 printf '%s\n' 'native.receipt.pre-push stage=validate' >&2
 # The Mac UI receipt is checked at install time, not here (make install).
 exec make -C "$repo_root" validate
