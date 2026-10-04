@@ -433,6 +433,9 @@ final class WiltedMacModel {
     var subscriptionWriteTasks: [UUID: Task<Void, Never>] = [:]
     var audioRouteRecoveryInFlight = false
     var audioRouteRecoveryAttempted = false
+    /// The playback command owner: token order, pending and failure state,
+    /// the serialized effect tail, and the speed-save line.
+    var playbackCommands = WiltedMacPlaybackCommandState()
     var isPodcastPlayback = false {
         didSet {
             if oldValue && !isPodcastPlayback { clearPodcastPlaybackOrigin() }

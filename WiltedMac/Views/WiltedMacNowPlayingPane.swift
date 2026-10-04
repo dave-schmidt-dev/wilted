@@ -74,17 +74,21 @@ struct WiltedMacNowPlayingPane: View {
 
     private var idle: some View {
         VStack(spacing: WiltedTheme.Spacing.medium) {
-            WiltedProduceTile(symbol: .lettuce, size: 96)
-                .accessibilityHidden(true)
-            Text("Nothing is playing")
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Text("Choose an episode from Larder to start playback.")
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            VStack(spacing: WiltedTheme.Spacing.medium) {
+                WiltedProduceTile(symbol: .lettuce, size: 96)
+                    .accessibilityHidden(true)
+                Text("Nothing is playing")
+                    .wiltedFont(.title)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                Text("Choose an episode from Larder to start playback.")
+                    .wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("wilted-player-idle")
+            // A first start answers here before anything is current.
+            WiltedMacPlaybackStartResult(model: model)
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("wilted-player-idle")
     }
 
     private var playing: some View {
@@ -93,10 +97,13 @@ struct WiltedMacNowPlayingPane: View {
             transportRow
             scrubber
             if model.playbackError != nil || showsStatus {
-                Text(model.playbackStatusMessage)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(model.playbackStatusTone.color(colorScheme))
-                    .accessibilityIdentifier("wilted-player-status")
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    Text(model.playbackStatusMessage)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(model.playbackStatusTone.color(colorScheme))
+                        .accessibilityIdentifier("wilted-player-status")
+                    WiltedMacPlaybackRetryButton(model: model)
+                }
             }
             tabs
         }
@@ -213,6 +220,7 @@ struct WiltedMacNowPlayingPane: View {
                 .fixedSize()
                 .accessibilityLabel("Speed")
                 .accessibilityIdentifier("wilted-player-speed")
+                WiltedMacSpeedSaveLine(model: model)
 
                 Button("Restart") { model.restartPlayback() }
                     .keyboardShortcut("r", modifiers: .command)

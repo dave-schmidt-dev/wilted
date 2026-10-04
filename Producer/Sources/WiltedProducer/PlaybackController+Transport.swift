@@ -1,6 +1,29 @@
 import Foundation
 import WiltedDomain
 
+/// Why an explicit request for audio did not produce it, typed at the one
+/// seam that asks the backend to start. A caller can therefore tell a
+/// refusal apart from a broken route. Missing or unreadable media keeps its
+/// own `PlaybackControllerError` cases, so neither is mistaken for a route
+/// fault either.
+public enum PlaybackTransportError: Error, Equatable, Sendable {
+    /// The backend was asked to start the loaded revision and declined.
+    /// Nothing about the route failed and the playhead is unchanged, so an
+    /// explicit retry may succeed and no route recovery is warranted.
+    case backendRefused(ItemID)
+    /// The backend could not be rebuilt for the loaded revision: its output
+    /// route or decoder is unavailable. This is the only start failure that
+    /// warrants an automatic route recovery.
+    case routeUnavailable(ItemID)
+}
+
+/// What an explicit start actually did. Playing is reported only from the
+/// backend's answer, never inferred from the request.
+public enum PlaybackStartOutcome: Equatable, Sendable {
+    case started
+    case alreadyPlaying
+}
+
 /// Transport, start and route-recovery operations: loading a revision or a
 /// queued episode, play/pause/toggle, seeking, restart, the pause-or-quit
 /// checkpoints, and rebuilding the backend after an audio route change.
@@ -58,25 +81,46 @@ extension PlaybackController {
             throw CancellationError()
         }
         setRate(savedRate)
+        // Queue operations keep their silent autoplay: the queue move must
+        // complete whether or not the backend agreed to start. A caller that
+        // needs a typed answer follows the operation with `start()`.
         if playAfterLoad { isPlaying = backend.play() }
         return loadedGeneration
     }
 
+    /// Starts the loaded revision. Throws `PlaybackTransportError` when the
+    /// backend declines (`backendRefused`) or cannot be rebuilt after an
+    /// engine failure (`routeUnavailable`); the playhead is kept either way.
     public func play() throws {
-        guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
-        if let itemID, recoverableFault == .playbackFailed(itemID) {
+        guard currentRevision != nil, let loadedItemID = itemID else {
+            throw PlaybackControllerError.noLoadedRevision
+        }
+        if recoverableFault == .playbackFailed(loadedItemID) {
             // A finished AVAudioPlayer no longer has a registered completion
             // callback. Reload to give an explicit retry its own generation.
             guard let mediaURL else { throw PlaybackControllerError.noLoadedRevision }
             let position = clamp(positionSeconds)
-            try backend.load(url: mediaURL)
-            loadedBackendGeneration = backend.loadedGeneration
+            try reloadBackend(from: mediaURL, itemID: loadedItemID)
             completionHandledGeneration = nil
             backend.currentTime = position
             positionSeconds = position
         }
         isPlaying = backend.play()
-        if isPlaying { recoverableFault = nil }
+        guard isPlaying else { throw PlaybackTransportError.backendRefused(loadedItemID) }
+        recoverableFault = nil
+    }
+
+    /// The typed explicit start: reports `.alreadyPlaying` without asking the
+    /// backend again, otherwise behaves exactly like `play()`.
+    @discardableResult
+    public func start() throws -> PlaybackStartOutcome {
+        guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
+        if backend.isPlaying {
+            isPlaying = true
+            return .alreadyPlaying
+        }
+        try play()
+        return .started
     }
 
     public func pause() async throws {
@@ -136,12 +180,11 @@ extension PlaybackController {
     /// Rebuilds the backend after an audio route/configuration change. The
     /// exact playhead and whether it was playing are captured before reload.
     public func recoverFromRouteChange() async throws {
-        guard let mediaURL else { throw PlaybackControllerError.noLoadedRevision }
+        guard let mediaURL, let loadedItemID = itemID else { throw PlaybackControllerError.noLoadedRevision }
         let wasPlaying = backend.isPlaying || isPlaying
         let position = livePositionSeconds
         backend.stop()
-        try backend.load(url: mediaURL)
-        loadedBackendGeneration = backend.loadedGeneration
+        try reloadBackend(from: mediaURL, itemID: loadedItemID)
         completionHandledGeneration = nil
         recoverableFault = nil
         backend.currentTime = position
@@ -158,10 +201,9 @@ extension PlaybackController {
         stageSpeedInterval(endingAt: livePositionSeconds)
         let wasPlaying = backend.isPlaying || isPlaying
         if reloadBackend {
-            guard let mediaURL else { throw PlaybackControllerError.noLoadedRevision }
+            guard let mediaURL, let loadedItemID = itemID else { throw PlaybackControllerError.noLoadedRevision }
             backend.stop()
-            try backend.load(url: mediaURL)
-            loadedBackendGeneration = backend.loadedGeneration
+            try self.reloadBackend(from: mediaURL, itemID: loadedItemID)
             completionHandledGeneration = nil
         }
         sessionID = Self.newSessionID()
@@ -175,5 +217,19 @@ extension PlaybackController {
         speedSavingsBaselineSeconds = target
         isPlaying = wasPlaying && backend.play()
         try await checkpoint()
+    }
+
+    /// Rebuilds the backend for the loaded media. Any failure here is the
+    /// output route or decoder, not the file's presence (which was checked
+    /// when it loaded), so it is reported as a typed route fault.
+    private func reloadBackend(from mediaURL: URL, itemID loadedItemID: ItemID) throws {
+        do {
+            try backend.load(url: mediaURL)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw PlaybackTransportError.routeUnavailable(loadedItemID)
+        }
+        loadedBackendGeneration = backend.loadedGeneration
     }
 }

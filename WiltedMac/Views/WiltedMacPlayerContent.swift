@@ -103,6 +103,7 @@ struct WiltedMacPlayerContent: View {
                 }
 
             }
+            WiltedMacSpeedSaveLine(model: model)
 
             HStack(spacing: WiltedTheme.Spacing.medium) {
                 transport("backward.end.fill", label: "Previous episode", id: "wilted-player-previous") {
@@ -224,7 +225,8 @@ struct WiltedMacPlayerContent: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            if let status = model.playbackOperationStatus {
+            // A pending command already speaks through the status line above.
+            if let status = model.playbackOperationStatus, status != model.playbackStatusMessage {
                 Text(status)
                     .wiltedFont(.utility)
                     .accessibilityIdentifier("wilted-player-operation-status")

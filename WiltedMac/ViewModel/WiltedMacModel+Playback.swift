@@ -43,16 +43,20 @@ extension WiltedMacModel {
     ///
     /// Every case routes through the same method the on-screen control calls,
     /// so a media key cannot end up with behaviour of its own — including the
-    /// durable checkpoint each of those already writes.
+    /// durable checkpoint each of those already writes. An explicit Pause is
+    /// honoured even before anything is current, so it can cancel a pending
+    /// first start; an explicit Play never reads as Pause.
     func handleRemoteCommand(_ command: WiltedRemoteCommand) {
+        if case .pause = command {
+            pausePlayback()
+            return
+        }
         guard hasCurrentPlayback else { return }
         switch command {
         case .play:
-            guard !isPlaying else { return }
-            togglePlayback()
+            startPlayback()
         case .pause:
-            guard isPlaying else { return }
-            togglePlayback()
+            break
         case .toggle:
             togglePlayback()
         case .skipForward:
@@ -72,26 +76,6 @@ extension WiltedMacModel {
         }
     }
 
-    func togglePlayback() {
-#if canImport(WiltedProducer)
-        guard let playback else { return }
-        let starting = !isPlaying
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                // Play reads the phone's newest position first (bounded; a failure changes nothing).
-                if starting { await self.refreshPhonePositionBeforePlay() }
-                try await playback.toggle()
-                self.isPlaying = playback.isPlaying
-                self.refreshPlaybackReadout()
-                await self.queueCurrentPlaybackCheckpoint()
-            } catch { self.reportAudioRouteFault("Playback is unavailable.") }
-        }
-#else
-        isPlaying.toggle()
-#endif
-    }
-
     /// Returns to Library without changing playback state.
     ///
     /// The player no longer draws its own back button — the sidebar is
@@ -106,21 +90,6 @@ extension WiltedMacModel {
 
     func previousPlayback() { navigatePodcastQueue(previous: true) }
     func nextPlayback() { navigatePodcastQueue(previous: false) }
-
-    /// Starts a new playback session and publishes its durable checkpoint.
-    func restartPlayback() {
-#if canImport(WiltedProducer)
-        guard let playback else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await playback.restart()
-                self.refreshPlaybackReadout()
-                await self.queueCurrentPlaybackCheckpoint()
-            } catch { self.playbackError = "Playback restart is unavailable." }
-        }
-#endif
-    }
 
     /// Retires the loaded episode without playing the rest of it.
     ///
@@ -138,6 +107,9 @@ extension WiltedMacModel {
     func markCurrentPlaybackCompleted() {
 #if canImport(WiltedProducer)
         guard let playback else { return }
+        // A command issued while this runs (a selection, Pause, seek) owns
+        // what plays next, so the advance below only runs if none was.
+        let issuedAt = playbackCommands.generation
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -156,6 +128,7 @@ extension WiltedMacModel {
                     await self.reloadLibraryRows()
                 }
                 await self.retireFinishedEpisode()
+                guard self.playbackCommands.generation == issuedAt else { return }
                 self.advanceToNextMenuEpisode()
             } catch { self.playbackError = "This episode could not be marked completed." }
         }
@@ -214,44 +187,6 @@ extension WiltedMacModel {
     }
 #endif
 
-    /// Records a playback fault and gives the backend one automatic chance to
-    /// rebuild itself before exposing a manual retry.
-    func reportAudioRouteFault(_ message: String) {
-        playbackError = message
-#if canImport(WiltedProducer)
-        guard !audioRouteRecoveryAttempted else { return }
-        audioRouteRecoveryAttempted = true
-        recoverAudioRoute()
-#else
-        audioRouteFault = false
-#endif
-    }
-
-    func recoverAudioRoute() {
-#if canImport(WiltedProducer)
-        guard let playback, !audioRouteRecoveryInFlight else { return }
-        audioRouteRecoveryInFlight = true
-        audioRouteFault = false
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await playback.recoverFromRouteChange()
-                self.audioRouteFault = false
-                self.audioRouteRecoveryAttempted = false
-                self.playbackError = nil
-                self.refreshPlaybackReadout()
-            } catch {
-                self.audioRouteFault = true
-                self.playbackError = "Audio route recovery failed."
-            }
-            self.audioRouteRecoveryInFlight = false
-        }
-#else
-        audioRouteFault = false
-        playbackError = nil
-#endif
-    }
-
     /// Hiding, minimising, or closing the last window. The playhead is written
     /// down and the automation tick stops, but the audio keeps going: a podcast
     /// the owner is listening to does not stop because the window went away.
@@ -265,7 +200,7 @@ extension WiltedMacModel {
         stopAutomationTicker()
 #if canImport(WiltedProducer)
         guard let playback else { return }
-        playbackOperationTask = Task { [weak self] in
+        enqueuePlaybackEffect { [weak self] in
             guard let self else { return }
             try? await playback.manualCheckpoint()
             await self.queueCurrentPlaybackCheckpoint()
@@ -284,9 +219,11 @@ extension WiltedMacModel {
         cancelSeamMarker()
 #if canImport(WiltedProducer)
         guard let playback else { return }
-        playbackOperationTask = Task { [weak self] in
+        // A Stop supersedes any pending start, so nothing starts after quit.
+        issuePlaybackCommand(.stop, pending: nil) { [weak self] _ in
             guard let self else { return }
             try? await playback.handlePauseOrQuit()
+            self.isPlaying = playback.liveIsPlaying
             await self.queueCurrentPlaybackCheckpoint()
         }
 #endif
@@ -324,6 +261,38 @@ extension WiltedMacModel {
         refreshPlaybackReadout()
 #endif
     }
+
+#if canImport(WiltedProducer)
+    func installPlaybackCommandHookForTesting(_ hook: (@MainActor (WiltedMacPlaybackCommand) async -> Void)?) {
+        playbackCommands.beforeEffectForTesting = hook
+    }
+
+    func waitForFixturePodcastInstallForTesting() async {
+        await fixturePodcastInstallTask?.value
+    }
+
+    func installSpeedSaveForTesting(_ save: (@MainActor (Double) async throws -> Void)?) {
+        playbackCommands.speedSaveForTesting = save
+    }
+
+    /// Rebuilds the controller over the same store with a test backend,
+    /// keeping every handler the store bootstrap wired.
+    func installPlaybackBackendForTesting(_ backend: any PlaybackBackend) {
+        guard let store, let old = playback else { return }
+        let controller = PlaybackController(store: store, backend: backend, deviceID: old.deviceID)
+        controller.podcastStateHandler = old.podcastStateHandler
+        controller.playbackDidFinishHandler = old.playbackDidFinishHandler
+        controller.podcastCompletionHandler = old.podcastCompletionHandler
+        controller.episodeEligibilityPredicate = old.episodeEligibilityPredicate
+        controller.defaultRate = old.defaultRate
+        // The replaced controller must not call back into the model again.
+        old.backend.stop()
+        old.podcastStateHandler = nil
+        old.playbackDidFinishHandler = nil
+        old.podcastCompletionHandler = nil
+        playback = controller
+    }
+#endif
 
     func waitForPlaybackOperationForTesting() async {
 #if canImport(WiltedProducer)

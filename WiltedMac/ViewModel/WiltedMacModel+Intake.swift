@@ -174,36 +174,29 @@ extension WiltedMacModel {
         beginArticlePlaybackTransition(article)
 #if canImport(WiltedProducer)
         guard let playback else { return }
-        guard let fixtureRevision else {
-            if fixtureMode { return }
-            Task { [weak self] in
-                guard let self, let store = self.store,
-                      let itemID = try? ItemID(rawValue: article.id),
-                      let revision = try? await store.readyRevision(for: itemID) else { return }
-                do {
-                    try await playback.load(revision)
-                    if autoplay { try playback.play() }
-                    self.isPlaying = playback.isPlaying
-                    self.refreshPlaybackReadout()
-                    await self.loadTranscript(itemID: itemID, revisionID: revision.revision.revisionID)
-                } catch { self.playbackError = "Audio could not be loaded." }
-            }
-            return
-        }
-        playbackOperationTask = Task { [weak self] in
+        if fixtureRevision == nil && fixtureMode { return }
+        let fixtureRevision = fixtureRevision
+        // Opening an article is a selection: it supersedes any pending
+        // command, and only the newest one may start the loaded audio.
+        issuePlaybackCommand(.select, pending: autoplay ? WiltedMacPlaybackCopy.starting : nil, target: article.id,
+                             failureMessage: "Audio could not be loaded.") { [weak self] command in
             guard let self else { return }
-            do {
-                try await playback.load(fixtureRevision)
-                if autoplay { try playback.play() }
-                self.isPlaying = playback.isPlaying
-                self.refreshPlaybackReadout()
-                if let itemID = try? ItemID(rawValue: article.id) {
-                    await self.loadTranscript(
-                        itemID: itemID,
-                        revisionID: fixtureRevision.revision.revisionID
-                    )
-                }
-            } catch { self.playbackError = "Audio could not be loaded." }
+            let itemID = try? ItemID(rawValue: article.id)
+            let stored: StoredAudioRevision
+            if let fixtureRevision {
+                stored = fixtureRevision
+            } else {
+                guard let store = self.store, let itemID,
+                      let ready = try? await store.readyRevision(for: itemID) else { return }
+                stored = ready
+            }
+            try self.ensureCurrentPlaybackCommand(command)
+            try await playback.load(stored)
+            try self.ensureNewestSelection(command)
+            if autoplay, self.isCurrentPlaybackCommand(command) { _ = try playback.start() }
+            self.isPlaying = playback.isPlaying
+            self.refreshPlaybackReadout()
+            if let itemID { await self.loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID) }
         }
 #endif
     }
@@ -337,18 +330,25 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
     private func performPlaybackStart(for episode: WiltedMacEpisode, isLarderIntent: Bool) {
         guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
-        playbackOperationStatus = "Opening \(episode.title)…"
-        playbackOperationTask = Task { [weak self] in
+        let opening = "Opening \(episode.title)…"
+        playbackOperationStatus = opening
+        // A selection supersedes any pending command, auto-advance included.
+        // The queue move lands without autoplay; only the newest command may
+        // then start it, so a Pause issued meanwhile wins.
+        issuePlaybackCommand(.select, pending: opening, target: episode.id,
+                             failureMessage: WiltedMacPlaybackCopy.missing) { [weak self] command in
             guard let self else { return }
+            defer { if self.playbackOperationStatus == opening { self.playbackOperationStatus = nil } }
             do {
                 await self.fixturePodcastInstallTask?.value
-                Self.playbackLog.notice(
-                    "playEpisode started: episode=\(episode.id, privacy: .public)"
-                )
+                Self.playbackLog.notice("playEpisode started: episode=\(episode.id, privacy: .public)")
                 // The outgoing episode is still current here; the forced
                 // publish below is the one that names the new episode.
                 self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
                 await self.refreshPhonePositionBeforePlay()
+                // Before the queue moves, any newer command cancels this one
+                // outright; once it has moved, only a newer selection does.
+                try self.ensureCurrentPlaybackCommand(command)
 
                 let isQueued = self.podcastQueueIDs.contains(episode.id)
                 if isLarderIntent && isQueued {
@@ -371,7 +371,9 @@ extension WiltedMacModel {
                     if let outgoingCurrentID, playback.itemID == outgoingCurrentID, playback.revisionID != nil {
                         try await playback.checkpoint()
                     }
-                    try await playback.selectPodcastQueueEpisode(id, autoplay: true)
+                    try self.ensureCurrentPlaybackCommand(command)
+                    try await playback.selectPodcastQueueEpisode(id, autoplay: false)
+                    try self.ensureNewestSelection(command)
                     // The selected row loaded, so the session now belongs to
                     // the durable queue it was selected from. A load failure
                     // throws past this line and leaves the outgoing session's
@@ -379,12 +381,17 @@ extension WiltedMacModel {
                     self.isLarderQueuePlayback = true
                 } else {
                     try await playback.playPodcastQueueEpisodeNow(id)
+                    try self.ensureNewestSelection(command)
                     self.menuSort = .custom
                     // A generic Play keeps the Larder-wide continuation
                     // contract, and it ends any queue-origin mode the
                     // previous session had.
                     self.isLarderQueuePlayback = false
                 }
+                // Only the newest command starts audio: a Pause or seek issued
+                // meanwhile keeps the selection but not the start.
+                if self.isCurrentPlaybackCommand(command) { _ = try playback.start() }
+                self.isPlaying = playback.isPlaying
 
                 Self.playbackLog.notice(
                     "playEpisode returned: episode=\(episode.id, privacy: .public) isPlaying=\(playback.liveIsPlaying, privacy: .public) time=\(playback.livePositionSeconds, privacy: .public) rate=\(playback.playbackRate, privacy: .public)"
@@ -399,21 +406,13 @@ extension WiltedMacModel {
                 await self.refreshPodcastQueueState()
                 await self.loadEpisodeTranscript(itemID: id)
                 self.refreshPlaybackReadout()
-                self.playbackError = nil
-                self.playbackOperationStatus = nil
+                if self.isCurrentPlaybackCommand(command) { self.playbackError = nil }
             } catch {
-                await self.refreshPodcastQueueState()
-                // A manual play throws before `podcastStateHandler` ever runs,
-                // so this is the only place that repairs the flag for this path.
-                if case let PlaybackControllerError.podcastMediaUnavailable(unavailableID) = error,
-                   let index = self.episodes.firstIndex(where: { $0.id == unavailableID.rawValue }) {
-                    self.episodes[index].isReadyMediaAvailable = false
-                }
-                self.playbackError = "This episode's saved audio is unavailable."
+                if !(error is WiltedMacPlaybackSuperseded) { await self.refreshPodcastQueueState() }
                 Self.playbackLog.error(
                     "playEpisode failed: episode=\(episode.id, privacy: .public) error=\(String(describing: error), privacy: .public)"
                 )
-                self.playbackOperationStatus = nil
+                throw error
             }
         }
     }
