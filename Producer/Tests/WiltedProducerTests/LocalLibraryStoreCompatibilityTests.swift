@@ -1,105 +1,181 @@
 import Foundation
-import SQLite3
+import CryptoKit
+import SwiftData
 import XCTest
 import WiltedDomain
 import WiltedSync
 @testable import WiltedProducer
 
 final class LocalLibraryStoreCompatibilityTests: XCTestCase {
-    /// This V8-era table remains in the V13 schema for migration, but the V13
-    /// public API represents dismissals on the episode row instead of writing
-    /// the legacy tombstone table.
-    private let unseededEntities = ["PodcastEpisodeDismissalRecord"]
+    /// SHA-256 of the checked-in V13 fixture. The fixture is frozen: this
+    /// build writes V14 stores, so it can no longer be regenerated, and every
+    /// test below works on a copy.
+    static let v13FixtureSHA256 = "3be8dc8875963cdc840443bf310dcdca0fd78c7ade5c04d55d42e605b2a8aeb3"
 
-    func testWriteV13Fixture() async throws {
-        guard let output = ProcessInfo.processInfo.environment["WILTED_WRITE_V13_FIXTURE"], !output.isEmpty else {
-            throw XCTSkip("Set WILTED_WRITE_V13_FIXTURE to write the checked-in V13 fixture.")
+    func testV13FixtureBytesAreFrozen() throws {
+        XCTAssertEqual(try Self.sha256(of: fixtureURL), Self.v13FixtureSHA256)
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: fixtureURL), .known(13))
+    }
+
+    func testV13FixtureMigratesToV14WithRetainedBackupAndReopens() async throws {
+        let copied = try copiedFixture()
+        defer { try? FileManager.default.removeItem(at: copied.deletingLastPathComponent()) }
+
+        let backupURL: URL
+        do {
+            let store = try LocalLibraryStore(url: copied)
+            try await assertFixtureValues(in: store)
+            let retained = await store.migrationBackupURL
+            backupURL = try XCTUnwrap(retained, "a V13 store must be backed up before it opens as V14")
+            let summary = try await store.lifetimeStatisticsSummary()
+            XCTAssertEqual(summary.state, .rebuildRequired, "opening must not rebuild the summary")
+            XCTAssertNotNil(summary.trackingStartedAt)
+            XCTAssertEqual(summary.measured, LifetimeMeasuredTotals())
         }
+        XCTAssertEqual(try Self.sha256(of: backupURL), Self.v13FixtureSHA256, "the backup is the untouched V13 store")
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: backupURL), .known(13))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(14))
 
-        try await writeFixture(to: URL(fileURLWithPath: output))
+        let reopened = try LocalLibraryStore(url: copied)
+        let secondBackup = await reopened.migrationBackupURL
+        XCTAssertNil(secondBackup, "a current store is not backed up again")
+        try await assertFixtureValues(in: reopened)
+        let rebuilt = try await reopened.rebuildLifetimeStatisticsSummary()
+        XCTAssertEqual(rebuilt.state, .ready)
+        XCTAssertEqual(rebuilt.legacy, LifetimeStatistics(audioProcessedSeconds: 12.5))
+        XCTAssertEqual(rebuilt.measured, LifetimeMeasuredTotals(), "no history is fabricated for the new totals")
+        XCTAssertEqual(try Self.sha256(of: fixtureURL), Self.v13FixtureSHA256)
+    }
+
+    func testV13FixtureIsRefusedUnmodifiedWithoutMigration() throws {
+        let copied = try copiedFixture()
+        defer { try? FileManager.default.removeItem(at: copied.deletingLastPathComponent()) }
+        let before = try Self.directorySnapshot(copied.deletingLastPathComponent())
+
+        XCTAssertThrowsError(try LocalLibraryStore(url: copied, migrate: false)) { error in
+            XCTAssertEqual(error as? LocalLibraryStoreError, .migrationRequired(fromVersion: 13))
+        }
+        XCTAssertEqual(try Self.directorySnapshot(copied.deletingLastPathComponent()), before)
+    }
+
+    func testFailureAfterInPlaceMigrationRestoresTheV13Original() async throws {
+        let copied = try copiedFixture()
+        defer { try? FileManager.default.removeItem(at: copied.deletingLastPathComponent()) }
+
+        let hooks = LocalLibraryOpenHooks(afterMigration: {
+            // The source really was migrated before this failure.
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(14))
+            throw InjectedMigrationFailure()
+        })
+        var backupURL: URL?
+        XCTAssertThrowsError(try LocalLibraryStore(url: copied, migrate: true, hooks: hooks)) { error in
+            guard case .migrationFailedRestored(let url, _)? = error as? LocalLibraryStoreError else {
+                return XCTFail("expected a restored migration failure, got \(error)")
+            }
+            backupURL = url
+        }
+        XCTAssertEqual(try Self.sha256(of: copied), Self.v13FixtureSHA256, "the original bytes are restored")
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(13))
+        XCTAssertEqual(try Self.sha256(of: XCTUnwrap(backupURL)), Self.v13FixtureSHA256, "the backup is retained")
+
+        let recovered = try LocalLibraryStore(url: copied)
+        try await assertFixtureValues(in: recovered)
+    }
+
+    func testRetainedBackupRestoreProcedureReturnsTheV13Store() async throws {
+        let copied = try copiedFixture()
+        defer { try? FileManager.default.removeItem(at: copied.deletingLastPathComponent()) }
+        let backupURL: URL
+        do {
+            let store = try LocalLibraryStore(url: copied)
+            _ = try await store.recordLifetimeMeasure(
+                id: "after-migration", try XCTUnwrap(.time(.playedTime, seconds: 5)), at: Date()
+            )
+            let retained = await store.migrationBackupURL
+            backupURL = try XCTUnwrap(retained)
+        }
+        try LocalLibraryStore.restoreMigrationBackup(LocalLibraryMigrationPreflight(
+            sourceURL: copied, retainedURL: backupURL, retainedFiles: []
+        ))
+        XCTAssertEqual(try Self.sha256(of: copied), Self.v13FixtureSHA256)
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(13))
+        let reopened = try LocalLibraryStore(url: copied)
+        try await assertFixtureValues(in: reopened)
+        let restoredEvent = try await reopened.lifetimeMeasureEventExists(id: "after-migration")
+        XCTAssertFalse(restoredEvent, "restoring returns exactly the pre-migration store")
+    }
+
+    func testV13StoreWithLiveWALIsCheckpointedIntoACompleteBackup() async throws {
+        let copied = try copiedFixture()
+        defer { try? FileManager.default.removeItem(at: copied.deletingLastPathComponent()) }
+        // Keep the V13 writer's connection open so its commit stays in the WAL.
+        let v13Writer = try Self.appendV13LegacyStatistic(at: copied, id: "wal|speech", seconds: 2)
+        defer { withExtendedLifetime(v13Writer) {} }
+        let walURL = URL(fileURLWithPath: copied.path + "-wal")
+        let walBytes = try FileManager.default.attributesOfItem(atPath: walURL.path)[.size] as? NSNumber
+        XCTAssertGreaterThan(walBytes?.intValue ?? 0, 0, "the source must carry committed rows only in its WAL")
+
+        let store = try LocalLibraryStore(url: copied)
+        let retained = await store.migrationBackupURL
+        let backupURL = try XCTUnwrap(retained)
+        let totals = try await store.lifetimeStatistics()
+        XCTAssertEqual(totals, LifetimeStatistics(audioProcessedSeconds: 12.5, speechGeneratedSeconds: 2))
+        XCTAssertEqual(try LocalLibraryStore.tableRowCounts(at: backupURL)["ZLIFETIMESTATISTICEVENTRECORD"], 2,
+                       "the backup holds the WAL's committed rows")
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: backupURL), .known(13))
+        let backupFiles = try FileManager.default.contentsOfDirectory(atPath: backupURL.deletingLastPathComponent().path)
+        XCTAssertTrue(backupFiles.contains(backupURL.lastPathComponent + "-wal"), "the backup keeps the WAL sidecar")
+    }
+
+    func testNewerStoreIsRefusedWithoutAnyWrite() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wilted-future-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("library.sqlite")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Keep the newer build's connection open so its sidecars are live.
+        let schema = Schema(LocalLibrarySchemaV14.models + [FutureSchemaRecord.self])
+        let futureWriter = try ModelContainer(for: schema, configurations: [
+            ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none),
+        ])
+        defer { withExtendedLifetime(futureWriter) {} }
+        let context = ModelContext(futureWriter)
+        context.insert(FutureSchemaRecord(id: "future"))
+        try context.save()
+        let walURL = URL(fileURLWithPath: url.path + "-wal")
+        let walBytes = try FileManager.default.attributesOfItem(atPath: walURL.path)[.size] as? NSNumber
+        XCTAssertGreaterThan(walBytes?.intValue ?? 0, 0, "the newer store's latest commit is still in its WAL")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-shm"))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url),
+                       .unrecognized("store matches no schema from V1 through V14"))
+        let before = try Self.directorySnapshot(directory)
+
+        for migrate in [true, false] {
+            XCTAssertThrowsError(try LocalLibraryStore(url: url, migrate: migrate)) { error in
+                guard case .incompatibleStoreVersion? = error as? LocalLibraryStoreError else {
+                    return XCTFail("expected a downgrade refusal, got \(error)")
+                }
+            }
+        }
+        XCTAssertThrowsError(try LocalLibraryStore.migrationPreflight(at: url))
+        XCTAssertEqual(try Self.directorySnapshot(directory), before,
+                       "a refused store keeps every file byte-identical and gains no backup")
     }
 
     func testV13FixtureOpensWithMigration() async throws {
-        try await assertFixtureReads(migrate: true)
-    }
-
-    func testV13FixtureOpensWithoutMigration() async throws {
-        try await assertFixtureReads(migrate: false)
-    }
-
-    private func assertFixtureReads(migrate: Bool) async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wilted-v13-fixture-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        let copiedFixture = directory.appendingPathComponent("library-v13.store")
-        try FileManager.default.copyItem(at: fixtureURL, to: copiedFixture)
-
-        let store = try LocalLibraryStore(url: copiedFixture, migrate: migrate)
+        let copied = try copiedFixture()
+        defer { try? FileManager.default.removeItem(at: copied.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: copied, migrate: true)
         try await assertFixtureValues(in: store)
     }
 
-    private func writeFixture(to output: URL) async throws {
+    private func copiedFixture() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wilted-v13-fixture-write-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+            .appendingPathComponent("wilted-v13-fixture-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        let source = directory.appendingPathComponent("library-v13.store")
-        let values = try fixtureValues()
-        do {
-            let store = try LocalLibraryStore(url: source)
-            try await seed(values, in: store)
-            try await assertFixtureValues(in: store)
-        }
-
-        try checkpointAndDisableWAL(at: source)
-        try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: output.path) {
-            try FileManager.default.removeItem(at: output)
-        }
-        try FileManager.default.copyItem(at: source, to: output)
-    }
-
-    private func seed(_ values: FixtureValues, in store: LocalLibraryStore) async throws {
-        try await store.save(article: values.article)
-        try await store.saveReadyRevision(values.articleRevision, mediaURL: values.articleMediaURL)
-        try await store.save(transcript: values.transcript)
-        try await store.save(playback: values.playback)
-        try await store.record(preparation: values.preparation)
-        try await store.save(syncState: values.syncState)
-        try await store.record(tombstone: values.tombstone)
-        try await store.applySyncCommit(LocalLibrarySyncCommit(state: SyncRepositoryState()))
-
-        try await store.save(feed: values.feed)
-        try await store.save(episode: values.episode)
-        try await store.save(episode: values.dismissedEpisode)
-        try await store.save(subscription: values.subscription)
-        try await store.save(download: values.download)
-        try await store.save(artwork: values.artwork)
-        try await store.save(queueEntry: values.queueEntry)
-        try await store.save(playbackSpeed: values.playbackSpeed)
-        let dismissed = try await store.dismissPodcastEpisode(values.dismissedEpisode.itemID, at: values.timestamp)
-        XCTAssertTrue(dismissed)
-
-        try await store.saveReadyRevision(values.podcastRevision, mediaURL: values.podcastMediaURL)
-        try await store.savePreparationOutcome(values.preparationOutcome)
-        try await store.saveListening(values.listening)
-        let statisticInserted = try await store.recordLifetimeStatistic(
-            id: "fixture|audio-processed", kind: .audioProcessed, seconds: 12.5
-        )
-        XCTAssertTrue(statisticInserted)
-        let checkpoint = try await store.recordPlaybackSpeedCheckpoint(
-            revisionID: values.podcastRevision.revisionID, from: 0, to: 30, rate: 1
-        )
-        XCTAssertEqual(checkpoint, 0)
-        _ = try await store.issueWorkTicket(
-            kind: .podcastPreparation, subjectID: values.episode.itemID.rawValue,
-            resolvedItemID: values.episode.itemID.rawValue,
-            policySnapshot: Data([0x01, 0x02]), processingPolicy: Data([0x03]),
-            requestedAt: values.timestamp, requestSequence: 7
-        )
+        let copied = directory.appendingPathComponent("library-v13.store")
+        try FileManager.default.copyItem(at: fixtureURL, to: copied)
+        return copied
     }
 
     private func assertFixtureValues(in store: LocalLibraryStore) async throws {
@@ -170,7 +246,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
             requestedAt: values.timestamp, updatedAt: values.timestamp
         ))
         XCTAssertEqual(inspection, LocalLibraryInspection(
-            schemaVersion: .v13, articleCount: 1, revisionCount: 2, preparationCount: 1,
+            schemaVersion: .v14, articleCount: 1, revisionCount: 2, preparationCount: 1,
             playbackCount: 1, transcriptCount: 1
         ))
     }
@@ -180,20 +256,6 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Fixtures/library-v13.store")
-    }
-
-    private func checkpointAndDisableWAL(at url: URL) throws {
-        var handle: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let database = handle else {
-            throw FixtureError.sqlite("could not open fixture")
-        }
-        defer { sqlite3_close(database) }
-
-        for statement in ["PRAGMA wal_checkpoint(TRUNCATE)", "PRAGMA journal_mode=DELETE"] {
-            guard sqlite3_exec(database, statement, nil, nil, nil) == SQLITE_OK else {
-                throw FixtureError.sqlite(String(cString: sqlite3_errmsg(database)))
-            }
-        }
     }
 
     private func fixtureValues() throws -> FixtureValues {
@@ -311,6 +373,46 @@ private struct FixtureValues {
     let listening: PodcastListeningState
 }
 
-private enum FixtureError: Error {
-    case sqlite(String)
+
+extension LocalLibraryStoreCompatibilityTests {
+    static func sha256(of url: URL) throws -> String {
+        SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Every file under `directory` (recursively) with its content hash, so a
+    /// refused open can be shown to have written, removed and added nothing.
+    static func directorySnapshot(_ directory: URL) throws -> [String: String] {
+        var snapshot: [String: String] = [:]
+        let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey])
+        while let file = enumerator?.nextObject() as? URL {
+            guard try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            let relative = String(file.standardizedFileURL.path.dropFirst(directory.standardizedFileURL.path.count))
+            snapshot[relative] = try sha256(of: file)
+        }
+        return snapshot
+    }
+
+    /// Writes one more legacy ledger row through the frozen V13 schema, the
+    /// way a V13 build would. The returned container keeps its connection.
+    @discardableResult
+    static func appendV13LegacyStatistic(at url: URL, id: String, seconds: Double) throws -> ModelContainer {
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV13.self)
+        let container = try ModelContainer(for: schema, configurations: [
+            ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none),
+        ])
+        let context = ModelContext(container)
+        context.insert(LocalLibrarySchemaV11Models.LifetimeStatisticEventRecord(
+            id: id, kind: .speechGenerated, seconds: seconds
+        ))
+        try context.save()
+        return container
+    }
 }
+
+/// An entity no released schema has, standing in for a newer build's store.
+@Model final class FutureSchemaRecord {
+    @Attribute(.unique) var id: String
+    init(id: String) { self.id = id }
+}
+
+struct InjectedMigrationFailure: Error {}

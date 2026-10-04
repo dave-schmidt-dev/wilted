@@ -5,93 +5,7 @@ import WiltedDomain
 
 @MainActor
 final class PlaybackControllerTests: XCTestCase {
-    func testSpeedSavingsUseDurableRevisionHighWaterAcrossSeeksAndRelaunch() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        var controller = PlaybackController(store: store, backend: backend)
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        controller.setRate(2)
-        backend.currentTime = 10
-        try await controller.checkpoint()
-        try await controller.checkpoint()
-        try await controller.seek(to: 3)
-        backend.currentTime = 8
-        try await controller.checkpoint()
-        let firstTotal = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
-        XCTAssertEqual(firstTotal, 5, accuracy: 0.0001)
-
-        let relaunchedBackend = FakeBackend()
-        controller = PlaybackController(store: store, backend: relaunchedBackend)
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        controller.setRate(2)
-        try await controller.seek(to: 30)
-        relaunchedBackend.currentTime = 40
-        try await controller.checkpoint()
-        let relaunchedTotal = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
-        XCTAssertEqual(relaunchedTotal, 10, accuracy: 0.0001)
-    }
-
-    func testListenerEquivalentNormalRateAdvancesHighWaterWithoutRecordingSavings() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        controller.setRate(1)
-        backend.currentTime = 20
-        try await controller.checkpoint()
-        controller.setRate(2)
-        backend.currentTime = 30
-        try await controller.checkpoint()
-
-        let total = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
-        XCTAssertEqual(total, 5, accuracy: 0.0001)
-    }
-
-    func testManualCompletionDoesNotCountUnplayedRemainderAsSpeedSavings() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        controller.setRate(2)
-        backend.currentTime = 10
-
-        try await controller.markCompleted()
-
-        let total = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
-        XCTAssertEqual(total, 5, accuracy: 0.0001)
-    }
-
-    func testRateChangesSplitUncheckpointedPlaybackAtTheirExactBoundary() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        controller.setRate(2)
-        backend.currentTime = 10
-        controller.setRate(1)
-        backend.currentTime = 20
-        controller.setRate(2)
-        backend.currentTime = 30
-
-        try await controller.checkpoint()
-
-        let total = try await store.lifetimeStatistics().fasterPlaybackTimeSavedSeconds
-        XCTAssertEqual(total, 10, accuracy: 0.0001)
-    }
-
-    private final class FakeBackend: PlaybackBackend {
+    final class FakeBackend: PlaybackBackend {
         var duration: TimeInterval = 42
         var currentTime: TimeInterval = 0
         var isPlaying = false
@@ -122,13 +36,13 @@ final class PlaybackControllerTests: XCTestCase {
         }
     }
 
-    private func storeURL(_ name: String = #function) -> URL {
+    func storeURL(_ name: String = #function) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("wilted-playback-\(name)-\(UUID().uuidString)")
             .appendingPathComponent("library.sqlite")
     }
 
-    private func fixture() throws -> (Article, AudioRevision) {
+    func fixture() throws -> (Article, AudioRevision) {
         let url = URL(string: "https://example.test/playback")!
         let article = try Article(itemID: ItemID.derive(from: url), canonicalURL: url,
                                   title: "Playback", source: "example.test",
@@ -138,114 +52,6 @@ final class PlaybackControllerTests: XCTestCase {
                                          contentHash: "sha256:\(String(repeating: "a", count: 64))",
                                          mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1)
         return (article, revision)
-    }
-
-    func testPauseThenNewControllerResumesMatchingRevision() async throws {
-        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend, deviceID: "test-device")
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        backend.currentTime = 12
-        try controller.play()
-        try await controller.pause()
-
-        let resumed = PlaybackController(store: store, backend: FakeBackend(), deviceID: "test-device")
-        try await resumed.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        XCTAssertEqual(resumed.positionSeconds, 12)
-        XCTAssertEqual(resumed.revisionID, revision.revisionID)
-    }
-
-    func testMismatchedRevisionResumeIsIgnored() async throws {
-        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (article, first) = try fixture()
-        let second = try AudioRevision(itemID: article.itemID, revisionID: RevisionID(rawValue: "revision-two"),
-                                       durationSeconds: 42, byteCount: 1,
-                                       contentHash: "sha256:\(String(repeating: "b", count: 64))",
-                                       mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1)
-        let state = try PlaybackState(itemID: article.itemID, revisionID: first.revisionID, sessionID: "old-session",
-                                      sequence: 3, positionSeconds: 30, durationSeconds: 42, completed: false,
-                                      intent: .progress, deviceID: "test-device", updatedAt: Timestamp(Date()))
-        try await store.save(playback: state)
-        let controller = PlaybackController(store: store, backend: FakeBackend())
-        try await controller.load(revision: second, mediaURL: URL(fileURLWithPath: "/tmp/other.m4a"))
-        XCTAssertEqual(controller.positionSeconds, 0)
-        XCTAssertNotEqual(controller.sessionID, state.sessionID)
-    }
-
-    func testRouteRecoveryPreservesPositionAndPlayState() async throws {
-        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        backend.currentTime = 17
-        try controller.play()
-        try await controller.recoverFromRouteChange()
-        XCTAssertEqual(backend.currentTime, 17)
-        XCTAssertTrue(backend.isPlaying)
-        XCTAssertEqual(backend.loadCount, 2)
-    }
-
-    /// Progress reached the store only on a transport press or a clean quit,
-    /// so a process that ended without one -- an installer replacing the app,
-    /// a force quit, a crash -- resumed from wherever the listener last
-    /// pressed a button rather than where the audio actually was. A checkpoint
-    /// taken while the engine is still running has to persist the live
-    /// playhead and leave playback alone.
-    func testACheckpointTakenMidPlaybackPersistsWithoutStopping() async throws {
-        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend, deviceID: "test-device")
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        try controller.play()
-        backend.currentTime = 31
-
-        try await controller.checkpoint()
-
-        XCTAssertTrue(backend.isPlaying, "checkpointing is not a transport action")
-        XCTAssertTrue(controller.isPlaying)
-        let itemID = try XCTUnwrap(controller.itemID)
-        let revisionID = try XCTUnwrap(controller.revisionID)
-        let stored = try await store.playbackState(for: itemID, revisionID: revisionID)
-        let persisted = try XCTUnwrap(stored)
-        XCTAssertEqual(persisted.positionSeconds, 31, "a relaunch resumes from here")
-        XCTAssertFalse(persisted.completed)
-
-        // The playhead keeps moving; the next tick has to overtake the last one
-        // rather than lose to its sequence number.
-        backend.currentTime = 44
-        try await controller.checkpoint()
-        let storedLater = try await store.playbackState(for: itemID, revisionID: revisionID)
-        let later = try XCTUnwrap(storedLater)
-        XCTAssertEqual(later.positionSeconds, 42, "clamped to the revision duration")
-        XCTAssertGreaterThan(later.sequence, persisted.sequence)
-    }
-
-    func testRewindAndRestartCreateNewSessionsAndExplicitIntent() async throws {
-        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        let initialSession = try XCTUnwrap(controller.sessionID)
-        backend.currentTime = 20
-        try await controller.checkpoint()
-        try await controller.seekBackward(seconds: 5)
-        let rewindSession = try XCTUnwrap(controller.sessionID)
-        XCTAssertNotEqual(rewindSession, initialSession)
-        XCTAssertEqual(controller.intent, .rewind)
-        XCTAssertEqual(controller.positionSeconds, 15)
-        try await controller.restart()
-        XCTAssertNotEqual(controller.sessionID, rewindSession)
-        XCTAssertEqual(controller.intent, .restart)
-        XCTAssertEqual(controller.positionSeconds, 0)
     }
 
     func testNaturalCompletionAdvancesExactlyOnceAndInterruptionDoesNotAdvance() async throws {
@@ -370,90 +176,6 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(relaunchedCompletedState).completed)
     }
 
-    func testArticleFailureAtEndStaysIncompleteAndPlayRetryRearmsCompletion() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        var finishCount = 0
-        var podcastObservationCount = 0
-        controller.playbackDidFinishHandler = { finishCount += 1 }
-        controller.podcastStateHandler = { _, _ in podcastObservationCount += 1 }
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/fake.m4a"))
-        try controller.play()
-        let failedGeneration = backend.loadedGeneration
-        backend.currentTime = backend.duration
-        backend.finish(successfully: false)
-        await waitUntil { finishCount == 1 }
-        try await controller.checkpoint()
-        let failedState = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
-        XCTAssertEqual(try XCTUnwrap(failedState).positionSeconds, backend.duration)
-        XCTAssertFalse(try XCTUnwrap(failedState).completed)
-        XCTAssertFalse(controller.completed)
-        XCTAssertEqual(podcastObservationCount, 0, "an article failure must preserve the UI's article identity")
-
-        backend.currentTime = 0
-        try controller.play()
-        XCTAssertNotEqual(backend.loadedGeneration, failedGeneration)
-        XCTAssertNil(controller.recoverableFault)
-        XCTAssertEqual(backend.currentTime, backend.duration,
-                       "retry must restore the stop checkpoint even if the failed player reset")
-        backend.finish(generation: failedGeneration, successfully: true)
-        try await Task.sleep(for: .milliseconds(20))
-        XCTAssertTrue(controller.isPlaying)
-        XCTAssertEqual(finishCount, 1)
-
-        backend.finish(successfully: true)
-        await waitUntil { finishCount == 2 }
-        backend.finish(successfully: false)
-        backend.finish(successfully: true)
-        try await Task.sleep(for: .milliseconds(20))
-        XCTAssertTrue(controller.completed)
-        XCTAssertNil(controller.recoverableFault, "failure after success is a contradictory duplicate")
-        XCTAssertEqual(finishCount, 2)
-        XCTAssertEqual(podcastObservationCount, 0)
-    }
-
-    func testFailureWithResetBackendRetainsCheckpointForRetry() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        backend.resetsTimeOnFailure = true
-        let controller = PlaybackController(store: store, backend: backend)
-        var finishCount = 0
-        controller.playbackDidFinishHandler = { finishCount += 1 }
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/fake.m4a"))
-        try controller.play()
-        backend.currentTime = 19
-        try await controller.checkpoint()
-        backend.currentTime = 25
-        backend.finish(successfully: false)
-        await waitUntil { finishCount == 1 }
-        XCTAssertEqual(backend.currentTime, 0, "the fake resets before delivering the failure callback")
-        XCTAssertEqual(controller.livePositionSeconds, 19,
-                       "the readout must retain progress when the failed backend clock resets")
-        try await controller.checkpoint()
-        XCTAssertEqual(controller.livePositionSeconds, 19)
-        let saved = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
-        XCTAssertEqual(try XCTUnwrap(saved).positionSeconds, 19)
-        XCTAssertFalse(try XCTUnwrap(saved).completed)
-        try controller.play()
-        XCTAssertEqual(backend.currentTime, 19)
-        XCTAssertEqual(controller.positionSeconds, 19)
-
-        backend.finish(successfully: false)
-        await waitUntil { finishCount == 2 }
-        XCTAssertEqual(backend.currentTime, 0)
-        try await controller.recoverFromRouteChange()
-        XCTAssertEqual(backend.currentTime, 19, "route recovery must also retain the stop checkpoint")
-        XCTAssertEqual(controller.livePositionSeconds, 19)
-        XCTAssertNil(controller.recoverableFault)
-    }
-
     func testReloadDuringCompletionCheckpointCannotAdvanceOrStopReplacement() async throws {
         let path = storeURL()
         let root = path.deletingLastPathComponent()
@@ -499,161 +221,6 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(observationCount, 0)
         let state = try await store.podcastQueueState()
         XCTAssertEqual(state.currentEpisodeID, first.revision.itemID)
-    }
-
-    func testMarkCompletedAfterFailureSurvivesLaterCheckpoints() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        var finishCount = 0
-        controller.playbackDidFinishHandler = { finishCount += 1 }
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/fake.m4a"))
-        try controller.play()
-        backend.currentTime = 19
-        backend.finish(successfully: false)
-        await waitUntil { finishCount == 1 }
-        XCTAssertEqual(controller.recoverableFault, .playbackFailed(revision.itemID))
-
-        try await controller.markCompleted()
-        XCTAssertNil(controller.recoverableFault)
-        try await controller.checkpoint()
-        try await controller.pause()
-        try await controller.handlePauseOrQuit()
-        let saved = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
-        XCTAssertTrue(try XCTUnwrap(saved).completed)
-        XCTAssertEqual(try XCTUnwrap(saved).positionSeconds, backend.duration)
-        XCTAssertTrue(controller.completed)
-        XCTAssertNil(controller.recoverableFault)
-    }
-
-    func testRewindAndRestartClearFailureWithoutAnotherPlayReload() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
-        let backend = FakeBackend()
-        backend.resetsTimeOnFailure = true
-        let controller = PlaybackController(store: store, backend: backend)
-        var finishCount = 0
-        controller.playbackDidFinishHandler = { finishCount += 1 }
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/fake.m4a"))
-        try controller.play()
-        backend.currentTime = 20
-        try await controller.checkpoint()
-        let interruptedSession = controller.sessionID
-        backend.finish(successfully: false)
-        await waitUntil { finishCount == 1 }
-        XCTAssertEqual(backend.currentTime, 0)
-        XCTAssertEqual(controller.livePositionSeconds, 20)
-
-        try await controller.seekBackward(seconds: 5)
-        XCTAssertEqual(controller.positionSeconds, 15)
-        XCTAssertEqual(controller.intent, .rewind)
-        XCTAssertNotEqual(controller.sessionID, interruptedSession)
-        XCTAssertNil(controller.recoverableFault)
-        XCTAssertEqual(backend.loadCount, 2)
-        try controller.play()
-        XCTAssertEqual(backend.loadCount, 2, "rewind already restored a valid backend generation")
-        XCTAssertEqual(backend.currentTime, 15)
-        backend.currentTime = 18
-        try await controller.checkpoint()
-        let rewoundState = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
-        let rewoundCheckpoint = try XCTUnwrap(rewoundState)
-        XCTAssertEqual(rewoundCheckpoint.intent, .rewind, "durable checkpoints retain the explicit session intent")
-
-        backend.finish(successfully: false)
-        await waitUntil { finishCount == 2 }
-        try await controller.restart()
-        XCTAssertNil(controller.recoverableFault)
-        XCTAssertEqual(backend.loadCount, 3)
-        try controller.play()
-        XCTAssertEqual(backend.loadCount, 3, "restart already restored a valid backend generation")
-        XCTAssertEqual(backend.currentTime, 0)
-        backend.currentTime = 3
-        try await controller.checkpoint()
-        let restartedState = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
-        let restartedCheckpoint = try XCTUnwrap(restartedState)
-        XCTAssertEqual(restartedCheckpoint.intent, .restart, "durable checkpoints retain the explicit session intent")
-    }
-
-    /// Progress is written from where the audio is, so an episode the listener
-    /// is finished with at 91% stays at 91% and the Larder goes on offering it.
-    /// Marking it writes the same terminal record a natural finish writes, and
-    /// deliberately does not advance: the press says "done with this", not
-    /// "play the next thing". The queue must also stay put afterwards, because
-    /// the backend's clock now sits at the end of the file and a later resume
-    /// would otherwise fire a completion nobody asked for.
-    func testMarkingCompletedWritesTheTerminalRecordWithoutAdvancing() async throws {
-        let path = storeURL(); let root = path.deletingLastPathComponent()
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let store = try LocalLibraryStore(url: path)
-        let first = try await queueRevision(index: 3, root: root, store: store)
-        let second = try await queueRevision(index: 4, root: root, store: store)
-        try await store.replacePodcastQueue(try PodcastQueueState(
-            episodeIDs: [first.revision.itemID, second.revision.itemID],
-            currentEpisodeID: first.revision.itemID
-        ))
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        var completionCalls: [ItemID] = []
-        controller.podcastCompletionHandler = { completionCalls.append($0) }
-        await controller.restorePodcastQueue()
-        XCTAssertEqual(controller.itemID, first.revision.itemID)
-        backend.currentTime = 20
-        try await controller.checkpoint()
-        XCTAssertFalse(controller.completed)
-
-        try await controller.markCompleted()
-        XCTAssertTrue(controller.completed)
-        XCTAssertFalse(controller.isPlaying)
-        XCTAssertFalse(backend.isPlaying)
-        XCTAssertEqual(controller.positionSeconds, controller.durationSeconds)
-        XCTAssertEqual(controller.itemID, first.revision.itemID, "marking completed advances nothing")
-        let queueState = try await store.podcastQueueState()
-        XCTAssertEqual(queueState.currentEpisodeID, first.revision.itemID)
-
-        let storedState = try await store.playbackState(
-            for: first.revision.itemID, revisionID: first.revision.revisionID
-        )
-        let stored = try XCTUnwrap(storedState)
-        XCTAssertTrue(stored.completed)
-        XCTAssertEqual(stored.positionSeconds, stored.durationSeconds)
-
-        let listening = try await store.listeningState(for: first.revision.itemID)
-        XCTAssertNotNil(listening?.completedAt, "the manual mark-completed path writes the listening fact too")
-        XCTAssertEqual(listening?.lastRevisionID, first.revision.revisionID)
-        XCTAssertTrue(completionCalls.isEmpty,
-                      "markCompleted() bypasses handleBackendCompletion, so retirement is the caller's job, not the controller's")
-
-        backend.finish(successfully: true)
-        try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(controller.itemID, first.revision.itemID,
-                       "a resume that runs out at the end it was already marked at must not pull in the next episode")
-        XCTAssertEqual(backend.loadCount, 1)
-    }
-
-    func testSelectingPodcastWithAutoplayStartsBackend() async throws {
-        let path = storeURL(); let root = path.deletingLastPathComponent()
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let store = try LocalLibraryStore(url: path)
-        let episode = try await queueRevision(index: 7, root: root, store: store)
-        try await store.replacePodcastQueue(try PodcastQueueState(
-            episodeIDs: [episode.revision.itemID], currentEpisodeID: nil
-        ))
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-
-        try await controller.selectPodcastQueueEpisode(episode.revision.itemID, autoplay: true)
-
-        XCTAssertTrue(backend.isPlaying)
-        XCTAssertTrue(controller.isPlaying)
-        let queueState = try await store.podcastQueueState()
-        XCTAssertEqual(queueState.currentEpisodeID, episode.revision.itemID)
     }
 
     func testArticleCompletionEmitsNoPodcastObservationWhilePodcastNoNextDoes() async throws {
@@ -963,99 +530,6 @@ final class PlaybackControllerTests: XCTestCase {
 
         controller.defaultRate = 9
         XCTAssertEqual(controller.defaultRate, 2, "the default is clamped like any other rate")
-    }
-
-    func testDirectSeekClampsUsesLivePositionAndFencesOldRunCompletion() async throws {
-        let path = storeURL(); let root = path.deletingLastPathComponent()
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let store = try LocalLibraryStore(url: path)
-        let first = try await queueRevision(index: 3, root: root, store: store)
-        let second = try await queueRevision(index: 4, root: root, store: store)
-        try await store.replacePodcastQueue(try PodcastQueueState(
-            episodeIDs: [first.revision.itemID, second.revision.itemID],
-            currentEpisodeID: first.revision.itemID
-        ))
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        await controller.restorePodcastQueue()
-        backend.currentTime = 10
-
-        try await controller.seekForward(seconds: 30)
-        XCTAssertEqual(controller.positionSeconds, 40, "relative seeks must use the live engine position")
-        let oldGeneration = backend.loadedGeneration
-        let oldSession = controller.sessionID
-        try await controller.seek(to: -100)
-        XCTAssertEqual(controller.positionSeconds, 0)
-        XCTAssertNotEqual(controller.sessionID, oldSession)
-        XCTAssertGreaterThan(backend.loadedGeneration, oldGeneration)
-
-        backend.finish(generation: oldGeneration, successfully: true)
-        try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(controller.itemID, first.revision.itemID)
-        XCTAssertFalse(controller.completed)
-
-        try await controller.seek(to: 500)
-        XCTAssertEqual(controller.positionSeconds, 42)
-        await XCTAssertThrowsErrorAsync(try await controller.seek(to: .nan)) { error in
-            guard case .invalidSeek = error as? PlaybackControllerError else {
-                return XCTFail("expected invalid seek, got \(error)")
-            }
-        }
-    }
-
-    func testDefaultForwardSeekAdvancesThirtySeconds() async throws {
-        let path = storeURL()
-        defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: try LocalLibraryStore(url: path), backend: backend)
-        let (_, revision) = try fixture()
-        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
-        backend.currentTime = 5
-
-        try await controller.seekForward()
-
-        XCTAssertEqual(controller.positionSeconds, 35)
-    }
-
-    func testExplicitRestartAllowsSecondExactlyOnceCompletionAndRejectsOldCallbacks() async throws {
-        let path = storeURL(); let root = path.deletingLastPathComponent()
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let store = try LocalLibraryStore(url: path)
-        let first = try await queueRevision(index: 5, root: root, store: store)
-        let second = try await queueRevision(index: 6, root: root, store: store)
-        try await store.replacePodcastQueue(try PodcastQueueState(
-            episodeIDs: [first.revision.itemID], currentEpisodeID: first.revision.itemID
-        ))
-        let backend = FakeBackend()
-        let controller = PlaybackController(store: store, backend: backend)
-        await controller.restorePodcastQueue()
-
-        let firstRunGeneration = backend.loadedGeneration
-        backend.finish(successfully: true)
-        await waitUntil { controller.completed }
-        XCTAssertEqual(controller.itemID, first.revision.itemID)
-
-        try await controller.restart()
-        let restartedGeneration = backend.loadedGeneration
-        XCTAssertGreaterThan(restartedGeneration, firstRunGeneration)
-        XCTAssertFalse(controller.completed)
-        XCTAssertEqual(controller.positionSeconds, 0)
-        try await store.replacePodcastQueue(try PodcastQueueState(
-            episodeIDs: [first.revision.itemID, second.revision.itemID],
-            currentEpisodeID: first.revision.itemID
-        ))
-
-        backend.finish(generation: firstRunGeneration, successfully: true)
-        try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(controller.itemID, first.revision.itemID)
-
-        backend.finish(generation: restartedGeneration, successfully: true)
-        backend.finish(generation: restartedGeneration, successfully: true)
-        await waitUntil { controller.itemID == second.revision.itemID }
-        XCTAssertEqual(controller.itemID, second.revision.itemID)
-        XCTAssertEqual(backend.loadCount, 3, "the restarted run may advance only once")
     }
 
     func testPlayNowMovesFarTargetBeforeCurrentPreservesCheckpointAndKeepsPreviousNextSemantics() async throws {
@@ -1744,7 +1218,7 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.loadCount, 1)
     }
 
-    private func queueRevision(
+    func queueRevision(
         index: Int, root: URL, store: LocalLibraryStore, prepared: Bool = true, itemID: ItemID? = nil
     ) async throws -> StoredAudioRevision {
         // Truncated, because the digits of a two-digit index repeated 64 times
@@ -1837,14 +1311,14 @@ final class PlaybackControllerTests: XCTestCase {
         return url
     }
 
-    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+    func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
         for _ in 0..<100 {
             if condition() { return }
             try? await Task.sleep(for: .milliseconds(10))
         }
     }
 
-    private func XCTAssertThrowsErrorAsync(
+    func XCTAssertThrowsErrorAsync(
         _ expression: @autoclosure () async throws -> Void,
         _ errorHandler: (Error) -> Void
     ) async {

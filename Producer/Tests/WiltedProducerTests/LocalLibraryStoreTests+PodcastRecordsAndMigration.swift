@@ -250,7 +250,13 @@ extension LocalLibraryStoreTests {
         try LocalLibraryStore.createV5MigrationFixture(at: url, article: item, playback: try playback(for: item, revision: rev, position: 21))
         let preflight = try LocalLibraryStore.migrationPreflight(at: url)
         XCTAssertTrue(preflight.retainedFiles.contains(where: { $0.lastPathComponent == url.lastPathComponent }))
-        let retained = try LocalLibraryStore(url: preflight.retainedURL, migrate: false)
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: preflight.retainedURL), .known(5),
+                       "the retained copy must stay at the source schema")
+        // A store that needs a migration is refused, not migrated, without `migrate`.
+        XCTAssertThrowsError(try LocalLibraryStore(url: preflight.retainedURL, migrate: false)) { error in
+            XCTAssertEqual(error as? LocalLibraryStoreError, .migrationRequired(fromVersion: 5))
+        }
+        let retained = try LocalLibraryStore(url: preflight.retainedURL)
         let retainedArticle = try await retained.article(for: item.itemID)
         XCTAssertEqual(retainedArticle, item)
         let migrated = try LocalLibraryStore(url: url)
@@ -283,7 +289,7 @@ extension LocalLibraryStoreTests {
                                                        playback: try playback(for: item, revision: rev, position: 23))
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v13)
+        XCTAssertEqual(inspection.schemaVersion, .v14)
         XCTAssertEqual(inspection.articleCount, 1)
         XCTAssertEqual(inspection.revisionCount, 1)
         XCTAssertEqual(inspection.transcriptCount, 1)

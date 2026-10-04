@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import SwiftData
 import Testing
 import WiltedDomain
 @testable import WiltedProducer
@@ -419,6 +420,76 @@ struct PodcastDownloadCoordinatorTests {
         #expect(try stagingFiles(in: fixture.libraryDirectory).isEmpty)
     }
 
+    @Test func receivedBytesCountPartialRetryRefetchAndCacheReuseExactly() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let partial: [PodcastDownloadEvent] = [
+            .response(.init(url: fixture.enclosureURL, statusCode: 200, mediaType: fixture.mediaType,
+                            expectedByteCount: 6)), .data(Data(fixture.body.prefix(4)))
+        ]
+        await expect(.declaredSizeMismatch(expected: 6, actual: 4), fixture: fixture, events: partial)
+        #expect(try await receivedBytes(fixture.store) == 4, "a partial transfer counts what arrived")
+        _ = try await fixture.coordinator(events: fixture.successEvents).download(episodeID: fixture.episodeID)
+        #expect(try await receivedBytes(fixture.store) == 10, "a retry counts its own bytes")
+        _ = try await fixture.coordinator(events: fixture.successEvents).download(episodeID: fixture.episodeID)
+        #expect(try await receivedBytes(fixture.store) == 10, "reusing the verified file receives nothing")
+        _ = try await fixture.coordinator(events: fixture.successEvents)
+            .download(episodeID: fixture.episodeID, ignoringExisting: true)
+        #expect(try await receivedBytes(fixture.store) == 16, "a re-fetch is a new attempt")
+        #expect(try receivedByteEvents(fixture.store).count == 3, "a frozen clock writes one terminal event per attempt")
+    }
+
+    @Test func cancelledTransferCountsTheBytesReceivedBeforeCancellation() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let transport = CancellationTransport(response: .init(
+            url: fixture.enclosureURL, statusCode: 200, mediaType: "audio/mpeg", expectedByteCount: nil
+        ), chunks: [Data("abc".utf8), Data("d".utf8)])
+        let coordinator = PodcastDownloadCoordinator(
+            store: fixture.store, libraryDirectory: fixture.libraryDirectory,
+            transport: transport, mediaValidator: StubValidator(result: .success(12))
+        )
+        let progress = ProgressRecorder()
+        let task = Task { try await coordinator.download(episodeID: fixture.episodeID) { progress.append($0) } }
+        await transport.started.wait()
+        while !progress.values.contains(where: { $0.bytesReceived == 4 }) { await Task.yield() }
+        task.cancel()
+        do { _ = try await task.value; Issue.record("expected cancellation") }
+        catch { #expect(error as? PodcastDownloadCoordinatorError == .cancelled) }
+        #expect(try await receivedBytes(fixture.store) == 4)
+    }
+
+    @Test func receivedBytesPersistAtMostOncePerSecondPlusATerminalWrite() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let clock = SteppingClock(step: 0.3)
+        let chunks = (0..<12).map { Data([UInt8($0)]) }
+        let coordinator = PodcastDownloadCoordinator(
+            store: fixture.store, libraryDirectory: fixture.libraryDirectory,
+            transport: EventTransport([.response(.init(url: fixture.enclosureURL, statusCode: 200,
+                                                       mediaType: fixture.mediaType, expectedByteCount: 12))]
+                                      + chunks.map { .data($0) }),
+            mediaValidator: StubValidator(result: .success(12)), now: { clock.next() }
+        )
+        _ = try await coordinator.download(episodeID: fixture.episodeID)
+        let events = try receivedByteEvents(fixture.store)
+        #expect(events.reduce(0) { $0 + $1.amount } == 12)
+        #expect(events.count >= 2, "periodic writes happened before the terminal one")
+        for (earlier, later) in zip(events.dropLast(), events.dropLast().dropFirst()) {
+            #expect(later.recordedAt.timeIntervalSince(earlier.recordedAt) >= 1)
+        }
+    }
+
+    private func receivedBytes(_ store: LocalLibraryStore) async throws -> Int64 {
+        try await store.lifetimeStatisticsSummary().measured.receivedBytes
+    }
+
+    private func receivedByteEvents(_ store: LocalLibraryStore) throws -> [LocalLibrarySchemaV14Models.LifetimeMeasureEventRecord] {
+        let kind = LifetimeMeasureKind.receivedBytes.rawValue
+        return try ModelContext(store.container).fetch(FetchDescriptor<LocalLibrarySchemaV14Models.LifetimeMeasureEventRecord>(
+            predicate: #Predicate { $0.kind == kind }, sortBy: [SortDescriptor(\.sequence)]))
+    }
+
     private func expect(
         _ expected: PodcastDownloadCoordinatorError,
         fixture: Fixture,
@@ -589,14 +660,25 @@ private final class TaskCanceller: @unchecked Sendable {
 
 private struct CancellationTransport: PodcastDownloadTransporting {
     let response: PodcastDownloadHTTPResponse
+    var chunks: [Data] = []
     let started = AsyncGate()
 
     func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
         AsyncThrowingStream { continuation in
             continuation.yield(.response(response))
+            for chunk in chunks { continuation.yield(.data(chunk)) }
             Task { await started.open() }
         }
     }
+}
+
+/// A clock that moves forward a fixed step every time it is read.
+private final class SteppingClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private let step: TimeInterval
+    private var current = Date(timeIntervalSince1970: 1_700_000_000)
+    init(step: TimeInterval) { self.step = step }
+    func next() -> Date { lock.withLock { current += step; return current } }
 }
 
 private final class DownloadURLProtocol: URLProtocol, @unchecked Sendable {

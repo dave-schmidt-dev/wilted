@@ -265,6 +265,7 @@ public actor PodcastDownloadCoordinator {
             throw PodcastDownloadCoordinatorError.transport(String(describing: error))
         }
         var hasher = SHA256()
+        var byteMeter = PodcastDownloadByteMeter(episodeID: episodeID, startedAt: now())
         store.inFlightMedia.begin(stagingURL)
         defer {
             try? handle.close()
@@ -306,6 +307,8 @@ public actor PodcastDownloadCoordinator {
                     ))
                     onStatus(.init(stage: .transferring, bytesReceived: received, expectedByteCount: expected))
                 case .data(let data):
+                    byteMeter.receive(data.count)
+                    await persistReceivedBytes(byteMeter.takeDueCheckpoint(at: now()), meter: &byteMeter)
                     guard responseSeen else { throw PodcastDownloadCoordinatorError.invalidResponse(nil) }
                     guard Int64(data.count) <= maximumBytes - received else {
                         throw PodcastDownloadCoordinatorError.streamedSizeTooLarge(received + Int64(data.count))
@@ -396,9 +399,11 @@ public actor PodcastDownloadCoordinator {
                 updatedAt: Timestamp(now())
             )
             try await store.finalizePodcastDownload(revision: revision, mediaURL: finalURL, download: completed)
+            await persistReceivedBytes(byteMeter.pendingAmount, meter: &byteMeter)
             onStatus(.init(stage: .completed, bytesReceived: received, expectedByteCount: expected))
             return PodcastDownloadResult(revision: revision, mediaURL: finalURL, download: completed)
         } catch {
+            await persistReceivedBytes(byteMeter.pendingAmount, meter: &byteMeter)
             let cancelled = error is CancellationError || Task.isCancelled ||
                 (error as? PodcastDownloadCoordinatorError) == .cancelled
             let status: PodcastDownloadStatus = cancelled ? .cancelled : .failed
@@ -413,6 +418,16 @@ public actor PodcastDownloadCoordinator {
             if cancelled { throw PodcastDownloadCoordinatorError.cancelled }
             throw typedError
         }
+    }
+
+    /// Writes one received-byte checkpoint. Statistics never fail a download:
+    /// an error leaves the bytes for the attempt's next, larger checkpoint.
+    private func persistReceivedBytes(_ amount: LifetimeMeasureAmount?, meter: inout PodcastDownloadByteMeter) async {
+        guard let amount else { return }
+        do {
+            try await store.recordLifetimeMeasureCheckpoint(amount, ownerKey: meter.ownerKey, at: now())
+            meter.didPersist(amount)
+        } catch {}
     }
 
     private func completedResult(
