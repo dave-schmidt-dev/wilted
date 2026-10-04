@@ -300,6 +300,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.mac.tests
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: WiltedMacTests.WiltedMacTestBundleObserver
 
   WiltediOSTests:
     type: bundle.unit-test

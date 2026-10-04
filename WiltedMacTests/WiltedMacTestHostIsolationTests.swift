@@ -4,6 +4,18 @@ import XCTest
 
 @MainActor
 final class WiltedMacTestHostIsolationTests: XCTestCase {
+    func testHostStateDirectoryUsesTheGateTemporaryRoot() {
+        let environment = ProcessInfo.processInfo.environment
+        let temporaryRoot = environment["WILTED_TEST_TMPDIR"].flatMap { value in
+            value.isEmpty ? nil : URL(fileURLWithPath: value, isDirectory: true)
+        } ?? FileManager.default.temporaryDirectory
+
+        XCTAssertTrue(
+            isInside(WiltedMacModel.testHostStateDirectory, temporaryRoot),
+            "the XCTest host state must resolve under the gate's temporary root"
+        )
+    }
+
     func testDefaultModelStateStaysOutsideTheOwnerLibrary() {
         XCTAssertTrue(WiltedMacModel.hostsTests, "this regression test requires XCTest's app host")
 
