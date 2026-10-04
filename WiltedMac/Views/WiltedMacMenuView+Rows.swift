@@ -172,12 +172,19 @@ extension WiltedMacMenuView {
                     .accessibilityLabel("Played")
                     .accessibilityIdentifier("wilted-menu-played-\(episode.id)")
             } else {
+                // The press is answered on the row it came from while it opens.
+                let opening = model.playbackCommands.pending?.command.itemID == episode.id
                 Button { model.playLarderEpisode(episode) } label: {
-                    Label("Play now", systemImage: "play.fill")
+                    if opening {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Play now", systemImage: "play.fill")
+                    }
                 }
                     .labelStyle(.iconOnly)
+                    .disabled(opening)
                     .help("Play now")
-                    .accessibilityLabel("Play \(episode.title) now")
+                    .accessibilityLabel(opening ? "Opening \(episode.title)" : "Play \(episode.title) now")
                     .accessibilityIdentifier("wilted-menu-play-\(episode.id)")
             }
         case .downloaded:

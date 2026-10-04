@@ -275,7 +275,11 @@ extension WiltedMacModel {
     /// The player's one-line status, matching the listener's status channel so
     /// the same condition reads the same way on both platforms. Never color
     /// alone: the tone accompanies this text rather than replacing it.
+    /// A pending command or its failure outranks the idle and resting states
+    /// in every player, so a press is answered before any audio is.
     var playbackStatusMessage: String {
+        if let pending = playbackCommands.pending { return pending.message }
+        if let failure = playbackCommands.failure { return failure.message }
         if !hasCurrentPlayback { return "Nothing is playing" }
         if let playbackError { return playbackError }
         if isPlaying { return "Playing" }
@@ -284,7 +288,8 @@ extension WiltedMacModel {
     }
 
     var playbackStatusTone: WiltedStatusTone {
-        if playbackError != nil { return .failure }
+        if playbackCommands.pending != nil { return .caution }
+        if playbackCommands.failure != nil || playbackError != nil { return .failure }
         if isPlaying { return .active }
         return .neutral
     }

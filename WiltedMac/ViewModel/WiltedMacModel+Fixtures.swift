@@ -311,16 +311,7 @@ extension WiltedMacModel {
     /// Jumps playback to a transcript line the listener picked.
     func seekToTranscriptCue(_ cue: WiltedMacTranscriptCue) {
 #if canImport(WiltedProducer)
-        guard let playback else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await playback.seek(to: cue.startSeconds)
-                self.isPlaying = playback.isPlaying
-                self.refreshPlaybackReadout()
-                await self.queueCurrentPlaybackCheckpoint()
-            } catch { self.reportAudioRouteFault("Playback is unavailable.") }
-        }
+        seekPlayback { try await $0.seek(to: cue.startSeconds) }
 #endif
     }
 
@@ -340,16 +331,7 @@ extension WiltedMacModel {
     }
 
     func seek(by seconds: TimeInterval) {
-        guard let playback else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await playback.seek(by: seconds)
-                self.isPlaying = playback.isPlaying
-                self.refreshPlaybackReadout()
-                await self.queueCurrentPlaybackCheckpoint()
-            } catch { self.reportAudioRouteFault("Playback is unavailable.") }
-        }
+        seekPlayback { try await $0.seek(by: seconds) }
     }
 
     func navigatePodcastQueue(previous: Bool) {
@@ -367,31 +349,24 @@ extension WiltedMacModel {
             }
             return
         }
-        playbackOperationStatus = previous ? "Opening previous episode…" : "Opening next episode…"
-        playbackOperationTask = Task { [weak self] in
+        let opening = previous ? "Opening previous episode…" : "Opening next episode…"
+        playbackOperationStatus = opening
+        // Next and Previous are selections: they supersede a pending command,
+        // land without autoplay, and start only while still the newest one.
+        issuePlaybackCommand(.select, pending: opening, failureMessage: previous
+            ? "The previous episode is unavailable." : "The next episode is unavailable.") { [weak self] command in
             guard let self else { return }
-            do {
-                let selected = try await (previous
-                    ? playback.selectPreviousPodcastQueueEpisode()
-                    : playback.selectNextPodcastQueueEpisode())
-                if selected {
-                    await self.refreshPodcastQueueState()
-                    self.refreshPlaybackReadout()
-                    self.playbackError = nil
-                }
-                self.playbackOperationStatus = nil
-            } catch {
-                self.playbackOperationStatus = nil
-                // A manual skip throws before `podcastStateHandler` ever runs,
-                // so this is the only place that repairs the flag for this path.
-                if case let PlaybackControllerError.podcastMediaUnavailable(unavailableID) = error,
-                   let index = self.episodes.firstIndex(where: { $0.id == unavailableID.rawValue }) {
-                    self.episodes[index].isReadyMediaAvailable = false
-                }
-                self.playbackError = previous
-                    ? "The previous episode is unavailable."
-                    : "The next episode is unavailable."
-            }
+            defer { if self.playbackOperationStatus == opening { self.playbackOperationStatus = nil } }
+            let selected = try await (previous
+                ? playback.selectPreviousPodcastQueueEpisode(autoplay: false)
+                : playback.selectNextPodcastQueueEpisode(autoplay: false))
+            try self.ensureNewestSelection(command)
+            guard selected else { return }
+            try self.startIfCurrent(playback, for: command)
+            self.isPlaying = playback.isPlaying
+            await self.refreshPodcastQueueState()
+            self.refreshPlaybackReadout()
+            if self.isCurrentPlaybackCommand(command) { self.playbackError = nil }
         }
 #endif
     }

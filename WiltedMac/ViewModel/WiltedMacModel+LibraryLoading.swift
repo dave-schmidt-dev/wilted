@@ -185,6 +185,9 @@ extension WiltedMacModel {
         // Read before the task: the mode belongs to the session that just
         // finished, and work the task starts must not reinterpret it.
         let continuesLarderQueue = isLarderQueuePlayback
+        // The advance is owed from now; a selection, seek or Pause issued
+        // during the awaits below supersedes it.
+        let advance = beginAutomaticAdvance()
         Task { [weak self] in
             guard let self else { return }
             // The completed record was already written by the controller
@@ -214,6 +217,16 @@ extension WiltedMacModel {
                 }
                 note = await self.completeAndRetire(id)
                     ?? "\(finished.title) could not be marked finished."
+            }
+            let claim = self.claimAutomaticAdvance(advance)
+            guard claim == .owns else {
+                // A newer command owns the player, so leave it alone; an
+                // explicit Pause still unloads the finished episode, the
+                // same as running out of episodes.
+                if claim == .paused { await self.stopPlaybackForRemovedEpisode() }
+                await self.reloadLibraryRows()
+                self.podcastOperationMessage = note
+                return
             }
             guard let next else {
                 // Retirement leaves the row in `episodes`, so nothing else

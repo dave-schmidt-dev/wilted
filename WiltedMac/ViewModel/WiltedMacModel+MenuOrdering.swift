@@ -160,15 +160,10 @@ extension WiltedMacModel {
         playback?.defaultRate = Float(playbackRate)
         playback?.setRate(Float(playbackRate))
         rescheduleSeamMarker()
-        guard isPodcastPlayback, let store, let id = playback?.itemID else { return }
-        let selectedRate = playbackRate
-        playbackOperationStatus = "Saving playback speed…"
-        Task { [weak self] in
-            try? await store.save(playbackSpeed: PodcastPlaybackSpeed(
-                itemID: id, speed: selectedRate, updatedAt: Timestamp(Date())
-            ))
-            self?.playbackOperationStatus = nil
-        }
+        guard isPodcastPlayback, let id = playback?.itemID else { return }
+        // The live speed above stays in force whatever the save does; the
+        // save reports on its own status line, scoped to this episode.
+        savePlaybackSpeed(playbackRate, for: id)
 #else
         rescheduleSeamMarker()
 #endif
@@ -184,18 +179,9 @@ extension WiltedMacModel {
     func scrub(to value: Double) {
         guard value.isFinite else { return }
 #if canImport(WiltedProducer)
-        guard let playback else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await playback.seek(to: value)
-                self.refreshPlaybackReadout()
-                // A scrub is exactly the jump the system cannot extrapolate,
-                // and a short one is inside the drift tolerance.
-                self.publishNowPlaying(force: true)
-                await self.queueCurrentPlaybackCheckpoint()
-            } catch { self.reportAudioRouteFault("Playback is unavailable.") }
-        }
+        // A scrub is exactly the jump the system cannot extrapolate, and a
+        // short one is inside the drift tolerance, so it publishes the jump.
+        seekPlayback(publishesJump: true) { try await $0.seek(to: value) }
 #else
         playbackPositionSeconds = min(max(value, 0), max(0, playbackDurationSeconds))
 #endif

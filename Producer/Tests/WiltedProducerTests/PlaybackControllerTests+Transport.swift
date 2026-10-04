@@ -327,4 +327,136 @@ extension PlaybackControllerTests {
         XCTAssertEqual(controller.itemID, second.revision.itemID)
         XCTAssertEqual(backend.loadCount, 3, "the restarted run may advance only once")
     }
+
+    func testBackendRefusalIsTypedAndKeepsPlayheadWithoutRouteFault() async throws {
+        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = RefusingBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        backend.currentTime = 9
+        backend.refusesPlay = true
+
+        await XCTAssertThrowsErrorAsync(_ = try controller.start()) { error in
+            XCTAssertEqual(error as? PlaybackTransportError, .backendRefused(revision.itemID))
+        }
+        await XCTAssertThrowsErrorAsync(try await controller.toggle()) { error in
+            XCTAssertEqual(error as? PlaybackTransportError, .backendRefused(revision.itemID))
+        }
+        XCTAssertFalse(controller.isPlaying, "a refused start must never be reported as playing")
+        XCTAssertEqual(backend.currentTime, 9)
+        XCTAssertNil(controller.recoverableFault, "a refusal is not an engine or route fault")
+        XCTAssertEqual(backend.loadCount, 1, "a refusal must not rebuild the backend")
+
+        backend.refusesPlay = false
+        XCTAssertEqual(try controller.start(), .started)
+        XCTAssertTrue(controller.isPlaying)
+    }
+
+    func testStartReportsAlreadyPlayingWithoutAskingBackendAgain() async throws {
+        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = RefusingBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        await XCTAssertThrowsErrorAsync(_ = try controller.start()) { error in
+            XCTAssertEqual(error as? PlaybackControllerError, .noLoadedRevision)
+        }
+        try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
+        XCTAssertEqual(try controller.start(), .started)
+        XCTAssertEqual(try controller.start(), .alreadyPlaying)
+        XCTAssertEqual(backend.playCount, 1)
+        try await controller.toggle()
+        XCTAssertFalse(controller.isPlaying, "toggle while playing pauses and never reports refusal")
+        XCTAssertEqual(backend.playCount, 1)
+    }
+
+    /// Play Now whose start gate declines moves the queue and loads, but only
+    /// an explicit `start()` asks the backend to play.
+    func testPlayNowDeclinedByStartGateMovesQueueAndNeverStarts() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await queueRevision(index: 21, root: root, store: store)
+        let second = try await queueRevision(index: 22, root: root, store: store)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.revision.itemID], currentEpisodeID: first.revision.itemID
+        ))
+        let backend = RefusingBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        await controller.restorePodcastQueue()
+
+        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID, startsIf: { false })
+        XCTAssertEqual(controller.itemID, second.revision.itemID)
+        let state = try await store.podcastQueueState()
+        XCTAssertEqual(state.currentEpisodeID, second.revision.itemID)
+        XCTAssertEqual(backend.playCount, 0, "nothing starts without the caller's start()")
+        XCTAssertFalse(controller.isPlaying)
+
+        try await controller.playPodcastQueueEpisodeNow(second.revision.itemID, startsIf: { false })
+        XCTAssertEqual(backend.playCount, 0, "re-selecting the loaded current episode does not start it either")
+        XCTAssertEqual(try controller.start(), .started)
+        XCTAssertEqual(backend.playCount, 1)
+    }
+
+    func testBackendRebuildFailuresAreTypedRouteFaults() async throws {
+        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try fixture()
+        let backend = RefusingBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        let mediaURL = URL(fileURLWithPath: "/tmp/audio.m4a")
+        try await controller.load(revision: revision, mediaURL: mediaURL)
+        try controller.play()
+        backend.currentTime = 20
+        backend.failsLoad = true
+
+        await XCTAssertThrowsErrorAsync(try await controller.recoverFromRouteChange()) { error in
+            XCTAssertEqual(error as? PlaybackTransportError, .routeUnavailable(revision.itemID))
+        }
+        await XCTAssertThrowsErrorAsync(try await controller.restart()) { error in
+            XCTAssertEqual(error as? PlaybackTransportError, .routeUnavailable(revision.itemID))
+        }
+        backend.failsLoad = false
+        try await controller.load(revision: revision, mediaURL: mediaURL)
+        try controller.play()
+        backend.finish(successfully: false)
+        await waitUntil { controller.recoverableFault == .playbackFailed(revision.itemID) }
+        backend.failsLoad = true
+        await XCTAssertThrowsErrorAsync(try controller.play()) { error in
+            XCTAssertEqual(error as? PlaybackTransportError, .routeUnavailable(revision.itemID),
+                           "a failed engine rebuild on retry is a route fault, not missing media")
+        }
+    }
+
+    /// A backend whose start can be refused and whose rebuild can fail, so the
+    /// typed transport outcomes are driven causally rather than inferred.
+    final class RefusingBackend: PlaybackBackend {
+        var duration: TimeInterval = 42
+        var currentTime: TimeInterval = 0
+        var isPlaying = false
+        var rate: Float = 1
+        var volume: Float = 1
+        var refusesPlay = false
+        var failsLoad = false
+        private(set) var loadCount = 0
+        private(set) var playCount = 0
+        private(set) var loadedGeneration: UInt64 = 0
+        var completionHandler: (@MainActor @Sendable (UInt64, Bool) -> Void)?
+
+        func load(url: URL) throws {
+            if failsLoad { throw CocoaError(.fileReadCorruptFile) }
+            loadCount += 1; loadedGeneration += 1; isPlaying = false
+        }
+        func play() -> Bool {
+            playCount += 1
+            isPlaying = !refusesPlay
+            return isPlaying
+        }
+        func pause() { isPlaying = false }
+        func stop() { isPlaying = false }
+        func finish(successfully: Bool) { completionHandler?(loadedGeneration, successfully) }
+    }
 }
