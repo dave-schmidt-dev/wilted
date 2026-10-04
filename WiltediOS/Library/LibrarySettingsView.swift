@@ -134,8 +134,8 @@ struct LibrarySettingsView: View {
         .accessibilityIdentifier("wilted-library-settings-storage")
     }
 
-    /// One row: the status, plus when the mirror was last fetched once it is current. The last
-    /// refresh, and the Mac's own activity, are the same fact seen from two ends, so it is shown once.
+    /// One row: the status, plus, once idle, when this phone last fetched the library. The detail line
+    /// labels that time as the phone's own read; the phone cannot see the Mac's newest publication.
     private var syncCard: some View {
         let sync = model.syncSummary
         return WiltedSettingsCard(title: WiltedScreenCopy.sync) {

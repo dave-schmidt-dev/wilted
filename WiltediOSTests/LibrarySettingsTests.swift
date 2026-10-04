@@ -140,11 +140,11 @@ final class LibrarySettingsTests: XCTestCase {
             isRefreshing: true, quarantined: false, error: "x", lastRefresh: now, throttleNotice: "iCloud is rate limiting sync.")
         XCTAssertEqual(paused.status, "Paused")
         XCTAssertEqual(paused.detail, "iCloud is rate limiting sync.")
-        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now).status, "Up to date")
+        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now).status, "Fetched")
         XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: nil).status, "Not synced yet")
 
         let current = LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now)
-        XCTAssertEqual(LibrarySettingsFormat.syncLine(current, lastRefresh: now), "Up to date · \(LibrarySettingsFormat.date(now))")
+        XCTAssertEqual(LibrarySettingsFormat.syncLine(current, lastRefresh: now), "Fetched · \(LibrarySettingsFormat.date(now))")
         let broken = LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: "x", lastRefresh: now)
         XCTAssertEqual(LibrarySettingsFormat.syncLine(broken, lastRefresh: now), "Problem")
     }

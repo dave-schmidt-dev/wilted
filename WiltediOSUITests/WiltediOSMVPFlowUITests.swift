@@ -181,12 +181,12 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         assertNoLiveTransport(in: app)
     }
 
-    func testLibraryRootSyncStatusReportsUpToDateAfterTheFixtureFetch() {
+    func testLibraryRootSyncStatusNamesThePhoneFetchAfterTheFixtureFetch() {
         let app = launchLibraryRoot(.normal)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-library-throttle"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-library-error"].exists)
         let status = settingsSyncStatus(in: app)
-        XCTAssertTrue(waitForPrefix("Up to date", on: status), status.label)
+        XCTAssertTrue(waitForPrefix("Fetched · ", on: status), status.label)
         assertNoLiveTransport(in: app)
     }
 

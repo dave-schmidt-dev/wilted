@@ -63,14 +63,20 @@ enum LibrarySettingsFormat {
         let tone: WiltedStatusTone
     }
 
-    /// One line for the sync row: the status, and when the mirror was last fetched once it is current.
+    /// Labels the idle fetch time as this phone's own read. The phone cannot see what the Mac has
+    /// published since, so nothing here claims the two match.
+    static let phoneFetchNote = "Fetch time reports this phone’s last successful library read."
+
+    /// One line for the sync row: the status, and, once idle after a fetch, when this phone last fetched.
     static func syncLine(_ summary: SyncSummary, lastRefresh: Date?) -> String {
         guard summary.tone == .positive, let lastRefresh else { return summary.status }
         return "\(summary.status) · \(date(lastRefresh))"
     }
 
     /// Status in words, so state never rests on color alone. Precedence: an account review blocks
-    /// everything, then iCloud rate limiting, then a running fetch, then the last error, then how fresh the mirror is.
+    /// everything, then iCloud rate limiting, then a running fetch, then the last error, then whether
+    /// this phone has fetched. A fetch says nothing about the Mac's newest publication, so the idle
+    /// state names the phone's fetch and never claims the library matches the Mac.
     static func sync(
         isRefreshing: Bool, quarantined: Bool, error: String?, lastRefresh: Date?, throttleNotice: String? = nil,
         throttleRetrying: Bool = false
@@ -85,7 +91,7 @@ enum LibrarySettingsFormat {
         }
         if isRefreshing { return SyncSummary(status: "Syncing", detail: nil, tone: .active) }
         if let error { return SyncSummary(status: "Problem", detail: error, tone: .failure) }
-        if lastRefresh != nil { return SyncSummary(status: "Up to date", detail: nil, tone: .positive) }
+        if lastRefresh != nil { return SyncSummary(status: "Fetched", detail: phoneFetchNote, tone: .positive) }
         return SyncSummary(status: "Not synced yet", detail: nil, tone: .neutral)
     }
 }
