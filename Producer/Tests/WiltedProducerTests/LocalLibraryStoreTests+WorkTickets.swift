@@ -265,6 +265,58 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(firstSnapshot, secondSnapshot, "a second reconcile must change nothing")
     }
 
+    func testReconcileWorkTicketsReportsCountedProgressAndContinuesAfterTicketFailure() async throws {
+        enum InjectedFailure: Error { case expected }
+        final class ProgressRecorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stored: [LocalLibraryStore.WorkTicketReconciliationProgress] = []
+
+            func append(_ update: LocalLibraryStore.WorkTicketReconciliationProgress) {
+                lock.withLock { stored.append(update) }
+            }
+
+            var updates: [LocalLibraryStore.WorkTicketReconciliationProgress] {
+                lock.withLock { stored }
+            }
+        }
+
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let now = Timestamp(Date(timeIntervalSince1970: 1_700_010_000))
+        let recorder = ProgressRecorder()
+
+        let result = try await store.reconcileWorkTickets(
+            now: now, sequenceFloor: 0,
+            importedDeferrals: [
+                WorkTicketImportedDeferral(subjectID: "broken"),
+                WorkTicketImportedDeferral(subjectID: "recovered"),
+            ],
+            progress: { recorder.append($0) },
+            failureInjector: { step, subjectID in
+                if step == .importingDeferrals && subjectID == "broken" {
+                    throw InjectedFailure.expected
+                }
+            }
+        )
+        let progress = recorder.updates
+
+        XCTAssertEqual(
+            progress.filter { $0.step == .importingDeferrals }.map { "\($0.done)/\($0.total)" },
+            ["0/2", "1/2", "2/2"]
+        )
+        XCTAssertEqual(result.importedDeferralCount, 1)
+        XCTAssertEqual(result.errors.map(\.subjectID), ["broken"])
+        let recoveredTicket = try await store.workTicket(kind: .podcastPreparation, subjectID: "recovered")
+        let brokenTicket = try await store.workTicket(kind: .podcastPreparation, subjectID: "broken")
+        XCTAssertNotNil(recoveredTicket)
+        XCTAssertNil(brokenTicket)
+        XCTAssertEqual(
+            Set(progress.filter { $0.step != .importingDeferrals }.map(\.step)),
+            Set(LocalLibraryStore.WorkTicketReconciliationStep.allCases.filter { $0 != .importingDeferrals }),
+            "every recovery step reports even when it has no candidate tickets"
+        )
+    }
+
     // MARK: - V13 episode removals
 
     /// Task 4.5 done-condition 2: a V12 store seeded with a bare `retiredAt`

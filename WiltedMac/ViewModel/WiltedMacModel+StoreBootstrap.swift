@@ -101,8 +101,17 @@ extension WiltedMacModel {
             // ticket queue agrees rather than contradicts it; before the
             // library load, so the first rows drawn are already reconciled.
             announceStartupStep(.reconcilingWork)
-            await reconcileWorkTickets(in: configuredStore)
-            announceStartupStep(.loadingLibrary)
+            let ticketReconciliation = await reconcileWorkTickets(in: configuredStore)
+            if ticketReconciliation.errors.isEmpty {
+                announceStartupStep(.loadingLibrary)
+            } else {
+                announceStartupStep(.recoveringWork(
+                    action: "continuing with recovered requests",
+                    done: ticketReconciliation.totalCount,
+                    total: ticketReconciliation.totalCount,
+                    errors: ticketReconciliation.errors.map { "\($0.subjectID): \($0.message)" }
+                ))
+            }
             let library = try await loadLibrary(from: configuredStore)
             articles = library.articles
             applyEpisodes(library.episodes, allowsAutomaticAdmissions: false)
@@ -273,7 +282,7 @@ extension WiltedMacModel {
     /// means an imported deferral or an in-memory request carried over from
     /// this same launch (the store-less fallback below) is already a row by
     /// the time the projection reads it back.
-    func reconcileWorkTickets(in store: LocalLibraryStore) async {
+    func reconcileWorkTickets(in store: LocalLibraryStore) async -> WorkTicketReconciliation {
         let encoder = JSONEncoder()
         var importedDeferrals = deferredAutomaticPreparations.map { job in
             WorkTicketImportedDeferral(
@@ -299,22 +308,35 @@ extension WiltedMacModel {
             importedDeferrals.append(WorkTicketImportedDeferral(subjectID: subjectID))
         }
         do {
-            _ = try await store.reconcileWorkTickets(
+            let reconciliation = try await store.reconcileWorkTickets(
                 now: Timestamp(Date()), sequenceFloor: preparationRequestSequence,
-                importedDeferrals: importedDeferrals
+                importedDeferrals: importedDeferrals,
+                progress: { [weak self] update in
+                    Task { @MainActor [weak self] in
+                        self?.announceStartupStep(.recoveringWork(
+                            action: update.step.startupAction, done: update.done, total: update.total
+                        ))
+                    }
+                }
             )
-        } catch {
-            return
-        }
-        preferences.removeObject(forKey: Self.deferredAutomaticPreparationsPreferenceKey)
-        preferences.removeObject(forKey: Self.preparationRequestSequencePreferenceKey)
+            preferences.removeObject(forKey: Self.deferredAutomaticPreparationsPreferenceKey)
+            preferences.removeObject(forKey: Self.preparationRequestSequencePreferenceKey)
 
-        guard let tickets = try? await store.workTickets() else { return }
-        preparationRequestSequence = max(preparationRequestSequence, tickets.map(\.requestSequence).max() ?? 0)
-        preparationRequestSequences = tickets
-            .filter { ($0.kind == .podcastPreparation || $0.kind == .articlePreparation)
-                && ($0.state == .pending || $0.state == .deferred) }
-            .reduce(into: [String: Int]()) { result, ticket in result[ticket.subjectID] = ticket.requestSequence }
+            guard let tickets = try? await store.workTickets() else { return reconciliation }
+            preparationRequestSequence = max(preparationRequestSequence, tickets.map(\.requestSequence).max() ?? 0)
+            preparationRequestSequences = tickets
+                .filter { ($0.kind == .podcastPreparation || $0.kind == .articlePreparation)
+                    && ($0.state == .pending || $0.state == .deferred) }
+                .reduce(into: [String: Int]()) { result, ticket in result[ticket.subjectID] = ticket.requestSequence }
+            return reconciliation
+        } catch {
+            return WorkTicketReconciliation(
+                importedDeferralCount: 0, adoptedDownloadCount: 0, closedRunCount: 0, prunedCount: 0,
+                errors: [LocalLibraryStore.WorkTicketReconciliationError(
+                    step: .importingDeferrals, subjectID: "work-ticket-recovery", message: String(describing: error)
+                )]
+            )
+        }
     }
 
     func configureStoreDependencies(_ configuredStore: LocalLibraryStore?) {

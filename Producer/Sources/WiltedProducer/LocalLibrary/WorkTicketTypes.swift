@@ -132,16 +132,24 @@ public struct WorkTicketReconciliation: Equatable, Sendable {
     public let closedRunCount: Int
     public let collapsedDuplicateCount: Int
     public let prunedCount: Int
+    public let errors: [LocalLibraryStore.WorkTicketReconciliationError]
 
     public init(
         importedDeferralCount: Int, adoptedDownloadCount: Int, closedRunCount: Int,
-        collapsedDuplicateCount: Int = 0, prunedCount: Int
+        collapsedDuplicateCount: Int = 0, prunedCount: Int,
+        errors: [LocalLibraryStore.WorkTicketReconciliationError] = []
     ) {
         self.importedDeferralCount = importedDeferralCount
         self.adoptedDownloadCount = adoptedDownloadCount
         self.closedRunCount = closedRunCount
         self.collapsedDuplicateCount = collapsedDuplicateCount
         self.prunedCount = prunedCount
+        self.errors = errors
+    }
+
+    public var totalCount: Int {
+        importedDeferralCount + adoptedDownloadCount + closedRunCount
+            + collapsedDuplicateCount + prunedCount + errors.count
     }
 }
 

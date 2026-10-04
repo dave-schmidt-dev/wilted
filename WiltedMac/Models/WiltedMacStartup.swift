@@ -103,19 +103,36 @@ struct WiltedMacStaleInvalidationFailure: Error {
 
 /// One awaited phase of store bootstrap, named so the startup readout can say
 /// what the wait is for instead of showing one fixed sentence through all of it.
-enum WiltedMacStartupStep: String, Equatable, Sendable {
-    case openingStore = "Opening your larder"
-    case updatingLibraryFormat = "Updating the library format"
-    case retiringFinishedEpisodes = "Tidying finished episodes"
-    case checkingPreparationFingerprint = "Checking preparation fingerprints"
-    case closingInterruptedRuns = "Closing interrupted preparations"
-    case reconcilingWork = "Reconciling background work"
-    case loadingLibrary = "Loading saved episodes and articles"
-    case restoringPlayback = "Restoring playback"
+enum WiltedMacStartupStep: Equatable, Sendable {
+    case openingStore
+    case updatingLibraryFormat
+    case retiringFinishedEpisodes
+    case checkingPreparationFingerprint
+    case closingInterruptedRuns
+    case reconcilingWork
+    case recoveringWork(action: String, done: Int, total: Int, errors: [String] = [])
+    case loadingLibrary
+    case restoringPlayback
 
     /// The readout's line: the step's own words, with the ellipsis the old
     /// fixed sentence carried.
-    var label: String { rawValue + "\u{2026}" }
+    var label: String {
+        let text: String
+        switch self {
+        case .openingStore: text = "Opening your larder"
+        case .updatingLibraryFormat: text = "Updating the library format"
+        case .retiringFinishedEpisodes: text = "Tidying finished episodes"
+        case .checkingPreparationFingerprint: text = "Checking preparation fingerprints"
+        case .closingInterruptedRuns: text = "Closing interrupted preparations"
+        case .reconcilingWork: text = "Reconciling background work"
+        case let .recoveringWork(action, done, total, errors):
+            let issue = errors.isEmpty ? "" : " \(errors.joined(separator: " "))"
+            return "Recovering \(done) of \(total) requests: \(action).\(issue)"
+        case .loadingLibrary: text = "Loading saved episodes and articles"
+        case .restoringPlayback: text = "Restoring playback"
+        }
+        return text + "\u{2026}"
+    }
 }
 
 enum WiltedMacStartupState: Equatable, Sendable {

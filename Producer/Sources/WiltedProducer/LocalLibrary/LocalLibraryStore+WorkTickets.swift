@@ -5,6 +5,59 @@ import WiltedDomain
 import WiltedSync
 
 extension LocalLibraryStore {
+    /// Narrow test seam for exercising a ticket-local recovery error through
+    /// the app bootstrap path. Production leaves this nil.
+    @_spi(Testing) public nonisolated(unsafe) static var workTicketReconciliationFailureForTesting:
+        (@Sendable (WorkTicketReconciliationStep, String) -> Bool)?
+
+    private struct InjectedWorkTicketReconciliationFailure: Error {}
+    /// A recoverable unit of launch-time ticket repair.
+    public enum WorkTicketReconciliationStep: String, Equatable, Sendable, CaseIterable {
+        case importingDeferrals
+        case adoptingDownloads
+        case closingInterruptedRuns
+        case collapsingDuplicates
+        case pruningTickets
+
+        public var startupAction: String {
+            switch self {
+            case .importingDeferrals: "importing deferred preparations"
+            case .adoptingDownloads: "adopting downloads"
+            case .closingInterruptedRuns: "closing interrupted requests"
+            case .collapsingDuplicates: "collapsing duplicate requests"
+            case .pruningTickets: "removing expired requests"
+            }
+        }
+    }
+
+    /// One live reconciliation update. `done` is reported both before and
+    /// after a step so a zero-item step is still visible to the caller.
+    public struct WorkTicketReconciliationProgress: Equatable, Sendable {
+        public let step: WorkTicketReconciliationStep
+        public let done: Int
+        public let total: Int
+
+        public init(step: WorkTicketReconciliationStep, done: Int, total: Int) {
+            self.step = step
+            self.done = done
+            self.total = total
+        }
+    }
+
+    /// A single ticket that could not be recovered. Reconciliation records it
+    /// and continues so one malformed row cannot strand the rest of the queue.
+    public struct WorkTicketReconciliationError: Equatable, Sendable {
+        public let step: WorkTicketReconciliationStep
+        public let subjectID: String
+        public let message: String
+
+        public init(step: WorkTicketReconciliationStep, subjectID: String, message: String) {
+            self.step = step
+            self.subjectID = subjectID
+            self.message = message
+        }
+    }
+
     /// Decodes a persisted work-ticket row, dropping it if its `kind` or
     /// `state` raw value is not one this store recognizes.
     private static func decodeWorkTicket(_ record: LocalLibrarySchemaV12Models.WorkTicketRecord) -> WorkTicket? {
@@ -265,9 +318,42 @@ extension LocalLibraryStore {
     public func reconcileWorkTickets(
         now: Timestamp,
         sequenceFloor: Int,
-        importedDeferrals: [WorkTicketImportedDeferral]
+        importedDeferrals: [WorkTicketImportedDeferral],
+        progress: (@Sendable (WorkTicketReconciliationProgress) -> Void)? = nil
+    ) throws -> WorkTicketReconciliation {
+        let testFailure = Self.workTicketReconciliationFailureForTesting
+        return try reconcileWorkTickets(
+            now: now, sequenceFloor: sequenceFloor, importedDeferrals: importedDeferrals,
+            progress: progress,
+            failureInjector: { step, subjectID in
+                if testFailure?(step, subjectID) == true {
+                    throw InjectedWorkTicketReconciliationFailure()
+                }
+            }
+        )
+    }
+
+    /// Test-only overload that injects a ticket-local failure without making
+    /// production recovery behavior depend on test data.
+    func reconcileWorkTickets(
+        now: Timestamp,
+        sequenceFloor: Int,
+        importedDeferrals: [WorkTicketImportedDeferral],
+        progress: (@Sendable (WorkTicketReconciliationProgress) -> Void)? = nil,
+        failureInjector: (@Sendable (WorkTicketReconciliationStep, String) throws -> Void)?
     ) throws -> WorkTicketReconciliation {
         let context = ModelContext(container)
+        var errors: [WorkTicketReconciliationError] = []
+
+        func report(_ step: WorkTicketReconciliationStep, _ done: Int, _ total: Int) {
+            progress?(WorkTicketReconciliationProgress(step: step, done: done, total: total))
+        }
+
+        func recordFailure(_ error: Error, step: WorkTicketReconciliationStep, subjectID: String) {
+            errors.append(WorkTicketReconciliationError(
+                step: step, subjectID: subjectID, message: String(describing: error)
+            ))
+        }
 
         // 1. Import deferrals. Find-or-insert, exactly like `issueWorkTicket`:
         // an existing ticket for the subject wins unchanged, so re-running
@@ -275,7 +361,12 @@ extension LocalLibraryStore {
         // earlier attempt saved this step and then failed a later one) is a
         // no-op rather than a duplicate.
         var importedCount = 0
-        for deferral in importedDeferrals {
+        report(.importingDeferrals, 0, importedDeferrals.count)
+        for (index, deferral) in importedDeferrals.enumerated() {
+            try Task.checkCancellation()
+            defer { report(.importingDeferrals, index + 1, importedDeferrals.count) }
+            do {
+                try failureInjector?(.importingDeferrals, deferral.subjectID)
             let id = "\(WorkTicketKind.podcastPreparation.rawValue)|\(deferral.subjectID)"
             let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
             guard !records.contains(where: { $0.id == id }) else { continue }
@@ -288,6 +379,9 @@ extension LocalLibraryStore {
             )
             context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
             importedCount += 1
+            } catch {
+                recordFailure(error, step: .importingDeferrals, subjectID: deferral.subjectID)
+            }
         }
         try context.save()
 
@@ -296,9 +390,16 @@ extension LocalLibraryStore {
         // or a launch that died before it could issue one.
         var adoptedCount = 0
         var seenSubjects: Set<String> = []
-        for download in try unfinishedPodcastDownloads() + resumablePodcastDownloads() {
+        let orphanedDownloads = try (unfinishedPodcastDownloads() + resumablePodcastDownloads()).filter {
+            seenSubjects.insert($0.episodeID.rawValue).inserted
+        }
+        report(.adoptingDownloads, 0, orphanedDownloads.count)
+        for (index, download) in orphanedDownloads.enumerated() {
+            try Task.checkCancellation()
             let subjectID = download.episodeID.rawValue
-            guard seenSubjects.insert(subjectID).inserted else { continue }
+            defer { report(.adoptingDownloads, index + 1, orphanedDownloads.count) }
+            do {
+                try failureInjector?(.adoptingDownloads, subjectID)
             let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
             let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
             guard !records.contains(where: { $0.id == id }) else { continue }
@@ -311,6 +412,9 @@ extension LocalLibraryStore {
             )
             context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
             adoptedCount += 1
+            } catch {
+                recordFailure(error, step: .adoptingDownloads, subjectID: subjectID)
+            }
         }
         try context.save()
 
@@ -323,7 +427,12 @@ extension LocalLibraryStore {
         var closedCount = 0
         let runningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
             .filter { $0.state == WorkTicketState.running.rawValue }
-        for record in runningRecords {
+        report(.closingInterruptedRuns, 0, runningRecords.count)
+        for (index, record) in runningRecords.enumerated() {
+            try Task.checkCancellation()
+            defer { report(.closingInterruptedRuns, index + 1, runningRecords.count) }
+            do {
+                try failureInjector?(.closingInterruptedRuns, record.subjectID)
             let attemptCount = record.attemptCount + 1
             let isTerminalClassification = record.failureKind == PodcastDownloadFailureKind.terminal.rawValue
             if isTerminalClassification || attemptCount > 3 {
@@ -335,6 +444,9 @@ extension LocalLibraryStore {
             record.attemptCount = attemptCount
             record.updatedAt = now.date
             closedCount += 1
+            } catch {
+                recordFailure(error, step: .closingInterruptedRuns, subjectID: record.subjectID)
+            }
         }
         try context.save()
 
@@ -353,19 +465,33 @@ extension LocalLibraryStore {
         // duplicate already terminal is left alone: it already stopped doing
         // work, and step 4 below prunes it in due course.
         var collapsedCount = 0
-        let articleRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
-            .filter { $0.kind == WorkTicketKind.articlePreparation.rawValue }
+        let articleRecords: [LocalLibrarySchemaV12Models.WorkTicketRecord] = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>()
+        )
+        .filter { $0.kind == WorkTicketKind.articlePreparation.rawValue }
         let groupedByResolution = Dictionary(grouping: articleRecords.filter { $0.resolvedItemID != nil }) {
             $0.resolvedItemID!
         }
-        for (_, group) in groupedByResolution where group.count > 1 {
-            let canonical = group.max { $0.requestSequence < $1.requestSequence }
-            for record in group where record.id != canonical?.id {
-                guard let state = WorkTicketState(rawValue: record.state), !state.isTerminal,
-                      state.canTransition(to: .cancelled) else { continue }
+        let duplicateRecords = groupedByResolution.values.flatMap { group -> [LocalLibrarySchemaV12Models.WorkTicketRecord] in
+            guard group.count > 1, let canonical = group.max(by: { $0.requestSequence < $1.requestSequence }) else {
+                return []
+            }
+            return group.filter { record in
+                record.id != canonical.id
+                    && (WorkTicketState(rawValue: record.state).map { !$0.isTerminal && $0.canTransition(to: .cancelled) } ?? false)
+            }
+        }
+        report(.collapsingDuplicates, 0, duplicateRecords.count)
+        for (index, record) in duplicateRecords.enumerated() {
+            try Task.checkCancellation()
+            defer { report(.collapsingDuplicates, index + 1, duplicateRecords.count) }
+            do {
+                try failureInjector?(.collapsingDuplicates, record.subjectID)
                 record.state = WorkTicketState.cancelled.rawValue
                 record.updatedAt = now.date
                 collapsedCount += 1
+            } catch {
+                recordFailure(error, step: .collapsingDuplicates, subjectID: record.subjectID)
             }
         }
         try context.save()
@@ -375,14 +501,24 @@ extension LocalLibraryStore {
         var prunedCount = 0
         let cutoff = now.date.addingTimeInterval(-30 * 24 * 60 * 60)
         let allRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        var recordsToPrune: [LocalLibrarySchemaV12Models.WorkTicketRecord] = []
         for kind in WorkTicketKind.allCases {
             let terminalRecords = allRecords
                 .filter { $0.kind == kind.rawValue && (WorkTicketState(rawValue: $0.state)?.isTerminal ?? false) }
                 .sorted { $0.updatedAt > $1.updatedAt }
             guard terminalRecords.count > 50 else { continue }
-            for record in terminalRecords.dropFirst(50) where record.updatedAt < cutoff {
+            recordsToPrune += terminalRecords.dropFirst(50).filter { $0.updatedAt < cutoff }
+        }
+        report(.pruningTickets, 0, recordsToPrune.count)
+        for (index, record) in recordsToPrune.enumerated() {
+            try Task.checkCancellation()
+            defer { report(.pruningTickets, index + 1, recordsToPrune.count) }
+            do {
+                try failureInjector?(.pruningTickets, record.subjectID)
                 context.delete(record)
                 prunedCount += 1
+            } catch {
+                recordFailure(error, step: .pruningTickets, subjectID: record.subjectID)
             }
         }
         try context.save()
@@ -395,7 +531,8 @@ extension LocalLibraryStore {
         // preferences state, not library content this actor owns.
         return WorkTicketReconciliation(
             importedDeferralCount: importedCount, adoptedDownloadCount: adoptedCount,
-            closedRunCount: closedCount, collapsedDuplicateCount: collapsedCount, prunedCount: prunedCount
+            closedRunCount: closedCount, collapsedDuplicateCount: collapsedCount, prunedCount: prunedCount,
+            errors: errors
         )
     }
 
