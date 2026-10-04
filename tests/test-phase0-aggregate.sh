@@ -31,6 +31,7 @@ expected_legs=(
   "test-pipeline-worker"
   "test-preparation-runtime"
   "test-install-mac-app"
+  "test-install-mac-contract"
   "test-temp-sweep"
   "test-storage-retention"
   "test-temp-leaks"

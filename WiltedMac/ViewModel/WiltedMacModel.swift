@@ -275,6 +275,8 @@ final class WiltedMacModel {
     /// Why CloudKit calls are paused (rate limited, unavailable) and until when; nil while they run.
     /// Set by the library sync's shared gate, shown in the Sync settings card.
     var libraryThrottle: TransportGateState?
+    /// Whether library sync may send for the signed-in iCloud account (Task 5.0); nil while off.
+    var libraryAccountStatus: WiltedMacLibraryAccountStatus?
     /// Episodes whose newest listen was on the phone, from the latest device records.
     var phonePositions: [ItemID: WiltedMacPhonePosition] = [:]
     /// Podcast feeds Wilted follows, newest subscription first.

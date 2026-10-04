@@ -71,13 +71,23 @@ final class WiltedMacLibraryPublisherTests: XCTestCase {
     }
 
     func testFlagIsOffUnlessExactlyOne() {
+        // The flag only forces the publisher on; whether it runs without one is the runtime
+        // selection's decision (the live-build default), not the flag's.
         XCTAssertFalse(WiltedMacLibraryPublisher.isEnabled(in: [:]))
         XCTAssertFalse(WiltedMacLibraryPublisher.isEnabled(in: ["WILTED_LIBRARY_SYNC": "0"]))
         XCTAssertFalse(WiltedMacLibraryPublisher.isEnabled(in: ["WILTED_LIBRARY_SYNC": "true"]))
         XCTAssertTrue(WiltedMacLibraryPublisher.isEnabled(in: ["WILTED_LIBRARY_SYNC": "1"]))
     }
 
-    func testDisabledPublisherTouchesNothing() async throws {
+    func testAPublisherBuiltWithoutAFlagIsEnabledByDefault() {
+        let publisher = WiltedMacLibraryPublisher(
+            source: FakeStateSource(), transport: InMemoryLibraryTransport(deviceID: "mac", server: makeServer()),
+            sink: FakeIntentSink())
+        XCTAssertTrue(publisher.isEnabled, "a constructed publisher runs; the runtime selection decides construction")
+        XCTAssertEqual(WiltedMacLibraryPublisher.environmentKey, WiltedMacLibraryRuntimeSelection.environmentKey)
+    }
+
+        func testDisabledPublisherTouchesNothing() async throws {
         let server = makeServer()
         let source = FakeStateSource(state([episode("a")], queue: ["a"], playback: position("a")))
         let report = try await publisher(source, server: server, enabled: false).sync()

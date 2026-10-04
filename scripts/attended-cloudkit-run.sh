@@ -17,8 +17,9 @@
 # `--library-sync` extends the same flow for the attended iPhone library-sync
 # run: it builds both Development apps, installs the iOS app on
 # WILTED_DEVICE_ID, quits any running Mac app, and relaunches the Development
-# Mac app with WILTED_LIBRARY_SYNC=1. Run `scripts/attended-cloudkit-run.sh
-# --help` for details.
+# Mac app with no launch flag: a live Development build selects the library
+# publisher by default (WILTED_LIBRARY_SYNC=0 is the explicit off override). Run
+# `scripts/attended-cloudkit-run.sh --help` for details.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,11 +42,13 @@ Modes:
                   2. install the iOS app on the device in WILTED_DEVICE_ID
                   3. quit any running com.zerodelta.wilted.mac (fails if it
                      does not exit)
-                  4. launch the Development Mac app with
-                     open -n --env WILTED_LIBRARY_SYNC=1 <app>
+                  4. launch the Development Mac app with open -n <app>; a live
+                     Development build selects the library publisher by
+                     default, so no launch flag is needed
+                     (WILTED_LIBRARY_SYNC=0 forces it off, =1 forces it on)
                   5. verify by bundle id and process path that the running
                      instance is the Development build
-                  The installed Debug app in /Applications is not modified.
+                  The installed app in /Applications is not modified.
                   Restore the daily-driver app afterwards with: make install
   -h, --help      print this help and exit
 
@@ -197,7 +200,7 @@ cmd_install() {
 }
 
 # Attended library-sync run. The device is checked first so a missing
-# WILTED_DEVICE_ID fails before any build starts. The installed Debug app is
+# WILTED_DEVICE_ID fails before any build starts. The installed app is
 # only quit, never modified; `make install` restores it.
 cmd_library_sync() {
   [[ -n "${WILTED_DEVICE_ID:-}" ]] || fail 'set WILTED_DEVICE_ID to the paired device identifier'
@@ -211,7 +214,7 @@ cmd_library_sync() {
   cmd_install
 
   step "Quitting running $mac_bundle_id"
-  info 'the installed Debug app is left untouched; restore it afterwards with: make install'
+  info 'the installed app is left untouched; restore it afterwards with: make install'
   if [[ -n "$(wilted_running_bundle_pids "$mac_bundle_id")" ]]; then
     osascript -e "tell application id \"$mac_bundle_id\" to quit" >/dev/null 2>&1 || true
     wilted_wait_for_bundle_exit "$mac_bundle_id" 10 \
@@ -219,9 +222,10 @@ cmd_library_sync() {
   fi
   info "no $mac_bundle_id instance running"
 
-  step 'Launching Development Mac app with WILTED_LIBRARY_SYNC=1'
-  # --env is explicit on purpose: LaunchServices does not inherit the shell.
-  open -n --env WILTED_LIBRARY_SYNC=1 "$mac_app_path" || fail 'open failed'
+  step 'Launching Development Mac app (library publisher is the live default)'
+  # No --env: the live build selects the publisher itself, and LaunchServices
+  # does not inherit the shell, so a stray WILTED_LIBRARY_SYNC cannot leak in.
+  open -n "$mac_app_path" || fail 'open failed'
 
   local expected_dir pid path bad='' found=0 tries=20
   expected_dir="$(cd -P "$mac_app_path" && pwd -P)/Contents/MacOS/"
@@ -243,8 +247,8 @@ cmd_library_sync() {
   info "running Development instance verified: $mac_bundle_id from $expected_dir"
 
   step 'Library-sync run ready'
-  info 'Mac app is publishing (WILTED_LIBRARY_SYNC=1); iOS app is installed on the device'
-  info 'restore the daily-driver Debug app with: make install'
+  info 'Mac app is publishing (live default); iOS app is installed on the device'
+  info 'restore the daily-driver app with: make install'
 }
 
 case "${1:-all}" in

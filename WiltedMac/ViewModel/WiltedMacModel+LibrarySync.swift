@@ -6,9 +6,6 @@ import WiltedCloudKit
 import WiltedCloudKitLibrary
 import WiltedDomain
 import WiltedLibrary
-#if WILTED_CLOUDKIT_LIVE
-import CloudKit
-#endif
 
 #if canImport(WiltedProducer)
 import WiltedProducer
@@ -150,69 +147,6 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
     }
 }
 
-// MARK: - Transport
-
-/// Stands in when this build or process may not reach CloudKit. Every operation fails, so a
-/// unit-test host or a non-live build never touches an iCloud account.
-struct WiltedMacUnavailableLibraryTransport: LibraryTransport {
-    let reason: String
-    private var failure: LibraryTransportError { .transport(reason) }
-
-    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { throw failure }
-    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { throw failure }
-    func send(intent: LibraryIntent) async throws { throw failure }
-    func listIntents() async throws -> [LibraryIntent] { throw failure }
-    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws { throw failure }
-    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { throw failure }
-    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws { throw failure }
-    func mediaOffers() async throws -> [LibraryMediaOffer] { throw failure }
-    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL { throw failure }
-    func removeMedia(entryID: ItemID) async throws { throw failure }
-}
-
-enum WiltedMacLibraryTransports {
-    static let containerIdentifier = "iCloud.com.zerodelta.wilted"
-
-    /// `CloudKitLibraryTransport` as the library writer on `WiltedLibraryZone`, or the
-    /// unavailable stand-in without `WILTED_CLOUDKIT_LIVE` or under XCTest.
-    static func production(deviceID: String, hostsTests: Bool) -> any LibraryTransport {
-#if WILTED_CLOUDKIT_LIVE
-        guard !hostsTests else { return WiltedMacUnavailableLibraryTransport(reason: "iCloud sync is off in tests.") }
-        do {
-            let outbox = CloudKitLibraryOutbox()
-            let factory = driverFactory(outbox: outbox)
-            return try CloudKitLibraryTransport(
-                deviceID: deviceID, isLibraryWriter: true, driver: try factory(nil), driverFactory: factory, outbox: outbox
-            )
-        } catch {
-            return WiltedMacUnavailableLibraryTransport(reason: "iCloud library sync could not start.")
-        }
-#else
-        _ = (deviceID, hostsTests)
-        return WiltedMacUnavailableLibraryTransport(reason: "iCloud sync is not enabled in this build.")
-#endif
-    }
-
-#if WILTED_CLOUDKIT_LIVE
-    private static func driverFactory(outbox: CloudKitLibraryOutbox) -> CloudKitEngineDriverFactory {
-        let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
-        let zoneID = LibraryRecordMapper().zoneID
-        return { stateData in
-            let serialization = try stateData.map { data -> CKSyncEngine.State.Serialization in
-                guard let decoded = try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: data) else {
-                    throw CloudKitSyncError.stateCorrupt
-                }
-                return decoded
-            }
-            return LiveCloudKitEngineDriver(
-                database: database, stateSerialization: serialization,
-                zoneBootstrap: LiveCloudKitZoneBootstrap(database: database, zoneID: zoneID),
-                recordProvider: { outbox.record(for: $0) })
-        }
-    }
-#endif
-}
-
 // MARK: - Controller
 
 /// Republishes when the queue or removals change: it watches the model with
@@ -233,6 +167,8 @@ final class WiltedMacLibrarySyncController {
     var handoff: WiltedMacHandoffController?
     /// The fresh read of the phone's position a Play press makes before the audio starts.
     var playRefresher: WiltedMacPlayPositionRefresher?
+    /// The iCloud account binding that gates every server call; nil when unmanaged (Task 5.0).
+    var account: WiltedMacLibraryAccountController?
     private weak var model: WiltedMacModel?
     private let triggers: AsyncStream<Void>.Continuation
     private var loop: Task<Void, Never>?
@@ -277,6 +213,7 @@ final class WiltedMacLibrarySyncController {
 
     func stop() {
         stopped = true
+        account?.stop()
         inbound?.stop()
         handoff?.stop()
         loop?.cancel()
@@ -288,6 +225,7 @@ final class WiltedMacLibrarySyncController {
     func close() async {
         stop()
         await onShutdownDrain?()
+        await account?.close()
         await inbound?.close()
         await loop?.value
         await offerReconcile?.value
@@ -340,6 +278,8 @@ final class WiltedMacLibrarySyncController {
 
     private func performPass(includesStats: Bool) async -> Bool {
         guard !stopped, let model, !model.isClosingTemporaryState else { return true }
+        // Paused for the account: nothing to send, and nothing to report as a failure.
+        if let account, !account.gate.isOpen { return true }
         do {
             lastReport = try await publisher.sync(includesStats: includesStats)
             // Offers follow the same triggers as state (the queue and the prepared set) but run on
@@ -352,11 +292,16 @@ final class WiltedMacLibrarySyncController {
         } catch {
             lastFailure = String(describing: error)
             // A closed gate reports itself (the Sync card); only a new kind of failure is an error.
-            if !(error is TransportThrottled) {
+            if !(error is TransportThrottled), !Self.isAccountPause(error) {
                 librarySyncLog.error("Library publish failed: \(String(describing: error), privacy: .public)")
             }
             return false
         }
+    }
+
+    /// A call refused or superseded by the account gate; the account status reports it.
+    static func isAccountPause(_ error: any Error) -> Bool {
+        error is WiltedMacLibraryAccountError || (error as? LibraryTransportError) == .superseded
     }
 }
 
@@ -379,30 +324,50 @@ extension WiltedMacModel {
         set { objc_setAssociatedObject(self, &librarySyncShutdownKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
     }
 
-    /// Starts the library publisher when `WILTED_LIBRARY_SYNC=1` and a store is open;
-    /// otherwise stops any running one. Returns whether a publisher is running.
+    /// Starts the library publisher when the runtime selection names it (the live-build default,
+    /// or `WILTED_LIBRARY_SYNC=1`) and a store is open; otherwise stops any running one. The
+    /// default starts only on a transport that reports account changes. Returns whether a
+    /// publisher is running.
     @discardableResult
     func startLibrarySyncIfEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         transport: (any LibraryTransport)? = nil,
         mediaRequestConsumer: WiltedMacLibraryIntentSink.Consumer? = nil,
         inboundMaintenance: (@Sendable () async -> Void)? = nil,
-        debounce: Duration = .seconds(2)
+        debounce: Duration = .seconds(2),
+        account accountSource: WiltedMacLibraryAccountSource? = nil
     ) -> Bool {
         stopLibrarySync()
-        guard !isClosingTemporaryState, WiltedMacLibraryPublisher.isEnabled(in: environment), !fixtureMode, let store else { return false }
+        let selection = libraryRuntimeSelection(environment: environment)
+        guard !isClosingTemporaryState, selection.engine == .libraryPublisher, !fixtureMode, let store else { return false }
         let previousShutdown = librarySyncShutdown
         let deviceID = libraryDeviceID()
         let source = WiltedMacLocalLibraryStateSource(store: store, deviceID: deviceID) { [weak self] in
             await MainActor.run { self?.librarySyncPlaybackSample() }
         }
-        let rawTransport = transport ?? WiltedMacLibraryTransports.production(deviceID: deviceID, hostsTests: Self.hostsTests)
+        let rawTransport = transport
+            ?? WiltedMacLibraryTransports.production(deviceID: deviceID, hostsTests: librarySyncBuildFacts.hostsTests)
+        let accountSource = accountSource
+            ?? WiltedMacLibraryAccountSource.transport(rawTransport, probe: WiltedMacLibraryTransports.accountProbe())
+        guard selection.admits(managedTransport: accountSource != nil) else {
+            librarySyncLog.error("Library sync default refused: the transport reports no account changes")
+            libraryAccountStatus = .transportUnavailable
+            return false
+        }
         // One gate for every server call this device makes (poller, handoff, publisher, intents,
         // media): a rate limit anywhere pauses all of them together and the Sync card says so.
         let gate = TransportGate(onChange: { [weak self] state in
             Task { @MainActor in self?.libraryThrottleChanged(state) }
         })
-        let resolvedTransport = ThrottledLibraryTransport(wrapping: rawTransport, gate: gate)
+        // The account gate sits inside the throttle, so a call is admitted when it actually runs.
+        let account = accountSource.map { signals in
+            WiltedMacLibraryAccountController(
+                source: signals, persistence: .store(store),
+                isLibraryEmpty: { (try? await source.currentState())?.isEmptyLibrary ?? false })
+        }
+        let accountGated = WiltedMacAccountGatedLibraryTransport(
+            inner: rawTransport, gate: account?.gate ?? WiltedMacLibraryAccountGate(open: true))
+        let resolvedTransport = ThrottledLibraryTransport(wrapping: accountGated, gate: gate)
         let syncDirectory = libraryURL.deletingLastPathComponent().appendingPathComponent("library-sync", isDirectory: true)
         // The phone's positions become the Mac's stored positions (see WiltedMacPositionImporter).
         let importer = WiltedMacPositionImporter(host: WiltedMacModelPositionImportHost(model: self), deviceID: deviceID)
@@ -411,7 +376,9 @@ extension WiltedMacModel {
             directory: syncDirectory, deviceID: deviceID, gate: gate,
             // The one whole-zone scan: it teaches the transport the peer and entry names to poll.
             discover: {
-                try await gate.run { _ = try await (rawTransport as? CloudKitLibraryTransport)?.discoverPeers() }
+                try await gate.run {
+                    try await accountGated.run { _ = try await (rawTransport as? CloudKitLibraryTransport)?.discoverPeers() }
+                }
             },
             onDeviceRecords: { [weak self] records in
                 await importer.handle(records)
@@ -445,7 +412,24 @@ extension WiltedMacModel {
             fetch: { try await resolvedTransport.fetchDeviceRecords() }, importer: importer,
             onRecords: { [weak self] records in self?.updatePhonePositions(from: records) })
         // The Mac's one 30 s sync round: reads, then its own writes (state, statistics, checkpoint).
-        inbound.start(sink: sink, publishRound: { [weak controller] in await controller?.tickRound() })
+        let startPolling = { [weak controller] in
+            _ = inbound.start(sink: sink, publishRound: { [weak controller] in await controller?.tickRound() })
+        }
+        if let account {
+            controller.account = account
+            account.willOpen = { await publisher.resetForAccount() }
+            account.didOpen = { [weak controller] in
+                startPolling()
+                controller?.requestPublish()
+            }
+            account.didClose = { _ = inbound.stop() }
+            account.onStatus = { [weak self] status in self?.libraryAccountStatus = status }
+            libraryAccountStatus = account.status
+            account.start()
+        } else {
+            libraryAccountStatus = .unmanaged
+            startPolling()
+        }
         let handoff = WiltedMacHandoffController(
             coordinator: HandoffCoordinator(transport: resolvedTransport, deviceID: deviceID),
             player: WiltedMacModelHandoffPlayer(
@@ -473,6 +457,7 @@ extension WiltedMacModel {
         }
         objc_setAssociatedObject(self, &librarySyncControllerKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         libraryThrottle = nil
+        libraryAccountStatus = nil
         phonePositions = [:]
     }
 

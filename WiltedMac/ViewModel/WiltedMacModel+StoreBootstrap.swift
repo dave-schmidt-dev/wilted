@@ -423,8 +423,9 @@ extension WiltedMacModel {
             selectedSyncFactory = makeWiltedMacLiveSyncTransportFactory(configuration: liveConfiguration)
         }
 #endif
-        // WILTED_LIBRARY_SYNC=1: the library publisher is this app's only sync engine.
-        syncLifecycle = WiltedMacLibraryPublisher.isEnabled() ? nil : configuredStore.map {
+        // Exactly one engine: the runtime selection names it (the library publisher by default
+        // in a live build, the legacy engine for an explicit off, a test host or a fixture).
+        syncLifecycle = libraryRuntimeSelection().engine != .legacy ? nil : configuredStore.map {
             WiltedMacSyncLifecycle(
                 store: $0,
                 transportFactory: fixtureMode ? nil : selectedSyncFactory,

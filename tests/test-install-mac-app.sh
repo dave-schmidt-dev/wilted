@@ -57,8 +57,11 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '[[ "${WILTED_TEST_COMPLETE_BUILD:-0}" == 1 ]] || exit 42' \
     >"$guard_bin/xcodegen"
 printf '%s\n' '#!/usr/bin/env bash' \
-    'app="$WILTED_TEST_DERIVED/Build/Products/Debug/WiltedMac.app"' \
+    'configuration=Debug' \
+    'while (( $# > 0 )); do [[ "$1" == -configuration ]] && configuration="$2"; shift; done' \
+    'app="$WILTED_TEST_DERIVED/Build/Products/$configuration/WiltedMac.app"' \
     'mkdir -p "$app/Contents"' \
+    ': >"$app/Contents/embedded.provisionprofile"' \
     '/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.zerodelta.wilted.mac" "$app/Contents/Info.plist" >/dev/null' \
     '[[ "${WILTED_TEST_ACTIVATE_DURING_BUILD:-0}" == 1 ]] && : >"$WILTED_TEST_ACTIVE_MARKER"' \
     'exit 0' \
@@ -75,7 +78,9 @@ printf '%s\n' '#!/usr/bin/env bash' \
 printf '%s\n' '#!/usr/bin/env bash' \
     '[[ "${WILTED_TEST_PIPELINE_RUNNING:-0}" == 1 || -e "$WILTED_TEST_ACTIVE_MARKER" ]]' \
     >"$guard_bin/pgrep"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$guard_bin/codesign"
+printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ " $* " == *" --display "* ]] && printf "%s\\n" "<key>com.apple.developer.aps-environment</key><string>development</string><string>iCloud.com.zerodelta.wilted</string>"' \
+    'exit 0' >"$guard_bin/codesign"
 printf '%s\n' '#!/usr/bin/env bash' ': >"$WILTED_TEST_REPLACE_MARKER"' 'exit 1' >"$guard_bin/ditto"
 printf '%s\n' '#!/usr/bin/env bash' ': >"$WILTED_TEST_QUIT_MARKER"' 'exit 0' >"$guard_bin/osascript"
 printf '%s\n' '#!/usr/bin/env bash' \
@@ -395,8 +400,10 @@ assert_installer_contains 'wilted_wait_for_bundle_exit "$bundle_id"' \
     'waits for running copies to exit before replacing the bundle'
 assert_installer_contains 'path xcode mac-install' \
     'looks up the installer cache path through the build-cache helper'
-assert_installer_contains 'app="$derived/Build/Products/Debug/WiltedMac.app"' \
-    'installs the Debug Mac product even when the shared cache holds other configurations'
+assert_installer_contains 'app="$derived/Build/Products/$configuration/WiltedMac.app"' \
+    'installs the built configuration product even when the shared cache holds other configurations'
+assert_installer_contains "configuration='Development'" \
+    'builds and installs the live Development configuration'
 assert_installer_contains 'run xcode mac-install --clean-app-product -- xcodebuild build' \
     'routes the installer build through the build-cache helper'
 assert_installer_contains 'run xcode mac-install --clean-app-product -- xcodebuild build' \

@@ -69,7 +69,7 @@ for flag in --help -h help; do
   if run_script zero "help $flag" -- "$flag"; then
     expect_in "$out" '--library-sync' "help $flag documents --library-sync"
     expect_in "$out" 'WILTED_DEVICE_ID' "help $flag documents WILTED_DEVICE_ID"
-    expect_in "$out" 'WILTED_LIBRARY_SYNC=1' "help $flag documents the sync env"
+    expect_in "$out" 'WILTED_LIBRARY_SYNC=0' "help $flag documents the explicit off override"
     expect_in "$out" 'make install' "help $flag documents the restore command"
   fi
 done
@@ -95,8 +95,13 @@ fi
 
 # 6. Static contract: one install path, explicit --env launch, no /Applications
 #    writes, restore command printed.
-grep -qF 'open -n --env WILTED_LIBRARY_SYNC=1 "$mac_app_path"' "$script" \
-  && pass 'launches with explicit open --env' || fail 'explicit open --env launch missing'
+grep -qF 'open -n "$mac_app_path"' "$script" \
+  && pass 'launches the live default with a plain open' || fail 'plain open launch missing'
+if grep -qE 'open .*--env|--env WILTED_LIBRARY_SYNC' "$script"; then
+  fail 'launch still forces the library engine with a launch-only flag'
+else
+  pass 'launch relies on the live default, not a launch-only flag'
+fi
 [[ "$(grep -c 'devicectl device install' "$script")" == 1 ]] \
   && pass 'single device install path' || fail 'expected exactly one devicectl install'
 grep -q 'cmd_install' <(sed -n '/^cmd_library_sync()/,/^}/p' "$script") \
