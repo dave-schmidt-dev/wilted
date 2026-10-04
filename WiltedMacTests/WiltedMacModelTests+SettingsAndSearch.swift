@@ -9,7 +9,7 @@ extension WiltedMacModelTests {
     // MARK: Settings overrides (Task 0.6)
 
     func testMenuOverridesAreOffByDefaultAndSurviveARebuild() {
-        let suite = "com.zerodelta.wilted.mac.menu-overrides-tests"
+        let suite = WiltedMacTestPreferences.suiteName("menu-overrides-tests")
         guard let preferences = UserDefaults(suiteName: suite) else {
             return XCTFail("Unable to open a preferences suite for the test")
         }

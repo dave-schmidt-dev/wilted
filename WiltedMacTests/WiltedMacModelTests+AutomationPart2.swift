@@ -8,7 +8,6 @@ import WiltedProducer
 extension WiltedMacModelTests {
     func testDeferredAutomaticPreparationPersistsItsAdmissionOrderWindowAndSnapshot() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let window = try offPeakWindow()
         let firstSnapshot = PodcastPreparationPolicySnapshot(
             transcriptPolicy: .alwaysTranscribe, removeAds: false
@@ -66,7 +65,6 @@ extension WiltedMacModelTests {
     /// from the model, and stopping it has to say so rather than going quiet.
     func testAutomationStatusIsObservableAndCancellationIsAnnounced() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-status")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -88,7 +86,6 @@ extension WiltedMacModelTests {
     /// the behaviour of every build before automation existed.
     func testLaunchStartsAutomationAndTheDefaultPolicyDoesNothing() async throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-launch")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -122,7 +119,6 @@ extension WiltedMacModelTests {
     /// else is checkpointing.
     func testThePlaybackCheckpointTickerOutlivesFocusLoss() async throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("playback-checkpoint-ticker")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -159,7 +155,6 @@ extension WiltedMacModelTests {
     /// that matters is that asking for full volume changes nothing.
     func testTheTestHostNeverDrivesAudioOutput() async throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("silent-playback")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -176,7 +171,6 @@ extension WiltedMacModelTests {
 
     func testTheOpenWindowTickerRestartsAfterBeingStopped() async throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-ticker-restart")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -209,7 +203,6 @@ extension WiltedMacModelTests {
     /// the window hides is not a fix at all.
     func testTheTicketDrainTickerSurvivesGoingToBackground() async throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("ticket-drain-ticker-restart")
         defer { try? FileManager.default.removeItem(at: directory) }
 

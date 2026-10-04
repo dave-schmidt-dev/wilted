@@ -14,8 +14,15 @@ enum WiltedMacTestPreferences {
     static let suitePrefix = "com.zerodelta.wilted.mac.tests"
 
     static func ephemeral() -> UserDefaults {
-        let name = "\(suitePrefix).\(ProcessInfo.processInfo.processIdentifier).\(UUID().uuidString)"
-        return Registry.shared.make(name)
+        Registry.shared.make(suiteName("ephemeral"))
+    }
+
+    /// A per-process, per-call suite name for a test that opens its own
+    /// `UserDefaults`; removed with its test case like `ephemeral()`'s.
+    static func suiteName(_ label: String) -> String {
+        let name = "\(suitePrefix).\(label).\(ProcessInfo.processInfo.processIdentifier).\(UUID().uuidString)"
+        Registry.shared.track(name)
+        return name
     }
 
     /// The suite names created and not yet removed, for the cleanup test.
@@ -29,7 +36,7 @@ enum WiltedMacTestPreferences {
 
         var names: [String] { lock.withLock { created } }
 
-        func make(_ name: String) -> UserDefaults {
+        func track(_ name: String) {
             lock.withLock {
                 if !observing {
                     observing = true
@@ -37,6 +44,9 @@ enum WiltedMacTestPreferences {
                 }
                 created.append(name)
             }
+        }
+
+        func make(_ name: String) -> UserDefaults {
             let defaults = UserDefaults(suiteName: name) ?? UserDefaults()
             defaults.removePersistentDomain(forName: name)
             return defaults
