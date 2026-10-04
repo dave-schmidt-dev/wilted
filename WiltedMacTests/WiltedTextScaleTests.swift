@@ -65,7 +65,7 @@ final class WiltedTextScaleTests: XCTestCase {
     // MARK: - What the reader's choice survives
 
     func testAnAbsentOrUnreadableChoiceTakesTheDefaultRatherThanTheSmallestStep() {
-        let suite = "com.zerodelta.wilted.mac.textscale-tests"
+        let suite = WiltedMacTestPreferences.suiteName("textscale-tests")
         guard let defaults = UserDefaults(suiteName: suite) else {
             return XCTFail("Unable to open a preferences suite for the test")
         }

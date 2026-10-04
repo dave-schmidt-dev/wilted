@@ -295,7 +295,7 @@ extension WiltedMacModelTests {
 
     /// The counter is persisted, so the click order outlives the process.
     func testPreparationRequestSequenceSurvivesAModelRebuild() throws {
-        let suite = "com.zerodelta.wilted.mac.preparation-sequence-tests"
+        let suite = WiltedMacTestPreferences.suiteName("preparation-sequence-tests")
         guard let preferences = UserDefaults(suiteName: suite) else {
             return XCTFail("Unable to open a preferences suite for the test")
         }

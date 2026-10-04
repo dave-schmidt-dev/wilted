@@ -108,7 +108,6 @@ extension WiltedMacModelTests {
     /// reconstructed, live in the store.
     func testTheLastAutomaticRefreshTimeSurvivesRelaunch() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-last-refresh")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -136,7 +135,6 @@ extension WiltedMacModelTests {
 
     func testAutomationSettingsRoundTripThroughInjectedPreferences() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-round-trip")
         defer { try? FileManager.default.removeItem(at: directory) }
         let settings = WiltedAutomationSettings(
@@ -219,7 +217,6 @@ extension WiltedMacModelTests {
 
     func testEveryAutomationControlValueMapsAndPersists() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-control-values")
         defer { try? FileManager.default.removeItem(at: directory) }
         let window = try offPeakWindow()
@@ -305,7 +302,6 @@ extension WiltedMacModelTests {
 
     func testAutomationSettingsSurviveRelaunch() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-relaunch")
         defer { try? FileManager.default.removeItem(at: directory) }
         let settings = WiltedAutomationSettings(
@@ -325,7 +321,6 @@ extension WiltedMacModelTests {
 
     func testCorruptAutomationSettingsFallClosedToDefaults() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-corrupt")
         defer { try? FileManager.default.removeItem(at: directory) }
         preferences.set(Data("not settings data".utf8), forKey: WiltedMacModel.automationSettingsPreferenceKey)
@@ -337,7 +332,6 @@ extension WiltedMacModelTests {
 
     func testInvalidAutomationSettingsValuesFallClosedToDefaults() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-invalid")
         defer { try? FileManager.default.removeItem(at: directory) }
         preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)
@@ -362,7 +356,6 @@ extension WiltedMacModelTests {
 
     func testAbsentAutomationSettingsUseCurrentDefaults() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-absent")
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -374,7 +367,6 @@ extension WiltedMacModelTests {
 
     func testAutomationSettingsDoNotDisturbLegacyPreferenceKeys() throws {
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("automation-legacy")
         defer { try? FileManager.default.removeItem(at: directory) }
         preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)

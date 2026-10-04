@@ -254,7 +254,7 @@ extension WiltedMacModelTests {
 
     /// 1.4: the selection is written and read back.
     func testOldestMenuSortSurvivesARebuild() throws {
-        let suite = "com.zerodelta.wilted.mac.menu-sort-oldest-tests"
+        let suite = WiltedMacTestPreferences.suiteName("menu-sort-oldest-tests")
         guard let preferences = UserDefaults(suiteName: suite) else {
             return XCTFail("Unable to open a preferences suite for the test")
         }

@@ -9,9 +9,8 @@ extension WiltedMacModelTests {
     // MARK: Library preferences
 
     func testLarderSortIsTheOnlyOrderPreference() throws {
-        // A fixed suite: `removePersistentDomain` empties the file but leaves
-        // it, so a per-run name would litter ~/Library/Preferences.
-        let suite = "com.zerodelta.wilted.mac.model-order-tests"
+        // A per-process suite, removed with its plist when the test finishes.
+        let suite = WiltedMacTestPreferences.suiteName("model-order-tests")
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
         preferences.removePersistentDomain(forName: suite)
         defer { preferences.removePersistentDomain(forName: suite) }
@@ -33,7 +32,7 @@ extension WiltedMacModelTests {
     }
 
     func testStoredLegacyLibraryOrderMigratesForward() throws {
-        let suite = "com.zerodelta.wilted.mac.model-order-migration-tests"
+        let suite = WiltedMacTestPreferences.suiteName("model-order-migration-tests")
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
         preferences.removePersistentDomain(forName: suite)
         defer { preferences.removePersistentDomain(forName: suite) }
@@ -129,7 +128,7 @@ extension WiltedMacModelTests {
     }
 
     func testTheOrderingPreferencesSurviveRelaunch() {
-        let suite = "com.zerodelta.wilted.mac.queue-controls-tests"
+        let suite = WiltedMacTestPreferences.suiteName("queue-controls-tests")
         let preferences = UserDefaults(suiteName: suite) ?? UserDefaults()
         preferences.removePersistentDomain(forName: suite)
         defer { preferences.removePersistentDomain(forName: suite) }
@@ -240,7 +239,7 @@ extension WiltedMacModelTests {
     }
 
     func testPlaybackSpeedSurvivesRelaunch() throws {
-        let suite = "com.zerodelta.wilted.mac.model-tests"
+        let suite = WiltedMacTestPreferences.suiteName("model-tests")
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
         preferences.removePersistentDomain(forName: suite)
         defer { preferences.removePersistentDomain(forName: suite) }

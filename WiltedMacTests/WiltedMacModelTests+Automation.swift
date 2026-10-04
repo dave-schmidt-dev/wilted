@@ -9,7 +9,7 @@ extension WiltedMacModelTests {
     // MARK: Automation settings
 
     func automationSettingsPreferences() throws -> UserDefaults {
-        let suite = "com.zerodelta.wilted.mac.automation-settings-tests"
+        let suite = WiltedMacTestPreferences.suiteName("automation-settings-tests")
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
         preferences.removePersistentDomain(forName: suite)
         return preferences
@@ -330,7 +330,6 @@ extension WiltedMacModelTests {
         // legitimately exists. It is reported, not rejected: refusing to decode
         // it would lose every other preference saved beside it.
         let preferences = try automationSettingsPreferences()
-        defer { preferences.removePersistentDomain(forName: "com.zerodelta.wilted.mac.automation-settings-tests") }
         let directory = temporaryDirectory("blocked-transcript-policy")
         defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
