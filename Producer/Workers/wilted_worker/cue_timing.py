@@ -147,6 +147,7 @@ def serialize_ad_audit(audit) -> dict:
         "declinedCommercialEvidenceSeeds": [
             {
                 "status": "declined",
+                "reason": seed.reason,
                 "ids": [int(value) for value in seed.ids],
                 "startSeconds": float(seed.start_s),
                 "endSeconds": float(seed.end_s),

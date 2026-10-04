@@ -71,11 +71,12 @@ class AuditCandidate:
 
 @dataclass(frozen=True)
 class DeclinedCommercialEvidenceSeed:
-    """A CTA/destination cue sequence proposed for removal but preserved."""
+    """A CTA/destination cue sequence preserved after commercial evidence review."""
 
     ids: tuple[int, ...]
     start_s: float
     end_s: float
+    reason: str
 
 
 @dataclass

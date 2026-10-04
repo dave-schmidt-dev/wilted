@@ -173,13 +173,17 @@ def analyze_ad_detections(
             ids=seed_ids,
             start_s=float(segments[seed_ids[0]].start_s),
             end_s=float(segments[seed_ids[-1]].end_s),
+            reason=(
+                "dropped-after-proposal"
+                if any(
+                    float(ad.start_s) < float(segments[seed_ids[-1]].end_s)
+                    and float(ad.end_s) > float(segments[seed_ids[0]].start_s)
+                    for ad in proposed_detections
+                )
+                else "review-declined"
+            ),
         )
         for seed_ids in _worker_commercial_seeds.commercial_evidence_seed_ids(segments, detections)
-        if any(
-            float(ad.start_s) <= float(segments[seed_ids[0]].start_s)
-            and float(ad.end_s) >= float(segments[seed_ids[-1]].end_s)
-            for ad in proposed_detections
-        )
     )
     if auditing_backend.contract_errors:
         raise WorkerError("ads-audit-contract-unavailable", auditing_backend.contract_errors[0])

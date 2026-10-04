@@ -421,6 +421,44 @@ class OutcomeContractTests(unittest.TestCase):
         self.assertEqual(command[command.index("-map") + 1], "[outa]")
 
 class CommercialEvidenceAuditTests(unittest.TestCase):
+    def test_review_declined_commercial_evidence_seed_is_serialized_without_a_cut(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(10.0, 20.0, "visit acme dot"),
+            FakeSegment(20.0, 30.0, "com to get started today"),
+            FakeSegment(30.0, 40.0, "programme after"),
+        ]
+        llm = FakeLLM(
+            commercial_ad_ids=[1, 2],
+            commercial_programme_ids=[0, 1, 2, 3],
+        )
+        llm.load()
+        ads = install_fake_ads(llm)
+        patches = [
+            mock.patch.object(module, name, passthrough)
+            for module, name, passthrough in (
+                (_worker_commercial_recovery, "recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
+                (_worker_commercial_seeds, "recover_sparse_commercial_reads", _passthrough_detections),
+                (_worker_edge_recovery, "recover_transcript_start_preroll", _passthrough_detections),
+                (_worker_tail_recovery, "recover_transcript_end_postroll", _passthrough_detections),
+            )
+        ]
+        with contextlib.ExitStack() as stack, redirect_stderr(io.StringIO()):
+            for patcher in patches:
+                stack.enter_context(patcher)
+            analysis = wp.analyze_ad_detections(ads, llm, segments, 40.0)
+        self.assertEqual(analysis.detections, ())
+        self.assertEqual(
+            _worker_cue_timing.serialize_ad_audit(analysis.audit)["declinedCommercialEvidenceSeeds"],
+            [{
+                "status": "declined",
+                "reason": "review-declined",
+                "ids": [1, 2],
+                "startSeconds": 10.0,
+                "endSeconds": 30.0,
+            }],
+        )
+
     def test_declined_commercial_evidence_seed_is_serialized_without_a_cut(self):
         segments = [
             FakeSegment(0.0, 10.0, "programme before"),
@@ -449,7 +487,13 @@ class CommercialEvidenceAuditTests(unittest.TestCase):
         self.assertEqual(analysis.detections, ())
         self.assertEqual(
             _worker_cue_timing.serialize_ad_audit(analysis.audit)["declinedCommercialEvidenceSeeds"],
-            [{"status": "declined", "ids": [1, 2], "startSeconds": 10.0, "endSeconds": 30.0}],
+            [{
+                "status": "declined",
+                "reason": "dropped-after-proposal",
+                "ids": [1, 2],
+                "startSeconds": 10.0,
+                "endSeconds": 30.0,
+            }],
         )
 
 
