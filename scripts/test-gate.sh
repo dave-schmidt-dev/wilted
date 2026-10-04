@@ -93,6 +93,9 @@ leg_names=(
   ios-pixel-snapshot-tests
 )
 leg_reports=(none xctest xctest xctest xctest count count count count)
+# shellcheck source=lib/native-gate-legs.sh
+source "$repo_root/scripts/lib/native-gate-legs.sh"
+wilted_gate_legs_validate "${leg_names[@]}" || exit 2
 declare -i failed_legs=0
 declare -i completed_legs=0
 declare -i deferred_legs=0
@@ -759,7 +762,7 @@ else
   validate_ios_pixel_snapshot_baselines "$repo_root"
 fi
 
-if ! is_deferred_leg macos-ui-tests && screen_is_locked; then
+if ! is_deferred_leg macos-ui-tests && wilted_gate_leg_selected macos-ui-tests && screen_is_locked; then
   status 'native.macos-ui.screen-locked remedy="unlock the Mac and rerun make native-ui"'
   fail 'the macOS UI leg cannot activate an application while the screen is locked'
   exit 1
@@ -771,15 +774,9 @@ if [[ -n "$native_interrupt_test_command" ]]; then
   exit 0
 fi
 
-run_leg "${leg_names[0]}" "${leg_reports[0]}" leg_xcodegen_reproducible
-run_leg "${leg_names[1]}" "xctest" leg_wiltedkit_tests
-run_leg "${leg_names[2]}" "xctest" leg_cloudsync_tests
-run_leg "${leg_names[3]}" "xctest" leg_listener_tests
-run_leg "${leg_names[4]}" "xctest" leg_wiltedproducer_tests
-run_leg "${leg_names[5]}" "${leg_reports[5]}" leg_macos_unit_tests
-run_leg "${leg_names[6]}" "${leg_reports[6]}" leg_ios_unit_tests
-run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests
-run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests
+leg_fns=(leg_xcodegen_reproducible leg_wiltedkit_tests leg_cloudsync_tests leg_listener_tests leg_wiltedproducer_tests
+  leg_macos_unit_tests leg_ios_unit_tests leg_macos_ui_tests leg_ios_ui_tests)
+wilted_gate_run_legs
 
 wilted_temp_remove_owned_child "$tmp_root" "$inherited_tmp" wilted-native-gate. || fail 'native temp root ownership changed before cleanup'
 tmp_root=""
@@ -788,13 +785,14 @@ if ! wilted_temp_compare "$native_audit_root/parent-before.json" "$native_audit_
   failed_legs=$((failed_legs + 1))
 fi
 status "native.complete failed_legs=$failed_legs total_legs=$completed_legs deferred_legs=$deferred_legs"
+wilted_gate_legs_summary
 if [[ "$failed_legs" -ne 0 ]]; then
   status "native.failed count=$failed_legs"
   exit 1
 fi
 if [[ "$deferred_legs" -ne 0 ]]; then
   status "native.deferred count=$deferred_legs legs=${deferred_leg_names[*]} rerun=\"make native-ui\""
-  status "native.passed count=$completed_legs deferred=$deferred_legs"
+  status "native.passed count=$completed_legs deferred=$deferred_legs$(wilted_gate_legs_suffix)"
 else
-  status "native.passed count=$completed_legs"
+  status "native.passed count=$completed_legs$(wilted_gate_legs_suffix)"
 fi

@@ -38,6 +38,7 @@ expected_legs=(
   "test-git-hooks"
   "test-simulator-cleanup"
   "test-native-ui-receipt"
+  "test-native-gate-legs"
   "test-release-wrappers"
   "test-file-size"
   "test-attended-library-sync"

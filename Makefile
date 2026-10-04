@@ -38,7 +38,7 @@ native:
 # focus for its entire run, so it is deliberately absent from `validate` and
 # `native`. Run this when you can give up the machine; the deferred-leg line
 # in every other run tells you when it is owed.
-# A clean, fully green run writes a commit-bound receipt for the pre-push hook.
+# A clean, fully green run writes a commit-bound receipt that `make install` checks.
 # The receipt runner checks cleanliness before entering the screen-seizing gate.
 # `caffeinate` because every test in the leg fails with "Failed to activate
 # application (current state: Running Background)" if the display sleeps
@@ -56,7 +56,10 @@ app-icon:
 # the live build that runs the library publisher against Development CloudKit;
 # Debug has no live transport and Release needs a Developer ID identity this
 # machine is not required to hold. See the script for the signing and TCC grant.
+# Refuses when no green `make native-ui` receipt covers the Mac UI surface being
+# installed; WILTED_SKIP_UI_RECEIPT=1 installs anyway with a loud warning.
 install:
+	@python3 scripts/native-ui-receipt.py check-head
 	@bash scripts/install-mac-app.sh
 
 # Scores the ad detector against hand-labelled real episodes, reading the cuts

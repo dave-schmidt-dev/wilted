@@ -359,7 +359,8 @@ assert_capability_source_contract
 # pass either.
 assert_macos_ui_leg_is_executed() {
   assert_contains 'leg_macos_ui_tests()' "$gate"
-  assert_contains 'run_leg "${leg_names[7]}" "${leg_reports[7]}" leg_macos_ui_tests' "$gate"
+  assert_contains 'leg_macos_ui_tests' "$gate"
+  assert_contains 'run_leg "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"' "$repo_root/scripts/lib/native-gate-legs.sh"
   assert_contains '  macos-ui-tests' "$gate"
   assert_validation_contains 'macos-ui-tests) mac_ui_declared_test_count ;;'
   # A floor is a minimum, so a named journey can vanish while an unrelated new
@@ -462,7 +463,7 @@ assert_private_simulator_contract() {
   assert_contains 'WILTED_UI_LOCK_PID_FILE="$lock_pid_file"' "$gate"
   assert_contains 'gate_ui_test_lock --label "$label"' "$gate"
   assert_contains 'python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building' "$gate"
-  assert_contains 'run_leg "${leg_names[8]}" "${leg_reports[8]}" leg_ios_ui_tests' "$gate"
+  assert_contains 'leg_ios_ui_tests' "$gate"
   assert_contains 'create_gate_simulator ios-units' "$gate"
   assert_contains 'create_gate_simulator ios-pixel-ui' "$gate"
   assert_contains 'cleanup_leg_simulator "$udid" "$result"' "$gate"

@@ -23,6 +23,7 @@ All notable changes to this project are documented in this file.
 - CarPlay no longer crashes on launch: no Siri assistant cell is configured. A cell without an Intents extension made CarPlay raise from `clientAssistantCellUnavailableWithError:`; and David does not want a Siri button on the car screen at all.
 
 ### Changed
+- The Mac UI receipt check moved from the pre-push hook to `make install`: a push now runs `make validate` only, while `make install` refuses unless a green `make native-ui` receipt covers the Mac UI surface of the tree being installed (`WILTED_SKIP_UI_RECEIPT=1` installs anyway with a warning naming the receipt it ignores). `WILTED_GATE_LEGS=<legs>` reruns single legs of the native gate; such a filtered run is reported as `filtered=<n>` and can never record a receipt.
 - First launch of this version upgrades the Mac library to storage version 14 (lifetime listening totals). A backup is taken first, the upgrade is checked on a copy before the real library is touched, and it stops if any table holding data would be lost. An older Wilted build cannot open the upgraded library; recovery steps are in `docs/statistics-migration-recovery.md`.
 - Removing an episode or unsubscribing on the Mac now asks first. Unsubscribe "Removes this subscription, its episodes and their saved positions. Downloaded audio files stay on disk."
 - `make install` now builds the Development configuration with live iCloud, and the library publisher is the default sync engine (`WILTED_LIBRARY_SYNC=0` keeps the legacy path, `=1` forces the publisher).

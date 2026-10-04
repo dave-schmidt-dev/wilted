@@ -36,15 +36,22 @@ make install-hooks
 The `pre-commit` hook runs `make check-fast`: commits warn above 500 lines and fail
 above 800 unless `.file-size-exceptions` lists the file with a reason. It checks staged
 `.swift`, `.py`, and `.sh` files through `scripts/check_file_size.py`; `make validate` audits
-the whole tree. The `pre-push` hook runs `make validate`, then compares each pushed
-ref with the last green Mac UI receipt in `.logs/native-ui-receipt.json` for
-the paths in `scripts/mac-ui-surface.paths`. A Mac UI surface change requires
-`make native-ui` on a clean commit; non-surface pushes remain headless. The
+the whole tree. The `pre-push` hook runs `make validate` and nothing else, so a push
+never waits on the screen-seizing Mac UI run. The
 installer is idempotent and sets the installing worktree's private
 `core.hooksPath` to its `.githooks`, so installing in one linked worktree does
 not change its siblings. A legacy shared `.githooks` setting is migrated only
 when this is the sole worktree; with linked siblings, installation refuses
 without changing Git configuration.
+
+## Test tiers
+
+1. **Commit:** `make check-fast` (lint, dead code, file size, scratch).
+2. **Push:** `make validate`, the headless gate. It defers the `macos-ui-tests` leg and says so.
+3. **Install:** `make install` first runs `python3 scripts/native-ui-receipt.py check-head` and refuses unless a green `make native-ui` receipt (`.logs/native-ui-receipt.json`) covers the Mac UI surface (`scripts/mac-ui-surface.paths`) of the tree being installed: new commits, staged or unstaged edits and untracked files under those paths all count as stale. `WILTED_SKIP_UI_RECEIPT=1 make install` proceeds anyway and prints a warning naming the receipt commit it ignores (or `none`); use it only when the Mac UI leg cannot run.
+4. **`make native-ui`:** the full gate including the screen-seizing XCUITest leg, on a clean commit; the only thing that mints a receipt.
+
+**Single-leg reruns.** `WILTED_GATE_LEGS=<comma list>` runs only the named legs of `scripts/test-gate.sh` (`xcodegen-reproducible`, `wiltedkit-tests`, `cloudsync-tests`, `listener-tests`, `wiltedproducer-tests`, `macos-unit-tests`, `ios-unit-tests`, `macos-ui-tests`, `ios-pixel-snapshot-tests`), for example `WILTED_GATE_LEGS=wiltedkit-tests bash scripts/test-gate.sh`. Unknown, empty or malformed names fail closed before any leg or simulator sweep runs. The summary still prints `native.complete`, lists the skipped legs on `native.leg.skipped` and `native.filtered` lines, and qualifies the pass line as `native.passed count=<n> filtered=<k>`. A filtered run is a diagnostic only: `native-ui-receipt.py record` refuses while the variable is set, so it can never mint a receipt. `tests/test-native-gate-legs.sh` holds the meta-tests.
 
 ## Bounded tests and scratch
 

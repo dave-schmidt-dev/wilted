@@ -67,8 +67,6 @@ copy_checkout_files() {
   cp "$repo_root/.githooks/pre-commit" "$checkout/.githooks/pre-commit"
   cp "$repo_root/.githooks/pre-push" "$checkout/.githooks/pre-push"
   cp "$repo_root/scripts/install-git-hooks.sh" "$checkout/scripts/install-git-hooks.sh"
-  cp "$repo_root/scripts/native-ui-receipt.py" "$checkout/scripts/native-ui-receipt.py"
-  cp "$repo_root/scripts/mac-ui-surface.paths" "$checkout/scripts/mac-ui-surface.paths"
   chmod +x "$checkout/.githooks/pre-commit" "$checkout/.githooks/pre-push" \
     "$checkout/scripts/install-git-hooks.sh"
 }
@@ -102,6 +100,12 @@ run_hook pre-commit check-fast 0
 run_hook pre-commit check-fast 23
 run_hook pre-push validate 0
 run_hook pre-push validate 29
+# Pre-push runs `make validate` and nothing else: the Mac UI receipt is checked
+# by `make install`, so a push never needs the screen-seizing native-ui run.
+if grep -Eq 'native-ui-receipt|surface-check' "$repo_root/.githooks/pre-push"; then
+  printf '%s\n' 'assertion failed: pre-push still checks the native UI receipt' >&2
+  exit 1
+fi
 
 live_common_config="$(common_config_for "$repo_root")"
 live_common_hooks_path="$(git config --file "$live_common_config" --get-all core.hooksPath 2>/dev/null || true)"

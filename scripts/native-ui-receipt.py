@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind a green native UI gate to a clean commit and check pushed refs."""
+"""Bind a green native UI gate to a clean commit and check it before an install."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 RECEIPT = ROOT / ".logs" / "native-ui-receipt.json"
+FILTER_ENV = "WILTED_GATE_LEGS"
+SKIP_ENV = "WILTED_SKIP_UI_RECEIPT"
 SURFACE = ROOT / "scripts" / "mac-ui-surface.paths"
 EXPECTED_LEGS = (
     "xcodegen-reproducible",
@@ -29,7 +31,6 @@ EXPECTED_LEGS = (
     "macos-ui-tests",
     "ios-pixel-snapshot-tests",
 )
-ZERO_OID = re.compile(r"^0+$")
 COMMIT_OID = re.compile(r"^[0-9a-f]{40,64}$")
 TEST_LINE = re.compile(r"^native\.tests label=([^ ]+) reported=([0-9]+)(?: |$)")
 LEG_LINE = re.compile(r"^native\.leg\.complete name=([^ ]+) status=([0-9]+)$")
@@ -64,7 +65,7 @@ def clean_commit() -> tuple[str, str]:
 
 
 def read_surface() -> list[str]:
-    """Read the single commented path list used by every push comparison."""
+    """Read the single commented path list the install comparison uses."""
     paths = [
         line.strip()
         for line in SURFACE.read_text(encoding="utf-8").splitlines()
@@ -110,6 +111,9 @@ def heartbeat(stop: threading.Event) -> None:
 
 def record() -> int:
     """Run the screen-seizing gate once and atomically mint its receipt."""
+    if FILTER_ENV in os.environ:
+        status(f"refused reason=filtered-gate detail={FILTER_ENV}-is-set action=\"unset it and run make native-ui\"")
+        return 1
     before_commit, before_describe = clean_commit()
     status(f"start commit={before_commit} gate=make-native-ui")
     stop = threading.Event()
@@ -178,53 +182,47 @@ def receipt_commit() -> str | None:
         return None
 
 
-def empty_tree() -> str:
-    """Calculate this repository's object-format-correct empty tree OID."""
-    return git("hash-object", "-t", "tree", "--stdin", input_data=b"").decode()
-
-
-def check() -> int:
-    """Reject a pushed ref if its Mac UI diff has no green receipt behind it."""
+def surface_changes(base: str) -> list[str]:
+    """Mac UI surface paths that differ between the receipt commit and the working tree."""
     surface = read_surface()
+    tracked = git("diff", "--name-only", "-z", base, "--", *surface)
+    untracked = git("ls-files", "--others", "--exclude-standard", "-z", "--", *surface)
+    return sorted({p.decode("utf-8", "replace") for p in (tracked + b"\0" + untracked).split(b"\0") if p})
+
+
+def check_head() -> int:
+    """Refuse an install whose Mac UI surface has no green receipt behind it.
+
+    The tree being installed is compared with the receipt commit, so staged,
+    unstaged and untracked surface changes count as well as new commits.
+    WILTED_SKIP_UI_RECEIPT=1 proceeds with a loud warning instead.
+    """
     receipt = receipt_commit()
-    refs = [line.split() for line in sys.stdin if line.strip()]
-    status(f"check refs={len(refs)} receipt={'present' if receipt else 'missing'}")
-    blocked = False
-    for fields in refs:
-        if len(fields) != 4:
-            raise ValueError("malformed pre-push ref input")
-        local_ref, local_oid, _remote_ref, remote_oid = fields
-        if ZERO_OID.fullmatch(local_oid):
-            status(f"pass ref={local_ref} reason=deletion")
-            continue
-        if not COMMIT_OID.fullmatch(local_oid):
-            raise ValueError(f"invalid pushed commit for {local_ref}")
-        base = receipt or (empty_tree() if ZERO_OID.fullmatch(remote_oid) else remote_oid)
-        try:
-            paths = git("diff", "--name-only", "-z", base, local_oid, "--", *surface)
-        except subprocess.CalledProcessError:
-            status(f'block ref={local_ref} reason=unusable-baseline action="make native-ui"')
-            blocked = True
-            continue
-        if paths:
-            changed = [path.decode("utf-8", "replace") for path in paths.split(b"\0") if path]
-            status(
-                f'block ref={local_ref} changed={changed[0]} '
-                f'reason={"stale-receipt" if receipt else "missing-receipt"} action="make native-ui"'
-            )
-            blocked = True
-            continue
-        status(f"pass ref={local_ref} reason=surface-unchanged")
-    return 1 if blocked else 0
+    if os.environ.get(SKIP_ENV) == "1":
+        status(f"WARNING skipped=true reason={SKIP_ENV}=1 receipt={receipt or 'none'} detail=\"installing a Mac UI surface no green make native-ui covers\"")
+        return 0
+    if receipt is None:
+        status('block reason=missing-receipt action="make native-ui"')
+        return 1
+    try:
+        changed = surface_changes(receipt)
+    except subprocess.CalledProcessError:
+        status('block reason=unusable-baseline action="make native-ui"')
+        return 1
+    if changed:
+        status(f'block changed={changed[0]} count={len(changed)} reason=stale-receipt receipt={receipt} action="make native-ui"')
+        return 1
+    status(f"pass receipt={receipt} reason=surface-unchanged")
+    return 0
 
 
 def main() -> int:
-    """Dispatch the receipt writer or pre-push verifier."""
-    if len(sys.argv) != 2 or sys.argv[1] not in {"record", "check"}:
-        print("usage: native-ui-receipt.py record|check", file=sys.stderr)
+    """Dispatch the receipt writer or the install-time verifier."""
+    if len(sys.argv) != 2 or sys.argv[1] not in {"record", "check-head"}:
+        print("usage: native-ui-receipt.py record|check-head", file=sys.stderr)
         return 2
     try:
-        return record() if sys.argv[1] == "record" else check()
+        return record() if sys.argv[1] == "record" else check_head()
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         status(f'error detail="{error}" action="make native-ui"')
         return 1
