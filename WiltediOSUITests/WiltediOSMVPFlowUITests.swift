@@ -114,8 +114,11 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         // can never be reached sooner than the hold, however loaded the host is.
         let expand = app.buttons["wilted-player-expand"]
         XCTAssertTrue(expand.waitForExistence(timeout: 2))
+        // Read first, then time the read: the query itself can be slow, so only a value observed inside
+        // the window is judged.
+        let pendingValue = expand.value as? String
         if Date().timeIntervalSince(tappedAt) < Self.pendingCheckWindow {
-            XCTAssertEqual(expand.value as? String, Self.starting, "the pending start is shown while the file is looked up")
+            XCTAssertEqual(pendingValue, Self.starting, "the pending start is shown while the file is looked up")
         }
         XCTAssertTrue(waitForLabel("Pause", on: app.buttons["wilted-player-mini-toggle"], timeout: 15))
         let startedAfter = Date().timeIntervalSince(tappedAt)
