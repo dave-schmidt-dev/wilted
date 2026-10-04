@@ -38,6 +38,8 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - The Mac records lifetime listening totals in its library: minutes played, audio downloaded, and minutes manually skipped (forward seeks and Next), alongside the existing four totals.
+- Mac Settings shows seven lifetime totals (the existing four plus minutes played, GB downloaded and minutes manually skipped) with the date tracking started. While the totals load or rebuild after the upgrade, Settings says so; if they cannot be read, Settings offers a retry and the Larder still opens normally.
+- Mac Settings shows library sync status: changes waiting to send, when this Mac last sent and read changes, errors, rate limits and account problems, with one Sync now button and an account review step. It describes this Mac's own sends; whether the phone has fetched them is shown on the phone.
 - The Now Playing position bar is a real scrubber, on the full player and the mini player's line: drag or tap to pick a time, the chosen time shows live, playback moves once on release, and VoiceOver adjusts it by the skip lengths.
 - Mark completed and Remove from Larder on Now Playing and the episode detail, each asking first; the Larder rows now use swipes (not downloaded: right removes, left downloads; downloaded: right marks the episode completed, started or not, left plays), a full swipe only opens the question, and VoiceOver gets each action by name. The inline completion tick is gone.
 - The iPhone shows only what the Mac reports ready (Larder, CarPlay, Siri, play order); an episode the Mac says it has no ready audio for leaves the list at once and returns when the Mac offers it.
