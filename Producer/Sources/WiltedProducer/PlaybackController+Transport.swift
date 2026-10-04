@@ -58,7 +58,7 @@ extension PlaybackController {
             throw CancellationError()
         }
         setRate(savedRate)
-        if playAfterLoad { isPlaying = backend.play() }
+        if playAfterLoad { isPlaying = backend.play(); meterListening() }
         return loadedGeneration
     }
 
@@ -76,6 +76,7 @@ extension PlaybackController {
             positionSeconds = position
         }
         isPlaying = backend.play()
+        meterListening()
         if isPlaying { recoverableFault = nil }
     }
 
@@ -83,6 +84,7 @@ extension PlaybackController {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         backend.pause()
         isPlaying = false
+        meterListening()
         try await checkpoint()
     }
 
@@ -114,6 +116,10 @@ extension PlaybackController {
             speedSavingsBaselineSeconds = target
             completed = target >= durationSeconds
             intent = .progress
+            // Every caller is an explicit listener seek (scrub, transcript
+            // cue, skip-forward). The jump is clamped to the item, so it never
+            // exceeds the remaining duration.
+            recordManualSkip(seconds: target - current)
             try await checkpoint()
         }
     }
@@ -131,7 +137,12 @@ extension PlaybackController {
 
     public func manualCheckpoint() async throws { try await checkpoint() }
     public func pauseAndCheckpoint() async throws { try await pause() }
-    public func handlePauseOrQuit() async throws { backend.pause(); isPlaying = false; try await checkpoint() }
+    public func handlePauseOrQuit() async throws {
+        backend.pause()
+        isPlaying = false
+        meterListening()
+        try await checkpoint()
+    }
 
     /// Rebuilds the backend after an audio route/configuration change. The
     /// exact playhead and whether it was playing are captured before reload.
@@ -147,6 +158,7 @@ extension PlaybackController {
         backend.currentTime = position
         positionSeconds = position
         isPlaying = wasPlaying && backend.play()
+        meterListening()
     }
 
     private func beginNewSession(
@@ -174,6 +186,7 @@ extension PlaybackController {
         positionSeconds = target
         speedSavingsBaselineSeconds = target
         isPlaying = wasPlaying && backend.play()
+        meterListening()
         try await checkpoint()
     }
 }

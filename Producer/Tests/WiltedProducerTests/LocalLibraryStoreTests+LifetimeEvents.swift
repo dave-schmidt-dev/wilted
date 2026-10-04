@@ -342,3 +342,49 @@ final class ProgressLog: @unchecked Sendable {
     func append(_ report: LifetimeStatisticsRebuildProgress) { lock.withLock { storage.append(report) } }
     var reports: [LifetimeStatisticsRebuildProgress] { lock.withLock { storage } }
 }
+
+extension LocalLibraryLifetimeEventTests {
+    /// The byte meter behind `PodcastDownloadCoordinator`: a periodic write at
+    /// most once per second, only when something new arrived, and a terminal
+    /// amount that a failed write keeps covering.
+    func testDownloadByteMeterWritesAtMostOncePerSecondAndKeepsFailedAmounts() throws {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let episodeID = try ItemID(rawValue: "item-" + String(repeating: "7", count: 64))
+        var meter = PodcastDownloadByteMeter(episodeID: episodeID, startedAt: start)
+        XCTAssertTrue(meter.ownerKey.hasPrefix("download|\(episodeID.rawValue)|"))
+        XCTAssertNil(meter.pendingAmount, "nothing received, nothing to write")
+        meter.receive(100)
+        XCTAssertNil(meter.takeDueCheckpoint(at: start.addingTimeInterval(0.9)))
+        let first = try XCTUnwrap(meter.takeDueCheckpoint(at: start.addingTimeInterval(1)))
+        XCTAssertEqual(first, try bytes(100))
+        meter.didPersist(first)
+        meter.receive(50)
+        XCTAssertNil(meter.takeDueCheckpoint(at: start.addingTimeInterval(1.5)), "under a second since the last write")
+        let second = try XCTUnwrap(meter.takeDueCheckpoint(at: start.addingTimeInterval(2)))
+        XCTAssertEqual(second, try bytes(150), "checkpoints are cumulative per attempt")
+        // That write failed: the terminal amount still covers its bytes.
+        meter.receive(1)
+        XCTAssertEqual(meter.pendingAmount, try bytes(151))
+        meter.didPersist(try bytes(151))
+        XCTAssertNil(meter.pendingAmount)
+        XCTAssertNil(meter.takeDueCheckpoint(at: start.addingTimeInterval(10)), "nothing new, no write")
+        meter.receive(0)
+        XCTAssertNil(meter.pendingAmount)
+    }
+
+    /// Two download attempts for one episode never share a high-water mark.
+    func testDownloadAttemptsOwnSeparateHighWaterMarks() async throws {
+        let store = try LocalLibraryStore(url: try makeStoreURL())
+        let episodeID = try ItemID(rawValue: "item-" + String(repeating: "8", count: 64))
+        let now = Date()
+        for _ in 0..<2 {
+            var meter = PodcastDownloadByteMeter(episodeID: episodeID, startedAt: now)
+            meter.receive(64)
+            let amount = try XCTUnwrap(meter.pendingAmount)
+            let admitted = try await store.recordLifetimeMeasureCheckpoint(amount, ownerKey: meter.ownerKey, at: now)
+            XCTAssertEqual(admitted, try bytes(64))
+        }
+        let summary = try await store.lifetimeStatisticsSummary()
+        XCTAssertEqual(summary.measured.receivedBytes, 128)
+    }
+}
