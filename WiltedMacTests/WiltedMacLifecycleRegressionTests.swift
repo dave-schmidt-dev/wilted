@@ -135,13 +135,9 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
         try await finish(rig)
         XCTAssertEqual(probe.finishes, 1, "the lookup asked about 20 and 20 was dismissed")
         try await assertNeverAdvancedInto(20, rig, completed: [19])
-        let seen = "current=\(rig.label(rig.model.currentPodcastEpisodeID)) playing=\(rig.backend.isPlaying) " +
-            "observed=\(rig.recorder.observed.map { rig.label($0) }) finishes=\(rig.recorder.finishes)"
-        XCTExpectFailure("Mac defect (B1-T4.2): PlaybackController.handleBackendCompletion picks 20, then " +
-            "loadQueuedEpisode's eligibility re-check throws podcastMediaUnavailable(20) and the run stops " +
-            "instead of moving on to 21 [\(seen)]", options: Self.nonStrict)
         XCTAssertEqual(rig.model.currentPodcastEpisodeID, rig.id(21), "the run continues with 21")
         XCTAssertTrue(rig.backend.isPlaying)
+        XCTAssertEqual(rig.recorder.finishes, 0, "skipping 20 is not a stop")
         await rig.model.close()
     }
 
@@ -164,8 +160,8 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
         await rig.model.close()
     }
 
-    /// A Pause pressed right after EOF, before the advance looks up 20,
-    /// cancels the continuation: nothing starts.
+    /// A Pause pressed right after EOF, before the advance loads 20, drops
+    /// the advance: 19 stays loaded, paused and current, and 20 never loads.
     func testAPauseAfterTheEndCancelsTheQueueAdvance() async throws {
         let rig = try await makeRig("forward-pause", middle: .ready)
         try await startQueue(rig, at: 19)
@@ -176,14 +172,11 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
             pauseIssued = rig.model.playbackCommands.pending?.command.kind == .pause
         }
 
-        XCTAssertEqual(rig.recorder.completed, [rig.id(19)], "the pause does not repeat 19's completion")
-        let seen = "pauseIssued=\(pauseIssued) current=\(rig.label(rig.model.currentPodcastEpisodeID)) " +
-            "playing=\(rig.backend.isPlaying)"
-        XCTExpectFailure("Mac defect (B1-T4.2): a Pause issued after EOF does not fence the controller's own " +
-            "queue advance (handleBackendCompletion -> loadQueuedEpisode(next, playAfterLoad: true)); 38dfe1a " +
-            "fences only the model-side continuations [\(seen)]", options: Self.nonStrict)
+        XCTAssertTrue(pauseIssued, "the Pause reached the command owner")
+        try await assertNeverAdvancedInto(20, rig, completed: [19])
         XCTAssertFalse(rig.backend.isPlaying, "a Pause after the end must leave nothing playing")
-        XCTAssertNotEqual(rig.model.currentPodcastEpisodeID, rig.id(20), "the advance to 20 is cancelled")
+        XCTAssertEqual(rig.model.currentPodcastEpisodeID, rig.id(19), "the finished episode stays current")
+        XCTAssertEqual(rig.recorder.finishes, 0, "a held advance is not announced as the end of the queue")
         await rig.model.close()
     }
 

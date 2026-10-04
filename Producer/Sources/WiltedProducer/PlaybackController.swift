@@ -171,6 +171,9 @@ public final class PlaybackController {
     var currentRevision: AudioRevision?
     var checkpointTask: Task<Void, Never>?
     var completionHandledGeneration: UInt64?
+    /// Bumped by every explicit pause or stop. A queue advance compares it
+    /// with the value at the end of file to tell whether one was issued since.
+    var explicitHoldSerial: UInt64 = 0
     var loadedBackendGeneration: UInt64?
     var loadedIsPodcastEpisode = false
     var pendingSpeedIntervals: [PendingSpeedInterval] = []
@@ -200,8 +203,12 @@ public final class PlaybackController {
         self.backend = backend
         self.deviceID = deviceID
         self.backend.completionHandler = { [weak self] generation, successfully in
+            // Read at the end of file itself, so a pause issued before the
+            // task below runs still counts as issued after the end.
+            let holdAtEnd = self?.explicitHoldSerial ?? 0
             Task { @MainActor [weak self] in
-                await self?.handleBackendCompletion(generation: generation, successfully: successfully)
+                await self?.handleBackendCompletion(
+                    generation: generation, successfully: successfully, holdAtEnd: holdAtEnd)
             }
         }
     }
@@ -530,7 +537,7 @@ public final class PlaybackController {
         return .applied
     }
 
-    private func handleBackendCompletion(generation: UInt64, successfully: Bool) async {
+    private func handleBackendCompletion(generation: UInt64, successfully: Bool, holdAtEnd: UInt64) async {
         guard generation == loadedBackendGeneration,
               completionHandledGeneration != generation,
               let completedItemID = itemID else { return }
@@ -558,37 +565,7 @@ public final class PlaybackController {
                 playbackDidFinishHandler?()
                 return
             }
-            let nextEligible = try? await nextEligibleEpisodeID(after: completedItemID)
-            guard let next = nextEligible else {
-                podcastStateHandler?(itemID, nil)
-                playbackDidFinishHandler?()
-                return
-            }
-            var activeGeneration = generation
-            var activeItemID = completedItemID
-            do {
-                let nextGeneration = try await loadQueuedEpisode(
-                    next, playAfterLoad: true, expectedGeneration: generation
-                )
-                guard loadedBackendGeneration == nextGeneration, itemID == next else { return }
-                activeGeneration = nextGeneration
-                activeItemID = next
-                try await store.setCurrentPodcastQueueEpisode(next)
-                guard loadedBackendGeneration == activeGeneration, itemID == activeItemID else { return }
-                podcastStateHandler?(next, nil)
-            } catch is CancellationError {
-                return
-            } catch {
-                guard loadedBackendGeneration == activeGeneration, itemID == activeItemID else { return }
-                backend.pause()
-                isPlaying = false
-                meterListening()
-                if let fault = recoverableFault,
-                   fault == .podcastMediaUnavailable(next) || fault == .podcastMediaUnreadable(next) {
-                    podcastStateHandler?(completedItemID, fault)
-                }
-                playbackDidFinishHandler?()
-            }
+            await advanceQueue(after: completedItemID, in: state, generation: generation, holdAtEnd: holdAtEnd)
         } else {
             // Both callback outcomes consume the same generation. Only an
             // explicit retry or reload can allow another completion.

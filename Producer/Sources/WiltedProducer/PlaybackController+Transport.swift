@@ -127,6 +127,9 @@ extension PlaybackController {
     }
 
     public func pause() async throws {
+        // Recorded before anything can fail: a Pause pressed in the gap after
+        // an episode ends still means "do not start the next one".
+        explicitHoldSerial &+= 1
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         backend.pause()
         isPlaying = false
@@ -184,6 +187,7 @@ extension PlaybackController {
     public func manualCheckpoint() async throws { try await checkpoint() }
     public func pauseAndCheckpoint() async throws { try await pause() }
     public func handlePauseOrQuit() async throws {
+        explicitHoldSerial &+= 1
         backend.pause()
         isPlaying = false
         meterListening()
