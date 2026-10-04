@@ -169,25 +169,20 @@ public final class PlaybackController {
     @ObservationIgnored public var episodeEligibilityPredicate: (@MainActor @Sendable (ItemID) async -> Bool)?
 
     var currentRevision: AudioRevision?
-    private var checkpointTask: Task<Void, Never>?
+    var checkpointTask: Task<Void, Never>?
     var completionHandledGeneration: UInt64?
     var loadedBackendGeneration: UInt64?
-    private var loadedIsPodcastEpisode = false
-    private struct PendingSpeedInterval {
-        let startSeconds: TimeInterval
-        let endSeconds: TimeInterval
-        let rate: Double
-    }
-    private var pendingSpeedIntervals: [PendingSpeedInterval] = []
+    var loadedIsPodcastEpisode = false
+    var pendingSpeedIntervals: [PendingSpeedInterval] = []
     /// Program position at the last accounting boundary. Forward seeks reset
     /// this baseline before persistence, so skipped audio is never playback.
     var speedSavingsBaselineSeconds: TimeInterval = 0
-    private var speedSavingsRate = 1.0
+    var speedSavingsRate = 1.0
     /// The last state written for the loaded revision, so a checkpoint that changes nothing (paused,
     /// same position, session, intent and completion) keeps its original time. Otherwise every
     /// idle checkpoint, such as the one taken when the app goes to the background, would look
     /// newer than a position another device saved in the meantime.
-    private var lastWritten: (sessionID: String, position: TimeInterval, completed: Bool, intent: PlaybackIntent, at: Date)?
+    var lastWritten: (sessionID: String, position: TimeInterval, completed: Bool, intent: PlaybackIntent, at: Date)?
 
     public init(
         store: LocalLibraryStore,
@@ -476,44 +471,6 @@ public final class PlaybackController {
         try await checkpointCompletedRevision(accountPlaybackToEnd: false)
     }
 
-    public func checkpoint() async throws { try await checkpoint(markCompletedAtEnd: true) }
-
-    /// Writes the current playhead without inferring a terminal record unless
-    /// the caller is handling an actual audio completion. Manual Next uses the
-    /// non-terminal form until its successor has loaded successfully.
-    private func checkpoint(markCompletedAtEnd: Bool) async throws {
-        guard let revision = currentRevision, let itemID, let revisionID, let sessionID else {
-            throw PlaybackControllerError.noLoadedRevision
-        }
-        let livePosition = clamp(backend.currentTime)
-        positionSeconds = recoverableFault == .playbackFailed(itemID)
-            ? max(positionSeconds, livePosition) : livePosition
-        isPlaying = backend.isPlaying
-        completed = markCompletedAtEnd && positionSeconds >= durationSeconds
-            && recoverableFault != .playbackFailed(itemID)
-        sequence = max(1, sequence + 1)
-        let unchanged = !backend.isPlaying && lastWritten.map {
-            $0.sessionID == sessionID && $0.position == positionSeconds && $0.completed == completed && $0.intent == intent
-        } == true
-        let stamp = unchanged ? lastWritten?.at ?? Date() : Date()
-        let state = try PlaybackState(
-            itemID: itemID,
-            revisionID: revisionID,
-            sessionID: sessionID,
-            sequence: sequence,
-            positionSeconds: positionSeconds,
-            durationSeconds: revision.durationSeconds,
-            completed: completed,
-            intent: intent,
-            deviceID: deviceID,
-            updatedAt: Timestamp(stamp)
-        )
-        try await store.save(playback: state)
-        lastWritten = (state.sessionID, state.positionSeconds, state.completed, state.intent, stamp)
-        stageSpeedInterval(endingAt: positionSeconds)
-        try await persistPendingSpeedIntervals(revisionID: revisionID)
-    }
-
     /// Adopts a position another device saved for this exact revision (the Mac adopting the
     /// phone's), unless it is not newer than the stored one, the episode is finished here, or it
     /// is playing here. Never starts playback and never touches a playing episode.
@@ -629,40 +586,6 @@ public final class PlaybackController {
         }
     }
 
-    private func checkpointCompletedRevision(accountPlaybackToEnd: Bool) async throws {
-        guard let revision = currentRevision, let itemID, let revisionID, let sessionID else {
-            throw PlaybackControllerError.noLoadedRevision
-        }
-        let accountingEnd = accountPlaybackToEnd ? durationSeconds : clamp(backend.currentTime)
-        backend.currentTime = durationSeconds
-        positionSeconds = durationSeconds
-        completed = true
-        sequence = max(1, sequence + 1)
-        let now = Timestamp(Date())
-        let playbackState = try PlaybackState(
-            itemID: itemID,
-            revisionID: revisionID,
-            sessionID: sessionID,
-            sequence: sequence,
-            positionSeconds: durationSeconds,
-            durationSeconds: revision.durationSeconds,
-            completed: true,
-            intent: intent,
-            deviceID: deviceID,
-            updatedAt: now
-        )
-        if loadedIsPodcastEpisode {
-            try await store.save(playback: playbackState, listening: PodcastListeningState(
-                episodeID: itemID, completedAt: now, lastRevisionID: revisionID, updatedAt: now
-            ))
-        } else {
-            try await store.save(playback: playbackState)
-        }
-        stageSpeedInterval(endingAt: accountingEnd)
-        try await persistPendingSpeedIntervals(revisionID: revisionID)
-        speedSavingsBaselineSeconds = durationSeconds
-    }
-
     /// Immutable details of an outgoing podcast eligible for manual-Next
     /// completion. The controller captures these before loading a successor,
     /// because the successor replaces the mutable current-revision fields.
@@ -706,53 +629,8 @@ public final class PlaybackController {
         ))
     }
 
-    public func startPeriodicCheckpoint(every interval: TimeInterval = 5) {
-        checkpointTask?.cancel()
-        guard interval > 0, interval.isFinite else { return }
-        checkpointTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(interval))
-                    guard let self else { return }
-                    try await self.checkpoint()
-                } catch is CancellationError { return }
-                catch { /* a later manual checkpoint remains available */ }
-            }
-        }
-    }
-
-    public func stopPeriodicCheckpoint() {
-        checkpointTask?.cancel()
-        checkpointTask = nil
-    }
-
     func clamp(_ value: TimeInterval) -> TimeInterval {
         min(max(value.isFinite ? value : 0, 0), max(durationSeconds, 0))
-    }
-
-    func stageSpeedInterval(endingAt position: TimeInterval) {
-        let end = clamp(position)
-        guard end > speedSavingsBaselineSeconds else { return }
-        pendingSpeedIntervals.append(PendingSpeedInterval(
-            startSeconds: speedSavingsBaselineSeconds,
-            endSeconds: end,
-            rate: speedSavingsRate
-        ))
-        speedSavingsBaselineSeconds = end
-    }
-
-    private func persistPendingSpeedIntervals(revisionID: RevisionID) async throws {
-        let intervals = pendingSpeedIntervals
-        guard !intervals.isEmpty else { return }
-        for interval in intervals {
-            try await store.recordPlaybackSpeedCheckpoint(
-                revisionID: revisionID,
-                from: interval.startSeconds,
-                to: interval.endSeconds,
-                rate: interval.rate
-            )
-        }
-        pendingSpeedIntervals.removeFirst(min(intervals.count, pendingSpeedIntervals.count))
     }
 
     static func newSessionID() -> String {
