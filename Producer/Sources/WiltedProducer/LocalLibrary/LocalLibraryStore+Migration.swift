@@ -214,8 +214,10 @@ extension LocalLibraryStore {
         let pipe = Pipe()
         process.standardOutput = pipe; process.standardError = pipe
         do {
-            try process.run(); process.waitUntilExit()
+            try process.run()
+            // Drain before waiting: sqlite3 blocks once its output fills the pipe buffer.
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
         } catch {
             return (127, String(describing: error))

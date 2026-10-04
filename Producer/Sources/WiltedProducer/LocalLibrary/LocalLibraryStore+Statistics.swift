@@ -48,9 +48,13 @@ extension LocalLibraryStore {
             guard try !legacyEventExists(contribution.id, in: context) else { continue }
             context.insert(LegacyEvent(id: contribution.id, kind: contribution.kind, seconds: contribution.seconds))
             if !summaryLoaded { summary = try readySummary(in: context); summaryLoaded = true }
-            summary?.legacy.add(contribution.kind, seconds: contribution.seconds)
-            // Match the measured path: a ready summary records when it last changed.
-            summary?.updatedAt = Date()
+            // Match the measured path: read, add, write back, and record when it changed.
+            if let summary {
+                var legacy = summary.legacy
+                legacy.add(contribution.kind, seconds: contribution.seconds)
+                summary.legacy = legacy
+                summary.updatedAt = Date()
+            }
             inserted = true
         }
         return inserted
