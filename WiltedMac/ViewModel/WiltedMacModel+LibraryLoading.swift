@@ -282,12 +282,6 @@ extension WiltedMacModel {
         subscriptions = values.subscriptions
     }
 
-    /// Re-reads the local ledger without touching sync or mutable library rows.
-    func refreshLifetimeStatistics() async {
-        guard let store, let totals = try? await store.lifetimeStatistics() else { return }
-        lifetimeStatistics = totals
-    }
-
     func loadLibrary(from store: LocalLibraryStore) async throws
         -> (articles: [WiltedMacArticle], episodes: LibraryEpisodeRows, subscriptions: [WiltedMacSubscription]) {
         libraryReadEpoch &+= 1

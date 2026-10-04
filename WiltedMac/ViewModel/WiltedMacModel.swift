@@ -247,8 +247,12 @@ final class WiltedMacModel {
     var playbackRate: Double = WiltedMacModel.initialPlaybackRate
     var playbackVolume: Double = 1
     var playbackOperationStatus: String?
-    /// Device-local totals derived only from the append-only event ledger.
-    var lifetimeStatistics = LifetimeStatistics()
+    /// Device-local totals derived only from the durable lifetime summary.
+    var statisticsState: WiltedMacStatisticsState = .loading
+    /// The four legacy totals, once the summary is ready; zeros otherwise.
+    var lifetimeStatistics: LifetimeStatistics { statisticsState.summary?.legacy ?? LifetimeStatistics() }
+    /// The one background summary load/rebuild. Never awaited by bootstrap.
+    var statisticsTask: Task<Void, Never>?
     var articlePublicationCount = 0
     var articlePlaybackCheckpointCount = 0
     /// Set only after the one automatic route recovery attempt fails. The
@@ -320,6 +324,9 @@ final class WiltedMacModel {
     /// that returns it immediately; the app injects the real resolver.
     let pipelineFingerprintResolution: @Sendable () async -> String?
     let invalidateStalePreparations: WiltedMacStaleInvalidation
+    /// Injectable so a delayed or failing summary can be exercised apart from
+    /// a store that will not open.
+    let statisticsOperations: WiltedMacStatisticsOperations
     private let invalidationRules: [PodcastPreparationInvalidationRule]
     let retainedArtifactPresenter: (URL) -> Void
     var startupAttemptCount = 0
@@ -472,6 +479,7 @@ final class WiltedMacModel {
          pipelineFingerprint: String? = nil,
          pipelineFingerprintResolution: (@Sendable () async -> String?)? = nil,
          staleInvalidationOverride: WiltedMacStaleInvalidation? = nil,
+         statisticsOperations: WiltedMacStatisticsOperations = .live,
          invalidationRules: [PodcastPreparationInvalidationRule] = PodcastPreparationPipeline.invalidationRules,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
          podcastFeedClient: PodcastFeedClient = PodcastFeedClient(),
@@ -527,6 +535,7 @@ final class WiltedMacModel {
         self.pipelineFingerprint = pipelineFingerprint
         self.pipelineFingerprintResolution = pipelineFingerprintResolution ?? { pipelineFingerprint }
         self.invalidationRules = invalidationRules
+        self.statisticsOperations = statisticsOperations
         let rules = invalidationRules
         self.invalidateStalePreparations = staleInvalidationOverride ?? { store, fingerprint in
             try await store.invalidateStalePodcastPreparations(
@@ -651,6 +660,7 @@ final class WiltedMacModel {
             syncReconciliationTask,
             podcastRefreshTask,
             bootstrapRecoveryTask,
+            statisticsTask,
             linkClassificationTask,
             podcastSubscriptionClassificationTask,
             fixturePodcastInstallTask,

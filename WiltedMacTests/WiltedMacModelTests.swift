@@ -28,6 +28,7 @@ final class WiltedMacModelTests: XCTestCase {
 
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
+        await model.waitForLifetimeStatisticsForTesting()
 
         XCTAssertEqual(model.lifetimeStatistics, LifetimeStatistics(
             audioProcessedSeconds: 120,

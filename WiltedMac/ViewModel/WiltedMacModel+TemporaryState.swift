@@ -238,6 +238,7 @@ extension WiltedMacModel {
         syncReconciliationTask?.cancel()
         podcastRefreshTask?.cancel()
         bootstrapRecoveryTask?.cancel()
+        statisticsTask?.cancel()
         linkClassificationTask?.cancel()
         podcastSubscriptionClassificationTask?.cancel()
         fixturePodcastInstallTask?.cancel()
@@ -263,6 +264,7 @@ extension WiltedMacModel {
             let reconciliation = syncReconciliationTask
             let refresh = podcastRefreshTask
             let recovery = bootstrapRecoveryTask
+            let statistics = statisticsTask
             let classification = linkClassificationTask
             let subscriptionClassification = podcastSubscriptionClassificationTask
             let fixtureInstall = fixturePodcastInstallTask
@@ -277,6 +279,7 @@ extension WiltedMacModel {
             await reconciliation?.value
             await refresh?.value
             await recovery?.value
+            await statistics?.value
             await classification?.value
             await subscriptionClassification?.value
             await fixtureInstall?.value
