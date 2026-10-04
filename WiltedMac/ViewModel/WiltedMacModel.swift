@@ -567,6 +567,9 @@ final class WiltedMacModel {
             startupState = configuredStore == nil
                 ? .failed(Self.startupFailure(canRetry: false))
                 : .ready
+            // Production starts this from bootstrap; fixtures do it here so
+            // Settings settles instead of waiting on the card's `.task`.
+            beginLifetimeStatisticsLoad()
             installFixture(
                 ready: arguments.contains("--wilted-ui-fixture-ready") || arguments.contains("--wilted-ui-fixture-playing")
                     || larderDemo,

@@ -212,7 +212,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         )
     }
 
-    func testMacNavigationSelectionPixelBaselines() {
+    func testMacNavigationSelectionPixelBaselines() async {
         for appearance in WiltedAppearance.allCases {
             let model = WiltedMacModel(
                 arguments: ["--wilted-ui-fixture-ready"],
@@ -220,6 +220,8 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 preferences: WiltedMacTestPreferences.ephemeral()
             )
             model.selectedNavigation = .settings
+            // Settings shows lifetime totals once the background load lands.
+            await model.waitForLifetimeStatisticsForTesting()
             let variant = WiltedVisualVariant(
                 appearance: appearance,
                 dynamicType: .standard,
