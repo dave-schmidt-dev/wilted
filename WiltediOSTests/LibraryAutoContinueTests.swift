@@ -6,153 +6,6 @@ import WiltedListener
 import XCTest
 @testable import WiltediOS
 
-private final class AutoEngine: ListenerAudioEngine, LibraryRateAdjustable, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _currentTime = 0.0
-    private var _isPlaying = false
-    private var handler: (@Sendable (UInt64) -> Void)?
-    private var generation: UInt64 = 0
-    var duration = 600.0
-    var rate: Float = 1
-    private(set) var loadedStarts: [Double] = []
-
-    var currentTime: Double {
-        get { lock.withLock { _currentTime } }
-        set { lock.withLock { _currentTime = newValue } }
-    }
-    var isPlaying: Bool {
-        get { lock.withLock { _isPlaying } }
-        set { lock.withLock { _isPlaying = newValue } }
-    }
-    func load(url: URL) throws { try load(url: url, completionGeneration: 0) }
-    func load(url: URL, completionGeneration: UInt64) throws { generation = completionGeneration; currentTime = 0 }
-    func play() -> Bool { isPlaying = true; return true }
-    func pause() { isPlaying = false }
-    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { self.handler = handler }
-
-    func finishNaturally(reporting reported: UInt64? = nil) {
-        isPlaying = false
-        currentTime = duration
-        handler?(reported ?? generation)
-    }
-}
-
-private final class AutoSession: ListenerAudioSession, @unchecked Sendable {
-    func activate() throws {}
-    func deactivate() {}
-}
-
-private final class AutoNowPlaying: ListenerNowPlaying, @unchecked Sendable {
-    func update(title: String, duration: Double, position: Double, rate: Double) {}
-    func clear() {}
-}
-
-@MainActor private final class AutoRemote: LibraryRemoteCommands {
-    func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
-    func uninstall() {}
-}
-
-@MainActor private final class AutoEvents: LibrarySessionEvents {
-    func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void) {}
-}
-
-/// Holds cache lookups so a test can act between two of them deterministically, without sleeping.
-/// The wrapper captures the entries before it holds, so what the caller receives was decided
-/// before the hold began and the test's mutation lands strictly after it.
-private actor LookupGate {
-    private enum WaitError: Error { case timedOut }
-    private var armed = false
-    private var heldCount = 0
-    private var heldLookups: [UUID: CheckedContinuation<Void, Never>] = [:]
-    private var heldOrder: [UUID] = []
-    private var observers: [UUID: CheckedContinuation<Void, Error>] = [:]
-
-    func arm() { armed = true }
-
-    /// Called by the cache wrapper after it captured the entries: wakes the test, then waits.
-    func hold() async {
-        guard armed else { return }
-        heldCount += 1
-        observers.values.forEach { $0.resume() }
-        observers.removeAll()
-        let id = UUID()
-        await withCheckedContinuation { continuation in
-            heldLookups[id] = continuation
-            heldOrder.append(id)
-            Task {
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                self.releaseHeld(id)
-            }
-        }
-    }
-
-    /// Waits until a lookup is held right now.
-    func waitForHold() async throws {
-        if heldCount > 0 { return }
-        let id = UUID()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            observers[id] = continuation
-            Task {
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                self.timeoutWait(id)
-            }
-        }
-    }
-
-    private func timeoutWait(_ id: UUID) {
-        observers.removeValue(forKey: id)?.resume(throwing: WaitError.timedOut)
-    }
-
-    private func releaseHeld(_ id: UUID) {
-        guard let continuation = heldLookups.removeValue(forKey: id) else { return }
-        heldOrder.removeAll { $0 == id }
-        heldCount -= 1
-        continuation.resume()
-    }
-
-    /// Lets the oldest held lookup return, keeping the gate armed.
-    func releaseNext() {
-        guard let id = heldOrder.first else { return }
-        releaseHeld(id)
-    }
-
-    /// Lets every held lookup return and stops holding new ones.
-    func disarm() {
-        armed = false
-        heldOrder.forEach { heldLookups.removeValue(forKey: $0)?.resume() }
-        heldLookups.removeAll()
-        heldOrder.removeAll()
-        heldCount = 0
-    }
-}
-
-/// A `LibraryMediaCache` whose lookups a `LookupGate` can hold.
-private actor AutoContinueGatedMediaCache: LibraryMediaCache {
-    let base: FileMediaCache
-    let gate: LookupGate
-
-    init(base: FileMediaCache, gate: LookupGate) {
-        self.base = base
-        self.gate = gate
-    }
-
-    func cachedEntries() async -> [ItemID: CachedMedia] {
-        let entries = await base.cachedEntries()
-        await gate.hold()
-        return entries
-    }
-
-    func cachedFile(for offer: LibraryMediaOffer) async -> URL? { await base.cachedFile(for: offer) }
-    func adopt(verifiedFile: URL, for offer: LibraryMediaOffer) async throws -> URL {
-        try await base.adopt(verifiedFile: verifiedFile, for: offer)
-    }
-    func remove(entryID: ItemID) async throws { try await base.remove(entryID: entryID) }
-    func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? {
-        await base.cachedTranscript(entryID: entryID, revisionID: revisionID)
-    }
-    func storeTranscript(_ transcript: LibraryTranscript) async { await base.storeTranscript(transcript) }
-}
-
 /// Auto-continue: a finished episode is followed by the next one of the shared play order, on the
 /// real model, player and file cache with an in-memory server standing in for the Mac.
 @MainActor
@@ -697,6 +550,55 @@ final class LibraryAutoContinueTests: XCTestCase {
         await settle()
         XCTAssertEqual(rig.player.status, .ended, "the suffix runs out and playback stops")
         XCTAssertEqual(rig.player.item?.entryID, id("21"), "no wrap backwards to 19")
+    }
+
+    /// Task 4.2: a middle episode the Larder no longer holds, removed before 19 ends (not during a
+    /// lookup), is pruned by the continuation's own snapshot; the walk reaches 21 and stops there.
+    func testAMiddleEpisodeRemovedBeforeTheEndIsSkippedAndTheWalkStopsAtTheLast() async throws {
+        let rig = try await makeRig(entries: ["19", "20", "21"])
+        await start(rig, "19")
+        await rig.model.decide(.removeFromLarder, entryID: id("20"))
+        try await assertWalkSkips20AndStopsAt21(rig)
+    }
+
+    /// Task 4.2: a middle episode whose audio the Mac never prepared is not on the phone, so the
+    /// suffix the manual start captures leaves it out; the walk reaches 21 and stops there.
+    func testAnUnpreparedMiddleEpisodeIsSkippedAndTheWalkStopsAtTheLast() async throws {
+        let rig = try await makeRig(entries: ["19", "20", "21"])
+        try await rig.model.mediaCache.remove(entryID: id("20"))
+        rig.model.media[id("20")] = .notPrepared
+        await start(rig, "19")
+        XCTAssertEqual(rig.model.handoffState.forwardSequenceIDs, [id("19"), id("21")])
+        try await assertWalkSkips20AndStopsAt21(rig)
+    }
+
+    private func assertWalkSkips20AndStopsAt21(_ rig: Rig) async throws {
+        rig.engine.finishNaturally()
+        try await eventually("21 after 19") { rig.player.item?.entryID == self.id("21") && rig.player.isPlaying }
+        rig.engine.finishNaturally()
+        await settle()
+        XCTAssertEqual(rig.player.item?.entryID, id("21"), "no wrap back to 19")
+        XCTAssertEqual(rig.player.status, .ended)
+    }
+
+    /// Task 4.2: the end of one load reported twice (the engine's completion delivered again before
+    /// anything else ran) is one completion: one Mark completed to the Mac and one advance, to 20,
+    /// never a second advance past it.
+    func testAnEndReportedTwiceSendsOneCompletionAndAdvancesOnce() async throws {
+        let rig = try await makeRig(entries: ["19", "20", "21"])
+        await start(rig, "19")
+        rig.engine.finishNaturally()
+        rig.engine.finishNaturally()
+        try await eventually("20 after 19") { rig.player.item?.entryID == self.id("20") && rig.player.isPlaying }
+        try await eventually("the completion") {
+            rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("19") }
+        }
+        await settle()
+        XCTAssertEqual(rig.player.item?.entryID, id("20"), "one end, one advance")
+        XCTAssertTrue(rig.player.isPlaying)
+        let sent = try await mac.listIntents().map(\.action)
+        XCTAssertEqual(sent, [.markDone(entryID: id("19"))], "one completion record for one play-out")
+        XCTAssertEqual(rig.model.decisions.filter { $0.isSilent && $0.entryID == id("19") }.count, 1)
     }
 
     /// A continuation still in its candidate's start lookup is superseded by the listener's command:
