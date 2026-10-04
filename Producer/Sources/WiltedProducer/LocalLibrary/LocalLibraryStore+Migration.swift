@@ -5,8 +5,13 @@ import WiltedDomain
 import WiltedSync
 
 extension LocalLibraryStore {
-    /// Checkpoints the source WAL and verifies a complete V5 rollback copy before
-    /// the live V6 migration is allowed to open the source database.
+    /// Checkpoints the source WAL, migrates a disposable clone to the current
+    /// schema and verifies its row counts, then writes a complete retained
+    /// copy (main file plus every sidecar) before the live store may migrate.
+    ///
+    /// Works for every supported source version (V1 through the version
+    /// before current). An unrecognised store is refused before the
+    /// checkpoint, so it is never mutated.
     public nonisolated static func migrationPreflight(at sourceURL: URL, retainingAt destinationURL: URL? = nil) throws -> LocalLibraryMigrationPreflight {
         let manager = FileManager.default
         guard manager.fileExists(atPath: sourceURL.path) else {
@@ -18,20 +23,26 @@ extension LocalLibraryStore {
            destinationURL.deletingLastPathComponent().standardizedFileURL == sourceDirectory.standardizedFileURL {
             throw LocalLibraryStoreError.migrationPreflightFailed("retained destination must not share the source directory")
         }
+        let sourceVersion: Int
+        switch try diskSchemaVersion(at: sourceURL) {
+        case .known(let version): sourceVersion = version
+        case .absent: throw LocalLibraryStoreError.migrationPreflightFailed("source store does not exist")
+        case .unrecognized(let detail): throw LocalLibraryStoreError.incompatibleStoreVersion(detail)
+        }
         try checkpointSQLite(at: sourceURL)
         let retainedDirectory = destinationURL?.deletingLastPathComponent()
-            ?? sourceDirectory.appendingPathComponent("\(sourceName).v5-\(UUID().uuidString)", isDirectory: true)
+            ?? sourceDirectory.appendingPathComponent("\(sourceName).v\(sourceVersion)-backup-\(UUID().uuidString)", isDirectory: true)
         try manager.createDirectory(at: retainedDirectory, withIntermediateDirectories: true)
         let retainedURL = destinationURL ?? retainedDirectory.appendingPathComponent(sourceName)
         let retainedName = retainedURL.lastPathComponent
-        let files = try manager.contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent == sourceName || $0.lastPathComponent.hasPrefix("\(sourceName)-") }
+        // Count before capturing bytes: even a read-only SQLite open may touch
+        // the shared-memory sidecar, and the backup must equal the source as left.
+        let sourceCounts = try tableRowCounts(at: sourceURL)
+        let files = try storeFiles(named: sourceName, in: sourceDirectory)
         guard files.contains(where: { $0.standardizedFileURL == sourceURL.standardizedFileURL }) else {
             throw LocalLibraryStoreError.migrationPreflightFailed("source store disappeared")
         }
-        let checkpointedFiles = try files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }).map { file in
-            (url: file, bytes: try Data(contentsOf: file))
-        }
+        let checkpointedFiles = try files.map { file in (url: file, bytes: try Data(contentsOf: file)) }
         // Validate a disposable clone. SwiftData may checkpoint or remove WAL
         // sidecars as it opens a store, so opening retainedURL itself would make
         // the rollback artifact differ from the post-checkpoint source.
@@ -40,22 +51,21 @@ extension LocalLibraryStore {
             // disposable validation clone because SQLite may delete them on open.
             try manager.copyItem(at: sourceURL, to: validationURL)
             do {
-                let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
-                let configuration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
-                _ = try ModelContainer(for: schema, configurations: [configuration])
-            } catch {
-                // Legacy V1-V4 stores are still supported. Upgrade only the disposable
-                // validation clone to V5; the retained copy and source remain untouched.
-                do {
-                    let schema = Schema(versionedSchema: LocalLibrarySchemaV5.self)
+                let schema = Schema(versionedSchema: LocalLibraryCurrentSchema.self)
+                try autoreleasepool {
                     let configuration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
-                    _ = try ModelContainer(for: schema, migrationPlan: LocalLibraryV5MigrationPlan.self,
-                                            configurations: [configuration])
-                    let reopenedConfiguration = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
-                    _ = try ModelContainer(for: schema, configurations: [reopenedConfiguration])
-                } catch {
-                    throw LocalLibraryStoreError.migrationPreflightFailed("retained V5 copy could not be opened: \(error)")
+                    _ = try ModelContainer(for: schema, migrationPlan: LocalLibraryCurrentMigrationPlan.self,
+                                           configurations: [configuration])
                 }
+                try autoreleasepool {
+                    let reopened = ModelConfiguration(schema: schema, url: validationURL, cloudKitDatabase: .none)
+                    _ = try ModelContainer(for: schema, configurations: [reopened])
+                }
+                try verifyRowCounts(sourceCounts, preserved: try tableRowCounts(at: validationURL))
+            } catch {
+                throw LocalLibraryStoreError.migrationPreflightFailed(
+                    "disposable V\(sourceVersion) clone did not migrate to V\(LocalLibrarySchemaVersion.current.rawValue): \(error)"
+                )
             }
         }
         // Copy only after validation has closed so SQLite cannot clean up the
@@ -63,23 +73,77 @@ extension LocalLibraryStore {
         // source file, including zero-length WAL/SHM files.
         var retainedFiles: [URL] = []
         for file in checkpointedFiles {
-            let suffix = file.url.lastPathComponent == sourceName
-                ? ""
-                : String(file.url.lastPathComponent.dropFirst(sourceName.count))
+            let suffix = String(file.url.lastPathComponent.dropFirst(sourceName.count))
             let copy = retainedDirectory.appendingPathComponent(retainedName + suffix)
             try file.bytes.write(to: copy, options: .atomic)
             retainedFiles.append(copy)
         }
         guard manager.fileExists(atPath: retainedURL.path) else {
-            throw LocalLibraryStoreError.migrationPreflightFailed("retained V5 store was not written")
+            throw LocalLibraryStoreError.migrationPreflightFailed("retained V\(sourceVersion) store was not written")
         }
         return LocalLibraryMigrationPreflight(sourceURL: sourceURL, retainedURL: retainedURL, retainedFiles: retainedFiles)
     }
 
-    nonisolated static func hasV6PodcastTables(at url: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        let result = runSQLite(url: url, sql: "SELECT name FROM sqlite_master WHERE lower(name) LIKE '%podcastfeed%' LIMIT 1;")
-        return result.status == 0 && !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// Replaces the source store's main file and sidecars with the retained
+    /// backup's. Every source file is removed first and the backup is copied
+    /// to new files, so a connection still holding the old files cannot write
+    /// into the restored ones. The backup itself is never modified.
+    public nonisolated static func restoreMigrationBackup(_ preflight: LocalLibraryMigrationPreflight) throws {
+        let manager = FileManager.default
+        let sourceDirectory = preflight.sourceURL.deletingLastPathComponent()
+        let sourceName = preflight.sourceURL.lastPathComponent
+        let retainedName = preflight.retainedURL.lastPathComponent
+        guard manager.fileExists(atPath: preflight.retainedURL.path) else {
+            throw LocalLibraryStoreError.migrationPreflightFailed("retained backup is missing")
+        }
+        for file in try storeFiles(named: sourceName, in: sourceDirectory) {
+            try manager.removeItem(at: file)
+        }
+        for file in try storeFiles(named: retainedName, in: preflight.retainedURL.deletingLastPathComponent()) {
+            let suffix = String(file.lastPathComponent.dropFirst(retainedName.count))
+            try manager.copyItem(at: file, to: sourceDirectory.appendingPathComponent(sourceName + suffix))
+        }
+    }
+
+    /// The main store file plus its `-wal`/`-shm` (or other `-`) sidecars.
+    private nonisolated static func storeFiles(named name: String, in directory: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent == name || $0.lastPathComponent.hasPrefix("\(name)-") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Row counts of every entity table (`Z*`, excluding Core Data's `Z_*`
+    /// bookkeeping), read through a read-only SQLite connection.
+    nonisolated static func tableRowCounts(at url: URL) throws -> [String: Int] {
+        let tables = runSQLite(url: url, readOnly: true, sql:
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Z%' AND name NOT LIKE 'Z\\_%' ESCAPE '\\';")
+        guard tables.status == 0 else {
+            throw LocalLibraryStoreError.migrationPreflightFailed("table listing failed: \(tables.output)")
+        }
+        let names = tables.output.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty }
+        guard !names.isEmpty else { return [:] }
+        let sql = names.map { "SELECT '\($0)', count(*) FROM \"\($0)\"" }.joined(separator: " UNION ALL ") + ";"
+        let counts = runSQLite(url: url, readOnly: true, sql: sql)
+        guard counts.status == 0 else {
+            throw LocalLibraryStoreError.migrationPreflightFailed("row count failed: \(counts.output)")
+        }
+        var result: [String: Int] = [:]
+        for line in counts.output.split(whereSeparator: \.isNewline) {
+            let fields = line.split(separator: "|")
+            guard fields.count == 2, let count = Int(fields[1]) else { continue }
+            result[String(fields[0])] = count
+        }
+        return result
+    }
+
+    /// Every entity table present both before and after a migration must
+    /// keep its row count; a lightweight stage only adds tables and columns.
+    nonisolated static func verifyRowCounts(_ before: [String: Int], preserved after: [String: Int]) throws {
+        for (table, count) in before where after[table] != nil && after[table] != count {
+            throw LocalLibraryStoreError.migrationPreflightFailed(
+                "table \(table) had \(count) rows before migration and \(after[table] ?? 0) after"
+            )
+        }
     }
 
     private nonisolated static func checkpointSQLite(at url: URL) throws {
@@ -98,7 +162,7 @@ extension LocalLibraryStore {
         manager: FileManager, sourceName: String, operation: (URL) throws -> T
     ) throws -> T {
         let directory = manager.temporaryDirectory.appendingPathComponent(
-            "wilted-v5-validation-\(UUID().uuidString)", isDirectory: true
+            "wilted-migration-validation-\(UUID().uuidString)", isDirectory: true
         )
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? manager.removeItem(at: directory) }
@@ -130,10 +194,10 @@ extension LocalLibraryStore {
     }
     #endif
 
-    private nonisolated static func runSQLite(url: URL, sql: String) -> (status: Int32, output: String) {
+    private nonisolated static func runSQLite(url: URL, readOnly: Bool = false, sql: String) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [url.path, sql]
+        process.arguments = (readOnly ? ["-readonly"] : []) + [url.path, sql]
         let pipe = Pipe()
         process.standardOutput = pipe; process.standardError = pipe
         do {

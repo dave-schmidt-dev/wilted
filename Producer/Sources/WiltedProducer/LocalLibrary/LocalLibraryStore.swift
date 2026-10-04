@@ -22,10 +22,27 @@ public actor LocalLibraryStore {
     /// Number of `context.fetch` calls made by `podcastLibrarySnapshot()` since
     /// this store opened. Test-only: proves the snapshot's read cost stays
     /// flat as the library grows instead of scaling with episode count.
-    internal(set) var podcastLibrarySnapshotFetchCount = 0
+    var podcastLibrarySnapshotFetchCount = 0
 
+    /// Number of ledger, high-water and summary fetches made by the lifetime
+    /// statistics write and read paths since this store opened. Test-only:
+    /// proves each checkpoint and summary read costs a constant number of
+    /// exact-key fetches regardless of ledger size.
+    var lifetimeStatisticsFetchCount = 0
+
+    /// Whether a summary rebuild is running; only one may run at a time.
+    var lifetimeStatisticsRebuildRunning = false
+
+    /// Opens (creating, migrating or refusing) the store at `url`.
+    ///
+    /// An existing store that is older than the current schema is first
+    /// copied to a retained backup and migrated on a disposable clone; only
+    /// then is it migrated in place, and a failed migration restores the
+    /// original. A store newer than this build, or unrecognised, is refused
+    /// without any write. With `migrate: false`, a store that needs a
+    /// migration is refused instead of migrated.
     public init(url: URL, migrate: Bool = true) throws {
-        try self.init(url: url, migrate: migrate, migrationFailure: nil, retainingAt: nil)
+        try self.init(url: url, migrate: migrate, hooks: LocalLibraryOpenHooks())
     }
 
     #if DEBUG
@@ -33,49 +50,17 @@ public actor LocalLibraryStore {
     /// forward migration fails after preflight and before the live container opens.
     internal init(url: URL, migrate: Bool = true,
                   migrationFailure: (@Sendable () throws -> Void)?, retainingAt: URL? = nil) throws {
-        self.url = url
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var retainedURL: URL?
-        if migrate, FileManager.default.fileExists(atPath: url.path), !Self.hasV6PodcastTables(at: url) {
-            // This runs before ModelContainer sees the source URL. The retained
-            // copy is the rollback artifact if a forward migration fails.
-            retainedURL = try Self.migrationPreflight(at: url, retainingAt: retainingAt).retainedURL
-            try migrationFailure?()
-        }
-        migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV13.self)
-        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
-        if migrate {
-            container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
-                                            configurations: [configuration])
-        } else {
-            container = try ModelContainer(for: schema, configurations: [configuration])
-        }
-    }
-
-    #else
-    private init(url: URL, migrate: Bool, migrationFailure: (@Sendable () throws -> Void)?, retainingAt: URL?) throws {
-        self.url = url
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var retainedURL: URL?
-        if migrate, FileManager.default.fileExists(atPath: url.path), !Self.hasV6PodcastTables(at: url) {
-            // This runs before ModelContainer sees the source URL. The retained
-            // copy is the rollback artifact if a forward migration fails.
-            retainedURL = try Self.migrationPreflight(at: url).retainedURL
-        }
-        migrationBackupURL = retainedURL
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV13.self)
-        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
-        if migrate {
-            container = try ModelContainer(for: schema, migrationPlan: LocalLibraryMigrationPlan.self,
-                                            configurations: [configuration])
-        } else {
-            container = try ModelContainer(for: schema, configurations: [configuration])
-        }
+        try self.init(url: url, migrate: migrate,
+                      hooks: LocalLibraryOpenHooks(beforeMigration: migrationFailure, retainingAt: retainingAt))
     }
     #endif
+
+    init(url: URL, migrate: Bool, hooks: LocalLibraryOpenHooks) throws {
+        self.url = url
+        let opened = try Self.openContainer(at: url, migrate: migrate, hooks: hooks)
+        container = opened.container
+        migrationBackupURL = opened.backupURL
+    }
 
     // MARK: - Orphan media audit and reclaim (Task 4.4)
 
