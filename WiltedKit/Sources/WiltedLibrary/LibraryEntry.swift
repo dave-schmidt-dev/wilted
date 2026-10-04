@@ -14,6 +14,13 @@ public struct PodcastEpisodePayload: Codable, Sendable, Equatable {
         self.rssGUID = rssGUID
         self.episodeLink = episodeLink
     }
+
+    /// A fresh encoder with a fixed key order, so equal payloads always encode to equal bytes.
+    static var encoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
 }
 
 /// One item in the synchronized library, independent of its kind.
@@ -109,7 +116,10 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         try with(removal: state, removedAt: state == .none ? nil : removedAt)
     }
 
-    /// Builds a `podcast.episode` entry from its typed payload.
+    /// Builds a `podcast.episode` entry from its typed payload. The payload is encoded with
+    /// sorted keys: `JSONEncoder`'s default key order varies between encodes, and entry
+    /// equality (and so `LibraryStateDiffer`) compares payload bytes, so an unsorted payload
+    /// would re-send an unchanged entry on every pass.
     public static func podcastEpisode(
         id: ItemID,
         sourceID: ItemID,
@@ -125,7 +135,7 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         try LibraryEntry(
             id: id, kind: .podcastEpisode, sourceID: sourceID, title: title, summary: summary,
             publishedAt: publishedAt, durationSeconds: durationSeconds, artworkRef: artworkRef,
-            removal: removal, removedAt: removedAt, payload: JSONEncoder().encode(payload)
+            removal: removal, removedAt: removedAt, payload: PodcastEpisodePayload.encoder.encode(payload)
         )
     }
 

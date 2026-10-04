@@ -91,4 +91,31 @@ final class LibraryStateDifferTests: XCTestCase {
         let after = snapshot(slots: [slot("b", 1)], entries: before.entries.values.map { $0 })
         XCTAssertEqual(LibraryStateDiffer.diff(from: before, to: after), [.slotRemoved(entryID: id("a"))])
     }
+
+    /// Regression (B1 Task 5.2): `JSONEncoder`'s default key order varies between encodes, and the
+    /// differ compares payload bytes, so an unsorted `podcastEpisode` payload re-sent every
+    /// unchanged entry on every pass.
+    func testPodcastEpisodePayloadBytesAreStableSoAnUnchangedEntryIsNotResent() throws {
+        func build() throws -> LibraryEntry {
+            try LibraryEntry.podcastEpisode(
+                id: id("a"), sourceID: id("feed"), title: "Episode a", summary: "S",
+                publishedAt: Date(timeIntervalSince1970: 1_000), durationSeconds: 60,
+                payload: PodcastEpisodePayload(
+                    enclosureURL: try XCTUnwrap(URL(string: "https://example.test/a.mp3")),
+                    feedURL: try XCTUnwrap(URL(string: "https://example.test/feed.xml")),
+                    rssGUID: "guid-a",
+                    episodeLink: try XCTUnwrap(URL(string: "https://example.test/a"))
+                )
+            )
+        }
+        let first = try build()
+        for _ in 0..<50 {
+            let again = try build()
+            XCTAssertEqual(again.payload, first.payload)
+            XCTAssertEqual(
+                LibraryStateDiffer.diff(from: LibrarySnapshot(entries: [first]), to: LibrarySnapshot(entries: [again])),
+                []
+            )
+        }
+    }
 }
