@@ -121,6 +121,10 @@ extension LocalLibraryStore {
             stage = .feed
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
             where record.id == feed { remove(record) }
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.PodcastFeedPolicyRecord>())
+            where record.feedID == feed { remove(record) }
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeMatchRuleRecord>())
+            where record.feedID == feed { remove(record) }
             try Self.reachRemovalStage(.feed)
 
             stage = .episodes
@@ -129,6 +133,8 @@ extension LocalLibraryStore {
             let episodeIDs = Set(episodes.map(\.id))
             for record in episodes { remove(record) }
             staged += try stageEpisodeLinkRemoval(for: episodeIDs, in: context)
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeDecisionRecord>())
+            where episodeIDs.contains(record.episodeID) { remove(record) }
             try Self.reachRemovalStage(.episodes)
 
             stage = .queue

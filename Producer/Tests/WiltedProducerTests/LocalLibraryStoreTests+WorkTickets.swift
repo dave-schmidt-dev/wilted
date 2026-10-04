@@ -31,7 +31,7 @@ extension LocalLibraryStoreTests {
 
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v15, "the migration plan must carry a V11 store to the current V15")
+        XCTAssertEqual(inspection.schemaVersion, .current, "the migration plan must carry a V11 store to the current schema")
 
         let migratedDownload = try await migrated.download(for: episodeID)
         XCTAssertEqual(migratedDownload, download, "the pre-existing download row must survive the lightweight migration")
@@ -298,7 +298,7 @@ extension LocalLibraryStoreTests {
 
         let migrated = try LocalLibraryStore(url: url)
         let inspection = try await migrated.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v15, "the migration plan must carry a V12 store to the current V15")
+        XCTAssertEqual(inspection.schemaVersion, .current, "the migration plan must carry a V12 store to the current schema")
 
         let first = try await migrated.reconcileEpisodeRemovals()
         XCTAssertEqual(first.backfilledRetirementCount, 1)

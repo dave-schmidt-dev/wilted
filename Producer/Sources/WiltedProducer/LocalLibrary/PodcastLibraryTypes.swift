@@ -207,3 +207,31 @@ public struct PodcastPlaybackSpeed: Codable, Equatable, Sendable {
         self.itemID = itemID; self.speed = speed; self.updatedAt = updatedAt
     }
 }
+
+/// A durable keep/skip answer for an episode.
+public enum EpisodeDecision: String, Codable, Equatable, Sendable {
+    case keep
+    case skip
+}
+
+/// Where an episode decision came from.
+public enum EpisodeDecisionSource: String, Codable, Equatable, Sendable {
+    case manual
+    case rule
+    case policy
+}
+
+/// The value representation of V16's episode-decision record.
+public struct EpisodeDecisionRecord: Codable, Equatable, Sendable {
+    public let episodeID: ItemID
+    public let decision: EpisodeDecision
+    public let source: EpisodeDecisionSource
+    public let ruleID: UUID?
+    public let decidedAt: Timestamp
+
+    public init(episodeID: ItemID, decision: EpisodeDecision, source: EpisodeDecisionSource,
+                ruleID: UUID? = nil, decidedAt: Timestamp) {
+        self.episodeID = episodeID; self.decision = decision; self.source = source
+        self.ruleID = ruleID; self.decidedAt = decidedAt
+    }
+}

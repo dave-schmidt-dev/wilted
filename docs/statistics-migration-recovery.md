@@ -1,4 +1,4 @@
-# Store migration (V14 statistics, V15 episode links): backup, validation, restore, downgrade refusal
+# Store migration (V14 statistics, V15 links, V16 automation): backup, validation, restore, downgrade refusal
 
 Store schema V14 adds the measured lifetime ledger (`LifetimeMeasureEventRecord`),
 its per-session/attempt high-water rows (`LifetimeMeasureHighWaterRecord`), one
@@ -19,6 +19,11 @@ below, so a V14 store gets the same clone check, retained backup and
 restore-on-failure as a V13 one. The code is in `LocalLibrarySchemaV15.swift`
 and `LocalLibraryStore+EpisodeLinks.swift`.
 
+Store schema V16 adds three wholly new tables: `PodcastFeedPolicyRecord`
+(per-feed automation overrides), `EpisodeMatchRuleRecord` (ordered per-feed
+matching rules), and `EpisodeDecisionRecord` (one keep/skip decision per
+episode). No existing entity changes shape, so V15 -> V16 is lightweight.
+
 Never practise this procedure on the owner's library. Use a copy of
 `Producer/Tests/Fixtures/library-v13.store` or `library-v14.store` under a
 `mktemp -d` directory below `$TMPDIR`.
@@ -27,21 +32,21 @@ Never practise this procedure on the owner's library. Use a copy of
 
 `LocalLibraryStore(url:)` runs one sequence for every build configuration:
 
-1. **No file:** a new V15 store is created. Its summary starts `ready` at zero,
+1. **No file:** a new V16 store is created. Its summary starts `ready` at zero,
    and tracking starts now.
 2. **Version detection:** the store's entity version hashes are read from its
    metadata through a read-only Core Data call. They are compared with every
-   released schema, V1 through V15. Nothing is written.
+   released schema, V1 through V16. Nothing is written.
 3. **Unrecognised or newer store:** the open throws
    `LocalLibraryStoreError.incompatibleStoreVersion`. This is the downgrade
    refusal. It happens before any checkpoint, copy or open, so the main file,
    `-wal` and `-shm` stay byte-identical and no backup directory is created.
-4. **Current V15 store:** it opens directly.
-5. **Older store (V1 to V14):**
+4. **Current V16 store:** it opens directly.
+5. **Older store (V1 to V15):**
    1. `PRAGMA wal_checkpoint(TRUNCATE)` folds the WAL into the main file. A busy
       or incomplete checkpoint aborts the open.
    2. Entity-table row counts are read through a read-only SQLite connection.
-   3. A **disposable clone** of the main file is migrated to V15 with the full
+   3. A **disposable clone** of the main file is migrated to V16 with the full
       migration plan and reopened. Its row counts must equal the source's for
       every table both have. The clone is then deleted.
    4. The checkpointed main file and **every** sidecar are copied to the
@@ -106,8 +111,8 @@ the restored copy. Tests run it on fixtures:
 
 ## Downgrade
 
-An older build cannot open a V15 store, because its migration plan has no V15
-schema. This build refuses anything newer than V15 the same way, without
+An older build cannot open a V16 store, because its migration plan has no V16
+schema. This build refuses anything newer than V16 the same way, without
 writing to it. To run an
 older build, restore that version's retained backup using the steps above.
 Measured events and episode links recorded after the migration are not in that
@@ -119,19 +124,21 @@ All of these are in `Producer/Tests/WiltedProducerTests/`.
 
 - `LocalLibraryEpisodeLinkTests` covers:
   - the frozen V14 fixture hash
-  - V14 to V15 migration keeping every table's row count and every statistic
+  - V14 to V16 migration keeping every table's row count and every statistic
   - injected post-migration failure restoring the V14 original
-  - refusal of a store newer than V15 with a byte-identical directory
+  - refusal of a store newer than V16 with a byte-identical directory
   - the link written by admission and refresh, joined by the snapshot, kept on
     dismissal and deleted with the episode
 - `LocalLibraryStoreCompatibilityTests` covers:
   - the frozen V13 fixture hash
-  - V13 to V15 migration and reopen with every fixture value preserved
+  - V13 to V16 migration and reopen with every fixture value preserved
   - backup bytes equal to the fixture
   - `migrate: false` refusal
   - injected post-migration failure and restore
   - a hot-WAL V13 source checkpointed into a complete backup
   - refusal of a newer store with a byte-identical directory
+- `LocalLibraryFeedAutomationTests` covers the frozen V15 fixture and V13,
+  V14 and V15 migration to V16 with retained backups and preserved rows.
 - `LocalLibraryLifetimeEventTests` covers:
   - units
   - exact-key deduplication

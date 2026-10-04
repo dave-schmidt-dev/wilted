@@ -4,7 +4,7 @@ import XCTest
 import WiltedDomain
 @testable import WiltedProducer
 
-/// V15 episode page links: the frozen V14 store migrates without losing a row
+/// V15 episode page links: the frozen V14 store migrates through V16 without losing a row
 /// or a statistic, and the link row follows its episode through admission,
 /// refresh, snapshot reads and hard deletion.
 final class LocalLibraryEpisodeLinkTests: XCTestCase {
@@ -46,7 +46,7 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: v14FixtureURL), .known(14))
     }
 
-    func testV14FixtureMigratesToV15KeepingEveryRowAndStatistic() async throws {
+    func testV14FixtureMigratesToV16KeepingEveryRowAndStatistic() async throws {
         let copied = try copiedV14Fixture()
         let before = try LocalLibraryStore.tableRowCounts(at: v14FixtureURL)
         XCTAssertGreaterThan(before.values.reduce(0, +), 10, "the fixture must carry real rows")
@@ -55,7 +55,7 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
         do {
             let store = try LocalLibraryStore(url: copied)
             let retained = await store.migrationBackupURL
-            backupURL = try XCTUnwrap(retained, "a V14 store must be backed up before it opens as V15")
+            backupURL = try XCTUnwrap(retained, "a V14 store must be backed up before it opens as V16")
             let summary = try await store.lifetimeStatisticsSummary()
             XCTAssertEqual(summary.state, .ready)
             XCTAssertEqual(summary.legacy, LifetimeStatistics(audioProcessedSeconds: 12.5))
@@ -70,10 +70,13 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
         }
         XCTAssertEqual(try LocalLibraryStoreCompatibilityTests.sha256(of: backupURL), Self.v14FixtureSHA256,
                        "the backup is the untouched V14 store")
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(15))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(16))
 
         var after = try LocalLibraryStore.tableRowCounts(at: copied)
         XCTAssertEqual(after.removeValue(forKey: "ZPODCASTEPISODELINKRECORD"), 0, "the new table starts empty")
+        XCTAssertEqual(after.removeValue(forKey: "ZPODCASTFEEDPOLICYRECORD"), 0)
+        XCTAssertEqual(after.removeValue(forKey: "ZEPISODEMATCHRULERECORD"), 0)
+        XCTAssertEqual(after.removeValue(forKey: "ZEPISODEDECISIONRECORD"), 0)
         XCTAssertEqual(after, before, "every pre-existing table keeps its exact row count")
 
         let reopened = try LocalLibraryStore(url: copied)
@@ -87,7 +90,7 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
     func testFailureAfterV14MigrationRestoresTheV14Original() throws {
         let copied = try copiedV14Fixture()
         let hooks = LocalLibraryOpenHooks(afterMigration: {
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(15))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(16))
             throw InjectedMigrationFailure()
         })
         XCTAssertThrowsError(try LocalLibraryStore(url: copied, migrate: true, hooks: hooks)) { error in
@@ -107,11 +110,11 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
         XCTAssertEqual(try LocalLibraryStoreCompatibilityTests.sha256(of: copied), Self.v14FixtureSHA256)
     }
 
-    /// An older build must not open a V15 store: the link table is unknown to
+    /// An older build must not open a V16 store: the automation tables are unknown to
     /// it. A store from any schema newer than this build gets the same refusal.
-    func testStoreNewerThanV15IsRefusedAndLeftByteIdentical() throws {
+    func testStoreNewerThanV16IsRefusedAndLeftByteIdentical() throws {
         let url = try makeStoreURL()
-        let schema = Schema(LocalLibrarySchemaV15.models + [FutureSchemaRecord.self])
+        let schema = Schema(LocalLibrarySchemaV16.models + [FutureSchemaRecord.self])
         let future = try ModelContainer(for: schema, configurations: [
             ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none),
         ])

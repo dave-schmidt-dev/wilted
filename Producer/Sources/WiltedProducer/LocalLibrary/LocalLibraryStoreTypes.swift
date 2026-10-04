@@ -22,8 +22,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v13 = 13
     case v14 = 14
     case v15 = 15
+    case v16 = 16
 
-    public static let current: LocalLibrarySchemaVersion = .v15
+    public static let current: LocalLibrarySchemaVersion = .v16
 }
 
 /// The local ownership state used by generation-based remote reconciliation.
@@ -195,6 +196,7 @@ public enum LocalLibraryStoreError: Error, Equatable, Sendable {
     case invalidPodcastState(String)
     case migrationPreflightFailed(String)
     case invalidWorkTicketTransition(from: String, to: String)
+    case invalidFeedAutomationPolicy(String)
     /// The on-disk store matches no schema this build knows -- typically a
     /// newer build's store. Nothing was written, checkpointed or copied.
     case incompatibleStoreVersion(String)
