@@ -306,6 +306,7 @@ struct WiltedMacArticleRow: View {
     let model: WiltedMacModel
     let article: WiltedMacArticle
     @Environment(\.colorScheme) private var colorScheme
+    @State private var removal = WiltedMacRemovalFlow()
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
@@ -329,6 +330,7 @@ struct WiltedMacArticleRow: View {
                     )
                     .lineLimit(1)
                     .truncationMode(.tail)
+                WiltedMacRemovalStatusLine(flow: removal, model: model, identifierSuffix: "-\(article.id)")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -340,7 +342,8 @@ struct WiltedMacArticleRow: View {
             }
 
             Menu {
-                Button("Remove", role: .destructive) { model.removeArticle(article) }
+                Button("Delete…", role: .destructive) { removal.request(.article(article)) }
+                    .disabled(removal.isSaving)
             } label: {
                 Image(systemName: "ellipsis")
                     .accessibilityLabel("More actions for \(article.title)")
@@ -352,6 +355,7 @@ struct WiltedMacArticleRow: View {
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .contentShape(Rectangle())
+        .wiltedRemovalConfirmation(removal, model: model)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-article-row-\(article.id)")
     }

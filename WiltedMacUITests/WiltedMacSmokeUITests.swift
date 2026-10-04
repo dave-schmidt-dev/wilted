@@ -91,13 +91,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         // Drive the removal rather than merely proving the control is drawn.
         // This is the library's only destructive path, so "the menu exists" is
         // not evidence that pressing it removes anything.
-        let remove = app.menuItems["Remove"]
+        let remove = app.menuItems["Delete…"]
         XCTAssertTrue(remove.waitForExistence(timeout: 5))
         remove.click()
+        confirmRemoval(in: app, label: "Confirm delete")
 
         XCTAssertTrue(
             row.waitForNonExistence(timeout: 10),
-            "Remove left the article on screen; the row must disappear once the item is tombstoned."
+            "Delete left the article on screen; the row must disappear once the item is tombstoned."
         )
         XCTAssertTrue(
             app.descendants(matching: .any)["wilted-menu-empty"].waitForExistence(timeout: 10),
@@ -146,8 +147,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-row-'")
         ).count
         unsubscribe.click()
-        let message = app.descendants(matching: .any)["wilted-podcast-operation-message"]
-        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        confirmRemoval(in: app, label: "Confirm unsubscribe")
+        let removalStatus = app.descendants(matching: .any)["wilted-delete-save-status"]
+        XCTAssertTrue(removalStatus.waitForExistence(timeout: 8))
         let rowsAfter = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-row-'")
         ).count
@@ -631,6 +633,15 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// The words an element shows. macOS puts a Text's words in its value, not
     /// its label, and a Text with links can hand each run to a child, so the
     /// element and its static-text descendants are read together.
+    /// Presses the removal dialog's destructive button: by identifier, or by
+    /// its label where the dialog does not carry identifiers through.
+    private func confirmRemoval(in app: XCUIApplication, label: String) {
+        let byIdentifier = app.descendants(matching: .any)["wilted-delete-confirm"]
+        let confirm = byIdentifier.waitForExistence(timeout: 5) ? byIdentifier : app.buttons[label]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "the removal dialog must offer \(label)")
+        confirm.click()
+    }
+
     private func visibleText(of element: XCUIElement) -> String {
         // macOS 27 can leave a menu button's label empty and carry its name in the title.
         let own = [element.value as? String, element.label, element.title].compactMap { $0 }

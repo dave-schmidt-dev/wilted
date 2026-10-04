@@ -107,7 +107,7 @@ extension PlaybackControllerTests {
     func testACheckpointTakenMidPlaybackPersistsWithoutStopping() async throws {
         let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
+        let (_, revision) = try await storedFixture(in: store)
         let backend = FakeBackend()
         let controller = PlaybackController(store: store, backend: backend, deviceID: "test-device")
         try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
@@ -139,7 +139,7 @@ extension PlaybackControllerTests {
         let path = storeURL()
         defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
+        let (_, revision) = try await storedFixture(in: store)
         let backend = FakeBackend()
         let controller = PlaybackController(store: store, backend: backend)
         var finishCount = 0
@@ -292,7 +292,7 @@ extension PlaybackControllerTests {
         XCTAssertEqual(PlaybackController.playedTimeCheckpointInterval, 10)
         let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
+        let (_, revision) = try await storedFixture(in: store)
         let clock = ListeningTestClock()
         var controller: PlaybackController? = PlaybackController(store: store, backend: FakeBackend())
         controller?.listeningClock = { clock.now }

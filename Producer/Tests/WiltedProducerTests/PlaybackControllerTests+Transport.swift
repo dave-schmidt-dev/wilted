@@ -13,7 +13,7 @@ extension PlaybackControllerTests {
     func testPauseThenNewControllerResumesMatchingRevision() async throws {
         let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
+        let (_, revision) = try await storedFixture(in: store)
         let backend = FakeBackend()
         let controller = PlaybackController(store: store, backend: backend, deviceID: "test-device")
         try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
@@ -85,7 +85,7 @@ extension PlaybackControllerTests {
         let path = storeURL()
         defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
+        let (_, revision) = try await storedFixture(in: store)
         let backend = FakeBackend()
         let controller = PlaybackController(store: store, backend: backend)
         var finishCount = 0
@@ -131,7 +131,7 @@ extension PlaybackControllerTests {
         let path = storeURL()
         defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
+        let (_, revision) = try await storedFixture(in: store)
         let backend = FakeBackend()
         backend.resetsTimeOnFailure = true
         let controller = PlaybackController(store: store, backend: backend)
@@ -169,7 +169,7 @@ extension PlaybackControllerTests {
         let path = storeURL()
         defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: path)
-        let (_, revision) = try fixture()
+        let (_, revision) = try await storedFixture(in: store)
         let backend = FakeBackend()
         backend.resetsTimeOnFailure = true
         let controller = PlaybackController(store: store, backend: backend)

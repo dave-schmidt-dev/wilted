@@ -17,6 +17,7 @@ struct WiltedMacFeedsView: View {
     @State private var selectedFeedEpisodeIDs: Set<String> = []
     /// This changes one request only; Settings remains the saved default.
     @State private var subscriptionInitialMetadataOverride: Int?
+    @State private var feedRemoval = WiltedMacRemovalFlow()
 
     init(model: WiltedMacModel) {
         _model = Bindable(model)
@@ -368,8 +369,10 @@ struct WiltedMacFeedsView: View {
                     }
                 }
             }
+            WiltedMacRemovalStatusLine(flow: feedRemoval, model: model)
             WiltedMacPodcastOperationMessage(model: model)
         }
+        .wiltedRemovalConfirmation(feedRemoval, model: model)
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(WiltedScreenCopy.feedsIdentifier)
@@ -424,7 +427,8 @@ struct WiltedMacFeedsView: View {
             .labelsHidden()
             .accessibilityLabel("Show episodes from \(subscription.title)")
             .accessibilityIdentifier("wilted-podcast-feed-enabled-\(subscription.id)")
-            Button("Unsubscribe") { model.unsubscribe(subscription) }
+            Button("Unsubscribe…") { feedRemoval.request(.feed(subscription)) }
+                .disabled(feedRemoval.isSaving)
                 .accessibilityIdentifier("wilted-podcast-feed-unsubscribe-\(subscription.id)")
         }
         .padding(.vertical, WiltedTheme.Spacing.small)

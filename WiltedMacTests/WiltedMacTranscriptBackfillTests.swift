@@ -43,7 +43,7 @@ final class WiltedMacTranscriptBackfillTests: XCTestCase {
     }
 }
 
-/// The library's only destructive path. `removeArticle` marks the stored article
+/// The library's only destructive path. `commitArticleRemoval` marks the stored article
 /// deleted and records a tombstone; the row must actually leave the list.
 @MainActor
 final class WiltedMacArticleRemovalTests: XCTestCase {
@@ -56,9 +56,13 @@ final class WiltedMacArticleRemovalTests: XCTestCase {
         )
         try await poll("fixture article never reached the library") { !model.articles.isEmpty }
         let article = try XCTUnwrap(model.articles.first)
+        // The row can show before the fixture's store write lands; the commit
+        // needs the stored article.
+        await model.fixtureInstallTask?.value
 
-        model.removeArticle(article)
-        try await poll("removeArticle left the article in the library") { model.articles.isEmpty }
+        let removed = try await model.commitArticleRemoval(article)
+        XCTAssertTrue(removed)
+        XCTAssertTrue(model.articles.isEmpty, "the committed removal left the article in the library")
     }
 
     private func poll(

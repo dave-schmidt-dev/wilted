@@ -123,11 +123,11 @@ extension WiltedMacModelTests {
         let (model, _) = try await modelWithFeeds(["Alpha", "Beta"], directory: directory)
         let alpha = try XCTUnwrap(model.subscriptions.first { $0.title == "Alpha" })
 
-        model.unsubscribe(alpha)
+        let removed = try await model.commitUnsubscribe(alpha)
         try await settle(model)
+        XCTAssertEqual(removed, 1)
         XCTAssertEqual(model.subscriptions.map(\.title), ["Beta"])
         XCTAssertEqual(model.episodes.map(\.feedTitle), ["Beta"])
-        XCTAssertEqual(model.podcastOperationMessage, "Unsubscribed from Alpha and removed 1 episode.")
     }
 
     /// The reported bug: episodes removed from the Larder came back. Removal

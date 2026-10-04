@@ -157,50 +157,56 @@ extension WiltedMacModel {
         }
     }
 
-    /// Removes an article from the library.
-    ///
-    /// Marks the stored article deleted and records a local tombstone, which
-    /// is what `refresh()` and the sync repository both already read. The
-    /// library had no removal path at all, so anything prepared once —
-    /// including a stray fixture row written before fixture mode moved to a
-    /// temporary directory — stayed on screen permanently.
-    ///
-    /// Local only. Publishing the tombstone to CloudKit rides the existing
-    /// pending-change path and is not triggered from here.
-    func removeArticle(_ article: WiltedMacArticle) {
 #if canImport(WiltedProducer)
-        guard let store else { return }
-        undoableRemoval = nil
-        if selectedArticleID == article.id {
-            selectedArticleID = nil
-            isNowPlaying = false
-            currentTranscript = nil
-            // Nothing is loaded any more, so the widget has to stop showing it.
-            publishNowPlaying(force: true)
+    /// Removes an article from the library, committing before anything on
+    /// screen changes.
+    ///
+    /// `LocalLibraryStore.removeArticle` writes the deleted flag and the local
+    /// tombstone in one save, so a throw means neither landed and the row,
+    /// selection and player stay as they were for a retry. A repeat returns
+    /// false and changes nothing. Local only: publishing the tombstone to
+    /// CloudKit rides the existing pending-change path.
+    @discardableResult
+    func commitArticleRemoval(_ article: WiltedMacArticle) async throws -> Bool {
+        guard let store else { throw WiltedMacRemovalUnavailable() }
+        let itemID = try ItemID(rawValue: article.id)
+        let removed = try await store.removeArticle(itemID: itemID)
+        if selectedArticleID == article.id || (!isPodcastPlayback && playback?.itemID == itemID) {
+            stopPlaybackAfterCommittedRemoval()
         }
-        Task { [weak self] in
-            guard let self else { return }
-            guard let itemID = try? ItemID(rawValue: article.id) else { return }
-            guard let stored = try? await store.articles().first(where: { $0.itemID == itemID }) else { return }
-            guard let deleted = try? Article(
-                itemID: stored.itemID, canonicalURL: stored.canonicalURL, title: stored.title,
-                source: stored.source, author: stored.author, publishedTime: stored.publishedTime,
-                createdAt: stored.createdAt, isDeleted: true
-            ) else { return }
-            try? await store.save(article: deleted)
-            // Keyed by item, deliberately. `record(tombstone:)` upserts on `id`,
-            // and this is the only path in the producer that writes one, so
-            // removing the same article twice leaves one row rather than two.
-            let tombstone = LocalLibraryTombstone(
-                id: itemID.rawValue,
-                itemID: itemID,
-                requestedAt: Timestamp(Date())
-            )
-            try? await store.record(tombstone: tombstone)
-            self.refresh()
-        }
-#endif
+        articles.removeAll { $0.id == article.id }
+        return removed
     }
+
+    /// Stops what a committed removal just took out of the library.
+    ///
+    /// The current references clear at once, so no player, widget or remote
+    /// command offers the removed item. The pause then runs as a `.stop`
+    /// command, which also supersedes a start still pending for it. Callers
+    /// reach this only after the store commit, so a failed removal never
+    /// interrupts the audio.
+    func stopPlaybackAfterCommittedRemoval() {
+        stopPlaybackCheckpointTicker()
+        cancelSeamMarker()
+        currentPodcastEpisodeID = nil
+        isPodcastPlayback = false
+        selectedArticleID = nil
+        isNowPlaying = false
+        isPlaying = false
+        currentTranscript = nil
+        playbackPositionSeconds = 0
+        playbackDurationSeconds = 0
+        publishNowPlaying(force: true)
+        guard let playback else { return }
+        issuePlaybackCommand(.stop, pending: nil) { _ in
+            // A paused transport has nothing to stop. The pause's checkpoint
+            // for the removed item is skipped by the store, and a failed pause
+            // surfaces through the command owner.
+            guard playback.liveIsPlaying else { return }
+            try await playback.pause()
+        }
+    }
+#endif
 
     /// Fetches and stores the transcript for an already-prepared article.
     ///
@@ -456,3 +462,6 @@ extension WiltedMacModel {
 
 #endif
 }
+
+/// A confirmed removal reached a model with no open library store.
+struct WiltedMacRemovalUnavailable: Error {}

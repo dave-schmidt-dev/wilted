@@ -54,6 +54,14 @@ final class PlaybackControllerTests: XCTestCase {
         return (article, revision)
     }
 
+    /// `fixture()` with its article saved, as every playable article is in
+    /// production: the store skips a first checkpoint for an item with no row.
+    func storedFixture(in store: LocalLibraryStore) async throws -> (Article, AudioRevision) {
+        let (article, revision) = try fixture()
+        try await store.save(article: article)
+        return (article, revision)
+    }
+
     func testNaturalCompletionAdvancesExactlyOnceAndInterruptionDoesNotAdvance() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }
