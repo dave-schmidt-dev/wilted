@@ -3,12 +3,20 @@ set -Eeuo pipefail
 
 # Builds the Mac app and installs it as the locally running copy.
 #
-# Debug, not Release: Release signs with a Developer ID identity and a
-# distribution profile this machine is not required to hold, while Debug is
-# Apple Development signed with a certificate-anchored designated requirement.
-# That requirement is what keeps the Documents TCC grant for
-# com.zerodelta.wilted.mac alive across rebuilds, so the installed copy does
-# not re-prompt every time it is replaced.
+# Development, not Debug or Release. Development is the live build: it compiles
+# WILTED_CLOUDKIT_LIVE and carries WiltedMac/WiltedMac.entitlements (the
+# iCloud.com.zerodelta.wilted CloudKit container, development push), so the
+# installed app runs the library publisher by default against the Development
+# CloudKit environment. Debug compiles no live transport and stays the unit-test
+# configuration; Release is the separate Production (Developer ID) build.
+#
+# Signing uses the Development configuration's own Apple Development identity
+# and the provisioning profile already cached on this Mac. The build never
+# passes -allowProvisioningUpdates, so it never contacts the developer portal;
+# a missing or expired cached profile fails the build here, and refreshing it
+# is an attended step in Xcode. The Apple Development signature keeps a
+# certificate-anchored designated requirement, which is what keeps the
+# Documents TCC grant for com.zerodelta.wilted.mac alive across rebuilds.
 #
 # Idempotent: run it again after any change and the installed copy is replaced
 # in place. A running copy is quit first, because ditto over a live bundle
@@ -24,6 +32,8 @@ bundle_id='com.zerodelta.wilted.mac'
 build_cache="$repo_root/scripts/build-with-cache.py"
 derived=''
 build_log="$repo_root/.logs/install-mac-app.log"
+configuration='Development'
+container='iCloud.com.zerodelta.wilted'
 
 status() { printf '%s\n' "$*" >&2; }
 
@@ -74,19 +84,20 @@ xcodegen generate --spec "$repo_root/project.yml" --project "$repo_root" --proje
 
 # Xcode's signing pass rejects Finder metadata on a prior app product.
 # The helper removes it under the same lock that serializes the build.
-status 'install.build configuration=Debug'
+status "install.build configuration=$configuration"
 python3 "$build_cache" run xcode mac-install --clean-app-product -- xcodebuild build \
   -project "$repo_root/Wilted.xcodeproj" \
   -scheme WiltedMac \
-  -configuration Debug \
+  -configuration "$configuration" \
   -destination 'platform=macOS' \
   -quiet >"$build_log" 2>&1 || {
     status 'install.build failed; last 40 lines follow'
     tail -40 "$build_log" >&2
+    status 'install.hint a missing or expired cached Mac Development profile is refreshed in Xcode (attended); this script never asks the portal'
     exit 1
   }
 
-app="$derived/Build/Products/Debug/WiltedMac.app"
+app="$derived/Build/Products/$configuration/WiltedMac.app"
 [[ -n "$app" && -d "$app" ]] || { status 'install.error no app product was produced'; exit 1; }
 
 # Refuse to install something that is not this app, rather than overwriting
@@ -95,6 +106,18 @@ built_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Content
 [[ "$built_id" == "$bundle_id" ]] ||
   { status "install.error built bundle identifier is '$built_id', expected '$bundle_id'"; exit 1; }
 codesign --verify --strict "$app" || { status 'install.error built app failed signature verification'; exit 1; }
+
+# The live build is only useful with its CloudKit entitlement; without it the
+# app would select the library publisher and fail every call. Checked before
+# anything running is quit or replaced.
+entitlements="$(codesign --display --entitlements :- "$app" 2>/dev/null || true)"
+[[ "$entitlements" == *"$container"* ]] ||
+  { status "install.error built app does not carry the $container entitlement"; exit 1; }
+[[ "$(tr -d '[:space:]' <<<"$entitlements")" == *'aps-environment</key><string>development</string>'* ]] ||
+  { status 'install.error built app does not carry the development push entitlement'; exit 1; }
+[[ -f "$app/Contents/embedded.provisionprofile" ]] ||
+  { status 'install.error built app has no embedded provisioning profile'; exit 1; }
+status "install.audit configuration=$configuration entitlement=$container profile=embedded"
 
 target="$destination_dir/$(basename "$app")"
 if [[ -e "$target" ]]; then

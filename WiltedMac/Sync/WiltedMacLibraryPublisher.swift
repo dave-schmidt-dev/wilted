@@ -28,15 +28,16 @@ struct LibraryPublishReport: Sendable, Equatable {
 /// It never writes playback records: `HandoffCoordinator` (driven by `WiltedMacHandoffController`)
 /// is the only writer of the Mac's NowPlaying and Progress, so an epoch is never published twice.
 ///
-/// Default OFF: nothing is contacted unless `WILTED_LIBRARY_SYNC=1`. The publisher is the
-/// library's single writer, so it seeds its per-record base versions from the server on the
+/// `WiltedMacLibraryRuntimeSelection` decides whether a publisher exists: by default in a live
+/// build, on `WILTED_LIBRARY_SYNC=1` anywhere. The publisher is the library's single writer, so it seeds its per-record base versions from the server on the
 /// first pass, then sends only what `LibraryStateDiffer` reports as changed.
 actor WiltedMacLibraryPublisher {
-    static let environmentKey = "WILTED_LIBRARY_SYNC"
+    static let environmentKey = WiltedMacLibraryRuntimeSelection.environmentKey
 
-    /// True only when the environment sets `WILTED_LIBRARY_SYNC` to exactly `1`.
+    /// True only when the environment forces the publisher on (`WILTED_LIBRARY_SYNC` exactly `1`).
+    /// Whether it runs without the flag is the runtime selection's call, not this one's.
     static func isEnabled(in environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        environment[environmentKey] == "1"
+        WiltedMacLibraryRuntimeSelection.override(in: environment) == .on
     }
 
     nonisolated let isEnabled: Bool
@@ -56,7 +57,7 @@ actor WiltedMacLibraryPublisher {
         source: any LibraryStateSource,
         transport: any LibraryTransport,
         sink: any LibraryIntentSink,
-        isEnabled: Bool = WiltedMacLibraryPublisher.isEnabled(),
+        isEnabled: Bool = true,
         statsProvider: (@Sendable () async -> LifetimeStatistics?)? = nil,
         relaysIntents: Bool = true,
         clock: @escaping @Sendable () -> Date = { Date() }

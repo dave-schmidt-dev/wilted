@@ -298,6 +298,7 @@ run_leg_async "test-audit-walkthrough" "$repo_root/tests/test-audit-walkthrough.
 run_leg_async "test-pipeline-worker" "$repo_root/tests/test-pipeline-worker.sh"
 run_leg_async "test-preparation-runtime" "$repo_root/tests/test-preparation-runtime.sh"
 run_leg_async "test-install-mac-app" "$repo_root/tests/test-install-mac-app.sh"
+run_leg_async "test-install-mac-contract" "$repo_root/tests/test-install-mac-contract.sh"
 run_leg_async "test-temp-sweep" "$repo_root/tests/test-temp-sweep.sh"
 run_leg_async "test-storage-retention" "$repo_root/tests/test-storage-retention.sh"
 run_leg_async "test-temp-leaks" "$repo_root/tests/test-temp-leaks.sh"

@@ -23,8 +23,8 @@ lifetime and is released by the child's exit; while another build holds the
 lock, a wait heartbeat is emitted at least every 15 seconds. The start line
 carrying the cache path goes to stderr.
 
-For installer builds, `--clean-app-product` removes only the Debug WiltedMac.app
-inside the Xcode cache lock before building.
+For installer builds, `--clean-app-product` removes only the Debug and Development
+WiltedMac.app inside the Xcode cache lock before building.
 
 The helper owns the cache location, so a child command that already supplies
 `--scratch-path`, `--build-path`, or `-derivedDataPath` is rejected, as are
@@ -207,22 +207,30 @@ def parse_arguments(argv: list[str]) -> tuple[str, str, str, bool, list[str]]:
     return action, kind, key, clean_product, child
 
 
+INSTALLER_APP_CONFIGURATIONS = ("Debug", "Development")
+
+
 def clean_app_product(cache: Path) -> None:
-    """Remove only the installer app product while holding the Xcode cache lock."""
-    target = cache / "Build/Products/Debug/WiltedMac.app"
-    for parent in (cache / "Build", cache / "Build/Products", target.parent):
-        if parent.is_symlink():
-            raise ValueError(f"clean-app-product-symlink-parent: {parent}")
-    try:
-        if target.is_symlink():
-            target.unlink()
-        elif target.is_dir():
-            shutil.rmtree(target)
-        elif target.exists():
-            raise ValueError(f"clean-app-product-unexpected-type: {target}")
-    except OSError as error:
-        raise ValueError(f"clean-app-product-failed: {error}") from error
-    emit(f"clean-app-product path={target}")
+    """Remove only the installer app products while holding the Xcode cache lock.
+
+    The installer builds Development; Debug is cleaned too so a product left by an
+    earlier installer cannot carry stale Finder metadata into a later signing pass.
+    """
+    for configuration in INSTALLER_APP_CONFIGURATIONS:
+        target = cache / "Build/Products" / configuration / "WiltedMac.app"
+        for parent in (cache / "Build", cache / "Build/Products", target.parent):
+            if parent.is_symlink():
+                raise ValueError(f"clean-app-product-symlink-parent: {parent}")
+        try:
+            if target.is_symlink():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                raise ValueError(f"clean-app-product-unexpected-type: {target}")
+        except OSError as error:
+            raise ValueError(f"clean-app-product-failed: {error}") from error
+        emit(f"clean-app-product path={target}")
 
 
 def main(argv: list[str]) -> int:

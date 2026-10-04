@@ -342,6 +342,85 @@ final class WiltedMacLibraryAccountTests: XCTestCase {
         await relaunchBoundary(model)
     }
 
+    // MARK: Startup account check (Task 5.1)
+
+    @discardableResult
+    private func startProbed(
+        _ model: WiltedMacModel, _ fixture: WiltedMacLibraryAccountFixture
+    ) throws -> WiltedMacLibrarySyncController {
+        let (_, transport) = pair()
+        return try start(model, fixture, transport)
+    }
+
+    func testWithNoSignalTheCheckResolvesTheBoundOwnerAfterRelaunch() async throws {
+        let directory = wiltedTemporaryDirectory("account-probe-owner")
+        let (model, _) = try await launch(directory)
+        let first = WiltedMacLibraryAccountFixture()
+        try startProbed(model, first)
+        first.signIn(recordName: ownerName)
+        try await eventually("bound") { model.libraryAccountStatus == .active }
+        await relaunchBoundary(model)
+
+        // A relaunched engine rebuilt from saved state reports no sign-in at all.
+        let (relaunched, _) = try await launch(directory)
+        let silent = WiltedMacLibraryAccountFixture()
+        silent.answerProbe(.signedIn(token: token(ownerName)))
+        let controller = try startProbed(relaunched, silent)
+        XCTAssertEqual(relaunched.libraryAccountStatus, .awaitingAccount)
+        try await eventually("the check reopens for the same owner") { relaunched.libraryAccountStatus == .active }
+        XCTAssertEqual(silent.probes, 1)
+        XCTAssertEqual(silent.resets, 0, "the same owner needs no review and no transport reset")
+        XCTAssertNotNil(controller.inbound?.poller)
+        await relaunchBoundary(relaunched)
+    }
+
+    func testACheckThatFindsNoAccountKeepsSendingClosedWithAClearStatus() async throws {
+        let (model, store) = try await launch(wiltedTemporaryDirectory("account-probe-none"))
+        let fixture = WiltedMacLibraryAccountFixture()
+        fixture.answerProbe(.noAccount)
+        let controller = try startProbed(model, fixture)
+        try await eventually("no account reported") { model.libraryAccountStatus == .noAccount }
+        XCTAssertFalse(controller.account?.gate.isOpen ?? true)
+        XCTAssertNil(controller.inbound?.poller)
+        let binding = try await store.libraryAccountBinding()
+        XCTAssertNil(binding, "no account binds nothing")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(fixture.probes, 1, "a definite answer is not re-checked")
+        XCTAssertEqual(model.libraryAccountStatus.map(String.init(describing:)), "no iCloud account")
+
+        // A later sign-in still binds the first owner of the empty library.
+        fixture.signIn(recordName: ownerName)
+        try await eventually("bound after sign-in") { model.libraryAccountStatus == .active }
+        await relaunchBoundary(model)
+    }
+
+    func testAnUnavailableCheckRetriesThenReportsTheAccountUnavailable() async throws {
+        let (model, _) = try await launch(wiltedTemporaryDirectory("account-probe-unavailable"))
+        let fixture = WiltedMacLibraryAccountFixture()
+        fixture.answerProbe(.unavailable)
+        let controller = try startProbed(model, fixture)
+        try await eventually("retries exhausted") { fixture.probes == 3 }
+        try await eventually("unavailable reported") { model.libraryAccountStatus == .accountUnavailable }
+        XCTAssertFalse(controller.account?.gate.isOpen ?? true)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(fixture.probes, 3, "the check is bounded")
+        await relaunchBoundary(model)
+    }
+
+    func testASignalThatArrivesFirstWinsOverTheCheck() async throws {
+        let (model, _) = try await launch(wiltedTemporaryDirectory("account-probe-signal-first"))
+        let fixture = WiltedMacLibraryAccountFixture()
+        fixture.probeDelay = .milliseconds(300)
+        fixture.answerProbe(.noAccount)
+        try startProbed(model, fixture)
+        fixture.signIn(recordName: ownerName)
+        try await eventually("bound by the signal") { model.libraryAccountStatus == .active }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(fixture.probes, 0, "no check runs once a signal named the account")
+        XCTAssertEqual(model.libraryAccountStatus, .active)
+        await relaunchBoundary(model)
+    }
+
     func testATransportWithoutAccountSignalsIsUnmanaged() async throws {
         let (model, _) = try await launch(wiltedTemporaryDirectory("account-unmanaged"))
         let (_, transport) = pair()

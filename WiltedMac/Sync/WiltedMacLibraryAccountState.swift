@@ -30,6 +30,13 @@ enum WiltedMacLibraryAccountStatus: Equatable, Sendable, CustomStringConvertible
     case approvedAwaitingAccount
     /// The binding could not be read or written; nothing is sent.
     case failed
+    /// A direct check found no iCloud account signed in; nothing is sent until one is.
+    case noAccount
+    /// Neither a signal nor a direct check could establish the account; nothing is sent.
+    case accountUnavailable
+    /// The default could not start: the transport reports no account changes (live CloudKit
+    /// could not start), so nothing runs rather than sending unbound.
+    case transportUnavailable
 
     var allowsSync: Bool { self == .unmanaged || self == .active }
     var needsReview: Bool { if case .reviewRequired = self { true } else { false } }
@@ -42,126 +49,22 @@ enum WiltedMacLibraryAccountStatus: Equatable, Sendable, CustomStringConvertible
         case let .reviewRequired(reason): "review required (\(reason.rawValue))"
         case .approvedAwaitingAccount: "approved, awaiting account"
         case .failed: "failed"
+        case .noAccount: "no iCloud account"
+        case .accountUnavailable: "iCloud account unavailable"
+        case .transportUnavailable: "iCloud library sync could not start"
         }
-    }
-}
-
-/// Why a library server call was refused. Carries no account identifier.
-enum WiltedMacLibraryAccountError: Error, Equatable, Sendable, CustomStringConvertible {
-    /// The account is not approved for sending, so the call never reached the transport.
-    case notApproved
-
-    var description: String { "library sync is paused until the iCloud account is confirmed" }
-}
-
-// MARK: - Gate
-
-/// The open/closed state every library server call checks, plus the generation that
-/// invalidates work admitted before a close. Closing bumps the generation; reopening does not,
-/// so a call admitted before a close can never complete after a reopen either.
-final class WiltedMacLibraryAccountGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var open: Bool
-    private var generationValue: UInt64 = 0
-
-    init(open: Bool) { self.open = open }
-
-    var isOpen: Bool { lock.withLock { open } }
-    var generation: UInt64 { lock.withLock { generationValue } }
-
-    /// Admits one call, returning the generation it must still hold when it finishes.
-    func admit() throws -> UInt64 {
-        try lock.withLock {
-            guard open else { throw WiltedMacLibraryAccountError.notApproved }
-            return generationValue
-        }
-    }
-
-    /// Throws `superseded` when the gate closed (or closed and reopened) since `generation`.
-    func verify(_ generation: UInt64) throws {
-        try lock.withLock {
-            guard open, generationValue == generation else { throw LibraryTransportError.superseded }
-        }
-    }
-
-    func close() { lock.withLock { open = false; generationValue &+= 1 } }
-    func reopen() { lock.withLock { open = true } }
-}
-
-/// A `LibraryTransport` whose every call, local commits included, runs only while the account
-/// gate is open and returns only if it is still open at the same generation. A result that
-/// arrives after an account change is discarded as `superseded`, so nothing it carried is
-/// written locally. Wrap it inside `ThrottledLibraryTransport`, so admission happens when the
-/// call actually runs, after any throttle wait.
-struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
-    let inner: any LibraryTransport
-    let gate: WiltedMacLibraryAccountGate
-
-    /// Runs `operation` under the gate; used for calls made outside the protocol (discovery).
-    func run<Result: Sendable>(_ operation: () async throws -> Result) async throws -> Result {
-        let generation = try gate.admit()
-        let result = try await operation()
-        try gate.verify(generation)
-        return result
-    }
-
-    /// Changes whenever the inner transport's generation or the account gate's does.
-    func operationGeneration() async -> UInt64 { await inner.operationGeneration() &+ gate.generation }
-
-    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
-        try await run { try await inner.fetchChanges(since: token) }
-    }
-    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult {
-        try await run { try await inner.push(changes: changes) }
-    }
-    func send(intent: LibraryIntent) async throws { try await run { try await inner.send(intent: intent) } }
-    func listIntents() async throws -> [LibraryIntent] { try await run { try await inner.listIntents() } }
-    func publishIntentOutcome(_ outcome: IntentOutcome) async throws {
-        try await run { try await inner.publishIntentOutcome(outcome) }
-    }
-    func intentOutcomes() async throws -> [IntentOutcome] { try await run { try await inner.intentOutcomes() } }
-    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {
-        try await run { try await inner.publish(record, as: channel) }
-    }
-    func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
-        try await run { try await inner.fetchDeviceRecords() }
-    }
-    func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
-        let generation = try gate.admit()
-        try await inner.publish(records)  // The tuple array is not Sendable, so not through `run`.
-        try gate.verify(generation)
-    }
-    func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
-        try await run { try await inner.poll(options) }
-    }
-    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
-        try await run { try await inner.publishMedia(offer: offer, fileURL: fileURL) }
-    }
-    func mediaOffers() async throws -> [LibraryMediaOffer] { try await run { try await inner.mediaOffers() } }
-    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
-        try await run { try await inner.fetchMedia(offer, progress: progress) }
-    }
-    func removeMedia(entryID: ItemID) async throws { try await run { try await inner.removeMedia(entryID: entryID) } }
-    func publishStats(_ stats: LibraryStats) async throws { try await run { try await inner.publishStats(stats) } }
-    func readStats() async throws -> LibraryStats? { try await run { try await inner.readStats() } }
-    func publishTranscript(_ transcript: LibraryTranscript) async throws {
-        try await run { try await inner.publishTranscript(transcript) }
-    }
-    func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
-        try await run { try await inner.transcript(entryID: entryID, revisionID: revisionID) }
-    }
-    func removeTranscript(entryID: ItemID) async throws {
-        try await run { try await inner.removeTranscript(entryID: entryID) }
-    }
-    func commitFetchedState(_ token: LibraryChangeToken?) async throws {
-        try await run { try await inner.commitFetchedState(token) }
-    }
-    func commitSentState(_ token: LibraryChangeToken?) async throws {
-        try await run { try await inner.commitSentState(token) }
     }
 }
 
 // MARK: - Account sources
+
+/// What a direct, read-only account check found. The token is hashed exactly as the CloudKit
+/// adapter hashes it (`CloudKitAccountIdentity.token(for:)`); the record name never leaves the check.
+enum WiltedMacLibraryAccountProbeResult: Equatable, Sendable {
+    case signedIn(token: String)
+    case noAccount
+    case unavailable
+}
 
 /// Where account signals come from and how a reviewed transport is re-enabled.
 struct WiltedMacLibraryAccountSource: Sendable {
@@ -172,11 +75,23 @@ struct WiltedMacLibraryAccountSource: Sendable {
     var log: @Sendable (String) -> Void = { message in
         libraryAccountLog.notice("\(message, privacy: .public)")
     }
+    /// Resolves the account directly when no signal arrives within `probeDelay`: an engine
+    /// rebuilt from saved state reports no sign-in, and must not wait for one forever.
+    var probe: (@Sendable () async -> WiltedMacLibraryAccountProbeResult)?
+    var probeDelay: Duration = .seconds(5)
+    /// Checks made while the account stays undetermined (`unavailable`). The wait doubles after
+    /// each one up to `probeMaxDelay`, so a Mac that launched offline still resolves later.
+    var probeAttempts = 12
+    var probeMaxDelay: Duration = .seconds(300)
 
     /// The live CloudKit transport's own signals, or nil for a transport that reports none.
-    static func transport(_ raw: any LibraryTransport) -> Self? {
+    static func transport(
+        _ raw: any LibraryTransport, probe: (@Sendable () async -> WiltedMacLibraryAccountProbeResult)? = nil
+    ) -> Self? {
         guard let cloudKit = raw as? CloudKitLibraryTransport else { return nil }
-        return Self(signals: cloudKit.accountChanges, resetTransport: { await cloudKit.resetAfterAccountChange() })
+        return Self(
+            signals: cloudKit.accountChanges, resetTransport: { await cloudKit.resetAfterAccountChange() },
+            probe: probe)
     }
 }
 
@@ -188,11 +103,20 @@ final class WiltedMacLibraryAccountFixture: @unchecked Sendable {
     private let lock = NSLock()
     private var resetsValue = 0
     private var linesValue: [String] = []
+    private var probeValue: WiltedMacLibraryAccountProbeResult?
+    private var probesValue = 0
+    /// How long the controller waits for a signal before the probe runs, and how often it retries.
+    var probeDelay: Duration = .milliseconds(50)
+    var probeAttempts = 3
 
     init() { (signals, continuation) = AsyncStream<CloudKitAccountChangeSignal>.makeStream() }
 
     var resets: Int { lock.withLock { resetsValue } }
     var loggedLines: [String] { lock.withLock { linesValue } }
+    var probes: Int { lock.withLock { probesValue } }
+
+    /// Answers the startup probe with `result`; without one the source has no probe.
+    func answerProbe(_ result: WiltedMacLibraryAccountProbeResult) { lock.withLock { probeValue = result } }
 
     func emit(_ signal: CloudKitAccountChangeSignal) { continuation.yield(signal) }
 
@@ -200,10 +124,19 @@ final class WiltedMacLibraryAccountFixture: @unchecked Sendable {
     func signIn(recordName: String) { emit(.ownershipAdopted(token: CloudKitAccountIdentity.token(for: recordName))) }
 
     var source: WiltedMacLibraryAccountSource {
-        WiltedMacLibraryAccountSource(
+        let answers = lock.withLock { probeValue != nil }
+        let probe: @Sendable () async -> WiltedMacLibraryAccountProbeResult = { [self] in
+            lock.withLock {
+                probesValue += 1
+                return probeValue ?? .unavailable
+            }
+        }
+        return WiltedMacLibraryAccountSource(
             signals: signals,
             resetTransport: { [self] in lock.withLock { resetsValue += 1 } },
-            log: { [self] line in lock.withLock { linesValue.append(line) } })
+            log: { [self] line in lock.withLock { linesValue.append(line) } },
+            probe: answers ? probe : nil,
+            probeDelay: probeDelay, probeAttempts: probeAttempts, probeMaxDelay: probeDelay)
     }
 }
 
@@ -237,6 +170,8 @@ final class WiltedMacLibraryAccountController {
     private var sessionAdoptedToken: String?
     private var chain: Task<Void, Never>?
     private var consumer: Task<Void, Never>?
+    private var prober: Task<Void, Never>?
+    private var signalsReceived = 0
     private var hydrated = false
     private var stopped = false
 
@@ -260,6 +195,9 @@ final class WiltedMacLibraryAccountController {
                 self.receive(signal)
             }
         }
+        if let probe = source.probe {
+            prober = Task { [weak self] in await self?.runProbes(probe) }
+        }
     }
 
     /// Resumes after review: binds the account signed in now, or, when this session has seen no
@@ -281,11 +219,13 @@ final class WiltedMacLibraryAccountController {
         stopped = true
         gate.close()
         consumer?.cancel()
+        prober?.cancel()
     }
 
     /// Joins the transition chain, so a quarantine received before `stop()` is persisted.
     func close() async {
         stop()
+        await prober?.value
         await chain?.value
         await consumer?.value
     }
@@ -303,6 +243,7 @@ final class WiltedMacLibraryAccountController {
 
     /// Closes at once, before anything is persisted, when a signal can only end in a closed gate.
     private func receive(_ signal: CloudKitAccountChangeSignal) {
+        signalsReceived += 1
         switch signal {
         case .quarantineRequired:
             closeNow()
@@ -312,6 +253,41 @@ final class WiltedMacLibraryAccountController {
             break
         }
         enqueue { await $0.handle(signal) }
+    }
+
+    /// Checks the account directly while no signal has named it: an engine rebuilt from saved
+    /// state reports no sign-in. A signal that arrives first, or during a check, always wins.
+    private func runProbes(_ probe: @escaping @Sendable () async -> WiltedMacLibraryAccountProbeResult) async {
+        var delay = source.probeDelay
+        for _ in 0..<max(1, source.probeAttempts) {
+            do { try await Task.sleep(for: delay) } catch { return }
+            delay = min(delay * 2, max(source.probeDelay, source.probeMaxDelay))
+            guard !stopped, signalsReceived == 0, sessionAdoptedToken == nil else { return }
+            let result = await probe()
+            guard !Task.isCancelled, !stopped, signalsReceived == 0 else { return }
+            enqueue { await $0.applyProbe(result) }
+            if result != .unavailable { return }
+        }
+    }
+
+    private func applyProbe(_ result: WiltedMacLibraryAccountProbeResult) async {
+        guard hydrated, !stopped, signalsReceived == 0, sessionAdoptedToken == nil else { return }
+        let undetermined = binding.map { $0.state == .bound || $0.state == .approved } ?? true
+        switch result {
+        case let .signedIn(token) where LocalLibraryAccountBinding.isHashedToken(token):
+            source.log("Library account resolved by a direct check")
+            sessionAdoptedToken = token
+            await adopt(token)
+        case .signedIn:
+            source.log("Library account check returned an unhashed identity; ignored")
+            if undetermined { setStatus(.accountUnavailable) }
+        case .noAccount:
+            source.log("Library account check found no iCloud account; sending paused")
+            if undetermined { setStatus(.noAccount) }
+        case .unavailable:
+            source.log("Library account check could not reach iCloud; sending paused")
+            if undetermined { setStatus(.accountUnavailable) }
+        }
     }
 
     private func closeNow() {

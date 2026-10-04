@@ -1,4 +1,7 @@
+import CloudKit
 import Foundation
+import WiltedCloudKit
+import WiltedCloudKitLibrary
 import WiltedDomain
 import WiltedLibrary
 import WiltedProducer
@@ -204,7 +207,8 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
 
     func testEnvironmentFlagTurnsLegacyEngineOffAndDefaultLeavesItOn() async throws {
         let (defaultModel, _) = try await bootstrapped("library-sync-legacy-default")
-        XCTAssertNotNil(defaultModel.syncLifecycle, "default OFF keeps the legacy engine")
+        XCTAssertNotNil(defaultModel.syncLifecycle, "a test host's default keeps the legacy engine")
+        XCTAssertNil(defaultModel.librarySyncController)
 
         setenv("WILTED_LIBRARY_SYNC", "1", 1)
         defer { unsetenv("WILTED_LIBRARY_SYNC") }
@@ -256,4 +260,179 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTAssertNil(finished, "a finished episode is not resurrected")
         model.stopLibrarySync()
     }
+
+    // MARK: Runtime selection (Task 5.1)
+
+    private let liveFacts = WiltedMacLibraryBuildFacts(compiledLive: true, hostsTests: false)
+
+    /// A model that believes it is a normal live launch. Bootstrap runs the real selection, so
+    /// the production transport it reaches must be this Debug build's unavailable stand-in.
+    private func liveBootstrapped(_ name: String) async throws -> (WiltedMacModel, LocalLibraryStore) {
+#if WILTED_CLOUDKIT_LIVE
+        throw XCTSkip("live-default wiring is exercised only where the production transport is inert")
+#else
+        let model = makeModel(name)
+        model.librarySyncBuildFacts = liveFacts
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        return (model, try XCTUnwrap(model.store))
+#endif
+    }
+
+    func testRuntimeSelectionDefaultsOnlyANormalLiveLaunchToThePublisher() {
+        typealias Selection = WiltedMacLibraryRuntimeSelection
+        let nonLive = WiltedMacLibraryBuildFacts(compiledLive: false, hostsTests: false)
+        let liveTestHost = WiltedMacLibraryBuildFacts(compiledLive: true, hostsTests: true)
+        let cases: [([String: String], WiltedMacLibraryBuildFacts, Bool, Selection.Engine, Selection.Reason)] = [
+            ([:], liveFacts, false, .libraryPublisher, .liveDefault),
+            (["WILTED_LIBRARY_SYNC": ""], liveFacts, false, .libraryPublisher, .liveDefault),
+            ([:], nonLive, false, .legacy, .nonLiveBuild),
+            ([:], liveTestHost, false, .legacy, .testHost),
+            ([:], liveFacts, true, .legacy, .fixture),
+            (flagOn, nonLive, false, .libraryPublisher, .explicitOn),
+            (flagOn, liveTestHost, false, .libraryPublisher, .explicitOn),
+            (flagOn, liveFacts, true, .none, .fixture),
+            (["WILTED_LIBRARY_SYNC": "0"], liveFacts, false, .legacy, .explicitOff),
+            (["WILTED_LIBRARY_SYNC": "off"], liveFacts, false, .legacy, .explicitOff),
+            (["WILTED_LIBRARY_SYNC": "true"], liveFacts, false, .legacy, .explicitOff),
+        ]
+        for (environment, facts, fixture, engine, reason) in cases {
+            let selection = Selection.select(environment: environment, facts: facts, fixtureMode: fixture)
+            XCTAssertEqual(selection.engine, engine, "\(environment) \(facts) fixture=\(fixture)")
+            XCTAssertEqual(selection.reason, reason, "\(environment) \(facts) fixture=\(fixture)")
+            XCTAssertEqual(selection, Selection.select(environment: environment, facts: facts, fixtureMode: fixture),
+                           "a relaunch with the same inputs selects the same engine")
+        }
+        let liveDefault = Selection.select(environment: [:], facts: liveFacts, fixtureMode: false)
+        XCTAssertTrue(liveDefault.admits(managedTransport: true))
+        XCTAssertFalse(liveDefault.admits(managedTransport: false), "the default never runs unmanaged")
+        XCTAssertTrue(Selection.select(environment: flagOn, facts: liveFacts, fixtureMode: false)
+            .admits(managedTransport: false), "an explicit 1 keeps today's unmanaged runs")
+        XCTAssertFalse(Selection.select(environment: ["WILTED_LIBRARY_SYNC": "0"], facts: liveFacts, fixtureMode: false)
+            .admits(managedTransport: true))
+    }
+
+    func testALiveLaunchRunsExactlyOneEngineAndNeverTheUnavailableTransport() async throws {
+        let (model, _) = try await liveBootstrapped("library-sync-live-bootstrap")
+        XCTAssertEqual(model.libraryRuntimeSelection(environment: [:]).reason, .liveDefault)
+        XCTAssertNil(model.syncLifecycle, "the legacy engine never runs beside the library publisher")
+        XCTAssertNil(model.librarySyncController, "the unavailable stand-in is refused, not started")
+        XCTAssertEqual(model.libraryAccountStatus, .transportUnavailable)
+
+        // An unmanaged transport is refused by the default too, with the same visible status.
+        let server = InMemoryLibraryServer(writerDeviceID: "mac-test")
+        XCTAssertFalse(model.startLibrarySyncIfEnabled(
+            environment: [:], transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server)))
+        XCTAssertNil(model.librarySyncController)
+        XCTAssertEqual(model.libraryAccountStatus, .transportUnavailable)
+
+        // A managed transport starts by default, gated on the account.
+        let account = WiltedMacLibraryAccountFixture()
+        XCTAssertTrue(model.startLibrarySyncIfEnabled(
+            environment: [:], transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
+            debounce: .milliseconds(20), account: account.source))
+        XCTAssertEqual(model.libraryAccountStatus, .awaitingAccount)
+        XCTAssertNil(model.syncLifecycle)
+        model.stopLibrarySync()
+        await model.waitForLibrarySyncShutdown()
+    }
+
+    func testExplicitOffKeepsTheLegacyEngineInALiveBuildAndExplicitOnStillRunsUnmanaged() async throws {
+        let off: WiltedMacModel
+        do {
+            setenv("WILTED_LIBRARY_SYNC", "0", 1)
+            defer { unsetenv("WILTED_LIBRARY_SYNC") }
+            off = try await liveBootstrapped("library-sync-live-off").0
+        }
+        XCTAssertNotNil(off.syncLifecycle, "explicit off keeps the legacy engine")
+        XCTAssertNil(off.librarySyncController)
+        XCTAssertFalse(off.startLibrarySyncIfEnabled(environment: ["WILTED_LIBRARY_SYNC": "0"]))
+        await off.close()
+
+        let (model, _) = try await liveBootstrapped("library-sync-live-on")
+        let server = InMemoryLibraryServer(writerDeviceID: "mac-test")
+        XCTAssertTrue(model.startLibrarySyncIfEnabled(
+            environment: flagOn, transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server)))
+        XCTAssertEqual(model.libraryAccountStatus, .unmanaged)
+        model.stopLibrarySync()
+        await model.waitForLibrarySyncShutdown()
+    }
+
+    func testAFixtureLaunchStaysInertEvenWhenLiveOrForcedOn() async throws {
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("library-sync-fixture"),
+            preferences: WiltedMacTestPreferences.ephemeral())
+        model.librarySyncBuildFacts = liveFacts
+        XCTAssertEqual(model.libraryRuntimeSelection(environment: [:]).engine, .legacy)
+        XCTAssertEqual(model.libraryRuntimeSelection(environment: flagOn).engine, .none)
+        let server = InMemoryLibraryServer(writerDeviceID: "mac-test")
+        XCTAssertFalse(model.startLibrarySyncIfEnabled(
+            environment: flagOn, transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
+            account: WiltedMacLibraryAccountFixture().source))
+        XCTAssertNil(model.librarySyncController)
+        await model.close()
+    }
+
+    /// The real CloudKit library transport over an engine that never reaches iCloud: the account
+    /// events CKSyncEngine reports drive the binding, and recovery clears the transport itself.
+    func testTheCloudKitTransportIsAlwaysManagedAndRecoversThroughItsOwnReset() async throws {
+        let driver = WiltedMacInertEngineDriver()
+        let transport = try CloudKitLibraryTransport(
+            deviceID: "mac-test", isLibraryWriter: true, driver: driver,
+            driverFactory: { _ in WiltedMacInertEngineDriver() }, outbox: CloudKitLibraryOutbox())
+        XCTAssertNotNil(WiltedMacLibraryAccountSource.transport(transport), "a live transport is always managed")
+
+        let (model, store) = try await liveBootstrapped("library-sync-cloudkit-account")
+        XCTAssertTrue(model.startLibrarySyncIfEnabled(environment: [:], transport: transport, debounce: .milliseconds(20)))
+        XCTAssertEqual(model.libraryAccountStatus, .awaitingAccount)
+        let owner = CloudKitAccountIdentity.token(for: "_c93e-raw-icloud-owner-record")
+
+        driver.emit(.accountChanged(.signIn, identity: CloudKitAccountIdentity(currentOwnerToken: owner)))
+        try await eventually("owner bound") { model.libraryAccountStatus == .active }
+        let bound = try await store.libraryAccountBinding()
+        XCTAssertEqual(bound?.ownerToken, owner)
+
+        driver.emit(.accountChanged(.signOut, identity: CloudKitAccountIdentity()))
+        try await eventually("signed out") { model.libraryAccountStatus == .reviewRequired(.signOut) }
+        let quarantined = await transport.isQuarantined()
+        XCTAssertTrue(quarantined)
+
+        driver.emit(.accountChanged(.signIn, identity: CloudKitAccountIdentity(currentOwnerToken: owner)))
+        try await eventually("same owner recovered") { model.libraryAccountStatus == .active }
+        let cleared = await transport.isQuarantined()
+        XCTAssertFalse(cleared, "recovery resets the real transport's quarantine")
+        model.stopLibrarySync()
+        await model.waitForLibrarySyncShutdown()
+    }
+}
+
+/// A CloudKit engine that never reaches iCloud: every operation fails, and the test injects the
+/// account events CKSyncEngine would report.
+private final class WiltedMacInertEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
+    private struct Offline: Error {}
+    private let stream: AsyncStream<CloudKitEngineEvent>
+    private let continuation: AsyncStream<CloudKitEngineEvent>.Continuation
+
+    init() { (stream, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream() }
+
+    func emit(_ event: CloudKitEngineEvent) { continuation.yield(event) }
+
+    var events: AsyncStream<CloudKitEngineEvent> { get async { stream } }
+    func ensureZone() async throws { throw Offline() }
+    func fetchChanges() async throws { throw Offline() }
+    func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws { throw Offline() }
+    func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] { throw Offline() }
+    func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] {
+        throw Offline()
+    }
+    func ensureZone(_ zoneID: CKRecordZone.ID) async throws { throw Offline() }
+    func saveRecordRaw(_ record: CKRecord, progress: @escaping @Sendable (Double) -> Void) async throws { throw Offline() }
+    func fetchAssetRecordRaw(_ id: CKRecord.ID, assetField: String, to destination: URL,
+                             progress: @escaping @Sendable (Double) -> Void) async throws -> CKRecord { throw Offline() }
+    func deleteRecordsRaw(_ ids: [CKRecord.ID]) async throws { throw Offline() }
+    func sendChanges() async throws { throw Offline() }
+    func cancelOperations() async {}
+    func resetZoneBootstrap() async {}
+    func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async {}
+    func isValidStateData(_ data: Data) -> Bool { true }
 }

@@ -127,9 +127,16 @@ class BuildWithCacheTests(unittest.TestCase):
         (app / "old").write_text("stale")
         other = cache / "Build/Products/Debug/Other.app"
         other.mkdir()
+        development = cache / "Build/Products/Development/WiltedMac.app"
+        development.mkdir(parents=True)
+        (development / "old").write_text("stale")
+        release = cache / "Build/Products/Release/WiltedMac.app"
+        release.mkdir(parents=True)
         module.clean_app_product(cache)
         self.assertFalse(app.exists())
+        self.assertFalse(development.exists(), "the installer's Development product is cleaned too")
         self.assertTrue(other.is_dir())
+        self.assertTrue(release.is_dir(), "only installer configurations are cleaned")
         with self.assertRaisesRegex(ValueError, "clean-app-product-requires-xcode"):
             module.parse_arguments(
                 ["run", "swiftpm", "probe", "--clean-app-product", "--", "swift", "build"]
