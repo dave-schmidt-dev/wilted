@@ -68,6 +68,16 @@ class AuditCandidate:
     ids: tuple[int, ...]
     detail: str
 
+
+@dataclass(frozen=True)
+class DeclinedCommercialEvidenceSeed:
+    """A CTA/destination cue sequence proposed for removal but preserved."""
+
+    ids: tuple[int, ...]
+    start_s: float
+    end_s: float
+
+
 @dataclass
 class AdAnalysisAudit:
     """Evidence recorded around the archive detector's otherwise opaque retries."""
@@ -85,6 +95,7 @@ class AdAnalysisAudit:
     speculative_cuts: tuple[object, ...] = ()
     incomplete_error: str | None = None
     near_empty: str | None = None
+    declined_commercial_evidence_seeds: tuple[DeclinedCommercialEvidenceSeed, ...] = ()
 
 @dataclass(frozen=True)
 class AdAnalysis:

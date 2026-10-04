@@ -144,6 +144,15 @@ def serialize_ad_audit(audit) -> dict:
              "detail": candidate.detail}
             for candidate in audit.candidates
         ],
+        "declinedCommercialEvidenceSeeds": [
+            {
+                "status": "declined",
+                "ids": [int(value) for value in seed.ids],
+                "startSeconds": float(seed.start_s),
+                "endSeconds": float(seed.end_s),
+            }
+            for seed in audit.declined_commercial_evidence_seeds
+        ],
         "incompleteError": audit.incomplete_error,
         "nearEmpty": audit.near_empty,
     }

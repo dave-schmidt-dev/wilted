@@ -27,7 +27,7 @@ from . import gpu_admission as _worker_gpu_admission
 from . import reporting as _worker_reporting
 from . import span_bounds as _worker_span_bounds
 from . import tail_recovery as _worker_tail_recovery
-from .ad_audit import AdAnalysis, AuditingBackend
+from .ad_audit import AdAnalysis, AuditingBackend, DeclinedCommercialEvidenceSeed
 from .ad_runtime_adaptations import install_context_aware_overlap_resolution, install_legacy_sponsor_opening_compatibility, install_produced_disclaimer_evidence, install_proportional_render_budget
 from .constants import COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
 from .cue_timing import _near_empty_nominations, build_effective_cut_map, build_keep_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
@@ -168,6 +168,19 @@ def analyze_ad_detections(
             f"span covering them: {details}",
         )
     audit = auditing_backend.audit(detections, segments)
+    audit.declined_commercial_evidence_seeds = tuple(
+        DeclinedCommercialEvidenceSeed(
+            ids=seed_ids,
+            start_s=float(segments[seed_ids[0]].start_s),
+            end_s=float(segments[seed_ids[-1]].end_s),
+        )
+        for seed_ids in _worker_commercial_seeds.commercial_evidence_seed_ids(segments, detections)
+        if any(
+            float(ad.start_s) <= float(segments[seed_ids[0]].start_s)
+            and float(ad.end_s) >= float(segments[seed_ids[-1]].end_s)
+            for ad in proposed_detections
+        )
+    )
     if auditing_backend.contract_errors:
         raise WorkerError("ads-audit-contract-unavailable", auditing_backend.contract_errors[0])
     if auditing_backend.mostly_failed:

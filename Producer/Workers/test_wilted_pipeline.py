@@ -1,6 +1,7 @@
 """Podcast worker tests."""
 from __future__ import annotations
 import ast
+import contextlib
 import importlib.util
 import inspect
 import io
@@ -418,6 +419,39 @@ class OutcomeContractTests(unittest.TestCase):
         self.assertIn("concat=n=2:v=0:a=1[outc]", filter_complex)
         self.assertIn(";[outc]aresample[outa]", filter_complex)
         self.assertEqual(command[command.index("-map") + 1], "[outa]")
+
+class CommercialEvidenceAuditTests(unittest.TestCase):
+    def test_declined_commercial_evidence_seed_is_serialized_without_a_cut(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(10.0, 20.0, "visit acme dot"),
+            FakeSegment(20.0, 30.0, "com to get started today"),
+            FakeSegment(30.0, 40.0, "programme after"),
+        ]
+        llm = FakeLLM()
+        llm.load()
+        ads = install_fake_ads(llm, detections=[FakeAd(0.0, 30.0, label="sponsor_read")])
+        patches = [
+            mock.patch.object(module, name, passthrough)
+            for module, name, passthrough in (
+                (_worker_commercial_recovery, "recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
+                (_worker_commercial_seeds, "recover_commercial_evidence_reads", _passthrough_detections),
+                (_worker_commercial_seeds, "recover_sparse_commercial_reads", _passthrough_detections),
+                (_worker_edge_recovery, "recover_transcript_start_preroll", _passthrough_detections),
+                (_worker_tail_recovery, "recover_transcript_end_postroll", _passthrough_detections),
+            )
+        ]
+        with contextlib.ExitStack() as stack, redirect_stderr(io.StringIO()):
+            for patcher in patches:
+                stack.enter_context(patcher)
+            analysis = wp.analyze_ad_detections(ads, llm, segments, 40.0)
+        self.assertTrue(any(request.get("field") == "program_start_id" for request in llm.requests))
+        self.assertEqual(analysis.detections, ())
+        self.assertEqual(
+            _worker_cue_timing.serialize_ad_audit(analysis.audit)["declinedCommercialEvidenceSeeds"],
+            [{"status": "declined", "ids": [1, 2], "startSeconds": 10.0, "endSeconds": 30.0}],
+        )
+
 
 class ProtocolTests(unittest.TestCase):
     def test_a_malformed_request_is_answered_not_crashed(self):
