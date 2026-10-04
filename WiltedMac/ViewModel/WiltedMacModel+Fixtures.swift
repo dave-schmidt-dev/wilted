@@ -380,6 +380,9 @@ extension WiltedMacModel {
             // that ask for the path directly.
             return temporaryDirectory.appendingPathComponent("Wilted-fixture", isDirectory: true)
         }
+        if hostsTests {
+            return testHostStateDirectory
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("Wilted", isDirectory: true)

@@ -12,6 +12,21 @@ struct WiltedMacApp: App {
     @NSApplicationDelegateAdaptor(WiltedMacAppDelegate.self) private var appDelegate
 
     init() {
+        let arguments = ProcessInfo.processInfo.arguments
+        let model = Self.makeLaunchModel(arguments: arguments)
+        _model = State(initialValue: model)
+        WiltedMacAppDelegate.installTermination(
+            for: model, arguments: arguments, hostsTests: WiltedMacModel.hostsTests
+        )
+    }
+
+    /// Builds the model used by the app composition root. Keeping this small
+    /// seam lets the hosted-app regression test inspect the exact launch path.
+    @MainActor
+    static func makeLaunchModel(
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        preferences: UserDefaults = .standard
+    ) -> WiltedMacModel {
         // The system integration is built here and nowhere else. It is
         // process-global state, so the app is the only context in which owning
         // the machine's Now Playing widget and its media keys is correct.
@@ -23,10 +38,9 @@ struct WiltedMacApp: App {
         //
         // The unit-test host is this same app bundle, so a test run launches
         // this initialiser too. It is excluded for the same reason and one
-        // more: the tests drive the daily driver's own library, and publishing
-        // it would put whatever the owner was listening to into the menu bar
-        // under a process XCTest is about to kill.
-        let arguments = ProcessInfo.processInfo.arguments
+        // more: the test host has its own temporary library, and publishing
+        // it would put a synthetic test episode into the menu bar under a
+        // process XCTest is about to kill.
         let hostsTests = WiltedMacModel.hostsTests
         let ownsSystemPlayback = !hostsTests && !WiltedMacModel.isFixtureLaunch(arguments: arguments)
         let model = WiltedMacModel(
@@ -44,14 +58,13 @@ struct WiltedMacApp: App {
             ),
             nowPlayingSink: ownsSystemPlayback ? MediaPlayerNowPlayingSink() : nil,
             remoteCommandSource: ownsSystemPlayback ? MediaPlayerRemoteCommandSource() : nil,
-            preferences: .standard
+            preferences: preferences
         )
-        _model = State(initialValue: model)
-        WiltedMacAppDelegate.installTermination(for: model, arguments: arguments, hostsTests: hostsTests)
+        return model
     }
 
-    /// Hosted unit tests launch the real app bundle and therefore resolve its
-    /// normal library path. They must not activate a production migration.
+    /// Hosted unit tests launch the real app bundle against temporary state.
+    /// They must not activate a production migration.
     static func pipelineFingerprintForLaunch(
         hostsTests: Bool,
         resolvedFingerprint: String?
