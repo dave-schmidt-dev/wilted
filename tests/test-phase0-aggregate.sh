@@ -41,6 +41,7 @@ expected_legs=(
   "test-file-size"
   "test-attended-library-sync"
   "test-core-reliability-prototype"
+  "test-test-product-metadata"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   expected_legs+=("test-audio-contract-ios-build")
