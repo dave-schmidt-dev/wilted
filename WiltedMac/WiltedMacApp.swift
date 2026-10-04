@@ -7,6 +7,9 @@ import WiltedProducer
 struct WiltedMacApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model: WiltedMacModel
+    /// Owns `applicationShouldTerminate`, so a normal quit drains local work
+    /// before the process exits (see `WiltedMacTerminationCoordinator`).
+    @NSApplicationDelegateAdaptor(WiltedMacAppDelegate.self) private var appDelegate
 
     init() {
         // The system integration is built here and nowhere else. It is
@@ -26,7 +29,7 @@ struct WiltedMacApp: App {
         let arguments = ProcessInfo.processInfo.arguments
         let hostsTests = WiltedMacModel.hostsTests
         let ownsSystemPlayback = !hostsTests && !WiltedMacModel.isFixtureLaunch(arguments: arguments)
-        _model = State(initialValue: WiltedMacModel(
+        let model = WiltedMacModel(
             arguments: arguments,
             // Hosted XCTest launches this composition root against the
             // owner's normal library. Tests inject a fingerprint into their
@@ -42,7 +45,9 @@ struct WiltedMacApp: App {
             nowPlayingSink: ownsSystemPlayback ? MediaPlayerNowPlayingSink() : nil,
             remoteCommandSource: ownsSystemPlayback ? MediaPlayerRemoteCommandSource() : nil,
             preferences: .standard
-        ))
+        )
+        _model = State(initialValue: model)
+        WiltedMacAppDelegate.installTermination(for: model, arguments: arguments, hostsTests: hostsTests)
     }
 
     /// Hosted unit tests launch the real app bundle and therefore resolve its
@@ -71,9 +76,10 @@ struct WiltedMacApp: App {
                 .task {
                     model.reconcileSyncOnLaunchOrForeground()
                 }
-                // The only quit hook there is. Scene phase reports that the
-                // windows went away, which is not the same event and must not
-                // stop the audio, so termination is observed separately.
+                // Scene phase reports that the windows went away, which is
+                // not the same event as quitting and must not stop the audio.
+                // A normal quit already drained in `applicationShouldTerminate`;
+                // this remains for paths that skip it (a hosted test run).
                 .onReceive(NotificationCenter.default.publisher(
                     for: NSApplication.willTerminateNotification
                 )) { _ in

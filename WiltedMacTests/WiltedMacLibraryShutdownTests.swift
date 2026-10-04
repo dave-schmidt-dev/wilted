@@ -77,6 +77,43 @@ final class WiltedMacLibraryShutdownTests: XCTestCase {
         try await checkMaintenanceDrain(explicitStop: true)
     }
 
+    /// The quit path's network step cancels the library controllers, then
+    /// joins them: it returns only after a blocked maintenance writer finished.
+    func testTerminationNetworkStepJoinsBlockedMaintenanceBeforeReturning() async throws {
+        let directory = wiltedTemporaryDirectory("library-shutdown-termination")
+        let root = directory.deletingLastPathComponent()
+        let accounting = directory.appendingPathComponent("library-sync/media-accounting.json")
+        let gate = LibraryShutdownGate()
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { try LocalLibraryStore(url: $0) },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertTrue(model.startLibrarySyncIfEnabled(
+            environment: ["WILTED_LIBRARY_SYNC": "1"],
+            transport: InMemoryLibraryTransport(deviceID: "mac", server: InMemoryLibraryServer(writerDeviceID: "mac")),
+            inboundMaintenance: {
+                await gate.hold()
+                try? FileManager.default.createDirectory(at: accounting.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? Data("termination-maintenance".utf8).write(to: accounting)
+            }
+        ))
+        let controller = try XCTUnwrap(model.librarySyncController)
+        controller.onShutdownDrain = { await gate.observeDrain(root: root) }
+        await gate.waitUntilHeld()
+
+        await model.closeLibraryControllersForTermination()
+        let writerDoneAtReturn = FileManager.default.fileExists(atPath: accounting.path)
+        await gate.release()  // only matters if the step returned without joining
+
+        let drainObserved = await gate.drainObserved
+        XCTAssertTrue(drainObserved, "the termination step stops the controller through its drain")
+        XCTAssertTrue(writerDoneAtReturn, "the termination step joins the controller before returning")
+        XCTAssertNil(model.librarySyncController)
+    }
+
     private func checkMaintenanceDrain(explicitStop: Bool) async throws {
         let directory = wiltedTemporaryDirectory("library-shutdown-maintenance")
         let root = directory.deletingLastPathComponent()

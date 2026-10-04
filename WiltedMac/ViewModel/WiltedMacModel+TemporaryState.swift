@@ -292,5 +292,56 @@ extension WiltedMacModel {
         await syncLifecycle?.close()
         await waitForLibrarySyncShutdown()
     }
+
+    // MARK: Normal quit
+
+    /// Stops admitting new work for a quit: the same gate fixture teardown
+    /// uses, so refreshes, feed decisions, intake, automation and every
+    /// playback command but Pause and Stop are refused while the drain runs.
+    func stopAdmittingWorkForTermination() {
+        terminationAdmission = WiltedMacTerminationAdmission(
+            wasClosing: isClosingTemporaryState,
+            librarySyncWasRunning: librarySyncController != nil
+        )
+        isClosingTemporaryState = true
+    }
+
+    /// Cancels in-flight podcast downloads and waits for each to finish. A
+    /// cancelled download writes its received bytes on its terminal path.
+    func cancelAndAwaitDownloadsForTermination() async {
+        let downloads = Array(podcastDownloadTasks.values)
+        for task in downloads { task.cancel() }
+        for task in downloads { _ = try? await task.value }
+    }
+
+    /// The quit was cancelled: admit work again, unless a fixture teardown
+    /// had already closed admission, and restart what the drain stopped.
+    func resumeAdmittingWorkAfterCancelledTermination() {
+        guard let admission = terminationAdmission else { return }
+        terminationAdmission = nil
+        guard !admission.wasClosing, temporaryStateCloseTask == nil else { return }
+        isClosingTemporaryState = false
+        startAutomationTicker()
+        startTicketDrainTicker()
+        if admission.librarySyncWasRunning { startLibrarySyncIfEnabled() }
+    }
+
+    private var terminationAdmission: WiltedMacTerminationAdmission? {
+        get { objc_getAssociatedObject(self, &terminationAdmissionKey) as? WiltedMacTerminationAdmission }
+        set { objc_setAssociatedObject(self, &terminationAdmissionKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
 #endif
 }
+
+/// What admission looked like before a quit drain closed it.
+private final class WiltedMacTerminationAdmission {
+    let wasClosing: Bool
+    let librarySyncWasRunning: Bool
+
+    init(wasClosing: Bool, librarySyncWasRunning: Bool) {
+        self.wasClosing = wasClosing
+        self.librarySyncWasRunning = librarySyncWasRunning
+    }
+}
+
+private nonisolated(unsafe) var terminationAdmissionKey: UInt8 = 0

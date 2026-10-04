@@ -478,6 +478,17 @@ extension WiltedMacModel {
 
     func waitForLibrarySyncShutdown() async { await librarySyncShutdown?.value }
 
+    /// A normal quit's network step: cancel outstanding network generations,
+    /// then close and join the library controllers. Pending library and
+    /// playback work is already durable locally, so nothing here waits for
+    /// cloud success, and the caller bounds the join. Task 5.0's publisher
+    /// shutdown belongs here, between the cancel and the join.
+    func closeLibraryControllersForTermination() async {
+        syncLifecycle?.cancel()
+        stopLibrarySync()
+        await waitForLibrarySyncShutdown()
+    }
+
     /// Everything whose change should republish at once: the queue and removals. Playback is
     /// published by the handoff controller and statistics by the sync round, so neither a position
     /// checkpoint nor the listening clock wakes the publisher.
