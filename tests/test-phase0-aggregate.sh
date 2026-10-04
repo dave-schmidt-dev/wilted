@@ -42,7 +42,6 @@ expected_legs=(
   "test-release-wrappers"
   "test-file-size"
   "test-attended-library-sync"
-  "test-core-reliability-prototype"
   "test-test-product-metadata"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
@@ -117,7 +116,6 @@ assert_contains 'run_leg_async "test-temp-leaks" "$repo_root/tests/test-temp-lea
 assert_contains 'python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" --' "$phase0_script"
 assert_contains 'trap '\''cleanup_phase0; exit 129'\'' HUP' "$phase0_script"
 assert_contains 'run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"' "$phase0_script"
-assert_contains 'run_leg_async "test-core-reliability-prototype" "$repo_root/tests/test-core-reliability-prototype.sh"' "$phase0_script"
 
 tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0-agg.XXXXXX")"
 phase_owned_pids=""

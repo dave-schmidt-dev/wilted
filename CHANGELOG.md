@@ -74,6 +74,10 @@ All notable changes to this project are documented in this file.
 - Added two Siri commands (9 of 10 App Shortcut slots; one slot is free): "How much is left in Wilted" (time left on the loaded episode at the current speed, honest when nothing is loaded or the length is unknown), "Set speed to <0.75 to 2> in Wilted" (the player's six speeds; it sets the app's speed setting too, so it persists). The sleep timer (pause after 5 to 90 minutes or at the end of the episode, off cancels) is an intent for the Shortcuts app only, with no Siri phrase: on a device Siri handed every "sleep timer" request to the Clock app, which cannot end an episode. Added phrase synonyms to the existing shortcuts; none can collide with Siri's own pause and resume.
 - Indexed downloaded episodes and their shows in Spotlight as App Intents indexed entities, kept in step with downloads and removals, and donated the play and mark-completed intents the person uses in the app so Siri can learn them (iOS 18 and earlier APIs only).
 
+### Removed
+
+- The Batch 1 HTML prototype and its Playwright test leg are gone; UX is now reviewed in the native app.
+
 ### Changed
 
 - Rebuilt the iPhone Larder as one list of episodes the Mac has prepared (a ready or available media offer, or audio already on the phone), with sort (custom, newest, oldest, shortest, show, title; remembered), an All / On phone / Available filter, search over title, show and notes, artwork thumbnails, publication dates, and Play that resumes from the Mac's last position. New and Removed sections and the Keep and Restore actions are gone from the phone. The rows now use Wilted type and a faint lettuce watermark, with SF Symbol controls: download or delete the local copy (delete asks first), play or pause, and Mark completed (asks first, and completes the episode on the Mac too). Remove from Larder is no longer offered on the phone, and reorder handles show only in Custom order.

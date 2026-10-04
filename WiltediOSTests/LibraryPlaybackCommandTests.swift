@@ -25,8 +25,8 @@ private final class CommandEngine: ListenerAudioEngine, @unchecked Sendable {
 }
 
 /// The phone's start ownership (Task 3.2): pending, duplicate and supersession rules applied before
-/// the cache lookup, and an explicit outcome for every start. Prototype scenarios
-/// (docs/mockups/2026-10-03-core-reliability.test.cjs) are named on each test.
+/// the cache lookup, and an explicit outcome for every start. Each test names its
+/// scenario ID from the retired Batch 1 prototype.
 @MainActor
 final class LibraryPlaybackCommandTests: XCTestCase {
     private struct Rig {

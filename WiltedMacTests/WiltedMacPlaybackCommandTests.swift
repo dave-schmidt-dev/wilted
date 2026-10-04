@@ -6,7 +6,7 @@ import WiltedProducer
 
 /// The playback command owner, driven through a scripted backend and an
 /// injected suspension so each ordering is caused rather than raced.
-/// Scenario IDs refer to `docs/mockups/2026-10-03-core-reliability.html`.
+/// Scenario IDs come from the retired Batch 1 prototype.
 @MainActor
 final class WiltedMacPlaybackCommandTests: XCTestCase {
     // PLAY-DELAY, RACE duplicate primary and space presses.

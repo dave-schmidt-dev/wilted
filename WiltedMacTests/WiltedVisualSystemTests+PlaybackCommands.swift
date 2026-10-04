@@ -4,8 +4,8 @@ import WiltedProducer
 @testable import WiltedMac
 
 /// What every player shows for a command's pending and failed states, and
-/// the speed picker's own save line. Scenario IDs refer to
-/// `docs/mockups/2026-10-03-core-reliability.html`.
+/// the speed picker's own save line. Scenario IDs come from the retired
+/// Batch 1 prototype.
 extension WiltedVisualSystemTests {
     // SPEED-FAIL: the live speed stays; the failure says what a restart uses.
     @MainActor

@@ -309,7 +309,6 @@ run_leg_async "test-native-gate-legs" "$repo_root/tests/test-native-gate-legs.sh
 run_leg_async "test-release-wrappers" "$repo_root/tests/test-release-wrappers.sh"
 run_leg_async "test-file-size" "$repo_root/tests/test-file-size.sh"
 run_leg_async "test-attended-library-sync" "$repo_root/tests/test-attended-library-sync.sh"
-run_leg_async "test-core-reliability-prototype" "$repo_root/tests/test-core-reliability-prototype.sh"
 run_leg_async "test-test-product-metadata" "$repo_root/tests/test-test-product-metadata.sh"
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   run_leg_async "test-audio-contract-ios-build" "$repo_root/tests/test-audio-contract-ios-build.sh"
