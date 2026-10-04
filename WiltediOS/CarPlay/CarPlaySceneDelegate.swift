@@ -155,7 +155,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 
     private func listItem(for row: CarEpisodeRow) -> CPListItem {
-        let item = CPListItem(text: row.title, detailText: commandDetail(for: row) ?? row.detail)
+        let item = CPListItem(text: row.title, detailText: Self.commandDetail(model?.playbackCommand, for: row) ?? row.detail)
         item.isPlaying = row.isPlaying
         if let fraction = row.listenedFraction { item.playbackProgress = CGFloat(fraction) }
         // Local cache only, and never a disk read here: what is already in memory shows at once, the
@@ -183,11 +183,13 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             presentFailure: { _ in render() }, completion: completion)
     }
 
-    /// The shared start state for this row, the same words the phone shows: pending, or the failure
-    /// with how to retry. Audio apps get list and Now Playing templates only, so the row carries it.
-    private func commandDetail(for row: CarEpisodeRow) -> String? {
-        guard let command = model?.playbackCommand, command.entryID == row.id else { return nil }
-        guard case let .failed(_, _, failure) = command, failure != .missingMedia else { return command.text }
+    /// The shared start state for this row: pending, or the failure with how to retry. Audio apps get
+    /// list and Now Playing templates only, so the row carries it. The words match the phone's, except
+    /// that nothing asks the driver to act on the phone: missing audio only says it is not here.
+    static func commandDetail(_ command: LibraryPlaybackCommandStatus?, for row: CarEpisodeRow) -> String? {
+        guard let command, command.entryID == row.id else { return nil }
+        guard case let .failed(_, _, failure) = command else { return command.text }
+        if failure == .missingMedia { return "Audio isn't on this iPhone." }
         return "\(command.text) Select to retry."
     }
 

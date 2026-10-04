@@ -239,6 +239,26 @@ final class LibraryRuntimeSeamTests: XCTestCase {
         XCTAssertEqual(rig.runtime.player.status, .playing, "a row press is a select, not a toggle")
     }
 
+    /// The car row carries the shared start state in car wording: pending, a retryable failure, and
+    /// missing audio that never asks the driver to act on the phone.
+    func testCarRowDetailShowsTheStartStateWithoutAskingTheDriverToUseThePhone() async throws {
+        let rig = try await makeRig()
+        await rig.runtime.prepare()
+        let row = try carRow(rig)
+        let other = try ItemID(rawValue: "item-other")
+        func detail(_ command: LibraryPlaybackCommandStatus?) -> String? { CarPlaySceneDelegate.commandDetail(command, for: row) }
+
+        XCTAssertNil(detail(nil))
+        XCTAssertNil(detail(.starting(entryID: other, title: "Other")), "another row's start leaves this row alone")
+        XCTAssertEqual(detail(.starting(entryID: row.id, title: row.title)), "Starting playback…")
+        XCTAssertEqual(
+            detail(.failed(entryID: row.id, title: row.title, failure: .engineRefused)),
+            "Playback refused. Your position is kept. Select to retry.")
+        let missing = try XCTUnwrap(detail(.failed(entryID: row.id, title: row.title, failure: .missingMedia)))
+        XCTAssertEqual(missing, "Audio isn't on this iPhone.")
+        XCTAssertFalse(missing.lowercased().contains("download"), "the car never asks the driver to download")
+    }
+
     #if DEBUG
     /// Positive control for the LibraryRoot fixture's live-transport spy: the live construction path
     /// (`LibraryEnvironment.makeModel`) moves the very count the UI tests assert stays 0.
