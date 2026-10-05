@@ -185,7 +185,8 @@ final class WiltedMacIntentApplier {
         switch intent.action {
         case .keep:
             switch state {
-            case .live(queued: true, _): return try applied()
+            // A queued entry is still sent through the model: the phone's Keep is the
+            // owner's own decision, and it turns a policy-kept entry into a manual one.
             case .live: return try result(await host.keepEntry(entryID))
             default: return try rejected(notApplicable)
             }

@@ -262,6 +262,8 @@ extension WiltedMacModel {
                     self.podcastOperationMessage = "\(episode.title) could not be marked completed."
                     return
                 }
+                // The listener's own decision: automatic admission must not reverse it.
+                await self.recordOwnerDecision(.skip, for: episode.id, store: store)
                 if let playback = self.playback {
                     try? await playback.removePodcastQueueEpisode(id)
                     await self.refreshPodcastQueueState()
@@ -293,6 +295,7 @@ extension WiltedMacModel {
                     self.podcastOperationMessage = "\(episode.title) could not be restored."
                     return
                 }
+                await self.recordOwnerDecision(.keep, for: episode.id, store: store)
                 await self.reloadLibraryRows()
                 self.podcastOperationMessage = "Restored \(episode.title)."
                 if let restored = self.episodes.first(where: { $0.id == episode.id }) {
@@ -449,6 +452,7 @@ extension WiltedMacModel {
                 return
             }
             hiddenEpisodeIDs.remove(dismissal.id)
+            await recordOwnerDecision(.keep, for: dismissal.id, store: store)
             let values = try await loadLibrary(from: store)
             articles = values.articles
             applyEpisodes(values.episodes)
@@ -462,6 +466,18 @@ extension WiltedMacModel {
 #endif
 
 #if canImport(WiltedProducer)
+    /// Records the owner's Skip or Restore after the store write it describes
+    /// has committed. A failed record is logged, not thrown: the committed
+    /// change still needs its follow-up work, and a retry would find the store
+    /// already at the target and never reach this record again.
+    func recordOwnerDecision(_ decision: EpisodeDecision, for episodeID: String, store: LocalLibraryStore) async {
+        do {
+            try await recordManualDecisions(decision, for: [episodeID], at: Timestamp(Date()), store: store)
+        } catch {
+            removalLog.error("Manual decision record failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
     /// Tracks finite subscription writes so fixture teardown can cancel and
     /// drain them before its owned store directory is removed.
     func trackSubscriptionWrite(_ operation: @escaping @MainActor () async -> Void) {

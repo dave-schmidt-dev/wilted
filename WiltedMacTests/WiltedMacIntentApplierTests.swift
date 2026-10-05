@@ -93,11 +93,11 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         XCTAssertEqual(r.appliedCount.value, 1, "an applied decision triggers a republish")
     }
 
-    func testKeepOfAnAlreadyQueuedEntryIsAppliedWithoutTouchingTheModel() async throws {
+    func testKeepOfAnAlreadyQueuedEntryStillGoesThroughTheModelSoItHoldsAManualRecord() async throws {
         let r = rig()
         r.host.states[ids[0]] = .live(queued: true, started: false)
         try await r.applier.apply(intent(.keep(entryID: ids[0])))
-        XCTAssertEqual(r.host.calls, [])
+        XCTAssertEqual(r.host.calls, ["keep item-a"])
         let published = try await outcomes(r)
         XCTAssertEqual(published.first?.disposition, .applied)
     }
