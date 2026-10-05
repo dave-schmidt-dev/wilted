@@ -116,10 +116,17 @@ class AdDetectionMixinB:
         self.assertIn("advertising throughout", details["ads.detect.span.confirmed"])
         self.assertEqual(self.confirmed, frozenset({(6.72, 456.88)}))
 
-    def test_a_span_the_review_vouched_for_survives_the_size_ceiling(self):
+    def test_a_confirmed_span_over_the_total_ceiling_is_held_without_a_cut(self):
         confirmed = frozenset({(6.72, 292.64)})
-        kept = wp.reject_implausible_ad_spans([FakeAd(6.72, 292.64)], 459.0, confirmed)
-        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(6.72, 292.64)])
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans([FakeAd(6.72, 292.64)], 459.0, confirmed)
+        self.assertEqual(kept, [])
+        events = [json.loads(line) for line in stream.getvalue().splitlines()]
+        held = [event for event in events if event["stage"] == "ads.detect.span.held"]
+        self.assertEqual(len(held), 1)
+        self.assertIn("6.720-292.640", held[0]["detail"])
+        self.assertIn("62% of the episode", held[0]["detail"])
 
     def test_a_fully_confirmed_cut_that_crosses_the_programme_floor_keeps_the_episode_whole(self):
         # The floor binds even when every span was vouched for: a review that

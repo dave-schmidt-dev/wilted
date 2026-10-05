@@ -154,6 +154,14 @@ def serialize_ad_audit(audit) -> dict:
             }
             for seed in audit.declined_commercial_evidence_seeds
         ],
+        "heldSpans": [
+            {
+                "reason": span.reason,
+                "startSeconds": float(span.start_s),
+                "endSeconds": float(span.end_s),
+            }
+            for span in audit.held_spans
+        ],
         "incompleteError": audit.incomplete_error,
         "nearEmpty": audit.near_empty,
     }

@@ -79,6 +79,15 @@ class DeclinedCommercialEvidenceSeed:
     reason: str
 
 
+@dataclass(frozen=True)
+class HeldAdSpan:
+    """A detected span preserved to enforce an episode-level safety bound."""
+
+    start_s: float
+    end_s: float
+    reason: str
+
+
 @dataclass
 class AdAnalysisAudit:
     """Evidence recorded around the archive detector's otherwise opaque retries."""
@@ -97,6 +106,7 @@ class AdAnalysisAudit:
     incomplete_error: str | None = None
     near_empty: str | None = None
     declined_commercial_evidence_seeds: tuple[DeclinedCommercialEvidenceSeed, ...] = ()
+    held_spans: tuple[HeldAdSpan, ...] = ()
 
 @dataclass(frozen=True)
 class AdAnalysis:

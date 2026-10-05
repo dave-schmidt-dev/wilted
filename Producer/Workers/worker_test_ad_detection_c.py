@@ -118,19 +118,22 @@ class AdDetectionMixinC:
         self.assertEqual(kept, [])
         self.assertIn("no review could vouch for it", stream.getvalue())
 
-    def test_a_vouched_for_span_is_not_discarded_by_the_total_ceiling(self):
-        # The total ceiling exists to catch a detector that classified most of
-        # an episode by accident, and a reviewed span is not an accident: its
-        # verdict stands and the span survives. What the combined ceiling
-        # changed is that the verdict no longer carries an unreviewed
-        # companion with it. The 286s span plus the 10s span are 64% of the
-        # episode together, over the 60% ceiling, so the 10s span no review
-        # vouched for is handed back and the vouched-for span is the cut.
+    def test_the_total_ceiling_holds_a_vouched_span_and_hands_back_its_companion(self):
+        # The reviewed 286s span alone is 62% of this episode, over the 60%
+        # ceiling. It is held whole, and the unreviewed companion is handed
+        # back with it so no unreviewed span remains in the cut.
         confirmed = frozenset({(6.72, 292.64)})
-        kept = wp.reject_implausible_ad_spans(
-            [FakeAd(6.72, 292.64), FakeAd(300.0, 310.0)], 459.0, confirmed
-        )
-        self.assertEqual([(ad.start_s, ad.end_s) for ad in kept], [(6.72, 292.64)])
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            kept = wp.reject_implausible_ad_spans(
+                [FakeAd(6.72, 292.64), FakeAd(300.0, 310.0)], 459.0, confirmed
+            )
+        self.assertEqual(kept, [])
+        events = [json.loads(line) for line in stream.getvalue().splitlines()]
+        held = [event for event in events if event["stage"] == "ads.detect.span.held"]
+        self.assertEqual(len(held), 1)
+        self.assertIn("6.720-292.640", held[0]["detail"])
+        self.assertIn("62% of the episode", held[0]["detail"])
 
     def test_a_short_episodes_vouched_for_spans_are_the_cut_the_ceiling_leaves(self):
         # A news-alert episode that genuinely is mostly advertising: the

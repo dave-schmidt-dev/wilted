@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
+from .ad_audit import HeldAdSpan
 from .commercial_seeds import _constrained_id
 from .constants import AD_POD_CONTINUATION_MAX_GAP_SECONDS, AD_POD_CONTINUATION_MAX_SECONDS, AD_POD_CONTINUATION_MAX_SEGMENTS, COMMERCIAL_RECOVERY_CONTEXT_CHARS, MAXIMUM_SINGLE_AD_SHARE, MAXIMUM_TOTAL_AD_SHARE, MAXIMUM_UNCONFIRMED_AD_SHARE, MINIMUM_PROGRAMME_SHARE, OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS
 from .edge_recovery import _program_starts_inside
@@ -237,7 +238,21 @@ def resize_oversized_ad_spans(ads_module, backend, segments, detections, total_s
         resized.append(kept)
     return resized, frozenset(confirmed)
 
-def reject_implausible_ad_spans(detections, total_seconds, confirmed=frozenset()):
+def _record_held_span(held_spans, start_s, end_s, reason, total_seconds):
+    """Record an uncut interval and report its share of the episode."""
+    start_s, end_s = float(start_s), float(end_s)
+    if held_spans is not None:
+        held_spans.append(HeldAdSpan(start_s, end_s, reason))
+    share = (end_s - start_s) / total_seconds
+    _worker_reporting.progress(
+        "ads.detect.span.held",
+        f"{start_s:.3f}-{end_s:.3f} is held: {reason} ({share:.0%} of the episode)",
+    )
+
+
+def reject_implausible_ad_spans(
+    detections, total_seconds, confirmed=frozenset(), held_spans=None
+):
     """Drop unreviewed detections too large to be advertising, and say which and why.
 
     Dropping the span rather than trimming it is deliberate: nothing here knows
@@ -245,20 +260,15 @@ def reject_implausible_ad_spans(detections, total_seconds, confirmed=frozenset()
     programme audio with the same confidence the detector just misplaced.
 
     `confirmed` holds the spans a review already read end to end and vouched
-    for. A vouched-for span is never dropped for its size: a short news alert
-    can legitimately be mostly advertising, and overruling a verdict on
-    arithmetic is how a correctly-detected sponsor read became a failed
-    preparation. But a verdict behind one span is not a verdict behind the
-    rest. Unreviewed spans are measured against a bound of their own, tighter
-    than the total, so they cannot accumulate past what a single span may
-    claim, and the total ceiling still measures reviewed and unreviewed
-    removals together, so a vouched-for span cannot carry unreviewed
-    companions across the episode. Either bound tripping keeps only the spans
-    a review vouched for, which is the cut that risks the least programme.
-    Under all of it is `MINIMUM_PROGRAMME_SHARE`: a combined removal that
-    would leave less than that share of the episode as programme keeps the
-    whole episode, even when every span was vouched for, because that much of
-    an episode called advertising is a detector failure no review can rescue.
+    for. A vouched-for span is exempt from the single-span limit, so a short
+    news alert can legitimately be mostly advertising, but it is still subject
+    to the total-share ceiling. If the vouched-for spans alone exceed that
+    ceiling, they are held and no span is cut. Otherwise, an over-limit
+    combination hands back the unreviewed spans and keeps only vouched-for
+    spans. Unreviewed spans also have a tighter bound of their own, so they
+    cannot accumulate past what a single span may claim. The
+    `MINIMUM_PROGRAMME_SHARE` floor also keeps the whole episode when a cut
+    would leave too little programme.
     """
     if total_seconds <= 0 or not detections:
         return detections
@@ -277,8 +287,21 @@ def reject_implausible_ad_spans(detections, total_seconds, confirmed=frozenset()
     vouched = [ad for ad in kept if (float(ad.start_s), float(ad.end_s)) in confirmed]
     unreviewed = [ad for ad in kept if (float(ad.start_s), float(ad.end_s)) not in confirmed]
     unreviewed_removed = sum(float(ad.end_s) - float(ad.start_s) for ad in unreviewed)
+    vouched_removed = sum(float(ad.end_s) - float(ad.start_s) for ad in vouched)
     total_removed = sum(float(ad.end_s) - float(ad.start_s) for ad in kept)
     programme_share = 1 - total_removed / total_seconds
+    if vouched_removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
+        for ad in vouched:
+            _record_held_span(
+                held_spans, ad.start_s, ad.end_s, "total-share-ceiling", total_seconds
+            )
+        _worker_reporting.progress(
+            "ads.detect.refused",
+            f"the spans a review vouched for total {vouched_removed:.1f}s of "
+            f"{total_seconds:.1f}s ({vouched_removed / total_seconds:.0%}), over the "
+            f"{MAXIMUM_TOTAL_AD_SHARE:.0%} total-share ceiling; keeping the episode whole",
+        )
+        return []
     if programme_share < MINIMUM_PROGRAMME_SHARE:
         _worker_reporting.progress(
             "ads.detect.refused",
@@ -309,8 +332,29 @@ def reject_implausible_ad_spans(detections, total_seconds, confirmed=frozenset()
         return vouched
     return kept
 
+
+def enforce_total_ad_share_ceiling(detections, total_seconds, held_spans=None):
+    """Hold every final detection if recovery leaves the total over its ceiling."""
+    if total_seconds <= 0 or not detections:
+        return detections
+    total_removed = sum(float(ad.end_s) - float(ad.start_s) for ad in detections)
+    share = total_removed / total_seconds
+    if share <= MAXIMUM_TOTAL_AD_SHARE:
+        return detections
+    for ad in detections:
+        _record_held_span(
+            held_spans, ad.start_s, ad.end_s, "total-share-ceiling", total_seconds
+        )
+    _worker_reporting.progress(
+        "ads.detect.refused",
+        f"final recovered detections total {total_removed:.1f}s of {total_seconds:.1f}s "
+        f"({share:.0%}), over the {MAXIMUM_TOTAL_AD_SHARE:.0%} total-share ceiling; "
+        "keeping the episode whole",
+    )
+    return []
+
 def recover_adjacent_ad_pod_continuations(
-    ads_module, backend, segments, detections, total_seconds
+    ads_module, backend, segments, detections, total_seconds, held_spans=None
 ):
     """Extend a surviving cut through one immediately adjacent promo, or preserve it."""
     if not detections or len(segments) < 2 or not 0 < total_seconds < float("inf"):
@@ -392,9 +436,14 @@ def recover_adjacent_ad_pod_continuations(
                     for other in recovered
                 )
                 or proposed_seconds / total_seconds > MAXIMUM_SINGLE_AD_SHARE
-                or total_removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE
             ):
                 raise ValueError("adjacent continuation is overly broad")
+            if total_removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
+                _record_held_span(
+                    held_spans, ad_end, extension_end,
+                    "total-share-ceiling", total_seconds,
+                )
+                continue
         except Exception as error:  # noqa: BLE001 - incomplete review preserves the verified cut
             _worker_reporting.progress(
                 "ads.detect.pod-continuation.skipped",

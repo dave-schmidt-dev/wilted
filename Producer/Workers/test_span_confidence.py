@@ -117,6 +117,84 @@ class ProducedSpanConfidenceTests(unittest.TestCase):
         )
         self.assertNotEqual(spans[0]["confidence"], 1.0)
 
+
+class TotalAdShareCeilingTests(unittest.TestCase):
+    def test_confirmed_span_over_total_ceiling_is_held_and_audited(self):
+        ad = FakeAd(0.0, 70.0, label="sponsor_read")
+        held_spans = []
+        with mock.patch.object(_worker_reporting, "progress") as progress:
+            kept = _worker_span_bounds.reject_implausible_ad_spans(
+                [ad], 100.0, frozenset({(0.0, 70.0)}), held_spans
+            )
+
+        self.assertEqual(kept, [])
+        self.assertEqual(
+            [(span.start_s, span.end_s, span.reason) for span in held_spans],
+            [(0.0, 70.0, "total-share-ceiling")],
+        )
+        serialized = _worker_cue_timing.serialize_ad_audit(
+            _worker_ad_audit.AdAnalysisAudit(held_spans=tuple(held_spans))
+        )
+        self.assertEqual(
+            serialized["heldSpans"],
+            [{"reason": "total-share-ceiling", "startSeconds": 0.0, "endSeconds": 70.0}],
+        )
+        held_events = [
+            call for call in progress.call_args_list
+            if call.args[0] == "ads.detect.span.held"
+        ]
+        self.assertEqual(len(held_events), 1)
+        self.assertIn("70% of the episode", held_events[0].args[1])
+
+    def test_over_ceiling_pod_continuation_is_held_and_existing_cut_survives(self):
+        llm = FakeLLM(adjacent_program_start_id=2)
+        llm.load()
+        ads = install_fake_ads(llm)
+        detections = [
+            FakeAd(0.0, 35.0, label="ad_break"),
+            FakeAd(40.0, 60.0, label="sponsor_read"),
+        ]
+        segments = [
+            FakeSegment(60.0, 65.0, "adjacent sponsor passage"),
+            FakeSegment(65.0, 70.0, "adjacent sponsor continuation"),
+            FakeSegment(70.0, 75.0, "programme resumes"),
+        ]
+        held_spans = []
+        with mock.patch.object(_worker_reporting, "progress") as progress:
+            recovered = _worker_span_bounds.recover_adjacent_ad_pod_continuations(
+                ads, llm, segments, detections, 100.0, held_spans
+            )
+
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in recovered],
+            [(0.0, 35.0), (40.0, 60.0)],
+        )
+        self.assertEqual(
+            [(span.start_s, span.end_s, span.reason) for span in held_spans],
+            [(60.0, 70.0, "total-share-ceiling")],
+        )
+        held_events = [
+            call for call in progress.call_args_list
+            if call.args[0] == "ads.detect.span.held"
+        ]
+        self.assertEqual(len(held_events), 1)
+        self.assertIn("10% of the episode", held_events[0].args[1])
+
+    def test_final_over_ceiling_detections_are_all_held(self):
+        detections = [FakeAd(0.0, 35.0), FakeAd(40.0, 70.0)]
+        held_spans = []
+        with mock.patch.object(_worker_reporting, "progress") as progress:
+            kept = _worker_span_bounds.enforce_total_ad_share_ceiling(
+                detections, 100.0, held_spans
+            )
+
+        self.assertEqual(kept, [])
+        self.assertEqual(len(held_spans), 2)
+        self.assertEqual(
+            sum(call.args[0] == "ads.detect.span.held" for call in progress.call_args_list),
+            2,
+        )
+
 class RuntimeRecoveryConfidenceTests(unittest.TestCase):
     """The Runtime's own recovery reviews report a measured receipt too.
 

@@ -33,7 +33,7 @@ from .constants import COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
 from .cue_timing import _near_empty_nominations, build_effective_cut_map, build_keep_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
 from .nomination import _CallBudgetBackend, _experimental_speculative_cuts, detect_nominated_ad_spans
 from .reporting import DiscardedRuns, WorkerError
-from .span_bounds import recover_adjacent_ad_pod_continuations, reject_implausible_ad_spans
+from .span_bounds import enforce_total_ad_share_ceiling, recover_adjacent_ad_pod_continuations, reject_implausible_ad_spans
 from .sponsor_evidence import explicit_sponsor_anchor_ids, explicit_sponsor_opening_pattern, sponsor_anchor_is_covered
 from .tail_recovery import trim_straddling_span_tails
 
@@ -145,16 +145,25 @@ def analyze_ad_detections(
         ads_module, auditing_backend, segments, detections, total_seconds
     )
     proposed_detections = detections
-    detections = reject_implausible_ad_spans(detections, total_seconds, confirmed_spans)
-    detections = recover_adjacent_ad_pod_continuations(
-        ads_module, auditing_backend, segments, detections, total_seconds
+    held_spans = []
+    detections = reject_implausible_ad_spans(
+        detections, total_seconds, confirmed_spans, held_spans
     )
+    detections = recover_adjacent_ad_pod_continuations(
+        ads_module, auditing_backend, segments, detections, total_seconds, held_spans
+    )
+    detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
     opening_pattern = explicit_sponsor_opening_pattern(ads_module)
     dropped_anchor_ids = [
         anchor_id
         for anchor_id in explicit_sponsor_anchor_ids(segments, opening_pattern)
         if sponsor_anchor_is_covered(anchor_id, segments, proposed_detections)
         and not sponsor_anchor_is_covered(anchor_id, segments, detections)
+        and not any(
+            held.start_s < float(segments[anchor_id].end_s)
+            and held.end_s > float(segments[anchor_id].start_s)
+            for held in held_spans
+        )
     ]
     if dropped_anchor_ids:
         details = ", ".join(
@@ -168,6 +177,7 @@ def analyze_ad_detections(
             f"span covering them: {details}",
         )
     audit = auditing_backend.audit(detections, segments)
+    audit.held_spans = tuple(held_spans)
     audit.declined_commercial_evidence_seeds = tuple(
         DeclinedCommercialEvidenceSeed(
             ids=seed_ids,
