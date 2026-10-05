@@ -301,6 +301,7 @@ targets:
     sources:
       - path: WiltedWatch
       - path: WiltediOS/WatchLink
+      - path: Shared/WiltedTheme.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.watchkitapp

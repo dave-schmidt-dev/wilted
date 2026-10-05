@@ -10,6 +10,7 @@ import SwiftUI
 struct NowPlayingView: View {
     /// The state the screen renders and controls.
     let model: WatchViewModel
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ScrollView {
@@ -34,12 +35,12 @@ struct NowPlayingView: View {
                     .lineLimit(2)
                 Text(playing.showTitle)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
             } else {
                 Text("Nothing playing")
                     .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -52,14 +53,14 @@ struct NowPlayingView: View {
         let total = duration > 0 ? duration : max(position, 1)
         return VStack(alignment: .leading, spacing: 2) {
             ProgressView(value: min(max(position, 0), total), total: total)
-                .tint(.accentColor)
+                .tint(WiltedTheme.color(.progress, scheme: colorScheme))
             HStack {
                 Text(Self.timeText(position))
                 Spacer()
                 Text(duration > 0 ? Self.timeText(duration) : "--:--")
             }
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
@@ -76,7 +77,7 @@ struct NowPlayingView: View {
             } label: {
                 Image(systemName: "gobackward")
                     .font(.title3)
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
             }
             .buttonStyle(.bordered)
             .accessibilityLabel("Skip back")
@@ -86,7 +87,7 @@ struct NowPlayingView: View {
             } label: {
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.title3)
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
             }
             .buttonStyle(.bordered)
             .accessibilityLabel(isPlaying ? "Pause" : "Play")
@@ -96,7 +97,7 @@ struct NowPlayingView: View {
             } label: {
                 Image(systemName: "goforward")
                     .font(.title3)
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
             }
             .buttonStyle(.bordered)
             .accessibilityLabel("Skip forward")
@@ -111,7 +112,7 @@ struct NowPlayingView: View {
             } label: {
                 Label(Self.speedText(model.currentSpeed), systemImage: "speedometer")
                     .font(.caption)
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
             }
             .accessibilityLabel("Playback speed \(Self.speedText(model.currentSpeed))")
 
@@ -120,7 +121,7 @@ struct NowPlayingView: View {
             } label: {
                 Label(sleepLabel, systemImage: "moon.zzz")
                     .font(.caption)
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
             }
             .accessibilityLabel("Sleep timer")
         }
@@ -144,11 +145,11 @@ struct NowPlayingView: View {
             if let note = model.unreachableNote {
                 Text(note)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
             Text(model.ageText)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

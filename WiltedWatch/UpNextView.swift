@@ -8,6 +8,7 @@ import SwiftUI
 struct UpNextView: View {
     /// The state the screen renders and controls.
     let model: WatchViewModel
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         List {
@@ -22,7 +23,7 @@ struct UpNextView: View {
     @ViewBuilder private var queue: some View {
         if rows.isEmpty {
             Text("Nothing queued")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         } else {
             ForEach(rows, id: \.episodeID) { row in
                 Button {
@@ -33,10 +34,10 @@ struct UpNextView: View {
                             .lineLimit(1)
                         Text(row.showTitle)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .lineLimit(1)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
                 }
                 .disabled(!model.controlsEnabled)
                 .accessibilityLabel("Play \(row.title), \(row.showTitle)")
@@ -49,11 +50,11 @@ struct UpNextView: View {
             if let note = model.unreachableNote {
                 Text(note)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
             Text(model.ageText)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
     }
 }
