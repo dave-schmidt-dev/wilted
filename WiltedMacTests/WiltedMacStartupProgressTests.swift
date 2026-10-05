@@ -91,4 +91,36 @@ final class WiltedMacStartupProgressTests: XCTestCase {
         })
         XCTAssertEqual(model.startupState, .ready)
     }
+
+    func testRecoveryProgressCannotReplaceLoadingLibrary() async throws {
+        let directory = wiltedTemporaryDirectory("startup-progress-order")
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                let itemID = try ItemID(rawValue: "item-" + String(repeating: "d", count: 64))
+                try await store.save(download: PodcastDownload(
+                    episodeID: itemID, status: .failed, updatedAt: Timestamp(Date()),
+                    failureKind: .retryable
+                ))
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        var steps: [WiltedMacStartupStep] = []
+        model.startupStepObserverForTesting = { steps.append($0) }
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        await Task.yield()
+        await Task.yield()
+
+        guard let loadingIndex = steps.firstIndex(of: .loadingLibrary) else {
+            return XCTFail("bootstrap never announced the library-loading step")
+        }
+        XCTAssertFalse(steps.dropFirst(loadingIndex + 1).contains { step in
+            if case .recoveringWork = step { return true }
+            return false
+        })
+        XCTAssertEqual(model.startupState, .ready)
+    }
 }

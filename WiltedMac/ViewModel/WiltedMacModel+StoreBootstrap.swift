@@ -308,12 +308,16 @@ extension WiltedMacModel {
             importedDeferrals.append(WorkTicketImportedDeferral(subjectID: subjectID))
         }
         do {
+            let reconciliationAttempt = startupAttemptCount
             let reconciliation = try await store.reconcileWorkTickets(
                 now: Timestamp(Date()), sequenceFloor: preparationRequestSequence,
                 importedDeferrals: importedDeferrals,
                 progress: { [weak self] update in
                     Task { @MainActor [weak self] in
-                        self?.announceStartupStep(.recoveringWork(
+                        guard let self,
+                              self.startupAttemptCount == reconciliationAttempt,
+                              self.startupState.loadingStep?.acceptsWorkTicketRecoveryProgress == true else { return }
+                        self.announceStartupStep(.recoveringWork(
                             action: update.step.startupAction, done: update.done, total: update.total
                         ))
                     }
@@ -329,6 +333,10 @@ extension WiltedMacModel {
                     && ($0.state == .pending || $0.state == .deferred) }
                 .reduce(into: [String: Int]()) { result, ticket in result[ticket.subjectID] = ticket.requestSequence }
             return reconciliation
+        } catch is CancellationError {
+            return WorkTicketReconciliation(
+                importedDeferralCount: 0, adoptedDownloadCount: 0, closedRunCount: 0, prunedCount: 0
+            )
         } catch {
             return WorkTicketReconciliation(
                 importedDeferralCount: 0, adoptedDownloadCount: 0, closedRunCount: 0, prunedCount: 0,

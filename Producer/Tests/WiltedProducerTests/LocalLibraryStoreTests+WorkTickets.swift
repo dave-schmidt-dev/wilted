@@ -265,8 +265,7 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(firstSnapshot, secondSnapshot, "a second reconcile must change nothing")
     }
 
-    func testReconcileWorkTicketsReportsCountedProgressAndContinuesAfterTicketFailure() async throws {
-        enum InjectedFailure: Error { case expected }
+    func testReconcileWorkTicketsReportsCountedProgress() async throws {
         final class ProgressRecorder: @unchecked Sendable {
             private let lock = NSLock()
             private var stored: [LocalLibraryStore.WorkTicketReconciliationProgress] = []
@@ -288,15 +287,10 @@ extension LocalLibraryStoreTests {
         let result = try await store.reconcileWorkTickets(
             now: now, sequenceFloor: 0,
             importedDeferrals: [
-                WorkTicketImportedDeferral(subjectID: "broken"),
-                WorkTicketImportedDeferral(subjectID: "recovered"),
+                WorkTicketImportedDeferral(subjectID: "first"),
+                WorkTicketImportedDeferral(subjectID: "second"),
             ],
-            progress: { recorder.append($0) },
-            failureInjector: { step, subjectID in
-                if step == .importingDeferrals && subjectID == "broken" {
-                    throw InjectedFailure.expected
-                }
-            }
+            progress: { recorder.append($0) }
         )
         let progress = recorder.updates
 
@@ -304,12 +298,12 @@ extension LocalLibraryStoreTests {
             progress.filter { $0.step == .importingDeferrals }.map { "\($0.done)/\($0.total)" },
             ["0/2", "1/2", "2/2"]
         )
-        XCTAssertEqual(result.importedDeferralCount, 1)
-        XCTAssertEqual(result.errors.map(\.subjectID), ["broken"])
-        let recoveredTicket = try await store.workTicket(kind: .podcastPreparation, subjectID: "recovered")
-        let brokenTicket = try await store.workTicket(kind: .podcastPreparation, subjectID: "broken")
-        XCTAssertNotNil(recoveredTicket)
-        XCTAssertNil(brokenTicket)
+        XCTAssertEqual(result.importedDeferralCount, 2)
+        XCTAssertTrue(result.errors.isEmpty)
+        let firstTicket = try await store.workTicket(kind: .podcastPreparation, subjectID: "first")
+        let secondTicket = try await store.workTicket(kind: .podcastPreparation, subjectID: "second")
+        XCTAssertNotNil(firstTicket)
+        XCTAssertNotNil(secondTicket)
         XCTAssertEqual(
             Set(progress.filter { $0.step != .importingDeferrals }.map(\.step)),
             Set(LocalLibraryStore.WorkTicketReconciliationStep.allCases.filter { $0 != .importingDeferrals }),

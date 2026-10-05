@@ -114,6 +114,16 @@ enum WiltedMacStartupStep: Equatable, Sendable {
     case loadingLibrary
     case restoringPlayback
 
+    /// Whether a recovery update still belongs to the active reconciliation phase.
+    var acceptsWorkTicketRecoveryProgress: Bool {
+        switch self {
+        case .reconcilingWork, .recoveringWork:
+            true
+        default:
+            false
+        }
+    }
+
     /// The readout's line: the step's own words, with the ellipsis the old
     /// fixed sentence carried.
     var label: String {
