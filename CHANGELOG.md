@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Mac startup and work recovery show counted progress for each step instead of a single waiting message.
+- The Mac Now Playing pane's episode title is smaller, and the narrow sidebar rail shows the Ready audio time under a play icon.
 
 ### Fixed
 - Ad removal no longer cuts most of a short episode when two sponsor reads bracket the programme: a confirmed cut that would push the episode past the total advertising ceiling, or a pod extension that would reach the next read, is now kept in the audio and recorded as held instead of removed.
