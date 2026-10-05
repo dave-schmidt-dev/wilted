@@ -17,11 +17,11 @@ private struct WatchMessageEnvelope: @unchecked Sendable {
 final class WatchSession: NSObject, WatchSessionProtocol, WCSessionDelegate {
     private let session: WCSession
 
-    /// Wraps `session`; production passes `WCSession.default`.
+    /// Wraps `session`; production passes `WCSession.default`. The delegate is set in `activate()`,
+    /// which the bridge calls only when `WCSession.isSupported()`.
     init(session: WCSession = .default) {
         self.session = session
         super.init()
-        session.delegate = self
     }
 
     var isSupported: Bool { WCSession.isSupported() }
