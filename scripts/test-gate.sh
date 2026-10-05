@@ -93,6 +93,8 @@ leg_names=(
   ios-pixel-snapshot-tests
 )
 leg_reports=(none xctest xctest xctest xctest count count count count)
+# shellcheck source=lib/native-gate-staging.sh
+source "$repo_root/scripts/lib/native-gate-staging.sh"
 # shellcheck source=lib/native-gate-legs.sh
 source "$repo_root/scripts/lib/native-gate-legs.sh"
 wilted_gate_legs_validate "${leg_names[@]}" || exit 2
@@ -339,12 +341,7 @@ leg_xcodegen_reproducible() {
   # referenced signing input in both generated projects so xcodebuild never
   # reads or writes the checkout.
   local project_file
-  for project_file in \
-    WiltedMac/Info.plist WiltedMac/WiltedMac.entitlements \
-    WiltedMac/WiltedMacProduction.entitlements WiltediOS/Info.plist \
-    WiltediOS/WiltediOS.entitlements WiltediOS/WiltediOSProduction.entitlements \
-    WiltediOSIntents/Info.plist WiltediOSIntents/WiltediOSIntents.entitlements \
-    WiltediOSIntents/WiltediOSIntentsProduction.entitlements; do
+  for project_file in "${wilted_gate_xcodegen_inputs[@]}"; do
     mkdir -p "$first/$(dirname "$project_file")" "$second/$(dirname "$project_file")"
     cp "$integration_root/$project_file" "$first/$project_file"
     cp "$integration_root/$project_file" "$second/$project_file"
@@ -714,23 +711,6 @@ leg_ios_ui_tests() {
     WiltediOSUITests/WiltediOSPixelSnapshotTests \
     WiltediOSUITests/WiltediOSMVPFlowUITests || result=$?
   cleanup_leg_simulator "$udid" "$result"
-}
-
-prepare_integration_root() {
-  integration_root="$tmp_root/integration-root"
-  mkdir -p "$integration_root/WiltedKit" "$integration_root/Producer" "$integration_root/CloudSync" "$integration_root/Listener"
-  cp "$project_yml" "$integration_root/project.yml"
-  cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests" \
-    "$repo_root/WiltedMacUITests" "$repo_root/WiltediOS" "$repo_root/WiltediOSTests" \
-    "$repo_root/WiltediOSIntents" "$repo_root/WiltediOSUITests" "$integration_root/"
-  cp "$repo_root/WiltedKit/Package.swift" "$integration_root/WiltedKit/Package.swift"
-  cp -R "$repo_root/WiltedKit/Sources" "$repo_root/WiltedKit/Tests" "$integration_root/WiltedKit/"
-  cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"
-  cp -R "$repo_root/Producer/Sources" "$repo_root/Producer/Tests" "$integration_root/Producer/"
-  cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"
-  cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"
-  cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"
-  cp -R "$repo_root/Listener/Sources" "$repo_root/Listener/Tests" "$integration_root/Listener/"
 }
 
 if [[ "$native_self_test" != "1" ]]; then
