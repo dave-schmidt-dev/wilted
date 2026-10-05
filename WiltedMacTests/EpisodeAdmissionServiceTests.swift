@@ -186,6 +186,30 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
         XCTAssertEqual(restored?.source, .manual)
     }
 
+    func testManualPrepareOnAnAutoPrepareOffFeedStillIssuesExactlyOneTicketWhileTheAutomaticPathIssuesNone() async throws {
+        let fixture = try await makeFixture(
+            policy: FeedAutomationPolicy(autoKeep: .on, autoDownload: .on, autoPrepare: .off),
+            feedItems: [.init("a", day: 1)], prepareEverything: true
+        )
+
+        let claimed = try await fixture.model.automaticRefresh(fixture.feedURL, claimingNewest: 0)
+        for id in claimed { try await fixture.model.startClaimedDownload(id) }
+        await fixture.model.waitForPodcastOperations()
+        await fixture.model.waitForPodcastPreparationOperationsForTesting()
+
+        XCTAssertEqual(fixture.episode("a")?.downloadState, .completed, "the kept episode is downloaded")
+        let automatic = try await fixture.tickets(.podcastPreparation)
+        XCTAssertTrue(automatic.isEmpty, "control: the automatic path issues none under feed Auto prepare Off")
+        XCTAssertEqual(fixture.runner.count, 0)
+
+        fixture.model.prepareEpisode(try XCTUnwrap(fixture.episode("a")))
+        await fixture.model.waitForPodcastPreparationOperationsForTesting()
+
+        let manual = try await fixture.tickets(.podcastPreparation)
+        XCTAssertEqual(manual.map(\.subjectID), [fixture.id("a")], "an explicit Prepare issues exactly one ticket")
+        XCTAssertEqual(fixture.runner.count, 1, "and the preparation really starts")
+    }
+
     // MARK: Release
 
     func testRetiringAKeptEpisodeReleasesTheOldestWaitingEpisode() async throws {
