@@ -429,7 +429,10 @@ def recover_adjacent_ad_pod_continuations(
             if (
                 extension_end <= ad_end
                 or extension_end - ad_end > AD_POD_CONTINUATION_MAX_SECONDS
-                or any(
+            ):
+                raise ValueError("adjacent continuation is overly broad")
+            if (
+                any(
                     other is not ad
                     and float(other.start_s) < extension_end
                     and float(other.end_s) > ad_end
@@ -437,7 +440,11 @@ def recover_adjacent_ad_pod_continuations(
                 )
                 or proposed_seconds / total_seconds > MAXIMUM_SINGLE_AD_SHARE
             ):
-                raise ValueError("adjacent continuation is overly broad")
+                _record_held_span(
+                    held_spans, ad_end, extension_end,
+                    "pod-continuation-bracket", total_seconds,
+                )
+                continue
             if total_removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
                 _record_held_span(
                     held_spans, ad_end, extension_end,

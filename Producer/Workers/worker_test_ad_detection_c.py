@@ -76,6 +76,56 @@ class AdDetectionMixinC:
         self.assertNotIn("ads.detect.refused", stages)
         self.assertIn("ads.cut.refused", stages)
 
+    def test_a_bracketed_pod_continuation_is_held_without_losing_programme_audio(self):
+        # The reviewer reaches the separate closing read, not the first
+        # continuation segment.  That brackets programme discussion between
+        # two confirmed reads, so the original cuts must survive unchanged.
+        segments = [
+            FakeSegment(0.0, 20.0, "opening sponsorship message"),
+            FakeSegment(20.0, 30.0, "the programme begins with the news"),
+            FakeSegment(30.0, 40.0, "the hosts discuss the first story"),
+            FakeSegment(40.0, 50.0, "more programme context follows"),
+            FakeSegment(50.0, 60.0, "the discussion continues"),
+            FakeSegment(60.0, 80.0, "a separate closing sponsorship message"),
+            FakeSegment(80.0, 100.0, "the programme returns after the read"),
+        ]
+        llm = FakeLLM(adjacent_program_start_id=6)
+        install_fake_ads(llm, detections=[
+            FakeAd(0.0, 20.0, label="sponsor_read"),
+            FakeAd(60.0, 80.0, label="sponsor_read"),
+        ])
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            request = {
+                "audioPath": str(self.audio),
+                "outputPath": str(Path(directory) / "prepared.mp3"),
+            }
+            with redirect_stderr(stream), \
+                    mock.patch.object(_worker_cue_timing, "probe_duration", return_value=180.0), \
+                    mock.patch.object(
+                        _worker_ad_removal,
+                        "render_keep_segments",
+                        side_effect=lambda _source, output, _keeps: output.write_bytes(b"prepared"),
+                    ):
+                _path, spans, _keeps, _raw, audit = wp.detect_and_cut(
+                    request, self.audio, [], segments, with_report=True
+                )
+
+        self.assertEqual(
+            [(span["startSeconds"], span["endSeconds"]) for span in spans],
+            [(0.0, 20.0), (60.0, 80.0)],
+        )
+        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
+        self.assertIn("ads.detect.span.held", stages)
+        self.assertEqual(
+            audit["heldSpans"],
+            [{
+                "reason": "pod-continuation-bracket",
+                "startSeconds": 20.0,
+                "endSeconds": 80.0,
+            }],
+        )
+
     def test_an_all_programme_oversized_span_is_not_confirmed_or_cut(self):
         # The first supplied ID means the program starts immediately. It must
         # not confirm an oversized detection or let it bypass the size ceiling.
