@@ -97,6 +97,8 @@ leg_reports=(none xctest xctest xctest xctest count count count count)
 source "$repo_root/scripts/lib/native-gate-staging.sh"
 # shellcheck source=lib/native-gate-legs.sh
 source "$repo_root/scripts/lib/native-gate-legs.sh"
+# shellcheck source=lib/native-gate-watch.sh
+source "$repo_root/scripts/lib/native-gate-watch.sh"
 wilted_gate_legs_validate "${leg_names[@]}" || exit 2
 declare -i failed_legs=0
 declare -i completed_legs=0

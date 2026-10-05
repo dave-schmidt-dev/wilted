@@ -9,11 +9,17 @@
 # the simulator sweep) runs.
 
 skipped_leg_names=()
+# Opt-in legs run only when WILTED_GATE_LEGS names them: the default gate neither
+# runs nor reports them as skipped. A lib file registers each with a parallel
+# name, function and report mode (see scripts/lib/native-gate-watch.sh).
+optin_leg_names=()
+optin_leg_fns=()
+optin_leg_reports=()
 
 # Usage: wilted_gate_legs_validate <known leg name>...
 wilted_gate_legs_validate() {
   [[ -n "${WILTED_GATE_LEGS+x}" ]] || return 0
-  local name known found selected=()
+  local name known found selected=() known_legs=("$@" ${optin_leg_names[@]+"${optin_leg_names[@]}"})
   if [[ -z "$WILTED_GATE_LEGS" ]]; then
     printf '%s\n' 'native.error WILTED_GATE_LEGS is set but empty; name legs or unset it' >&2
     return 1
@@ -21,9 +27,9 @@ wilted_gate_legs_validate() {
   IFS=',' read -r -a selected <<<"$WILTED_GATE_LEGS"
   for name in "${selected[@]}"; do
     found=0
-    for known in "$@"; do [[ "$name" == "$known" ]] && found=1; done
+    for known in "${known_legs[@]}"; do [[ "$name" == "$known" ]] && found=1; done
     if [[ "$found" -eq 0 ]]; then
-      printf 'native.error unknown leg in WILTED_GATE_LEGS: "%s"; known legs: %s\n' "$name" "$*" >&2
+      printf 'native.error unknown leg in WILTED_GATE_LEGS: "%s"; known legs: %s\n' "$name" "${known_legs[*]}" >&2
       return 1
     fi
   done
@@ -36,7 +42,7 @@ wilted_gate_leg_selected() {
   # selecting one brings that leg along (a deferred Mac UI leg needs none).
   [[ "$1" == xcodegen-reproducible ]] || return 1
   local leg
-  for leg in macos-unit-tests ios-unit-tests ios-pixel-snapshot-tests macos-ui-tests; do
+  for leg in macos-unit-tests ios-unit-tests ios-pixel-snapshot-tests macos-ui-tests ${optin_leg_names[@]+"${optin_leg_names[@]}"}; do
     [[ ",$WILTED_GATE_LEGS," == *",$leg,"* ]] || continue
     if [[ "$leg" == macos-ui-tests ]] && declare -F is_deferred_leg >/dev/null &&
       is_deferred_leg macos-ui-tests; then
@@ -58,6 +64,12 @@ wilted_gate_run_legs() {
     else
       skipped_leg_names+=("$name")
       printf 'native.leg.skipped name=%s reason=not-in-WILTED_GATE_LEGS\n' "$name" >&2
+    fi
+  done
+  for i in "${!optin_leg_names[@]}"; do
+    name="${optin_leg_names[$i]}"
+    if [[ -n "${WILTED_GATE_LEGS+x}" && ",$WILTED_GATE_LEGS," == *",$name,"* ]]; then
+      run_leg "$name" "${optin_leg_reports[$i]}" "${optin_leg_fns[$i]}"
     fi
   done
 }
