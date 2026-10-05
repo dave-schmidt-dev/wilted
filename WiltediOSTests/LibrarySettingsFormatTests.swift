@@ -85,4 +85,12 @@ final class LibrarySettingsFormatTests: XCTestCase {
         XCTAssertEqual(LibrarySettingsFormat.syncLine(never, lastRefresh: nil), "Not synced yet")
         assertNoConvergenceClaim([never.status, never.detail])
     }
+
+    func testThePhoneStatisticsGroupIsTitledThisIPhoneAndKeepsOnlyItsOwnTotals() {
+        XCTAssertTrue(LibrarySettingsFormat.phoneStatisticsTitle.contains("iPhone"),
+                      "the group is titled for this iPhone, not the Mac's lifetime statistics")
+        XCTAssertNotEqual(LibrarySettingsFormat.phoneStatisticsTitle, WiltedScreenCopy.lifetimeStatistics)
+        XCTAssertEqual(LibrarySettingsFormat.phoneStatRows(LibraryPhoneStats()).count, 3,
+                       "only the phone's own three totals; the Mac's seven include Mac-only work")
+    }
 }

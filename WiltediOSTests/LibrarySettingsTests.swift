@@ -149,6 +149,38 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertEqual(LibrarySettingsFormat.syncLine(broken, lastRefresh: now), "Problem")
     }
 
+    // MARK: cards
+
+    func testAboutCardListsTheVersionAndNoDeviceIDRow() {
+        let rows = LibrarySettingsFormat.aboutRows(version: "0.2.8 (7)")
+        XCTAssertEqual(rows.map(\.identifier), [LibrarySettingsFormat.versionIdentifier])
+        XCTAssertEqual(rows.map(\.label), ["Version"])
+        XCTAssertFalse(rows.contains { $0.identifier == LibrarySettingsFormat.deviceIdentifier },
+                       "the device ID moves out of About into Diagnostics")
+    }
+
+    func testDiagnosticsDisclosureKeepsTheDeviceIDCopyable() {
+        let rows = LibrarySettingsFormat.diagnosticsRows(deviceID: "phone-123", syncDetail: nil)
+        XCTAssertEqual(rows.map(\.identifier), [LibrarySettingsFormat.deviceIdentifier])
+        XCTAssertEqual(rows.first?.label, "Device")
+        XCTAssertEqual(rows.first?.value, "phone-123")
+        XCTAssertEqual(rows.first?.isCopyable, true, "the device ID stays copyable")
+    }
+
+    func testSyncDetailShowsInlineOnlyForAnErrorAndOtherwiseWaitsInDiagnostics() {
+        let fetched = LibrarySettingsFormat.sync(
+            isRefreshing: false, quarantined: false, error: nil, lastRefresh: Date())
+        XCTAssertFalse(LibrarySettingsFormat.showsSyncDetailInline(fetched))
+        let fetchedRows = LibrarySettingsFormat.diagnosticsRows(deviceID: "phone", syncDetail: fetched.detail)
+        XCTAssertEqual(fetchedRows.map(\.identifier),
+                       [LibrarySettingsFormat.deviceIdentifier, LibrarySettingsFormat.syncDetailIdentifier])
+
+        let failure = LibrarySettingsFormat.sync(
+            isRefreshing: false, quarantined: false, error: "The library could not be fetched.", lastRefresh: nil)
+        XCTAssertTrue(LibrarySettingsFormat.showsSyncDetailInline(failure))
+        XCTAssertEqual(failure.detail, "The library could not be fetched.")
+    }
+
     // MARK: model seam
 
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
