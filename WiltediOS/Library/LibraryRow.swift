@@ -34,6 +34,18 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     var episodeLink: URL?
 }
 
+extension LibraryRow {
+    /// The row's one-line metadata, "Show - duration - date". `namesShow` is false for a row under a
+    /// feed section header, which already names the show, so the line keeps only duration and date.
+    func detailText(namesShow: Bool = true) -> String {
+        let duration = durationText ?? "Unknown"
+        let date = publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
+        guard namesShow else { return "\(duration) - \(date)" }
+        let show = showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(show.isEmpty ? "Show unknown" : show) - \(duration) - \(date)"
+    }
+}
+
 /// Fixed-format clock and duration text, so labels do not shift with the device locale.
 struct LibraryClockFormat: Sendable {
     let timeZone: TimeZone

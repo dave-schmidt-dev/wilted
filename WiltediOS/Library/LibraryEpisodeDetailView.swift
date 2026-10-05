@@ -69,6 +69,22 @@ extension LibraryTranscriptSlot where Content == EmptyView {
     }
 }
 
+/// The episode detail's stacked content, top to bottom, as data. Download and Play are the two
+/// controls of the shared action row; Share follows them, so the playback actions stay directly
+/// under the heading. `drawn` is the order the screen builds from, and `index` pins the order in a test.
+enum LibraryEpisodeDetailRow: Int, Comparable, Sendable {
+    case artwork, header, download, play, share, notes, transcript
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+
+    /// The blocks the detail draws, in draw order. The shared action row draws Download and Play
+    /// together, so it appears once, at `download`.
+    static let drawn: [Self] = [.artwork, .header, .download, .share, .notes, .transcript]
+
+    /// Where this element sits in the full top-to-bottom order.
+    var index: Int { rawValue }
+}
+
 /// One episode in full: large artwork, title, show, date, duration, the notes the Mac published,
 /// the same audio actions as its Larder row, and the transcript section. Reads the row
 /// live from the model, so progress and state keep moving while it is open.
@@ -101,31 +117,49 @@ struct LibraryEpisodeDetailView: View {
     private func content(_ row: LibraryRow) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
-                LibraryArtwork(url: row.artworkURL, side: 240, isDecorative: false)
-                    .accessibilityLabel("Artwork for \(row.title)")
-                    .accessibilityIdentifier("wilted-library-detail-artwork")
-                    .frame(maxWidth: .infinity)
-                header(row)
-                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    LibraryEpisodeActions(
-                        row: row, media: model.mediaState(for: row.id),
-                        isPlaying: playingID == row.id,
-                        onMedia: { model.performMediaAction($0, entryID: row.id) },
-                        onPlay: onPlay.map { play in { play(row) } },
-                        decisionActions: model.decisionActions(for: row),
-                        decisionStatus: model.decisionStatus(for: row.id),
-                        onDecision: { model.performDecision($0, entryID: row.id) },
-                        onCancelDecision: { model.cancelDecision(entryID: row.id) })
-                }
-                notes(row)
-                LibraryTranscriptSlot(entryID: row.id) {
-                    LibraryTranscriptSection(model: model, entryID: row.id, player: player, height: 360)
+                ForEach(LibraryEpisodeDetailRow.drawn, id: \.self) { element in
+                    block(element, row: row)
                 }
             }
             .padding(WiltedTheme.Spacing.large)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("wilted-library-detail")
+    }
+
+    /// One stacked block. Download and Play draw as the shared action row, so `.download` renders it
+    /// and `.play` is an order marker that never appears in `drawn`.
+    @ViewBuilder
+    private func block(_ element: LibraryEpisodeDetailRow, row: LibraryRow) -> some View {
+        switch element {
+        case .artwork:
+            LibraryArtwork(url: row.artworkURL, side: 240, isDecorative: false)
+                .accessibilityLabel("Artwork for \(row.title)")
+                .accessibilityIdentifier("wilted-library-detail-artwork")
+                .frame(maxWidth: .infinity)
+        case .header:
+            header(row)
+        case .download:
+            LibraryEpisodeActions(
+                row: row, media: model.mediaState(for: row.id),
+                isPlaying: playingID == row.id,
+                onMedia: { model.performMediaAction($0, entryID: row.id) },
+                onPlay: onPlay.map { play in { play(row) } },
+                decisionActions: model.decisionActions(for: row),
+                decisionStatus: model.decisionStatus(for: row.id),
+                onDecision: { model.performDecision($0, entryID: row.id) },
+                onCancelDecision: { model.cancelDecision(entryID: row.id) })
+        case .play:
+            EmptyView()
+        case .share:
+            share(row)
+        case .notes:
+            notes(row)
+        case .transcript:
+            LibraryTranscriptSlot(entryID: row.id) {
+                LibraryTranscriptSection(model: model, entryID: row.id, player: player, height: 360)
+            }
+        }
     }
 
     private func header(_ row: LibraryRow) -> some View {
@@ -148,7 +182,6 @@ struct LibraryEpisodeDetailView: View {
                     .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
             }
             LibraryCheckpointLine(row: row, player: player, identifier: "wilted-library-detail-checkpoint")
-            share(row)
         }
     }
 

@@ -207,7 +207,7 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         app.buttons["Feed"].tap()
         XCTAssertTrue(group.waitForExistence(timeout: 5))
         organize.tap()
-        app.buttons["None"].tap()
+        app.buttons["No Grouping"].tap()
         XCTAssertTrue(count.waitForExistence(timeout: 5))
         XCTAssertFalse(group.exists)
 
