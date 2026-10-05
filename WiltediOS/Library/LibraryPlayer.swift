@@ -101,7 +101,7 @@ final class LibraryPlayer: ObservableObject {
     private var endedAtTransportCount = -1
     /// Set by the sleep timer's "end of episode": the next natural end reports auto-play off, once, so the
     /// next episode does not start. Cleared when used, when the timer is cancelled and when playback stops.
-    private(set) var stopsAfterCurrentItem = false
+    @Published private(set) var stopsAfterCurrentItem = false
     /// True while the item that just played out is still loaded and nothing has been commanded since.
     var isUntouchedSinceEnd: Bool { status == .ended && transportCount == endedAtTransportCount }
     /// Artwork bytes for the loaded item, read once from the local cache when it starts.

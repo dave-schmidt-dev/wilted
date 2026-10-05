@@ -16,21 +16,29 @@ final class LibraryRuntime {
     let player: LibraryPlayer
     let settings: LibrarySettingsStore
     private let artwork: LibraryArtworkCache?
+    private let watchSession: (any WatchSessionProtocol)?
+    private var watchBridge: WatchBridge?
     private var prepareTask: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
     private var subscriptions: Set<AnyCancellable> = []
 
-    init(model: LibraryAppModel, player: LibraryPlayer, settings: LibrarySettingsStore, artwork: LibraryArtworkCache? = nil) {
+    init(
+        model: LibraryAppModel, player: LibraryPlayer, settings: LibrarySettingsStore,
+        artwork: LibraryArtworkCache? = nil, watchSession: (any WatchSessionProtocol)? = nil
+    ) {
         self.artwork = artwork
+        self.watchSession = watchSession
         self.model = model
         self.player = player
         self.settings = settings
     }
 
-    /// The production stack: CloudKit-backed model, real audio engine, `UserDefaults` settings.
+    /// The production stack: CloudKit-backed model, real audio engine, `UserDefaults` settings, and
+    /// the system Watch session.
     static func live() -> LibraryRuntime {
         LibraryRuntime(
-            model: LibraryEnvironment.makeModel(), player: .live(), settings: LibrarySettingsStore(), artwork: .shared)
+            model: LibraryEnvironment.makeModel(), player: .live(), settings: LibrarySettingsStore(),
+            artwork: .shared, watchSession: WatchSession())
     }
 
     /// Wires the player to the model and the settings and loads what is already on the phone, with no
@@ -74,6 +82,20 @@ final class LibraryRuntime {
             .store(in: &subscriptions)
         await model.loadLocalState()
         keepArtworkCached()
+        startWatchBridge()
+    }
+
+    /// Starts the Watch bridge after the runtime has prepared. The bridge never blocks or fails
+    /// prepare: it does nothing when the system does not support watch sessions or when this
+    /// runtime was built without a session (tests, previews).
+    private func startWatchBridge() {
+        guard let watchSession, watchBridge == nil else { return }
+        let bridge = WatchBridge(
+            session: watchSession,
+            target: LibraryVoiceTarget(model: model, player: player, settings: settings),
+            source: LibraryWatchSource(model: model, player: player))
+        watchBridge = bridge
+        bridge.start()
     }
 
     /// Downloads artwork for the episodes on the phone while the app has a connection, so the car and

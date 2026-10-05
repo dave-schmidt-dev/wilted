@@ -16,6 +16,9 @@ final class SleepTimer {
 
     private(set) var deadline: Instant?
     private var task: Task<Void, Never>?
+    /// Called after the deadline starts, fires or is cancelled, so a remote can mirror the timer
+    /// without polling. Set by `WatchBridge`.
+    var onChange: (@MainActor () -> Void)?
     private let now: @MainActor () -> Instant
     private let sleep: @MainActor (Duration) async -> Void
 
@@ -28,6 +31,13 @@ final class SleepTimer {
     }
 
     var isActive: Bool { deadline != nil }
+
+    /// The running deadline as a wall-clock date, for the watch snapshot; nil when no timer runs.
+    var deadlineDate: Date? {
+        guard let deadline else { return nil }
+        let remaining = now().duration(to: deadline).components
+        return Date().addingTimeInterval(Double(remaining.seconds) + Double(remaining.attoseconds) / 1e18)
+    }
 
     /// Replaces any running timer.
     func start(minutes: Int, onExpire: @escaping @MainActor () -> Void) {
@@ -42,20 +52,24 @@ final class SleepTimer {
                     guard self.deadline == end else { return }
                     self.deadline = nil
                     self.task = nil
+                    self.onChange?()
                     if remaining.components.seconds > -Int64(Self.grace.components.seconds) { onExpire() }
                     return
                 }
                 await self.sleep(remaining)
             }
         }
+        onChange?()
     }
 
     /// Waits for the running timer to finish or be cancelled; tests call it before asserting.
     func settle() async { await task?.value }
 
     func cancel() {
+        let wasActive = deadline != nil
         task?.cancel()
         task = nil
         deadline = nil
+        if wasActive { onChange?() }
     }
 }
