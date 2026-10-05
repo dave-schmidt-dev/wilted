@@ -6,6 +6,10 @@ import WiltedDomain
 
 @Suite("Podcast preparation pipeline")
 struct PodcastPreparationPipelineTests {
+    @Test func semanticVersionTracksTheWorkerBehaviour() {
+        #expect(PodcastPreparationPipeline.semanticVersion == "podcast-preparation-v6")
+    }
+
     @Test(arguments: [false, true])
     func everySuccessfulUncutTerminalPathRecordsSourceAudioButNoAdTime(removeAds: Bool) async throws {
         let fixture = try await Fixture()

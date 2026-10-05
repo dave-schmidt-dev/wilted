@@ -141,6 +141,82 @@ class AdDetectionMixinC:
         self.assertIn("ads.detect.span.rejected", stages)
         self.assertNotIn("ads.detect.span.confirmed", stages)
 
+    def _alexa_opening_replay(self, rebase_answer):
+        """Run the 33-cue Alexa sponsor shape through the public cut seam."""
+        timings = [
+            (0.0, 2.4), (6.72, 30.0), (30.0, 50.0), (50.0, 67.12),
+            (67.12, 90.0), (90.0, 115.0), (115.0, 140.0), (140.0, 160.0),
+            (160.0, 167.64), (167.64, 187.8), (187.8, 210.0), (210.0, 230.0),
+            (230.0, 250.0), (250.0, 270.0), (270.0, 285.0), (285.0, 295.76),
+        ]
+        timings.extend((300.0 + index * 15.0, 315.0 + index * 15.0) for index in range(14))
+        timings.extend([(530.0, 537.68), (537.68, 560.0), (560.0, 575.086)])
+        texts = (
+            ["show ident"]
+            + ["sponsor copy"] * 8
+            + ["unlabelled sponsor/programme straddle"]
+            + ["programme discussion"] * 21
+            + ["closing sponsor message", "closing sponsor signoff"]
+        )
+        texts[1] = "today's sponsor is acme"
+        texts[2] = "visit acme dot com to get started today"
+        texts[4] = "this episode is brought to you by beta"
+        texts[5] = "visit beta dot com to get started today"
+        segments = [FakeSegment(start, end, text) for (start, end), text in zip(timings, texts)]
+        llm = FakeLLM(
+            left_boundary_include=True,
+            boundary_content_start_id=10,
+            commercial_prefix_cue_answer='{"include": true}',
+            preroll_program_start_id=10,
+            program_id_answers=[0, rebase_answer],
+        )
+        install_fake_ads(llm, detections=[
+            FakeAd(6.72, 295.76, label="sponsor_read"),
+            FakeAd(537.68, 575.086, label="sponsor_read"),
+        ])
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            request = {"audioPath": str(self.audio), "outputPath": str(Path(directory) / "prepared.mp3")}
+            with redirect_stderr(stream), \
+                    mock.patch.object(_worker_cue_timing, "probe_duration", return_value=575.086), \
+                    mock.patch.object(
+                        _worker_ad_removal,
+                        "render_keep_segments",
+                        side_effect=lambda _source, output, _keeps: output.write_bytes(b"prepared"),
+                    ):
+                _path, spans, _keeps, _raw, audit = wp.detect_and_cut(
+                    request, self.audio, [], segments, with_report=True
+                )
+        return spans, audit, [json.loads(line) for line in stream.getvalue().splitlines()]
+
+    def test_a_sponsor_prefix_programme_confirmation_is_held_not_cut(self):
+        # The first prefix cue is programme. A second confirmation also finds
+        # programme after the anchor, so neither review authorizes this span.
+        spans, audit, events = self._alexa_opening_replay(1)
+        self.assertEqual(
+            [(span["startSeconds"], span["endSeconds"]) for span in spans],
+            [(537.68, 575.086)],
+        )
+        self.assertTrue(all(span["startSeconds"] >= 6.72 for span in spans))
+        self.assertEqual(audit["heldSpans"], [{
+            "reason": "sponsor-prefix-programme-found",
+            "startSeconds": 0.0,
+            "endSeconds": 295.76,
+        }])
+        self.assertNotIn("ads.detect.recovery.audit.failed", [event["stage"] for event in events])
+
+    def test_alexa_opening_sponsor_rebases_after_the_joined_prefix(self):
+        spans, audit, events = self._alexa_opening_replay(-1)
+        self.assertEqual(
+            [(span["startSeconds"], span["endSeconds"]) for span in spans],
+            [(6.72, 167.64), (537.68, 575.086)],
+        )
+        stages = [event["stage"] for event in events]
+        self.assertIn("ads.detect.recovery.preroll.extended", stages)
+        self.assertIn("ads.detect.span.rebased", stages)
+        self.assertNotIn("ads.detect.recovery.audit.failed", stages)
+        self.assertEqual(audit["heldSpans"], [])
+
     def test_a_span_where_program_starts_at_first_segment_is_not_confirmed(self):
         llm = FakeLLM(preroll_program_start_id=0, rescan_evidence_id=-1)
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))

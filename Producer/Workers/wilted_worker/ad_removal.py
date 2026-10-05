@@ -115,11 +115,24 @@ def analyze_ad_detections(
     commercial_recovery_backend = _CallBudgetBackend(
         auditing_backend, COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
     )
+    opening_pattern = explicit_sponsor_opening_pattern(ads_module)
+    explicit_anchor_ids = explicit_sponsor_anchor_ids(segments, opening_pattern)
+    detections_before_explicit_recovery = tuple(detections)
     detections = _worker_commercial_recovery.recover_unclaimed_explicit_sponsor_reads(
         ads_module,
         auditing_backend,
         segments,
         detections,
+    )
+    prefix_rebase_anchor_ids = frozenset(
+        anchor_id
+        for anchor_id in explicit_anchor_ids
+        if len(segments) > 1
+        and anchor_id == 1
+        and 0 not in explicit_anchor_ids
+        and not sponsor_anchor_is_covered(0, segments, detections_before_explicit_recovery)
+        and sponsor_anchor_is_covered(0, segments, detections)
+        and sponsor_anchor_is_covered(anchor_id, segments, detections)
     )
     detections = _worker_commercial_seeds.recover_commercial_evidence_reads(
         ads_module, commercial_recovery_backend, segments, detections, total_seconds
@@ -141,11 +154,17 @@ def analyze_ad_detections(
         detections,
         explicit_sponsor_opening_pattern(ads_module),
     )
-    detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
-        ads_module, auditing_backend, segments, detections, total_seconds
-    )
-    proposed_detections = detections
     held_spans = []
+    if prefix_rebase_anchor_ids:
+        detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
+            ads_module, auditing_backend, segments, detections, total_seconds,
+            rebase_anchor_ids=prefix_rebase_anchor_ids, held_spans=held_spans,
+        )
+    else:
+        detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
+            ads_module, auditing_backend, segments, detections, total_seconds
+        )
+    proposed_detections = detections
     detections = reject_implausible_ad_spans(
         detections, total_seconds, confirmed_spans, held_spans
     )
@@ -153,10 +172,9 @@ def analyze_ad_detections(
         ads_module, auditing_backend, segments, detections, total_seconds, held_spans
     )
     detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
-    opening_pattern = explicit_sponsor_opening_pattern(ads_module)
     dropped_anchor_ids = [
         anchor_id
-        for anchor_id in explicit_sponsor_anchor_ids(segments, opening_pattern)
+        for anchor_id in explicit_anchor_ids
         if sponsor_anchor_is_covered(anchor_id, segments, proposed_detections)
         and not sponsor_anchor_is_covered(anchor_id, segments, detections)
         and not any(
