@@ -267,7 +267,7 @@ extension WiltedMacModel {
                     await self.refreshPodcastQueueState()
                 }
                 if wasPlaying { await self.stopPlaybackForRemovedEpisode() }
-                await self.reloadLibraryRows()
+                await self.releaseWaitingEpisodesAfterRetirement(of: episode)
             } catch {
                 self.undoableSkip = nil
                 self.podcastOperationMessage = "\(episode.title) could not be marked completed."
@@ -329,6 +329,7 @@ extension WiltedMacModel {
                 self.podcastOperationMessage = "\(episode.title) could not be removed."
             } else {
                 self.undoableRemoval = self.dismissedEpisodes.first { $0.id == episode.id }
+                await self.releaseWaitingEpisodes(feedIDs: Set([episode.feedID].compactMap { $0 }))
             }
         }
 #endif

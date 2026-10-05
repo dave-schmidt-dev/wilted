@@ -198,6 +198,16 @@ extension WiltedMacModel {
         }
     }
 
+    /// Releases the waiting episodes a retirement or removal just freed a slot
+    /// for. The library rows are re-read first because admission counts the
+    /// kept episodes from them, and the retired or dismissed one must no
+    /// longer count. Call it only after the store write has committed.
+    func releaseWaitingEpisodesAfterRetirement(of episode: WiltedMacEpisode) async {
+        guard let feedID = episode.feedID else { return }
+        await reloadLibraryRows()
+        await releaseWaitingEpisodes(feedIDs: [feedID])
+    }
+
     struct ManualKeepOutcome {
         var changed: Set<String> = []
         var accepted: Set<String> = []

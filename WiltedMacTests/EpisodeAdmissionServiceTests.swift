@@ -210,6 +210,55 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
         XCTAssertEqual(fixture.model.podcastQueueIDs, ["a", "b", "c"].map(fixture.id), "retiring b releases c")
     }
 
+    func testCompletingAKeptEpisodeReleasesTheOldestWaitingEpisode() async throws {
+        let fixture = try await makeFixture(
+            policy: FeedAutomationPolicy(autoKeep: .on, autoDownload: .on, autoPrepare: .off, keptLimit: .explicit(1)),
+            storedEpisodes: [.init("a", day: 1), .init("b", day: 2), .init("c", day: 3)],
+            keptStored: ["a"]
+        )
+
+        await fixture.model.completeAndRetire(try ItemID(rawValue: fixture.id("a")))
+        await fixture.drain()
+
+        XCTAssertEqual(fixture.model.podcastQueueIDs, ["a", "b"].map(fixture.id), "b is the oldest waiting episode")
+        let released = try await fixture.store.episodeDecision(for: ItemID(rawValue: fixture.id("b")))
+        XCTAssertEqual(released?.source, .policy)
+        let waiting = try await fixture.store.episodeDecision(for: ItemID(rawValue: fixture.id("c")))
+        XCTAssertNil(waiting, "c still waits")
+        let downloads = try await fixture.tickets(.podcastDownload)
+        XCTAssertEqual(downloads.map(\.subjectID), [fixture.id("b")])
+    }
+
+    func testMarkingAKeptEpisodeCompletedReleasesTheOldestWaitingEpisode() async throws {
+        let fixture = try await makeFixture(
+            policy: FeedAutomationPolicy(autoKeep: .on, autoDownload: .on, autoPrepare: .off, keptLimit: .explicit(1)),
+            storedEpisodes: [.init("a", day: 1), .init("b", day: 2), .init("c", day: 3)],
+            keptStored: ["a"]
+        )
+
+        fixture.model.skipEpisode(try XCTUnwrap(fixture.episode("a")), requireStarted: false)
+        await fixture.drain()
+
+        XCTAssertEqual(fixture.model.podcastQueueIDs.last, fixture.id("b"), "b is the oldest waiting episode")
+        let waiting = try await fixture.store.episodeDecision(for: ItemID(rawValue: fixture.id("c")))
+        XCTAssertNil(waiting, "c still waits")
+    }
+
+    func testRemovingAKeptEpisodeReleasesTheOldestWaitingEpisode() async throws {
+        let fixture = try await makeFixture(
+            policy: FeedAutomationPolicy(autoKeep: .on, autoDownload: .on, autoPrepare: .off, keptLimit: .explicit(1)),
+            storedEpisodes: [.init("a", day: 1), .init("b", day: 2), .init("c", day: 3)],
+            keptStored: ["a"]
+        )
+
+        fixture.model.removeEpisode(try XCTUnwrap(fixture.episode("a")))
+        await fixture.drain()
+
+        XCTAssertEqual(fixture.model.podcastQueueIDs, [fixture.id("b")], "removing a frees the slot for b")
+        let waiting = try await fixture.store.episodeDecision(for: ItemID(rawValue: fixture.id("c")))
+        XCTAssertNil(waiting, "c still waits")
+    }
+
     func testNoKeptLimitMeansSkipReleasesNothing() async throws {
         let fixture = try await makeFixture(
             policy: FeedAutomationPolicy(autoKeep: .on, autoDownload: .off),

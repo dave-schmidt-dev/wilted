@@ -290,7 +290,14 @@ extension WiltedMacModelTests {
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
 
-        XCTAssertEqual(steps, [
+        // Counted recovery steps are progress inside the reconciliation phase:
+        // they may appear, but only between reconcilingWork and loadingLibrary.
+        func isRecovery(_ step: WiltedMacStartupStep) -> Bool {
+            if case .recoveringWork = step { return true }
+            return false
+        }
+        let named = steps.filter { !isRecovery($0) }
+        XCTAssertEqual(named, [
             .openingStore,
             .updatingLibraryFormat,
             .retiringFinishedEpisodes,
@@ -300,7 +307,15 @@ extension WiltedMacModelTests {
             .loadingLibrary,
             .restoringPlayback,
         ])
-        let labels = steps.map(\.label)
+        let reconciling = try XCTUnwrap(steps.firstIndex(of: .reconcilingWork))
+        let loading = try XCTUnwrap(steps.firstIndex(of: .loadingLibrary))
+        for (index, step) in steps.enumerated() where isRecovery(step) {
+            XCTAssertTrue(
+                index > reconciling && index < loading,
+                "a recovery step at position \(index) must sit between reconciliation (\(reconciling)) and loading (\(loading))"
+            )
+        }
+        let labels = named.map(\.label)
         XCTAssertEqual(Set(labels).count, labels.count,
                        "every awaited step renders one distinct string")
         XCTAssertEqual(model.startupState, .ready)

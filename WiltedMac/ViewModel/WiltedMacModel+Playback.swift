@@ -180,6 +180,7 @@ extension WiltedMacModel {
         do {
             try await store.retireEpisode(episodeID)
             hideEpisode(episode)
+            await releaseWaitingEpisodesAfterRetirement(of: episode)
             return "Finished \(episode.title)."
         } catch {
             return "\(episode.title) could not be marked finished."
