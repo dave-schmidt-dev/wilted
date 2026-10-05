@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Ad removal no longer cuts most of a short episode when two sponsor reads bracket the programme: a confirmed cut that would push the episode past the total advertising ceiling, or a pod extension that would reach the next read, is now kept in the audio and recorded as held instead of removed.
+- An episode whose opening sponsor read cannot be told apart from the show's spoken ident is no longer refused outright: the opening is kept, the decision is recorded as held, and the rest of the episode (including its closing promo) is still prepared. The preparation report now also lists every commercial cue the review declined to cut, with its reason. Preparations made before this change are re-prepared once (`podcast-preparation-v6`).
 - Running the Mac unit tests (including the pre-push check) no longer opens or writes the real Wilted library: the test host now uses its own temporary library and deletes it when the tests finish.
 - Cancelling a Mac feed refresh right after starting it no longer leaves feed rows reading "Waiting to refresh", and a search typed before quitting the Mac app finds transcript-only matches again after relaunch.
 - A feed with an over-long episode page address (resolved length past 2,048 characters, or a `<link>` past the 4,096-byte text limit) now loses only that link instead of the whole feed, and the iPhone applies the same address rules as the Mac, so an address with credentials or no host is never shared: Share falls back to "No episode page".
