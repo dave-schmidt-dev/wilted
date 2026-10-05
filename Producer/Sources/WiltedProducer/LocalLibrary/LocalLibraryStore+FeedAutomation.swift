@@ -134,6 +134,43 @@ extension LocalLibraryStore {
             .filter { episodeIDs.contains($0.episodeID) }.map(Self.decodeDecision)
     }
 
+    /// Puts decision records and the queue back to an earlier state in one
+    /// save. A `nil` value returns that episode to undecided by deleting its
+    /// record; a non-nil value is written as it was. Used only to undo or roll
+    /// back automatic changes, never to record a new decision.
+    public func restoreEpisodeDecisions(_ prior: [ItemID: EpisodeDecisionRecord?], queue: PodcastQueueState,
+                                        addedAt: Timestamp = Timestamp(Date())) throws {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<DecisionRecord>())
+        for (episodeID, value) in prior {
+            let existing = records.first { $0.episodeID == episodeID.rawValue }
+            switch (existing, value) {
+            case let (record?, nil):
+                context.delete(record)
+            case let (record?, value?):
+                record.decision = value.decision.rawValue; record.source = value.source.rawValue
+                record.ruleID = value.ruleID; record.decidedAt = value.decidedAt.date
+            case let (nil, value?):
+                context.insert(DecisionRecord(episodeID: episodeID.rawValue, decision: value.decision.rawValue,
+                                              source: value.source.rawValue, ruleID: value.ruleID,
+                                              decidedAt: value.decidedAt.date))
+            case (nil, nil):
+                break
+            }
+        }
+        let queueRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+        let existingDates = Dictionary(queueRecords.map { ($0.episodeID, $0.addedAt) }, uniquingKeysWith: { first, _ in first })
+        for record in queueRecords { context.delete(record) }
+        for (position, episodeID) in queue.episodeIDs.enumerated() {
+            let storedPosition = position + (episodeID == queue.currentEpisodeID ? Self.podcastCurrentPositionOffset : 0)
+            context.insert(LocalLibrarySchemaV6Models.PodcastQueueRecord(
+                try PodcastQueueEntry(episodeID: episodeID, position: storedPosition,
+                                      addedAt: Timestamp(existingDates[episodeID.rawValue] ?? addedAt.date))
+            ))
+        }
+        try context.save()
+    }
+
     /// Atomically appends an episode to the queue, records its decision, and
     /// find-or-inserts requested tickets. Existing queue rows and tickets are
     /// left unchanged, matching their public one-at-a-time counterparts.

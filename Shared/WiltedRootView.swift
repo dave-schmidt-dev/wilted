@@ -73,8 +73,8 @@ public enum WiltedScreenCopy {
     /// Wilted refreshes only when asked and downloads only what the listener
     /// picks, so the Feeds card says so rather than letting an absent schedule
     /// read as a hidden one.
-    public static let feedsPolicy = "Refresh admits episode metadata. An episode remains undecided until you Keep it in Larder; "
-        + "only then can Larder automation download or prepare it."
+    public static let feedsPolicy = "Refresh admits episode metadata. An episode stays undecided until you Keep it in Larder, "
+        + "or Auto keep or a Keep rule does; only then can Larder automation download or prepare it."
     public static let addArticleIdentifier = "wilted-add-article"
     public static let openPlayer = "Open Now Playing"
     public static let openPlayerIdentifier = "wilted-open-player"

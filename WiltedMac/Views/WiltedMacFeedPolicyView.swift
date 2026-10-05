@@ -16,10 +16,11 @@ import WiltedProducer
 /// test (or a caller that needs the stored result) does not race the writer.
 @MainActor @Observable
 final class WiltedMacFeedPolicyBoard {
-    private let model: WiltedMacModel
+    let model: WiltedMacModel
     private(set) var policies: [String: FeedAutomationPolicy] = [:]
     private(set) var failedFeedIDs: Set<String> = []
     @ObservationIgnored private var rules: [String: EpisodeMatchRules] = [:]
+    @ObservationIgnored private var editors: [String: WiltedMacFeedRulesEditor] = [:]
     @ObservationIgnored private var writeChain: Task<Void, Never>?
 
     init(model: WiltedMacModel) {
@@ -53,6 +54,45 @@ final class WiltedMacFeedPolicyBoard {
         }
         policies = loaded
         rules = loadedRules
+    }
+
+    // MARK: Match rules
+
+    /// The feed's saved rules, in order.
+    func rules(for feedID: String) -> EpisodeMatchRules { rules[feedID] ?? EpisodeMatchRules() }
+
+    /// The feed's rules editor, kept so a draft survives closing the popover.
+    func rulesEditor(for feedID: String) -> WiltedMacFeedRulesEditor {
+        if let editor = editors[feedID] { return editor }
+        let editor = WiltedMacFeedRulesEditor(board: self, feedID: feedID)
+        editors[feedID] = editor
+        return editor
+    }
+
+    /// Saves a feed's whole ordered rule set. Returns false, changing nothing,
+    /// when the feed is not loaded or a pattern is invalid.
+    @discardableResult
+    func replaceRules(_ next: EpisodeMatchRules, for feedID: String) -> Bool {
+        guard isLoaded(feedID), (try? next.validate()) != nil else { return false }
+        rules[feedID] = next
+        failedFeedIDs.remove(feedID)
+        let previous = writeChain
+        writeChain = Task { [weak self] in
+            await previous?.value
+            await self?.persist(rules: next, feedID)
+        }
+        return true
+    }
+
+    private func persist(rules next: EpisodeMatchRules, _ feedID: String) async {
+        guard let store = model.store, !model.isClosingTemporaryState,
+              let id = try? ItemID(rawValue: feedID) else { return }
+        do {
+            try await store.replaceEpisodeMatchRules(next, for: id)
+        } catch {
+            failedFeedIDs.insert(feedID)
+            if let stored = try? await store.episodeMatchRules(for: id) { rules[feedID] = stored }
+        }
     }
 
     /// Waits for every accepted choice to reach the store.
@@ -161,7 +201,6 @@ struct WiltedMacFeedPolicyButton: View {
         .accessibilityIdentifier("wilted-feed-policy-button-\(subscription.id)")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             WiltedMacFeedPolicyContent(board: board, subscription: subscription, dismiss: { isPresented = false })
-                .frame(width: 380)
                 .padding(WiltedTheme.Spacing.large)
                 .background(WiltedTheme.color(.card, scheme: colorScheme))
         }
@@ -177,11 +216,26 @@ struct WiltedMacFeedPolicyContent: View {
     var dismiss: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
     @State private var limitIsRejected = false
+    @State private var showsRules = false
 
     private var feedID: String { subscription.id }
     private var policy: FeedAutomationPolicy { board.policy(for: feedID) }
 
     var body: some View {
+        Group {
+            if showsRules {
+                WiltedMacFeedRulesView(
+                    editor: board.rulesEditor(for: feedID), subscription: subscription,
+                    resolved: board.resolved(for: feedID), back: { showsRules = false }
+                )
+            } else {
+                settingsPage
+            }
+        }
+        .frame(width: showsRules ? WiltedMacFeedRulesView.width : 380)
+    }
+
+    private var settingsPage: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             Text("Feed settings")
                 .wiltedFont(.title)
@@ -218,6 +272,10 @@ struct WiltedMacFeedPolicyContent: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feed-policy-failed")
             }
+            WiltedMacFeedRulesEntry(
+                editor: board.rulesEditor(for: feedID), subscription: subscription, isEnabled: board.isLoaded(feedID),
+                open: { showsRules = true }
+            )
             Divider()
             resolvedNow
             Text("A lower limit never removes an episode already in Larder.")
