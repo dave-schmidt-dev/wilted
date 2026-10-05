@@ -13,6 +13,8 @@ All notable changes to this project are documented in this file.
 ### Changed
 - Mac startup and work recovery show counted progress for each step instead of a single waiting message.
 - The Mac Now Playing pane's episode title is smaller, and the narrow sidebar rail shows the Ready audio time under a play icon.
+- iPhone Larder: rows grouped by feed no longer repeat the feed name, Sort and Group are titled sections ("None" is now "No Grouping"), Sort and Filter show a filled icon while active, and episode detail puts Share below Play and Download.
+- iPhone Settings: the device ID moves into a Diagnostics disclosure, sync detail appears inline only when sync has an error, and the listening totals are titled "This iPhone".
 
 ### Fixed
 - Ad removal no longer cuts most of a short episode when two sponsor reads bracket the programme: a confirmed cut that would push the episode past the total advertising ceiling, or a pod extension that would reach the next read, is now kept in the audio and recorded as held instead of removed.
