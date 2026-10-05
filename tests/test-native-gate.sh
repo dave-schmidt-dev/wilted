@@ -145,14 +145,15 @@ assert_wiltedkit_sync_contract() {
   assert_validation_contains 'run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package"'
   assert_validation_contains 'CloudSync named adapter case was not observed'
   assert_validation_contains 'CloudSync named send case was not observed'
-  assert_contains 'cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"' "$gate"
-  assert_contains 'cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"' "$gate"
+  staging="$repo_root/scripts/lib/native-gate-staging.sh"; assert_contains 'source "$repo_root/scripts/lib/native-gate-staging.sh"' "$gate"
+  assert_contains 'cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"' "$staging"
+  assert_contains 'cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"' "$staging"
   assert_contains 'leg_listener_tests' "$gate"
   assert_validation_contains "local cache_key='native-listener-tests'"
   assert_validation_contains 'Listener repository case was not observed'
   assert_validation_contains 'Listener playback case was not observed'
-  assert_contains 'cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"' "$gate"
-  assert_contains 'cp -R "$repo_root/Listener/Sources" "$repo_root/Listener/Tests" "$integration_root/Listener/"' "$gate"
+  assert_contains 'cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"' "$staging"
+  assert_contains 'cp -R "$repo_root/Listener/Sources" "$repo_root/Listener/Tests" "$integration_root/Listener/"' "$staging"
 }
 
 assert_wiltedkit_sync_contract
@@ -387,15 +388,15 @@ assert_snapshot_contract() {
   assert_validation_contains 'expected_selectors'
   assert_validation_contains 'duplicate_selectors'
   assert_validation_contains 'empty_pngs'
-  assert_contains 'cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests"' "$gate"
-  assert_contains 'cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"' "$gate"
-  assert_contains 'cp -R "$repo_root/Producer/Sources" "$repo_root/Producer/Tests" "$integration_root/Producer/"' "$gate"
+  assert_contains 'cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests"' "$staging"
+  assert_contains 'cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"' "$staging"
+  assert_contains 'cp -R "$repo_root/Producer/Sources" "$repo_root/Producer/Tests" "$integration_root/Producer/"' "$staging"
   for entitlement in \
     WiltedMac/WiltedMac.entitlements \
     WiltedMac/WiltedMacProduction.entitlements \
     WiltediOS/WiltediOS.entitlements \
     WiltediOS/WiltediOSProduction.entitlements; do
-    assert_contains "$entitlement" "$gate"
+    assert_contains "$entitlement" "$staging"
   done
   assert_contains 'validate_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines "$integration_root"' "$gate"
