@@ -448,23 +448,6 @@ extension WiltedMacModel {
         return claims.filter(kept.contains).sorted()
     }
 
-    /// Refreshes one feed and saves only its metadata. This deliberately uses
-    /// the non-claiming store path: automated refresh has no authority to turn
-    /// an undecided Feeds episode into download or preparation work.
-    private func automaticRefresh(_ url: URL, claimingNewest limit: Int) async throws -> [String] {
-        guard let store else { throw CancellationError() }
-        let loaded = try await podcastFeedClient.load(url)
-        try await store.save(feed: loaded.feed)
-        _ = try await store.savePodcastEpisodes(loaded.episodes, admission: .incremental)
-        let values = try await loadLibrary(from: store)
-        articles = values.articles
-        applyEpisodes(values.episodes)
-        subscriptions = values.subscriptions
-        dismissedEpisodes = try await loadDismissedEpisodes(from: store)
-        _ = limit // Kept for coordinator ABI compatibility; always zero by policy.
-        return []
-    }
-
     /// Wraps a terminal (or cancelled/not-found) download failure so
     /// `withRetries` never retries it and `drain` treats it as one claim
     /// done, not the automation pass stopping. `underlying` is kept for

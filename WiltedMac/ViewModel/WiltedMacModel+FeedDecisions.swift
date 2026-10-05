@@ -67,27 +67,24 @@ extension WiltedMacModel {
             }
             switch decision {
             case .keep:
-                let result = try await store.appendPodcastQueueEpisodes(ids)
-                let changed = Set(result.newlyAdded.map(\.rawValue))
-                let accepted = changed.union(result.alreadyQueued.map(\.rawValue))
+                let outcome = try await commitManualKeep(captured, store: store)
+                let (changed, accepted) = (outcome.changed, outcome.accepted)
                 if !accepted.isEmpty {
                     advanceLibraryReadProvenance()
                     podcastQueueRefreshGeneration &+= 1
                 }
                 await feedDecisionAfterDurableCommitForTesting?()
                 guard !isClosingTemporaryState, !Task.isCancelled else { return }
-                podcastQueueIDs = result.state.episodeIDs.map(\.rawValue)
+                podcastQueueIDs = outcome.queueIDs
                 settleFeedDecision(captured.map(\.id), committed: accepted)
-                let newlyKept = captured.filter { changed.contains($0.id) }
-                if automationSettings.downloadEverythingOnMenu {
-                    for episode in newlyKept where Self.menuGroup(for: episode) == .available { downloadEpisode(episode) }
-                }
-                podcastOperationMessage = decisionMessage("Kept", changed: changed.count, accepted: accepted.count, unresolved: result.unresolved.count)
+                for episode in outcome.downloads { downloadEpisode(episode) }
+                podcastOperationMessage = decisionMessage("Kept", changed: changed.count, accepted: accepted.count, unresolved: outcome.unresolved.count)
             case .skip:
                 let retiredAt = Timestamp(Date())
                 let result = try await store.retireEpisodes(ids, at: retiredAt)
                 let changed = Set(result.committed.map(\.rawValue))
                 let accepted = changed.union(result.alreadyAtTarget.map(\.rawValue))
+                try await recordManualDecisions(.skip, for: accepted, at: retiredAt, store: store)
                 if !accepted.isEmpty { advanceLibraryReadProvenance() }
                 await feedDecisionAfterDurableCommitForTesting?()
                 guard !isClosingTemporaryState, !Task.isCancelled else { return }
@@ -96,10 +93,15 @@ extension WiltedMacModel {
                 applyRetirement(to: accepted, at: retirementTimes)
                 settleFeedDecision(captured.map(\.id), committed: accepted)
                 podcastOperationMessage = decisionMessage("Skipped", changed: changed.count, accepted: accepted.count, unresolved: result.unresolved.count)
+                // A retirement frees a kept slot: let the feed's oldest waiting episode in.
+                if !changed.isEmpty {
+                    await releaseWaitingEpisodes(feedIDs: Set(captured.filter { changed.contains($0.id) }.compactMap(\.feedID)))
+                }
             case .restore:
                 let result = try await store.restoreEpisodes(ids)
                 let changed = Set(result.committed.map(\.rawValue))
                 let accepted = changed.union(result.alreadyAtTarget.map(\.rawValue))
+                try await recordManualDecisions(.keep, for: accepted, at: Timestamp(Date()), store: store)
                 if !accepted.isEmpty { advanceLibraryReadProvenance() }
                 await feedDecisionAfterDurableCommitForTesting?()
                 guard !isClosingTemporaryState, !Task.isCancelled else { return }

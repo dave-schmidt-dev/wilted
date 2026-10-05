@@ -35,7 +35,11 @@ extension WiltedMacModel {
         // The download is the request: its place in the preparation line is
         // taken now, so a later download that finishes first still queues
         // behind it.
-        registerPreparationRequest(for: episode.id)
+        // The number is reserved now, so the click keeps its place in line;
+        // the durable ticket is written below only if the feed allows
+        // automatic preparation. A request an admission already holds is kept.
+        let reservedPreparation = preparationRequestSequences[episode.id] == nil
+            ? reservePreparationRequest(for: episode.id) : nil
         // A distinct ticket from the preparation one above -- downloads are
         // not ordered against each other (`registerPreparationRequest`'s
         // number is for the preparation gate only), so this one's sequence
@@ -52,6 +56,9 @@ extension WiltedMacModel {
             // One place to clear the task-table entry, run on every exit
             // (return or throw) rather than duplicated in each branch below.
             defer { self.podcastDownloadTasks[episode.id] = nil }
+            if let reservedPreparation {
+                await self.settleReservedPreparation(reservedPreparation, for: episode)
+            }
             // Fixture rows are published immediately for a responsive launch,
             // while their store records are installed asynchronously. Wait for
             // that install before exercising the real coordinator so a fast UI
@@ -121,7 +128,14 @@ extension WiltedMacModel {
                 // requested the row has no state to keep and nothing names it
                 // as pending. It reports what it will do straight away, so the
                 // reload below has something to preserve.
-                if self.automationSettings.prepareEverythingDownloaded,
+                if await self.automaticPreparationSuppressed(for: episode) {
+                    // A feed-level Off is a hard stop, including for the global
+                    // prepare-everything override. Explicit Prepare never
+                    // passes through here.
+                    if self.preparationRequestSequences[episode.id] != nil {
+                        self.withdrawPreparationRequest(for: episode.id)
+                    }
+                } else if self.automationSettings.prepareEverythingDownloaded,
                    self.podcastQueueIDs.contains(episode.id) {
                     // The override prepares immediately, exactly as the group's
                     // Prepare all does, and only for an episode waiting on the
@@ -181,6 +195,32 @@ extension WiltedMacModel {
     /// is not started a second time. A settled record does not block: retrying
     /// a failure from the row is exactly what that path is for.
 #if canImport(WiltedProducer)
+    /// True when the episode's feed has Auto prepare set to Off. Only that
+    /// explicit per-feed choice suppresses automatic preparation; Use global
+    /// leaves the processing policy in charge, as it always has.
+    func automaticPreparationSuppressed(for episode: WiltedMacEpisode) async -> Bool {
+        guard let store, let rawFeedID = episode.feedID,
+              let feedID = try? ItemID(rawValue: rawFeedID),
+              let policy = try? await store.feedAutomationPolicy(for: feedID) else { return false }
+        return EpisodeAdmissionService.suppressesAutomaticPreparation(policy)
+    }
+
+    /// Writes the pending preparation ticket for a number reserved by
+    /// `downloadEpisode`, or releases the number when the feed forbids
+    /// automatic preparation.
+    private func settleReservedPreparation(_ sequence: Int, for episode: WiltedMacEpisode) async {
+        if await automaticPreparationSuppressed(for: episode) {
+            if preparationRequestSequences[episode.id] == sequence {
+                preparationRequestSequences.removeValue(forKey: episode.id)
+            }
+            return
+        }
+        await recordWorkTicketTransition(
+            kind: .podcastPreparation, subjectID: episode.id,
+            requestSequence: sequence, state: .pending, admitting: true
+        )
+    }
+
     private func claimDownload(_ episodeID: ItemID) async -> Bool {
         guard let store else { return false }
         return (try? await store.claimPodcastDownload(episodeID: episodeID, scope: .notInFlight)) ?? false
@@ -385,6 +425,25 @@ extension WiltedMacModel {
             )
         }
         return sequence
+    }
+
+    /// Takes this episode's place in the preparation line without writing a
+    /// ticket; the caller decides whether the request becomes durable.
+    func reservePreparationRequest(for episodeID: String) -> Int {
+        let sequence = nextPreparationRequestSequence()
+        preparationRequestSequences[episodeID] = sequence
+        return sequence
+    }
+
+    /// Adopts a preparation ticket an admission already wrote, so the model's
+    /// counter stays above every durable sequence and a later run for this
+    /// episode carries the ticket's own number instead of a lower one.
+    func adoptAdmittedPreparation(sequence: Int, for episodeID: String) {
+        preparationRequestSequences[episodeID] = sequence
+        if sequence > preparationRequestSequence {
+            preparationRequestSequence = sequence
+            preferences.set(preparationRequestSequence, forKey: Self.preparationRequestSequencePreferenceKey)
+        }
     }
 
     /// Advances and persists the counter without recording a pending request.
