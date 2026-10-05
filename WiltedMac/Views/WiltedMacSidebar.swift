@@ -4,8 +4,8 @@ import SwiftUI
 ///
 /// Narrow windows swap the labelled form for an icon-only rail. The rail keeps
 /// every destination one click away -- a tooltip and an accessibility label
-/// carry the name the text no longer does -- and drops the totals, which have
-/// no room. The column is never hidden.
+/// carry the name the text no longer does -- and keeps only the Ready total,
+/// as an icon over the compact time. The column is never hidden.
 struct WiltedMacSidebar: View {
     @Bindable var model: WiltedMacModel
     let mode: WiltedMacSidebarMode
@@ -36,7 +36,7 @@ struct WiltedMacSidebar: View {
             .scrollContentBackground(.hidden)
             .background(WiltedTheme.color(.page, scheme: colorScheme))
             .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-            if mode == .full { totals }
+            if mode == .full { totals } else { railReadyTotal }
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityIdentifier("wilted-mac-sidebar")
@@ -109,6 +109,33 @@ struct WiltedMacSidebar: View {
         .padding(.bottom, WiltedTheme.Spacing.medium)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-sidebar-totals")
+    }
+
+    /// The rail's one total: the Ready time under a play icon, in the compact
+    /// form the Larder's group headings use. The name moves to the tooltip
+    /// and accessibility label; an unknown duration count does not fit and
+    /// stays with the full sidebar.
+    private var railReadyTotal: some View {
+        let summary = model.menuGroupAudioSummary(.playable)
+        return VStack(spacing: WiltedTheme.Spacing.xSmall) {
+            Divider()
+            Image(systemName: "play.circle")
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .wiltedFont(.body)
+                .accessibilityHidden(true)
+            Text(summary.label)
+                .wiltedFont(.caption)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+        }
+        .padding(.horizontal, WiltedTheme.Spacing.xSmall)
+        .padding(.bottom, WiltedTheme.Spacing.medium)
+        .help("Ready: \(summary.detailLabel)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Ready, \(summary.detailLabel)")
+        .accessibilityIdentifier("wilted-sidebar-ready-total")
     }
 
     /// One sidebar waiting time. The figure and its unknown count come from

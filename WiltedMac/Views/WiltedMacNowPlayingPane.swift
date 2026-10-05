@@ -123,7 +123,7 @@ struct WiltedMacNowPlayingPane: View {
             artwork
             VStack(spacing: WiltedTheme.Spacing.xSmall) {
                 Text(title)
-                    .wiltedFont(.display)
+                    .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
