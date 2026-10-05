@@ -141,7 +141,7 @@ class AdDetectionMixinC:
         self.assertIn("ads.detect.span.rejected", stages)
         self.assertNotIn("ads.detect.span.confirmed", stages)
 
-    def _alexa_opening_replay(self, rebase_answer):
+    def _alexa_opening_replay(self, rebase_answer, *, program_id_answers=None):
         """Run the 33-cue Alexa sponsor shape through the public cut seam."""
         timings = [
             (0.0, 2.4), (6.72, 30.0), (30.0, 50.0), (50.0, 67.12),
@@ -166,9 +166,10 @@ class AdDetectionMixinC:
         llm = FakeLLM(
             left_boundary_include=True,
             boundary_content_start_id=10,
+            boundary_starts_program=False if program_id_answers else None,
             commercial_prefix_cue_answer='{"include": true}',
             preroll_program_start_id=10,
-            program_id_answers=[0, rebase_answer],
+            program_id_answers=program_id_answers or [0, rebase_answer],
         )
         install_fake_ads(llm, detections=[
             FakeAd(6.72, 295.76, label="sponsor_read"),
@@ -188,6 +189,32 @@ class AdDetectionMixinC:
                     request, self.audio, [], segments, with_report=True
                 )
         return spans, audit, [json.loads(line) for line in stream.getvalue().splitlines()]
+
+    def test_alexa_safe_prefix_rebases_after_it_finds_programme_at_zero(self):
+        spans, audit, events = self._alexa_opening_replay(
+            -1, program_id_answers=[9, 0, -1]
+        )
+        self.assertEqual(
+            [(span["startSeconds"], span["endSeconds"]) for span in spans],
+            [(6.72, 167.64), (537.68, 575.086)],
+        )
+        self.assertEqual(audit["heldSpans"], [])
+        self.assertIn("ads.detect.span.rebased", [event["stage"] for event in events])
+
+    def test_alexa_safe_prefix_programme_after_anchor_holds_the_span(self):
+        spans, audit, events = self._alexa_opening_replay(
+            1, program_id_answers=[9, 0, 1]
+        )
+        self.assertEqual(
+            [(span["startSeconds"], span["endSeconds"]) for span in spans],
+            [(537.68, 575.086)],
+        )
+        self.assertEqual(audit["heldSpans"], [{
+            "reason": "sponsor-prefix-programme-found",
+            "startSeconds": 0.0,
+            "endSeconds": 295.76,
+        }])
+        self.assertNotIn("ads.detect.recovery.audit.failed", [event["stage"] for event in events])
 
     def test_a_sponsor_prefix_programme_confirmation_is_held_not_cut(self):
         # The first prefix cue is programme. A second confirmation also finds

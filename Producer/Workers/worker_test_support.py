@@ -145,7 +145,7 @@ def _worker_owned_prompts():
 def _passthrough_detections(_ads, _backend, _segments, detections, *_args):
     return detections
 
-def _passthrough_reviewed_detections(_ads, _backend, _segments, detections, *_args):
+def _passthrough_reviewed_detections(_ads, _backend, _segments, detections, *_args, **_kwargs):
     return detections, frozenset()
 
 @dataclass

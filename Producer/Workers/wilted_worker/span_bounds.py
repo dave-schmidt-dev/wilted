@@ -26,6 +26,70 @@ from .constants import AD_POD_CONTINUATION_MAX_GAP_SECONDS, AD_POD_CONTINUATION_
 from .edge_recovery import _program_starts_inside
 from .prompts import AD_POD_CONTINUATION_PROMPT, OVERSIZED_SPAN_CONFIRM_PROMPT, OVERSIZED_SPAN_PROGRAM_START_PROMPT, OVERSIZED_SPAN_RESCAN_PROMPT
 
+
+def _try_rebase_confirmed_prefix(
+    ads_module, backend, segments, ad, total_seconds, window_ids,
+    rebase_anchor_ids, program_id, held_spans,
+):
+    """Confirm the anchored portion before a review-found programme cue.
+
+    Returns ``None`` when no anchor lies in the bounded passage, otherwise the
+    final resize outcome. A non-advertising answer is positive programme
+    evidence, so it records the existing held-span disposition rather than
+    permitting another recovery path.
+    """
+    rebase_anchor_id = next(
+        (
+            anchor_id
+            for anchor_id in sorted(rebase_anchor_ids)
+            if window_ids[0] < anchor_id < program_id and anchor_id in window_ids
+        ),
+        None,
+    )
+    if rebase_anchor_id is None:
+        return None
+    rebase_ids = [
+        segment_id
+        for segment_id in window_ids
+        if rebase_anchor_id <= segment_id < program_id
+    ]
+    _worker_reporting.progress(
+        "ads.detect.span.rebase.reviewing",
+        f"preserving prefix ID {window_ids[0]} and rechecking from explicit anchor ID "
+        f"{rebase_anchor_id} before program ID {program_id}",
+    )
+    try:
+        rebase_program_id = _constrained_id(
+            ads_module, backend, OVERSIZED_SPAN_CONFIRM_PROMPT, "program_id",
+            rebase_ids, [-1, *rebase_ids], segments,
+        )
+    except Exception as error:  # noqa: BLE001 - uncertainty holds the full span
+        _worker_reporting.progress(
+            "ads.detect.span.rebase.skipped",
+            f"anchor-forward confirmation failed: {type(error).__name__}: {error}",
+        )
+    else:
+        if rebase_program_id == -1:
+            rebase_start_s = float(segments[rebase_anchor_id].start_s)
+            end_s = float(segments[program_id].start_s)
+            _worker_reporting.progress(
+                "ads.detect.span.rebased",
+                f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} safely rebased to "
+                f"{rebase_start_s:.3f}-{end_s:.3f} from explicit anchor ID {rebase_anchor_id}",
+            )
+            return ("confirmed", ads_module.AdSegment(
+                rebase_start_s, end_s, float(ad.confidence), ad.label
+            ))
+        _worker_reporting.progress(
+            "ads.detect.span.rebase.skipped",
+            f"the anchor-forward passage holds program content at {rebase_program_id}",
+        )
+    _record_held_span(
+        held_spans, ad.start_s, ad.end_s, "sponsor-prefix-programme-found", total_seconds
+    )
+    return ("program_found", None)
+
+
 def _resize_one_oversized_span(
     ads_module, backend, segments, ad, total_seconds, rebase_anchor_ids=frozenset(),
     held_spans=None,
@@ -104,54 +168,19 @@ def _resize_one_oversized_span(
         rebase_anchor_id = next(
             (
                 anchor_id
-                for anchor_id in rebase_anchor_ids
+                for anchor_id in sorted(rebase_anchor_ids)
                 if window_ids[0] < anchor_id < program_start_id
             ),
             None,
         )
         if program_id == window_ids[0] and rebase_anchor_id is not None:
             # The first cue is a verified prefix joined to an explicit sponsor
-            # anchor. It is programme, so preserve it, then ask the exact same
-            # bounded confirmation about the anchor-forward passage only.
-            # Nothing after the first review's programme boundary is exposed.
-            rebase_ids = [
-                segment_id for segment_id in opening_ids
-                if rebase_anchor_id <= segment_id < program_start_id
-            ]
-            _worker_reporting.progress(
-                "ads.detect.span.rebase.reviewing",
-                f"preserving prefix ID {window_ids[0]} and rechecking from explicit anchor ID "
-                f"{rebase_anchor_id} before program ID {program_start_id}",
+            # anchor. It is programme, so preserve it, then recheck only the
+            # anchor-forward passage before the bounded programme boundary.
+            return _try_rebase_confirmed_prefix(
+                ads_module, backend, segments, ad, total_seconds, window_ids,
+                rebase_anchor_ids, program_start_id, held_spans,
             )
-            try:
-                rebase_program_id = _constrained_id(
-                    ads_module, backend, OVERSIZED_SPAN_CONFIRM_PROMPT, "program_id",
-                    rebase_ids, [-1, *rebase_ids], segments,
-                )
-            except Exception as error:  # noqa: BLE001 - uncertainty holds the full span
-                _worker_reporting.progress(
-                    "ads.detect.span.rebase.skipped",
-                    f"anchor-forward confirmation failed: {type(error).__name__}: {error}",
-                )
-            else:
-                if rebase_program_id == -1:
-                    rebase_start_s = float(segments[rebase_anchor_id].start_s)
-                    _worker_reporting.progress(
-                        "ads.detect.span.rebased",
-                        f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} safely rebased to "
-                        f"{rebase_start_s:.3f}-{end_s:.3f} from explicit anchor ID {rebase_anchor_id}",
-                    )
-                    return ("confirmed", ads_module.AdSegment(
-                        rebase_start_s, end_s, float(ad.confidence), ad.label
-                    ))
-                _worker_reporting.progress(
-                    "ads.detect.span.rebase.skipped",
-                    f"the anchor-forward passage holds program content at {rebase_program_id}",
-                )
-            _record_held_span(
-                held_spans, ad.start_s, ad.end_s, "sponsor-prefix-programme-found", total_seconds
-            )
-            return ("program_found", None)
         # A positive answer means this proposed prefix was too wide, not that
         # its whole original span may be re-vouched for. The one bounded retry
         # considers only the earlier IDs. It can therefore establish precisely
@@ -180,6 +209,13 @@ def _resize_one_oversized_span(
                 "ads.detect.span.resize.skipped",
                 f"the safe prefix still holds program content at {prefix_program_id}",
             )
+            if prefix_program_id == window_ids[0]:
+                rebased = _try_rebase_confirmed_prefix(
+                    ads_module, backend, segments, ad, total_seconds, window_ids,
+                    rebase_anchor_ids, program_id, held_spans,
+                )
+                if rebased is not None:
+                    return rebased
             if rebase_anchor_id is not None:
                 _record_held_span(
                     held_spans, ad.start_s, ad.end_s,

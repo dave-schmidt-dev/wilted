@@ -155,15 +155,10 @@ def analyze_ad_detections(
         explicit_sponsor_opening_pattern(ads_module),
     )
     held_spans = []
-    if prefix_rebase_anchor_ids:
-        detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
-            ads_module, auditing_backend, segments, detections, total_seconds,
-            rebase_anchor_ids=prefix_rebase_anchor_ids, held_spans=held_spans,
-        )
-    else:
-        detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
-            ads_module, auditing_backend, segments, detections, total_seconds
-        )
+    detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
+        ads_module, auditing_backend, segments, detections, total_seconds,
+        rebase_anchor_ids=prefix_rebase_anchor_ids, held_spans=held_spans,
+    )
     proposed_detections = detections
     detections = reject_implausible_ad_spans(
         detections, total_seconds, confirmed_spans, held_spans
