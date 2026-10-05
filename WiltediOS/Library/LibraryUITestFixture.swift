@@ -17,6 +17,9 @@ enum LibraryUITestScenario: String, Sendable {
     case startError = "start-error"
     /// The first library fetch succeeds; every later read is answered "rate limited" by iCloud.
     case throttled
+    /// Pixel baselines: the normal stack with a fixed clock (so "Fetched" shows one fixed time) and a
+    /// second feed, so grouping by feed has two sections.
+    case pixel
 }
 
 /// DEBUG-only deterministic dependencies for the production `LibraryRoot`.
@@ -37,6 +40,25 @@ enum LibraryUITestFixture {
     static let startDelay: Duration = .seconds(3)
     static let suiteName = "wilted-library-root-fixture"
     static let episodeIDs = ["fixture-episode-1", "fixture-episode-2"]
+    /// The pixel scenario's clock: 2026-10-03 12:00 UTC.
+    nonisolated static let pixelClock = Date(timeIntervalSince1970: 1_791_028_800)
+
+    static let appearancePrefix = "--wilted-library-root-appearance="
+
+    /// The scheme a launch pins with `--wilted-library-root-appearance=light|dark`; nil follows the system.
+    static func colorScheme(arguments: [String] = ProcessInfo.processInfo.arguments) -> ColorScheme? {
+        switch arguments.first(where: { $0.hasPrefix(appearancePrefix) })?.dropFirst(appearancePrefix.count) {
+        case "light": .light
+        case "dark": .dark
+        default: nil
+        }
+    }
+
+    /// The model's clock: fixed for the pixel scenario, the real one otherwise.
+    nonisolated static func clock(for scenario: LibraryUITestScenario) -> @Sendable () -> Date {
+        if scenario == .pixel { return { pixelClock } }
+        return { Date() }
+    }
 
     /// The scenario this launch asked for, or nil for any other launch.
     static func scenario(arguments: [String] = ProcessInfo.processInfo.arguments) -> LibraryUITestScenario? {
@@ -95,7 +117,8 @@ enum LibraryUITestFixture {
                 ? LibraryUITestDelayedCache(inner: cache, delay: LibraryUITestFixture.startDelay) : cache
             model = LibraryAppModel(
                 transport: transport, deviceID: "phone", mediaCache: mediaCache, preferences: defaults,
-                ownPositionsURL: scratch.appendingPathComponent("own-positions.json"))
+                ownPositionsURL: scratch.appendingPathComponent("own-positions.json"),
+                now: LibraryUITestFixture.clock(for: scenario))
             player = LibraryPlayer(
                 engine: LibraryUITestEngine(refusesPlay: scenario == .startError), session: LibraryUITestSession(),
                 nowPlaying: LibraryUITestNowPlaying(), remoteCommands: LibraryUITestRemote(),
@@ -122,13 +145,23 @@ enum LibraryUITestFixture {
                         durationSeconds: LibraryUITestEngine.length)))
                     changes.append(.slot(try QueueSlot(entryID: id, sortKey: Double(index))))
                 }
+                if scenario == .pixel {
+                    let secondShow = try ItemID(rawValue: "fixture-show-2")
+                    let third = try ItemID(rawValue: "fixture-episode-3")
+                    changes.append(.source(LibrarySource(id: secondShow, kind: .podcastFeed, title: "Second Fixture Show")))
+                    changes.append(.entry(try LibraryEntry(
+                        id: third, kind: .podcastEpisode, sourceID: secondShow, title: "Fixture Episode 3",
+                        summary: "A second local fixture episode.",
+                        publishedAt: Date(timeIntervalSince1970: 1_700_000_002), durationSeconds: LibraryUITestEngine.length)))
+                    changes.append(.slot(try QueueSlot(entryID: third, sortKey: 2)))
+                }
                 let pending = changes.enumerated().map {
                     PendingLibraryChange(localSeq: UInt64($0.offset + 1), change: $0.element, baseVersion: 0)
                 }
                 _ = try await mac.push(changes: pending)
                 let audio = Data(repeating: 7, count: 512)
                 let hash = MediaHash.prefix + SHA256.hash(data: audio).map { String(format: "%02x", $0) }.joined()
-                for raw in LibraryUITestFixture.episodeIDs {
+                for raw in LibraryUITestFixture.episodeIDs + (scenario == .pixel ? ["fixture-episode-3"] : []) {
                     let offer = try LibraryMediaOffer(
                         entryID: try ItemID(rawValue: raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: hash,
                         byteCount: Int64(audio.count), mediaType: "audio/mp4", durationSeconds: LibraryUITestEngine.length)
@@ -153,6 +186,7 @@ struct LibraryUITestFixtureHost: View {
         if isSeeded {
             LibraryRoot(model: stack.model, player: stack.player, settings: stack.settings)
                 .overlay(alignment: .bottomLeading) { LibraryUITestFixtureMarker(scenario: stack.scenario) }
+                .preferredColorScheme(LibraryUITestFixture.colorScheme())
         } else {
             ProgressView()
                 .accessibilityIdentifier(LibraryUITestFixture.loadingMarker)
