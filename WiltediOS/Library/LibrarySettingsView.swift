@@ -166,7 +166,10 @@ struct LibrarySettingsView: View {
     }
 
     private var aboutCard: some View {
-        let version = LibrarySettingsFormat.version(Bundle.main.infoDictionary)
+        var version = LibrarySettingsFormat.version(Bundle.main.infoDictionary)
+#if DEBUG
+        if let pinned = LibraryUITestFixture.pinnedVersion { version = pinned }
+#endif
         return WiltedSettingsCard(title: LibrarySettingsFormat.aboutTitle) {
             ForEach(LibrarySettingsFormat.aboutRows(version: version), id: \.identifier) { row in
                 settingsRow(row)

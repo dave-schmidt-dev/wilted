@@ -54,6 +54,20 @@ enum LibraryUITestFixture {
         }
     }
 
+    /// The pixel scenario's time zone: a fixed offset, so no daylight-saving change or host setting moves a date.
+    nonisolated static let pixelTimeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+    /// The About version the pixel scenario shows in place of the bundle's, so a release bump moves no baseline.
+    nonisolated static let pixelVersion = "0.0.0 (fixture)"
+
+    /// The pinned About version for this launch, or nil outside the pixel scenario.
+    static var pinnedVersion: String? { scenario() == .pixel ? pixelVersion : nil }
+
+    /// Pins the Larder, detail and Settings date formatters (`LibraryDateFormat`) for the pixel scenario;
+    /// the model's own zone covers the clock formatter.
+    static func pinProcessTimeZone() {
+        LibraryDateFormat.timeZone = pixelTimeZone
+    }
+
     /// The model's clock: fixed for the pixel scenario, the real one otherwise.
     nonisolated static func clock(for scenario: LibraryUITestScenario) -> @Sendable () -> Date {
         if scenario == .pixel { return { pixelClock } }
@@ -83,6 +97,7 @@ enum LibraryUITestFixture {
     /// query from Siri or Shortcuts cannot build `LibraryRuntime.shared`.
     static func launch(_ scenario: LibraryUITestScenario) {
         guard stack == nil else { return }
+        if scenario == .pixel { pinProcessTimeZone() }
         UserDefaults.standard.removeObject(forKey: LibraryEnvironment.deviceIDKey)
         UserDefaults().removePersistentDomain(forName: suiteName)
         let built = Stack(scenario: scenario)
@@ -118,7 +133,8 @@ enum LibraryUITestFixture {
             model = LibraryAppModel(
                 transport: transport, deviceID: "phone", mediaCache: mediaCache, preferences: defaults,
                 ownPositionsURL: scratch.appendingPathComponent("own-positions.json"),
-                now: LibraryUITestFixture.clock(for: scenario))
+                now: LibraryUITestFixture.clock(for: scenario),
+                timeZone: scenario == .pixel ? LibraryUITestFixture.pixelTimeZone : .current)
             player = LibraryPlayer(
                 engine: LibraryUITestEngine(refusesPlay: scenario == .startError), session: LibraryUITestSession(),
                 nowPlaying: LibraryUITestNowPlaying(), remoteCommands: LibraryUITestRemote(),

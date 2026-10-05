@@ -94,6 +94,9 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             "--wilted-library-root-fixture", "--wilted-library-root-scenario=pixel",
             "--wilted-library-root-appearance=\(dark ? "dark" : "light")"
         ]
+        // Probe hook: WILTED_PIXEL_PROBE_TZ (as TEST_RUNNER_WILTED_PIXEL_PROBE_TZ) launches the app in another
+        // zone; the fixture pins its own, so the captures must not move.
+        if let zone = ProcessInfo.processInfo.environment["WILTED_PIXEL_PROBE_TZ"] { app.launchEnvironment["TZ"] = zone }
         app.launch()
         let any = app.descendants(matching: .any)
         let firstRow = any["wilted-library-row-fixture-episode-1"]

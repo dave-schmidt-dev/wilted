@@ -32,7 +32,7 @@ enum LibrarySettingsFormat {
     }
 
     static func date(_ value: Date?) -> String {
-        value.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet"
+        value.map(LibraryDateFormat.dayAndTime) ?? "Not yet"
     }
 
     /// "1.25x", "2x".

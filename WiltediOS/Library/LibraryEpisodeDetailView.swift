@@ -230,7 +230,7 @@ struct LibraryEpisodeDetailView: View {
     }
 
     private func meta(_ row: LibraryRow) -> String {
-        [row.durationText, row.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())]
+        [row.durationText, LibraryDateFormat.day(row.publishedAt)]
             .compactMap { $0 }.joined(separator: " · ")
     }
 
