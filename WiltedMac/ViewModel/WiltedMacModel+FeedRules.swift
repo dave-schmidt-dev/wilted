@@ -15,6 +15,10 @@ struct FeedRulesUndo: Sendable, Equatable {
     let applied: [ItemID: EpisodeDecisionRecord]
     let priorQueue: PodcastQueueState
     let postQueue: PodcastQueueState
+    /// Keeps whose download and preparation Apply issued.
+    var issued: Set<ItemID> = []
+    /// Kept episodes Apply skipped that were holding a preparation request.
+    var withdrawn: Set<ItemID> = []
 }
 
 struct FeedRulesApplyResult: Sendable, Equatable {
@@ -104,6 +108,18 @@ extension WiltedMacModel {
 
         let priorQueue = try await store.podcastQueueState()
         let decidedAt = Timestamp(Date())
+        // A Keep here is an automatic Keep: it asks for what the feed's policy calls for.
+        let kinds = EpisodeAdmissionService.keepWorkTicketKinds(
+            for: try await store.feedAutomationPolicy(for: feedID)
+                .resolved(using: EpisodeAdmissionService.globalDefaults(automationSettings))
+        )
+        var withdrawn: Set<ItemID> = []
+        for admission in admissions where admission.decision == .skip && priorQueue.episodeIDs.map(\.rawValue).contains(admission.episodeID) {
+            let id = try ItemID(rawValue: admission.episodeID)
+            if await holdsPreparationRequest(for: id, store: store) { withdrawn.insert(id) }
+        }
+        var claimed: [String] = []
+        var issued: Set<ItemID> = []
         var prior: [ItemID: EpisodeDecisionRecord?] = [:]
         var applied: [ItemID: EpisodeDecisionRecord] = [:]
         do {
@@ -114,7 +130,13 @@ extension WiltedMacModel {
                     episodeID: id, decision: admission.decision, source: admission.source,
                     ruleID: admission.ruleID, decidedAt: decidedAt
                 )
-                try await store.admitEpisode(record, enqueue: admission.decision == .keep, workTicketKinds: [])
+                let keeps = admission.decision == .keep
+                let request = EpisodeAdmissionService.Admission(
+                    episodeID: admission.episodeID, decision: admission.decision, source: admission.source,
+                    ruleID: admission.ruleID, workTicketKinds: keeps ? kinds : []
+                )
+                if try await commitAdmission(request, as: id, decidedAt: decidedAt, store: store) { claimed.append(admission.episodeID) }
+                if keeps, !kinds.isEmpty { issued.insert(id) }
                 applied[id] = record
             }
             let skipped = Set(applied.filter { $0.value.decision == .skip }.keys)
@@ -128,6 +150,7 @@ extension WiltedMacModel {
         } catch {
             // A half-applied pass is worse than none: put everything back.
             try? await store.restoreEpisodeDecisions(prior, queue: priorQueue)
+            for id in issued { await withdrawUnstartedKeepWork(for: id, store: store) }
             await refreshPodcastQueueState()
             throw error
         }
@@ -137,9 +160,13 @@ extension WiltedMacModel {
         for (id, record) in applied where record.decision == .skip && priorQueue.episodeIDs.contains(id) {
             withdrawPreparationRequest(for: id.rawValue)
         }
+        startClaimedDownloads(claimed)
         return FeedRulesApplyResult(
             counts: plan.counts,
-            undo: FeedRulesUndo(feedID: rawFeedID, prior: prior, applied: applied, priorQueue: priorQueue, postQueue: postQueue)
+            undo: FeedRulesUndo(
+                feedID: rawFeedID, prior: prior, applied: applied, priorQueue: priorQueue, postQueue: postQueue,
+                issued: issued, withdrawn: withdrawn
+            )
         )
     }
 
@@ -174,6 +201,11 @@ extension WiltedMacModel {
         }
         try await store.restoreEpisodeDecisions(restore, queue: queue)
         await refreshPodcastQueueState()
+        // Work Apply asked for goes with the Keep; a request Apply withdrew comes back with it.
+        for id in restore.keys where undo.issued.contains(id) { await withdrawUnstartedKeepWork(for: id, store: store) }
+        for id in restore.keys where undo.withdrawn.contains(id) && restore[id]??.decision == .keep {
+            registerPreparationRequest(for: id.rawValue)
+        }
         return restore.count
     }
 

@@ -166,6 +166,112 @@ final class WiltedMacFeedRulesTests: XCTestCase {
         )
     }
 
+    // MARK: Apply's Keeps are automatic Keeps (4.2b)
+
+    private var downloadAndPrepare: FeedAutomationPolicy {
+        FeedAutomationPolicy(autoKeep: .on, autoDownload: .on, autoPrepare: .on)
+    }
+
+    /// No transfer can start, so every download an Apply issues stays not yet started.
+    private func applyRules(_ fixture: Fixture) async {
+        fixture.model.podcastDownloadCoordinator = nil
+        fixture.editor.preview()
+        await fixture.editor.task?.value
+        fixture.editor.apply()
+        await fixture.editor.task?.value
+    }
+
+    private func tickets(_ fixture: Fixture, _ kind: WorkTicketKind) async throws -> [WorkTicket] {
+        try await fixture.store.workTickets().filter { $0.kind == kind }.sorted { $0.subjectID < $1.subjectID }
+    }
+
+    /// Ticket writes the model makes in the background settle shortly after the call.
+    private func eventually(_ what: String, line: UInt = #line, _ condition: () async throws -> Bool) async throws {
+        for _ in 0..<300 {
+            if try await condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail(what, line: line)
+    }
+
+    func testApplyKeepsIssueOneDownloadAndOnePreparationEachWhenTheFeedPolicyCallsForThemAndNoneWhenOff() async throws {
+        let on = try await makeFixture(mixed, policy: downloadAndPrepare)
+        await applyRules(on)
+        let newlyKept = ["a", "c", "e"].map(on.id).sorted()
+        let downloads = try await tickets(on, .podcastDownload)
+        XCTAssertEqual(downloads.map(\.subjectID), newlyKept, "one download ticket per newly kept episode")
+        XCTAssertTrue(downloads.allSatisfy { $0.state == .pending })
+        let preparations = try await tickets(on, .podcastPreparation).filter { $0.state == .pending }
+        XCTAssertEqual(preparations.map(\.subjectID), newlyKept, "one preparation ticket per newly kept episode")
+        let claimed = try await on.store.downloads()
+        XCTAssertEqual(claimed.map(\.episodeID.rawValue).sorted(), newlyKept, "the store claim 3.1 takes")
+        for ticket in preparations {
+            XCTAssertEqual(on.model.preparationRequestSequences[ticket.subjectID], ticket.requestSequence, "adopted, as 3.1 does")
+        }
+
+        let off = try await makeFixture(mixed, policy: FeedAutomationPolicy(autoKeep: .on, autoDownload: .off, autoPrepare: .on))
+        await applyRules(off)
+        let offDownloads = try await tickets(off, .podcastDownload)
+        let offPreparations = try await tickets(off, .podcastPreparation).filter { $0.state == .pending }
+        let offClaims = try await off.store.downloads()
+        XCTAssertTrue(offDownloads.isEmpty)
+        XCTAssertTrue(offPreparations.isEmpty)
+        XCTAssertTrue(offClaims.isEmpty)
+        let offQueue = try await off.queue().episodeIDs.map(\.rawValue)
+        XCTAssertEqual(offQueue, ["f", "h", "a", "c", "e"].map(off.id), "the Keeps still happened")
+    }
+
+    func testUndoWithdrawsTheNotYetStartedTicketsAndLeavesAStartedDownloadAlone() async throws {
+        let fixture = try await makeFixture(mixed, policy: downloadAndPrepare)
+        await applyRules(fixture)
+        // Episode c's transfer has begun; a and e are still waiting.
+        await fixture.model.recordWorkTicketTransition(kind: .podcastDownload, subjectID: fixture.id("c"), state: .running)
+
+        fixture.editor.undoLastApply()
+        await fixture.editor.task?.value
+
+        let downloads = try await tickets(fixture, .podcastDownload)
+        XCTAssertEqual(downloads.map { "\($0.subjectID) \($0.state.rawValue)" }.sorted(),
+                       [("a", "cancelled"), ("c", "running"), ("e", "cancelled")].map { "\(fixture.id($0.0)) \($0.1)" }.sorted())
+        try await eventually("the preparation requests are withdrawn") {
+            let open = try await self.tickets(fixture, .podcastPreparation).filter { !$0.state.isTerminal }
+            return open.isEmpty
+        }
+        for guid in ["a", "c", "e"] {
+            XCTAssertNil(fixture.model.preparationRequestSequences[fixture.id(guid)], guid)
+        }
+        let claims = try await fixture.store.downloads()
+        XCTAssertEqual(claims.first { $0.episodeID == fixture.ids["a"] }?.status, .cancelled, "the waiting claim is released")
+    }
+
+    func testUndoOfAnApplySkipRequestsThePreparationApplyWithdrew() async throws {
+        let fixture = try await makeFixture(mixed, policy: downloadAndPrepare)
+        let d = fixture.id("d")
+        fixture.model.registerPreparationRequest(for: d)
+        try await eventually("d holds a pending preparation ticket") {
+            try await self.tickets(fixture, .podcastPreparation).contains { $0.subjectID == d && $0.state == .pending }
+        }
+        let before = try XCTUnwrap(fixture.model.preparationRequestSequences[d])
+        await applyRules(fixture)
+        try await eventually("Apply withdrew d's request") {
+            try await self.tickets(fixture, .podcastPreparation).contains { $0.subjectID == d && $0.state == .cancelled }
+        }
+        XCTAssertNil(fixture.model.preparationRequestSequences[d])
+
+        fixture.editor.undoLastApply()
+        await fixture.editor.task?.value
+
+        try await eventually("Undo asked for d's preparation again") {
+            try await self.tickets(fixture, .podcastPreparation).contains { $0.subjectID == d && $0.state == .pending }
+        }
+        let again = try XCTUnwrap(fixture.model.preparationRequestSequences[d])
+        XCTAssertGreaterThan(again, before)
+        let record = try await fixture.decisions()[d]
+        XCTAssertEqual(record?.decision, .keep)
+        let bTickets = try await tickets(fixture, .podcastPreparation).filter { $0.subjectID == fixture.id("b") }
+        XCTAssertTrue(bTickets.isEmpty, "an episode that held no request is not given one")
+    }
+
     func testAnAutomaticKeepThatIsPlayingIsNeverSkipped() async throws {
         let fixture = try await makeFixture(mixed)
         fixture.model.currentPodcastEpisodeID = fixture.id("d")

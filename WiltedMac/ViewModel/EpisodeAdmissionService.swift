@@ -102,13 +102,15 @@ struct EpisodeAdmissionService {
     private static func keepAdmission(
         _ id: String, source: EpisodeDecisionSource, ruleID: UUID?, policy: EffectiveFeedAutomationPolicy
     ) -> Admission {
-        var tickets: [WorkTicketKind] = []
-        if policy.autoDownload {
-            tickets.append(.podcastDownload)
-            if policy.autoPrepare { tickets.append(.podcastPreparation) }
-        }
-        return .init(episodeID: id, decision: .keep, source: source, ruleID: ruleID,
-                     workTicketKinds: tickets)
+        .init(episodeID: id, decision: .keep, source: source, ruleID: ruleID,
+              workTicketKinds: keepWorkTicketKinds(for: policy))
+    }
+
+    /// The work an automatic Keep issues under this policy. Preparation follows
+    /// a download, so Auto prepare alone issues nothing.
+    static func keepWorkTicketKinds(for policy: EffectiveFeedAutomationPolicy) -> [WorkTicketKind] {
+        guard policy.autoDownload else { return [] }
+        return policy.autoPrepare ? [.podcastDownload, .podcastPreparation] : [.podcastDownload]
     }
 }
 
@@ -168,19 +170,35 @@ extension WiltedMacModel {
         var downloads: [String] = []
         for admission in admissions {
             guard let id = try? ItemID(rawValue: admission.episodeID) else { continue }
-            let tickets = try await store.admitEpisode(.init(
-                episodeID: id, decision: admission.decision, source: admission.source,
-                ruleID: admission.ruleID, decidedAt: Timestamp(Date())
-            ), enqueue: admission.decision == .keep, workTicketKinds: admission.workTicketKinds)
-            for ticket in tickets where ticket.kind == .podcastPreparation {
-                adoptAdmittedPreparation(sequence: ticket.requestSequence, for: admission.episodeID)
-            }
-            if admission.workTicketKinds.contains(.podcastDownload),
-               try await store.claimPodcastDownload(episodeID: id) {
+            if try await commitAdmission(admission, as: id, decidedAt: Timestamp(Date()), store: store) {
                 downloads.append(admission.episodeID)
             }
         }
         return downloads
+    }
+
+    /// Commits one admission: decision, queue entry and tickets in one write,
+    /// then adopts the preparation request and takes the download claim.
+    /// Returns true when this call took the download claim.
+    func commitAdmission(
+        _ admission: EpisodeAdmissionService.Admission, as id: ItemID, decidedAt: Timestamp, store: LocalLibraryStore
+    ) async throws -> Bool {
+        let tickets = try await store.admitEpisode(.init(
+            episodeID: id, decision: admission.decision, source: admission.source,
+            ruleID: admission.ruleID, decidedAt: decidedAt
+        ), enqueue: admission.decision == .keep, workTicketKinds: admission.workTicketKinds)
+        for ticket in tickets where ticket.kind == .podcastPreparation {
+            adoptAdmittedPreparation(sequence: ticket.requestSequence, for: admission.episodeID)
+        }
+        return admission.workTicketKinds.contains(.podcastDownload)
+            ? try await store.claimPodcastDownload(episodeID: id) : false
+    }
+
+    /// Starts the transfers whose claims `commitAdmission` took.
+    func startClaimedDownloads(_ ids: [String]) {
+        for id in ids {
+            if let episode = episodes.first(where: { $0.id == id }) { downloadEpisode(episode, alreadyClaimed: true) }
+        }
     }
 
     /// Fills the slots a Skip or retirement freed: re-plans each affected feed
@@ -197,9 +215,7 @@ extension WiltedMacModel {
             started += claimed
         }
         await refreshPodcastQueueState()
-        for id in started {
-            if let episode = episodes.first(where: { $0.id == id }) { downloadEpisode(episode, alreadyClaimed: true) }
-        }
+        startClaimedDownloads(started)
     }
 
     /// Releases the waiting episodes a retirement or removal just freed a slot
