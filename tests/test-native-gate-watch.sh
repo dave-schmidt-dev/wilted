@@ -56,6 +56,10 @@ log="$tmp_dir/fail.log"
 [[ "$(run_case fail "$log" WILTED_GATE_LEGS=watchos-build NATIVE_FORCE_FAIL_LEG=watchos-build)" -ne 0 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'native.failed count=1' "$log"
 
+# The self-test stubs the build, so check statically that a failed build fails
+# the leg instead of falling through to status=0.
+assert_contains 'if ! run_with_build_cache xcode native-watchos-build' "$watch_lib"
+
 # An unknown name still fails closed and the error names the new leg as known.
 log="$tmp_dir/unknown.log"
 [[ "$(run_case unknown "$log" WILTED_GATE_LEGS=no-such-leg)" -ne 0 ]] || { cat "$log" >&2; exit 1; }

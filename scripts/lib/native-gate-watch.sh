@@ -18,11 +18,15 @@ leg_watchos_build() {
   require_tool xcodebuild
   local project
   project="$(find_project)" || return 1
-  run_with_build_cache xcode native-watchos-build xcodebuild build \
+  # The leg runs where errexit does not reach, so the build status is checked
+  # explicitly; otherwise a compile error would still report status=0.
+  if ! run_with_build_cache xcode native-watchos-build xcodebuild build \
     -project "$project" \
     -scheme WiltedWatch \
     -configuration Debug \
     -destination 'generic/platform=watchOS Simulator' \
-    -quiet
+    -quiet; then
+    return 1
+  fi
   printf 'native.watchos.build scheme=WiltedWatch destination=watchos-simulator\n'
 }
