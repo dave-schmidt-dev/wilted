@@ -16,6 +16,7 @@ wilted_gate_xcodegen_inputs=(
   WiltediOSIntents/Info.plist
   WiltediOSIntents/WiltediOSIntents.entitlements
   WiltediOSIntents/WiltediOSIntentsProduction.entitlements
+  WiltedWatch/Info.plist
 )
 
 prepare_integration_root() {
@@ -24,7 +25,7 @@ prepare_integration_root() {
   cp "$project_yml" "$integration_root/project.yml"
   cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests" \
     "$repo_root/WiltedMacUITests" "$repo_root/WiltediOS" "$repo_root/WiltediOSTests" \
-    "$repo_root/WiltediOSIntents" "$repo_root/WiltediOSUITests" "$integration_root/"
+    "$repo_root/WiltediOSIntents" "$repo_root/WiltedWatch" "$repo_root/WiltediOSUITests" "$integration_root/"
   cp "$repo_root/WiltedKit/Package.swift" "$integration_root/WiltedKit/Package.swift"
   cp -R "$repo_root/WiltedKit/Sources" "$repo_root/WiltedKit/Tests" "$integration_root/WiltedKit/"
   cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"

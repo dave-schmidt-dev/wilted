@@ -138,6 +138,10 @@ targets:
       - target: WiltediOSIntents
         embed: false
         link: false
+      # Built first, copied into Watch/ by the script below (the companion Watch remote; Development only).
+      - target: WiltedWatch
+        embed: false
+        link: false
     # Embedded by this script instead of Xcode's embed phase so Release can leave it out: Production has no
     # Siri entitlement (an App Store app with an Intents extension needs it) and no CarPlay entitlement, so
     # Release ships without the extension until Siri does.
@@ -148,6 +152,21 @@ targets:
           if [ "$CONFIGURATION" != "Release" ]; then
             mkdir -p "$TARGET_BUILD_DIR/$PLUGINS_FOLDER_PATH"
             rsync -a --delete "$BUILT_PRODUCTS_DIR/WiltediOSIntents.appex" "$TARGET_BUILD_DIR/$PLUGINS_FOLDER_PATH/"
+          fi
+      # The Watch app is a separate platform product, so it lands in its own products directory, not this one.
+      # Release leaves it out, like the Intents extension: no Watch App ID or distribution profile exists yet.
+      - name: Embed the Watch app (not in Release)
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$CONFIGURATION" != "Release" ]; then
+            case "$PLATFORM_NAME" in
+              iphonesimulator) watch_platform=watchsimulator ;;
+              *) watch_platform=watchos ;;
+            esac
+            watch_app="$(dirname "$BUILT_PRODUCTS_DIR")/$CONFIGURATION-$watch_platform/WiltedWatch.app"
+            [ -d "$watch_app" ] || { echo "error: $watch_app was not built" >&2; exit 1; }
+            mkdir -p "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Watch"
+            rsync -a --delete "$watch_app" "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Watch/"
           fi
     settings:
       base:
@@ -273,6 +292,50 @@ targets:
             SupportedMediaCategories:
               - INMediaCategoryPodcasts
 
+  # The Apple Watch remote: shows now playing and Up Next from the phone and sends playback commands to it.
+  # It plays nothing and keeps no library state; the iPhone stays the authority (W-INV-007 has no Watch record).
+  WiltedWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: WiltedWatch
+      - path: WiltediOS/WatchLink
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.watchkitapp
+        INFOPLIST_FILE: WiltedWatch/Info.plist
+        SKIP_INSTALL: YES
+        TARGETED_DEVICE_FAMILY: "4"
+        # No icon yet: the placeholder catalog has none, and the default name would fail the build.
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+      configs:
+        # Automatic, like the Intents extension: Xcode creates the Watch App ID and profile (device builds
+        # need -allowProvisioningUpdates); the iPhone app keeps its manual profile.
+        Development:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Development"
+          CODE_SIGNING_ALLOWED: YES
+          CODE_SIGNING_REQUIRED: YES
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
+        Release:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Distribution"
+          CODE_SIGNING_ALLOWED: YES
+          CODE_SIGNING_REQUIRED: YES
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
+    info:
+      path: WiltedWatch/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: en
+        CFBundleDisplayName: Wilted
+        CFBundleName: WiltedWatch
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.zerodelta.wilted.ios
+
   WiltedMacTests:
     type: bundle.unit-test
     platform: macOS
@@ -380,3 +443,8 @@ schemes:
       targets:
         - WiltediOSTests
         - WiltediOSUITests
+
+  WiltedWatch:
+    build:
+      targets:
+        WiltedWatch: all
