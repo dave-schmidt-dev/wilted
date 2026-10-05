@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Per-feed automation on the Mac: each feed in Feeds has a settings popover for Auto keep, Auto download, Auto prepare (On, Off or Use global) and a Kept limit, with a "Resolved now" summary. Settings holds the global defaults (Auto keep Off, download Off, prepare On, no limit), so nothing changes until you turn something on.
+- A full feed makes new episodes wait for space instead of removing anything: an existing, playing or part-heard episode is never removed to make room, and finishing, completing or removing a kept episode lets the oldest waiting one in.
+- Per-feed match rules: ordered patterns on title or notes that Keep or Skip new episodes, with inline errors, a preview of every episode's verdict, and "Apply to existing", which changes only undecided and automatically decided episodes, never your own choices or anything you have started, and can be undone.
+- Your own Keep, Skip and Restore, on the Mac or the iPhone, are recorded as yours, and automation never reverses them.
+
+### Changed
+- Mac startup and work recovery show counted progress for each step instead of a single waiting message.
+
 ### Fixed
 - Ad removal no longer cuts most of a short episode when two sponsor reads bracket the programme: a confirmed cut that would push the episode past the total advertising ceiling, or a pod extension that would reach the next read, is now kept in the audio and recorded as held instead of removed.
 - An episode whose opening sponsor read cannot be told apart from the show's spoken ident is no longer refused outright: the opening is kept, the decision is recorded as held, and the rest of the episode (including its closing promo) is still prepared. The preparation report now also lists every commercial cue the review declined to cut, with its reason. Preparations made before this change are re-prepared once (`podcast-preparation-v6`).
