@@ -278,7 +278,9 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         autoAddPreparedToMenu: true,
         downloadEverythingOnMenu: false,
         prepareEverythingDownloaded: false,
-        initialEpisodeMetadataCount: 5
+        initialEpisodeMetadataCount: 5,
+        autoKeepNewEpisodes: false,
+        keptLimitPerFeed: nil
     )
 
     let version: Int
@@ -306,11 +308,20 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     /// Initial subscription metadata only; it never admits audio, downloads, or Keeps.
     let initialEpisodeMetadataCount: Int
 
+    /// The global Auto keep that every feed set to Use global inherits. Off by
+    /// default, so refresh gains no authority until the listener grants it.
+    let autoKeepNewEpisodes: Bool
+
+    /// The global kept limit for feeds set to Use global: a positive count, or
+    /// nil for no limit.
+    let keptLimitPerFeed: Int?
+
     init(refreshPolicy: WiltedAutomationRefreshPolicy, downloadPolicy: WiltedAutomationDownloadPolicy,
          processingPolicy: WiltedAutomationProcessingPolicy, transcriptPolicy: WiltedAutomationTranscriptPolicy,
          removeAds: Bool, autoAddPreparedToMenu: Bool = true,
          downloadEverythingOnMenu: Bool = false, prepareEverythingDownloaded: Bool = false,
-         initialEpisodeMetadataCount: Int = 5) {
+         initialEpisodeMetadataCount: Int = 5, autoKeepNewEpisodes: Bool = false,
+         keptLimitPerFeed: Int? = nil) {
         version = Self.currentVersion
         self.refreshPolicy = refreshPolicy
         self.downloadPolicy = downloadPolicy
@@ -321,6 +332,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         self.downloadEverythingOnMenu = downloadEverythingOnMenu
         self.prepareEverythingDownloaded = prepareEverythingDownloaded
         self.initialEpisodeMetadataCount = Self.validInitialEpisodeMetadataCount(initialEpisodeMetadataCount) ?? 5
+        self.autoKeepNewEpisodes = autoKeepNewEpisodes
+        self.keptLimitPerFeed = keptLimitPerFeed.flatMap { $0 > 0 ? $0 : nil }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -329,6 +342,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         case downloadEverythingOnMenu
         case prepareEverythingDownloaded
         case initialEpisodeMetadataCount
+        case autoKeepNewEpisodes
+        case keptLimitPerFeed
         case legacyReadableTranscriptPass = "readableTranscriptPass"
     }
 
@@ -365,6 +380,11 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         initialEpisodeMetadataCount = Self.validInitialEpisodeMetadataCount(
             try container.decodeIfPresent(Int.self, forKey: .initialEpisodeMetadataCount) ?? 5
         ) ?? 5
+        // Absent in settings saved before feeds gained global Auto keep and a
+        // kept limit: off and unlimited, which is what those installs did.
+        autoKeepNewEpisodes = try container.decodeIfPresent(Bool.self, forKey: .autoKeepNewEpisodes) ?? false
+        keptLimitPerFeed = (try container.decodeIfPresent(Int.self, forKey: .keptLimitPerFeed))
+            .flatMap { $0 > 0 ? $0 : nil }
         // Settings saved before the single-pass pipeline included this no-op
         // preference. Deliberately accept and discard it on migration.
         _ = try? container.decode(Bool.self, forKey: .legacyReadableTranscriptPass)
@@ -386,6 +406,30 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         try container.encode(downloadEverythingOnMenu, forKey: .downloadEverythingOnMenu)
         try container.encode(prepareEverythingDownloaded, forKey: .prepareEverythingDownloaded)
         try container.encode(initialEpisodeMetadataCount, forKey: .initialEpisodeMetadataCount)
+        try container.encode(autoKeepNewEpisodes, forKey: .autoKeepNewEpisodes)
+        try container.encodeIfPresent(keptLimitPerFeed, forKey: .keptLimitPerFeed)
+    }
+
+    /// These settings with the global Auto keep replaced; everything else is kept.
+    func settingAutoKeepNewEpisodes(_ value: Bool) -> Self {
+        Self(
+            refreshPolicy: refreshPolicy, downloadPolicy: downloadPolicy, processingPolicy: processingPolicy,
+            transcriptPolicy: transcriptPolicy, removeAds: removeAds, autoAddPreparedToMenu: autoAddPreparedToMenu,
+            downloadEverythingOnMenu: downloadEverythingOnMenu, prepareEverythingDownloaded: prepareEverythingDownloaded,
+            initialEpisodeMetadataCount: initialEpisodeMetadataCount, autoKeepNewEpisodes: value,
+            keptLimitPerFeed: keptLimitPerFeed
+        )
+    }
+
+    /// These settings with the global kept limit replaced (nil is No limit); everything else is kept.
+    func settingKeptLimitPerFeed(_ limit: Int?) -> Self {
+        Self(
+            refreshPolicy: refreshPolicy, downloadPolicy: downloadPolicy, processingPolicy: processingPolicy,
+            transcriptPolicy: transcriptPolicy, removeAds: removeAds, autoAddPreparedToMenu: autoAddPreparedToMenu,
+            downloadEverythingOnMenu: downloadEverythingOnMenu, prepareEverythingDownloaded: prepareEverythingDownloaded,
+            initialEpisodeMetadataCount: initialEpisodeMetadataCount, autoKeepNewEpisodes: autoKeepNewEpisodes,
+            keptLimitPerFeed: limit
+        )
     }
 
     static func validInitialEpisodeMetadataCount(_ value: Int) -> Int? { (1...100).contains(value) ? value : nil }
@@ -413,3 +457,44 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         + "while the transcript source is No local speech-to-text. Turn off Remove ads, or choose "
         + "another transcript source."
 }
+
+#if canImport(WiltedProducer)
+extension WiltedAutomationSettings {
+    /// The global values every feed set to Use global inherits. It is the one
+    /// definition admission resolves against, so Settings, the per-feed
+    /// summary and the episodes admitted can never disagree.
+    var feedAutomationDefaults: FeedAutomationGlobalDefaults {
+        EpisodeAdmissionService.globalDefaults(self)
+    }
+}
+
+/// The listener-facing words for a resolved feed policy. The per-feed summary
+/// and the Settings defaults both read their rows from here.
+enum WiltedFeedAutomationSummary {
+    struct Row: Equatable, Sendable {
+        let label: String
+        let value: String
+    }
+
+    static func rows(_ policy: EffectiveFeedAutomationPolicy) -> [Row] {
+        [
+            Row(label: "Auto keep", value: onOff(policy.autoKeep)),
+            Row(label: "Auto download", value: onOff(policy.autoDownload)),
+            Row(label: "Auto prepare", value: onOff(policy.autoPrepare)),
+            Row(label: "Kept limit", value: limitText(policy.keptLimit)),
+        ]
+    }
+
+    /// What a feed set to Use global resolves to under these settings.
+    static func globalRows(_ settings: WiltedAutomationSettings) -> [Row] {
+        rows(FeedAutomationPolicy().resolved(using: settings.feedAutomationDefaults))
+    }
+
+    static func limitText(_ limit: Int?) -> String {
+        guard let limit else { return "No limit" }
+        return limit == 1 ? "1 episode" : "\(limit) episodes"
+    }
+
+    private static func onOff(_ value: Bool) -> String { value ? "On" : "Off" }
+}
+#endif

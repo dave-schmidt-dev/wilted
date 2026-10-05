@@ -84,15 +84,19 @@ struct EpisodeAdmissionService {
     }
 
     /// Global values behind every Use global feed override. Auto keep has no
-    /// global switch, so automatic refresh gains authority only on feeds set
-    /// to On. Manual processing is the global Auto prepare Off.
+    /// Auto keep is Off globally until Settings turns it on, so automatic
+    /// refresh gains authority only on feeds set to On. Manual processing is
+    /// the global Auto prepare Off.
     static func globalDefaults(_ settings: WiltedAutomationSettings) -> FeedAutomationGlobalDefaults {
         let prepares: Bool
         switch settings.processingPolicy {
         case .manual: prepares = settings.prepareEverythingDownloaded
         case .immediate, .offPeak: prepares = true
         }
-        return .init(autoKeep: false, autoDownload: settings.downloadEverythingOnMenu, autoPrepare: prepares)
+        return .init(
+            autoKeep: settings.autoKeepNewEpisodes, autoDownload: settings.downloadEverythingOnMenu,
+            autoPrepare: prepares, keptLimit: settings.keptLimitPerFeed
+        )
     }
 
     private static func keepAdmission(

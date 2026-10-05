@@ -34,6 +34,7 @@ struct WiltedMacFeedsEpisodeRow: View {
     @Bindable var model: WiltedMacModel
     let episode: WiltedMacEpisode
     let isSelected: Bool
+    var isWaitingForSpace = false
     let setSelected: (Bool) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingNotes = false
@@ -56,6 +57,12 @@ struct WiltedMacFeedsEpisodeRow: View {
                     lifecycleLabel: episode.lifecyclePresentation.primaryLabel,
                     identifier: "wilted-feeds-metadata-\(episode.id)"
                 )
+                if isWaitingForSpace {
+                    Text("Waiting for space")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-feeds-waiting-\(episode.id)")
+                }
                 if model.pendingFeedDecisionIDs.contains(episode.id) {
                     HStack(spacing: WiltedTheme.Spacing.xSmall) {
                         ProgressView().controlSize(.small)

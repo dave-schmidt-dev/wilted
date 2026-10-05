@@ -177,6 +177,24 @@ struct WiltedMacSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("wilted-automation-menu-overrides-explanation")
 
+                Divider()
+
+                automationSectionTitle("Feed defaults")
+                WiltedMacGlobalFeedDefaultsControls(model: model)
+                ForEach(WiltedFeedAutomationSummary.globalRows(model.automationSettings).filter {
+                    $0.label == "Auto download" || $0.label == "Auto prepare"
+                }, id: \.label) { row in
+                    WiltedSettingsRow(
+                        row.label, value: row.value,
+                        identifier: "wilted-automation-feed-default-\(row.label.lowercased().replacingOccurrences(of: " ", with: "-"))"
+                    )
+                }
+                Text("Feeds set to Use global follow these. Auto download and Auto prepare follow the Larder "
+                     + "and Processing settings above. Change one feed from the gear beside it in Feeds.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-automation-feed-defaults-explanation")
             }
         }
         .accessibilityElement(children: .contain)
@@ -337,7 +355,9 @@ struct WiltedMacSettingsView: View {
                 autoAddPreparedToMenu: autoAddPreparedToMenu ?? settings.autoAddPreparedToMenu,
                 downloadEverythingOnMenu: downloadEverythingOnMenu ?? settings.downloadEverythingOnMenu,
                 prepareEverythingDownloaded: prepareEverythingDownloaded ?? settings.prepareEverythingDownloaded,
-                initialEpisodeMetadataCount: initialEpisodeMetadataCount ?? settings.initialEpisodeMetadataCount
+                initialEpisodeMetadataCount: initialEpisodeMetadataCount ?? settings.initialEpisodeMetadataCount,
+                autoKeepNewEpisodes: settings.autoKeepNewEpisodes,
+                keptLimitPerFeed: settings.keptLimitPerFeed
             )
         }
     }

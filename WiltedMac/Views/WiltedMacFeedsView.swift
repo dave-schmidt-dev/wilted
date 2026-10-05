@@ -26,9 +26,11 @@ struct WiltedMacFeedsView: View {
     /// This changes one request only; Settings remains the saved default.
     @State private var subscriptionInitialMetadataOverride: Int?
     @State private var feedRemoval = WiltedMacRemovalFlow()
+    @State private var policyBoard: WiltedMacFeedPolicyBoard
 
-    init(model: WiltedMacModel) {
+    init(model: WiltedMacModel, policyBoard: WiltedMacFeedPolicyBoard? = nil) {
         _model = Bindable(model)
+        _policyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
     }
 
     var body: some View {
@@ -161,6 +163,7 @@ struct WiltedMacFeedsView: View {
         let visible = model.feedsEpisodes
         let visibleIDs = Set(visible.map(\.id))
         let selected = visible.filter { selectedFeedEpisodeIDs.contains($0.id) }
+        let waitingIDs = policyBoard.waitingEpisodeIDs.intersection(visibleIDs)
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
                 Text("New episodes")
@@ -178,6 +181,14 @@ struct WiltedMacFeedsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-empty")
             } else {
+                if !waitingIDs.isEmpty {
+                    // Said once for the whole list; each waiting row carries its own tag.
+                    Text("Wilted never removes an existing, playing or part-heard episode to make room.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-feeds-waiting-note")
+                }
                 HStack(spacing: WiltedTheme.Spacing.small) {
                     WiltedMacFeedsSelectionControl(
                         state: selected.isEmpty ? .off : (selected.count == visible.count ? .on : .mixed),
@@ -202,6 +213,7 @@ struct WiltedMacFeedsView: View {
                         WiltedMacFeedsEpisodeRow(
                             model: model, episode: episode,
                             isSelected: selectedFeedEpisodeIDs.contains(episode.id),
+                            isWaitingForSpace: waitingIDs.contains(episode.id),
                             setSelected: { selected in
                                 if selected { selectedFeedEpisodeIDs.insert(episode.id) }
                                 else { selectedFeedEpisodeIDs.remove(episode.id) }
@@ -403,6 +415,8 @@ struct WiltedMacFeedsView: View {
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(WiltedScreenCopy.feedsIdentifier)
+        // The board holds each feed's stored policy; reload when the list of feeds changes.
+        .task(id: model.subscriptions.map(\.id)) { await policyBoard.reload() }
     }
 
     /// What one feed currently contributes, in words rather than a bare count,
@@ -461,6 +475,7 @@ struct WiltedMacFeedsView: View {
             .disabled(model.isFeedWritePending(subscription.id))
             .accessibilityLabel("Show episodes from \(subscription.title)")
             .accessibilityIdentifier("wilted-podcast-feed-enabled-\(subscription.id)")
+            WiltedMacFeedPolicyButton(board: policyBoard, subscription: subscription)
             Button("Unsubscribe…") { feedRemoval.request(.feed(subscription)) }
                 .disabled(feedRemoval.isSaving || model.isFeedWritePending(subscription.id))
                 .accessibilityIdentifier("wilted-podcast-feed-unsubscribe-\(subscription.id)")
