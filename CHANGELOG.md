@@ -108,6 +108,9 @@ All notable changes to this project are documented in this file.
 
 - The Batch 1 HTML prototype and its Playwright test leg are gone; UX is now reviewed in the native app.
 - The preparation runtime no longer resolves private feeds through Bitwarden Secrets Manager references (`bws:` feed URLs and their opaque episode identities); nothing had used them since the Python app was retired, and they could not work in a distributed app. The `feedparser` dependency went with them.
+- The episode-page prose extraction tier from episode preparation (90b07cc).
+- The Runtime nightly, scheduler and weather launchd jobs, their wrapper scripts, and the `install-launchd` and `uninstall-launchd` targets (5c38890).
+- The legacy Python app: its CLI, TUI, station runtime, scheduler, database, launcher and policy scripts (6d87838).
 
 ### Changed
 
