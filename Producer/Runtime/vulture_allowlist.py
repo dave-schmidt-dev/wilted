@@ -19,4 +19,3 @@ cut_ads  # used dynamically by ads_module.cut_ads in Producer/Workers/wilted_wor
 detect_ads  # used dynamically by ads_module.detect_ads in Producer/Workers/wilted_worker (nomination, commercial_recovery) (src/wilted/ads.py:1006)
 execution_capability_scope  # used dynamically by Producer/Workers/wilted_pipeline.py and ad_corpus.py (src/wilted/execution_capability.py:53)
 transcribe_audio  # used dynamically by transcribe.transcribe_audio in Producer/Workers/wilted_worker/transcript_sources.py (src/wilted/transcribe.py:128)
-PROJECT_ROOT  # documented package attribute (README.md) with its own resolution tests; no production reader since DATA_DIR was pruned (src/wilted/__init__.py:11)
