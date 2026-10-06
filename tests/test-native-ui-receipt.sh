@@ -26,14 +26,14 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
   wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
 fi
 printf 'run\n' >>"${WILTED_FAKE_GATE_LOG:?}"
-for leg in xcodegen-reproducible wiltedkit-tests cloudsync-tests listener-tests wiltedproducer-tests macos-unit-tests ios-unit-tests macos-ui-tests ios-pixel-snapshot-tests; do
+for leg in xcodegen-reproducible wiltedkit-tests cloudsync-tests playback-tests listener-tests wiltedproducer-tests macos-unit-tests ios-unit-tests macos-ui-tests ios-pixel-snapshot-tests; do
   printf 'native.leg.start name=%s\n' "$leg"
   if [[ "$leg" != xcodegen-reproducible ]]; then
     printf 'native.tests label=%s reported=2\n' "$leg"
   fi
   printf 'native.leg.complete name=%s status=0\n' "$leg"
 done
-printf '%s\n' 'native.complete failed_legs=0 total_legs=9 deferred_legs=0' 'native.passed count=9'
+printf '%s\n' 'native.complete failed_legs=0 total_legs=10 deferred_legs=0' 'native.passed count=10'
 GATE
 cat >"$temp_root/bin/make" <<'MAKE'
 #!/usr/bin/env bash
@@ -103,7 +103,7 @@ receipt = json.load(open(sys.argv[1], encoding="utf-8"))
 assert receipt["commit"] == sys.argv[2]
 assert receipt["describe"]
 assert dt.datetime.fromisoformat(receipt["createdAt"].replace("Z", "+00:00"))
-assert len(receipt["testCounts"]) == 9
+assert len(receipt["testCounts"]) == 10
 assert receipt["testCounts"]["xcodegen-reproducible"] == 0
 assert receipt["testCounts"]["macos-ui-tests"] == 2
 PY

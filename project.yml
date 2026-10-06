@@ -17,6 +17,8 @@ packages:
     path: CloudSync
   WiltedListener:
     path: Listener
+  WiltedPlayback:
+    path: Playback
 
 configs:
   Debug: debug
@@ -134,6 +136,8 @@ targets:
         product: WiltedCloudKitLibrary
       - package: WiltedListener
         product: WiltedListener
+      - package: WiltedPlayback
+        product: WiltedPlayback
       # Built first, embedded in PlugIns/ by the script below (ordinary Siri requests, in the car too, are routed through it).
       - target: WiltediOSIntents
         embed: false

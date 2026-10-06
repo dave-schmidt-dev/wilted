@@ -5,7 +5,7 @@
 ## What `gate_test: test-gate.sh` proves
 
 Every invariant below names `test-gate.sh` as its gate. As of 2026-08-26 that
-script runs eight of its nine legs unconditionally and **defers the ninth**,
+script runs nine of its ten legs unconditionally and **defers the tenth**,
 `macos-ui-tests`, unless `WILTED_MAC_UI=1` (`make native-ui`).
 
 macOS XCUITest has no headless mode. It drives real HID events through

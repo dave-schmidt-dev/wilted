@@ -24,6 +24,7 @@ EXPECTED_LEGS = (
     "xcodegen-reproducible",
     "wiltedkit-tests",
     "cloudsync-tests",
+    "playback-tests",
     "listener-tests",
     "wiltedproducer-tests",
     "macos-unit-tests",
