@@ -57,7 +57,7 @@ public actor PodcastPreparationPipeline {
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:2583750abeaa31111810d1d2d1eea3c3d5ec77f231a930462cfd867657065812"
+    public static let pipelineSourceHash = "sha256:f7111a1301431d7ed3427abf3f37911e7f8672163f782b93e41d1924d8210311"
 
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
@@ -284,10 +284,16 @@ public actor PodcastPreparationPipeline {
                                                   fields: provenanceFields)
         report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title, evidence: provenance))
         do {
+            // The prepared output exists before its revision record does.
+            // Register it until this run is over so a concurrent sweep cannot
+            // reclaim a synthesis that is still being written.
+            let preparedURL = preparedAudioURL(for: audioURL)
+            store.inFlightMedia.begin(preparedURL)
+            defer { store.inFlightMedia.end(preparedURL) }
             var request: [String: Any] = [
                 "protocolVersion": 2,
                 "audioPath": audioURL.path,
-                "outputPath": preparedAudioURL(for: audioURL).path,
+                "outputPath": preparedURL.path,
                 "workDir": workDirectory.path,
                 "transcriptPolicy": policy.transcriptPolicy.rawValue,
                 "removeAds": policy.removeAds,

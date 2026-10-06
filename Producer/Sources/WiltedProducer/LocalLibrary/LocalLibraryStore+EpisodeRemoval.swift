@@ -28,11 +28,14 @@ extension LocalLibraryStore {
     /// representation changed. The preparation journal stays, so the Removed
     /// list can still say a preparation happened for this episode, and
     /// restoring should not resurrect a finished cut with no revision or
-    /// transcript behind it. Downloaded media stays on disk for the reason
-    /// `unsubscribeFromPodcast` gives: a `RevisionID` is derived from
-    /// content, so two episodes with identical bytes share one audio
-    /// revision and deleting the file here could break an episode that
-    /// survives this call.
+    /// transcript behind it.
+    ///
+    /// The records name media, and records equal audio: once the deletions
+    /// commit, the files they named are deleted directly. A `RevisionID` is
+    /// derived from content, so two episodes with identical bytes share one
+    /// audio revision and one file; the deletion primitive keeps any file a
+    /// surviving revision, download, or artwork record still names, so an
+    /// episode that survives this call keeps its audio.
     ///
     /// Idempotent against a second dismissal, which keeps the first
     /// dismissal's timestamp and returns false. Dismissing an episode that
@@ -48,6 +51,8 @@ extension LocalLibraryStore {
             // No row for this id at all -- a legacy or never-admitted episode.
             // Dismissal must still stick, the same way it did when a separate
             // tombstone table could record a removal with no matching row.
+            // With no row there are no records to read media from, so nothing
+            // is deleted here.
             context.insert(LocalLibrarySchemaV13Models.PodcastEpisodeRecord(
                 placeholderForDismissalID: identifier, feedID: nil, title: nil, dismissedAt: dismissedAt.date
             ))
@@ -55,6 +60,7 @@ extension LocalLibraryStore {
             return true
         }
         guard episode.removalKind != PodcastEpisodeRemovalKind.dismissed.rawValue else { return false }
+        let doomedMedia = try mediaURLs(forEpisodesWithIDs: [identifier], in: context)
         episode.removalKind = PodcastEpisodeRemovalKind.dismissed.rawValue
         episode.retiredAt = dismissedAt.date
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
@@ -72,6 +78,7 @@ extension LocalLibraryStore {
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
         where record.itemID == identifier { context.delete(record) }
         try context.save()
+        deleteMediaIfUnreferenced(doomedMedia)
         return true
     }
 
@@ -94,10 +101,12 @@ extension LocalLibraryStore {
 
     /// Removes a subscription and every record Wilted stored on its behalf.
     ///
-    /// Records only. Downloaded media files stay on disk because revision-aware
-    /// reclamation is a separate job; unsubscribe does not guess whether a
-    /// namespaced or same-item legacy revision is still referenced. There is
-    /// no undo: resubscribing admits the feed again from scratch.
+    /// Records and the media they named. The revision, download, and artwork
+    /// records of every episode of the feed are read before they are deleted,
+    /// and once the single save commits their files are deleted directly --
+    /// subject to the same shared-file guard dismissal uses, so a file another
+    /// surviving record still names stays. There is no undo: resubscribing
+    /// admits the feed again from scratch.
     ///
     /// Every deletion is staged in one `ModelContext` and committed by one
     /// save, so the cascade commits whole or not at all. A feed with nothing
@@ -131,6 +140,7 @@ extension LocalLibraryStore {
             let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
                 .filter { $0.feedID == feed }
             let episodeIDs = Set(episodes.map(\.id))
+            let doomedMedia = try mediaURLs(forEpisodesWithIDs: episodeIDs, in: context)
             for record in episodes { remove(record) }
             staged += try stageEpisodeLinkRemoval(for: episodeIDs, in: context)
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeDecisionRecord>())
@@ -181,8 +191,32 @@ extension LocalLibraryStore {
             stage = .save
             try Self.reachRemovalStage(.save)
             try context.save()
+            deleteMediaIfUnreferenced(doomedMedia)
             return episodeIDs.count
         }
+    }
+
+    /// The media files the given episodes' revision, download, and artwork
+    /// records name, read before those records are deleted so dismissal and
+    /// unsubscribe reclaim the same set.
+    private func mediaURLs(
+        forEpisodesWithIDs episodeIDs: Set<String>,
+        in context: ModelContext
+    ) throws -> [URL] {
+        var urls: [URL] = []
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        where episodeIDs.contains(record.itemID) {
+            if let value = record.mediaURL, let mediaURL = URL(string: value) { urls.append(mediaURL) }
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
+        where episodeIDs.contains(record.episodeID) {
+            if let value = record.localURL, let mediaURL = URL(string: value) { urls.append(mediaURL) }
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
+        where episodeIDs.contains(record.ownerID) {
+            if let value = record.localURL, let mediaURL = URL(string: value) { urls.append(mediaURL) }
+        }
+        return urls
     }
 
     static func apply(

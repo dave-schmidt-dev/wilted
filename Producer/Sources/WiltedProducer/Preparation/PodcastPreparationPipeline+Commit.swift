@@ -56,6 +56,11 @@ extension PodcastPreparationPipeline {
         let finalURL = try await store.readyRevision(for: episode.itemID, revisionID: revisionID)?.mediaURL
             ?? audioURL.deletingLastPathComponent()
                 .appendingPathComponent(revisionID.rawValue + "." + audioURL.pathExtension)
+        // The final file exists before its revision record does. Register it
+        // until the commit lands so a sweep cannot reclaim a prepared revision
+        // that is still being published.
+        store.inFlightMedia.begin(finalURL)
+        defer { store.inFlightMedia.end(finalURL) }
         if finalURL != preparedURL {
             if FileManager.default.fileExists(atPath: finalURL.path) {
                 guard try Self.contentHash(of: finalURL) == hash else {
