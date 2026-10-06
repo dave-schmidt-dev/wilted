@@ -4,7 +4,7 @@ import Foundation
 import MediaPlayer
 import WiltedDomain
 import WiltedLibrary
-import WiltedListener
+import WiltedPlayback
 
 /// An engine that can also change speed. `ListenerAudioEngine` has no rate, and the legacy
 /// article path never needed one; the Larder player does, so speed is an optional capability.

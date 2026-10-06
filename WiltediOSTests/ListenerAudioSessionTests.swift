@@ -1,6 +1,6 @@
 import AVFoundation
 import XCTest
-import WiltedListener
+import WiltedPlayback
 
 /// Covers the real `AVAudioSession` configuration rather than a fake.
 ///

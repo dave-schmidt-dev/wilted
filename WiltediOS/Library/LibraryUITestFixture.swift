@@ -4,7 +4,7 @@ import Foundation
 import SwiftUI
 import WiltedDomain
 import WiltedLibrary
-import WiltedListener
+import WiltedPlayback
 
 /// What the production-root UI fixture makes the phone's dependencies do, chosen by
 /// `--wilted-library-root-scenario=<rawValue>` beside `LibraryUITestFixture.argument`.

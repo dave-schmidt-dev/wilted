@@ -6,9 +6,9 @@ let package = Package(
     name: "WiltedListener",
     platforms: [.macOS(.v14), .iOS(.v26)],
     products: [.library(name: "WiltedListener", targets: ["WiltedListener"])],
-    dependencies: [.package(path: "../WiltedKit")],
+    dependencies: [.package(path: "../WiltedKit"), .package(path: "../Playback")],
     targets: [
-        .target(name: "WiltedListener", dependencies: [.product(name: "WiltedDomain", package: "WiltedKit"), .product(name: "WiltedSync", package: "WiltedKit")]),
+        .target(name: "WiltedListener", dependencies: [.product(name: "WiltedDomain", package: "WiltedKit"), .product(name: "WiltedSync", package: "WiltedKit"), .product(name: "WiltedPlayback", package: "Playback")]),
         .testTarget(name: "WiltedListenerTests", dependencies: ["WiltedListener", .product(name: "WiltedDomain", package: "WiltedKit"), .product(name: "WiltedSync", package: "WiltedKit")]),
     ]
 )
