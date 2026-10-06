@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- An Apple Watch remote for the iPhone (Development builds): Now Playing with play, pause, skip, speed and sleep, and Up Next; it always shows the phone's last update and its age, and disables its controls with a note while the phone is out of reach.
 - Per-feed automation on the Mac: each feed in Feeds has a settings popover for Auto keep, Auto download, Auto prepare (On, Off or Use global) and a Kept limit, with a "Resolved now" summary. Settings holds the global defaults (Auto keep Off, download Off, prepare On, no limit), so nothing changes until you turn something on.
 - A full feed makes new episodes wait for space instead of removing anything: an existing, playing or part-heard episode is never removed to make room, and finishing, completing or removing a kept episode lets the oldest waiting one in.
 - Per-feed match rules: ordered patterns on title or notes that Keep or Skip new episodes, with inline errors, a preview of every episode's verdict, and "Apply to existing", which changes only undecided and automatically decided episodes, never your own choices or anything you have started, and can be undone.
