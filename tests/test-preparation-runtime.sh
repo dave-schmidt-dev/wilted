@@ -15,9 +15,8 @@ fi
 # scheduler, station runtime, database) was retired on 2026-10-03.
 #
 # The suite must run with Producer/Runtime as the working directory: its
-# pyproject pins `testpaths = ["tests"]` and `wilted.PROJECT_ROOT` walks up to
-# the nearest pyproject.toml, so a run launched from the repository root
-# collects nothing and resolves the wrong data tree.
+# pyproject pins `testpaths = ["tests"]`, so a run launched from the repository
+# root collects nothing.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime_root="$repo_root/Producer/Runtime"

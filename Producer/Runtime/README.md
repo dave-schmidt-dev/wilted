@@ -13,8 +13,7 @@ launchd wrappers) was retired on 2026-10-03. It is archived at the git tag
 `legacy-python-app-2026-10-03`.
 
 Run the suite from this directory, never from the repository root: the
-`testpaths` setting and `wilted.PROJECT_ROOT` both resolve relative to the
-nearest `pyproject.toml`.
+`testpaths` setting resolves relative to the nearest `pyproject.toml`.
 
 ```
 cd Producer/Runtime && .venv/bin/python -m pytest

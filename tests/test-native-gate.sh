@@ -15,7 +15,9 @@ source "$repo_root/scripts/lib/mac-test-parent.sh"
 # shellcheck source=../scripts/lib/temp-sweep.sh
 source "$repo_root/scripts/lib/temp-sweep.sh"
 wilted_sweep_stale_temp_dirs
-tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate-meta.XXXXXX")"
+# shellcheck source=../scripts/lib/test-temp-state.sh
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate-meta.XXXXXX")"; wilted_temp_mark_owned "$tmp_dir"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 run_case() {
@@ -42,7 +44,6 @@ run_case() {
   printf 'meta-test[%s] status=%s\n' "$label" "$result" >&2
   printf '%s\n' "$result"
 }
-
 assert_contains() {
   local needle="$1"
   local file="$2"
@@ -52,7 +53,6 @@ assert_contains() {
     exit 1
   }
 }
-
 assert_validation_contains() {
   assert_contains "$1" "$native_gate_validation"
 }

@@ -14,7 +14,15 @@ python3 "$repo_root/tests/test_temp_leaks.py"
 WILTED_TEMP_LEAK_CHECKER="$repo_root/scripts/check-temp-leaks.py"
 source "$repo_root/scripts/lib/test-temp-state.sh"
 fixture_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-full-run-test.XXXXXX")"
+wilted_temp_mark_owned "$fixture_root"
 trap 'rm -rf "$fixture_root"' EXIT
+grep -q "^pid=$$\$" "$fixture_root/.wilted-temp-owned" || { echo "fixture root not marked with this pid" >&2; exit 1; }
+grep -q '^started=.' "$fixture_root/.wilted-temp-owned" || { echo "fixture root marker has no start time" >&2; exit 1; }
+mktemp_tail='XXXXXX"'; mktemp_tail+=')'  # built in pieces so this guard never matches itself
+for meta_test in tests/test-native-gate.sh tests/test-temp-leaks.sh; do
+  grep -A1 -F "$mktemp_tail" "$repo_root/$meta_test" | grep -q wilted_temp_mark_owned \
+    || { echo "$meta_test creates its temp root without wilted_temp_mark_owned" >&2; exit 1; }
+done
 
 # A sibling worktree's live, marked gate root is not this run's leak; this run's own
 # marked root still is (wilted_temp_compare passes the $$ that wilted_temp_mark_owned records).

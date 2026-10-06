@@ -38,8 +38,6 @@ from wilted.ads import (
     coarse_confidence,
     cut_ads,
     detect_ads,
-    remove_promos,
-    remove_promos_batch,
 )
 
 
@@ -1443,112 +1441,6 @@ class TestCutAds:
             assert mock_run.call_count == 2
             # Should use shutil.move for single segment
             mock_move.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# remove_promos
-# ---------------------------------------------------------------------------
-
-
-class TestRemovePromos:
-    def test_promos_identified_and_removed(self):
-        """LLM identifies promotional paragraphs which are removed."""
-        text = "Good content here.\n\nMore good stuff.\n\nSubscribe to our newsletter!\n\nFinal paragraph."
-        response = json.dumps({"promo_indices": [2]})
-        backend = _mock_backend([response])
-
-        result = remove_promos(text, backend)
-
-        assert "Subscribe to our newsletter" not in result
-        assert "Good content here." in result
-        assert "More good stuff." in result
-        assert "Final paragraph." in result
-
-    def test_no_promos_text_unchanged(self):
-        """No promotional content detected, text returned as-is."""
-        text = "Paragraph one.\n\nParagraph two.\n\nParagraph three."
-        response = json.dumps({"promo_indices": []})
-        backend = _mock_backend([response])
-
-        result = remove_promos(text, backend)
-
-        assert result == text
-
-    def test_multiple_promos_removed(self):
-        """Multiple promotional paragraphs removed."""
-        text = "Real content.\n\nSubscribe now!\n\nMore content.\n\nFollow us on Twitter!\n\nFinal content."
-        response = json.dumps({"promo_indices": [1, 3]})
-        backend = _mock_backend([response])
-
-        result = remove_promos(text, backend)
-
-        assert "Subscribe now" not in result
-        assert "Follow us on Twitter" not in result
-        assert "Real content." in result
-        assert "More content." in result
-        assert "Final content." in result
-
-    def test_llm_failure_returns_original(self):
-        """If LLM fails, original text is returned."""
-        text = "Some content.\n\nMore content."
-        backend = MagicMock()
-        backend.generate.side_effect = RuntimeError("model error")
-
-        result = remove_promos(text, backend)
-        assert result == text
-
-
-# ---------------------------------------------------------------------------
-# remove_promos_batch
-# ---------------------------------------------------------------------------
-
-
-class TestRemovePromosBatch:
-    def test_multiple_items_processed(self):
-        """Batch processing handles multiple items."""
-        items = [
-            (1, "Content A.\n\nPromo A.\n\nMore A."),
-            (2, "Content B.\n\nPromo B."),
-            (3, "Clean content only."),
-        ]
-
-        responses = [
-            json.dumps({"promo_indices": [1]}),
-            json.dumps({"promo_indices": [1]}),
-            json.dumps({"promo_indices": []}),
-        ]
-        backend = _mock_backend(responses)
-
-        results = remove_promos_batch(items, backend)
-
-        assert len(results) == 3
-        assert 1 in results
-        assert 2 in results
-        assert 3 in results
-        assert "Promo A" not in results[1]
-        assert "Content A." in results[1]
-        assert "Promo B" not in results[2]
-        assert results[3] == "Clean content only."
-
-    def test_partial_failure_returns_original(self):
-        """If one item fails, its original text is returned."""
-        items = [
-            (1, "Good content.\n\nPromo."),
-            (2, "Also good.\n\nAlso promo."),
-        ]
-
-        backend = MagicMock()
-        # First call succeeds, second fails
-        backend.generate.side_effect = [
-            (json.dumps({"promo_indices": [1]}), 50),
-            RuntimeError("boom"),
-        ]
-
-        results = remove_promos_batch(items, backend)
-
-        assert len(results) == 2
-        assert "Promo" not in results[1]
-        assert results[2] == "Also good.\n\nAlso promo."  # Original returned on failure
 
 
 # ---------------------------------------------------------------------------

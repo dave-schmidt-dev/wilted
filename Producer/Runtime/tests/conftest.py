@@ -2,8 +2,6 @@
 
 import pytest
 
-import wilted
-
 _TEST_MARKERS = {
     "test_ads.py": ("unit",),
     "test_ads_cut_guard.py": ("unit",),
@@ -12,30 +10,24 @@ _TEST_MARKERS = {
     "test_execution_capability.py": ("integration",),
     "test_llm.py": ("unit",),
     "test_llm_metal.py": ("integration",),
-    "test_text.py": ("unit",),
     "test_transcribe.py": ("unit",),
 }
 
 
 @pytest.fixture(autouse=True)
-def isolated_data(tmp_path, monkeypatch):
-    """Redirect all data paths to a temp directory for every test."""
+def isolated_data(tmp_path):
+    """Give every test its own temporary data directory."""
     data_dir = tmp_path / "data"
-    audio_dir = data_dir / "audio"
-    audio_dir.mkdir(parents=True)
-
-    monkeypatch.setattr(wilted, "DATA_DIR", data_dir)
-    monkeypatch.setattr(wilted, "AUDIO_DIR", audio_dir)
-    yield
+    data_dir.mkdir(parents=True)
+    yield data_dir
 
 
 @pytest.fixture
-def execution_capability():
+def execution_capability(isolated_data):
     """Activate worker-equivalent ML authority for direct stage tests."""
-    import wilted
     from wilted.execution_capability import execution_capability_scope
 
-    with execution_capability_scope(owner_id="test", data_dir=wilted.DATA_DIR):
+    with execution_capability_scope(owner_id="test", data_dir=isolated_data):
         yield
 
 

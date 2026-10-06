@@ -1,19 +1,16 @@
-"""Ad detection and removal for audio and article content.
+"""Ad detection and removal for audio content.
 
-Tasks 4.4-4.6: Sliding-window LLM-based ad detection in transcripts,
-ffmpeg-based ad segment cutting, and article promotional content removal.
+Tasks 4.4-4.6: Sliding-window LLM-based ad detection in transcripts and
+ffmpeg-based ad segment cutting.
 
 Usage:
-    from wilted.ads import detect_ads, cut_ads, remove_promos
+    from wilted.ads import detect_ads, cut_ads
 
     # Detect ads in a podcast transcript
     ad_segments = detect_ads(segments, backend)
 
     # Cut detected ads from an audio file
     cut_ads(audio_path, ad_segments, output_path)
-
-    # Remove promotional paragraphs from article text
-    cleaned = remove_promos(article_text, backend)
 """
 
 from __future__ import annotations
@@ -1622,94 +1619,3 @@ def cut_ads(
         # Clean up temp files
         if tmpdir is not None:
             shutil.rmtree(tmpdir, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-# Article promotional content removal
-# ---------------------------------------------------------------------------
-
-
-def remove_promos(text: str, backend: LLMBackend) -> str:
-    """Remove promotional paragraphs from article text.
-
-    Args:
-        text: Full article text with paragraph breaks.
-        backend: A loaded LLM backend for inference.
-
-    Returns:
-        Cleaned text with promotional paragraphs removed.
-    """
-    if not text.strip():
-        return ""
-
-    paragraphs = [p for p in text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        return ""
-
-    # Build numbered paragraph list for LLM
-    numbered = "\n\n".join(f"[{i}] {para}" for i, para in enumerate(paragraphs))
-
-    try:
-        response, _tokens = backend.generate(_PROMO_DETECT_SYSTEM_PROMPT, numbered)
-        parsed = parse_json_response(response)
-    except Exception:
-        logger.exception("Promo detection failed, returning original text")
-        return text
-
-    if not isinstance(parsed, dict):
-        logger.warning("Expected JSON object, got %s", type(parsed).__name__)
-        return text
-
-    promo_indices = parsed.get("promo_indices", [])
-    if not isinstance(promo_indices, list):
-        logger.warning("promo_indices is not a list: %s", type(promo_indices).__name__)
-        return text
-
-    # Validate indices
-    valid_indices = set()
-    for idx in promo_indices:
-        try:
-            idx_int = int(idx)
-            if 0 <= idx_int < len(paragraphs):
-                valid_indices.add(idx_int)
-        except (TypeError, ValueError):
-            logger.warning("Skipping invalid promo index: %s", idx)
-
-    if not valid_indices:
-        return text
-
-    # Remove promotional paragraphs
-    kept = [para for i, para in enumerate(paragraphs) if i not in valid_indices]
-    result = "\n\n".join(kept)
-
-    logger.info(
-        "Removed %d promotional paragraphs out of %d",
-        len(valid_indices),
-        len(paragraphs),
-    )
-    return result
-
-
-def remove_promos_batch(
-    items: list[tuple[int, str]],
-    backend: LLMBackend,
-) -> dict[int, str]:
-    """Remove promotional content from multiple articles.
-
-    Args:
-        items: List of (item_id, article_text) tuples.
-        backend: A loaded LLM backend (already loaded, shared across calls).
-
-    Returns:
-        Dict mapping item_id to cleaned text.
-    """
-    results: dict[int, str] = {}
-
-    for item_id, text in items:
-        try:
-            results[item_id] = remove_promos(text, backend)
-        except Exception:
-            logger.exception("Promo removal failed for item %d", item_id)
-            results[item_id] = text  # Fall back to original text
-
-    return results
