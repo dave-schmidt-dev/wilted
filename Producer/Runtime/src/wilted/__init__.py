@@ -19,6 +19,3 @@ else:
         # Fallback: assume original layout (src/wilted/__init__.py -> 3 parents up)
         _candidate = Path(__file__).resolve().parent.parent.parent
     PROJECT_ROOT = _candidate
-
-DATA_DIR = PROJECT_ROOT / "data"
-AUDIO_DIR = DATA_DIR / "audio"

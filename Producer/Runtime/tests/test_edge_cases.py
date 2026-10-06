@@ -20,16 +20,6 @@ class TestProjectRootResolution:
             f"PROJECT_ROOT={wilted.PROJECT_ROOT} does not contain pyproject.toml"
         )
 
-    def test_data_dir_default_is_under_project_root(self):
-        """The default DATA_DIR (before fixture override) should be PROJECT_ROOT/data."""
-        # The autouse isolated_data fixture patches DATA_DIR to a tmp path, so
-        # we verify the source definition rather than the live patched value.
-        from pathlib import Path
-
-        init_path = Path(wilted.__file__)
-        source = init_path.read_text()
-        assert 'DATA_DIR = PROJECT_ROOT / "data"' in source
-
     def test_env_var_override(self, tmp_path):
         """WILTED_PROJECT_ROOT env var should override auto-detection."""
         original_root = wilted.PROJECT_ROOT
