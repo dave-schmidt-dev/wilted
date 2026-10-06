@@ -104,7 +104,7 @@ Only a runtime check on an iOS 26 simulator and a real iOS 26 head unit proves t
 ## Open items
 
 - Entitlement granted 2026-09-30; the Addendum's no-access clause lifts once the CarPlay entitlement profile exists for the App ID. Until that profile is in place, nothing that touches the CarPlay APIs is added (see TASKS.md). Allowed groundwork now: the locked-phone file-protection audit, making the library model, transport, and player start without the iPhone window scene, and a framework-free episode-list model for the car. An earlier idea of adding the entitlement for simulator builds only is dropped because of the Addendum's no-access clause.
-- Whether the file protection class of the audio cache, library snapshot, and positions allows access while locked: audit before the first device test.
+- Whether the file protection class of the audio cache, library snapshot, and positions allows access while locked is covered headless by `LibraryFileProtectionTests` (source audit plus the files on disk) and by `CarPlayJourneyTests.testOwnPositionStoreIsReadableWhileTheDeviceIsLocked` for the own-position store; a locked-phone run on a device remains the attended evidence.
 - Whether launching with only the CarPlay scene can bring up the library model, transport, and player without the iPhone window scene.
 
 ## Siri

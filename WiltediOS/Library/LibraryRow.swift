@@ -34,7 +34,35 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     var episodeLink: URL?
 }
 
+extension LibraryRow {
+    /// The row's one-line metadata, "Show - duration - date". `namesShow` is false for a row under a
+    /// feed section header, which already names the show, so the line keeps only duration and date.
+    func detailText(namesShow: Bool = true) -> String {
+        let duration = durationText ?? "Unknown"
+        let date = LibraryDateFormat.day(publishedAt)
+        guard namesShow else { return "\(duration) - \(date)" }
+        let show = showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(show.isEmpty ? "Show unknown" : show) - \(duration) - \(date)"
+    }
+}
+
 /// Fixed-format clock and duration text, so labels do not shift with the device locale.
+/// The dates the Larder, episode detail and Settings show. They follow the device's time zone; only the
+/// DEBUG pixel fixture sets `timeZone`, so a baseline does not move with the host or daylight saving.
+enum LibraryDateFormat {
+    nonisolated(unsafe) static var timeZone: TimeZone = .autoupdatingCurrent
+
+    /// "Oct 3, 2026".
+    static func day(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(timeZone: timeZone).month(.abbreviated).day().year())
+    }
+
+    /// "Oct 3, 2026 at 8:00 AM".
+    static func dayAndTime(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, timeZone: timeZone))
+    }
+}
+
 struct LibraryClockFormat: Sendable {
     let timeZone: TimeZone
 

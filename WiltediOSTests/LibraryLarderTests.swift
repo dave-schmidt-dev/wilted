@@ -303,6 +303,32 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: false, position: 3_725), "Paused on this iPhone at 1:02:05")
     }
 
+    // MARK: toolbar
+
+    func testANonDefaultSortReturnsAnActiveSortCue() {
+        let resting = LibraryToolbar.sortCue(sort: .playOrder, group: .none)
+        XCTAssertFalse(resting.isActive)
+        XCTAssertEqual(resting.label, "Sort and group")
+        XCTAssertEqual(resting.symbol, "arrow.up.arrow.down.circle")
+
+        let sorted = LibraryToolbar.sortCue(sort: .newest, group: .none)
+        XCTAssertTrue(sorted.isActive, "a non-default sort lights the Sort control")
+        XCTAssertEqual(sorted.label, "Sort: Newest")
+        XCTAssertEqual(sorted.symbol, "arrow.up.arrow.down.circle.fill")
+
+        let grouped = LibraryToolbar.sortCue(sort: .playOrder, group: .feed)
+        XCTAssertTrue(grouped.isActive, "a non-default group lights it too")
+        XCTAssertEqual(grouped.label, "Group: Feed")
+    }
+
+    func testTheLarderToolbarKeepsAtMostTwoControls() {
+        XCTAssertEqual(LibraryToolbar.maximumControls, 2, "Sort/Group and Filter, and no more")
+        XCTAssertFalse(LibraryToolbar.filterCue(.all).isActive)
+        XCTAssertEqual(LibraryToolbar.filterCue(.all).symbol, "line.3.horizontal.decrease.circle")
+        XCTAssertTrue(LibraryToolbar.filterCue(.onPhone).isActive)
+        XCTAssertEqual(LibraryToolbar.filterCue(.onPhone).symbol, "line.3.horizontal.decrease.circle.fill")
+    }
+
     // MARK: phone row progress
 
     func testPhoneRowShowsTimeLeftProgressAndPlayedLikeTheCarRows() {

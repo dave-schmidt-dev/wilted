@@ -48,6 +48,84 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         assertSnapshot(launch(screen: .terminalFailure, dark: false), named: "listener-terminal-failure-light")
     }
 
+    // MARK: Production LibraryRoot (IOS-CLEAR-001, CI-4)
+
+    func testLibraryLarderLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.larder, dark: false), named: "library-larder-light")
+    }
+
+    func testLibraryLarderDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.larder, dark: true), named: "library-larder-dark")
+    }
+
+    func testLibraryLarderGroupedLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.larderGrouped, dark: false), named: "library-larder-grouped-light")
+    }
+
+    func testLibraryLarderGroupedDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.larderGrouped, dark: true), named: "library-larder-grouped-dark")
+    }
+
+    func testLibraryEpisodeDetailLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.episodeDetail, dark: false), named: "library-episode-detail-light")
+    }
+
+    func testLibraryEpisodeDetailDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.episodeDetail, dark: true), named: "library-episode-detail-dark")
+    }
+
+    func testLibrarySettingsLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.settings, dark: false), named: "library-settings-light")
+    }
+
+    func testLibrarySettingsDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.settings, dark: true), named: "library-settings-dark")
+    }
+
+    private enum LibraryScreen {
+        case larder, larderGrouped, episodeDetail, settings
+    }
+
+    /// Launches the production `LibraryRoot` over the fixed-clock `pixel` fixture and drives it to `screen`.
+    private func launchLibraryRoot(_ screen: LibraryScreen, dark: Bool) -> UIImage {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-ApplePersistenceIgnoreState", "YES",
+            "--wilted-library-root-fixture", "--wilted-library-root-scenario=pixel",
+            "--wilted-library-root-appearance=\(dark ? "dark" : "light")"
+        ]
+        // Probe hook: WILTED_PIXEL_PROBE_TZ (as TEST_RUNNER_WILTED_PIXEL_PROBE_TZ) launches the app in another
+        // zone; the fixture pins its own, so the captures must not move.
+        if let zone = ProcessInfo.processInfo.environment["WILTED_PIXEL_PROBE_TZ"] { app.launchEnvironment["TZ"] = zone }
+        app.launch()
+        let any = app.descendants(matching: .any)
+        let firstRow = any["wilted-library-row-fixture-episode-1"]
+        XCTAssertTrue(firstRow.waitForExistence(timeout: 20), "LibraryRoot fixture did not list its episodes.")
+        XCTAssertTrue(any["wilted-library-row-fixture-episode-3"].waitForExistence(timeout: 10))
+        switch screen {
+        case .larder:
+            break
+        case .larderGrouped:
+            app.buttons["wilted-library-organize"].tap()
+            app.buttons["Feed"].tap()
+            XCTAssertTrue(any["wilted-library-group-Fixture Show"].firstMatch.waitForExistence(timeout: 5))
+            XCTAssertTrue(any["wilted-library-group-Second Fixture Show"].firstMatch.waitForExistence(timeout: 5))
+        case .episodeDetail:
+            // The title, not the row's centre: the row centre can land on its own Play control.
+            let title = any["wilted-library-title-fixture-episode-1"]
+            XCTAssertTrue(title.waitForExistence(timeout: 5))
+            title.tap()
+            XCTAssertTrue(any["wilted-library-detail"].waitForExistence(timeout: 5))
+        case .settings:
+            app.buttons["wilted-library-settings-button"].tap()
+            XCTAssertTrue(any["wilted-library-settings"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["wilted-library-settings-sync-status"].waitForExistence(timeout: 5))
+        }
+        // Let the menu dismissal, sheet presentation and list layout finish before the capture.
+        Thread.sleep(forTimeInterval: 1.5)
+        return normalized(app.screenshot().image)
+    }
+
     private enum Screen: String {
         case library
         case settings

@@ -172,17 +172,25 @@ validate_ios_pixel_snapshot_baselines() {
     testListenerEmptyNowPlayingDarkPixelBaseline \
     testListenerEmptyNowPlayingLightPixelBaseline \
     testListenerTerminalFailureDarkPixelBaseline \
-    testListenerTerminalFailureLightPixelBaseline; do
+    testListenerTerminalFailureLightPixelBaseline \
+    testLibraryLarderDarkPixelBaseline \
+    testLibraryLarderLightPixelBaseline \
+    testLibraryLarderGroupedDarkPixelBaseline \
+    testLibraryLarderGroupedLightPixelBaseline \
+    testLibraryEpisodeDetailDarkPixelBaseline \
+    testLibraryEpisodeDetailLightPixelBaseline \
+    testLibrarySettingsDarkPixelBaseline \
+    testLibrarySettingsLightPixelBaseline; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$source" ||
       fail "iOS pixel snapshot test method is missing: $method"
   done
 
-  expected=$'listener-library-dark.png\nlistener-library-light.png\nlistener-now-playing-dark.png\nlistener-now-playing-empty-dark.png\nlistener-now-playing-empty-light.png\nlistener-now-playing-light.png\nlistener-settings-dark.png\nlistener-settings-light.png\nlistener-terminal-failure-dark.png\nlistener-terminal-failure-light.png'
-  actual="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; | sort)"
+  expected=$'library-episode-detail-dark.png\nlibrary-episode-detail-light.png\nlibrary-larder-dark.png\nlibrary-larder-grouped-dark.png\nlibrary-larder-grouped-light.png\nlibrary-larder-light.png\nlibrary-settings-dark.png\nlibrary-settings-light.png\nlistener-library-dark.png\nlistener-library-light.png\nlistener-now-playing-dark.png\nlistener-now-playing-empty-dark.png\nlistener-now-playing-empty-light.png\nlistener-now-playing-light.png\nlistener-settings-dark.png\nlistener-settings-light.png\nlistener-terminal-failure-dark.png\nlistener-terminal-failure-light.png'
+  actual="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; | LC_ALL=C sort)"
   [[ "$actual" == "$expected" ]] || fail 'iOS listener pixel baseline selectors are missing or unexpected'
   bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; | grep -vc 'PNG image data, 390 x 844' || true)"
   [[ "$bad_pngs" -eq 0 ]] || fail "iOS listener pixel baselines are invalid or wrong-sized: $bad_pngs"
-  printf 'native.ios-snapshots.baselines count=10 listener-library-downloads-settings-now-playing-terminal-failure-light-dark\n'
+  printf 'native.ios-snapshots.baselines count=18 listener-and-library-root-light-dark\n'
 }
 
 parse_result_bundle_test_count() {

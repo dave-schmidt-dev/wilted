@@ -175,8 +175,12 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
 
         let status = settingsSyncStatus(in: app)
         XCTAssertTrue(status.label.hasPrefix("Paused"), status.label)
-        let detail = app.descendants(matching: .any)["wilted-library-settings-sync-detail"]
-        XCTAssertTrue(detail.waitForExistence(timeout: 5))
+        // A paused sync is not an error, so its detail sits in the Diagnostics disclosure (CI-7). The
+        // disclosure's own identifier covers its rows, so the detail is found by its text.
+        let detail = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "iCloud is rate limiting sync.")).firstMatch
+        for _ in 0..<6 where !detail.exists { app.swipeUp() }
+        XCTAssertTrue(detail.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(detail.label.hasPrefix("iCloud is rate limiting sync."), detail.label)
         assertNoLiveTransport(in: app)
     }
@@ -207,7 +211,7 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         app.buttons["Feed"].tap()
         XCTAssertTrue(group.waitForExistence(timeout: 5))
         organize.tap()
-        app.buttons["None"].tap()
+        app.buttons["No Grouping"].tap()
         XCTAssertTrue(count.waitForExistence(timeout: 5))
         XCTAssertFalse(group.exists)
 

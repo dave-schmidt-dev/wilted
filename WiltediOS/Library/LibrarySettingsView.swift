@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import WiltedDomain
 import WiltedLibrary
 
@@ -15,6 +16,7 @@ struct LibrarySettingsView: View {
     @State private var cache = LibraryCacheSummary()
     @State private var isConfirmingRemoval = false
     @State private var removalNotice: String?
+    @State private var isDiagnosticsExpanded = false
 
     var body: some View {
         NavigationStack {
@@ -26,6 +28,7 @@ struct LibrarySettingsView: View {
                     syncCard
                     statisticsCard
                     aboutCard
+                    diagnosticsCard
                 }
                 .padding(WiltedTheme.Spacing.large)
             }
@@ -134,8 +137,8 @@ struct LibrarySettingsView: View {
         .accessibilityIdentifier("wilted-library-settings-storage")
     }
 
-    /// One row: the status, plus, once idle, when this phone last fetched the library. The detail line
-    /// labels that time as the phone's own read; the phone cannot see the Mac's newest publication.
+    /// One row: the status, and, once idle, when this phone last fetched the library. The detail
+    /// line waits in the collapsed Diagnostics disclosure; only an error shows it inline (CI-7).
     private var syncCard: some View {
         let sync = model.syncSummary
         return WiltedSettingsCard(title: WiltedScreenCopy.sync) {
@@ -148,10 +151,10 @@ struct LibrarySettingsView: View {
                     .multilineTextAlignment(.trailing)
                     .accessibilityIdentifier("wilted-library-settings-sync-status")
             }
-            if let detail = sync.detail {
+            if LibrarySettingsFormat.showsSyncDetailInline(sync), let detail = sync.detail {
                 Text(detail).wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-library-settings-sync-detail")
+                    .accessibilityIdentifier(LibrarySettingsFormat.syncDetailIdentifier)
             }
         }
         .accessibilityElement(children: .contain)
@@ -163,23 +166,39 @@ struct LibrarySettingsView: View {
     }
 
     private var aboutCard: some View {
-        WiltedSettingsCard(title: "About") {
-            iconRow("info.circle", "Version") {
-                Spacer(minLength: 0)
-                Text(LibrarySettingsFormat.version(Bundle.main.infoDictionary)).wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-library-settings-version")
-            }
-            iconRow("iphone", "Device") {
-                Spacer(minLength: 0)
-                Text(model.deviceID).wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .lineLimit(1).truncationMode(.middle)
-                    .accessibilityIdentifier("wilted-library-settings-device-id")
+        var version = LibrarySettingsFormat.version(Bundle.main.infoDictionary)
+#if DEBUG
+        if let pinned = LibraryUITestFixture.pinnedVersion { version = pinned }
+#endif
+        return WiltedSettingsCard(title: LibrarySettingsFormat.aboutTitle) {
+            ForEach(LibrarySettingsFormat.aboutRows(version: version), id: \.identifier) { row in
+                settingsRow(row)
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-about")
+    }
+
+    /// The device ID and the sync detail, folded away until asked for. The disclosure starts
+    /// collapsed; the device ID is still one tap and a copy away (CI-7).
+    private var diagnosticsCard: some View {
+        let rows = LibrarySettingsFormat.diagnosticsRows(
+            deviceID: model.deviceID, syncDetail: model.syncSummary.detail)
+        return WiltedSettingsCard(title: LibrarySettingsFormat.diagnosticsTitle) {
+            DisclosureGroup(isExpanded: $isDiagnosticsExpanded) {
+                ForEach(rows, id: \.identifier) { row in
+                    settingsRow(row)
+                }
+            } label: {
+                Text(LibrarySettingsFormat.diagnosticsDisclosureLabel)
+                    .wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            }
+            .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+            .accessibilityIdentifier("wilted-library-settings-diagnostics-disclosure")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-library-settings-diagnostics")
     }
 
     // MARK: Pieces
@@ -201,6 +220,34 @@ struct LibrarySettingsView: View {
             trailing()
         }
         .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+    }
+
+    /// One described settings row: the copy button rides along when the value should be copyable.
+    private func settingsRow(_ row: LibrarySettingsFormat.SettingsRow) -> some View {
+        iconRow(row.symbol, row.label) {
+            Spacer(minLength: 0)
+            Text(row.value).wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .lineLimit(row.wrapsText ? nil : 1)
+                .truncationMode(.middle)
+                .multilineTextAlignment(row.wrapsText ? .leading : .trailing)
+                .accessibilityIdentifier(row.identifier)
+            if row.isCopyable {
+                Button {
+                    UIPasteboard.general.string = row.value
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .wiltedFont(.body)
+                        .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                        .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget,
+                               minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(LibrarySettingsFormat.copyDeviceIDLabel)
+                .accessibilityIdentifier("\(row.identifier)-copy")
+            }
+        }
     }
 
     /// An "i" that opens `text` in a popover, so explanations stay off the page until asked for.
@@ -317,7 +364,7 @@ private struct StatisticsCard: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        WiltedSettingsCard(title: WiltedScreenCopy.lifetimeStatistics) {
+        WiltedSettingsCard(title: LibrarySettingsFormat.phoneStatisticsTitle) {
             ForEach(LibrarySettingsFormat.phoneStatRows(stats.stats), id: \.identifier) { stat in
                 HStack(spacing: WiltedTheme.Spacing.medium) {
                     Image(symbol: stat.symbol)

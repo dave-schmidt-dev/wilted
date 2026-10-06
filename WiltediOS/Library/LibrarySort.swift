@@ -46,7 +46,7 @@ enum LibraryGroupOption: String, CaseIterable, Identifiable, Sendable {
 
     var label: String {
         switch self {
-        case .none: "None"
+        case .none: "No Grouping"
         case .feed: "Feed"
         }
     }
@@ -56,11 +56,54 @@ enum LibraryGroupOption: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// What one Larder toolbar control shows: its label, its symbol, and whether the list is off the
+/// control's default. Plain values, so the cue rules are tested away from the bar.
+struct LibraryToolbarCue: Equatable, Sendable {
+    let label: String
+    let symbol: String
+    let isActive: Bool
+}
+
+/// The Larder toolbar's cues. The bar keeps its two controls, Sort/Group and Filter; a control that
+/// is not at its default says so on itself, so no third item is ever needed for the state.
+enum LibraryToolbar {
+    /// The cap the Larder toolbar holds itself to: Sort/Group and Filter.
+    static let maximumControls = 2
+
+    static func sortCue(sort: LibrarySortOption, group: LibraryGroupOption) -> LibraryToolbarCue {
+        let isActive = sort != .playOrder || group != .none
+        return LibraryToolbarCue(
+            label: label(sort: sort, group: group),
+            symbol: isActive ? "arrow.up.arrow.down.circle.fill" : "arrow.up.arrow.down.circle",
+            isActive: isActive)
+    }
+
+    static func filterCue(_ filter: LibraryFilter) -> LibraryToolbarCue {
+        LibraryToolbarCue(
+            label: "Filter: \(filter.title)",
+            symbol: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill",
+            isActive: filter != .all)
+    }
+
+    private static func label(sort: LibrarySortOption, group: LibraryGroupOption) -> String {
+        guard sort != .playOrder || group != .none else { return "Sort and group" }
+        switch (sort, group) {
+        case (.playOrder, let group): return "Group: \(group.label)"
+        case (let sort, .none): return "Sort: \(sort.label)"
+        case (let sort, let group): return "\(sort.label) · \(group.label)"
+        }
+    }
+}
+
 /// One run of rows under an optional heading; a single untitled section when nothing is grouped.
 struct LibraryRowSection: Identifiable, Equatable, Sendable {
     let id: String
     let title: String?
     let rows: [LibraryRow]
+
+    /// A titled section already names the feed in its header, so its rows leave the show out of the
+    /// detail line; the one untitled section has nothing else to name it.
+    var namesShowInRows: Bool { title == nil }
 }
 
 /// The pure part of the Larder list: which queued rows appear and in what order. `rows` is always

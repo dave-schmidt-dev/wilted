@@ -122,7 +122,7 @@ struct LibraryListView: View {
                 }
                 ForEach(sections) { section in
                     Section {
-                        ForEach(section.rows) { row in episodeRow(row) }
+                        ForEach(section.rows) { row in episodeRow(row, showsShowName: section.namesShowInRows) }
                     } header: {
                         sectionHeader(section, total: rows.count)
                     }
@@ -166,9 +166,10 @@ struct LibraryListView: View {
         .accessibilityIdentifier("wilted-library-list")
     }
 
-    /// One Larder row, its swipes and its VoiceOver actions. Kept out of `body` so the list type-checks quickly.
+    /// One Larder row, its swipes and its VoiceOver actions. A row under a feed section header is
+    /// told so, and leaves the show out of its detail line. Kept out of `body` so the list type-checks quickly.
     @ViewBuilder
-    private func episodeRow(_ row: LibraryRow) -> some View {
+    private func episodeRow(_ row: LibraryRow, showsShowName: Bool) -> some View {
         // A tap on the row opens the episode. Not a NavigationLink: while the drag
         // handles show, the list is in edit mode and a link would stop navigating.
         LibraryRowView(
@@ -181,7 +182,8 @@ struct LibraryListView: View {
             onCancelDecision: { model.cancelDecision(entryID: row.id) },
             player: player, progress: model.progress[row.id],
             isCompleted: LibraryListing.completionDate(row, finished: model.finished) != nil,
-            voiceOverActions: voiceOverActions(for: row))
+            voiceOverActions: voiceOverActions(for: row),
+            showsShowName: showsShowName)
         .contentShape(Rectangle())
         .onTapGesture { opened = row.id }
         .accessibilityAddTraits(.isButton)
@@ -257,14 +259,21 @@ struct LibraryListView: View {
 
     private var organizeMenu: some View {
         Menu {
-            Picker("Sort", selection: Binding(get: { sort }, set: { onOrganize?($0, group) })) {
-                ForEach(LibrarySortOption.allCases) { Text($0.label).tag($0) }
+            Section("Sort") {
+                Picker("Sort", selection: Binding(get: { sort }, set: { onOrganize?($0, group) })) {
+                    ForEach(LibrarySortOption.allCases) { Text($0.label).tag($0) }
+                }
+                .labelsHidden()
             }
-            Picker("Group", selection: Binding(get: { group }, set: { onOrganize?(sort, $0) })) {
-                ForEach(LibraryGroupOption.allCases) { Text($0.label).tag($0) }
+            Section("Group") {
+                Picker("Group", selection: Binding(get: { group }, set: { onOrganize?(sort, $0) })) {
+                    ForEach(LibraryGroupOption.allCases) { Text($0.label).tag($0) }
+                }
+                .labelsHidden()
             }
         } label: {
-            Label("Sort and group", systemImage: "arrow.up.arrow.down.circle")
+            let cue = LibraryToolbar.sortCue(sort: sort, group: group)
+            Label(cue.label, systemImage: cue.symbol)
         }
         .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
         .accessibilityIdentifier("wilted-library-organize")
@@ -276,7 +285,8 @@ struct LibraryListView: View {
                 ForEach(LibraryFilter.allCases) { Text($0.title).tag($0) }
             }
         } label: {
-            Label("Filter: \(model.filter.title)", systemImage: "line.3.horizontal.decrease.circle")
+            let cue = LibraryToolbar.filterCue(model.filter)
+            Label(cue.label, systemImage: cue.symbol)
         }
         .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
         .accessibilityIdentifier("wilted-library-filter")
@@ -336,6 +346,8 @@ struct LibraryRowView: View {
     var isCompleted = false
     /// Offered to VoiceOver on the title, where the row's swipe actions are not reachable.
     var voiceOverActions: [LibraryRowVoiceAction] = []
+    /// When false, the detail line leaves out the show, which a feed section header already names.
+    var showsShowName = true
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -391,17 +403,15 @@ struct LibraryRowView: View {
         .accessibilityIdentifier("wilted-library-row-\(row.id.rawValue)")
     }
 
-    /// Feed - TOTAL duration - date.
+    /// Feed - TOTAL duration - date, without the feed under a feed section header.
     private var detail: String {
-        Self.detail(row: row, progress: progress, completed: isCompleted)
+        row.detailText(namesShow: showsShowName)
     }
 
-    static func detail(row: LibraryRow, progress: EpisodeProgress? = nil, completed: Bool = false) -> String {
-        let show = row.showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        let showLabel = show.isEmpty ? "Show unknown" : show
-        let duration = row.durationText ?? "Unknown"
-        let date = row.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
-        return "\(showLabel) - \(duration) - \(date)"
+    static func detail(
+        row: LibraryRow, progress: EpisodeProgress? = nil, completed: Bool = false, showsShowName: Bool = true
+    ) -> String {
+        row.detailText(namesShow: showsShowName)
     }
 
     /// Playback status stays separate from the factual metadata line. Nil means duration or

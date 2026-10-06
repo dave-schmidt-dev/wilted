@@ -16,6 +16,20 @@ final class LibraryEpisodeDetailTests: XCTestCase {
         XCTAssertEqual(LibraryNotes.paragraphs("  \n \n"), [])
     }
 
+    // MARK: - Row order
+
+    func testShareSitsBelowPlayAndDownloadInTheEpisodeDetail() {
+        XCTAssertGreaterThan(
+            LibraryEpisodeDetailRow.share.index, LibraryEpisodeDetailRow.play.index,
+            "the Share row follows the Play control")
+        XCTAssertGreaterThan(
+            LibraryEpisodeDetailRow.share.index, LibraryEpisodeDetailRow.download.index,
+            "and the Download control")
+        XCTAssertEqual(
+            LibraryEpisodeDetailRow.drawn, [.artwork, .header, .download, .share, .notes, .transcript],
+            "the shared action row draws Download and Play once; Share stacks after it")
+    }
+
     // MARK: - Share
 
     private func row(link: URL?) throws -> LibraryRow {

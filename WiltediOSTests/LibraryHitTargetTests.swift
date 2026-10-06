@@ -10,7 +10,9 @@ import XCTest
 @MainActor
 final class LibraryHitTargetTests: XCTestCase {
     private var fixture: LibraryViewFixture!
-    private let minimum = WiltedTheme.Spacing.minimumTouchTarget
+    /// The touch-target floor, less a thousandth of a point: a frame at a fractional
+    /// origin can measure 43.99999999999994 for a 44 pt layout.
+    private let minimum = WiltedTheme.Spacing.minimumTouchTarget - 0.001
 
     override func setUp() async throws {
         await HostedAccessibility.prepare()

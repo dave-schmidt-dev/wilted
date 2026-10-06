@@ -1,5 +1,6 @@
 import Foundation
 import WiltedDomain
+import WiltedLibrary
 import XCTest
 @testable import WiltediOS
 
@@ -126,6 +127,22 @@ final class LibraryDisplayOrganizationTests: XCTestCase {
 
     func testTheFiveSortsAndTwoGroupsAreExactlyTheOnesOffered() {
         XCTAssertEqual(LibrarySortOption.allCases.map(\.label), ["Play order", "Newest", "Oldest", "Shortest", "Title"])
-        XCTAssertEqual(LibraryGroupOption.allCases.map(\.label), ["None", "Feed"])
+        XCTAssertEqual(LibraryGroupOption.allCases.map(\.label), ["No Grouping", "Feed"])
+    }
+
+    func testFeedGroupedRowsLeaveTheFeedNameToTheSectionHeader() throws {
+        let grouped = LibraryListing.organize(rows, sort: .playOrder, group: .feed)
+        let alpha = try XCTUnwrap(grouped.first { $0.title == "Alpha" })
+        XCTAssertFalse(alpha.namesShowInRows, "the header carries the feed name")
+        XCTAssertTrue(LibraryListing.organize(rows, sort: .playOrder, group: .none)[0].namesShowInRows,
+                      "the untitled section names the feed on each row")
+        for row in alpha.rows {
+            let detail = LibraryRowView.detail(row: row, showsShowName: false)
+            XCTAssertFalse(detail.localizedCaseInsensitiveContains("Alpha"), detail)
+            XCTAssertTrue(detail.contains(row.durationText ?? "Unknown"), detail)
+        }
+        XCTAssertTrue(
+            LibraryRowView.detail(row: try XCTUnwrap(alpha.rows.first)).contains("Alpha"),
+            "the same row names its feed when the list is not grouped")
     }
 }

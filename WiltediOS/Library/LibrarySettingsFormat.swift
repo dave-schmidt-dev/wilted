@@ -12,6 +12,10 @@ enum LibrarySettingsFormat {
         let identifier: String
     }
 
+    /// The phone's own three totals are titled for this iPhone: the Mac's seven include work the
+    /// phone never does, so the shared "Lifetime statistics" title invited the wrong comparison (CI-8).
+    static let phoneStatisticsTitle = "This iPhone"
+
     /// This phone's three lifetime rows. Zero reads as "None" so a fresh install is not a wall of zeros.
     static func phoneStatRows(_ stats: LibraryPhoneStats) -> [StatRow] {
         func time(_ seconds: Double) -> String { seconds >= 1 ? WiltedDuration.spoken(seconds) : "None" }
@@ -28,7 +32,7 @@ enum LibrarySettingsFormat {
     }
 
     static func date(_ value: Date?) -> String {
-        value.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet"
+        value.map(LibraryDateFormat.dayAndTime) ?? "Not yet"
     }
 
     /// "1.25x", "2x".
@@ -57,10 +61,69 @@ enum LibrarySettingsFormat {
         }
     }
 
+    static let aboutTitle = "About"
+    static let diagnosticsTitle = "Diagnostics"
+    static let diagnosticsDisclosureLabel = "Device and sync details"
+    static let versionIdentifier = "wilted-library-settings-version"
+    static let deviceIdentifier = "wilted-library-settings-device-id"
+    static let syncDetailIdentifier = "wilted-library-settings-sync-detail"
+    static let copyDeviceIDLabel = "Copy device ID"
+
+    /// One settings row, described outside the view so which card holds the device ID and whether it
+    /// is copyable is testable without hosting the sheet (CI-7).
+    struct SettingsRow: Equatable {
+        let label: String
+        let value: String
+        let symbol: String
+        let identifier: String
+        let isCopyable: Bool
+        let wrapsText: Bool
+
+        init(
+            label: String, value: String, symbol: String, identifier: String,
+            isCopyable: Bool = false, wrapsText: Bool = false
+        ) {
+            self.label = label
+            self.value = value
+            self.symbol = symbol
+            self.identifier = identifier
+            self.isCopyable = isCopyable
+            self.wrapsText = wrapsText
+        }
+    }
+
+    /// The About card holds the build alone; the device ID moved to the collapsed Diagnostics
+    /// disclosure (CI-7).
+    static func aboutRows(version: String) -> [SettingsRow] {
+        [SettingsRow(label: "Version", value: version, symbol: "info.circle", identifier: versionIdentifier)]
+    }
+
+    /// The collapsed Diagnostics disclosure: the device ID, copyable, plus the sync detail the sync
+    /// card keeps out of the way unless the row reports an error (CI-7).
+    static func diagnosticsRows(deviceID: String, syncDetail: String?) -> [SettingsRow] {
+        var rows = [
+            SettingsRow(
+                label: "Device", value: deviceID, symbol: "iphone", identifier: deviceIdentifier,
+                isCopyable: true)
+        ]
+        if let syncDetail, !syncDetail.isEmpty {
+            rows.append(SettingsRow(
+                label: "Sync detail", value: syncDetail, symbol: "arrow.triangle.2.circlepath",
+                identifier: syncDetailIdentifier, wrapsText: true))
+        }
+        return rows
+    }
+
     struct SyncSummary: Equatable {
         let status: String
         let detail: String?
         let tone: WiltedStatusTone
+    }
+
+    /// The sync card shows its detail inline only for an error; every other state keeps it in the
+    /// collapsed Diagnostics disclosure (CI-7).
+    static func showsSyncDetailInline(_ summary: SyncSummary) -> Bool {
+        summary.tone == .failure && summary.detail != nil
     }
 
     /// Labels the idle fetch time as this phone's own read. The phone cannot see what the Mac has
