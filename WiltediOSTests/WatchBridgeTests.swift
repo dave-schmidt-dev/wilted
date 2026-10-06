@@ -86,6 +86,15 @@ private final class FakeWatchTarget: VoiceCommandTarget {
     }
 }
 
+/// A hand-advanced clock, so the publish throttle is deterministic.
+private final class BridgeTestClock {
+    var now = Date(timeIntervalSince1970: 1_000_000)
+
+    func advance(seconds: TimeInterval) {
+        now = now.addingTimeInterval(seconds)
+    }
+}
+
 /// The reply dictionary a command's reply handler filled in; lock-protected so the session's
 /// callback can write it whatever thread it lands on.
 private final class ReplyBox: @unchecked Sendable {
@@ -106,6 +115,7 @@ final class WatchBridgeTests: XCTestCase {
         let source: FakeWatchSource
         let target: FakeWatchTarget
         let sleepTimer: SleepTimer
+        let clock: BridgeTestClock
     }
 
     private func makeRig(supported: Bool = true) -> Rig {
@@ -114,8 +124,13 @@ final class WatchBridgeTests: XCTestCase {
         let source = FakeWatchSource()
         let target = FakeWatchTarget()
         let sleepTimer = SleepTimer()
-        let bridge = WatchBridge(session: session, target: target, source: source, sleepTimer: sleepTimer)
-        return Rig(bridge: bridge, session: session, source: source, target: target, sleepTimer: sleepTimer)
+        let clock = BridgeTestClock()
+        let bridge = WatchBridge(
+            session: session, target: target, source: source, sleepTimer: sleepTimer,
+            now: { clock.now })
+        return Rig(
+            bridge: bridge, session: session, source: source, target: target, sleepTimer: sleepTimer,
+            clock: clock)
     }
 
     /// A rig whose Watch is paired, has the app installed and has finished activation, so the
@@ -132,10 +147,10 @@ final class WatchBridgeTests: XCTestCase {
         return rig
     }
 
-    private func nowPlaying(isPlaying: Bool) -> NowPlaying {
+    private func nowPlaying(isPlaying: Bool, positionSeconds: Double = 12) -> NowPlaying {
         NowPlaying(
             episodeID: "ep-1", title: "Episode One", showTitle: "Show",
-            positionSeconds: 12, durationSeconds: 600, isPlaying: isPlaying)
+            positionSeconds: positionSeconds, durationSeconds: 600, isPlaying: isPlaying)
     }
 
     /// Sends one command and waits for the reply the bridge must produce.
@@ -263,6 +278,21 @@ final class WatchBridgeTests: XCTestCase {
         XCTAssertEqual(playing.target.performed, [.pause], "a toggle of playing audio pauses")
     }
 
+    func testToggleUsesTheLiveSourceWhenNoSnapshotPublished() async throws {
+        let rig = makeRig()
+        rig.source.nowPlayingValue = nowPlaying(isPlaying: true)
+        rig.session.updateError = NSError(domain: "test", code: 1)
+        rig.bridge.start()
+        rig.session.isPaired = true
+        rig.session.isWatchAppInstalled = true
+        rig.session.completeActivation()
+        await rig.bridge.settlePendingPublish()
+        XCTAssertNil(rig.bridge.publishedSnapshot)
+
+        try await send(.toggle, on: rig)
+        XCTAssertEqual(rig.target.performed, [.pause], "the live source is playing even with nothing published")
+    }
+
     // MARK: Publishing
 
     func testStartingASleepTimerRepublishesUntilDate() async throws {
@@ -306,6 +336,62 @@ final class WatchBridgeTests: XCTestCase {
 
         await rig.bridge.settlePendingPublish()
         XCTAssertEqual(rig.session.contexts.count, published + 1, "bursts collapse into one context write")
+    }
+
+    func testPositionOnlyChangeWithinTheIntervalPublishesNothingNew() async {
+        let rig = await makeReadyRig(nowPlaying: nowPlaying(isPlaying: true))
+        let published = rig.session.contexts.count
+
+        rig.source.nowPlayingValue = nowPlaying(isPlaying: true, positionSeconds: 42)
+        rig.source.notifyChange()
+        await rig.bridge.settlePendingPublish()
+
+        XCTAssertEqual(
+            rig.session.contexts.count, published,
+            "a position tick inside the interval stays off the wire")
+        XCTAssertEqual(rig.bridge.publishedSnapshot?.nowPlaying?.positionSeconds, 12)
+    }
+
+    func testAPausedSeekPublishesAtOnce() async {
+        let rig = await makeReadyRig(nowPlaying: nowPlaying(isPlaying: false))
+        let published = rig.session.contexts.count
+
+        rig.source.nowPlayingValue = nowPlaying(isPlaying: false, positionSeconds: 42)
+        rig.source.notifyChange()
+        await rig.bridge.settlePendingPublish()
+
+        XCTAssertEqual(rig.session.contexts.count, published + 1, "no later tick would carry a paused seek")
+        XCTAssertEqual(rig.bridge.publishedSnapshot?.nowPlaying?.positionSeconds, 42)
+    }
+
+    func testPositionOnlyChangePublishesAfterTheIntervalPasses() async {
+        let rig = await makeReadyRig(nowPlaying: nowPlaying(isPlaying: true))
+        let published = rig.session.contexts.count
+
+        rig.source.nowPlayingValue = nowPlaying(isPlaying: true, positionSeconds: 42)
+        rig.source.notifyChange()
+        await rig.bridge.settlePendingPublish()
+        XCTAssertEqual(rig.session.contexts.count, published)
+
+        rig.clock.advance(seconds: 11)
+        rig.source.nowPlayingValue = nowPlaying(isPlaying: true, positionSeconds: 43)
+        rig.source.notifyChange()
+        await rig.bridge.settlePendingPublish()
+
+        XCTAssertEqual(rig.session.contexts.count, published + 1)
+        XCTAssertEqual(rig.bridge.publishedSnapshot?.nowPlaying?.positionSeconds, 43)
+    }
+
+    func testPlayStateChangeWithinTheIntervalPublishesAtOnce() async {
+        let rig = await makeReadyRig(nowPlaying: nowPlaying(isPlaying: true))
+        let published = rig.session.contexts.count
+
+        rig.source.nowPlayingValue = nowPlaying(isPlaying: false)
+        rig.source.notifyChange()
+        await rig.bridge.settlePendingPublish()
+
+        XCTAssertEqual(rig.session.contexts.count, published + 1)
+        XCTAssertEqual(rig.bridge.publishedSnapshot?.nowPlaying?.isPlaying, false)
     }
 
     func testAFailedUpdatePublishesNothingAndRejectsItsRows() async throws {

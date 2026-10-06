@@ -43,7 +43,10 @@ final class WatchSessionClient: NSObject, WCSessionDelegate {
         let session = WCSession.default
         guard session.isReachable else { return }
         guard let payload = try? WatchLinkCodec.encode(command) else { return }
-        session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        session.sendMessage(
+            payload,
+            replyHandler: { _ in },
+            errorHandler: { _ in })
     }
 
     private func activationCompleted() {

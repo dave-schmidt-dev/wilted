@@ -55,9 +55,15 @@ final class WatchBridge {
     private let target: any VoiceCommandTarget
     private let source: any WatchBridgeSource
     private let sleepTimer: SleepTimer
+    /// The clock the bridge reads for publish throttling.
+    private let now: () -> Date
+    /// How long a snapshot whose only change is the playback position waits to republish.
+    private let positionRepublishInterval: TimeInterval = 10
     private var changeSubscription: AnyCancellable?
     private var publishTask: Task<Void, Never>?
     private var lastPublished: WatchSnapshot?
+    /// When `lastPublished` was written, measured by `now`.
+    private var lastPublishedAt: Date?
     private var activationCompleted = false
     private var started = false
 
@@ -66,12 +72,14 @@ final class WatchBridge {
         session: any WatchSessionProtocol,
         target: any VoiceCommandTarget,
         source: any WatchBridgeSource,
-        sleepTimer: SleepTimer = .shared
+        sleepTimer: SleepTimer = .shared,
+        now: @escaping () -> Date = Date.init
     ) {
         self.session = session
         self.target = target
         self.source = source
         self.sleepTimer = sleepTimer
+        self.now = now
     }
 
     /// The last snapshot the phone successfully published, if any. Commands validate against it.
@@ -120,10 +128,16 @@ final class WatchBridge {
             nowPlaying: source.currentNowPlaying,
             upNext: source.currentUpNext,
             rate: source.currentRate,
-            sleep: sleepState())
+            sleep: sleepState(),
+            publishedAt: now())
+        if let lastPublished, let lastPublishedAt, Self.differsOnlyByPosition(lastPublished, snapshot),
+           now().timeIntervalSince(lastPublishedAt) < positionRepublishInterval {
+            return
+        }
         guard let context = try? WatchLinkCodec.encode(snapshot) else { return }
         guard (try? session.updateApplicationContext(context)) != nil else { return }
         lastPublished = snapshot
+        lastPublishedAt = now()
     }
 
     private func sleepState() -> SleepState {
@@ -138,7 +152,7 @@ final class WatchBridge {
                   let entryID = try? ItemID(rawValue: episodeID) else { return .reject(.unknownEpisode) }
             return .perform(.play(entryID))
         case .toggle:
-            return .perform(lastPublished?.nowPlaying?.isPlaying == true ? .pause : .resume)
+            return .perform(source.currentNowPlaying?.isPlaying == true ? .pause : .resume)
         case .skipForward:
             return .perform(.skipForward)
         case .skipBack:
@@ -158,6 +172,23 @@ final class WatchBridge {
 
     private static func contains(_ snapshot: WatchSnapshot, episodeID: String) -> Bool {
         snapshot.nowPlaying?.episodeID == episodeID || snapshot.upNext.contains { $0.episodeID == episodeID }
+    }
+
+    /// Whether two snapshots, both playing, carry identical state except for the playback position,
+    /// ignoring `publishedAt`, which every snapshot stamps fresh.
+    private static func differsOnlyByPosition(_ old: WatchSnapshot, _ new: WatchSnapshot) -> Bool {
+        guard old.version == new.version, old.upNext == new.upNext, old.rate == new.rate,
+              old.sleep == new.sleep,
+              let oldPlaying = old.nowPlaying, let newPlaying = new.nowPlaying,
+              oldPlaying.positionSeconds != newPlaying.positionSeconds,
+              // Only while playing: the next tick republishes. A paused seek has no later tick.
+              newPlaying.isPlaying
+        else { return false }
+        return oldPlaying.episodeID == newPlaying.episodeID
+            && oldPlaying.title == newPlaying.title
+            && oldPlaying.showTitle == newPlaying.showTitle
+            && oldPlaying.durationSeconds == newPlaying.durationSeconds
+            && oldPlaying.isPlaying == newPlaying.isPlaying
     }
 
     private static func rejectionReply(_ reason: WatchRejection) -> [String: Any] {
@@ -242,10 +273,12 @@ final class LibraryWatchSource: WatchBridgeSource {
     }
 
     var changes: AnyPublisher<Void, Never> {
-        Publishers.Merge3(
-            player.objectWillChange.map { _ in () },
-            model.$queued.map { _ in () },
-            model.$media.map { _ in () })
+        Publishers.MergeMany(
+            player.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            model.$queued.map { _ in () }.eraseToAnyPublisher(),
+            model.$media.map { _ in () }.eraseToAnyPublisher(),
+            model.$progress.map { _ in () }.eraseToAnyPublisher(),
+            model.$finished.map { _ in () }.eraseToAnyPublisher())
             .eraseToAnyPublisher()
     }
 

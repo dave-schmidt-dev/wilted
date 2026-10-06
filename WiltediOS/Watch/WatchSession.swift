@@ -66,6 +66,13 @@ final class WatchSession: NSObject, WatchSessionProtocol, WCSessionDelegate {
         }
     }
 
+    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        let envelope = WatchMessageEnvelope(message: message, replyHandler: { _ in })
+        Task { @MainActor [weak self] in
+            self?.delegate?.watchSessionDidReceiveMessage(envelope.message, replyHandler: envelope.replyHandler)
+        }
+    }
+
     private static func state(_ state: WCSessionActivationState) -> WatchSessionActivationState {
         switch state {
         case .notActivated: .notActivated
