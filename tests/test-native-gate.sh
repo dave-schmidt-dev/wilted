@@ -447,19 +447,6 @@ assert_snapshot_contract() {
     testShippingMacURLFocusPixelBaselines; do
     assert_validation_contains "$method"
   done
-  for method in \
-    testListenerLibraryDarkPixelBaseline \
-    testListenerLibraryLightPixelBaseline \
-    testListenerSettingsDarkPixelBaseline \
-    testListenerSettingsLightPixelBaseline \
-    testListenerNowPlayingDarkPixelBaseline \
-    testListenerNowPlayingLightPixelBaseline \
-    testListenerEmptyNowPlayingDarkPixelBaseline \
-    testListenerEmptyNowPlayingLightPixelBaseline \
-    testListenerTerminalFailureDarkPixelBaseline \
-    testListenerTerminalFailureLightPixelBaseline; do
-    assert_validation_contains "$method"
-  done
 }
 
 assert_snapshot_contract
@@ -520,27 +507,16 @@ assert_stray_host_cleanup_contract() {
 assert_stray_host_cleanup_contract
 
 assert_ios_mvp_journey_contract() {
-  local fixture="$repo_root/WiltediOS/ListenerMVPFixture.swift"
-  # The fixture launch path moved out of the thin app launcher with the library root swap.
-  local app="$repo_root/WiltediOS/LegacyListenerRoot.swift"
-  local listener_view="$repo_root/WiltediOS/ListenerAppView.swift"
+  local fixture="$repo_root/WiltediOS/Library/LibraryUITestFixture.swift"
+  local app="$repo_root/WiltediOS/WiltediOSApp.swift"
   local journey="$repo_root/WiltediOSUITests/WiltediOSMVPFlowUITests.swift"
 
   assert_contains '#if DEBUG' "$fixture"
-  assert_contains '#if DEBUG' "$app"
-  assert_contains 'ListenerMVPFixture.makeModel()' "$app"
-  assert_contains 'testAccountFreeListenerJourneyDownloadsPlaysResumesAndRecovers' "$journey"
-  assert_contains 'wilted-player-play-pause' "$journey"
-  # The permanent Now Playing tab owns the transport control. Assert its
-  # accessible action label and resume behavior without coupling this contract
-  # to a particular SwiftUI Button initializer.
-  assert_contains 'title: playbackIsPlaying ? "Pause" : "Play"' "$listener_view"
-  assert_contains 'await model.play(itemID: state.itemID)' "$listener_view"
-  assert_contains 'XCTAssertEqual(resumeControl.label, "Play")' "$journey"
-  if rg -q 'app\.buttons\["Play"\]' "$journey"; then
-    printf '%s\n' 'assertion failed: MVP resume must use the now-playing control identifier' >&2
-    exit 1
-  fi
+  assert_contains 'LibraryUITestFixtureHost(stack: stack)' "$app"
+  assert_contains 'testLibraryRootFixtureRendersProductionRootAndPlaysWithoutLiveTransport' "$journey"
+  assert_contains 'testLibraryRootDuplicatePressWhileStartingMakesOneStart' "$journey"
+  assert_contains 'wilted-library-play-' "$journey"
+  assert_contains 'LibraryRoot' "$repo_root/WiltediOSUITests/WiltediOSAttendedCloudKitUITests.swift"
 }
 
 assert_ios_mvp_journey_contract
@@ -632,7 +608,7 @@ mvp_missing_log="$tmp_dir/mvp-missing.log"
 mvp_missing_status="$(run_case mvp-missing "$mvp_missing_log" \
   env NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY=1 bash "$gate")"
 [[ "$mvp_missing_status" -ne 0 ]] || { cat "$mvp_missing_log" >&2; exit 1; }
-assert_contains 'native.insufficient-tests label=ios-pixel-snapshot-tests reported=10 expected_minimum=11' "$mvp_missing_log"
+assert_contains 'native.insufficient-tests label=ios-pixel-snapshot-tests reported=14 expected_minimum=15' "$mvp_missing_log"
 assert_contains 'native.failed count=1' "$mvp_missing_log"
 
 package_zero_log="$tmp_dir/package-zero.log"

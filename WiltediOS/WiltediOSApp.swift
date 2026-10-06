@@ -4,8 +4,7 @@ import SwiftUI
 import UIKit
 #endif
 
-/// Thin launcher. Legacy fixture arguments host `LegacyListenerRoot`; every other launch hosts
-/// the library list, so no legacy listener model (or its CKSyncEngine) exists in a normal launch.
+/// Thin launcher: every launch hosts the library list.
 /// In DEBUG, `--wilted-library-root-fixture` hosts the same `LibraryRoot` over the deterministic
 /// `LibraryUITestFixture` objects, decided before anything reads `LibraryRuntime.shared`.
 @main
@@ -14,7 +13,7 @@ struct WiltediOSApp: App {
     @UIApplicationDelegateAdaptor(WiltediOSDebugAppDelegate.self) private var pushDelegate
 
     init() {
-        if !LegacyListenerRoot.isFixtureLaunch(), let scenario = LibraryUITestFixture.scenario() {
+        if let scenario = LibraryUITestFixture.scenario() {
             LibraryUITestFixture.launch(scenario)
         }
     }
@@ -24,19 +23,15 @@ struct WiltediOSApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if LegacyListenerRoot.isFixtureLaunch() {
-                LegacyListenerRoot()
-            } else {
 #if DEBUG
-                if let stack = LibraryUITestFixture.stack {
-                    LibraryUITestFixtureHost(stack: stack)
-                } else {
-                    LibraryRoot()
-                }
-#else
+            if let stack = LibraryUITestFixture.stack {
+                LibraryUITestFixtureHost(stack: stack)
+            } else {
                 LibraryRoot()
-#endif
             }
+#else
+            LibraryRoot()
+#endif
         }
     }
 }
@@ -52,7 +47,7 @@ final class WiltediOSDebugAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        if !LegacyListenerRoot.isFixtureLaunch(), LibraryUITestFixture.scenario() != nil { return true }
+        if LibraryUITestFixture.scenario() != nil { return true }
         return push.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
 
