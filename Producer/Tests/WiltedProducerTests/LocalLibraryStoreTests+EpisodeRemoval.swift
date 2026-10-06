@@ -224,7 +224,7 @@ extension LocalLibraryStoreTests {
             XCTAssertTrue(revisions.isEmpty)
             XCTAssertNil(transcript)
             XCTAssertNil(playback)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: entry.mediaURL.path), "media reclamation is not part of unsubscribe")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: entry.mediaURL.path), "unsubscribe deletes the audio its records named")
         }
         let preparationRuns = try await store.preparationRuns()
         XCTAssertEqual(preparationRuns.count, all.count, "preparation history survives unsubscribe")

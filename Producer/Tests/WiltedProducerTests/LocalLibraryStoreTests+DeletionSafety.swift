@@ -148,7 +148,11 @@ extension LocalLibraryStoreTests {
         }
         let queue = try await fixture.store.podcastQueueState()
         XCTAssertEqual(queue.episodeIDs, [fixture.siblingEpisodes[0]])
-        for media in fixture.media { XCTAssertTrue(FileManager.default.fileExists(atPath: media.path), "media stays on disk") }
+        let targetMedia = fixture.media.prefix(fixture.targetEpisodes.count)
+        for media in targetMedia { XCTAssertFalse(FileManager.default.fileExists(atPath: media.path), "target media goes with its records") }
+        for media in fixture.media.dropFirst(targetMedia.count) {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: media.path), "sibling media stays on disk")
+        }
     }
 
     func testDuplicateUnsubscribeWritesOnce() async throws {
