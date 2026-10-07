@@ -172,9 +172,12 @@ cmd_mac() {
 }
 
 # The iOS Development build signs manually with the "Wilted iOS Development" profile (the only one that
-# carries the CarPlay audio entitlement), so the automatic-signing overrides are dropped for it.
+# carries the CarPlay audio entitlement), so the automatic-signing overrides are dropped for it. The
+# embedded Watch app signs automatically (project.yml), so an opted-in -allowProvisioningUpdates is
+# kept: without it Xcode cannot create the Watch profile and falls back to the team wildcard, which
+# does not carry the signing certificate.
 ios_signing_args() {
-  signing_args | grep -Fvx -e -allowProvisioningUpdates -e CODE_SIGN_STYLE=Automatic -e 'CODE_SIGN_IDENTITY=Apple Development'
+  signing_args | grep -Fvx -e CODE_SIGN_STYLE=Automatic -e 'CODE_SIGN_IDENTITY=Apple Development'
 }
 
 cmd_ios() {
