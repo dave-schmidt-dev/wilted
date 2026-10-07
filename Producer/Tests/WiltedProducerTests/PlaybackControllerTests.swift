@@ -948,6 +948,9 @@ final class PlaybackControllerTests: XCTestCase {
 
         let restored = try await store.restoreEpisode(secondID)
         XCTAssertTrue(restored)
+        // W-INV-025: retiring B reclaimed its audio and revision, so the
+        // restored episode needs its audio downloaded again before it can load.
+        _ = try await queueRevision(index: 2, root: root, store: store, prepared: true, itemID: secondID)
         let retiredAtAfter = try await store.retiredAt(for: secondID)
         XCTAssertNil(retiredAtAfter)
         let removalKindAfter = try await store.removalKind(for: secondID)
@@ -1123,6 +1126,9 @@ final class PlaybackControllerTests: XCTestCase {
         // Explicit Restore makes B eligible again
         let restored = try await store.restoreEpisode(secondID)
         XCTAssertTrue(restored)
+        // W-INV-025: retiring B reclaimed its audio and revision, so the
+        // restored episode needs its audio downloaded again before it can load.
+        _ = try await queueRevision(index: 2, root: root, store: store, prepared: true, itemID: secondID)
         let retiredAtAfter = try await store.retiredAt(for: secondID)
         XCTAssertNil(retiredAtAfter)
 
