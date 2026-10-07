@@ -33,6 +33,15 @@ extension LocalLibraryStore {
     public func save(downloadState download: PodcastDownload) throws { try save(download: download) }
 
     /// Atomically commits immutable downloaded media metadata and its completed state.
+    ///
+    /// A forced re-download that lands different bytes repoints the episode at
+    /// a new file. The revision records that named the previous file describe
+    /// audio that no longer exists, so they go the way `replaceReadyRevision`
+    /// removes a superseded revision: record, transcript, and playback binding
+    /// together, in the same save. The previous file itself is deleted only
+    /// after that save succeeds, and only if no surviving record still names
+    /// it -- a file another episode shares is kept, and a re-download of
+    /// identical content deletes nothing.
     public func finalizePodcastDownload(revision: AudioRevision, mediaURL: URL, download: PodcastDownload) throws {
         guard revision.itemID == download.episodeID,
               download.status == .completed,
@@ -53,7 +62,9 @@ extension LocalLibraryStore {
             context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: mediaURL))
         }
         let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
+        var previousMediaURL: URL?
         if let existing = downloads.first(where: { $0.episodeID == download.episodeID.rawValue }) {
+            previousMediaURL = existing.localURL.flatMap(URL.init)
             existing.status = download.status.rawValue
             existing.bytesReceived = download.bytesReceived
             existing.expectedByteCount = download.expectedByteCount
@@ -64,7 +75,30 @@ extension LocalLibraryStore {
         } else {
             context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download))
         }
+        if let previousMediaURL,
+           previousMediaURL.standardizedFileURL.path != mediaURL.standardizedFileURL.path {
+            let superseded = revisions.filter {
+                $0.itemID == revision.itemID.rawValue
+                    && $0.id != revision.revisionID.rawValue
+                    && $0.mediaURL.flatMap(URL.init)?.standardizedFileURL.path == previousMediaURL.standardizedFileURL.path
+            }
+            let supersededIDs = Set(superseded.map(\.id))
+            for record in superseded {
+                context.delete(record)
+            }
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
+            where record.itemID == revision.itemID.rawValue && supersededIDs.contains(record.revisionID) {
+                context.delete(record)
+            }
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+            where record.itemID == revision.itemID.rawValue && supersededIDs.contains(record.revisionID) {
+                context.delete(record)
+            }
+        }
         try context.save()
+        if let previousMediaURL {
+            deleteMediaIfUnreferenced([previousMediaURL])
+        }
     }
 
     /// Replaces one episode's audio revision with a prepared successor.
