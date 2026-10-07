@@ -97,7 +97,7 @@ extension WiltedMacModel {
         await podcastQueueReadBarrierForTesting?()
         guard generation == podcastQueueRefreshGeneration else { return }
         podcastQueueIDs = state.episodeIDs.map(\.rawValue)
-        applyMenuSortIfNeeded()
+        applyLarderSortIfNeeded()
         if isPodcastPlayback {
             let loadedEpisodeID = playback?.itemID?.rawValue
             let activeEpisodeID = loadedEpisodeID.flatMap { id in
@@ -261,7 +261,7 @@ extension WiltedMacModel {
     /// or retired rows are skipped because neither should be handed back to
     /// the player.
     private func nextReadyEpisode(after finishedID: String) -> WiltedMacEpisode? {
-        let ordered = Self.sortedLarderEpisodes(episodes, by: larderSort)
+        let ordered = Self.sortedLarderEpisodes(episodes, by: feedsSort)
         guard let index = ordered.firstIndex(where: { $0.id == finishedID }) else { return nil }
         return ordered[ordered.index(after: index)...]
             .first {

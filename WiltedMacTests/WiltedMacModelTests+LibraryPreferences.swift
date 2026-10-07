@@ -18,16 +18,16 @@ extension WiltedMacModelTests {
 
 
         let first = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
-        XCTAssertEqual(first.larderSort, .newest, "a fresh install lists newest first")
+        XCTAssertEqual(first.feedsSort, .newest, "a fresh install lists newest first")
         // The retired `libraryOrder` view writes the Larder's own sort, so the
-        // Menu bulk order and auto-advance can no longer disagree with what
+        // Larder bulk order and auto-advance can no longer disagree with what
         // the shelf shows.
         first.libraryOrder = .oldest
-        XCTAssertEqual(first.larderSort, .oldest, "the legacy view and the Larder are one preference")
-        first.larderSort = .title
+        XCTAssertEqual(first.feedsSort, .oldest, "the legacy view and the Larder are one preference")
+        first.feedsSort = .title
 
         let second = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
-        XCTAssertEqual(second.larderSort, .title, "the choice must outlive the model that made it")
+        XCTAssertEqual(second.feedsSort, .title, "the choice must outlive the model that made it")
         XCTAssertEqual(second.libraryOrder, .newest, "a non-date sort reads as its newest projection")
     }
 
@@ -41,23 +41,23 @@ extension WiltedMacModelTests {
         preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)
 
         let migrated = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
-        XCTAssertEqual(migrated.larderSort, .oldest,
+        XCTAssertEqual(migrated.feedsSort, .oldest,
                        "a host that only ever stored the retired key keeps its oldest-first shelf")
         XCTAssertEqual(
-            preferences.string(forKey: WiltedMacModel.larderSortPreferenceKey),
-            WiltedMacLarderSort.oldest.rawValue,
+            preferences.string(forKey: WiltedMacModel.feedsSortPreferenceKey),
+            WiltedMacFeedsSort.oldest.rawValue,
             "the migration writes the choice forward under the surviving key"
         )
 
-        preferences.set(WiltedMacLarderSort.title.rawValue, forKey: WiltedMacModel.larderSortPreferenceKey)
+        preferences.set(WiltedMacFeedsSort.title.rawValue, forKey: WiltedMacModel.feedsSortPreferenceKey)
         preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)
         let again = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
-        XCTAssertEqual(again.larderSort, .title, "a surviving sort wins over the retired key")
+        XCTAssertEqual(again.feedsSort, .title, "a surviving sort wins over the retired key")
     }
 
-    /// 2.7: only `menuSort` orders the Menu. The Feeds sort and the retired
-    /// projection can change without moving a single Menu row.
-    func testMenuOrderReadsOnlyMenuSortNotTheFeedsSort() {
+    /// 2.7: only `larderSort` orders the Larder. The Feeds sort and the retired
+    /// projection can change without moving a single Larder row.
+    func testLarderOrderReadsOnlyLarderSortNotTheFeedsSort() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         func ready(_ id: String, title: String) -> WiltedMacEpisode {
             WiltedMacEpisode(
@@ -73,20 +73,20 @@ extension WiltedMacModelTests {
             model.installEpisodeForTesting(value)
             model.seedPodcastQueueMembershipForTesting(value)
         }
-        model.menuSort = .title
-        let before = model.menuDisplayEpisodeIDs
+        model.larderSort = .title
+        let before = model.larderDisplayEpisodeIDs
         XCTAssertEqual(before, [alpha.id, zulu.id])
 
-        model.larderSort = .oldest
+        model.feedsSort = .oldest
         model.libraryOrder = .oldest
 
-        XCTAssertEqual(model.menuDisplayEpisodeIDs, before,
-                       "the Feeds sort and the retired projection do not order the Menu")
-        XCTAssertEqual(model.larderSort, .oldest, "the two legacy spellings stay one preference")
+        XCTAssertEqual(model.larderDisplayEpisodeIDs, before,
+                       "the Feeds sort and the retired projection do not order the Larder")
+        XCTAssertEqual(model.feedsSort, .oldest, "the two legacy spellings stay one preference")
         XCTAssertEqual(model.libraryOrder, .oldest)
     }
 
-    func testMenuAudioSummariesCountKnownDurationsAndExposeUnknowns() {
+    func testLarderAudioSummariesCountKnownDurationsAndExposeUnknowns() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let ready = WiltedMacEpisode(
             id: "summary-ready", title: "Ready", feedTitle: "Show", summary: "Fixture",
@@ -105,17 +105,17 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        // The whole-Menu total sums the waiting set; an unknown duration is
+        // The whole-Larder total sums the waiting set; an unknown duration is
         // visible as a count rather than silently counted as zero.
-        XCTAssertEqual(model.menuAudioSummary, WiltedMacQueueAudioSummary(episodes: [ready, unknown]))
-        XCTAssertEqual(model.menuAudioSummary.seconds, 600)
-        XCTAssertEqual(model.menuAudioSummary.unknownCount, 1)
-        XCTAssertEqual(model.menuAudioSummary.detailLabel, "10m · 1 unknown")
+        XCTAssertEqual(model.larderAudioSummary, WiltedMacQueueAudioSummary(episodes: [ready, unknown]))
+        XCTAssertEqual(model.larderAudioSummary.seconds, 600)
+        XCTAssertEqual(model.larderAudioSummary.unknownCount, 1)
+        XCTAssertEqual(model.larderAudioSummary.detailLabel, "10m · 1 unknown")
     }
 
     func testTheRetiredLarderKindGroupingIsGone() {
         // Commit 4f83343's kind grouping was withdrawn with the Larder. The
-        // Menu has one grouping axis -- readiness -- and a second orthogonal
+        // Larder has one grouping axis -- readiness -- and a second orthogonal
         // grouping by kind must not return beside it.
         let source = try? WiltedMacSource.model(root: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent())
@@ -134,20 +134,20 @@ extension WiltedMacModelTests {
         defer { preferences.removePersistentDomain(forName: suite) }
 
         let first = WiltedMacModel(arguments: [], preferences: preferences)
+        first.feedsSort = .title
         first.larderSort = .title
-        first.menuSort = .title
-        first.menuGrouping = .date
+        first.larderGrouping = .date
         first.selectedNavigation = .feeds
 
         let second = WiltedMacModel(arguments: [], preferences: preferences)
+        XCTAssertEqual(second.feedsSort, .title)
         XCTAssertEqual(second.larderSort, .title)
-        XCTAssertEqual(second.menuSort, .title)
-        XCTAssertEqual(second.menuGrouping, .date)
+        XCTAssertEqual(second.larderGrouping, .date)
         XCTAssertEqual(second.selectedNavigation, .feeds,
                        "the selected destination must outlive the model that chose it")
     }
 
-    func testMenuGroupingDefaultsToStatusAndBuildsFeedDateAndStatusSections() {
+    func testLarderGroupingDefaultsToStatusAndBuildsFeedDateAndStatusSections() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -177,26 +177,26 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        XCTAssertEqual(model.menuGrouping, .status)
-        XCTAssertEqual(model.menuSections(calendar: calendar, now: now).map(\.title), [
+        XCTAssertEqual(model.larderGrouping, .status)
+        XCTAssertEqual(model.larderSections(calendar: calendar, now: now).map(\.title), [
             "Ready", "Downloaded", "Not downloaded",
         ])
-        XCTAssertTrue(model.menuSections(calendar: calendar, now: now).allSatisfy { $0.statusGroup != nil })
+        XCTAssertTrue(model.larderSections(calendar: calendar, now: now).allSatisfy { $0.statusGroup != nil })
 
-        model.menuGrouping = .feed
-        let feedSections = model.menuSections(calendar: calendar, now: now)
+        model.larderGrouping = .feed
+        let feedSections = model.larderSections(calendar: calendar, now: now)
         XCTAssertEqual(feedSections.map(\.title), ["Daily Field", "Quiet Season"])
         XCTAssertEqual(feedSections.flatMap(\.episodes).count, 3)
         XCTAssertTrue(feedSections.allSatisfy { $0.statusGroup == nil })
 
-        model.menuGrouping = .date
-        let dateSections = model.menuSections(calendar: calendar, now: now)
+        model.larderGrouping = .date
+        let dateSections = model.larderSections(calendar: calendar, now: now)
         XCTAssertEqual(dateSections.prefix(2).map(\.title), ["Today", "Yesterday"])
         XCTAssertEqual(dateSections.flatMap(\.episodes).count, 3)
         XCTAssertTrue(dateSections.allSatisfy { $0.statusGroup == nil })
     }
 
-    func testMenuSortReordersOnlyUpcomingEpisodesAndKeepsCurrentInPlace() {
+    func testLarderSortReordersOnlyUpcomingEpisodesAndKeepsCurrentInPlace() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
@@ -210,10 +210,10 @@ extension WiltedMacModelTests {
                 preparationState: .prepared(summary: "Ready · transcript synced")
             )
         }
-        let current = episode("menu-sort-current", title: "Current", length: 900, published: 100)
-        let long = episode("menu-sort-long", title: "Alpha", length: 1_200, published: 300)
-        let short = episode("menu-sort-short", title: "Zulu", length: 120, published: 200)
-        let middle = episode("menu-sort-middle", title: "Middle", length: 600, published: 400)
+        let current = episode("larder-sort-current", title: "Current", length: 900, published: 100)
+        let long = episode("larder-sort-long", title: "Alpha", length: 1_200, published: 300)
+        let short = episode("larder-sort-short", title: "Zulu", length: 120, published: 200)
+        let middle = episode("larder-sort-middle", title: "Middle", length: 600, published: 400)
         model.installEpisodeForTesting(long)
         model.installEpisodeForTesting(short)
         model.installEpisodeForTesting(middle)
@@ -222,20 +222,20 @@ extension WiltedMacModelTests {
             queue: [current.id, long.id, short.id, middle.id]
         )
 
-        model.menuSort = .shortest
-        XCTAssertEqual(model.menuDisplayEpisodeIDs, [current.id, short.id, middle.id, long.id])
-        XCTAssertEqual(model.menuWaitingEpisodes.map(\.id), [short.id, middle.id, long.id],
+        model.larderSort = .shortest
+        XCTAssertEqual(model.larderDisplayEpisodeIDs, [current.id, short.id, middle.id, long.id])
+        XCTAssertEqual(model.larderWaitingEpisodes.map(\.id), [short.id, middle.id, long.id],
                        "the current podcast stays in Now Playing while every other durable entry keeps its order")
-        XCTAssertEqual(model.menuAudioSummary.seconds, 1_920)
+        XCTAssertEqual(model.larderAudioSummary.seconds, 1_920)
         XCTAssertEqual(model.currentPodcastEpisodeID, current.id)
 
-        model.menuSort = .title
-        XCTAssertEqual(model.menuDisplayEpisodeIDs, [current.id, long.id, middle.id, short.id])
-        XCTAssertEqual(model.menuWaitingEpisodes.map(\.id), [long.id, middle.id, short.id])
+        model.larderSort = .title
+        XCTAssertEqual(model.larderDisplayEpisodeIDs, [current.id, long.id, middle.id, short.id])
+        XCTAssertEqual(model.larderWaitingEpisodes.map(\.id), [long.id, middle.id, short.id])
         XCTAssertEqual(model.currentPodcastEpisodeID, current.id)
 
-        model.moveMenuEpisode(short.id, before: long.id)
-        XCTAssertEqual(model.menuSort, .custom, "a manual move must preserve the listener's custom order")
+        model.moveLarderEpisode(short.id, before: long.id)
+        XCTAssertEqual(model.larderSort, .custom, "a manual move must preserve the listener's custom order")
     }
 
     func testPlaybackSpeedSurvivesRelaunch() throws {

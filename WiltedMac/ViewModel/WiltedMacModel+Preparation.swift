@@ -412,7 +412,7 @@ extension WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
-    /// Starts whatever the Menu has next, once the episode that was playing
+    /// Starts whatever the Larder has next, once the episode that was playing
     /// has been finished by hand.
     ///
     /// Playing an episode to its end advances inside the controller's own
@@ -431,17 +431,17 @@ extension WiltedMacModel {
     /// that was just finished sitting at the head of the queue. Starting it
     /// again is the worst possible answer to "I am done with this", so the
     /// episode just retired is skipped explicitly rather than assumed gone.
-    func advanceToNextMenuEpisode() {
+    func advanceToNextLarderEpisode() {
         guard isPodcastPlayback else {
-            Self.playbackLog.notice("advanceToNextMenuEpisode: not podcast playback")
+            Self.playbackLog.notice("advanceToNextLarderEpisode: not podcast playback")
             return
         }
-        guard let next = nextMenuEpisodeToPlay() else {
-            Self.playbackLog.notice("advanceToNextMenuEpisode: no next episode")
+        guard let next = nextLarderEpisodeToPlay() else {
+            Self.playbackLog.notice("advanceToNextLarderEpisode: no next episode")
             return
         }
         Self.playbackLog.notice(
-            "advanceToNextMenuEpisode: nextEpisode=\(next.id, privacy: .public)"
+            "advanceToNextLarderEpisode: nextEpisode=\(next.id, privacy: .public)"
         )
         playEpisode(next)
     }

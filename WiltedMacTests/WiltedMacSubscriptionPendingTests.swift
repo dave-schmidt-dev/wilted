@@ -290,13 +290,13 @@ final class WiltedMacSubscriptionPendingTests: XCTestCase {
         let preferences = WiltedMacTestPreferences.ephemeral()
         let model = try await model(loader: PendingLoader(documents: documents(), held: false), feeds: 0, preferences: preferences)
         XCTAssertEqual(model.lastPodcastRefreshRelativeText(), "Never")
-        let larderBefore = try WiltedMacHeadless.recognizedText(WiltedMacMenuView(model: model, paneMode: .side))
+        let larderBefore = try WiltedMacHeadless.recognizedText(WiltedMacLarderView(model: model, paneMode: .side))
         XCTAssertFalse(larderBefore.contains { $0.contains("Last refreshed") }, "the Larder says nothing before a first refresh")
 
         let refreshed = Date().addingTimeInterval(-7_300)
         model.setLastAutomationRefresh(refreshed)
         let feeds = try WiltedMacHeadless.recognizedText(WiltedMacFeedsView(model: model))
-        let larder = try WiltedMacHeadless.recognizedText(WiltedMacMenuView(model: model, paneMode: .side))
+        let larder = try WiltedMacHeadless.recognizedText(WiltedMacLarderView(model: model, paneMode: .side))
         for (name, shown) in [("Feeds", feeds), ("Larder", larder)] {
             XCTAssertTrue(shown.contains { $0.contains("Last refreshed: 2 hours ago") }, "\(name): \(shown)")
         }
@@ -310,7 +310,7 @@ final class WiltedMacSubscriptionPendingTests: XCTestCase {
 
         let components = try WiltedMacHeadless.viewSource("WiltedMacFeedsComponents.swift")
         XCTAssertTrue(components.contains(".accessibilityLabel(model.lastPodcastRefreshExactText)"))
-        for view in ["WiltedMacFeedsView.swift", "WiltedMacMenuView.swift"] {
+        for view in ["WiltedMacFeedsView.swift", "WiltedMacLarderView.swift"] {
             XCTAssertTrue(try WiltedMacHeadless.viewSource(view).contains("WiltedMacLastRefreshedLabel(model: model"), view)
         }
     }

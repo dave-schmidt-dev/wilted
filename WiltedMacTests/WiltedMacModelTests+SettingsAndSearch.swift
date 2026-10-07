@@ -8,8 +8,8 @@ import WiltedProducer
 extension WiltedMacModelTests {
     // MARK: Settings overrides (Task 0.6)
 
-    func testMenuOverridesAreOffByDefaultAndSurviveARebuild() {
-        let suite = WiltedMacTestPreferences.suiteName("menu-overrides-tests")
+    func testLarderOverridesAreOffByDefaultAndSurviveARebuild() {
+        let suite = WiltedMacTestPreferences.suiteName("larder-overrides-tests")
         guard let preferences = UserDefaults(suiteName: suite) else {
             return XCTFail("Unable to open a preferences suite for the test")
         }
@@ -17,42 +17,42 @@ extension WiltedMacModelTests {
         defer { preferences.removePersistentDomain(forName: suite) }
 
         let first = WiltedMacModel(arguments: [], preferences: preferences)
-        XCTAssertFalse(first.automationSettings.downloadEverythingOnMenu)
+        XCTAssertFalse(first.automationSettings.downloadEverythingOnLarder)
         XCTAssertFalse(first.automationSettings.prepareEverythingDownloaded)
 
         first.updateAutomationSettings { settings in
             WiltedAutomationSettings(
                 refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
                 processingPolicy: settings.processingPolicy, transcriptPolicy: settings.transcriptPolicy,
-                removeAds: settings.removeAds, autoAddPreparedToMenu: settings.autoAddPreparedToMenu,
-                downloadEverythingOnMenu: true, prepareEverythingDownloaded: true
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: true, prepareEverythingDownloaded: true
             )
         }
 
         let rebuilt = WiltedMacModel(arguments: [], preferences: preferences)
-        XCTAssertTrue(rebuilt.automationSettings.downloadEverythingOnMenu,
+        XCTAssertTrue(rebuilt.automationSettings.downloadEverythingOnLarder,
                       "the download override must survive a model rebuild")
         XCTAssertTrue(rebuilt.automationSettings.prepareEverythingDownloaded,
                       "the prepare override must survive a model rebuild")
     }
 
-    /// Turning an override on takes the same bulk step the Menu's matching
+    /// Turning an override on takes the same bulk step the Larder's matching
     /// group action takes; the override is not a second enqueue path.
-    func testMenuOverridesReuseTheMenuBulkAdmissionFunctions() throws {
+    func testLarderOverridesReuseTheLarderBulkAdmissionFunctions() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try WiltedMacSource.model(root: root)
         let start = try XCTUnwrap(source.range(of: "func setAutomationSettings"))
         let end = try XCTUnwrap(source.range(of: "func updateAutomationSettings",
                                              range: start.upperBound..<source.endIndex))
         let body = source[start.lowerBound..<end.lowerBound]
-        XCTAssertTrue(body.contains("downloadAllAvailableMenuEpisodes()"),
-                      "the download override must reuse the Menu's bulk admission")
-        XCTAssertTrue(body.contains("prepareAllDownloadedMenuEpisodes()"),
-                      "the prepare override must reuse the Menu's bulk admission")
+        XCTAssertTrue(body.contains("downloadAllAvailableLarderEpisodes()"),
+                      "the download override must reuse the Larder's bulk admission")
+        XCTAssertTrue(body.contains("prepareAllDownloadedLarderEpisodes()"),
+                      "the prepare override must reuse the Larder's bulk admission")
     }
 
     /// The download override admits the whole Available group, not just later
-    /// arrivals: turning it on against a Menu that already holds episodes
+    /// arrivals: turning it on against a Larder that already holds episodes
     /// leaves nothing available and disables the bulk action.
     func testDownloadEverythingOverrideAdmitsTheWholeAvailableGroup() async throws {
         let directory = temporaryDirectory("download-everything-override")
@@ -110,21 +110,21 @@ extension WiltedMacModelTests {
         XCTAssertEqual(episodes.count, 2)
         for episode in episodes { model.keepEpisode(episode) }
         await waitForFeedDecisionWriters(model)
-        XCTAssertEqual(model.menuDownloadableEpisodes.count, 2, "both rows are Available before the override")
+        XCTAssertEqual(model.larderDownloadableEpisodes.count, 2, "both rows are Available before the override")
 
         model.updateAutomationSettings { settings in
             WiltedAutomationSettings(
                 refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
                 processingPolicy: .manual, transcriptPolicy: settings.transcriptPolicy,
-                removeAds: settings.removeAds, autoAddPreparedToMenu: settings.autoAddPreparedToMenu,
-                downloadEverythingOnMenu: true, prepareEverythingDownloaded: false
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: true, prepareEverythingDownloaded: false
             )
         }
         await model.waitForPodcastOperations()
 
-        XCTAssertTrue(model.menuEpisodes(in: .available).isEmpty,
+        XCTAssertTrue(model.larderEpisodes(in: .available).isEmpty,
                       "everything available was admitted, not hidden")
-        XCTAssertTrue(model.menuDownloadableEpisodes.isEmpty,
+        XCTAssertTrue(model.larderDownloadableEpisodes.isEmpty,
                       "the disabled bulk action has no set left")
         for id in episodeIDs {
             XCTAssertEqual(model.episodes.first { $0.id == id.rawValue }?.downloadState, .completed,
@@ -153,8 +153,8 @@ extension WiltedMacModelTests {
             WiltedAutomationSettings(
                 refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
                 processingPolicy: settings.processingPolicy, transcriptPolicy: settings.transcriptPolicy,
-                removeAds: settings.removeAds, autoAddPreparedToMenu: settings.autoAddPreparedToMenu,
-                downloadEverythingOnMenu: false, prepareEverythingDownloaded: true
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: false, prepareEverythingDownloaded: true
             )
         }
 
@@ -165,10 +165,10 @@ extension WiltedMacModelTests {
                        "an Available row is not prepared")
     }
 
-    // MARK: Menu search (Task 0.8)
+    // MARK: Larder search (Task 0.8)
 
-    /// A query matching an episode's show notes keeps that row on the Menu.
-    func testMenuSearchKeepsTheRowWhoseShowNotesMatch() {
+    /// A query matching an episode's show notes keeps that row on the Larder.
+    func testLarderSearchKeepsTheRowWhoseShowNotesMatch() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let matching = searchEpisode("search-matching", notes: "The winter garden survives")
         let other = searchEpisode("search-other", notes: "A different subject")
@@ -179,13 +179,13 @@ extension WiltedMacModelTests {
 
         model.librarySearchQuery = "winter garden"
 
-        XCTAssertEqual(model.menuSearchResults.map(\.id), [matching.id])
-        XCTAssertEqual(model.menuEpisodes(in: .downloaded).map(\.id), [matching.id])
+        XCTAssertEqual(model.larderSearchResults.map(\.id), [matching.id])
+        XCTAssertEqual(model.larderEpisodes(in: .downloaded).map(\.id), [matching.id])
     }
 
     /// A transcript-only match admits exactly the row the store named, and
     /// shows no row the set does not name.
-    func testMenuSearchShowsTranscriptNamedRowsAndNothingElse() {
+    func testLarderSearchShowsTranscriptNamedRowsAndNothingElse() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let named = searchEpisode("search-transcript-named", notes: "Nothing visible matches")
         let other = searchEpisode("search-transcript-other", notes: "Nothing visible matches")
@@ -196,9 +196,9 @@ extension WiltedMacModelTests {
         model.librarySearchQuery = "cormorant"
         model.installTranscriptSearchMatchesForTesting([named.id])
 
-        XCTAssertEqual(model.menuSearchResults.map(\.id), [named.id],
+        XCTAssertEqual(model.larderSearchResults.map(\.id), [named.id],
                        "the transcript set admits the row it names")
-        XCTAssertFalse(model.menuSearchResults.contains { $0.id == other.id },
+        XCTAssertFalse(model.larderSearchResults.contains { $0.id == other.id },
                        "the transcript set does not licence any other row")
     }
 
@@ -235,16 +235,16 @@ extension WiltedMacModelTests {
         }
         model.librarySearchQuery = "cormorant"
         model.installTranscriptSearchMatchesForTesting([first.id])
-        XCTAssertEqual(model.menuSearchResults.map(\.id), [first.id])
+        XCTAssertEqual(model.larderSearchResults.map(\.id), [first.id])
 
         model.librarySearchQuery = ""
-        XCTAssertFalse(model.isSearchingMenu)
-        XCTAssertEqual(Set(model.menuSearchResults.map(\.id)), Set([first.id, second.id]))
+        XCTAssertFalse(model.isSearchingLarder)
+        XCTAssertEqual(Set(model.larderSearchResults.map(\.id)), Set([first.id, second.id]))
     }
 
     /// While a search is active every group's bulk action is disabled, and
     /// the control says why; with the field clear the sets are non-empty.
-    func testSearchDisablesEveryMenuBulkAction() throws {
+    func testSearchDisablesEveryLarderBulkAction() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let available = destinationEpisode(
             "search-bulk-available", download: .notDownloaded, preparation: .notPrepared
@@ -257,18 +257,18 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        XCTAssertFalse(model.isSearchingMenu)
-        XCTAssertFalse(model.menuDownloadableEpisodes.isEmpty,
+        XCTAssertFalse(model.isSearchingLarder)
+        XCTAssertFalse(model.larderDownloadableEpisodes.isEmpty,
                        "the Available bulk action has work with a clear field")
-        XCTAssertFalse(model.menuPreparableEpisodes.isEmpty,
+        XCTAssertFalse(model.larderPreparableEpisodes.isEmpty,
                        "the Prepare bulk action has work with a clear field")
 
         model.librarySearchQuery = "nothing matches this"
-        XCTAssertTrue(model.isSearchingMenu)
+        XCTAssertTrue(model.isSearchingLarder)
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
-        XCTAssertTrue(view.contains("wilted-menu-search-suppresses-bulk"),
+        XCTAssertTrue(view.contains("wilted-larder-search-suppresses-bulk"),
                       "the disabled control must say a search is active")
         // Every Download-all and Prepare-all control goes through `bulkAction`,
         // and that one helper is what a search disables.
@@ -276,21 +276,21 @@ extension WiltedMacModelTests {
         let helperEnd = try XCTUnwrap(view.range(
             of: "private func ", range: helper.upperBound..<view.endIndex
         )?.lowerBound)
-        XCTAssertTrue(view[helper.lowerBound..<helperEnd].contains(".disabled(model.isSearchingMenu)"),
+        XCTAssertTrue(view[helper.lowerBound..<helperEnd].contains(".disabled(model.isSearchingLarder)"),
                       "every bulk action must be disabled by an active search")
         for title in ["Button(\"Download all", "Button(\"Prepare all"] {
             XCTAssertFalse(view.contains(title), "\(title) must go through bulkAction")
         }
-        XCTAssertTrue(view.contains("|| model.isSearchingMenu)"),
+        XCTAssertTrue(view.contains("|| model.isSearchingLarder)"),
                       "Play the first is a bulk action too")
-        XCTAssertTrue(view.contains(".disabled(model.isSearchingMenu)"),
+        XCTAssertTrue(view.contains(".disabled(model.isSearchingLarder)"),
                       "the group clear is a bulk action too")
         XCTAssertTrue(view.contains(".searchable(text: $model.librarySearchQuery,"),
-                      "the Menu must expose the search field")
+                      "the Larder must expose the search field")
     }
 
-    /// The sidebar totals describe the Menu, not the current search.
-    func testMenuSearchLeavesTheSidebarTotalsUnchanged() {
+    /// The sidebar totals describe the Larder, not the current search.
+    func testLarderSearchLeavesTheSidebarTotalsUnchanged() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let ready = destinationEpisode(
             "search-sidebar-ready", download: .completed, preparation: .prepared(summary: "Ready")
@@ -302,15 +302,15 @@ extension WiltedMacModelTests {
             model.installEpisodeForTesting(value)
             model.seedPodcastQueueMembershipForTesting(value)
         }
-        let playableTotal = model.menuGroupAudioSummary(.playable)
-        let menuTotal = model.menuAudioSummary
+        let playableTotal = model.larderGroupAudioSummary(.playable)
+        let larderTotal = model.larderAudioSummary
 
         model.librarySearchQuery = "no episode matches this"
 
-        XCTAssertTrue(model.menuSearchResults.isEmpty)
-        XCTAssertEqual(model.menuGroupAudioSummary(.playable), playableTotal)
-        XCTAssertEqual(model.menuAudioSummary, menuTotal)
-        XCTAssertEqual(model.menuAudioSummary.seconds, 1200)
+        XCTAssertTrue(model.larderSearchResults.isEmpty)
+        XCTAssertEqual(model.larderGroupAudioSummary(.playable), playableTotal)
+        XCTAssertEqual(model.larderAudioSummary, larderTotal)
+        XCTAssertEqual(model.larderAudioSummary.seconds, 1200)
     }
 
     private func searchEpisode(_ id: String, notes: String) -> WiltedMacEpisode {

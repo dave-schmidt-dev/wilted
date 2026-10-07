@@ -18,7 +18,7 @@ extension WiltedMacModelTests {
         for payload in [legacy, malformed] {
             let decoded = try JSONDecoder().decode(WiltedAutomationSettings.self, from: Data(payload.utf8))
             XCTAssertEqual(decoded.initialEpisodeMetadataCount, 5)
-            XCTAssertTrue(decoded.autoAddPreparedToMenu)
+            XCTAssertTrue(decoded.autoAddPreparedToLarder)
         }
     }
 
@@ -163,32 +163,41 @@ extension WiltedMacModelTests {
         XCTAssertNil(encoded?["readableTranscriptPass"])
     }
 
-    func testSettingsSavedBeforeTheMenuFilledItselfDecodeWithItEnabled() throws {
+    func testSettingsSavedBeforeTheLarderFilledItselfDecodeWithItEnabled() throws {
         let payload = #"{"version":1,"refreshPolicy":{"kind":"manual"},"downloadPolicy":"manual","processingPolicy":{"kind":"immediate"},"transcriptPolicy":"bestAvailable","removeAds":true}"#
 
         let settings = try JSONDecoder().decode(WiltedAutomationSettings.self, from: Data(payload.utf8))
-        XCTAssertTrue(settings.autoAddPreparedToMenu,
+        XCTAssertTrue(settings.autoAddPreparedToLarder,
                       "a file that predates the preference must not read as a refusal")
         XCTAssertEqual(settings, .defaults)
 
         let encoded = try JSONSerialization.jsonObject(
             with: JSONEncoder().encode(settings)) as? [String: Any]
+        // The Swift name moved to Larder; the stored key stays what files already on disk carry.
         XCTAssertEqual(encoded?["autoAddPreparedToMenu"] as? Bool, true,
                        "the preference is written back once it has been read")
+        XCTAssertNil(encoded?["autoAddPreparedToLarder"])
     }
 
-    func testTurningTheMenuOffIsKeptAcrossASaveAndLoad() throws {
+    func testSettingsStoredUnderTheMenuKeysStillDecode() throws {
+        let payload = #"{"version":1,"refreshPolicy":{"kind":"manual"},"downloadPolicy":"manual","processingPolicy":{"kind":"immediate"},"transcriptPolicy":"bestAvailable","removeAds":true,"autoAddPreparedToMenu":false,"downloadEverythingOnMenu":true}"#
+        let settings = try JSONDecoder().decode(WiltedAutomationSettings.self, from: Data(payload.utf8))
+        XCTAssertFalse(settings.autoAddPreparedToLarder)
+        XCTAssertTrue(settings.downloadEverythingOnLarder)
+    }
+
+    func testTurningTheLarderOffIsKeptAcrossASaveAndLoad() throws {
         let settings = WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
-            transcriptPolicy: .bestAvailable, removeAds: true, autoAddPreparedToMenu: false
+            transcriptPolicy: .bestAvailable, removeAds: true, autoAddPreparedToLarder: false
         )
         let restored = try JSONDecoder().decode(
             WiltedAutomationSettings.self, from: JSONEncoder().encode(settings))
-        XCTAssertFalse(restored.autoAddPreparedToMenu)
+        XCTAssertFalse(restored.autoAddPreparedToLarder)
         XCTAssertEqual(restored, settings)
     }
 
-    func testOnlyEpisodesThatBecamePreparedOnThisReloadCountAsMenuArrivals() {
+    func testOnlyEpisodesThatBecamePreparedOnThisReloadCountAsLarderArrivals() {
         func episode(_ id: String, prepared: Bool) -> WiltedMacEpisode {
             WiltedMacEpisode(
                 id: id, title: id, feedTitle: "Fixtures", summary: "Fixture", artworkURL: nil,
@@ -212,7 +221,7 @@ extension WiltedMacModelTests {
 
         XCTAssertEqual(arrivals, ["just-finished"],
                        "an episode this process has never seen is a first load, not an arrival, "
-                       + "or opening the app would empty the Larder into the Menu")
+                       + "or opening the app would empty the Larder into the Larder")
     }
 
     func testEveryAutomationControlValueMapsAndPersists() throws {

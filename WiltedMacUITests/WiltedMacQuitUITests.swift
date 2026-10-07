@@ -1,6 +1,6 @@
 import XCTest
 
-/// Cmd-Q through the real menu-bar shortcut. This seizes the screen, so it runs
+/// Cmd-Q through the real larder-bar shortcut. This seizes the screen, so it runs
 /// only in the morning `make native-ui` batch, never in an unattended loop.
 /// The isolated child-process tests in `WiltedMacTerminationTests` cover the
 /// same quit routing headlessly with a directed quit event.

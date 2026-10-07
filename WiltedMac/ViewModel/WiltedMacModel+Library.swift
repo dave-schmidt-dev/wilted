@@ -118,7 +118,7 @@ extension WiltedMacModel {
     /// listening record proves that the episode was completed.
     nonisolated static func isFinished(isPlayed: Bool) -> Bool { isPlayed }
 
-    /// The Menu row asks this before it offers Play: an episode already
+    /// The Larder row asks this before it offers Play: an episode already
     /// finished must not sit in Ready waiting to be played again.
     func isEpisodeFinished(_ episode: WiltedMacEpisode) -> Bool {
         Self.isFinished(isPlayed: episode.isPlayed)
@@ -137,18 +137,18 @@ extension WiltedMacModel {
     }
 
     /// How far this episode's running preparation has got, when it has said.
-    /// Nil while it is queued or reporting no fraction, so a Menu row shows an
+    /// Nil while it is queued or reporting no fraction, so a Larder row shows an
     /// indeterminate bar rather than one parked at zero.
     func preparationFraction(forEpisode id: String) -> Double? {
         processorRuns.first { $0.itemID == id && $0.outcome == .running }?.fraction
     }
 
-    /// Episodes in the order the Larder's chosen sort shows them. The Menu's
+    /// Episodes in the order the Larder's chosen sort shows them. The Larder's
     /// bulk add and the auto-advance search both want "the order the reader is
-    /// looking at", which is `larderSort` -- not the retired `libraryOrder`
+    /// looking at", which is `feedsSort` -- not the retired `libraryOrder`
     /// that could disagree with it.
     nonisolated static func sortedLarderEpisodes(
-        _ episodes: [WiltedMacEpisode], by sort: WiltedMacLarderSort
+        _ episodes: [WiltedMacEpisode], by sort: WiltedMacFeedsSort
     ) -> [WiltedMacEpisode] {
         let ranked = sortLarderItems(episodes.map(WiltedMacLibraryItem.episode), by: sort)
         let positions = Dictionary(uniqueKeysWithValues: ranked.enumerated().map { ($0.element.id, $0.offset) })
@@ -157,7 +157,7 @@ extension WiltedMacModel {
 
     nonisolated private static func sortLarderItems(
         _ items: [WiltedMacLibraryItem],
-        by sort: WiltedMacLarderSort
+        by sort: WiltedMacFeedsSort
     ) -> [WiltedMacLibraryItem] {
         items.sorted { lhs, rhs in
             switch sort {

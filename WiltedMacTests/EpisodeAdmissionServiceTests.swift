@@ -457,8 +457,8 @@ extension EpisodeAdmissionServiceTests {
             WiltedAutomationSettings(
                 refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
                 processingPolicy: .immediate, transcriptPolicy: settings.transcriptPolicy,
-                removeAds: settings.removeAds, autoAddPreparedToMenu: settings.autoAddPreparedToMenu,
-                downloadEverythingOnMenu: downloadEverything, prepareEverythingDownloaded: prepareEverything
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: downloadEverything, prepareEverythingDownloaded: prepareEverything
             )
         }
         addTeardownBlock { await model.close() }

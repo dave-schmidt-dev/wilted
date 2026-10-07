@@ -17,10 +17,10 @@ private let removalLog = Logger(subsystem: "com.zerodelta.wilted.mac", category:
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
-    /// The episode the Menu should start once the current one is finished:
+    /// The episode the Larder should start once the current one is finished:
     /// the first queued entry that is not the episode just finished, has not
     /// been retired or hidden, and can actually be played.
-    func nextMenuEpisodeToPlay() -> WiltedMacEpisode? {
+    func nextLarderEpisodeToPlay() -> WiltedMacEpisode? {
         let finishedID = currentPodcastEpisodeID
         for id in podcastQueueIDs {
             guard id != finishedID, !hiddenEpisodeIDs.contains(id),
@@ -225,7 +225,7 @@ extension WiltedMacModel {
     ///
     /// The row's Skip button used to call `removeEpisode`, which erased the
     /// episode's records and needed a network feed check to bring anything
-    /// back. The accepted Menu mockup asks for a reversible exclusion instead:
+    /// back. The accepted Larder mockup asks for a reversible exclusion instead:
     /// a started episode is marked finished through the same listening record
     /// every other completion writes, and taken off the playback queue, while
     /// its media, preparation outcome, transcript and identity all stay on

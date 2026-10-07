@@ -248,7 +248,7 @@ extension WiltedMacModel {
         fixturePodcastInstallTask?.cancel()
         fixtureInstallTask?.cancel()
         playbackOperationTask?.cancel()
-        menuAdditionTask?.cancel()
+        larderAdditionTask?.cancel()
         for task in podcastDownloadTasks.values { task.cancel() }
         for task in podcastPreparationTasks.values { task.cancel() }
         for task in podcastRestoreTasks.values { task.cancel() }
@@ -274,7 +274,7 @@ extension WiltedMacModel {
             let fixtureInstall = fixturePodcastInstallTask
             let articleFixtureInstall = fixtureInstallTask
             let playbackOperation = playbackOperationTask
-            let menuAddition = menuAdditionTask
+            let larderAddition = larderAdditionTask
             let downloads = Array(podcastDownloadTasks.values)
             let preparations = Array(podcastPreparationTasks.values)
             let restores = Array(podcastRestoreTasks.values)
@@ -289,7 +289,7 @@ extension WiltedMacModel {
             await fixtureInstall?.value
             await articleFixtureInstall?.value
             await playbackOperation?.value
-            await menuAddition?.value
+            await larderAddition?.value
             for task in downloads { _ = try? await task.value }
             for task in preparations { await task.value }
             for task in restores { await task.value }

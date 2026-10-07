@@ -348,7 +348,7 @@ extension WiltedMacModelTests {
         XCTAssertEqual(presentation.label, "Prepared · 3 ads removed · transcript synced")
     }
 
-    func testPlaybackAndMenuActionsRequireCompletedPreparation() {
+    func testPlaybackAndLarderActionsRequireCompletedPreparation() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
@@ -362,23 +362,23 @@ extension WiltedMacModelTests {
         )
 
         XCTAssertFalse(model.canPlayEpisode(base))
-        XCTAssertFalse(model.canAddEpisodeToMenu(base))
+        XCTAssertFalse(model.canAddEpisodeToLarder(base))
         XCTAssertTrue(WiltedMacModel.isEligibleForPreparation(base))
 
         var preparing = base
         preparing.preparationState = .preparing(stage: "Transcribing")
         XCTAssertFalse(model.canPlayEpisode(preparing))
-        XCTAssertFalse(model.canAddEpisodeToMenu(preparing))
+        XCTAssertFalse(model.canAddEpisodeToLarder(preparing))
         XCTAssertFalse(WiltedMacModel.isEligibleForPreparation(preparing))
 
         var prepared = base
         prepared.preparationState = .prepared(summary: "Ready · no ads found · transcript synced")
         XCTAssertTrue(model.canPlayEpisode(prepared))
-        XCTAssertTrue(model.canAddEpisodeToMenu(prepared))
+        XCTAssertTrue(model.canAddEpisodeToLarder(prepared))
         XCTAssertFalse(WiltedMacModel.isEligibleForPreparation(prepared))
     }
 
-    func testMenuUpcomingKeepsEveryDurableEntryAroundThePlayingOne() {
+    func testLarderUpcomingKeepsEveryDurableEntryAroundThePlayingOne() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
@@ -392,19 +392,19 @@ extension WiltedMacModelTests {
                 preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
             )
         }
-        let current = entry("menu-current", at: 1_700_000_000)
-        let earlier = entry("menu-earlier", at: 1_699_000_000)
-        let next = entry("menu-next", at: 1_701_000_000)
-        let later = entry("menu-later", at: 1_702_000_000)
+        let current = entry("larder-current", at: 1_700_000_000)
+        let earlier = entry("larder-earlier", at: 1_699_000_000)
+        let next = entry("larder-next", at: 1_701_000_000)
+        let later = entry("larder-later", at: 1_702_000_000)
         for value in [earlier, next, later] { model.installEpisodeForTesting(value) }
         model.installPlaybackStateForTesting(
             episode: current, isPlaying: true, position: 12, duration: 600,
             queue: [earlier.id, current.id, next.id, later.id]
         )
 
-        XCTAssertEqual(model.menuUpcomingEpisodeIDs, [earlier.id, next.id, later.id],
+        XCTAssertEqual(model.larderUpcomingEpisodeIDs, [earlier.id, next.id, later.id],
                        "the active podcast is represented by Now Playing, while entries on either side remain waiting")
-        XCTAssertEqual(model.menuDisplayEpisodeIDs, [earlier.id, current.id, next.id, later.id],
+        XCTAssertEqual(model.larderDisplayEpisodeIDs, [earlier.id, current.id, next.id, later.id],
                        "the sort projection keeps the entries around the playing one too")
         XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Playing"])
         XCTAssertEqual(model.episodePlaybackIndicators(for: next.id), ["In Larder"])

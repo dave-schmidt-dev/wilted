@@ -101,12 +101,12 @@ final class WiltedMacRedesignTests: XCTestCase {
         let views = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WiltedMac/Views")
         let root = try String(contentsOf: views.appendingPathComponent("WiltedMacRootView.swift"), encoding: .utf8)
-        let menu = try String(contentsOf: views.appendingPathComponent("WiltedMacMenuView.swift"), encoding: .utf8)
+        let larder = try String(contentsOf: views.appendingPathComponent("WiltedMacLarderView.swift"), encoding: .utf8)
         XCTAssertFalse(root.contains("NavigationSplitView("))
         XCTAssertTrue(root.contains(".frame(width: sidebarColumnWidth)"))
         XCTAssertTrue(root.contains(".frame(minWidth: WiltedMacShellLayout.windowMinimumWidth("))
-        XCTAssertFalse(menu.contains("Hide Now Playing"))
-        XCTAssertTrue(menu.contains("paneMode: WiltedMacPaneMode"))
+        XCTAssertFalse(larder.contains("Hide Now Playing"))
+        XCTAssertTrue(larder.contains("paneMode: WiltedMacPaneMode"))
     }
 
     func testFixtureWindowWidthIsReadOnlyFromAFixtureLaunch() {
@@ -204,7 +204,7 @@ final class WiltedMacRedesignTests: XCTestCase {
     /// Both apps share one search prompt, short enough for the Mac field.
     func testSearchPromptIsTheSameOnBothApps() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        for path in ["WiltedMac/Views/WiltedMacMenuView.swift", "WiltediOS/Library/LibraryListView.swift"] {
+        for path in ["WiltedMac/Views/WiltedMacLarderView.swift", "WiltediOS/Library/LibraryListView.swift"] {
             let source = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
             XCTAssertTrue(source.contains("prompt: \"Search episodes\""), path)
         }
@@ -216,7 +216,7 @@ final class WiltedMacRedesignTests: XCTestCase {
     func testLarderKeepsOneListViewAcrossTheLayoutSwitch() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/Views/WiltedMacMenuView.swift")
+            .appendingPathComponent("WiltedMac/Views/WiltedMacLarderView.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
         XCTAssertEqual(source.components(separatedBy: "WiltedMacDestination(").count - 1, 1,
                        "one list destination, not one per layout")
@@ -226,7 +226,7 @@ final class WiltedMacRedesignTests: XCTestCase {
         XCTAssertEqual(root.components(separatedBy: "WiltedMacNowPlayingPane(model: model, state: $paneState)").count - 1, 1)
         XCTAssertTrue(root.contains("@State private var paneState = WiltedMacPaneState()"))
         XCTAssertTrue(root.contains("playerPresentation == nil && shell.pane == .bottom"))
-        XCTAssertFalse(root.contains("model.selectedNavigation != .menu"))
+        XCTAssertFalse(root.contains("model.selectedNavigation != .larder"))
     }
 
     // MARK: Row progress
@@ -324,8 +324,8 @@ final class WiltedMacRedesignTests: XCTestCase {
     /// The sidebar uses iOS's symbols: the Larder is the larder, feeds are the
     /// broccoli, Settings keeps the system gear.
     func testSidebarSymbolsMatchIOS() {
-        XCTAssertEqual(WiltedMacNavigation.menu.symbolName, WiltedNavigation.library.symbolName)
-        XCTAssertEqual(WiltedMacNavigation.menu.symbolName, WiltedSymbol.larder.rawValue)
+        XCTAssertEqual(WiltedMacNavigation.larder.symbolName, WiltedNavigation.library.symbolName)
+        XCTAssertEqual(WiltedMacNavigation.larder.symbolName, WiltedSymbol.larder.rawValue)
         XCTAssertEqual(WiltedMacNavigation.feeds.symbolName, WiltedSymbol.broccoli.rawValue)
         XCTAssertEqual(WiltedMacNavigation.settings.symbolName, WiltedNavigation.settings.symbolName)
     }

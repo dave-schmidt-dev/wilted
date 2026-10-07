@@ -14,7 +14,7 @@ extension WiltedMacModelTests {
     /// Figures go into `docs/2026-09-17-queue-drawdown-measurements.md`. Two
     /// costs are measured separately because they are paid in different
     /// places: `refreshProcessorRuns` reads the store off the main actor,
-    /// while the Feeds and Menu lists are rebuilt on the main actor, where
+    /// while the Feeds and Larder lists are rebuilt on the main actor, where
     /// the cost is a dropped frame. Set `WILTED_MEASURE=1` to print.
     func testMeasureThePrepPollAndTheEagerlyBuiltQueueLists() async throws {
         let directory = temporaryDirectory("measure-queue-lists")
@@ -47,7 +47,7 @@ extension WiltedMacModelTests {
                         let episodeID = try ItemID.derivePodcastEpisode(
                             feedURL: feedURL, rssGUID: guid, enclosureURL: enclosureURL
                         )
-                        // Titles and dates vary so every Menu sort has real
+                        // Titles and dates vary so every Larder sort has real
                         // work to do rather than comparing equal keys.
                         try await store.save(episode: try PodcastEpisode(
                             itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: guid,
@@ -111,20 +111,20 @@ extension WiltedMacModelTests {
         XCTAssertEqual(feeds.rows, feedCount * perFeed - queuedCount)
         XCTAssertLessThan(feeds.seconds, 0.5, "the Feeds list got an order of magnitude slower")
 
-        // One Menu view pass: every group's chip count, its rows, and the
-        // continue button's check all call `menuEpisodes(in:)`, and each call
+        // One Larder view pass: every group's chip count, its rows, and the
+        // continue button's check all call `larderEpisodes(in:)`, and each call
         // rebuilds the whole waiting set.
-        let menu = measure("menuEpisodesOneViewPass") {
+        let larder = measure("larderEpisodesOneViewPass") {
             var total = 0
-            for group in WiltedMacMenuGroup.allCases {
-                total += model.menuEpisodes(in: group).count   // the chip count
-                total += model.menuEpisodes(in: group).count   // the rows
+            for group in WiltedMacLarderGroup.allCases {
+                total += model.larderEpisodes(in: group).count   // the chip count
+                total += model.larderEpisodes(in: group).count   // the rows
             }
-            total += model.menuEpisodes(in: .playable).count   // the continue check
+            total += model.larderEpisodes(in: .playable).count   // the continue check
             return total
         }
-        XCTAssertEqual(menu.rows, queuedCount * 2 + model.menuEpisodes(in: .playable).count)
-        XCTAssertLessThan(menu.seconds, 0.5, "building the Menu's lists got an order of magnitude slower")
+        XCTAssertEqual(larder.rows, queuedCount * 2 + model.larderEpisodes(in: .playable).count)
+        XCTAssertLessThan(larder.seconds, 0.5, "building the Larder's lists got an order of magnitude slower")
 
         // Off-main cost: the Prep poll's store reads.
         let pollStarted = DispatchTime.now().uptimeNanoseconds
@@ -143,7 +143,7 @@ extension WiltedMacModelTests {
         }
     }
 
-    /// Replaces the UI test testMenuBulkActionsAreDisabledWithHonestEmptyState.
+    /// Replaces the UI test testLarderBulkActionsAreDisabledWithHonestEmptyState.
     func testAReadyLibraryWithNothingKeptOffersNoBulkLarderWork() throws {
         let directory = temporaryDirectory("ready-no-bulk-work")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -152,8 +152,8 @@ extension WiltedMacModelTests {
             stateDirectoryOverride: directory,
             preferences: WiltedMacTestPreferences.ephemeral()
         )
-        XCTAssertTrue(model.menuDownloadableEpisodes.isEmpty)
-        XCTAssertTrue(model.menuPreparableEpisodes.isEmpty)
+        XCTAssertTrue(model.larderDownloadableEpisodes.isEmpty)
+        XCTAssertTrue(model.larderPreparableEpisodes.isEmpty)
     }
 
     /// Replaces the playback half of testSidebarListsDestinationsOnlyAndNotTheArticleList.

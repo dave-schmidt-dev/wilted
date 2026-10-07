@@ -189,10 +189,10 @@ extension WiltedMacModel {
         // An admission whose durable write raised is retried on the next
         // reload; without this the arrival filter excludes it (it was already
         // prepared before this reload) and the failed attempt would be final.
-        for id in pendingMenuAdditions where !candidates.contains(id) {
+        for id in pendingLarderAdditions where !candidates.contains(id) {
             candidates.append(id)
         }
-        if allowsAutomaticAdmissions, !candidates.isEmpty { autoAddPreparedEpisodesToMenu(candidates) }
+        if allowsAutomaticAdmissions, !candidates.isEmpty { autoAddPreparedEpisodesToLarder(candidates) }
     }
 
     /// The episodes that became prepared on this reload, and only those.
@@ -200,7 +200,7 @@ extension WiltedMacModel {
     /// An episode this process has never seen is deliberately excluded: the
     /// first load after launch publishes a whole library of already-prepared
     /// rows, and treating that as an arrival would empty the Larder into the
-    /// Menu every time the app opened.
+    /// Larder every time the app opened.
     nonisolated static func episodeIDsNewlyPrepared(
         in loaded: [WiltedMacEpisode], preparedBefore: Set<String>, knownBefore: Set<String>
     ) -> [String] {
@@ -211,33 +211,33 @@ extension WiltedMacModel {
     }
 
     /// Appends freshly prepared episodes to the durable queue when the
-    /// listener has asked the Menu to fill itself.
+    /// listener has asked the Larder to fill itself.
     ///
-    /// A candidate is one the Menu could render and add: not hidden, not
-    /// retired, not already played, and satisfying `canAddEpisodeToMenu`
+    /// A candidate is one the Larder could render and add: not hidden, not
+    /// retired, not already played, and satisfying `canAddEpisodeToLarder`
     /// (playable audio, not the current episode, not already a durable
     /// member). An admission whose write raises is named in
-    /// `podcastOperationMessage` and held in `pendingMenuAdditions` for the
+    /// `podcastOperationMessage` and held in `pendingLarderAdditions` for the
     /// next reload to retry.
-    private func autoAddPreparedEpisodesToMenu(_ ids: [String]) {
-        menuAdditionTask = Task { [weak self] in
-            await self?.performAutoAddPreparedEpisodesToMenu(ids)
+    private func autoAddPreparedEpisodesToLarder(_ ids: [String]) {
+        larderAdditionTask = Task { [weak self] in
+            await self?.performAutoAddPreparedEpisodesToLarder(ids)
         }
     }
 
     /// The awaited body of one auto-add pass, so a test can drive it to
     /// settlement without polling the view.
-    func performAutoAddPreparedEpisodesToMenu(_ ids: [String]) async {
+    func performAutoAddPreparedEpisodesToLarder(_ ids: [String]) async {
 #if canImport(WiltedProducer)
-        guard automationSettings.autoAddPreparedToMenu, let playback else { return }
+        guard automationSettings.autoAddPreparedToLarder, let playback else { return }
         let eligible = ids.compactMap { id in episodes.first { $0.id == id } }
             .filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil && !$0.isPlayed
-                      && canAddEpisodeToMenu($0) }
+                      && canAddEpisodeToLarder($0) }
         guard !eligible.isEmpty else {
             // A candidate that no longer satisfies the shipped predicate
             // cannot succeed on a later reload either, so it stops being
             // retried.
-            pendingMenuAdditions.subtract(ids)
+            pendingLarderAdditions.subtract(ids)
             return
         }
         podcastQueueIDs.append(contentsOf: eligible.map(\.id))
@@ -245,8 +245,8 @@ extension WiltedMacModel {
         for episode in eligible {
             guard let id = try? ItemID(rawValue: episode.id) else { continue }
             do {
-                if let menuAdmissionForTesting {
-                    try await menuAdmissionForTesting(id)
+                if let larderAdmissionForTesting {
+                    try await larderAdmissionForTesting(id)
                 } else {
                     try await playback.addPodcastQueueEpisode(id)
                 }
@@ -256,9 +256,9 @@ extension WiltedMacModel {
         }
         await refreshPodcastQueueState()
         if failed.isEmpty {
-            pendingMenuAdditions.subtract(eligible.map(\.id))
+            pendingLarderAdditions.subtract(eligible.map(\.id))
         } else {
-            pendingMenuAdditions.formUnion(failed)
+            pendingLarderAdditions.formUnion(failed)
             podcastOperationMessage = failed.count == 1
                 ? "An episode could not be added to Larder. It will be retried."
                 : "\(failed.count) episodes could not be added to Larder. They will be retried."
@@ -381,44 +381,44 @@ extension WiltedMacModel {
         return podcastQueueIDs.contains(episodeID) ? ["In Larder"] : []
     }
 
-    /// The Menu entries the badge and its label count: the same visible rows
-    /// the Menu renders, in Menu order. The current podcast stays durable in
+    /// The Larder entries the badge and its label count: the same visible rows
+    /// the Larder renders, in Larder order. The current podcast stays durable in
     /// the queue but is represented by Now Playing, while entries on either
     /// side remain waiting rows.
-    var menuUpcomingEpisodeIDs: [String] {
-        menuWaitingEpisodes.map(\.id)
+    var larderUpcomingEpisodeIDs: [String] {
+        larderWaitingEpisodes.map(\.id)
     }
 
-    /// The Menu rows after the selected durable ordering. Non-custom orders
+    /// The Larder rows after the selected durable ordering. Non-custom orders
     /// are applied to the persisted queue as soon as the choice changes, so
     /// this remains a defensive presentation projection while that write is
     /// in flight.
-    var menuDisplayEpisodeIDs: [String] {
-        sortedMenuEpisodeIDs(podcastQueueIDs, by: menuSort)
+    var larderDisplayEpisodeIDs: [String] {
+        sortedLarderEpisodeIDs(podcastQueueIDs, by: larderSort)
     }
 
-    /// The whole Menu's known listening time, summed from the same waiting set
-    /// every Menu heading counts. Unknown durations stay visible as a count
+    /// The whole Larder's known listening time, summed from the same waiting set
+    /// every Larder heading counts. Unknown durations stay visible as a count
     /// rather than being silently treated as zero.
-    var menuAudioSummary: WiltedMacQueueAudioSummary {
-        WiltedMacQueueAudioSummary(episodes: menuWaitingEpisodes)
+    var larderAudioSummary: WiltedMacQueueAudioSummary {
+        WiltedMacQueueAudioSummary(episodes: larderWaitingEpisodes)
     }
 
     /// One group's known listening time, from the group itself rather than the
-    /// current search: the sidebar describes the Menu, not the view.
-    func menuGroupAudioSummary(_ group: WiltedMacMenuGroup) -> WiltedMacQueueAudioSummary {
-        WiltedMacQueueAudioSummary(episodes: menuUnfilteredEpisodes(in: group))
+    /// current search: the sidebar describes the Larder, not the view.
+    func larderGroupAudioSummary(_ group: WiltedMacLarderGroup) -> WiltedMacQueueAudioSummary {
+        WiltedMacQueueAudioSummary(episodes: larderUnfilteredEpisodes(in: group))
     }
 
-    /// Every episode waiting on the Menu, in the Menu's own order.
+    /// Every episode waiting on the Larder, in the Larder's own order.
     ///
-    /// The Menu is the one place episodes wait: the durable queue defines the
+    /// The Larder is the one place episodes wait: the durable queue defines the
     /// waiting set, and the rows are those the library still holds. A queued
     /// id the library no longer carries -- a played-and-retired episode, say
     /// -- simply has no row.
-    var menuWaitingEpisodes: [WiltedMacEpisode] {
+    var larderWaitingEpisodes: [WiltedMacEpisode] {
         let visible = Dictionary(uniqueKeysWithValues: larderPresentationEpisodes.map { ($0.id, $0) })
-        return menuDisplayEpisodeIDs.compactMap { visible[$0] }
+        return larderDisplayEpisodeIDs.compactMap { visible[$0] }
     }
 
     /// The rows one group renders under the current search.
@@ -427,14 +427,14 @@ extension WiltedMacModel {
     /// all come from this function, so a count cannot disagree with the list
     /// it labels. The sidebar totals and the bulk sets deliberately read the
     /// waiting set directly: a search narrows the view, not the group.
-    func menuEpisodes(in group: WiltedMacMenuGroup) -> [WiltedMacEpisode] {
-        menuSearchResults.filter { Self.menuGroup(for: $0) == group }
+    func larderEpisodes(in group: WiltedMacLarderGroup) -> [WiltedMacEpisode] {
+        larderSearchResults.filter { Self.larderGroup(for: $0) == group }
     }
 
     /// A group's rows without the search applied: what the sidebar totals and
     /// every bulk action mean.
-    func menuUnfilteredEpisodes(in group: WiltedMacMenuGroup) -> [WiltedMacEpisode] {
-        menuWaitingEpisodes.filter { Self.menuGroup(for: $0) == group }
+    func larderUnfilteredEpisodes(in group: WiltedMacLarderGroup) -> [WiltedMacEpisode] {
+        larderWaitingEpisodes.filter { Self.larderGroup(for: $0) == group }
     }
 
     /// What "available can be downloaded, downloaded can be prepared,
@@ -442,7 +442,7 @@ extension WiltedMacModel {
     ///
     /// Preparing is still Downloaded: the audio is here and the cut is not,
     /// so the row carries the progress figure rather than moving groups.
-    nonisolated static func menuGroup(for episode: WiltedMacEpisode) -> WiltedMacMenuGroup {
+    nonisolated static func larderGroup(for episode: WiltedMacEpisode) -> WiltedMacLarderGroup {
         guard episode.downloadState == .completed else { return .available }
         guard episode.preparationState.isPrepared, episode.isReadyMediaAvailable else {
             return .downloaded
@@ -450,41 +450,41 @@ extension WiltedMacModel {
         return .playable
     }
 
-    /// The rows the Menu renders: the selected group, or every waiting episode
+    /// The rows the Larder renders: the selected group, or every waiting episode
     /// when no filter is set. Search narrows both, because it is a view of
     /// what the reader can see, while the group itself is unchanged.
-    var menuFilteredEpisodes: [WiltedMacEpisode] {
-        guard let menuFilter else { return menuSearchResults }
-        return menuSearchResults.filter { Self.menuGroup(for: $0) == menuFilter }
+    var larderFilteredEpisodes: [WiltedMacEpisode] {
+        guard let larderFilter else { return larderSearchResults }
+        return larderSearchResults.filter { Self.larderGroup(for: $0) == larderFilter }
     }
 
     /// Sections for the selected presentation. Feed and Date collect rows by
     /// their source and release day; Status retains the existing lifecycle
     /// groups and is the only mode that owns group actions.
-    func menuSections(
+    func larderSections(
         calendar: Calendar = .autoupdatingCurrent,
         now: Date = Date()
-    ) -> [WiltedMacMenuSection] {
-        switch menuGrouping {
+    ) -> [WiltedMacLarderSection] {
+        switch larderGrouping {
         case .feed:
             var feeds: [String] = []
             var episodesByFeed: [String: [WiltedMacEpisode]] = [:]
-            for episode in menuFilteredEpisodes {
+            for episode in larderFilteredEpisodes {
                 if episodesByFeed[episode.feedTitle] == nil { feeds.append(episode.feedTitle) }
                 episodesByFeed[episode.feedTitle, default: []].append(episode)
             }
             return feeds.map { feed in
-                WiltedMacMenuSection(
+                WiltedMacLarderSection(
                     id: "feed-\(feed)", title: feed, detail: nil,
                     statusGroup: nil, episodes: episodesByFeed[feed] ?? []
                 )
             }
         case .status:
-            let groups = menuFilter.map { [$0] } ?? WiltedMacMenuGroup.allCases
+            let groups = larderFilter.map { [$0] } ?? WiltedMacLarderGroup.allCases
             return groups.compactMap { group in
-                let episodes = menuEpisodes(in: group)
+                let episodes = larderEpisodes(in: group)
                 guard !episodes.isEmpty else { return nil }
-                return WiltedMacMenuSection(
+                return WiltedMacLarderSection(
                     id: "status-\(group.rawValue)", title: group.displayName,
                     detail: group.detail, statusGroup: group, episodes: episodes
                 )
@@ -492,7 +492,7 @@ extension WiltedMacModel {
         case .date:
             var dates: [Date] = []
             var episodesByDate: [Date: [WiltedMacEpisode]] = [:]
-            for episode in menuFilteredEpisodes {
+            for episode in larderFilteredEpisodes {
                 let date = calendar.startOfDay(for: episode.releasedAt)
                 if episodesByDate[date] == nil { dates.append(date) }
                 episodesByDate[date, default: []].append(episode)
@@ -507,7 +507,7 @@ extension WiltedMacModel {
                 } else {
                     title = date.formatted(date: .abbreviated, time: .omitted)
                 }
-                return WiltedMacMenuSection(
+                return WiltedMacLarderSection(
                     id: "date-\(date.timeIntervalSinceReferenceDate)", title: title,
                     detail: nil, statusGroup: nil, episodes: episodesByDate[date] ?? []
                 )
@@ -515,7 +515,7 @@ extension WiltedMacModel {
         }
     }
 
-    // MARK: - Menu search
+    // MARK: - Larder search
 
     /// Shorter than this and a query matches so much transcript text that the
     /// result is noise, while every keystroke still pays for the scan.
@@ -523,17 +523,17 @@ extension WiltedMacModel {
     /// How long the field must be still before the store is asked.
     static let transcriptSearchDebounce: Duration = .milliseconds(250)
 
-    /// Whether the Menu is showing a search right now.
-    var isSearchingMenu: Bool { !trimmedSearchQuery.isEmpty }
+    /// Whether the Larder is showing a search right now.
+    var isSearchingLarder: Bool { !trimmedSearchQuery.isEmpty }
 
     var trimmedSearchQuery: String {
         librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The waiting rows a search admits, before the group filter.
-    var menuSearchResults: [WiltedMacEpisode] {
-        guard isSearchingMenu else { return menuWaitingEpisodes }
-        return menuWaitingEpisodes.filter(matchesMenuSearch)
+    var larderSearchResults: [WiltedMacEpisode] {
+        guard isSearchingLarder else { return larderWaitingEpisodes }
+        return larderWaitingEpisodes.filter(matchesLarderSearch)
     }
 
 }

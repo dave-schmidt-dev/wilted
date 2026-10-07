@@ -275,8 +275,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         processingPolicy: .immediate,
         transcriptPolicy: .bestAvailable,
         removeAds: true,
-        autoAddPreparedToMenu: true,
-        downloadEverythingOnMenu: false,
+        autoAddPreparedToLarder: true,
+        downloadEverythingOnLarder: false,
         prepareEverythingDownloaded: false,
         initialEpisodeMetadataCount: 5,
         autoKeepNewEpisodes: false,
@@ -290,18 +290,18 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     let transcriptPolicy: WiltedAutomationTranscriptPolicy
     let removeAds: Bool
 
-    /// Whether an episode that finishes preparing joins the Menu on its own.
+    /// Whether an episode that finishes preparing joins the Larder on its own.
     /// Defaulted rather than required at every call site: a listener who
     /// prepares an episode almost always means to listen to it, and the
     /// existing tests describe automation policies, not queueing.
-    let autoAddPreparedToMenu: Bool
+    let autoAddPreparedToLarder: Bool
 
-    /// Whether everything on the Menu is fetched as soon as it waits. Off by
+    /// Whether everything on the Larder is fetched as soon as it waits. Off by
     /// default: downloads cost disk and bandwidth, so this is a deliberate
     /// override of the one-step-at-a-time row action, not a default policy.
-    let downloadEverythingOnMenu: Bool
+    let downloadEverythingOnLarder: Bool
 
-    /// Whether everything downloaded on the Menu starts preparing on its own.
+    /// Whether everything downloaded on the Larder starts preparing on its own.
     /// Off by default for the same reason: preparation spends model time.
     let prepareEverythingDownloaded: Bool
 
@@ -318,8 +318,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
 
     init(refreshPolicy: WiltedAutomationRefreshPolicy, downloadPolicy: WiltedAutomationDownloadPolicy,
          processingPolicy: WiltedAutomationProcessingPolicy, transcriptPolicy: WiltedAutomationTranscriptPolicy,
-         removeAds: Bool, autoAddPreparedToMenu: Bool = true,
-         downloadEverythingOnMenu: Bool = false, prepareEverythingDownloaded: Bool = false,
+         removeAds: Bool, autoAddPreparedToLarder: Bool = true,
+         downloadEverythingOnLarder: Bool = false, prepareEverythingDownloaded: Bool = false,
          initialEpisodeMetadataCount: Int = 5, autoKeepNewEpisodes: Bool = false,
          keptLimitPerFeed: Int? = nil) {
         version = Self.currentVersion
@@ -328,8 +328,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         self.processingPolicy = processingPolicy
         self.transcriptPolicy = transcriptPolicy
         self.removeAds = removeAds
-        self.autoAddPreparedToMenu = autoAddPreparedToMenu
-        self.downloadEverythingOnMenu = downloadEverythingOnMenu
+        self.autoAddPreparedToLarder = autoAddPreparedToLarder
+        self.downloadEverythingOnLarder = downloadEverythingOnLarder
         self.prepareEverythingDownloaded = prepareEverythingDownloaded
         self.initialEpisodeMetadataCount = Self.validInitialEpisodeMetadataCount(initialEpisodeMetadataCount) ?? 5
         self.autoKeepNewEpisodes = autoKeepNewEpisodes
@@ -338,8 +338,9 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case version, refreshPolicy, downloadPolicy, processingPolicy, transcriptPolicy, removeAds
-        case autoAddPreparedToMenu
-        case downloadEverythingOnMenu
+        // Stored settings keep the keys they were written under; only the Swift names moved.
+        case autoAddPreparedToLarder = "autoAddPreparedToMenu"
+        case downloadEverythingOnLarder = "downloadEverythingOnMenu"
         case prepareEverythingDownloaded
         case initialEpisodeMetadataCount
         case autoKeepNewEpisodes
@@ -365,16 +366,16 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         processingPolicy = try container.decode(WiltedAutomationProcessingPolicy.self, forKey: .processingPolicy)
         transcriptPolicy = try container.decode(WiltedAutomationTranscriptPolicy.self, forKey: .transcriptPolicy)
         removeAds = try container.decode(Bool.self, forKey: .removeAds)
-        // Absent in settings saved before the Menu learned to fill itself.
+        // Absent in settings saved before the Larder learned to fill itself.
         // Decoded permissively rather than behind a version bump, because
         // refusing to read an otherwise valid file would reset every other
         // preference to answer a question the file simply predates.
-        autoAddPreparedToMenu = try container.decodeIfPresent(Bool.self, forKey: .autoAddPreparedToMenu) ?? true
-        // Absent in settings saved before the Menu overrides existed. Off is
+        autoAddPreparedToLarder = try container.decodeIfPresent(Bool.self, forKey: .autoAddPreparedToLarder) ?? true
+        // Absent in settings saved before the Larder overrides existed. Off is
         // the answer the file would give if it were written today, and a
         // missing key is not evidence the reader ever asked for either.
-        downloadEverythingOnMenu =
-            try container.decodeIfPresent(Bool.self, forKey: .downloadEverythingOnMenu) ?? false
+        downloadEverythingOnLarder =
+            try container.decodeIfPresent(Bool.self, forKey: .downloadEverythingOnLarder) ?? false
         prepareEverythingDownloaded =
             try container.decodeIfPresent(Bool.self, forKey: .prepareEverythingDownloaded) ?? false
         initialEpisodeMetadataCount = Self.validInitialEpisodeMetadataCount(
@@ -402,8 +403,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         try container.encode(processingPolicy, forKey: .processingPolicy)
         try container.encode(transcriptPolicy, forKey: .transcriptPolicy)
         try container.encode(removeAds, forKey: .removeAds)
-        try container.encode(autoAddPreparedToMenu, forKey: .autoAddPreparedToMenu)
-        try container.encode(downloadEverythingOnMenu, forKey: .downloadEverythingOnMenu)
+        try container.encode(autoAddPreparedToLarder, forKey: .autoAddPreparedToLarder)
+        try container.encode(downloadEverythingOnLarder, forKey: .downloadEverythingOnLarder)
         try container.encode(prepareEverythingDownloaded, forKey: .prepareEverythingDownloaded)
         try container.encode(initialEpisodeMetadataCount, forKey: .initialEpisodeMetadataCount)
         try container.encode(autoKeepNewEpisodes, forKey: .autoKeepNewEpisodes)
@@ -414,8 +415,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     func settingAutoKeepNewEpisodes(_ value: Bool) -> Self {
         Self(
             refreshPolicy: refreshPolicy, downloadPolicy: downloadPolicy, processingPolicy: processingPolicy,
-            transcriptPolicy: transcriptPolicy, removeAds: removeAds, autoAddPreparedToMenu: autoAddPreparedToMenu,
-            downloadEverythingOnMenu: downloadEverythingOnMenu, prepareEverythingDownloaded: prepareEverythingDownloaded,
+            transcriptPolicy: transcriptPolicy, removeAds: removeAds, autoAddPreparedToLarder: autoAddPreparedToLarder,
+            downloadEverythingOnLarder: downloadEverythingOnLarder, prepareEverythingDownloaded: prepareEverythingDownloaded,
             initialEpisodeMetadataCount: initialEpisodeMetadataCount, autoKeepNewEpisodes: value,
             keptLimitPerFeed: keptLimitPerFeed
         )
@@ -425,8 +426,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     func settingKeptLimitPerFeed(_ limit: Int?) -> Self {
         Self(
             refreshPolicy: refreshPolicy, downloadPolicy: downloadPolicy, processingPolicy: processingPolicy,
-            transcriptPolicy: transcriptPolicy, removeAds: removeAds, autoAddPreparedToMenu: autoAddPreparedToMenu,
-            downloadEverythingOnMenu: downloadEverythingOnMenu, prepareEverythingDownloaded: prepareEverythingDownloaded,
+            transcriptPolicy: transcriptPolicy, removeAds: removeAds, autoAddPreparedToLarder: autoAddPreparedToLarder,
+            downloadEverythingOnLarder: downloadEverythingOnLarder, prepareEverythingDownloaded: prepareEverythingDownloaded,
             initialEpisodeMetadataCount: initialEpisodeMetadataCount, autoKeepNewEpisodes: autoKeepNewEpisodes,
             keptLimitPerFeed: limit
         )

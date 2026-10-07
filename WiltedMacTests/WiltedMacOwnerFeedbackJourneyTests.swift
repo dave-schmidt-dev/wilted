@@ -66,9 +66,9 @@ final class WiltedMacOwnerFeedbackJourneyTests: XCTestCase {
                 .map { try WiltedMacHeadless.viewSource($0) }.joined()
             XCTAssertTrue(sources.contains(identifier), identifier)
         }
-        let menuRows = try WiltedMacHeadless.viewSource("WiltedMacMenuView+Rows.swift")
-        XCTAssertTrue(menuRows.contains("identifier: \"wilted-menu-metadata-\\(episode.id)\""))
-        XCTAssertTrue(menuRows.contains("wilted-menu-play-\\(episode.id)"))
+        let larderRows = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
+        XCTAssertTrue(larderRows.contains("identifier: \"wilted-larder-metadata-\\(episode.id)\""))
+        XCTAssertTrue(larderRows.contains("wilted-larder-play-\\(episode.id)"))
     }
 
     /// Was `testSubscriptionIntakeFixtureAdmitsFiveMetadataRowsThenBulkKeepPreservesTheirFacts`.

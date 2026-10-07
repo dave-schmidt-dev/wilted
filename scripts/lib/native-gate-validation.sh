@@ -37,8 +37,8 @@ validate_pixel_snapshot_baselines() {
     wilted-player-volume wilted-player-scrubber wilted-player-previous \
     wilted-player-next wilted-player-restart wilted-player-keyboard-transports \
     wilted-player-status wilted-player-transcript-expanded \
-    wilted-mac-menu-detail wilted-menu-clear-ready wilted-menu-clear-downloaded \
-    wilted-menu-clear-available wilted-menu-mark-completed- wilted-menu-remove- wilted-menu-row-; do
+    wilted-mac-larder-detail wilted-larder-clear-ready wilted-larder-clear-downloaded \
+    wilted-larder-clear-available wilted-larder-mark-completed- wilted-larder-remove- wilted-larder-row-; do
     grep -Fq "$identifier" \
       "$root"/WiltedMac/Views/*.swift "$root/Shared/WiltedRootView.swift" ||
       fail "Mac compact player identifier is missing: $identifier"
@@ -241,7 +241,7 @@ assert_mac_ui_selector_floor_contract() {
   # A floor is a minimum, not a named set: an unrelated new test keeps the
   # suite above it while a named one quietly disappears. Tests whose absence
   # would not be caught by the count alone are asserted by identifier.
-  grep -q 'testMenuOverridesAnOffPeakDeferralWithPrepareNow' \
+  grep -q 'testLarderOverridesAnOffPeakDeferralWithPrepareNow' \
     "$repo_root/WiltedMacTests/WiltedMacSettingsJourneyTests.swift" ||
     fail 'the off-peak Prepare now journey must stay in the Mac journey tests'
   # `fail` exits, so the rejecting probe runs in a subshell: the contract is

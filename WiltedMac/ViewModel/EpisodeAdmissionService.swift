@@ -94,7 +94,7 @@ struct EpisodeAdmissionService {
         case .immediate, .offPeak: prepares = true
         }
         return .init(
-            autoKeep: settings.autoKeepNewEpisodes, autoDownload: settings.downloadEverythingOnMenu,
+            autoKeep: settings.autoKeepNewEpisodes, autoDownload: settings.downloadEverythingOnLarder,
             autoPrepare: prepares, keptLimit: settings.keptLimitPerFeed
         )
     }
@@ -253,9 +253,9 @@ extension WiltedMacModel {
             if let rawFeedID = episode.feedID, let feedID = try? ItemID(rawValue: rawFeedID) {
                 feedPolicy = try await store.feedAutomationPolicy(for: feedID)
             }
-            let download = !wasKept && Self.menuGroup(for: episode) == .available
+            let download = !wasKept && Self.larderGroup(for: episode) == .available
                 && EpisodeAdmissionService.shouldDownloadAfterManualKeep(
-                    feedPolicy: feedPolicy, globalDownloadEverything: automationSettings.downloadEverythingOnMenu
+                    feedPolicy: feedPolicy, globalDownloadEverything: automationSettings.downloadEverythingOnLarder
                 )
             try await store.admitEpisode(.init(
                 episodeID: id, decision: .keep, source: .manual, decidedAt: Timestamp(Date())

@@ -57,12 +57,12 @@ enum WiltedMacLibraryOrder: String, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 }
 
-/// The Menu's fixed reading order, not a chooser: what can be played right
+/// The Larder's fixed reading order, not a chooser: what can be played right
 /// now first, what needs one more step next, what needs two last. The groups
 /// are ordered because "available can be downloaded, downloaded can be
 /// prepared, prepared can be played" (David, 2026-09-17). `playable` is named
 /// for what it means; "Ready" is its on-screen label.
-enum WiltedMacMenuGroup: String, CaseIterable, Identifiable, Sendable {
+enum WiltedMacLarderGroup: String, CaseIterable, Identifiable, Sendable {
     case playable = "Ready"
     case downloaded = "Downloaded"
     case available = "Available"
@@ -84,7 +84,7 @@ enum WiltedMacMenuGroup: String, CaseIterable, Identifiable, Sendable {
 
 /// The whole of what a Feeds episode row offers. Feeds asks one question --
 /// keep this or skip it -- so every other decision belongs where the episode
-/// waits, on the Menu. Declaration order is the row's action order.
+/// waits, on the Larder. Declaration order is the row's action order.
 enum WiltedMacFeedsAction: String, CaseIterable, Identifiable, Sendable {
     case keep = "Keep"
     case skip = "Skip"
@@ -93,8 +93,8 @@ enum WiltedMacFeedsAction: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// Ordering for the Feeds inbox, which is a scan of what arrived, not the
-/// listening order the Menu keeps.
-enum WiltedMacLarderSort: String, CaseIterable, Identifiable, Sendable {
+/// listening order the Larder keeps.
+enum WiltedMacFeedsSort: String, CaseIterable, Identifiable, Sendable {
     case newest = "Newest"
     case oldest = "Oldest"
     case shortest = "Length · shortest"
@@ -104,9 +104,9 @@ enum WiltedMacLarderSort: String, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 }
 
-/// Menu ordering. `custom` is the explicit listening order; every other
+/// Larder ordering. `custom` is the explicit listening order; every other
 /// choice reorders every row except the one playing, which holds its place.
-enum WiltedMacMenuSort: String, CaseIterable, Identifiable, Sendable {
+enum WiltedMacLarderSort: String, CaseIterable, Identifiable, Sendable {
     case length = "Length"
     case age = "Age"
     case alphabetical = "Alphabetical"
@@ -127,9 +127,9 @@ enum WiltedMacMenuSort: String, CaseIterable, Identifiable, Sendable {
     var canonical: Self {
         self == .oldest ? .age : self
     }
-    var legacyDirection: WiltedMacMenuSortDirection? { self == .oldest ? .descending : nil }
+    var legacyDirection: WiltedMacLarderSortDirection? { self == .oldest ? .descending : nil }
 
-    static func restored(_ raw: String) -> (Self, WiltedMacMenuSortDirection?)? {
+    static func restored(_ raw: String) -> (Self, WiltedMacLarderSortDirection?)? {
         switch raw {
         case "Newest": return (.age, .ascending)
         case "Oldest": return (.age, .descending)
@@ -140,7 +140,7 @@ enum WiltedMacMenuSort: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum WiltedMacMenuSortDirection: String, Sendable {
+enum WiltedMacLarderSortDirection: String, Sendable {
     case ascending, descending
     var displayName: String { self == .ascending ? "Ascending" : "Descending" }
     var reversed: Self { self == .ascending ? .descending : .ascending }
@@ -148,7 +148,7 @@ enum WiltedMacMenuSortDirection: String, Sendable {
 
 /// How the Larder draws section boundaries. Grouping is presentation only;
 /// the durable queue and its independent sort remain the listening order.
-enum WiltedMacMenuGrouping: String, CaseIterable, Identifiable, Sendable {
+enum WiltedMacLarderGrouping: String, CaseIterable, Identifiable, Sendable {
     case feed = "Feed"
     case date = "Date"
     case status = "Status"
@@ -156,11 +156,11 @@ enum WiltedMacMenuGrouping: String, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 }
 
-struct WiltedMacMenuSection: Identifiable, Equatable {
+struct WiltedMacLarderSection: Identifiable, Equatable {
     let id: String
     let title: String
     let detail: String?
-    let statusGroup: WiltedMacMenuGroup?
+    let statusGroup: WiltedMacLarderGroup?
     let episodes: [WiltedMacEpisode]
 }
 

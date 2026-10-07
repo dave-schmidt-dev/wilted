@@ -2,15 +2,15 @@ import AppKit
 import SwiftUI
 import WiltedDomain
 
-// MARK: - Menu
+// MARK: - Larder
 
-/// The one place episodes wait: the retired Larder and Menu were the same
+/// The one place episodes wait: the retired Larder and Larder were the same
 /// idea twice. Rows read in a fixed order -- Ready, Downloaded, Available --
 /// because an episode can be downloaded, then prepared, then played, and the
 /// list says which step is next. Filters and bulk actions read through the
 /// same group accessor the rows do, so no count can label a list it does not
 /// match.
-struct WiltedMacMenuView: View {
+struct WiltedMacLarderView: View {
     static let readyActionSlotWidth: CGFloat = 28
     static let trailingActionSlotsWidth: CGFloat = 58
 
@@ -24,11 +24,11 @@ struct WiltedMacMenuView: View {
     var body: some View {
         WiltedMacDestination(
             title: "Larder",
-            identifier: "wilted-mac-menu-detail",
+            identifier: "wilted-mac-larder-detail",
             contentWidth: paneMode == .side ? nil : 760,
             inset: paneMode == .side ? WiltedTheme.Spacing.large : WiltedTheme.Spacing.section,
             watermark: true,
-            scrollAnchor: model.scrollAnchor(for: .menu)
+            scrollAnchor: model.scrollAnchor(for: .larder)
         ) {
             if paneMode == .bottom { bottomModeHeader }
             larderList
@@ -49,27 +49,27 @@ struct WiltedMacMenuView: View {
     @ViewBuilder private var larderList: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Text("Audio in Larder: \(model.menuAudioSummary.detailLabel)")
+                Text("Audio in Larder: \(model.larderAudioSummary.detailLabel)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-menu-audio-total")
-                Text("Ready: \(model.menuUnfilteredEpisodes(in: .playable).count) episodes")
+                    .accessibilityIdentifier("wilted-larder-audio-total")
+                Text("Ready: \(model.larderUnfilteredEpisodes(in: .playable).count) episodes")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-menu-waiting-count")
+                    .accessibilityIdentifier("wilted-larder-waiting-count")
                 // Absent before the first refresh, so a Larder that has never refreshed reads as it did.
                 if model.lastPodcastRefreshAt != nil {
-                    WiltedMacLastRefreshedLabel(model: model, identifier: "wilted-menu-last-refreshed")
+                    WiltedMacLastRefreshedLabel(model: model, identifier: "wilted-larder-last-refreshed")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             WiltedMacFlowLayout {
                 Menu {
-                    ForEach(Array(WiltedMacMenuGrouping.allCases), id: \.id) { option in
+                    ForEach(Array(WiltedMacLarderGrouping.allCases), id: \.id) { option in
                         Button {
-                            model.menuGrouping = option
+                            model.larderGrouping = option
                         } label: {
-                            if model.menuGrouping == option {
+                            if model.larderGrouping == option {
                                 Label(option.rawValue, systemImage: "checkmark")
                             } else {
                                 Text(option.rawValue)
@@ -77,23 +77,23 @@ struct WiltedMacMenuView: View {
                         }
                     }
                 } label: {
-                    Label("Group by: \(model.menuGrouping.rawValue)", systemImage: "rectangle.3.group")
+                    Label("Group by: \(model.larderGrouping.rawValue)", systemImage: "rectangle.3.group")
                         .wiltedFont(.utility)
                 }
                 .menuStyle(.button)
                 .controlSize(.regular)
-                .accessibilityLabel("Group Larder by: \(model.menuGrouping.rawValue)")
-                .accessibilityIdentifier("wilted-menu-grouping")
+                .accessibilityLabel("Group Larder by: \(model.larderGrouping.rawValue)")
+                .accessibilityIdentifier("wilted-larder-grouping")
                 Menu {
-                    // A Picker nested inside this Menu creates a second
+                    // A Picker nested inside this Larder creates a second
                     // submenu on macOS. Direct menu buttons keep every order
                     // in one click target while
                     // retaining the same persisted model binding.
-                    ForEach(WiltedMacMenuSort.presentationOptions, id: \.id) { option in
+                    ForEach(WiltedMacLarderSort.presentationOptions, id: \.id) { option in
                         Button {
-                            model.menuSort = option
+                            model.larderSort = option
                         } label: {
-                            if model.menuSort.canonical == option {
+                            if model.larderSort.canonical == option {
                                 Label(option.displayName, systemImage: "checkmark")
                             } else {
                                 Text(option.displayName)
@@ -101,27 +101,27 @@ struct WiltedMacMenuView: View {
                         }
                     }
                 } label: {
-                    Label("Sort by: \(model.menuSort.displayName)", systemImage: "arrow.up.arrow.down")
+                    Label("Sort by: \(model.larderSort.displayName)", systemImage: "arrow.up.arrow.down")
                         .wiltedFont(.utility)
                 }
                 .menuStyle(.button)
                 .controlSize(.regular)
-                .accessibilityLabel("Sort Larder: \(model.menuSort.displayName)")
-                .accessibilityIdentifier("wilted-menu-sort")
-                if model.menuSort != .custom {
+                .accessibilityLabel("Sort Larder: \(model.larderSort.displayName)")
+                .accessibilityIdentifier("wilted-larder-sort")
+                if model.larderSort != .custom {
                     Button {
-                        let direction = model.menuSortDirection.reversed
-                        model.menuSort = model.menuSort.canonical
-                        model.menuSortDirection = direction
+                        let direction = model.larderSortDirection.reversed
+                        model.larderSort = model.larderSort.canonical
+                        model.larderSortDirection = direction
                     } label: {
-                        Image(systemName: model.menuSortDirection == .ascending ? "arrow.up" : "arrow.down")
+                        Image(systemName: model.larderSortDirection == .ascending ? "arrow.up" : "arrow.down")
                             .wiltedFont(.utility)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
-                    .help("Sort direction: \(model.menuSortDirection.displayName)")
-                    .accessibilityLabel("Larder sort direction: \(model.menuSortDirection.displayName)")
-                    .accessibilityIdentifier("wilted-menu-sort-direction")
+                    .help("Sort direction: \(model.larderSortDirection.displayName)")
+                    .accessibilityLabel("Larder sort direction: \(model.larderSortDirection.displayName)")
+                    .accessibilityIdentifier("wilted-larder-sort-direction")
                 }
             }
         }

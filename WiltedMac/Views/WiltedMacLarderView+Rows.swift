@@ -2,14 +2,14 @@ import AppKit
 import SwiftUI
 import WiltedDomain
 
-extension WiltedMacMenuView {
-    func menuRow(
+extension WiltedMacLarderView {
+    func larderRow(
         _ episode: WiltedMacEpisode,
         position: Int,
         count: Int,
         showsGroupName: Bool
     ) -> some View {
-        let group = WiltedMacModel.menuGroup(for: episode)
+        let group = WiltedMacModel.larderGroup(for: episode)
         return VStack(spacing: 0) {
             Rectangle()
                 .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
@@ -28,7 +28,7 @@ extension WiltedMacMenuView {
                 WiltedMacEpisodeMetadata(
                     episode: episode,
                     lifecycleLabel: showsGroupName ? group.displayName : nil,
-                    identifier: "wilted-menu-metadata-\(episode.id)",
+                    identifier: "wilted-larder-metadata-\(episode.id)",
                     isLarder: true
                 )
                 // Partway through: how much is heard and how much is left,
@@ -45,7 +45,7 @@ extension WiltedMacMenuView {
                             .lineLimit(1)
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("wilted-menu-listened-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-listened-\(episode.id)")
                 }
                 // Only while the phone holds the newest position; hidden otherwise.
                 if let phoneLine = model.phonePositionLabel(forEpisodeID: episode.id) {
@@ -53,7 +53,7 @@ extension WiltedMacMenuView {
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .lineLimit(1)
-                        .accessibilityIdentifier("wilted-menu-phone-position-\(episode.id)")
+                        .accessibilityIdentifier("wilted-larder-phone-position-\(episode.id)")
                 }
                 // Preparing stays in Downloaded, and this is the figure that
                 // says so; the row does not move groups while it runs.
@@ -63,12 +63,12 @@ extension WiltedMacMenuView {
                         .tint(WiltedTheme.color(.progress, scheme: colorScheme))
                         .frame(width: 120)
                         .accessibilityValue("\(Int(fraction * 100)) percent prepared")
-                        .accessibilityIdentifier("wilted-menu-progress-\(episode.id)")
+                        .accessibilityIdentifier("wilted-larder-progress-\(episode.id)")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // `circle.grid.2x3.fill` is not in the system symbol set -- the
-            // handle drew as a blank square on every Menu row, so the reorder
+            // handle drew as a blank square on every Larder row, so the reorder
             // affordance was invisible. Checked against NSImage before
             // choosing the replacement rather than swapping one guess for
             // another.
@@ -80,10 +80,10 @@ extension WiltedMacMenuView {
                 .help("Drag to reorder")
                 .accessibilityLabel("Reorder \(episode.title)")
                 .accessibilityAction(named: Text("Move earlier")) {
-                    model.moveMenuEpisode(episode.id, by: -1)
+                    model.moveLarderEpisode(episode.id, by: -1)
                 }
                 .accessibilityAction(named: Text("Move later")) {
-                    model.moveMenuEpisode(episode.id, by: 1)
+                    model.moveLarderEpisode(episode.id, by: 1)
                 }
             if group == .playable {
                 nextStepControl(episode, group: group)
@@ -104,7 +104,7 @@ extension WiltedMacMenuView {
                         .labelStyle(.iconOnly)
                         .help("Mark completed")
                         .accessibilityLabel("Mark \(episode.title) completed")
-                        .accessibilityIdentifier("wilted-menu-mark-completed-\(episode.id)")
+                        .accessibilityIdentifier("wilted-larder-mark-completed-\(episode.id)")
                 } else {
                     Color.clear
                         .frame(width: 28, height: 28)
@@ -118,7 +118,7 @@ extension WiltedMacMenuView {
                     .labelStyle(.iconOnly)
                     .help("Remove from Larder")
                     .accessibilityLabel("Remove \(episode.title) from Larder")
-                    .accessibilityIdentifier("wilted-menu-remove-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-remove-\(episode.id)")
             }
             .controlSize(.small)
             .frame(width: Self.trailingActionSlotsWidth, alignment: .trailing)
@@ -126,14 +126,14 @@ extension WiltedMacMenuView {
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .dropDestination(for: String.self) { draggedIDs, _ in
-            model.dropMenuEpisodes(draggedIDs, before: episode.id)
+            model.dropLarderEpisodes(draggedIDs, before: episode.id)
         } isTargeted: { targeted in
             dropTargetID = targeted ? episode.id : nil
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(episode.title), number \(position) in Larder")
         .accessibilityValue("\(position) of \(count)")
-        .accessibilityIdentifier("wilted-menu-row-\(episode.id)")
+        .accessibilityIdentifier("wilted-larder-row-\(episode.id)")
     }
 
     /// The show's artwork at row size, or the produce tile when the feed
@@ -156,7 +156,7 @@ extension WiltedMacMenuView {
 
     /// The single step the row is waiting for. Its group already says which
     /// one it is, so a row never shows the other two greyed out.
-    @ViewBuilder private func nextStepControl(_ episode: WiltedMacEpisode, group: WiltedMacMenuGroup) -> some View {
+    @ViewBuilder private func nextStepControl(_ episode: WiltedMacEpisode, group: WiltedMacLarderGroup) -> some View {
         switch group {
         case .playable:
             if model.isEpisodeFinished(episode) {
@@ -166,7 +166,7 @@ extension WiltedMacMenuView {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .help("Played")
                     .accessibilityLabel("Played")
-                    .accessibilityIdentifier("wilted-menu-played-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-played-\(episode.id)")
             } else {
                 // The press is answered on the row it came from while it opens.
                 let opening = model.playbackCommands.pending?.command.itemID == episode.id
@@ -181,7 +181,7 @@ extension WiltedMacMenuView {
                     .disabled(opening)
                     .help("Play now")
                     .accessibilityLabel(opening ? "Opening \(episode.title)" : "Play \(episode.title) now")
-                    .accessibilityIdentifier("wilted-menu-play-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-play-\(episode.id)")
             }
         case .downloaded:
             if model.isDeferredForOffPeak(episode.id) {
@@ -195,7 +195,7 @@ extension WiltedMacMenuView {
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     Button("Prepare now") { model.prepareDeferredEpisodeNow(episode) }
                         .accessibilityLabel("Prepare \(episode.title) now")
-                        .accessibilityIdentifier("wilted-menu-prepare-now-\(episode.id)")
+                        .accessibilityIdentifier("wilted-larder-prepare-now-\(episode.id)")
                 }
             } else if episode.preparationState.isRunning {
                 HStack(spacing: WiltedTheme.Spacing.small) {
@@ -208,7 +208,7 @@ extension WiltedMacMenuView {
                         .labelStyle(.iconOnly)
                         .help("Stop")
                         .accessibilityLabel("Stop preparing \(episode.title)")
-                        .accessibilityIdentifier("wilted-menu-stop-\(episode.id)")
+                        .accessibilityIdentifier("wilted-larder-stop-\(episode.id)")
                 }
             } else if case .failed = episode.preparationState {
                 Button { model.prepareEpisode(episode) } label: {
@@ -217,10 +217,10 @@ extension WiltedMacMenuView {
                     .labelStyle(.iconOnly)
                     .help("Retry")
                     .accessibilityLabel("Retry preparing \(episode.title)")
-                    .accessibilityIdentifier("wilted-menu-retry-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-retry-\(episode.id)")
             } else {
                 Button("Prepare") { model.prepareEpisode(episode) }
-                    .accessibilityIdentifier("wilted-menu-prepare-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-prepare-\(episode.id)")
             }
         case .available:
             switch episode.downloadState {
@@ -231,7 +231,7 @@ extension WiltedMacMenuView {
                     .labelStyle(.iconOnly)
                     .help("Cancel download")
                     .accessibilityLabel("Cancel download \(episode.title)")
-                    .accessibilityIdentifier("wilted-menu-cancel-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-cancel-\(episode.id)")
             case .failed, .cancelled:
                 Button { model.retryEpisodeDownload(episode) } label: {
                     Label("Retry", systemImage: "arrow.clockwise")
@@ -239,7 +239,7 @@ extension WiltedMacMenuView {
                     .labelStyle(.iconOnly)
                     .help("Retry")
                     .accessibilityLabel("Retry \(episode.title)")
-                    .accessibilityIdentifier("wilted-menu-retry-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-retry-\(episode.id)")
             case .notDownloaded, .completed:
                 Button { model.downloadEpisode(episode) } label: {
                     Label("Download", systemImage: "arrow.down.circle")
@@ -247,13 +247,13 @@ extension WiltedMacMenuView {
                     .labelStyle(.iconOnly)
                     .help("Download")
                     .accessibilityLabel("Download \(episode.title)")
-                    .accessibilityIdentifier("wilted-menu-download-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-download-\(episode.id)")
             }
         }
     }
 
     /// The way in to the address box, moved here with the Larder's remaining
-    /// jobs: an article is saved listening, and the Menu is where listening
+    /// jobs: an article is saved listening, and the Larder is where listening
     /// starts now.
     var addArticleButton: some View {
         Button {

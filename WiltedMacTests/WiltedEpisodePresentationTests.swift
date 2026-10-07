@@ -156,7 +156,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
             "WiltedMac/Views/WiltedMacEpisodeMetadata.swift"), encoding: .utf8
         )
         let sections = try String(contentsOf: root.appendingPathComponent(
-            "WiltedMac/Views/WiltedMacMenuView+Sections.swift"), encoding: .utf8
+            "WiltedMac/Views/WiltedMacLarderView+Sections.swift"), encoding: .utf8
         )
         let feeds = try String(contentsOf: root.appendingPathComponent(
             "WiltedMac/Views/WiltedMacFeedsView.swift"), encoding: .utf8
@@ -170,7 +170,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertTrue(metadata.contains("larderRowLabel"))
         XCTAssertTrue(metadata.contains("duration < Double(Int.max)"))
         XCTAssertTrue(views.contains("wilted-feeds-metadata-\\(episode.id)"))
-        XCTAssertTrue(views.contains("wilted-menu-metadata-\\(episode.id)"))
+        XCTAssertTrue(views.contains("wilted-larder-metadata-\\(episode.id)"))
         XCTAssertTrue(views.contains("identifier.replacingOccurrences(of: \"restore\", with: \"metadata\")"))
         XCTAssertTrue(views.contains(".buttonStyle(.borderedProminent)"))
         XCTAssertTrue(views.contains(".buttonStyle(.bordered)"))
@@ -178,7 +178,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertTrue(sections.contains("Unknown publication date"))
         XCTAssertTrue(sections.contains("automatic download setting"))
         XCTAssertTrue(sections.contains("emptyDownloadedCopy"))
-        XCTAssertTrue(sections.contains("downloadEverythingOnMenu"))
+        XCTAssertTrue(sections.contains("downloadEverythingOnLarder"))
         XCTAssertTrue(libraryLoading.contains("feedTitle: dismissal.feedID.flatMap { feeds[$0]?.title }"))
         let feedsManagement = try XCTUnwrap(feeds.range(of: "feedManagement")?.lowerBound)
         let offList = try XCTUnwrap(feeds.range(of: "restorableEpisodes", range: feedsManagement..<feeds.endIndex)?.lowerBound)
@@ -192,7 +192,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         deferred.downloadState = .completed
         deferred.preparationState = .preparing(stage: "Queued")
         let idle = episode(id: "idle", publishedAt: nil, sourceDuration: 60)
-        let source = [WiltedMacMenuSection(
+        let source = [WiltedMacLarderSection(
             id: "status-available", title: "Not downloaded", detail: nil, statusGroup: .available,
             episodes: [idle, downloading, deferred]
         )]
@@ -214,7 +214,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         let known = episode(id: "known", publishedAt: published, sourceDuration: 60)
         let unknown = episode(id: "unknown", publishedAt: nil, sourceDuration: 60)
         let result = WiltedMacEpisodePresentationSections.displaySections(
-            [WiltedMacMenuSection(
+            [WiltedMacLarderSection(
                 id: "legacy-fallback", title: "Today", detail: nil, statusGroup: nil,
                 episodes: [unknown, known]
             )],
@@ -230,7 +230,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
     func testNewestPresentationPlacesUnknownFactsLastWithoutChangingCustomOrder() {
         let known = episode(id: "known", publishedAt: Date(timeIntervalSince1970: 1_700_000_000), sourceDuration: 60)
         let unknown = episode(id: "unknown", publishedAt: nil, sourceDuration: 60)
-        let source = [WiltedMacMenuSection(
+        let source = [WiltedMacLarderSection(
             id: "status-available", title: "Not downloaded", detail: nil, statusGroup: .available,
             episodes: [unknown, known]
         )]
@@ -252,7 +252,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         let middle = episode(id: "middle", publishedAt: Date(timeIntervalSince1970: 1_700_010_000), sourceDuration: 60)
         let newest = episode(id: "newest", publishedAt: Date(timeIntervalSince1970: 1_700_020_000), sourceDuration: 60)
         let unknown = episode(id: "unknown", publishedAt: nil, sourceDuration: 60)
-        let source = [WiltedMacMenuSection(
+        let source = [WiltedMacLarderSection(
             id: "status-available", title: "Not downloaded", detail: nil, statusGroup: .available,
             episodes: [newest, unknown, middle, oldest]
         )]
@@ -293,8 +293,8 @@ final class WiltedEpisodePresentationTests: XCTestCase {
 
     func testVisibleNumberingRestartsAfterRemovingTheFirstSevenRows() {
         let queue = (1...10).map { episode(id: "episode-\($0)", publishedAt: nil, sourceDuration: 60) }
-        func sections(_ rows: [WiltedMacEpisode]) -> [WiltedMacMenuSection] {
-            [WiltedMacMenuSection(id: "visible", title: "Larder", detail: nil, statusGroup: nil, episodes: rows)]
+        func sections(_ rows: [WiltedMacEpisode]) -> [WiltedMacLarderSection] {
+            [WiltedMacLarderSection(id: "visible", title: "Larder", detail: nil, statusGroup: nil, episodes: rows)]
         }
         let initial = WiltedMacEpisodePresentationSections.visibleNumbering(sections(queue))
         XCTAssertEqual(initial.count, 10)
@@ -310,7 +310,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
     func testVisibleNumberingUsesTheFilteredSubsetAndItsVisibleCount() {
         let queue = (1...10).map { episode(id: "episode-\($0)", publishedAt: nil, sourceDuration: 60) }
         let filtered = [queue[7], queue[9]]
-        let section = WiltedMacMenuSection(id: "filtered", title: "Matches", detail: nil, statusGroup: nil, episodes: filtered)
+        let section = WiltedMacLarderSection(id: "filtered", title: "Matches", detail: nil, statusGroup: nil, episodes: filtered)
         let numbered = WiltedMacEpisodePresentationSections.visibleNumbering([section])
         XCTAssertEqual(numbered.positions, ["episode-8": 1, "episode-10": 2])
         XCTAssertEqual(numbered.count, 2, "VoiceOver's X of Y must count only rendered rows")
@@ -324,8 +324,8 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         var active = episode(id: "active", publishedAt: nil, sourceDuration: 60)
         active.downloadState = .downloading(received: 30, expected: 60)
         let source = [
-            WiltedMacMenuSection(id: "feed-a", title: "A", detail: nil, statusGroup: nil, episodes: [first]),
-            WiltedMacMenuSection(id: "feed-b", title: "B", detail: nil, statusGroup: nil, episodes: [last, active]),
+            WiltedMacLarderSection(id: "feed-a", title: "A", detail: nil, statusGroup: nil, episodes: [first]),
+            WiltedMacLarderSection(id: "feed-b", title: "B", detail: nil, statusGroup: nil, episodes: [last, active]),
         ]
         let displayed = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .feed)
         XCTAssertEqual(displayed.map(\.id), ["active-work", "feed-a", "feed-b"])

@@ -9,7 +9,7 @@ extension WiltedMacModelTests {
     // MARK: Phase 0 — the two-destination restructure
 
     func testNavigationHasExactlyTheThreeSurvivingDestinations() {
-        XCTAssertEqual(WiltedMacNavigation.allCases, [.menu, .feeds, .settings])
+        XCTAssertEqual(WiltedMacNavigation.allCases, [.larder, .feeds, .settings])
         XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Feeds", "Settings"])
     }
 
@@ -21,19 +21,19 @@ extension WiltedMacModelTests {
         )
     }
 
-    func testARestoredSelectionNamingARetiredDestinationResolvesToTheMenu() {
-        XCTAssertEqual(WiltedMacNavigation.restored(from: "library"), .menu)
-        XCTAssertEqual(WiltedMacNavigation.restored(from: "processor"), .menu)
+    func testARestoredSelectionNamingARetiredDestinationResolvesToTheLarder() {
+        XCTAssertEqual(WiltedMacNavigation.restored(from: "library"), .larder)
+        XCTAssertEqual(WiltedMacNavigation.restored(from: "processor"), .larder)
         XCTAssertEqual(WiltedMacNavigation.restored(from: "feeds"), .feeds)
-        XCTAssertEqual(WiltedMacNavigation.restored(from: "menu"), .menu)
+        XCTAssertEqual(WiltedMacNavigation.restored(from: "menu"), .larder)
         XCTAssertEqual(WiltedMacNavigation.restored(from: "settings"), .settings)
-        XCTAssertEqual(WiltedMacNavigation.restored(from: nil), .menu,
+        XCTAssertEqual(WiltedMacNavigation.restored(from: nil), .larder,
                        "no stored selection lands on the one waiting place")
-        XCTAssertEqual(WiltedMacNavigation.restored(from: "sideways"), .menu,
+        XCTAssertEqual(WiltedMacNavigation.restored(from: "sideways"), .larder,
                        "an unreadable selection resolves rather than crashing")
     }
 
-    func testAStoredRetiredDestinationRestoresToTheMenu() {
+    func testAStoredRetiredDestinationRestoresToTheLarder() {
         let directory = temporaryDirectory("navigation-restore")
         defer { try? FileManager.default.removeItem(at: directory) }
         let suite = WiltedMacTestPreferences.suiteName("navigation-restore-tests")
@@ -45,13 +45,13 @@ extension WiltedMacModelTests {
         let fromLibrary = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory, preferences: preferences
         )
-        XCTAssertEqual(fromLibrary.selectedNavigation, .menu, "the retired Larder resolves to the Menu")
+        XCTAssertEqual(fromLibrary.selectedNavigation, .larder, "the retired Larder resolves to the Larder")
 
         preferences.set("processor", forKey: WiltedMacModel.selectedNavigationPreferenceKey)
         let fromProcessor = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory, preferences: preferences
         )
-        XCTAssertEqual(fromProcessor.selectedNavigation, .menu, "the retired Prep resolves to the Menu")
+        XCTAssertEqual(fromProcessor.selectedNavigation, .larder, "the retired Prep resolves to the Larder")
 
         preferences.set("settings", forKey: WiltedMacModel.selectedNavigationPreferenceKey)
         let fromSettings = WiltedMacModel(
@@ -105,38 +105,38 @@ extension WiltedMacModelTests {
         // Nothing is kept yet: every episode is in Feeds and none is waiting.
         XCTAssertEqual(Set(model.feedsEpisodes.map(\.id)),
                        Set([available.id, downloaded.id, preparing.id, ready.id]))
-        XCTAssertTrue(model.menuWaitingEpisodes.isEmpty)
+        XCTAssertTrue(model.larderWaitingEpisodes.isEmpty)
         XCTAssertTrue(
             Set(model.feedsEpisodes.map(\.id))
-                .isDisjoint(with: Set(model.menuWaitingEpisodes.map(\.id))),
+                .isDisjoint(with: Set(model.larderWaitingEpisodes.map(\.id))),
             "no episode may appear on both destinations"
         )
 
-        // Kept: every episode is waiting, each in exactly one Menu group, and
+        // Kept: every episode is waiting, each in exactly one Larder group, and
         // none remains in Feeds.
         for value in [available, downloaded, preparing, ready] {
             model.seedPodcastQueueMembershipForTesting(value)
         }
         XCTAssertTrue(model.feedsEpisodes.isEmpty)
-        XCTAssertEqual(model.menuWaitingEpisodes.count, 4)
-        let grouped = WiltedMacMenuGroup.allCases.flatMap { model.menuEpisodes(in: $0) }
+        XCTAssertEqual(model.larderWaitingEpisodes.count, 4)
+        let grouped = WiltedMacLarderGroup.allCases.flatMap { model.larderEpisodes(in: $0) }
         XCTAssertEqual(grouped.count, 4, "each waiting episode appears in exactly one group")
-        XCTAssertEqual(Set(grouped.map(\.id)), Set(model.menuWaitingEpisodes.map(\.id)))
+        XCTAssertEqual(Set(grouped.map(\.id)), Set(model.larderWaitingEpisodes.map(\.id)))
     }
 
     func testAFeedsRowOffersExactlyKeepAndSkip() throws {
         XCTAssertEqual(WiltedMacFeedsAction.allCases.map(\.rawValue), ["Keep", "Skip"],
-                       "Feeds asks one question; every other step belongs on the Menu")
+                       "Feeds asks one question; every other step belongs on the Larder")
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("ForEach(WiltedMacFeedsAction.allCases)"),
                       "the inbox row's buttons are that list, not a hand-kept set")
     }
 
-    func testKeepPutsAnEpisodeOnTheMenuWithoutTouchingItsAudio() async throws {
+    func testKeepPutsAnEpisodeOnTheLarderWithoutTouchingItsAudio() async throws {
         let directory = wiltedTemporaryDirectory("keep-preserves-audio")
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
-        let episodeID = try await installPreparedMenuEpisode(
+        let episodeID = try await installPreparedLarderEpisode(
             into: store, directory: directory, suffix: "keep-preserves-audio",
             durationSeconds: 600, playbackSeconds: 12
         )
@@ -168,8 +168,8 @@ extension WiltedMacModelTests {
         model.keepEpisode(prepared)
         await waitForFeedDecisionWriters(model)
 
-        XCTAssertTrue(model.podcastQueueIDs.contains(prepared.id), "the kept episode waits on the Menu")
-        XCTAssertTrue(model.menuWaitingEpisodes.contains { $0.id == prepared.id })
+        XCTAssertTrue(model.podcastQueueIDs.contains(prepared.id), "the kept episode waits on the Larder")
+        XCTAssertTrue(model.larderWaitingEpisodes.contains { $0.id == prepared.id })
         XCTAssertFalse(model.feedsEpisodes.contains { $0.id == prepared.id })
         guard let after = model.episodes.first(where: { $0.id == prepared.id }) else {
             return XCTFail("the kept row must still exist")
@@ -206,28 +206,28 @@ extension WiltedMacModelTests {
         model.seedPodcastQueueMembershipForTesting(episode)
 
         XCTAssertFalse(model.feedsEpisodes.contains { $0.id == episode.id },
-                       "an episode waiting on the Menu is not a Feeds arrival")
+                       "an episode waiting on the Larder is not a Feeds arrival")
     }
 
-    func testMenuGroupForEachReadinessState() {
+    func testLarderGroupForEachReadinessState() {
         XCTAssertEqual(
-            WiltedMacModel.menuGroup(for: destinationEpisode(
+            WiltedMacModel.larderGroup(for: destinationEpisode(
                 "group-available", download: .notDownloaded, preparation: .notPrepared)),
             .available
         )
         XCTAssertEqual(
-            WiltedMacModel.menuGroup(for: destinationEpisode(
+            WiltedMacModel.larderGroup(for: destinationEpisode(
                 "group-downloaded", download: .completed, preparation: .notPrepared)),
             .downloaded
         )
         XCTAssertEqual(
-            WiltedMacModel.menuGroup(for: destinationEpisode(
+            WiltedMacModel.larderGroup(for: destinationEpisode(
                 "group-failed", download: .completed, preparation: .failed("Preparation failed"))),
             .downloaded,
             "a failed preparation is still a downloaded episode needing the prepare step"
         )
         XCTAssertEqual(
-            WiltedMacModel.menuGroup(for: destinationEpisode(
+            WiltedMacModel.larderGroup(for: destinationEpisode(
                 "group-prepared", download: .completed, preparation: .prepared(summary: "Ready"))),
             .playable
         )
@@ -237,11 +237,11 @@ extension WiltedMacModelTests {
             "group-media-missing", download: .completed, preparation: .prepared(summary: "Ready")
         )
         missingMedia.isReadyMediaAvailable = false
-        XCTAssertEqual(WiltedMacModel.menuGroup(for: missingMedia), .downloaded)
+        XCTAssertEqual(WiltedMacModel.larderGroup(for: missingMedia), .downloaded)
     }
 
-    func testTheMenuGroupSequenceIsFixed() {
-        XCTAssertEqual(WiltedMacMenuGroup.allCases, [.playable, .downloaded, .available],
+    func testTheLarderGroupSequenceIsFixed() {
+        XCTAssertEqual(WiltedMacLarderGroup.allCases, [.playable, .downloaded, .available],
                        "available can be downloaded, downloaded can be prepared, prepared can be played")
     }
 
@@ -252,19 +252,19 @@ extension WiltedMacModelTests {
         model.installEpisodeForTesting(preparing)
         model.seedPodcastQueueMembershipForTesting(preparing)
 
-        XCTAssertEqual(WiltedMacModel.menuGroup(for: preparing), .downloaded,
+        XCTAssertEqual(WiltedMacModel.larderGroup(for: preparing), .downloaded,
                        "preparing is a state, not a group")
-        XCTAssertTrue(model.menuEpisodes(in: .downloaded).contains { $0.id == preparing.id })
-        XCTAssertFalse(model.menuEpisodes(in: .playable).contains { $0.id == preparing.id })
+        XCTAssertTrue(model.larderEpisodes(in: .downloaded).contains { $0.id == preparing.id })
+        XCTAssertFalse(model.larderEpisodes(in: .playable).contains { $0.id == preparing.id })
 
         // The row renders the one progress accessor, keyed by the episode id.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("model.preparationFraction(forEpisode: episode.id)"))
-        XCTAssertTrue(view.contains("wilted-menu-progress-"))
+        XCTAssertTrue(view.contains("wilted-larder-progress-"))
     }
 
-    func testASelectedMenuFilterRendersExactlyThatGroup() {
+    func testASelectedLarderFilterRendersExactlyThatGroup() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let available = destinationEpisode("filter-available", download: .notDownloaded, preparation: .notPrepared)
         let downloaded = destinationEpisode("filter-downloaded", download: .completed, preparation: .notPrepared)
@@ -275,19 +275,19 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        model.menuFilter = .downloaded
-        XCTAssertEqual(Set(model.menuFilteredEpisodes.map(\.id)),
-                       Set(model.menuEpisodes(in: .downloaded).map(\.id)))
-        XCTAssertEqual(model.menuFilteredEpisodes.map(\.id), [downloaded.id])
+        model.larderFilter = .downloaded
+        XCTAssertEqual(Set(model.larderFilteredEpisodes.map(\.id)),
+                       Set(model.larderEpisodes(in: .downloaded).map(\.id)))
+        XCTAssertEqual(model.larderFilteredEpisodes.map(\.id), [downloaded.id])
 
-        model.menuFilter = nil
-        XCTAssertEqual(Set(model.menuFilteredEpisodes.map(\.id)),
-                       Set(model.menuWaitingEpisodes.map(\.id)),
+        model.larderFilter = nil
+        XCTAssertEqual(Set(model.larderFilteredEpisodes.map(\.id)),
+                       Set(model.larderWaitingEpisodes.map(\.id)),
                        "the unfiltered selection is every waiting episode")
-        XCTAssertEqual(model.menuFilteredEpisodes.count, 3)
+        XCTAssertEqual(model.larderFilteredEpisodes.count, 3)
     }
 
-    func testEveryMenuCountReadsTheGroupAccessorItLabels() throws {
+    func testEveryLarderCountReadsTheGroupAccessorItLabels() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let available = destinationEpisode("count-available", download: .notDownloaded, preparation: .notPrepared)
         let downloaded = destinationEpisode("count-downloaded", download: .completed, preparation: .notPrepared)
@@ -302,22 +302,22 @@ extension WiltedMacModelTests {
 
         // One group, one set: a heading's count is the size of the rows it
         // labels, and the groups partition the waiting list exactly.
-        XCTAssertEqual(model.menuEpisodes(in: .available).map(\.id), [available.id])
-        XCTAssertEqual(model.menuEpisodes(in: .downloaded).map(\.id).sorted(),
+        XCTAssertEqual(model.larderEpisodes(in: .available).map(\.id), [available.id])
+        XCTAssertEqual(model.larderEpisodes(in: .downloaded).map(\.id).sorted(),
                        [downloaded.id, preparing.id].sorted())
-        XCTAssertEqual(model.menuEpisodes(in: .playable).map(\.id), [ready.id])
+        XCTAssertEqual(model.larderEpisodes(in: .playable).map(\.id), [ready.id])
         XCTAssertEqual(
-            WiltedMacMenuGroup.allCases.reduce(0) { $0 + model.menuEpisodes(in: $1).count },
-            model.menuWaitingEpisodes.count
+            WiltedMacLarderGroup.allCases.reduce(0) { $0 + model.larderEpisodes(in: $1).count },
+            model.larderWaitingEpisodes.count
         )
 
         // And the view draws every heading and chip from that accessor.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
-        XCTAssertTrue(view.contains("model.menuEpisodes(in: group).count"),
+        XCTAssertTrue(view.contains("model.larderEpisodes(in: group).count"),
                       "a heading or chip count must come from the group accessor")
-        XCTAssertFalse(view.contains("menuQueueSections"),
-                       "no parallel filter may rebuild the Menu list")
+        XCTAssertFalse(view.contains("larderQueueSections"),
+                       "no parallel filter may rebuild the Larder list")
     }
 
 }

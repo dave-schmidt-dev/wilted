@@ -371,7 +371,7 @@ assert_macos_ui_leg_is_executed() {
   assert_validation_contains 'macos-ui-tests) mac_ui_declared_test_count ;;'
   # A floor is a minimum, so a named journey can vanish while an unrelated new
   # test holds the count up. The gate asserts this one by identifier too.
-  assert_validation_contains 'testMenuOverridesAnOffPeakDeferralWithPrepareNow'
+  assert_validation_contains 'testLarderOverridesAnOffPeakDeferralWithPrepareNow'
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
   for method in testIntakeJourneyAcrossLarderFeedsAndSettings testEpisodeDecisionJourneyFromFeedsToLarder; do
     assert_contains "$method" "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift"

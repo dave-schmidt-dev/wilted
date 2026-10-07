@@ -7,14 +7,14 @@ import XCTest
 /// Dragging in the Larder: every position is reachable (first, middle, and the strip after the last
 /// row), a drop persists through the store, and anything that is not one queued episode is refused.
 @MainActor
-final class WiltedMacMenuDropTests: XCTestCase {
+final class WiltedMacLarderDropTests: XCTestCase {
     private let feedURL = URL(string: "https://feeds.example.test/drop.xml")!
     private let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
 
     /// A model on a real store with episodes "a", "b", "c", "d" queued in that order.
     private func model() async throws -> (WiltedMacModel, LocalLibraryStore, [String]) {
         let model = WiltedMacModel(
-            arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("menu-drop"),
+            arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("larder-drop"),
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
             preferences: WiltedMacTestPreferences.ephemeral())
         model.startStoreBootstrap()
@@ -61,22 +61,22 @@ final class WiltedMacMenuDropTests: XCTestCase {
         let (model, store, ids) = try await model()
         let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3])
 
-        XCTAssertTrue(model.dropMenuEpisodes([d], before: a), "first position")
+        XCTAssertTrue(model.dropLarderEpisodes([d], before: a), "first position")
         try await expectQueue([d, a, b, c], model, store)
 
-        XCTAssertTrue(model.dropMenuEpisodes([d], before: c), "middle position")
+        XCTAssertTrue(model.dropLarderEpisodes([d], before: c), "middle position")
         try await expectQueue([a, b, d, c], model, store)
 
-        XCTAssertTrue(model.dropMenuEpisodes([a], before: nil), "the strip after the last row")
+        XCTAssertTrue(model.dropLarderEpisodes([a], before: nil), "the strip after the last row")
         try await expectQueue([b, d, c, a], model, store)
     }
 
     func testDroppingUnderACalculatedSortSelectsCustomOrder() async throws {
         let (model, store, ids) = try await model()
-        model.menuSort = .alphabetical
-        await WiltedMacHeadless.eventually("the sort settles") { !model.isApplyingMenuSort }
-        XCTAssertTrue(model.dropMenuEpisodes([ids[0]], before: nil))
-        XCTAssertEqual(model.menuSort, .custom, "a drag is an explicit custom order")
+        model.larderSort = .alphabetical
+        await WiltedMacHeadless.eventually("the sort settles") { !model.isApplyingLarderSort }
+        XCTAssertTrue(model.dropLarderEpisodes([ids[0]], before: nil))
+        XCTAssertEqual(model.larderSort, .custom, "a drag is an explicit custom order")
         try await expectQueue([ids[1], ids[2], ids[3], ids[0]], model, store)
     }
 
@@ -94,10 +94,10 @@ final class WiltedMacMenuDropTests: XCTestCase {
             [ids[0], ids[1]],
         ]
         for payload in payloads {
-            XCTAssertFalse(model.dropMenuEpisodes(payload, before: ids[2]), "row refused \(payload)")
-            XCTAssertFalse(model.dropMenuEpisodes(payload, before: nil), "tail refused \(payload)")
+            XCTAssertFalse(model.dropLarderEpisodes(payload, before: ids[2]), "row refused \(payload)")
+            XCTAssertFalse(model.dropLarderEpisodes(payload, before: nil), "tail refused \(payload)")
         }
-        XCTAssertFalse(model.dropMenuEpisodes([ids[0]], before: unknown), "an unknown destination is refused")
+        XCTAssertFalse(model.dropLarderEpisodes([ids[0]], before: unknown), "an unknown destination is refused")
         XCTAssertEqual(model.podcastQueueIDs, prior, "the queue equals its prior order")
         XCTAssertNil(model.playbackOperationStatus, "no reorder was started")
         let durable = try await durableQueue(store)
@@ -106,13 +106,13 @@ final class WiltedMacMenuDropTests: XCTestCase {
 
     /// The row and the strip are the only drop targets; both go through the validating entry point.
     func testViewsRouteEveryDropThroughTheValidatingEntryPoint() throws {
-        let rows = try WiltedMacHeadless.viewSource("WiltedMacMenuView+Rows.swift")
-        let sections = try WiltedMacHeadless.viewSource("WiltedMacMenuView+Sections.swift")
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "model.dropMenuEpisodes(draggedIDs, before: episode.id)", in: rows), 1)
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "model.dropMenuEpisodes(draggedIDs, before: nil)", in: sections), 1)
+        let rows = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
+        let sections = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Sections.swift")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "model.dropLarderEpisodes(draggedIDs, before: episode.id)", in: rows), 1)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "model.dropLarderEpisodes(draggedIDs, before: nil)", in: sections), 1)
         for source in [rows, sections] {
             XCTAssertFalse(source.contains("draggedIDs.first"), "a drop must not read only the first payload")
         }
-        XCTAssertTrue(sections.contains("wilted-menu-drop-tail"))
+        XCTAssertTrue(sections.contains("wilted-larder-drop-tail"))
     }
 }

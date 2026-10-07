@@ -2,7 +2,7 @@ import AppKit
 import XCTest
 @testable import WiltedMac
 
-/// Headless form of the Settings and Menu journeys that used to launch the app under XCUITest:
+/// Headless form of the Settings and Larder journeys that used to launch the app under XCUITest:
 /// library publisher sync review, automation controls with quarantined-sync recovery, and Prepare now.
 @MainActor
 final class WiltedMacSettingsJourneyTests: XCTestCase {
@@ -127,7 +127,7 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
 
     /// Was `testMenuOverridesAnOffPeakDeferralWithPrepareNow`: pressing Prepare now has to end the
     /// deferral, not just change copy.
-    func testMenuOverridesAnOffPeakDeferralWithPrepareNow() async throws {
+    func testLarderOverridesAnOffPeakDeferralWithPrepareNow() async throws {
         let model = await WiltedMacHeadless.model(self, [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-deferred",
         ])
@@ -139,9 +139,9 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         // The row offers Prepare now exactly while the episode is deferred.
         XCTAssertTrue(model.isDeferredForOffPeak(episode.id),
                       "a deferred episode must offer a way past its off-peak window")
-        let rows = try WiltedMacHeadless.viewSource("WiltedMacMenuView+Rows.swift")
+        let rows = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
         XCTAssertTrue(rows.contains("if model.isDeferredForOffPeak(episode.id) {"))
-        XCTAssertTrue(rows.contains("wilted-menu-prepare-now-\\(episode.id)"))
+        XCTAssertTrue(rows.contains("wilted-larder-prepare-now-\\(episode.id)"))
         XCTAssertTrue(rows.contains("model.prepareDeferredEpisodeNow(episode)"))
 
         let kept = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
@@ -155,8 +155,8 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
             WiltedAutomationSettings(
                 refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
                 processingPolicy: policy, transcriptPolicy: settings.transcriptPolicy,
-                removeAds: settings.removeAds, autoAddPreparedToMenu: settings.autoAddPreparedToMenu,
-                downloadEverythingOnMenu: settings.downloadEverythingOnMenu,
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: settings.downloadEverythingOnLarder,
                 prepareEverythingDownloaded: settings.prepareEverythingDownloaded
             )
         }

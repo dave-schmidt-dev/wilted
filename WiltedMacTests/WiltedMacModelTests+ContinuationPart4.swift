@@ -542,8 +542,8 @@ extension WiltedMacModelTests {
         // shelf opposite to the queue: the earlier unfinished episodes sort
         // after the queue's last one, which is exactly the wrap a
         // queue-origin session must not take.
-        XCTAssertEqual(model.larderSort, .newest, "the Feeds sort is left at its default")
-        let shelfOrder = WiltedMacModel.sortedLarderEpisodes(model.episodes, by: model.larderSort).map(\.id)
+        XCTAssertEqual(model.feedsSort, .newest, "the Feeds sort is left at its default")
+        let shelfOrder = WiltedMacModel.sortedLarderEpisodes(model.episodes, by: model.feedsSort).map(\.id)
         XCTAssertEqual(shelfOrder, [ids[4].rawValue, ids[3].rawValue, ids[2].rawValue, ids[1].rawValue, ids[0].rawValue])
         XCTAssertNotEqual(shelfOrder, model.podcastQueueIDs,
                           "the default Feeds sort and the durable queue disagree about order")

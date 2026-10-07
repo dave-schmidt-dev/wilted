@@ -7,19 +7,19 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// Absorbs:
     /// - testEachDestinationExclusivelyOccupiesTheDetailRegion
     /// - testSidebarListsDestinationsOnlyAndNotTheArticleList (sidebar assertion only)
-    /// - testFeedsPageOwnsSubscribingAndTheMenuAsksForAnArticle
-    /// - testMenuArticleRowOffersRemoval
+    /// - testFeedsPageOwnsSubscribingAndTheLarderAsksForAnArticle
+    /// - testLarderArticleRowOffersRemoval
     /// - testFeedsPageListsPodcastFeedsWithPerFeedControls
     func testIntakeJourneyAcrossLarderFeedsAndSettings() {
         let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-window-width", "900"])
 
         let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
-        let navMenu = app.descendants(matching: .any)["wilted-navigation-menu"]
+        let navLarder = app.descendants(matching: .any)["wilted-navigation-larder"]
         let navSettings = app.descendants(matching: .any)["wilted-navigation-settings"]
         XCTAssertTrue(navFeeds.waitForExistence(timeout: 5))
-        XCTAssertTrue(navMenu.waitForExistence(timeout: 5))
+        XCTAssertTrue(navLarder.waitForExistence(timeout: 5))
         XCTAssertTrue(navSettings.waitForExistence(timeout: 5))
-        XCTAssertEqual(navMenu.label, "Larder")
+        XCTAssertEqual(navLarder.label, "Larder")
         XCTAssertEqual(navFeeds.label, "Feeds")
         XCTAssertEqual(navSettings.label, "Settings")
         XCTAssertFalse(app.descendants(matching: .any)["wilted-navigation-nowPlaying"].exists)
@@ -34,12 +34,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-speed"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-keyboard-transports"].exists)
 
-        let menuEmpty = app.descendants(matching: .any)["wilted-menu-empty"]
+        let larderEmpty = app.descendants(matching: .any)["wilted-larder-empty"]
         // The address box lives behind this button, so the button is what marks
-        // the Menu as the destination that takes an article.
+        // the Larder as the destination that takes an article.
         let addArticle = app.descendants(matching: .any)["wilted-add-article-button"]
         let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
-        XCTAssertTrue(menuEmpty.waitForExistence(timeout: 5))
+        XCTAssertTrue(larderEmpty.waitForExistence(timeout: 5))
         XCTAssertTrue(addArticle.exists)
         XCTAssertFalse(syncControls.exists)
 
@@ -56,7 +56,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         // leave the address field unreachable and this test still passing.
         let trigger = app.descendants(matching: .any)["wilted-add-article-button"]
         XCTAssertTrue(trigger.waitForExistence(timeout: 8))
-        XCTAssertEqual(trigger.label, "Add article", "The Menu's button must name what it takes")
+        XCTAssertEqual(trigger.label, "Add article", "The Larder's button must name what it takes")
         trigger.click()
 
         let add = app.descendants(matching: .any)["wilted-add-link"]
@@ -89,8 +89,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
             "Delete left the article on screen; the row must disappear once the item is tombstoned."
         )
         XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-menu-empty"].waitForExistence(timeout: 10),
-            "Removing the only article must fall back to the Menu's empty state."
+            app.descendants(matching: .any)["wilted-larder-empty"].waitForExistence(timeout: 10),
+            "Removing the only article must fall back to the Larder's empty state."
         )
         XCTAssertTrue(
             addArticle.waitForExistence(timeout: 5),
@@ -104,7 +104,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(addArticle.exists)
-        XCTAssertFalse(menuEmpty.exists)
+        XCTAssertFalse(larderEmpty.exists)
 
         let card = app.descendants(matching: .any)["wilted-podcast-feeds"]
         XCTAssertTrue(card.waitForExistence(timeout: 8))
@@ -179,9 +179,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         app.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -600)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-mac-feeds-detail"].exists)
 
-        navMenu.click()
+        navLarder.click()
         XCTAssertTrue(addArticle.waitForExistence(timeout: 5))
-        XCTAssertTrue(menuEmpty.exists)
+        XCTAssertTrue(larderEmpty.exists)
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(syncControls.exists)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
@@ -195,8 +195,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
     }
 
     /// Absorbs:
-    /// - testMenuSearchFiltersAndTheFeedsRestorePath
-    /// - testUnpreparedEpisodeHasNoListeningActionAndTheMenuOwnsItsStep
+    /// - testLarderSearchFiltersAndTheFeedsRestorePath
+    /// - testUnpreparedEpisodeHasNoListeningActionAndTheLarderOwnsItsStep
     /// - the Feeds show-notes popover
     func testEpisodeDecisionJourneyFromFeedsToLarder() {
         let app = launch(arguments: [
@@ -260,39 +260,39 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(keep.waitForExistence(timeout: 5))
         keep.click()
 
-        // The Menu waits the kept row with its one next step.
-        let navMenu = app.descendants(matching: .any)["wilted-navigation-menu"]
-        navMenu.click()
-        let menuRow = app.descendants(matching: .any).matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-row-'")
+        // The Larder waits the kept row with its one next step.
+        let navLarder = app.descendants(matching: .any)["wilted-navigation-larder"]
+        navLarder.click()
+        let larderRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-larder-row-'")
         ).firstMatch
-        XCTAssertTrue(menuRow.waitForExistence(timeout: 8))
+        XCTAssertTrue(larderRow.waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Not downloaded"].exists)
         XCTAssertTrue(app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-download-'")
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-larder-download-'")
         ).firstMatch.exists, "an Available row offers its one next step")
         XCTAssertEqual(app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-play-'")
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-larder-play-'")
         ).count, 0, "an Available row cannot claim to be playable")
         XCTAssertEqual(app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-skip-' OR identifier BEGINSWITH 'wilted-menu-mark-completed-'")
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-larder-skip-' OR identifier BEGINSWITH 'wilted-larder-mark-completed-'")
         ).count, 0, "an unstarted row has no skip or completion action")
         XCTAssertTrue(app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-menu-remove-'")
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-larder-remove-'")
         ).firstMatch.exists)
 
-        // Search narrows the Menu and never the queue.
+        // Search narrows the Larder and never the queue.
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.click()
         search.typeText("Quiet")
-        XCTAssertTrue(menuRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(larderRow.waitForExistence(timeout: 5))
         search.typeKey("a", modifierFlags: .command)
         search.typeText("missing")
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-menu-empty"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-larder-empty"].waitForExistence(timeout: 5))
         search.typeKey("a", modifierFlags: .command)
         search.typeKey(.delete, modifierFlags: [])
-        XCTAssertTrue(menuRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(larderRow.waitForExistence(timeout: 5))
     }
 
     /// The words an element shows. macOS puts a Text's words in its value, not

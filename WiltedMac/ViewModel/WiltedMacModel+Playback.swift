@@ -82,7 +82,7 @@ extension WiltedMacModel {
     /// permanent, so a second way back was redundant and the listener has no
     /// equivalent — but menu and keyboard paths still need the operation.
     func returnToLibrary() {
-        selectedNavigation = .menu
+        selectedNavigation = .larder
     }
 
     func rewind() { seek(by: -Self.backwardSkipSeconds) }
@@ -129,7 +129,7 @@ extension WiltedMacModel {
                 }
                 await self.retireFinishedEpisode()
                 guard self.claimAutomaticAdvance(advance) == .owns else { return }
-                self.advanceToNextMenuEpisode()
+                self.advanceToNextLarderEpisode()
             } catch { self.playbackError = "This episode could not be marked completed." }
         }
 #endif
@@ -397,7 +397,7 @@ extension WiltedMacModel {
         episodes.append(episode)
     }
 
-    /// Stands in for the store's transcript answer, so the Menu's union of
+    /// Stands in for the store's transcript answer, so the Larder's union of
     /// visible text and transcript matches can be asserted without writing
     /// transcript rows to disk first.
     func installTranscriptSearchMatchesForTesting(_ ids: Set<String>) {
@@ -406,19 +406,19 @@ extension WiltedMacModel {
 
     /// Replaces the durable per-episode admission so a test can make one
     /// raise; passing nil restores the real playback path.
-    func installMenuAdmissionForTesting(_ operation: (@Sendable (ItemID) async throws -> Void)?) {
-        menuAdmissionForTesting = operation
+    func installLarderAdmissionForTesting(_ operation: (@Sendable (ItemID) async throws -> Void)?) {
+        larderAdmissionForTesting = operation
     }
 
     /// Test seam: the one preparation slot, so ordering can be driven without
     /// a worker.
     var preparationGateForTesting: WiltedPreparationGate { preparationGate }
 
-    /// Awaits one library reload and the automatic Menu admission it may have
+    /// Awaits one library reload and the automatic Larder admission it may have
     /// started, so a retry can be asserted after it settles.
     func reloadLibraryRowsForTesting() async {
         await reloadLibraryRows()
-        await menuAdditionTask?.value
+        await larderAdditionTask?.value
     }
 
     func installArticleForTesting(_ article: WiltedMacArticle) {

@@ -185,7 +185,7 @@ extension WiltedMacModelTests {
     }
 
     /// Skipping a started episode marks it finished and leaves every artifact
-    /// in place, the reversible exclusion the Menu mockup names.
+    /// in place, the reversible exclusion the Larder mockup names.
     func testSkippingAStartedEpisodeMarksItPlayedAndKeepsItsMedia() async throws {
         let fixture = try await skipFixture("started")
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -201,7 +201,7 @@ extension WiltedMacModelTests {
 
         let skipped = try XCTUnwrap(fixture.model.episodes.first { $0.id == fixture.episodeID.rawValue })
         XCTAssertTrue(fixture.model.isEpisodeFinished(skipped),
-                      "a skipped episode is finished, so the Menu row cannot offer Play again")
+                      "a skipped episode is finished, so the Larder row cannot offer Play again")
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.mediaURL.path),
                       "skip must not delete the media the undo needs")
         XCTAssertTrue(fixture.model.dismissedEpisodes.isEmpty, "skip is an exclusion, not a dismissal")
@@ -354,7 +354,7 @@ extension WiltedMacModelTests {
     /// restoring either must land on the same store operation and leave the
     /// same durable state -- `removalKind` cleared, read back from the store
     /// itself, not inferred from the in-memory projection. One episode is
-    /// retired (Feeds' Skip), the other dismissed (Menu's Remove), each
+    /// retired (Feeds' Skip), the other dismissed (Larder's Remove), each
     /// restored through its own surface control.
     func testRetiredAndDismissedEpisodesBothRestoreThroughTheSameStoreOperation() async throws {
         let directory = temporaryDirectory("unified-restore")

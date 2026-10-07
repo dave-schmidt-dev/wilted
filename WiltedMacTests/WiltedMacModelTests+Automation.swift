@@ -134,10 +134,10 @@ extension WiltedMacModelTests {
                                        + "now has nothing to override")
         let episode = try XCTUnwrap(model.episodes.first { $0.id == deferredID })
         XCTAssertTrue(model.isDeferredForOffPeak(episode.id))
-        XCTAssertEqual(WiltedMacModel.menuGroup(for: episode), .downloaded,
+        XCTAssertEqual(WiltedMacModel.larderGroup(for: episode), .downloaded,
                        "the deferred row sits in the group whose control offers Prepare now")
 
-        // The UI leg does not reach the Menu directly: it opens Feeds and
+        // The UI leg does not reach the Larder directly: it opens Feeds and
         // presses the first Keep. Replaying that here keeps this a proxy for
         // the journey rather than for initialisation alone.
         let kept = try XCTUnwrap(model.feedsEpisodes.first,
@@ -146,7 +146,7 @@ extension WiltedMacModelTests {
         await waitForFeedDecisionWriters(model)
         XCTAssertEqual(kept.id, deferredID,
                        "the leg keeps the first Feeds row, so that row has to be the deferred "
-                       + "one or the Menu never draws a Prepare now control")
+                       + "one or the Larder never draws a Prepare now control")
         XCTAssertTrue(model.isDeferredForOffPeak(deferredID),
                       "keeping the episode must not clear its deferral")
     }
