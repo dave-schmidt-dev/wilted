@@ -191,31 +191,31 @@ def build(captures, commit, date_iso, date_human, previous):
             "fig-menu-idle", "5.1-menu-idle",
             "The Menu destination showing Now Playing idle, the sort and filter controls, and the three groups",
             "<strong>5.1 Menu, idle.</strong> The default destination at launch, restoring here even from a "
-            "stored selection that named a retired route. Its detail pane is <code>wilted-mac-menu-detail</code>, "
+            "stored selection that named a retired route. Its detail pane is <code>wilted-mac-larder-detail</code>, "
             "and Now Playing embeds the compact player (<code>wilted-compact-player</code>) directly in the "
             "destination rather than in a separate rail, because Menu is the one destination that expands "
             "Transcript and Notes inline (5.4) instead of into the full-window overlay. Audio on Menu "
-            "(<code>wilted-menu-audio-total</code>) and Ready "
-            "(<code>wilted-menu-waiting-count</code>) sit beside the independent "
-            "<strong>Group by: Status</strong> menu (<code>wilted-menu-grouping</code>), which also offers "
+            "(<code>wilted-larder-audio-total</code>) and Ready "
+            "(<code>wilted-larder-waiting-count</code>) sit beside the independent "
+            "<strong>Group by: Status</strong> menu (<code>wilted-larder-grouping</code>), which also offers "
             "Feed and Date, and the always-labelled <strong>Sort by: Custom order</strong> menu "
-            "(<code>wilted-menu-sort</code>), which offers Custom order, Newest, Oldest, Length, Show, and "
+            "(<code>wilted-larder-sort</code>), which offers Custom order, Newest, Oldest, Length, Show, and "
             "Title. Filter "
-            "chips (<code>wilted-menu-filter-all</code> and one per "
-            "<code>wilted-menu-filter-&lt;group&gt;</code>) jump to a group's rows, and Download all new "
-            "(<code>wilted-menu-download-all</code>) and Prepare all downloaded "
-            "(<code>wilted-menu-prepare-all</code>) act across whichever rows are currently visible. While a "
+            "chips (<code>wilted-larder-filter-all</code> and one per "
+            "<code>wilted-larder-filter-&lt;group&gt;</code>) jump to a group's rows, and Download all new "
+            "(<code>wilted-larder-download-all</code>) and Prepare all downloaded "
+            "(<code>wilted-larder-prepare-all</code>) act across whichever rows are currently visible. While a "
             "bulk run is active, each action shows a spinner with its count at "
-            "<code>wilted-menu-download-all-progress</code> (&ldquo;Downloading N&hellip;&rdquo;) or "
-            "<code>wilted-menu-prepare-all-progress</code> (&ldquo;Preparing N&hellip;&rdquo;); its button stays "
+            "<code>wilted-larder-download-all-progress</code> (&ldquo;Downloading N&hellip;&rdquo;) or "
+            "<code>wilted-larder-prepare-all-progress</code> (&ldquo;Preparing N&hellip;&rdquo;); its button stays "
             "beside the spinner while other rows remain startable. No frame captures this state because no "
             "fixture holds a bulk run open. The three "
             "groups &mdash; Ready, Downloaded, Available &mdash; are the episode steps in order; each carries "
-            "its own bulk action and clear (<code>wilted-menu-group-&lt;group&gt;</code>, "
-            "<code>wilted-menu-clear-ready</code>, <code>wilted-menu-clear-downloaded</code>, "
-            "<code>wilted-menu-clear-available</code>). A row can be dragged to reorder, and a strip below the "
-            "last row (<code>wilted-menu-drop-tail</code>) accepts a drop to move an entry to the end. An empty "
-            "Menu reads &ldquo;Nothing is waiting&rdquo; at <code>wilted-menu-empty</code> instead of a blank "
+            "its own bulk action and clear (<code>wilted-larder-group-&lt;group&gt;</code>, "
+            "<code>wilted-larder-clear-ready</code>, <code>wilted-larder-clear-downloaded</code>, "
+            "<code>wilted-larder-clear-available</code>). A row can be dragged to reorder, and a strip below the "
+            "last row (<code>wilted-larder-drop-tail</code>) accepts a drop to move an entry to the end. An empty "
+            "Menu reads &ldquo;Nothing is waiting&rdquo; at <code>wilted-larder-empty</code> instead of a blank "
             "list.",
             captures),
         "menu-add": figure(
@@ -234,19 +234,19 @@ def build(captures, commit, date_iso, date_human, previous):
             "The Menu's Ready group showing a prepared episode's row",
             "<strong>5.3 Menu, a prepared episode.</strong> A successful terminal preparation journal matching "
             "the audio revision ready to play places the episode in the Ready group "
-            "(<code>wilted-menu-group-ready</code>, <code>wilted-menu-row-&lt;id&gt;</code>). Under a Status "
+            "(<code>wilted-larder-group-ready</code>, <code>wilted-larder-row-&lt;id&gt;</code>). Under a Status "
             "heading its subtitle is &ldquo;&lt;show&gt; &middot; &lt;release date&gt;&rdquo;; it appends "
             "&ldquo;&middot; &lt;group&gt;&rdquo; only when grouped by Feed or Date, so status is stated once. "
-            "Play now (<code>wilted-menu-play-&lt;id&gt;</code>) is the <code>play.fill</code> icon and Played "
-            "(<code>wilted-menu-played-&lt;id&gt;</code>) is <code>checkmark.circle.fill</code>; each keeps its "
+            "Play now (<code>wilted-larder-play-&lt;id&gt;</code>) is the <code>play.fill</code> icon and Played "
+            "(<code>wilted-larder-played-&lt;id&gt;</code>) is <code>checkmark.circle.fill</code>; each keeps its "
             "word as its tooltip and accessibility label. A started, unfinished row offers "
-            "Mark completed (<code>wilted-menu-mark-completed-&lt;id&gt;</code>) as a <code>checkmark</code>; "
+            "Mark completed (<code>wilted-larder-mark-completed-&lt;id&gt;</code>) as a <code>checkmark</code>; "
             "unstarted and completed rows have no second completion control. "
-            "Remove (<code>wilted-menu-remove-&lt;id&gt;</code>) is <code>minus.circle</code> with the word kept "
+            "Remove (<code>wilted-larder-remove-&lt;id&gt;</code>) is <code>minus.circle</code> with the word kept "
             "as its tooltip and accessibility label; it only takes the episode off the Menu's queue and returns "
             "it to the Feeds inbox without marking it completed. The active episode is shown in Now Playing "
             "rather than repeated in Larder. A running preparation shows its progress at "
-            "<code>wilted-menu-progress-&lt;id&gt;</code>, drawn in the Downloaded group so the row does not "
+            "<code>wilted-larder-progress-&lt;id&gt;</code>, drawn in the Downloaded group so the row does not "
             "change groups mid-run.",
             captures),
         "menu-transcript-inline": figure(
@@ -263,9 +263,9 @@ def build(captures, commit, date_iso, date_human, previous):
             "fig-menu-deferred-prepare-now", "5.5-menu-deferred-prepare-now",
             "The Menu's Downloaded group showing a deferred episode row with its Prepare now control",
             "<strong>5.5 Menu, an off-peak deferral.</strong> The deferred fixture is kept from Feeds and "
-            "lands in the Downloaded group (<code>wilted-menu-group-downloaded</code>, "
-            "<code>wilted-menu-row-&lt;id&gt;</code>) with the row's off-peak state visible as &ldquo;Waiting for "
-            "off-peak&rdquo;. The row offers Prepare now (<code>wilted-menu-prepare-now-&lt;id&gt;</code>) so the "
+            "lands in the Downloaded group (<code>wilted-larder-group-downloaded</code>, "
+            "<code>wilted-larder-row-&lt;id&gt;</code>) with the row's off-peak state visible as &ldquo;Waiting for "
+            "off-peak&rdquo;. The row offers Prepare now (<code>wilted-larder-prepare-now-&lt;id&gt;</code>) so the "
             "listener can override the window without changing Settings. This frame captures the control before "
             "it is activated; the Mac smoke test drives the activation and verifies that the deferral is removed.",
             captures),
@@ -373,12 +373,12 @@ def build(captures, commit, date_iso, date_human, previous):
             "fig-recovery-download", "8.1-recovery-download-retry",
             "A Menu row in the Available group reporting a failed download and offering retry",
             "<strong>8.1 Download failure and retry.</strong> The download-failure fixture drives a row in the "
-            "Menu's Available group to fail its download at <code>wilted-menu-download-&lt;id&gt;</code>. The "
+            "Menu's Available group to fail its download at <code>wilted-larder-download-&lt;id&gt;</code>. The "
             "Download control is the <code>arrow.down.circle</code> icon, with Download kept as its tooltip "
             "and accessibility label. The row's next-step control becomes the <code>arrow.clockwise</code> "
-            "Retry icon at <code>wilted-menu-retry-&lt;id&gt;</code>, the same control an interrupted or cancelled "
+            "Retry icon at <code>wilted-larder-retry-&lt;id&gt;</code>, the same control an interrupted or cancelled "
             "download shows; a download still in flight shows the <code>xmark.circle</code> Cancel download "
-            "icon at <code>wilted-menu-cancel-&lt;id&gt;</code> instead. Each word remains its tooltip and "
+            "icon at <code>wilted-larder-cancel-&lt;id&gt;</code> instead. Each word remains its tooltip and "
             "accessibility label. Neither the row nor any other control is disabled by the failure &mdash; the "
             "rest of the Menu keeps working while this one row waits to be retried.",
             captures),
@@ -453,13 +453,13 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="menu"><h2>5. Menu</h2>
-<p>Menu is the primary destination and the default route at launch. <code>WiltedMacNavigation.restored(from:)</code> resolves an unreadable, absent, or retired stored selection to Menu. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and the three destinations &mdash; <code>wilted-navigation-menu</code>, <code>wilted-navigation-feeds</code>, <code>wilted-navigation-settings</code> &mdash; pinned above the standing sidebar totals (<code>wilted-sidebar-ready-total</code>, <code>wilted-sidebar-downloaded-total</code>, <code>wilted-sidebar-menu-total</code>).</p>
+<p>Menu is the primary destination and the default route at launch. <code>WiltedMacNavigation.restored(from:)</code> resolves an unreadable, absent, or retired stored selection to Menu. The sidebar (<code>wilted-mac-sidebar</code>) holds the wordmark and the three destinations &mdash; <code>wilted-navigation-larder</code>, <code>wilted-navigation-feeds</code>, <code>wilted-navigation-settings</code> &mdash; pinned above the standing sidebar totals (<code>wilted-sidebar-ready-total</code>, <code>wilted-sidebar-downloaded-total</code>, <code>wilted-sidebar-larder-total</code>).</p>
 {figures["menu-idle"]}
 {figures["menu-add"]}
 {figures["menu-prepared"]}
 {figures["menu-transcript-inline"]}
 {figures["menu-deferred"]}
-<p>Per-episode controls carry the episode's own id rather than a content hash: <code>wilted-menu-row-&lt;id&gt;</code> for the row, with the next-step control, Skip, and Remove each keyed the same way. These identifiers are present in the Accessibility tree for every captured Menu frame.</p>
+<p>Per-episode controls carry the episode's own id rather than a content hash: <code>wilted-larder-row-&lt;id&gt;</code> for the row, with the next-step control, Skip, and Remove each keyed the same way. These identifiers are present in the Accessibility tree for every captured Menu frame.</p>
 </section>
 
 <section id="playback"><h2>6. Bottom rail and full-window player</h2>
