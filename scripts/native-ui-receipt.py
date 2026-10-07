@@ -25,7 +25,6 @@ EXPECTED_LEGS = (
     "wiltedkit-tests",
     "cloudsync-tests",
     "playback-tests",
-    "listener-tests",
     "wiltedproducer-tests",
     "macos-unit-tests",
     "ios-unit-tests",

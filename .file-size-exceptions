@@ -4,7 +4,6 @@
 # over 800 lines when this rule was adopted: split them when next substantially changed,
 # then delete the entry. Entries record a reason, never a line cap.
 CloudSync/Tests/WiltedCloudKitTests/CloudKitAdapterTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
-Listener/Tests/WiltedListenerTests/ListenerTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Runtime/src/wilted/ads.py legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Runtime/tests/test_ads.py legacy 2026-09-25: over 800 lines when the rule was adopted
 Producer/Tests/WiltedProducerTests/LocalLibrarySyncRepositoryTests.swift legacy 2026-09-25: over 800 lines when the rule was adopted

@@ -15,8 +15,6 @@ packages:
     path: Producer
   WiltedCloudKit:
     path: CloudSync
-  WiltedListener:
-    path: Listener
   WiltedPlayback:
     path: Playback
 
@@ -134,8 +132,6 @@ targets:
         product: WiltedCloudKit
       - package: WiltedCloudKit
         product: WiltedCloudKitLibrary
-      - package: WiltedListener
-        product: WiltedListener
       - package: WiltedPlayback
         product: WiltedPlayback
       # Built first, embedded in PlugIns/ by the script below (ordinary Siri requests, in the car too, are routed through it).
@@ -362,8 +358,6 @@ targets:
         product: WiltedCloudKit
       - package: WiltedCloudKit
         product: WiltedCloudKitLibrary
-      - package: WiltedListener
-        product: WiltedListener
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.mac.tests

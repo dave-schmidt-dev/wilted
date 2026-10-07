@@ -43,7 +43,7 @@ assert_absent() {
 }
 
 # Unknown, empty and malformed names fail closed before any leg starts.
-for case_spec in 'unknown|no-such-leg' 'mixed|wiltedkit-tests,no-such-leg' 'empty-value|' 'empty-name|wiltedkit-tests,,listener-tests'; do
+for case_spec in 'unknown|no-such-leg' 'mixed|wiltedkit-tests,no-such-leg' 'empty-value|' 'empty-name|wiltedkit-tests,,playback-tests'; do
   label="${case_spec%%|*}" value="${case_spec#*|}"
   log="$tmp_dir/$label.log"
   [[ "$(run_case "$label" "$log" "WILTED_GATE_LEGS=$value")" -ne 0 ]] || { cat "$log" >&2; exit 1; }
@@ -60,12 +60,12 @@ log="$tmp_dir/single.log"
 [[ "$(run_case single "$log" WILTED_GATE_LEGS=wiltedkit-tests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'native.leg.start name=wiltedkit-tests' "$log"
 [[ "$(grep -c '^native.leg.start' "$log")" -eq 1 ]] || { cat "$log" >&2; exit 1; }
-[[ "$(grep -c '^native.leg.skipped' "$log")" -eq 9 ]] || { cat "$log" >&2; exit 1; }
+[[ "$(grep -c '^native.leg.skipped' "$log")" -eq 8 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'native.leg.skipped name=macos-ui-tests reason=not-in-WILTED_GATE_LEGS' "$log"
 assert_contains 'native.complete failed_legs=0 total_legs=1 deferred_legs=0' "$log"
 assert_contains 'native.filtered selected=wiltedkit-tests skipped=xcodegen-reproducible cloudsync-tests' "$log"
 assert_contains 'receipt=never' "$log"
-assert_contains 'native.passed count=1 filtered=9' "$log"
+assert_contains 'native.passed count=1 filtered=8' "$log"
 if grep -Eq '^native\.passed count=[0-9]+$' "$log"; then
   printf '%s\n' 'assertion failed: a filtered run emitted the unqualified native.passed line' >&2
   exit 1
@@ -83,16 +83,16 @@ assert_contains 'native.complete failed_legs=0 total_legs=2 deferred_legs=0' "$l
 
 # Selecting the screen-seizing leg without the opt-in still defers it, and says so.
 log="$tmp_dir/deferred.log"
-[[ "$(run_case deferred "$log" WILTED_GATE_LEGS=listener-tests,macos-ui-tests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
+[[ "$(run_case deferred "$log" WILTED_GATE_LEGS=playback-tests,macos-ui-tests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'native.leg.deferred name=macos-ui-tests' "$log"
 assert_contains 'native.complete failed_legs=0 total_legs=1 deferred_legs=1' "$log"
-assert_contains 'native.passed count=1 deferred=1 filtered=8' "$log"
+assert_contains 'native.passed count=1 deferred=1 filtered=7' "$log"
 
-# An unfiltered run is unchanged: ten stubbed legs, no filter lines.
+# An unfiltered run is unchanged: nine stubbed legs, no filter lines.
 log="$tmp_dir/full.log"
 [[ "$(run_case full "$log" WILTED_MAC_UI=1)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
-assert_contains 'native.complete failed_legs=0 total_legs=10 deferred_legs=0' "$log"
-assert_contains 'native.passed count=10' "$log"
+assert_contains 'native.complete failed_legs=0 total_legs=9 deferred_legs=0' "$log"
+assert_contains 'native.passed count=9' "$log"
 assert_absent 'native.filtered' "$log"
 assert_absent 'native.leg.skipped' "$log"
 

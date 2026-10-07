@@ -378,9 +378,8 @@ leg_playback_tests() {
   assert_test_sources playback-tests "$package/Tests"
   require_tool swift
 
-  # The engine, audio session and Now Playing types moved out of the Listener
-  # package; keep a named case in the runner evidence so an empty or unrelated
-  # suite cannot satisfy the leg.
+  # Keep a named case in the runner evidence so an empty or unrelated suite
+  # cannot satisfy the leg.
   set +e
   run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package" 2>&1 | tee "$tmp_root/playback-tests.xctest.log" >&2
   local test_status="${PIPESTATUS[0]}"
@@ -388,33 +387,6 @@ leg_playback_tests() {
   if [[ "$test_status" -eq 0 ]]; then
     if ! grep -Fq 'the system payload carries the rates, a podcast media type, and the artist only when present' "$tmp_root/playback-tests.xctest.log"; then
       printf '%s\n' 'native.error Playback Now Playing payload case was not observed in the test log' >&2
-      return 1
-    fi
-  fi
-  return "$test_status"
-}
-
-leg_listener_tests() {
-  local package="$repo_root/Listener"
-  local cache_key='native-listener-tests'
-  [[ -d "$package" ]] || fail "missing Listener package: $package"
-  assert_test_sources listener-tests "$package/Tests"
-  require_tool swift
-
-  # These cases exercise the durable repository and offline playback paths;
-  # keep their names in the runner evidence so an empty or unrelated suite
-  # cannot satisfy the leg.
-  set +e
-  run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package" 2>&1 | tee "$tmp_root/listener-tests.xctest.log" >&2
-  local test_status="${PIPESTATUS[0]}"
-  set -e
-  if [[ "$test_status" -eq 0 ]]; then
-    if ! grep -Fq 'repository applies remote deletion and quarantines pending playback' "$tmp_root/listener-tests.xctest.log"; then
-      printf '%s\n' 'native.error Listener repository case was not observed in the test log' >&2
-      return 1
-    fi
-    if ! grep -Fq 'offline playback supports resume, rewind, restart, interruption, and route changes' "$tmp_root/listener-tests.xctest.log"; then
-      printf '%s\n' 'native.error Listener playback case was not observed in the test log' >&2
       return 1
     fi
   fi
