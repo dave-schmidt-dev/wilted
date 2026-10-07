@@ -112,9 +112,11 @@ extension WiltedMacModelTests {
         model.playEpisode(prepared)
         await model.waitForPlaybackOperationForTesting()
         try await settle(model)
+        // Reaching the end records the durable listening fact. Finishing the
+        // episode is left out on purpose: finishing retires it, and retiring
+        // reclaims its audio and revision records (W-INV-025), which would
+        // leave no ready revision to lose the file from.
         await model.simulatePodcastPlaybackReachedEndForTesting()
-        try await settle(model)
-        model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)
 
         let verifyStore = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
@@ -143,9 +145,6 @@ extension WiltedMacModelTests {
             "Prepared \u{00B7} Local audio missing — Download again"
         )
         XCTAssertTrue(afterDeletion.lifecyclePresentation.isFailure)
-        XCTAssertTrue(afterDeletion.isPlayed, "the durable listening fact must survive the file's absence")
-        XCTAssertNotNil(afterDeletion.retiredAt,
-                        "natural completion still retired it before the file went missing")
 
         let outcomeAfter = try await verifyStore.preparationOutcome(for: episodeID, revisionID: revisionID)
         XCTAssertEqual(outcomeAfter, outcomeBefore, "a missing file must not touch the durable preparation outcome")

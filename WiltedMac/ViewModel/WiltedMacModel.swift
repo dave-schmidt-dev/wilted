@@ -363,6 +363,9 @@ final class WiltedMacModel {
     /// that returns it immediately; the app injects the real resolver.
     let pipelineFingerprintResolution: @Sendable () async -> String?
     let invalidateStalePreparations: WiltedMacStaleInvalidation
+    /// The launch storage sweep, injectable so a failing or observed sweep can
+    /// be exercised apart from a store that will not open.
+    let reclaimStorage: WiltedMacMediaReclaim
     /// Injectable so a delayed or failing summary can be exercised apart from
     /// a store that will not open.
     let statisticsOperations: WiltedMacStatisticsOperations
@@ -518,6 +521,7 @@ final class WiltedMacModel {
          pipelineFingerprint: String? = nil,
          pipelineFingerprintResolution: (@Sendable () async -> String?)? = nil,
          staleInvalidationOverride: WiltedMacStaleInvalidation? = nil,
+         reclaimOverride: WiltedMacMediaReclaim? = nil,
          statisticsOperations: WiltedMacStatisticsOperations = .live,
          invalidationRules: [PodcastPreparationInvalidationRule] = PodcastPreparationPipeline.invalidationRules,
          retainedArtifactPresenter: ((URL) -> Void)? = nil,
@@ -582,6 +586,9 @@ final class WiltedMacModel {
             try await store.invalidateStalePodcastPreparations(
                 currentFingerprint: fingerprint, rules: rules
             )
+        }
+        self.reclaimStorage = reclaimOverride ?? { store, directories, excluded in
+            try await store.sweepUnreferencedMedia(in: directories, excluding: excluded)
         }
         self.retainedArtifactPresenter = retainedArtifactPresenter ?? { url in
             NSWorkspace.shared.activateFileViewerSelecting([url])

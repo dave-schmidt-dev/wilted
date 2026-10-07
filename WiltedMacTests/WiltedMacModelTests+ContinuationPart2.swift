@@ -356,7 +356,25 @@ extension WiltedMacModelTests {
         let restoredSecond = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
         XCTAssertNil(restoredSecond.retiredAt)
         XCTAssertNil(restoredSecond.removalKind)
-        XCTAssertTrue(model.canPlayEpisode(restoredSecond), "restored B must be playable again")
+        // W-INV-025: retiring B reclaimed its audio, so a restored B is back on
+        // the shelf but must be downloaded again before it is playable.
+        XCTAssertFalse(model.canPlayEpisode(restoredSecond), "restored B has no audio until it is downloaded again")
+        let redownloadStore = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        try await Self.addReadyEpisode(
+            secondID, guid: "manual-skip-abc-retired-2", feedID: feedID, feedURL: feedURL,
+            enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
+            directory: directory, store: redownloadStore, created: Timestamp(Date())
+        )
+        // Preparing again is what proves the new audio; the outcome row went
+        // with the revision it described.
+        let redownloadedRevision = try await redownloadStore.readyRevision(for: secondID)
+        try await redownloadStore.savePreparationOutcome(PodcastPreparationOutcome(
+            episodeID: secondID, revisionID: try XCTUnwrap(redownloadedRevision?.revision.revisionID),
+            policyDigest: "d", pipelineFingerprint: "f", semanticVersion: "v", producedAt: Timestamp(Date())
+        ))
+        await model.reloadLibraryRowsForTesting()
+        let redownloadedSecond = try XCTUnwrap(model.episodes.first { $0.id == secondID.rawValue })
+        XCTAssertTrue(model.canPlayEpisode(redownloadedSecond), "re-downloaded B must be playable again")
         XCTAssertTrue(model.canSelectNextEpisode, "restoring B makes Next enabled again")
         model.publishNowPlaying(force: true)
         XCTAssertEqual(commands.availability.last?.hasNext, true)
