@@ -5,7 +5,7 @@
 ## What `gate_test: test-gate.sh` proves
 
 Every invariant below names `test-gate.sh` as its gate. As of 2026-08-26 that
-script runs nine of its ten legs unconditionally and **defers the tenth**,
+script runs eight of its nine legs unconditionally and **defers the ninth**,
 `macos-ui-tests`, unless `WILTED_MAC_UI=1` (`make native-ui`).
 
 macOS XCUITest has no headless mode. It drives real HID events through
@@ -34,7 +34,7 @@ label reached the tree.
 ## Standing invariants
 
 ### W-INV-001 — No silent blocking waits
-area: ["WiltedMac/**", "WiltediOS/**", "Producer/**", "WiltedKit/**", "CloudSync/**", "Listener/**"]
+area: ["WiltedMac/**", "WiltediOS/**", "Producer/**", "WiltedKit/**", "CloudSync/**", "Playback/**"]
 gate_test: test-gate.sh
 threshold: 3
 rationale: Every network, subprocess, extraction, speech, transfer, cache, and other stall-prone operation exposes live, cancellable progress on the active UI surface and reaches a bounded failure state.
@@ -72,13 +72,13 @@ threshold: 3
 rationale: Playback state carries revision ID, position, completion, session epoch, explicit restart/rewind intent, and update time. Merge rules preserve intentional rewinds/restarts and reject incompatible revisions. After an explicit rewind or restart, later Mac and iPhone checkpoints retain that intent for the session; compatible pending listener playback rebases against fetched server state before retry. A position adopted from another device is stamped with the time that device saved it and is refused when it is not newer than the stored one, when its epoch is below the highest seen for the entry, when it is for another revision, or when the episode is finished or playing; a backward move by a newer record is an intentional rewind and starts a rewind session.
 
 ### W-INV-007 — CloudKit transfer with local cache
-area: ["WiltedKit/**", "WiltedMac/**", "WiltediOS/**", "CloudSync/**", "Listener/**"]
+area: ["WiltedKit/**", "WiltedMac/**", "WiltediOS/**", "CloudSync/**", "Playback/**"]
 gate_test: test-gate.sh
 threshold: 3
 rationale: CloudKit is a transfer service, not the source of truth or a real-time channel. Library state travels on a single-writer channel (only the Mac writes it) and each device keeps its own handoff record, so devices never overwrite one another's handoff state. Both apps retain local state; the Mac publishes an offer for a completed revision and uploads its audio only on request, as one verified asset (at most 250 MB) in its own WiltedMediaZone through raw operations, replacing bounded chunks for library sync. Every engine and scan is scoped to WiltedLibraryZone, so catalog fetches never stage audio, and iOS explicitly fetches that asset with progress, verifies its byte count and streaming SHA-256, and atomically caches it for offline playback; the asset record is deleted once every requesting device acknowledges it, or after 7 days. Persisted zone changes/deletions survive relaunch, but engine tokens advance only after corresponding local data or send acknowledgements commit; the legacy chunked article path keeps its own rule that pending chunks gate publication only for their own revision until it is retired. Every typed account change quarantines local work until explicit review resumes the current engine, and an operation generation prevents pre-quarantine fetch/send completions from committing afterward.
 
 ### W-INV-008 — Cross-target fixtures are authoritative
-area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Listener/**", "Producer/Tests/Fixtures/**", "Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests*.swift"]
+area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Playback/**", "Producer/Tests/Fixtures/**", "Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests*.swift"]
 gate_test: test-gate.sh
 threshold: 3
 rationale: Publish, decode, merge, completion, deletion, version mismatch, offline cache, partial failure, delayed delivery, typed account transitions, and deterministic account-change interleavings use shared fixtures so Mac and iOS cannot silently diverge.

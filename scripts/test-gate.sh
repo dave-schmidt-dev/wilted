@@ -86,14 +86,13 @@ leg_names=(
   wiltedkit-tests
   cloudsync-tests
   playback-tests
-  listener-tests
   wiltedproducer-tests
   macos-unit-tests
   ios-unit-tests
   macos-ui-tests
   ios-pixel-snapshot-tests
 )
-leg_reports=(none xctest xctest xctest xctest xctest count count count count)
+leg_reports=(none xctest xctest xctest xctest count count count count)
 # shellcheck source=lib/native-gate-staging.sh
 source "$repo_root/scripts/lib/native-gate-staging.sh"
 # shellcheck source=lib/native-gate-legs.sh
@@ -758,7 +757,7 @@ if [[ -n "$native_interrupt_test_command" ]]; then
   exit 0
 fi
 
-leg_fns=(leg_xcodegen_reproducible leg_wiltedkit_tests leg_cloudsync_tests leg_playback_tests leg_listener_tests leg_wiltedproducer_tests
+leg_fns=(leg_xcodegen_reproducible leg_wiltedkit_tests leg_cloudsync_tests leg_playback_tests leg_wiltedproducer_tests
   leg_macos_unit_tests leg_ios_unit_tests leg_macos_ui_tests leg_ios_ui_tests)
 wilted_gate_run_legs
 

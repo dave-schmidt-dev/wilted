@@ -48,7 +48,7 @@ log="$tmp_dir/select.log"
 assert_contains 'native.leg.start name=xcodegen-reproducible' "$log"
 assert_contains 'native.leg.start name=watchos-build' "$log"
 assert_contains 'native.complete failed_legs=0 total_legs=2 deferred_legs=0' "$log"
-assert_contains 'native.passed count=2 filtered=9' "$log"
+assert_contains 'native.passed count=2 filtered=8' "$log"
 assert_absent 'native.leg.skipped name=watchos-build' "$log"
 
 # It fails the gate when the leg fails.
@@ -70,7 +70,7 @@ assert_absent 'native.leg.start' "$log"
 # The default gate is unchanged: the opt-in leg neither runs nor shows as skipped.
 log="$tmp_dir/full.log"
 [[ "$(run_case full "$log" WILTED_MAC_UI=1)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
-assert_contains 'native.passed count=10' "$log"
+assert_contains 'native.passed count=9' "$log"
 assert_absent 'watchos-build' "$log"
 
 # The real leg builds the WiltedWatch scheme for the watchOS simulator SDK and

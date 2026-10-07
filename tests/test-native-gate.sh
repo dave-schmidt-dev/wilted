@@ -53,6 +53,10 @@ assert_contains() {
   }
 }
 
+assert_absent() {
+  ! grep -Fq -- "$1" "$2" || { printf 'assertion failed: unexpected %s\n' "$1" >&2; exit 1; }
+}
+
 assert_validation_contains() {
   assert_contains "$1" "$native_gate_validation"
 }
@@ -153,31 +157,24 @@ assert_wiltedkit_sync_contract() {
   assert_validation_contains 'Playback Now Playing payload case was not observed'
   assert_contains 'cp "$repo_root/Playback/Package.swift" "$integration_root/Playback/Package.swift"' "$staging"
   assert_contains 'cp -R "$repo_root/Playback/Sources" "$repo_root/Playback/Tests" "$integration_root/Playback/"' "$staging"
-  assert_contains 'leg_listener_tests' "$gate"
-  assert_validation_contains "local cache_key='native-listener-tests'"
-  assert_validation_contains 'Listener repository case was not observed'
-  assert_validation_contains 'Listener playback case was not observed'
-  assert_contains 'cp "$repo_root/Listener/Package.swift" "$integration_root/Listener/Package.swift"' "$staging"
-  assert_contains 'cp -R "$repo_root/Listener/Sources" "$repo_root/Listener/Tests" "$integration_root/Listener/"' "$staging"
+  assert_absent 'leg_listener_tests' "$gate"
 }
 
 assert_wiltedkit_sync_contract
 
 assert_build_cache_routing_contract() {
-  local wiltedkit_cache cloudsync_cache playback_cache listener_cache producer_cache
+  local wiltedkit_cache cloudsync_cache playback_cache producer_cache
   local unique_count wiltedkit_block producer_block xcode_test_block mac_ui_block
   wiltedkit_cache="local cache_key='native-wiltedkit-tests'"
   cloudsync_cache="local cache_key='native-cloudsync-tests'"
   playback_cache="local cache_key='native-playback-tests'"
-  listener_cache="local cache_key='native-listener-tests'"
   producer_cache="local cache_key='native-wiltedproducer-tests'"
   assert_contains "$wiltedkit_cache" "$gate"
   assert_validation_contains "$cloudsync_cache"
   assert_validation_contains "$playback_cache"
-  assert_validation_contains "$listener_cache"
   assert_contains "$producer_cache" "$gate"
   unique_count="$(rg -o "local cache_key='native-[^']+'" "$gate" "$native_gate_validation" | sort -u | wc -l | tr -d ' ')"
-  [[ "$unique_count" -eq 5 ]] || {
+  [[ "$unique_count" -eq 4 ]] || {
     printf '%s\n' 'assertion failed: SwiftPM package legs share a cache key' >&2
     exit 1
   }
@@ -288,15 +285,12 @@ assert_capability_source_contract() {
   for wiring in \
     '  WiltedCloudKit:' \
     '    path: CloudSync' \
-    '  WiltedListener:' \
-    '    path: Listener' \
     '  WiltedPlayback:' \
     '    path: Playback' \
     '        product: WiltedSync' \
     '        product: WiltedCloudKit'; do
     assert_contains "$wiring" "$project"
   done
-  assert_contains '        product: WiltedListener' "$project"
   assert_contains '        product: WiltedPlayback' "$project"
   if rg -n 'com\.example\.wilted' \
     "$project" "$mac_development" "$mac_release" "$ios_development" "$ios_release"; then
@@ -579,8 +573,8 @@ fi
 success_log="$tmp_dir/success.log"
 success_status="$(run_case success "$success_log" bash "$gate")"
 [[ "$success_status" -eq 0 ]] || { cat "$success_log" >&2; exit 1; }
-assert_contains 'native.passed count=10' "$success_log"
-for package_leg in wiltedkit-tests cloudsync-tests playback-tests listener-tests wiltedproducer-tests; do
+assert_contains 'native.passed count=9' "$success_log"
+for package_leg in wiltedkit-tests cloudsync-tests playback-tests wiltedproducer-tests; do
   assert_contains "native.tests label=$package_leg reported=3 evidence=xctest" "$success_log"
 done
 
@@ -641,18 +635,6 @@ playback_failure_status="$(run_case playback-failure "$playback_failure_log" env
 assert_contains 'native.failed count=1' "$playback_failure_log"
 assert_contains 'forced_self_test_failure' "$playback_failure_log"
 
-listener_zero_log="$tmp_dir/listener-zero.log"
-listener_zero_status="$(run_case listener-zero "$listener_zero_log" env NATIVE_FORCE_ZERO_TEST_LEG=listener-tests bash "$gate")"
-[[ "$listener_zero_status" -ne 0 ]] || { cat "$listener_zero_log" >&2; exit 1; }
-assert_contains 'native.zero-tests label=listener-tests' "$listener_zero_log"
-assert_contains 'xctest=' "$listener_zero_log"
-
-listener_failure_log="$tmp_dir/listener-failure.log"
-listener_failure_status="$(run_case listener-failure "$listener_failure_log" env NATIVE_FORCE_FAIL_LEG=listener-tests bash "$gate")"
-[[ "$listener_failure_status" -ne 0 ]] || { cat "$listener_failure_log" >&2; exit 1; }
-assert_contains 'native.failed count=1' "$listener_failure_log"
-assert_contains 'forced_self_test_failure' "$listener_failure_log"
-
 producer_failure_log="$tmp_dir/producer-failure.log"
 producer_failure_status="$(run_case producer-failure "$producer_failure_log" env NATIVE_FORCE_FAIL_LEG=wiltedproducer-tests bash "$gate")"
 [[ "$producer_failure_status" -ne 0 ]] || { cat "$producer_failure_log" >&2; exit 1; }
@@ -698,7 +680,7 @@ assert_contains 'native.leg.deferred name=macos-ui-tests' "$mac_ui_deferred_log"
 assert_contains 'native.deferred count=1 legs=macos-ui-tests' "$mac_ui_deferred_log"
 # A deferred run must never emit the unqualified pass line, because that is the
 # line a human or a script reads as "every leg ran".
-assert_contains 'native.passed count=9 deferred=1' "$mac_ui_deferred_log"
+assert_contains 'native.passed count=8 deferred=1' "$mac_ui_deferred_log"
 if grep -Eq 'native\.passed count=[0-9]+$' "$mac_ui_deferred_log"; then
   printf '%s\n' 'assertion failed: deferred run emitted an unqualified native.passed line' >&2
   cat "$mac_ui_deferred_log" >&2
@@ -725,7 +707,7 @@ mac_ui_optin_status="$(run_case mac-ui-optin "$mac_ui_optin_log" \
 [[ "$mac_ui_optin_status" -eq 0 ]] || { cat "$mac_ui_optin_log" >&2; exit 1; }
 assert_contains 'native.leg.start name=macos-ui-tests' "$mac_ui_optin_log"
 assert_contains 'native.leg.complete name=macos-ui-tests status=0' "$mac_ui_optin_log"
-assert_contains 'native.passed count=10' "$mac_ui_optin_log"
+assert_contains 'native.passed count=9' "$mac_ui_optin_log"
 if grep -Fq 'native.leg.deferred' "$mac_ui_optin_log"; then
   printf '%s\n' 'assertion failed: opted-in run still deferred the macOS UI leg' >&2
   cat "$mac_ui_optin_log" >&2
@@ -795,4 +777,4 @@ if [[ "$retained_bundle_before" != "$retained_bundle_after" ]]; then
   exit 1
 fi
 
-printf '%s\n' 'native gate aggregate meta-test passed (ten native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed; the retained failure bundle is untouched)'
+printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed; the retained failure bundle is untouched)'
