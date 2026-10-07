@@ -200,7 +200,7 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         XCTAssertEqual(repeated.alreadyQueued, [active])
     }
 
-    func testSkipAndRestorePreserveMediaAndCompletedListeningState() async throws {
+    func testSkipDeletesAudioAndRestoreBringsTheEpisodeBackNotDownloadedKeepingCompletedListeningState() async throws {
         let fixture = try await makeFixture(count: 1, queueIndexes: [])
         addTeardownBlock { await fixture.model.close() }
         let itemID = fixture.itemIDs[0]
@@ -227,9 +227,12 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         let skippedListening = try await fixture.store.listeningState(for: itemID)
         XCTAssertEqual(skippedListening?.completedAt, fixture.createdAt)
         XCTAssertEqual(skippedListening?.lastRevisionID, revisionID)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
+        // W-INV-025: skipping deletes the audio and the records that named it.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path))
         let skippedRevisions = try await fixture.store.revisions(for: itemID)
-        XCTAssertEqual(skippedRevisions.count, 1)
+        XCTAssertEqual(skippedRevisions.count, 0)
+        let skippedDownload = try await fixture.store.download(for: itemID)
+        XCTAssertNil(skippedDownload)
 
         let skipped = try XCTUnwrap(fixture.model.skippedFeedEpisodes.first)
         fixture.model.restoreSkippedFeedEpisode(skipped)
@@ -237,9 +240,13 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         let restoredListening = try await fixture.store.listeningState(for: itemID)
         XCTAssertEqual(restoredListening?.completedAt, fixture.createdAt)
         XCTAssertNil(restoredListening?.lastRevisionID)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
+        // Restore brings the episode back as not downloaded; the audio is not
+        // resurrected.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path))
         let restoredRevisions = try await fixture.store.revisions(for: itemID)
-        XCTAssertEqual(restoredRevisions.count, 1)
+        XCTAssertEqual(restoredRevisions.count, 0)
+        let restoredDownload = try await fixture.store.download(for: itemID)
+        XCTAssertNil(restoredDownload)
     }
 
     func testOldQueueReadCannotReplaceCommittedKeepAndFreshReadStillPublishes() async throws {
