@@ -16,6 +16,8 @@ All notable changes to this project are documented in this file.
 - The Mac Now Playing pane's episode title is smaller, and the narrow sidebar rail shows the Ready audio time under a play icon.
 - iPhone Larder: rows grouped by feed no longer repeat the feed name, Sort and Group are titled sections ("None" is now "No Grouping"), Sort and Filter show a filled icon while active, and episode detail puts Share below Play and Download.
 - iPhone Settings: the device ID moves into a Diagnostics disclosure, sync detail appears inline only when sync has an error, and the listening totals are titled "This iPhone".
+- Records equal audio: finishing, skipping or retiring an episode now deletes its downloaded audio, and unsubscribing deletes the feed's audio, once the change is saved (a file another episode still uses stays). A restored episode comes back as not downloaded; Feeds keeps the history so it can be downloaded again. The unsubscribe confirmation says so.
+- Re-downloading an episode deletes the copy it replaces, and the Mac startup has a "Reclaiming storage" step that deletes audio no record names and clears records whose audio is missing.
 
 ### Fixed
 - Ad removal no longer cuts most of a short episode when two sponsor reads bracket the programme: a confirmed cut that would push the episode past the total advertising ceiling, or a pod extension that would reach the next read, is now kept in the audio and recorded as held instead of removed.
@@ -111,6 +113,8 @@ All notable changes to this project are documented in this file.
 - The episode-page prose extraction tier from episode preparation (90b07cc).
 - The Runtime nightly, scheduler and weather launchd jobs, their wrapper scripts, and the `install-launchd` and `uninstall-launchd` targets (5c38890).
 - The legacy Python app: its CLI, TUI, station runtime, scheduler, database, launcher and policy scripts (6d87838).
+- The legacy iOS listener model and the `Listener` package; the shared playback engine now lives in the `Playback` package (`WiltedPlayback`).
+- Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Changed
 

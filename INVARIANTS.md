@@ -161,7 +161,7 @@ gate_test: test-gate.sh
 threshold: 3
 rationale: The library publisher is bound to one iCloud account owner and sends nothing until the current account is the bound owner. An empty library binds its first owner without review; a library with data and no binding needs approval, even after relaunch; a sign-out or a different account holds sending until the owner approves in Settings, and a delayed fetch or send that completes after the change commits nothing. With no account, an unavailable check, a failed binding or a transport that cannot report accounts, nothing is sent and the status says why. Status text and logs never carry a raw account identifier or token, and no held state offers Sync now. Enforced by `testFirstOwnerOfAnEmptyLibraryBindsAndSurvivesRelaunchWithoutReview`, `testUnboundLibraryWithDataNeedsApprovalEvenAfterRelaunch`, `testADifferentAccountIsRetainedAsAConflictUntilApproved`, `testDelayedSendAfterAnAccountChangeCommitsNothingAndLaterSendsNeverLeave`, `testDelayedFetchAfterAnAccountChangeWritesNothing`, `testACheckThatFindsNoAccountKeepsSendingClosedWithAClearStatus`, `testAccountLogsAndStatusCarryNoRawIdentifierOrToken`, `testEveryAccountHoldHasPlainCopyAndNeverOffersSyncNow` and `testAccountReviewCopyAndApprovalThroughTheRealOwner`. Behavior against a live iCloud account is unverified.
 
-### W-INV-022 — Deletion needs confirmation and keeps downloaded files
+### W-INV-022 — Deletion needs confirmation
 area: ["WiltedMac/ViewModel/**", "Producer/Sources/WiltedProducer/LocalLibrary/**", "WiltedMacTests/WiltedMacDeletionSafetyTests.swift", "Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests+DeletionSafety.swift"]
 gate_test: test-gate.sh
 threshold: 3
