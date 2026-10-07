@@ -53,12 +53,12 @@ trap 'exit 129' HUP
 wilted_temp_mark_owned "$tmp_root"
 
 root="$tmp_root/record-root"
-mkdir -p "$root/WiltedKit" "$root/Producer" "$root/CloudSync" "$root/Listener"
+mkdir -p "$root/WiltedKit" "$root/Producer" "$root/CloudSync" "$root/Playback"
 cp "$repo_root/project.yml" "$root/project.yml"
 cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests" \
   "$repo_root/WiltedMacUITests" "$repo_root/WiltediOS" "$repo_root/WiltediOSTests" \
   "$repo_root/WiltediOSIntents" "$repo_root/WiltediOSUITests" "$root/"
-for package in WiltedKit Producer CloudSync Listener; do
+for package in WiltedKit Producer CloudSync Playback; do
   cp "$repo_root/$package/Package.swift" "$root/$package/Package.swift"
   cp -R "$repo_root/$package/Sources" "$repo_root/$package/Tests" "$root/$package/"
 done

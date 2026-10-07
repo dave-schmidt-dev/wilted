@@ -73,7 +73,7 @@ public enum ApplePodcastsLibrary {
     /// Every subscribed feed, with its downloaded episodes partitioned by
     /// whether the listener is finished with them. Feeds are ordered by title.
     public static func read(at source: URL) throws -> [Feed] {
-        let copy = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(
+        let copy = ScratchParent.url().appendingPathComponent(
             "wilted-apple-podcasts-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString).sqlite"
         )
         // The write-ahead log and shared-memory sidecars come along because the

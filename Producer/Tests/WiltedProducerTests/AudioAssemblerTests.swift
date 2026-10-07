@@ -140,7 +140,7 @@ struct AudioAssemblerTests {
     }
 
     private func temporaryDirectory() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("wilted-audio-\(UUID().uuidString)")
+        let url = OwnedTestTemp.root.appendingPathComponent("wilted-audio-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }

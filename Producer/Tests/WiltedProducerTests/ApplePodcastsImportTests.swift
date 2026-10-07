@@ -132,7 +132,7 @@ struct ApplePodcastsImportTests {
     }
 
     @Test func reportsAnUnreadableSourceRatherThanReturningNothing() {
-        let missing = FileManager.default.temporaryDirectory
+        let missing = OwnedTestTemp.root
             .appendingPathComponent("wilted-absent-\(UUID().uuidString).sqlite")
         #expect(throws: ApplePodcastsLibrary.ReadError.self) { try ApplePodcastsLibrary.read(at: missing) }
     }
@@ -155,7 +155,7 @@ struct ApplePodcastsImportTests {
     /// Builds the two Apple Podcasts tables this reader touches, with the
     /// columns it reads. Only the shape matters, so the fixture stays small.
     private func fixture(rows: [Row], function: String = #function) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
+        let url = OwnedTestTemp.root
             .appendingPathComponent("wilted-apple-fixture-\(function)-\(UUID().uuidString).sqlite")
         var handle: OpaquePointer?
         guard sqlite3_open(url.path, &handle) == SQLITE_OK, let database = handle else {

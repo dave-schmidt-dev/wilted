@@ -21,7 +21,7 @@ private actor RecordingSyncTransport: SyncTransport {
 
 final class LocalLibrarySyncRepositoryTests: XCTestCase {
     private func storeURL(_ name: String = #function) -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("wilted-sync-\(name)-\(UUID().uuidString)").appendingPathComponent("library.sqlite")
+        OwnedTestTemp.root.appendingPathComponent("wilted-sync-\(name)-\(UUID().uuidString)").appendingPathComponent("library.sqlite")
     }
 
     private func article(_ suffix: String = "alpha") throws -> Article {

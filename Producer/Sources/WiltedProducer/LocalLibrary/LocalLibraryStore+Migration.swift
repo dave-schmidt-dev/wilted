@@ -174,7 +174,7 @@ extension LocalLibraryStore {
     private nonisolated static func withMigrationValidationDirectory<T>(
         manager: FileManager, sourceName: String, operation: (URL) throws -> T
     ) throws -> T {
-        let directory = manager.temporaryDirectory.appendingPathComponent(
+        let directory = ScratchParent.url(manager).appendingPathComponent(
             "wilted-migration-validation-\(UUID().uuidString)", isDirectory: true
         )
         try manager.createDirectory(at: directory, withIntermediateDirectories: true)

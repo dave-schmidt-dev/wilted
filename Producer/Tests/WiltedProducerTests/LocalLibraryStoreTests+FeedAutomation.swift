@@ -98,7 +98,7 @@ final class LocalLibraryFeedAutomationTests: XCTestCase {
     }
 
     private func copiedFixture(_ name: String) throws -> URL {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("wilted-v16-\(UUID().uuidString)", isDirectory: true)
+        let directory = OwnedTestTemp.root.appendingPathComponent("wilted-v16-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         directories.append(directory)
         let copied = directory.appendingPathComponent(name)
@@ -107,7 +107,7 @@ final class LocalLibraryFeedAutomationTests: XCTestCase {
     }
 
     private func subscribedStore() async throws -> (LocalLibraryStore, ItemID, PodcastEpisode) {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("wilted-automation-\(UUID().uuidString)", isDirectory: true)
+        let directory = OwnedTestTemp.root.appendingPathComponent("wilted-automation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         directories.append(directory)
         let feedURL = URL(string: "https://podcasts.example.test/automation.xml")!

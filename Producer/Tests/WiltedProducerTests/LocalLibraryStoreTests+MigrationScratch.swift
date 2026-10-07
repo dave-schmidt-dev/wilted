@@ -5,7 +5,7 @@ import XCTest
 extension LocalLibraryStoreTests {
     func testMigrationValidationScratchIsRemovedWhenCopyThrows() throws {
         var validationURL: URL?
-        let missingSource = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let missingSource = OwnedTestTemp.root.appendingPathComponent(UUID().uuidString)
         XCTAssertThrowsError(
             try LocalLibraryStore.withMigrationValidationDirectoryForTesting { destination in
                 validationURL = destination

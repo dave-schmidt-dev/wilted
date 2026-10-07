@@ -80,7 +80,7 @@ final class LocalLibraryStoreTests: XCTestCase {
     struct ForcedMigrationFailure: Error {}
 
     func makeURL(_ name: String = #function) -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("wilted-store-\(name)-\(UUID().uuidString)").appendingPathComponent("library.sqlite")
+        OwnedTestTemp.root.appendingPathComponent("wilted-store-\(name)-\(UUID().uuidString)").appendingPathComponent("library.sqlite")
     }
 
     func article() throws -> Article {
