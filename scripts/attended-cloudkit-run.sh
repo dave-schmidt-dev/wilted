@@ -135,6 +135,18 @@ verify_artifact() {
     || fail "$label is not signed for team $wilted_development_team"
   info "$label signed by Apple Development, team=$wilted_development_team"
   codesign --verify --strict "$app" || fail "$label signature does not verify"
+  verify_nested_signatures "$label" "$app"
+}
+
+# The outer check does not descend into embedded bundles. An incremental build
+# can swap a nested app's embedded profile without re-signing it; the outer app
+# still verifies, but the device rejects the nested install (0xe8008017).
+verify_nested_signatures() {
+  local label="$1" app="$2" nested
+  while IFS= read -r -d '' nested; do
+    codesign --verify --strict "$nested" \
+      || fail "$label nested ${nested#"$app"/} signature does not verify; delete the built products and rebuild"
+  done < <(find "$app/Watch" "$app/PlugIns" -maxdepth 1 \( -name '*.app' -o -name '*.appex' \) -print0 2>/dev/null)
 }
 
 # Automatic signing must override the credential-free `-` identity and the

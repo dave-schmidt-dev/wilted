@@ -42,6 +42,7 @@ expected_legs=(
   "test-release-wrappers"
   "test-file-size"
   "test-attended-library-sync"
+  "test-attended-nested-signature"
   "test-test-product-metadata"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then

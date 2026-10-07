@@ -20,6 +20,7 @@ All notable changes to this project are documented in this file.
 - Re-downloading an episode deletes the copy it replaces, and the Mac startup has a "Reclaiming storage" step that deletes audio no record names and clears records whose audio is missing.
 
 ### Fixed
+- Attended iPhone builds now fail when the embedded Watch app's signature no longer verifies, instead of installing a Watch app the Watch silently refuses.
 - Ad removal no longer cuts most of a short episode when two sponsor reads bracket the programme: a confirmed cut that would push the episode past the total advertising ceiling, or a pod extension that would reach the next read, is now kept in the audio and recorded as held instead of removed.
 - An episode whose opening sponsor read cannot be told apart from the show's spoken ident is no longer refused outright: the opening is kept, the decision is recorded as held, and the rest of the episode (including its closing promo) is still prepared. The preparation report now also lists every commercial cue the review declined to cut, with its reason. Preparations made before this change are re-prepared once (`podcast-preparation-v6`).
 - Running the Mac unit tests (including the pre-push check) no longer opens or writes the real Wilted library: the test host now uses its own temporary library and deletes it when the tests finish.
