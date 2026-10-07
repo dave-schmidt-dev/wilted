@@ -44,6 +44,11 @@ extension WiltedMacModel {
 #endif
 
 #if canImport(WiltedProducer)
+    /// The launch storage-sweep log. A sweep that throws is not silent: it
+    /// lands here at `.warning`, retrievable with
+    /// `log show --predicate 'subsystem == "com.zerodelta.wilted.mac"'`.
+    private static let reclaimLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Reclaim")
+
     func performStoreBootstrap() async {
         let retainedPathsBeforeAttempt = await Task.detached { [libraryURL] in
             Set(Self.retainedV5StoreURLs(for: libraryURL).map(\.path))
@@ -102,14 +107,46 @@ extension WiltedMacModel {
             // library load, so the first rows drawn are already reconciled.
             announceStartupStep(.reconcilingWork)
             let ticketReconciliation = await reconcileWorkTickets(in: configuredStore)
-            if ticketReconciliation.errors.isEmpty {
+            // The launch storage sweep: exactly one directory, the downloaded
+            // episode audio itself -- never `<media>` whole, the preparation
+            // work directory, or the aligned-STT cache. The player has not
+            // been restored yet, so the store's queue state is the source for
+            // the file playback is about to open, and that file is excluded
+            // rather than assumed. A throwing sweep never blocks launch: the
+            // library is intact and the next launch sweeps again.
+            announceStartupStep(.reclaimingStorage)
+            var storageSweepErrors: [String] = []
+            do {
+                let report = try await reclaimStorage(
+                    configuredStore,
+                    [mediaDirectory.appendingPathComponent("PodcastAudio", isDirectory: true)],
+                    await currentPlaybackMediaExclusions(in: configuredStore)
+                )
+                Self.reclaimLog.info(
+                    "storage sweep removed files=\(report.files) bytes=\(report.bytes) clearedRecords=\(report.clearedRecords)"
+                )
+            } catch {
+                Self.reclaimLog.warning(
+                    "storage sweep failed: \(String(describing: error), privacy: .public)"
+                )
+                storageSweepErrors = ["storage: \(String(describing: error))"]
+            }
+            let ticketErrors = ticketReconciliation.errors.map { "\($0.subjectID): \($0.message)" }
+            if ticketErrors.isEmpty, storageSweepErrors.isEmpty {
                 announceStartupStep(.loadingLibrary)
+            } else if ticketErrors.isEmpty {
+                announceStartupStep(.recoveringWork(
+                    action: "continuing without reclaiming storage",
+                    done: 0,
+                    total: 0,
+                    errors: storageSweepErrors
+                ))
             } else {
                 announceStartupStep(.recoveringWork(
                     action: "continuing with recovered requests",
                     done: ticketReconciliation.totalCount,
                     total: ticketReconciliation.totalCount,
-                    errors: ticketReconciliation.errors.map { "\($0.subjectID): \($0.message)" }
+                    errors: ticketErrors + storageSweepErrors
                 ))
             }
             let library = try await loadLibrary(from: configuredStore)
@@ -203,6 +240,25 @@ extension WiltedMacModel {
             ))
         }
         startupTask = nil
+    }
+
+    /// The current playback episode's on-disk audio, excluded from the launch
+    /// sweep. The player has not been restored at this point, so the store is
+    /// the source: the completed download's file and the ready revision's
+    /// media are both excluded when present, so the episode the listener is
+    /// about to resume keeps its bytes.
+    private func currentPlaybackMediaExclusions(in store: LocalLibraryStore) async -> Set<URL> {
+        guard let currentEpisodeID = try? await store.podcastQueueState().currentEpisodeID else {
+            return []
+        }
+        var exclusions: Set<URL> = []
+        if let download = try? await store.download(for: currentEpisodeID), let localURL = download.localURL {
+            exclusions.insert(localURL)
+        }
+        if let revision = try? await store.readyRevision(for: currentEpisodeID) {
+            exclusions.insert(revision.mediaURL)
+        }
+        return exclusions
     }
 
     /// The stale-preparation failure's copy, separate from a store that will

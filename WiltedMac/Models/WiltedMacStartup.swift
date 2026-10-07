@@ -64,6 +64,10 @@ typealias WiltedMacStoreBootstrap = @Sendable (URL) async throws -> LocalLibrary
 /// be exercised apart from a store that will not open.
 typealias WiltedMacStaleInvalidation =
     @Sendable (LocalLibraryStore, String) async throws -> PodcastPreparationInvalidationResult
+/// The launch storage sweep over downloaded episode audio, injectable so a
+/// failing sweep can be exercised apart from a store that will not open.
+typealias WiltedMacMediaReclaim =
+    @Sendable (LocalLibraryStore, [URL], Set<URL>) async throws -> MediaSweepReport
 typealias WiltedMacPodcastDownloadTransportFactory = @Sendable () -> any PodcastDownloadTransporting
 typealias WiltedMacPodcastMediaValidatorFactory = @Sendable () -> any PodcastMediaValidating
 typealias WiltedMacPodcastPipelineRunnerFactory = @Sendable () -> any PodcastPipelineRunning
@@ -110,6 +114,7 @@ enum WiltedMacStartupStep: Equatable, Sendable {
     case checkingPreparationFingerprint
     case closingInterruptedRuns
     case reconcilingWork
+    case reclaimingStorage
     case recoveringWork(action: String, done: Int, total: Int, errors: [String] = [])
     case loadingLibrary
     case restoringPlayback
@@ -135,6 +140,7 @@ enum WiltedMacStartupStep: Equatable, Sendable {
         case .checkingPreparationFingerprint: text = "Checking preparation fingerprints"
         case .closingInterruptedRuns: text = "Closing interrupted preparations"
         case .reconcilingWork: text = "Reconciling background work"
+        case .reclaimingStorage: text = "Reclaiming storage"
         case let .recoveringWork(action, done, total, errors):
             let issue = errors.isEmpty ? "" : " \(errors.joined(separator: " "))"
             return "Recovering \(done) of \(total) requests: \(action).\(issue)"

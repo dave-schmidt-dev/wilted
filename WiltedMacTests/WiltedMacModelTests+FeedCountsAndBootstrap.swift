@@ -304,6 +304,7 @@ extension WiltedMacModelTests {
             .checkingPreparationFingerprint,
             .closingInterruptedRuns,
             .reconcilingWork,
+            .reclaimingStorage,
             .loadingLibrary,
             .restoringPlayback,
         ])
@@ -319,6 +320,148 @@ extension WiltedMacModelTests {
         XCTAssertEqual(Set(labels).count, labels.count,
                        "every awaited step renders one distinct string")
         XCTAssertEqual(model.startupState, .ready)
+    }
+
+    func testReclaimingStorageIsAnnouncedAfterReconcilingWorkAndBeforeLoadingLibrary() async throws {
+        let directory = temporaryDirectory("reclaim-step-order")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            pipelineFingerprint: "build-fingerprint",
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        var steps: [WiltedMacStartupStep] = []
+        model.startupStepObserverForTesting = { steps.append($0) }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        let reconciling = try XCTUnwrap(steps.firstIndex(of: .reconcilingWork))
+        let reclaiming = try XCTUnwrap(steps.firstIndex(of: .reclaimingStorage))
+        let loading = try XCTUnwrap(steps.firstIndex(of: .loadingLibrary))
+        XCTAssertTrue(reconciling < reclaiming, "the sweep is announced after work reconciliation")
+        XCTAssertTrue(reclaiming < loading, "the sweep is announced before the library loads")
+        XCTAssertEqual(model.startupState, .ready)
+    }
+
+    func testAThrowingStorageSweepStillReachesLoadingLibraryAndReady() async throws {
+        let directory = temporaryDirectory("reclaim-throwing")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in try LocalLibraryStore(url: url) },
+            reclaimOverride: { _, _, _ in throw StartupTestError.expectedFailure },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        var steps: [WiltedMacStartupStep] = []
+        model.startupStepObserverForTesting = { steps.append($0) }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        XCTAssertEqual(model.startupState, .ready,
+                       "a throwing sweep never blocks launch or fails startup")
+        func isRecovery(_ step: WiltedMacStartupStep) -> Bool {
+            if case .recoveringWork = step { return true }
+            return false
+        }
+        let reachedLoading = steps.contains(.loadingLibrary)
+        let recoveryLines = steps.filter(isRecovery)
+        XCTAssertTrue(reachedLoading || !recoveryLines.isEmpty,
+                      "loading is still announced, or the recovery line replaces it")
+        let storageErrors = steps.flatMap { step -> [String] in
+            guard case let .recoveringWork(_, _, _, errors) = step else { return [] }
+            return errors.filter { $0.hasPrefix("storage: ") }
+        }
+        XCTAssertEqual(storageErrors.count, 1,
+                       "the readout step list carries the storage error text exactly once")
+    }
+
+    func testTheLaunchSweepDeletesAnUnreferencedFileUnderPodcastAudioAndKeepsAReferencedOne() async throws {
+        let directory = temporaryDirectory("launch-sweep")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let audioDirectory = directory.appendingPathComponent("media", isDirectory: true)
+            .appendingPathComponent("PodcastAudio", isDirectory: true)
+        let preparationDirectory = directory.appendingPathComponent("media", isDirectory: true)
+            .appendingPathComponent("preparation", isDirectory: true)
+        for folder in [audioDirectory, preparationDirectory] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let orphanURL = audioDirectory.appendingPathComponent("orphan.mp3")
+        let referencedURL = audioDirectory.appendingPathComponent("referenced.mp3")
+        let preparationURL = preparationDirectory.appendingPathComponent("in-progress.wav")
+        let payload = Data("audio-bytes".utf8)
+        for url in [orphanURL, referencedURL, preparationURL] {
+            try payload.write(to: url)
+        }
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let episodeID = try ItemID(rawValue: "sweep-referenced-episode")
+        try await store.save(download: PodcastDownload(
+            episodeID: episodeID, status: .completed,
+            bytesReceived: Int64(payload.count), expectedByteCount: Int64(payload.count),
+            localURL: referencedURL, contentHash: Self.sha256Hex(payload), updatedAt: Timestamp(Date())
+        ))
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { _ in store },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        XCTAssertEqual(model.startupState, .ready)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphanURL.path),
+                       "a file under PodcastAudio that no record names is deleted")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: referencedURL.path),
+                       "a file a saved download record names stays")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preparationURL.path),
+                      "the preparation work directory is never swept")
+    }
+
+    func testTheLaunchSweepExcludesTheCurrentPlaybackFile() async throws {
+        let directory = temporaryDirectory("launch-sweep-exclusion")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let audioDirectory = directory.appendingPathComponent("media", isDirectory: true)
+            .appendingPathComponent("PodcastAudio", isDirectory: true)
+        try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        let currentURL = audioDirectory.appendingPathComponent("current.mp3")
+        let payload = Data("current-episode-audio".utf8)
+        try payload.write(to: currentURL)
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let episodeID = try ItemID(rawValue: "sweep-current-episode")
+        try await store.save(download: PodcastDownload(
+            episodeID: episodeID, status: .completed,
+            bytesReceived: Int64(payload.count), expectedByteCount: Int64(payload.count),
+            localURL: currentURL, contentHash: Self.sha256Hex(payload), updatedAt: Timestamp(Date())
+        ))
+        try await store.replacePodcastQueue(PodcastQueueState(
+            episodeIDs: [episodeID], currentEpisodeID: episodeID
+        ))
+
+        let recorder = ExcludedSetRecorder()
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { _ in store },
+            reclaimOverride: { store, directories, excluded in
+                recorder.record(excluded)
+                return try await store.sweepUnreferencedMedia(in: directories, excluding: excluded)
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        XCTAssertEqual(model.startupState, .ready)
+        let excludedSets = recorder.sets
+        XCTAssertEqual(excludedSets.count, 1, "the sweep runs once per launch")
+        XCTAssertTrue(excludedSets.first?.contains(currentURL) ?? false,
+                      "the queue's current episode file is excluded from the sweep")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: currentURL.path),
+                      "the current playback file survives the launch sweep")
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     func testStartupLoadingRendersTheCurrentStepNotOneFixedSentence() throws {
@@ -342,4 +485,24 @@ extension WiltedMacModelTests {
                        "the fixed sentence must be gone")
     }
 
+}
+
+/// Records the exclusion sets handed to an injected sweep. The seam is
+/// `@Sendable`, so it cannot capture and mutate a local variable the way the
+/// step observer does.
+private final class ExcludedSetRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedSets: [Set<URL>] = []
+
+    func record(_ set: Set<URL>) {
+        lock.lock()
+        recordedSets.append(set)
+        lock.unlock()
+    }
+
+    var sets: [Set<URL>] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedSets
+    }
 }
