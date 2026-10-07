@@ -11,13 +11,20 @@ struct WiltedMacNavigationState: Codable, Equatable {
     var isOffListExpanded = false
     /// The top visible anchor of each destination, keyed by `WiltedMacNavigation.rawValue`.
     var scrollAnchors: [String: String] = [:]
-    /// A `WiltedMacMenuGroup.rawValue`, nil for "All waiting".
-    var menuFilter: String?
+    /// A `WiltedMacLarderGroup.rawValue`, nil for "All waiting".
+    var larderFilter: String?
     var librarySearchQuery = ""
     var urlDraft = ""
     var podcastFeedDraft = ""
 
     init() {}
+
+    /// `larderFilter` is stored under `menuFilter`, the name it had before the Menu became the Larder.
+    private enum CodingKeys: String, CodingKey {
+        case selectedFeedEpisodeIDs, isOffListExpanded, scrollAnchors
+        case larderFilter = "menuFilter"
+        case librarySearchQuery, urlDraft, podcastFeedDraft
+    }
 
     /// Tolerant of a missing, added or reordered field: a stored value from another build restores
     /// what it can and defaults the rest.
@@ -25,11 +32,27 @@ struct WiltedMacNavigationState: Codable, Equatable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         selectedFeedEpisodeIDs = try values.decodeIfPresent(Set<String>.self, forKey: .selectedFeedEpisodeIDs) ?? []
         isOffListExpanded = try values.decodeIfPresent(Bool.self, forKey: .isOffListExpanded) ?? false
-        scrollAnchors = try values.decodeIfPresent([String: String].self, forKey: .scrollAnchors) ?? [:]
-        menuFilter = try values.decodeIfPresent(String.self, forKey: .menuFilter)
+        scrollAnchors = Self.migratingLegacyAnchors(
+            try values.decodeIfPresent([String: String].self, forKey: .scrollAnchors) ?? [:])
+        larderFilter = try values.decodeIfPresent(String.self, forKey: .larderFilter)
         librarySearchQuery = try values.decodeIfPresent(String.self, forKey: .librarySearchQuery) ?? ""
         urlDraft = try values.decodeIfPresent(String.self, forKey: .urlDraft) ?? ""
         podcastFeedDraft = try values.decodeIfPresent(String.self, forKey: .podcastFeedDraft) ?? ""
+    }
+
+    /// Anchors stored while the Larder was the Menu: the destination key was `menu` and its anchor ids began `menu-`.
+    /// An anchor already stored under the Larder's own name wins.
+    static func migratingLegacyAnchors(_ stored: [String: String]) -> [String: String] {
+        var result: [String: String] = [:]
+        for (key, anchor) in stored {
+            let legacy = key == WiltedMacNavigation.legacyLarderRawValue
+            let migratedKey = legacy ? WiltedMacNavigation.larder.rawValue : key
+            let migratedAnchor = legacy && anchor.hasPrefix("menu-") ? "larder-" + anchor.dropFirst("menu-".count) : anchor
+            if legacy, result[migratedKey] != nil { continue }
+            result[migratedKey] = migratedAnchor
+        }
+        if let current = stored[WiltedMacNavigation.larder.rawValue] { result[WiltedMacNavigation.larder.rawValue] = current }
+        return result
     }
 
     /// The value with everything that no longer exists dropped: episodes that left the library,
@@ -39,7 +62,7 @@ struct WiltedMacNavigationState: Codable, Equatable {
         result.selectedFeedEpisodeIDs.formIntersection(knownEpisodeIDs)
         let destinations = Set(WiltedMacNavigation.allCases.map(\.rawValue))
         result.scrollAnchors = scrollAnchors.filter { destinations.contains($0.key) }
-        if let filter = menuFilter, WiltedMacMenuGroup(rawValue: filter) == nil { result.menuFilter = nil }
+        if let filter = larderFilter, WiltedMacLarderGroup(rawValue: filter) == nil { result.larderFilter = nil }
         return result
     }
 

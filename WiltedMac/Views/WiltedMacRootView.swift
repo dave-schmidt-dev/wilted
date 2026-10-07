@@ -87,8 +87,8 @@ struct WiltedMacRootView: View {
                             switch model.selectedNavigation {
                             case .feeds:
                                 WiltedMacFeedsView(model: model)
-                            case .menu:
-                                WiltedMacMenuView(model: model, paneMode: shell.pane)
+                            case .larder:
+                                WiltedMacLarderView(model: model, paneMode: shell.pane)
                             case .settings:
                                 WiltedMacSettingsView(model: model)
                             }

@@ -327,7 +327,7 @@ extension WiltedMacModel: WiltedMacDecisionHost {
     func moveQueueEntry(from source: Int, to destination: Int, resulting: [ItemID]) async -> Bool {
         let wanted = resulting.map(\.rawValue)
         // A phone reorder is an explicit custom order; a calculated sort would redraw it away.
-        menuSort = .custom
+        larderSort = .custom
         moveEpisodeInUpNext(from: source, to: destination)
         for _ in 0..<Self.decisionMoveAttempts {
             if podcastQueueIDs == wanted { return true }

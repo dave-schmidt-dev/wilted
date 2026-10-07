@@ -242,12 +242,12 @@ struct WiltedMacPlayerContent: View {
         if model.currentEpisode != nil {
             expansionButton("Notes", expansion: .notes, id: "wilted-player-notes")
         }
-        if model.selectedNavigation != .menu {
-            Button("Larder (\(model.menuUpcomingEpisodeIDs.count))") {
+        if model.selectedNavigation != .larder {
+            Button("Larder (\(model.larderUpcomingEpisodeIDs.count))") {
                 presentation = nil
-                model.openMenu()
+                model.openLarder()
             }
-                .accessibilityLabel("Open Larder with \(model.menuUpcomingEpisodeIDs.count) episodes")
+                .accessibilityLabel("Open Larder with \(model.larderUpcomingEpisodeIDs.count) episodes")
                 .accessibilityIdentifier("wilted-player-menu")
         }
 

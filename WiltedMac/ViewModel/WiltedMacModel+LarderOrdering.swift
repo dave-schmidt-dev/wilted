@@ -16,25 +16,25 @@ import CloudKit
 extension WiltedMacModel {
     /// Downloaded rows genuinely preparing. A row waiting for the off-peak
     /// window carries a queued `.preparing` stage but is not running, and
-    /// `menuPreparableEpisodes` already offers it, so it is excluded here.
-    var menuPreparationsInFlight: [WiltedMacEpisode] {
-        menuUnfilteredEpisodes(in: .downloaded).filter {
+    /// `larderPreparableEpisodes` already offers it, so it is excluded here.
+    var larderPreparationsInFlight: [WiltedMacEpisode] {
+        larderUnfilteredEpisodes(in: .downloaded).filter {
             $0.preparationState.isRunning && !isDeferredForOffPeak($0.id)
         }
     }
 
-    /// The Menu's Available bulk action: the row's Download applied to the
+    /// The Larder's Available bulk action: the row's Download applied to the
     /// whole group, so acting on a group is one click rather than N.
-    func downloadAllAvailableMenuEpisodes() {
-        for episode in menuDownloadableEpisodes {
+    func downloadAllAvailableLarderEpisodes() {
+        for episode in larderDownloadableEpisodes {
             downloadEpisode(episode)
         }
     }
 
-    /// The Menu's Downloaded bulk action: the row's own step applied to the
+    /// The Larder's Downloaded bulk action: the row's own step applied to the
     /// group. Preparing stays in Downloaded with progress on each row.
-    func prepareAllDownloadedMenuEpisodes() {
-        for episode in menuPreparableEpisodes {
+    func prepareAllDownloadedLarderEpisodes() {
+        for episode in larderPreparableEpisodes {
             if isDeferredForOffPeak(episode.id) {
                 _ = prepareDeferredEpisodeNow(episode)
             } else {
@@ -52,24 +52,24 @@ extension WiltedMacModel {
 
     /// The group action names the queue mutation, not the retirement detail.
     /// Media, prepared cuts, transcripts and listening history are preserved.
-    func menuGroupClearLabel(_ group: WiltedMacMenuGroup) -> String {
-        let episodes = menuUnfilteredEpisodes(in: group)
+    func larderGroupClearLabel(_ group: WiltedMacLarderGroup) -> String {
+        let episodes = larderUnfilteredEpisodes(in: group)
         return "Remove all \(episodes.count) from Larder"
     }
 
-    /// Removes exactly the rows the group renders from the Menu, and nothing
+    /// Removes exactly the rows the group renders from the Larder, and nothing
     /// else: every row's download, prepared cut and transcript stay where they
     /// are.
     ///
     /// This is queue removal, not Skip or Completed. The whole group leaves
     /// Larder on the next render, then the durable queue is brought in line.
-    func clearMenuGroup(_ group: WiltedMacMenuGroup) {
+    func clearLarderGroup(_ group: WiltedMacLarderGroup) {
 #if canImport(WiltedProducer)
-        let episodes = menuUnfilteredEpisodes(in: group)
+        let episodes = larderUnfilteredEpisodes(in: group)
         guard !episodes.isEmpty else { return }
         let ids = Set(episodes.map(\.id))
         let wasPlaying = currentPodcastEpisodeID.map(ids.contains) ?? false
-        // The optimistic half: the whole group leaves the Menu on the next
+        // The optimistic half: the whole group leaves the Larder on the next
         // render, exactly as one row's removal does.
         podcastQueueIDs.removeAll { ids.contains($0) }
         // A bulk clear is not one episode's Skip, so nothing single is left
@@ -96,43 +96,43 @@ extension WiltedMacModel {
     /// vends exactly one); arbitrary text, unknown IDs and mixed payloads are
     /// refused with the order untouched.
     @discardableResult
-    func dropMenuEpisodes(_ payload: [String], before destinationID: String?) -> Bool {
+    func dropLarderEpisodes(_ payload: [String], before destinationID: String?) -> Bool {
         let dragged = Set(payload)
         guard dragged.count == 1, let draggedID = dragged.first,
               podcastQueueIDs.contains(draggedID) else { return false }
-        guard let destinationID else { return moveMenuEpisodeToEnd(draggedID) }
-        return moveMenuEpisode(draggedID, before: destinationID)
+        guard let destinationID else { return moveLarderEpisodeToEnd(draggedID) }
+        return moveLarderEpisode(draggedID, before: destinationID)
     }
 
     /// Moves a durable entry before another. Returns false for a payload
-    /// that is not one of the Menu's episodes or a no-op destination, so the
+    /// that is not one of the Larder's episodes or a no-op destination, so the
     /// drop handler can refuse it rather than claiming a move that never
     /// happened.
     @discardableResult
-    func moveMenuEpisode(_ episodeID: String, before destinationID: String) -> Bool {
+    func moveLarderEpisode(_ episodeID: String, before destinationID: String) -> Bool {
         guard episodeID != destinationID,
               let source = podcastQueueIDs.firstIndex(of: episodeID),
               let destination = podcastQueueIDs.firstIndex(of: destinationID) else { return false }
         // A drag is an explicit custom order. Leaving a calculated sort
         // selected would immediately redraw the listener's manual move away.
-        menuSort = .custom
+        larderSort = .custom
         moveEpisodeInUpNext(
             from: source,
-            to: Self.menuInsertionIndex(source: source, destination: destination)
+            to: Self.larderInsertionIndex(source: source, destination: destination)
         )
         return true
     }
 
     /// Moves a durable entry to the end. The tail strip below the last row
-    /// passes the queue's count, which `menuInsertionIndex` reads as "after
+    /// passes the queue's count, which `larderInsertionIndex` reads as "after
     /// the last row".
     @discardableResult
-    func moveMenuEpisodeToEnd(_ episodeID: String) -> Bool {
+    func moveLarderEpisodeToEnd(_ episodeID: String) -> Bool {
         guard let source = podcastQueueIDs.firstIndex(of: episodeID) else { return false }
-        menuSort = .custom
+        larderSort = .custom
         moveEpisodeInUpNext(
             from: source,
-            to: Self.menuInsertionIndex(source: source, destination: podcastQueueIDs.count)
+            to: Self.larderInsertionIndex(source: source, destination: podcastQueueIDs.count)
         )
         return true
     }
@@ -142,16 +142,16 @@ extension WiltedMacModel {
     /// the tail strip. The answer is in post-removal terms, which is what
     /// `moveEpisodeInUpNext` and the store expect: a tail drop answers with
     /// the position after the remaining rows, which is that queue's count.
-    static func menuInsertionIndex(source: Int, destination: Int) -> Int {
+    static func larderInsertionIndex(source: Int, destination: Int) -> Int {
         source < destination ? destination - 1 : destination
     }
 
-    func moveMenuEpisode(_ episodeID: String, by offset: Int) {
+    func moveLarderEpisode(_ episodeID: String, by offset: Int) {
         guard let source = podcastQueueIDs.firstIndex(of: episodeID) else { return }
         let destination = source + offset
         guard podcastQueueIDs.indices.contains(destination),
               podcastQueueIDs[destination] != currentPodcastEpisodeID else { return }
-        menuSort = .custom
+        larderSort = .custom
         moveEpisodeInUpNext(from: source, to: destination)
     }
 

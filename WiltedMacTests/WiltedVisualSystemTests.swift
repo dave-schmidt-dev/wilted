@@ -10,7 +10,7 @@ final class WiltedVisualSystemTests: XCTestCase {
     ///
     /// `circle.grid.2x3.fill` did not, and SwiftUI does not fail on a missing
     /// symbol -- it logs "No symbol named ... found in system symbol set" and
-    /// draws nothing, so the Menu's drag handle was an invisible control on
+    /// draws nothing, so the Larder's drag handle was an invisible control on
     /// every row and no test noticed. A name is cheap to typo and impossible
     /// to catch by reading, so the whole set is checked rather than the one
     /// that broke.
@@ -131,11 +131,11 @@ final class WiltedVisualSystemTests: XCTestCase {
         await model.waitForStoreBootstrap()
 
         // Articles and episodes load into one library; nothing is kept yet, so
-        // every visible episode is a Feeds arrival and none waits on the Menu.
+        // every visible episode is a Feeds arrival and none waits on the Larder.
         XCTAssertEqual(model.articles.map(\.id), [article.itemID.rawValue])
         XCTAssertEqual(Set(model.larderVisibleEpisodes.map(\.id)), Set(episodeIDs.map(\.rawValue)))
         XCTAssertEqual(model.feedsEpisodes.count, 3)
-        XCTAssertTrue(model.menuWaitingEpisodes.isEmpty)
+        XCTAssertTrue(model.larderWaitingEpisodes.isEmpty)
     }
 
 

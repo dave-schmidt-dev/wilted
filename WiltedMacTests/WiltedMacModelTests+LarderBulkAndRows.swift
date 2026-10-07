@@ -6,26 +6,26 @@ import WiltedProducer
 @testable import WiltedMac
 
 extension WiltedMacModelTests {
-    // MARK: Menu bulk actions and group clears
+    // MARK: Larder bulk actions and group clears
 
     /// The retired upcoming-scoped clear is gone, and every group owns a clear
     /// whose identifier names the group it acts on.
     func testTheRetiredUpcomingClearIsGoneAndEveryGroupClearsItsOwnRows() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let modelSource = try WiltedMacSource.model(root: root)
-        XCTAssertFalse(modelSource.contains("clearUpcomingMenu"),
+        XCTAssertFalse(modelSource.contains("clearUpcomingLarder"),
                        "the upcoming-scoped clear is retired")
         let view = try WiltedMacSource.views(root: root)
-        XCTAssertFalse(view.contains("wilted-menu-clear-upcoming"),
+        XCTAssertFalse(view.contains("wilted-larder-clear-upcoming"),
                        "the retired identifier must not survive in the view")
         for identifier in [
-            "wilted-menu-clear-ready",
-            "wilted-menu-clear-downloaded",
-            "wilted-menu-clear-available",
+            "wilted-larder-clear-ready",
+            "wilted-larder-clear-downloaded",
+            "wilted-larder-clear-available",
         ] {
             XCTAssertTrue(view.contains(identifier), "\(identifier) must name its own group")
         }
-        XCTAssertTrue(view.contains("model.menuGroupClearLabel(group)"))
+        XCTAssertTrue(view.contains("model.larderGroupClearLabel(group)"))
     }
 
     func testAGroupClearRemovesExactlyItsOwnRows() {
@@ -41,14 +41,14 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        model.clearMenuGroup(.downloaded)
+        model.clearLarderGroup(.downloaded)
 
-        XCTAssertEqual(model.menuEpisodes(in: .available).map(\.id), [available.id])
-        XCTAssertEqual(model.menuEpisodes(in: .playable).map(\.id), [ready.id])
-        XCTAssertTrue(model.menuEpisodes(in: .downloaded).isEmpty)
-        XCTAssertEqual(Set(model.menuWaitingEpisodes.map(\.id)), Set([available.id, ready.id]),
-                       "only the cleared group's rows leave the Menu")
-        // Nothing about the removed rows changed beyond Menu membership: no
+        XCTAssertEqual(model.larderEpisodes(in: .available).map(\.id), [available.id])
+        XCTAssertEqual(model.larderEpisodes(in: .playable).map(\.id), [ready.id])
+        XCTAssertTrue(model.larderEpisodes(in: .downloaded).isEmpty)
+        XCTAssertEqual(Set(model.larderWaitingEpisodes.map(\.id)), Set([available.id, ready.id]),
+                       "only the cleared group's rows leave the Larder")
+        // Nothing about the removed rows changed beyond Larder membership: no
         // download was cancelled and no prepared cut was touched.
         XCTAssertEqual(model.episodes.first { $0.id == started.id }?.downloadState, .completed)
         XCTAssertEqual(model.episodes.first { $0.id == started.id }?.preparationState, .notPrepared)
@@ -67,8 +67,8 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        XCTAssertEqual(model.menuGroupClearLabel(.downloaded), "Remove all 2 from Larder")
-        XCTAssertEqual(model.menuGroupClearLabel(.playable), "Remove all 1 from Larder")
+        XCTAssertEqual(model.larderGroupClearLabel(.downloaded), "Remove all 2 from Larder")
+        XCTAssertEqual(model.larderGroupClearLabel(.playable), "Remove all 1 from Larder")
     }
 
     func testAGroupRemovalDoesNotMarkStartedRowsCompletedOrSkipped() throws {
@@ -81,7 +81,7 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        model.clearMenuGroup(.downloaded)
+        model.clearLarderGroup(.downloaded)
 
         let message = try XCTUnwrap(model.podcastOperationMessage)
         XCTAssertEqual(message,
@@ -94,7 +94,7 @@ extension WiltedMacModelTests {
         let neverStarted = destinationEpisode("report-never", download: .completed, preparation: .notPrepared)
         freshModel.installEpisodeForTesting(neverStarted)
         freshModel.seedPodcastQueueMembershipForTesting(neverStarted)
-        freshModel.clearMenuGroup(.downloaded)
+        freshModel.clearLarderGroup(.downloaded)
         XCTAssertEqual(freshModel.podcastOperationMessage,
                        "Removed all 1 in Downloaded from Larder. No download, prepared cut, transcript, or listening history was touched.")
     }
@@ -112,9 +112,9 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        XCTAssertEqual(model.menuDownloadableEpisodes.map(\.id), [available.id],
+        XCTAssertEqual(model.larderDownloadableEpisodes.map(\.id), [available.id],
                        "Download all acts on the Available group")
-        XCTAssertEqual(model.menuPreparableEpisodes.map(\.id), [downloaded.id],
+        XCTAssertEqual(model.larderPreparableEpisodes.map(\.id), [downloaded.id],
                        "Prepare all acts on the downloaded rows that have not started preparing")
 
         // The label's count and the press's set are one accessor, so they
@@ -122,25 +122,25 @@ extension WiltedMacModelTests {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
         for fragment in [
-            "model.menuDownloadableEpisodes.count",
-            "actionable: model.menuDownloadableEpisodes",
-            "inFlight: model.menuDownloadsInFlight",
-            "model.menuPreparableEpisodes.count",
-            "actionable: model.menuPreparableEpisodes",
-            "inFlight: model.menuPreparationsInFlight",
+            "model.larderDownloadableEpisodes.count",
+            "actionable: model.larderDownloadableEpisodes",
+            "inFlight: model.larderDownloadsInFlight",
+            "model.larderPreparableEpisodes.count",
+            "actionable: model.larderPreparableEpisodes",
+            "inFlight: model.larderPreparationsInFlight",
         ] {
             XCTAssertTrue(view.contains(fragment), "\(fragment) must be the toolbar's source")
         }
         for identifier in [
-            "wilted-menu-play-first",
-            "wilted-menu-group-prepare-all",
-            "wilted-menu-group-download-all",
+            "wilted-larder-play-first",
+            "wilted-larder-group-prepare-all",
+            "wilted-larder-group-download-all",
         ] {
             XCTAssertTrue(view.contains(identifier), "\(identifier) must sit on its group's heading")
         }
         let modelSource = try WiltedMacSource.model(root: root)
-        XCTAssertTrue(modelSource.contains("for episode in menuDownloadableEpisodes"))
-        XCTAssertTrue(modelSource.contains("for episode in menuPreparableEpisodes"))
+        XCTAssertTrue(modelSource.contains("for episode in larderDownloadableEpisodes"))
+        XCTAssertTrue(modelSource.contains("for episode in larderPreparableEpisodes"))
     }
 
     func testBulkActionsCountOnlyWorkThePressStartsAndReportWhatIsStillRunning() {
@@ -160,10 +160,10 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(episode)
         }
 
-        XCTAssertEqual(Set(model.menuDownloadableEpisodes.map(\.id)), Set([notDownloaded.id, failed.id, cancelled.id]))
-        XCTAssertEqual(Set(model.menuDownloadsInFlight.map(\.id)), Set([queued.id, downloading.id]))
-        XCTAssertEqual(Set(model.menuPreparableEpisodes.map(\.id)), Set([notPrepared.id]))
-        XCTAssertEqual(Set(model.menuPreparationsInFlight.map(\.id)), Set([preparing.id]))
+        XCTAssertEqual(Set(model.larderDownloadableEpisodes.map(\.id)), Set([notDownloaded.id, failed.id, cancelled.id]))
+        XCTAssertEqual(Set(model.larderDownloadsInFlight.map(\.id)), Set([queued.id, downloading.id]))
+        XCTAssertEqual(Set(model.larderPreparableEpisodes.map(\.id)), Set([notPrepared.id]))
+        XCTAssertEqual(Set(model.larderPreparationsInFlight.map(\.id)), Set([preparing.id]))
 
         XCTAssertTrue(WiltedMacEpisodeDownloadState.queued.isInFlight)
         XCTAssertTrue(WiltedMacEpisodeDownloadState.downloading(received: 0, expected: nil).isInFlight)
@@ -190,10 +190,10 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        model.prepareAllDownloadedMenuEpisodes()
+        model.prepareAllDownloadedLarderEpisodes()
 
         XCTAssertEqual(
-            Set(model.menuPreparationsInFlight.map(\.id)), Set<String>([downloaded.id, preparing.id]),
+            Set(model.larderPreparationsInFlight.map(\.id)), Set<String>([downloaded.id, preparing.id]),
             "the pressed row joins the one already running"
         )
 
@@ -219,22 +219,22 @@ extension WiltedMacModelTests {
         ))
         model.seedPodcastQueueMembershipForTesting(deferred)
         model.admitAutomaticPreparation(for: deferred, at: try localDate(hour: 12))
-        XCTAssertEqual(model.menuPreparableEpisodes.map(\.id), [deferred.id])
-        XCTAssertTrue(model.menuPreparationsInFlight.isEmpty, "a row waiting for off-peak is not running")
+        XCTAssertEqual(model.larderPreparableEpisodes.map(\.id), [deferred.id])
+        XCTAssertTrue(model.larderPreparationsInFlight.isEmpty, "a row waiting for off-peak is not running")
 
-        model.prepareAllDownloadedMenuEpisodes()
+        model.prepareAllDownloadedLarderEpisodes()
 
         XCTAssertFalse(model.isDeferredForOffPeak(deferred.id))
         XCTAssertTrue(model.episodes.first(where: { $0.id == deferred.id })?.preparationState.isRunning == true)
-        XCTAssertTrue(model.menuPreparableEpisodes.isEmpty,
+        XCTAssertTrue(model.larderPreparableEpisodes.isEmpty,
                       "a genuinely running preparation must not be offered or started twice")
-        XCTAssertEqual(model.menuPreparationsInFlight.map(\.id), [deferred.id])
+        XCTAssertEqual(model.larderPreparationsInFlight.map(\.id), [deferred.id])
     }
 
     // MARK: Sidebar totals
 
     /// The sidebar's three waiting times are the playable group's, the
-    /// downloaded group's, and the whole Menu's; each is summed from the same
+    /// downloaded group's, and the whole Larder's; each is summed from the same
     /// accessor its heading counts, and an unknown duration stays a count.
     func testSidebarTotalsSumTheSameSetsTheirHeadingsCount() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
@@ -258,25 +258,25 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        XCTAssertEqual(model.menuGroupAudioSummary(.playable).seconds, 600)
-        XCTAssertEqual(model.menuGroupAudioSummary(.playable).unknownCount, 1,
+        XCTAssertEqual(model.larderGroupAudioSummary(.playable).seconds, 600)
+        XCTAssertEqual(model.larderGroupAudioSummary(.playable).unknownCount, 1,
                        "an unknown duration is excluded and counted, not treated as zero")
-        XCTAssertEqual(model.menuGroupAudioSummary(.downloaded).seconds, 300)
-        XCTAssertEqual(model.menuGroupAudioSummary(.downloaded).unknownCount, 0)
-        XCTAssertEqual(model.menuAudioSummary.seconds, 900)
-        XCTAssertEqual(model.menuAudioSummary.unknownCount, 1)
-        XCTAssertEqual(model.menuAudioSummary, WiltedMacQueueAudioSummary(episodes: model.menuWaitingEpisodes),
-                       "the whole-Menu figure sums the waiting set the Menu counts")
+        XCTAssertEqual(model.larderGroupAudioSummary(.downloaded).seconds, 300)
+        XCTAssertEqual(model.larderGroupAudioSummary(.downloaded).unknownCount, 0)
+        XCTAssertEqual(model.larderAudioSummary.seconds, 900)
+        XCTAssertEqual(model.larderAudioSummary.unknownCount, 1)
+        XCTAssertEqual(model.larderAudioSummary, WiltedMacQueueAudioSummary(episodes: model.larderWaitingEpisodes),
+                       "the whole-Larder figure sums the waiting set the Larder counts")
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
         for fragment in [
             "wilted-sidebar-ready-total",
             "wilted-sidebar-downloaded-total",
-            "wilted-sidebar-menu-total",
-            "model.menuGroupAudioSummary(.playable)",
-            "model.menuGroupAudioSummary(.downloaded)",
-            "model.menuAudioSummary",
+            "wilted-sidebar-larder-total",
+            "model.larderGroupAudioSummary(.playable)",
+            "model.larderGroupAudioSummary(.downloaded)",
+            "model.larderAudioSummary",
         ] {
             XCTAssertTrue(view.contains(fragment), "\(fragment) must be in the sidebar's totals")
         }
@@ -290,28 +290,28 @@ extension WiltedMacModelTests {
         XCTAssertTrue(view.contains("wilted-sidebar-totals"))
     }
 
-    // MARK: Menu row controls
+    // MARK: Larder row controls
 
     /// A preparing row offers Stop and a failed preparation offers Retry, both
     /// on the row that is in the state.
     func testAPreparingRowOffersStopAndAFailedOneOffersRetry() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
-        XCTAssertTrue(view.contains("wilted-menu-stop-"),
+        XCTAssertTrue(view.contains("wilted-larder-stop-"),
                       "a preparing row must offer a way to stop the run")
         XCTAssertTrue(view.contains("model.cancelEpisodePreparation(episode)"))
-        XCTAssertTrue(view.contains("wilted-menu-retry-"),
+        XCTAssertTrue(view.contains("wilted-larder-retry-"),
                       "a failed preparation must offer a retry beside it")
         XCTAssertTrue(view.contains("model.prepareEpisode(episode)"))
         XCTAssertTrue(view.contains("episode.preparationState.isRunning"))
         XCTAssertTrue(view.contains("case .failed = episode.preparationState"))
     }
 
-    // MARK: Menu row completion
+    // MARK: Larder row completion
 
     /// A Larder row exposes explicit completion only after it has started and
     /// before the durable listening record exists.
-    func testMenuRowCompletionEligibilityUsesStartedAndDurablePlayedState() {
+    func testLarderRowCompletionEligibilityUsesStartedAndDurablePlayedState() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let started = retirementEpisode("retire-started", position: 12)
         let unstarted = retirementEpisode("retire-unstarted", position: 0)
@@ -354,10 +354,10 @@ extension WiltedMacModelTests {
                        "the view must not restate the predicate")
         XCTAssertTrue(view.contains("model.hasStartedEpisode(episode) && !episode.isPlayed"))
         XCTAssertTrue(view.contains("model.skipEpisode(episode)"))
-        XCTAssertTrue(view.contains("wilted-menu-mark-completed-\\(episode.id)"))
+        XCTAssertTrue(view.contains("wilted-larder-mark-completed-\\(episode.id)"))
         XCTAssertTrue(view.contains("Remove from Larder"),
                       "an anomalous played row still has an explicit retirement path")
-        XCTAssertFalse(modelSource.contains("menuRowRetirementLabel"))
+        XCTAssertFalse(modelSource.contains("larderRowRetirementLabel"))
         XCTAssertFalse(view.contains("replacingOccurrences(of: \"could not be skipped\""),
                        "the view must present the model's completion message verbatim")
         XCTAssertTrue(modelSource.contains("Marked \\(episode.title) completed. Undo completion restores it."))

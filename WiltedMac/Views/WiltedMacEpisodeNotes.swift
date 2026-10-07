@@ -76,8 +76,8 @@ struct WiltedMacLarderEpisodeNotesTitle: View {
     @State private var isPresented = false
 
     var body: some View {
-        WiltedMacEpisodeNotesTitle(episode: episode, prefix: "wilted-menu", isPresented: $isPresented) {
-            WiltedMacEpisodeNotes(episode: episode, prefix: "wilted-menu") { EmptyView() }
+        WiltedMacEpisodeNotesTitle(episode: episode, prefix: "wilted-larder", isPresented: $isPresented) {
+            WiltedMacEpisodeNotes(episode: episode, prefix: "wilted-larder") { EmptyView() }
         }
     }
 }

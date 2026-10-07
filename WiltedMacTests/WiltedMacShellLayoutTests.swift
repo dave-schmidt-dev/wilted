@@ -7,7 +7,7 @@ import XCTest
 /// hosted renders prove the root view draws the same bar or pane on every destination.
 @MainActor
 final class WiltedMacShellLayoutTests: XCTestCase {
-    private let destinations: [WiltedMacNavigation] = [.feeds, .menu, .settings]
+    private let destinations: [WiltedMacNavigation] = [.feeds, .larder, .settings]
     private let fixture = ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"]
 
     /// One window width inside each band, for the shown sidebar: narrow (bottom bar), side (rail
@@ -31,7 +31,7 @@ final class WiltedMacShellLayoutTests: XCTestCase {
                 XCTAssertEqual(Set(layouts.map { "\($0)" }).count, 1, "\(band.name) visible=\(visible): \(layouts)")
             }
             XCTAssertEqual(
-                WiltedMacShellLayout.resolve(for: .menu, windowWidth: band.width), band.expected, band.name)
+                WiltedMacShellLayout.resolve(for: .larder, windowWidth: band.width), band.expected, band.name)
         }
     }
 
@@ -145,8 +145,8 @@ final class WiltedMacShellLayoutTests: XCTestCase {
     /// Hiding the sidebar takes its column out of the window at a wide width: the detail moves left
     /// and the side pane stays where it was.
     func testHidingTheSidebarRemovesItsColumnAndKeepsThePane() async throws {
-        let shown = try await rootBitmap(.menu, width: 1_200)
-        let hidden = try await rootBitmap(.menu, width: 1_200, sidebarVisible: false)
+        let shown = try await rootBitmap(.larder, width: 1_200)
+        let hidden = try await rootBitmap(.larder, width: 1_200, sidebarVisible: false)
         let column = NSRect(x: 0, y: 0, width: 200, height: 700)
         XCTAssertNotEqual(bytes(shown, in: column), bytes(hidden, in: column), "the sidebar column is gone")
         let pane = NSRect(x: 1_200 - 400, y: 0, width: 400, height: 700)

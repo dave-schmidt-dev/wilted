@@ -28,9 +28,9 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         let episode = try XCTUnwrap(model.feedsEpisodes.first)
         model.decideFeedEpisodes(.keep, episodes: [episode])
         await WiltedMacHeadless.drainDecisions(model)
-        model.selectedNavigation = .menu
+        model.selectedNavigation = .larder
         XCTAssertEqual(model.podcastQueueIDs, [episode.id])
-        let playable = model.menuEpisodes(in: .playable)
+        let playable = model.larderEpisodes(in: .playable)
         XCTAssertEqual(playable.map(\.id), [episode.id])
         XCTAssertFalse(model.isEpisodeFinished(try XCTUnwrap(playable.first)), "Play first is enabled")
 
@@ -74,7 +74,7 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         XCTAssertLessThan(active[0], active[1], "the next active cue follows the cue boundary")
 
         // The same live player follows the reader to every other destination.
-        for destination in [WiltedMacNavigation.feeds, .settings, .menu] {
+        for destination in [WiltedMacNavigation.feeds, .settings, .larder] {
             model.selectedNavigation = destination
             XCTAssertTrue(model.hasCurrentPlayback, "\(destination)")
             XCTAssertTrue(model.isPlaying, "\(destination)")
@@ -135,8 +135,8 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         }
         XCTAssertTrue(content.contains("label: model.isPlaying ? \"Pause\" : \"Play\""))
         XCTAssertTrue(content.contains(".onKeyPress(.space)"), "Space must invoke the primary transport")
-        XCTAssertTrue(content.contains("if model.selectedNavigation != .menu {"),
-                      "the player offers a way back to the Menu only off the Menu")
+        XCTAssertTrue(content.contains("if model.selectedNavigation != .larder {"),
+                      "the player offers a way back to the Larder only off the Larder")
         XCTAssertTrue(content.contains("wilted-player-menu"))
         XCTAssertTrue(content.contains("if model.audioRouteFault {"),
                       "Recover audio appears only after route recovery fails")
@@ -149,15 +149,15 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
                       "no overlay may still contain the player after a navigation change")
         XCTAssertTrue(root.contains(".allowsHitTesting(playerPresentation == nil)"))
 
-        let sections = try WiltedMacHeadless.viewSource("WiltedMacMenuView+Sections.swift")
-        for identifier in ["wilted-menu-play-first", "wilted-menu-prepare-all"] {
+        let sections = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Sections.swift")
+        for identifier in ["wilted-larder-play-first", "wilted-larder-prepare-all"] {
             XCTAssertTrue(sections.contains(identifier), identifier)
         }
-        let menu = try ["WiltedMacMenuView.swift", "WiltedMacMenuView+Sections.swift", "WiltedMacMenuView+Rows.swift"]
+        let larder = try ["WiltedMacLarderView.swift", "WiltedMacLarderView+Sections.swift", "WiltedMacLarderView+Rows.swift"]
             .map { try WiltedMacHeadless.viewSource($0) }.joined()
-        XCTAssertTrue(menu.contains("\"wilted-menu-\\(group.rawValue.lowercased())-count\""))
-        XCTAssertEqual("wilted-menu-\(WiltedMacMenuGroup.playable.rawValue.lowercased())-count", "wilted-menu-ready-count")
-        XCTAssertTrue(menu.contains("wilted-mac-menu-detail"))
-        XCTAssertTrue(menu.contains("wilted-menu-play-\\(episode.id)"))
+        XCTAssertTrue(larder.contains("\"wilted-larder-\\(group.rawValue.lowercased())-count\""))
+        XCTAssertEqual("wilted-larder-\(WiltedMacLarderGroup.playable.rawValue.lowercased())-count", "wilted-larder-ready-count")
+        XCTAssertTrue(larder.contains("wilted-mac-larder-detail"))
+        XCTAssertTrue(larder.contains("wilted-larder-play-\\(episode.id)"))
     }
 }

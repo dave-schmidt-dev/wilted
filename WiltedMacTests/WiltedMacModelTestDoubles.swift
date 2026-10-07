@@ -39,7 +39,7 @@ actor StoreCapture {
 
 @MainActor
 extension WiltedMacModel {
-    /// Seeds Menu membership for a pure projection fixture without claiming a
+    /// Seeds Larder membership for a pure projection fixture without claiming a
     /// durable Feed decision was exercised.
     func seedPodcastQueueMembershipForTesting(_ episode: WiltedMacEpisode) {
         podcastQueueIDs.append(episode.id)
@@ -97,30 +97,30 @@ final class ModelTestRemoteCommandSource: WiltedRemoteCommandSource {
 }
 
 /// Seeds one downloaded, prepared episode -- unplayed and not queued -- so a
-/// model that bootstraps this store sees it as a candidate for automatic Menu
+/// model that bootstraps this store sees it as a candidate for automatic Larder
 /// admission.
-func installPreparedMenuEpisode(
+func installPreparedLarderEpisode(
     into store: LocalLibraryStore, directory: URL, suffix: String,
     durationSeconds: TimeInterval = 12, playbackSeconds: TimeInterval = 0
 ) async throws -> ItemID {
     let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
-    let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/menu-admission-\(suffix).xml"))
+    let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/larder-admission-\(suffix).xml"))
     let feedID = try ItemID.derivePodcastFeed(from: feedURL)
-    let enclosure = try XCTUnwrap(URL(string: "https://media.example.test/menu-admission-\(suffix).mp3"))
+    let enclosure = try XCTUnwrap(URL(string: "https://media.example.test/larder-admission-\(suffix).mp3"))
     let episodeID = try ItemID.derivePodcastEpisode(
-        feedURL: feedURL, rssGUID: "menu-admission-\(suffix)", enclosureURL: enclosure
+        feedURL: feedURL, rssGUID: "larder-admission-\(suffix)", enclosureURL: enclosure
     )
     try await store.save(feed: try PodcastFeed(
-        itemID: feedID, canonicalURL: feedURL, title: "Menu admission feed", createdAt: created
+        itemID: feedID, canonicalURL: feedURL, title: "Larder admission feed", createdAt: created
     ))
     try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
     try await store.save(episode: try PodcastEpisode(
-        itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "menu-admission-\(suffix)",
-        title: "Menu admission episode", publishedTime: created, enclosureURL: enclosure,
+        itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "larder-admission-\(suffix)",
+        title: "Larder admission episode", publishedTime: created, enclosureURL: enclosure,
         enclosureMediaType: "audio/mpeg", createdAt: created
     ))
     let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "a", count: 64))
-    let mediaURL = directory.appendingPathComponent("menu-admission-\(suffix).mp3")
+    let mediaURL = directory.appendingPathComponent("larder-admission-\(suffix).mp3")
     try Data("audio".utf8).write(to: mediaURL)
     try await store.finalizePodcastDownload(
         revision: try AudioRevision(
@@ -141,7 +141,7 @@ func installPreparedMenuEpisode(
     ))
     if playbackSeconds > 0 {
         try await store.save(playback: try PlaybackState(
-            itemID: episodeID, revisionID: revisionID, sessionID: "prepared-menu-fixture",
+            itemID: episodeID, revisionID: revisionID, sessionID: "prepared-larder-fixture",
             sequence: 1, positionSeconds: playbackSeconds, durationSeconds: durationSeconds,
             completed: false, intent: .progress, deviceID: "mac-test", updatedAt: created
         ))

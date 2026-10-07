@@ -158,7 +158,7 @@ struct WiltedMacFeedsView: View {
     ///
     /// Feeds asks one question, so a row carries one answer each -- Keep or
     /// Skip -- and nothing else. The download, the preparation and the play
-    /// all belong to the Menu, where the episode waits once kept.
+    /// all belong to the Larder, where the episode waits once kept.
     @ViewBuilder private var inbox: some View {
         let visible = model.feedsEpisodes
         let visibleIDs = Set(visible.map(\.id))
@@ -222,7 +222,7 @@ struct WiltedMacFeedsView: View {
                     }
                 }
                 .wiltedCard(colorScheme)
-                // Deliberately bare, like the Menu's group cards. An
+                // Deliberately bare, like the Larder's group cards. An
                 // accessibility identifier here publishes the card as a
                 // container element, and a container placed directly around
                 // rows that are themselves `.contain` hoists their children

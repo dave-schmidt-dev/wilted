@@ -34,14 +34,14 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
         let popover = CGSize(width: 420, height: 360)
         let withNotes = try text(
             WiltedMacEpisodeNotes(episode: episode(notes: "Exact notes for this one", published: Date()),
-                                  prefix: "wilted-menu") { EmptyView() }, size: popover)
+                                  prefix: "wilted-larder") { EmptyView() }, size: popover)
         XCTAssertTrue(withNotes.contains("Hosted episode"), withNotes)
         XCTAssertTrue(withNotes.contains("Exact notes"), withNotes)
         XCTAssertFalse(withNotes.contains(noNotes))
 
         for empty in [nil, ""] {
             let shown = try text(
-                WiltedMacEpisodeNotes(episode: episode(notes: empty, published: Date()), prefix: "wilted-menu") {
+                WiltedMacEpisodeNotes(episode: episode(notes: empty, published: Date()), prefix: "wilted-larder") {
                     EmptyView()
                 }, size: popover)
             XCTAssertTrue(shown.contains(noNotes), "notes \(empty ?? "nil"): \(shown)")
@@ -55,7 +55,7 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
         let source = try WiltedMacHeadless.viewSource("WiltedMacEpisodeNotes.swift")
         XCTAssertTrue(source.contains(".accessibilityLabel(\"Show notes for \\(episode.title)\")"))
         XCTAssertTrue(source.contains(".accessibilityIdentifier(\"\\(prefix)-show-notes-\\(episode.id)\")"))
-        let rows = try WiltedMacHeadless.viewSource("WiltedMacMenuView+Rows.swift")
+        let rows = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
         XCTAssertTrue(rows.contains("WiltedMacLarderEpisodeNotesTitle(episode: episode)"))
     }
 
@@ -100,22 +100,22 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
 
     func testSortControlNamesItselfAndShowsADirectionOnlyForACalculatedSort() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
-        let menu = { try self.text(WiltedMacMenuView(model: model, paneMode: .side)) }
-        var shown = try menu()
+        let larder = { try self.text(WiltedMacLarderView(model: model, paneMode: .side)) }
+        var shown = try larder()
         XCTAssertTrue(shown.contains("Sort by: Custom"), shown)
-        model.menuSort = .age
-        shown = try menu()
+        model.larderSort = .age
+        shown = try larder()
         XCTAssertTrue(shown.contains("Sort by: Age"), shown)
-        XCTAssertEqual(model.menuSortDirection, .ascending)
-        model.menuSortDirection = .descending
-        XCTAssertEqual(model.menuSortDirection.displayName, "Descending")
-        XCTAssertEqual(WiltedMacMenuSort.presentationOptions.map(\.displayName), ["Length", "Age", "Alphabetical", "Custom"])
+        XCTAssertEqual(model.larderSortDirection, .ascending)
+        model.larderSortDirection = .descending
+        XCTAssertEqual(model.larderSortDirection.displayName, "Descending")
+        XCTAssertEqual(WiltedMacLarderSort.presentationOptions.map(\.displayName), ["Length", "Age", "Alphabetical", "Custom"])
 
         // The direction button is an icon, so its presence and names are pinned where they are declared.
-        let source = try WiltedMacHeadless.viewSource("WiltedMacMenuView.swift")
-        XCTAssertTrue(source.contains("if model.menuSort != .custom {"))
-        XCTAssertTrue(source.contains(".accessibilityLabel(\"Larder sort direction: \\(model.menuSortDirection.displayName)\")"))
-        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-menu-sort-direction\")"))
+        let source = try WiltedMacHeadless.viewSource("WiltedMacLarderView.swift")
+        XCTAssertTrue(source.contains("if model.larderSort != .custom {"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Larder sort direction: \\(model.larderSortDirection.displayName)\")"))
+        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-larder-sort-direction\")"))
     }
 
     func testEpisodeCountControlOffersFiveTenAndCustomWithNumericInputOnlyForCustom() throws {

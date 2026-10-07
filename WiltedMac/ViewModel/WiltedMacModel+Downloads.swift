@@ -139,7 +139,7 @@ extension WiltedMacModel {
                    self.podcastQueueIDs.contains(episode.id) {
                     // The override prepares immediately, exactly as the group's
                     // Prepare all does, and only for an episode waiting on the
-                    // Menu; with it off the processing policy's own plan
+                    // Larder; with it off the processing policy's own plan
                     // (including off-peak) still governs the arrival.
                     self.prepareEpisode(episode)
                 } else {

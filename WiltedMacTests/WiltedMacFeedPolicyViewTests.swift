@@ -81,8 +81,8 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
             WiltedAutomationSettings(
                 refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
                 processingPolicy: .manual, transcriptPolicy: settings.transcriptPolicy,
-                removeAds: settings.removeAds, autoAddPreparedToMenu: settings.autoAddPreparedToMenu,
-                downloadEverythingOnMenu: false, prepareEverythingDownloaded: false
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: false, prepareEverythingDownloaded: false
             )
         }
         XCTAssertEqual(

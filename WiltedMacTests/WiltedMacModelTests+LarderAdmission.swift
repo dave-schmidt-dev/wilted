@@ -6,7 +6,7 @@ import WiltedProducer
 @testable import WiltedMac
 
 extension WiltedMacModelTests {
-    // MARK: Phase 1 — Menu admission, removal, ordering, drops
+    // MARK: Phase 1 — Larder admission, removal, ordering, drops
 
     /// 1.2: an admission that raises is named instead of swallowed.
     func testAFailedAutoAddNamesTheFailureInTheStatusLine() async throws {
@@ -18,8 +18,8 @@ extension WiltedMacModelTests {
         let episode = try XCTUnwrap(model.episodes.first { $0.preparationState.isPrepared })
         XCTAssertFalse(model.podcastQueueIDs.contains(episode.id))
 
-        model.installMenuAdmissionForTesting { _ in throw StartupTestError.expectedFailure }
-        await model.performAutoAddPreparedEpisodesToMenu([episode.id])
+        model.installLarderAdmissionForTesting { _ in throw StartupTestError.expectedFailure }
+        await model.performAutoAddPreparedEpisodesToLarder([episode.id])
 
         XCTAssertTrue(
             model.podcastOperationMessage?.contains("could not be added to Larder") == true,
@@ -28,7 +28,7 @@ extension WiltedMacModelTests {
     }
 
     /// 1.2: the failed admission is held and retried on the next reload.
-    func testAutoAddRetriesAFailedMenuAdmissionOnTheNextReload() async throws {
+    func testAutoAddRetriesAFailedLarderAdmissionOnTheNextReload() async throws {
         let directory = temporaryDirectory("auto-add-retry")
 
         let model = preparedAdmissionModel(in: directory, suffix: "retry")
@@ -37,12 +37,12 @@ extension WiltedMacModelTests {
         let episode = try XCTUnwrap(model.episodes.first { $0.preparationState.isPrepared })
         XCTAssertFalse(model.podcastQueueIDs.contains(episode.id))
 
-        model.installMenuAdmissionForTesting { _ in throw StartupTestError.expectedFailure }
-        await model.performAutoAddPreparedEpisodesToMenu([episode.id])
+        model.installLarderAdmissionForTesting { _ in throw StartupTestError.expectedFailure }
+        await model.performAutoAddPreparedEpisodesToLarder([episode.id])
         XCTAssertFalse(model.podcastQueueIDs.contains(episode.id),
-                       "a write that raised leaves no durable Menu entry")
+                       "a write that raised leaves no durable Larder entry")
 
-        model.installMenuAdmissionForTesting(nil)
+        model.installLarderAdmissionForTesting(nil)
         await model.reloadLibraryRowsForTesting()
 
         XCTAssertTrue(model.podcastQueueIDs.contains(episode.id),
@@ -54,7 +54,7 @@ extension WiltedMacModelTests {
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in
                 let store = try LocalLibraryStore(url: url)
-                _ = try await installPreparedMenuEpisode(
+                _ = try await installPreparedLarderEpisode(
                     into: store, directory: url.deletingLastPathComponent(), suffix: suffix
                 )
                 return store
@@ -63,8 +63,8 @@ extension WiltedMacModelTests {
         )
     }
 
-    /// 1.3: the badge and its label count the same rows the Menu renders.
-    func testMenuBadgeAndSidebarTotalsCountTheRowsTheMenuRenders() throws {
+    /// 1.3: the badge and its label count the same rows the Larder renders.
+    func testLarderBadgeAndSidebarTotalsCountTheRowsTheLarderRenders() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let ready = destinationEpisode("count-ready", download: .completed,
                                        preparation: .prepared(summary: "Ready"))
@@ -77,17 +77,17 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        XCTAssertEqual(model.menuUpcomingEpisodeIDs.count, model.menuWaitingEpisodes.count,
-                       "the badge counts the rows the Menu renders")
-        XCTAssertEqual(Set(model.menuUpcomingEpisodeIDs), Set(model.menuWaitingEpisodes.map(\.id)))
-        XCTAssertEqual(model.menuAudioSummary,
-                       WiltedMacQueueAudioSummary(episodes: model.menuWaitingEpisodes))
+        XCTAssertEqual(model.larderUpcomingEpisodeIDs.count, model.larderWaitingEpisodes.count,
+                       "the badge counts the rows the Larder renders")
+        XCTAssertEqual(Set(model.larderUpcomingEpisodeIDs), Set(model.larderWaitingEpisodes.map(\.id)))
+        XCTAssertEqual(model.larderAudioSummary,
+                       WiltedMacQueueAudioSummary(episodes: model.larderWaitingEpisodes))
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
-        XCTAssertTrue(view.contains("model.menuUpcomingEpisodeIDs.count"))
-        XCTAssertTrue(view.contains("Open Larder with \\(model.menuUpcomingEpisodeIDs.count) episodes"))
-        XCTAssertTrue(view.contains("model.menuAudioSummary"))
+        XCTAssertTrue(view.contains("model.larderUpcomingEpisodeIDs.count"))
+        XCTAssertTrue(view.contains("Open Larder with \\(model.larderUpcomingEpisodeIDs.count) episodes"))
+        XCTAssertTrue(view.contains("model.larderAudioSummary"))
     }
 
     /// A podcast in playback belongs to Now Playing rather than the lower
@@ -113,12 +113,12 @@ extension WiltedMacModelTests {
         )
 
         XCTAssertEqual(model.larderPresentationEpisodes.map(\.id), [waiting.id])
-        XCTAssertEqual(model.menuWaitingEpisodes.map(\.id), [waiting.id])
-        XCTAssertEqual(model.menuUpcomingEpisodeIDs, [waiting.id], "the badge counts only waiting rows")
-        XCTAssertEqual(model.menuAudioSummary, WiltedMacQueueAudioSummary(episodes: [waiting]))
-        model.menuFilter = .playable
-        XCTAssertEqual(model.menuFilteredEpisodes.map(\.id), [waiting.id])
-        XCTAssertEqual(model.menuSections().flatMap(\.episodes).map(\.id), [waiting.id])
+        XCTAssertEqual(model.larderWaitingEpisodes.map(\.id), [waiting.id])
+        XCTAssertEqual(model.larderUpcomingEpisodeIDs, [waiting.id], "the badge counts only waiting rows")
+        XCTAssertEqual(model.larderAudioSummary, WiltedMacQueueAudioSummary(episodes: [waiting]))
+        model.larderFilter = .playable
+        XCTAssertEqual(model.larderFilteredEpisodes.map(\.id), [waiting.id])
+        XCTAssertEqual(model.larderSections().flatMap(\.episodes).map(\.id), [waiting.id])
 
         model.installPlaybackStateForTesting(
             episode: current, isPlaying: false, position: 12, duration: 600,
@@ -127,19 +127,19 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.larderPresentationEpisodes.map(\.id), [waiting.id],
                        "a paused podcast remains in Now Playing")
 
-        model.menuFilter = nil
+        model.larderFilter = nil
         model.installArticlePlaybackWithPodcastMarkerForTesting(
             episodeID: current.id, position: 12, duration: 600
         )
         XCTAssertEqual(model.larderPresentationEpisodes.map(\.id), [waiting.id, current.id],
                        "article playback must not hide a merely remembered podcast")
-        XCTAssertEqual(model.menuWaitingEpisodes.map(\.id), [current.id, waiting.id])
+        XCTAssertEqual(model.larderWaitingEpisodes.map(\.id), [current.id, waiting.id])
     }
 
     /// 1.3: queue removal is not retirement. The durable entry leaves the
     /// queue; the episode's row, records, and listening state stay.
-    func testRemovingADurableMenuEntryLeavesItsLibraryRowUntouched() async throws {
-        let directory = temporaryDirectory("menu-remove-leaves-row")
+    func testRemovingADurableLarderEntryLeavesItsLibraryRowUntouched() async throws {
+        let directory = temporaryDirectory("larder-remove-leaves-row")
 
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
@@ -195,7 +195,7 @@ extension WiltedMacModelTests {
     }
 
     /// 1.3: a durable member is not addable, wherever it sits in the queue.
-    func testCanAddEpisodeToMenuRefusesADurableMemberAtAnyIndex() {
+    func testCanAddEpisodeToLarderRefusesADurableMemberAtAnyIndex() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         func ready(_ id: String) -> WiltedMacEpisode {
             WiltedMacEpisode(
@@ -214,17 +214,17 @@ extension WiltedMacModelTests {
             queue: [earlier.id, current.id, later.id]
         )
 
-        XCTAssertFalse(model.canAddEpisodeToMenu(earlier),
+        XCTAssertFalse(model.canAddEpisodeToLarder(earlier),
                        "an entry before the current index is already durable")
-        XCTAssertFalse(model.canAddEpisodeToMenu(current),
+        XCTAssertFalse(model.canAddEpisodeToLarder(current),
                        "the current episode is never added a second time")
-        XCTAssertFalse(model.canAddEpisodeToMenu(later),
+        XCTAssertFalse(model.canAddEpisodeToLarder(later),
                        "an entry after the current index is already durable")
     }
 
     /// 1.4: oldest-first orders every row except the playing one and anchors
     /// the playing one where it was.
-    func testOldestMenuSortOrdersAscendingAndAnchorsTheCurrentEpisode() {
+    func testOldestLarderSortOrdersAscendingAndAnchorsTheCurrentEpisode() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         func ready(_ id: String, published: TimeInterval) -> WiltedMacEpisode {
             WiltedMacEpisode(
@@ -244,17 +244,17 @@ extension WiltedMacModelTests {
             queue: [middle.id, oldest.id, current.id, newest.id]
         )
 
-        model.menuSort = .oldest
+        model.larderSort = .oldest
 
-        XCTAssertEqual(model.menuDisplayEpisodeIDs, [oldest.id, middle.id, current.id, newest.id],
+        XCTAssertEqual(model.larderDisplayEpisodeIDs, [oldest.id, middle.id, current.id, newest.id],
                        "the non-playing rows sort by ascending publication date")
-        XCTAssertEqual(model.menuDisplayEpisodeIDs.firstIndex(of: current.id), 2,
+        XCTAssertEqual(model.larderDisplayEpisodeIDs.firstIndex(of: current.id), 2,
                        "the playing episode keeps its prior position")
     }
 
     /// 1.4: the selection is written and read back.
-    func testOldestMenuSortSurvivesARebuild() throws {
-        let suite = WiltedMacTestPreferences.suiteName("menu-sort-oldest-tests")
+    func testOldestLarderSortSurvivesARebuild() throws {
+        let suite = WiltedMacTestPreferences.suiteName("larder-sort-oldest-tests")
         guard let preferences = UserDefaults(suiteName: suite) else {
             return XCTFail("Unable to open a preferences suite for the test")
         }
@@ -262,11 +262,11 @@ extension WiltedMacModelTests {
         defer { preferences.removePersistentDomain(forName: suite) }
 
         let first = WiltedMacModel(arguments: [], preferences: preferences)
-        first.menuSort = .oldest
+        first.larderSort = .oldest
 
         let rebuilt = WiltedMacModel(arguments: [], preferences: preferences)
-        XCTAssertEqual(rebuilt.menuSort, .age)
-        XCTAssertEqual(rebuilt.menuSortDirection, .descending)
+        XCTAssertEqual(rebuilt.larderSort, .age)
+        XCTAssertEqual(rebuilt.larderSortDirection, .descending)
     }
 
     func testLarderSortModesDirectionsUnknownsAndDeterministicTies() {
@@ -285,38 +285,38 @@ extension WiltedMacModelTests {
             model.installEpisodeForTesting(value)
         }
         let ids = ["z", "c", "b", "a"]
-        XCTAssertEqual(WiltedMacMenuSort.presentationOptions, [.length, .age, .alphabetical, .custom])
-        model.menuSortDirection = .ascending
-        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .length), ["a", "b", "c", "z"])
-        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .age), ["b", "c", "a", "z"])
-        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .alphabetical), ["a", "b", "c", "z"])
-        model.menuSortDirection = .descending
-        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .length), ["b", "c", "a", "z"])
-        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .age), ["a", "b", "c", "z"])
-        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .alphabetical), ["z", "b", "c", "a"])
-        XCTAssertEqual(model.sortedMenuEpisodeIDs(ids, by: .custom), ids)
+        XCTAssertEqual(WiltedMacLarderSort.presentationOptions, [.length, .age, .alphabetical, .custom])
+        model.larderSortDirection = .ascending
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(ids, by: .length), ["a", "b", "c", "z"])
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(ids, by: .age), ["b", "c", "a", "z"])
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(ids, by: .alphabetical), ["a", "b", "c", "z"])
+        model.larderSortDirection = .descending
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(ids, by: .length), ["b", "c", "a", "z"])
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(ids, by: .age), ["a", "b", "c", "z"])
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(ids, by: .alphabetical), ["z", "b", "c", "a"])
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(ids, by: .custom), ids)
     }
 
     func testLarderCanonicalSortDirectionPersistsAndLegacyModesMigrate() throws {
         let preferences = WiltedMacTestPreferences.ephemeral()
         for (raw, mode, direction) in [
-            ("Newest", WiltedMacMenuSort.age, WiltedMacMenuSortDirection.ascending),
+            ("Newest", WiltedMacLarderSort.age, WiltedMacLarderSortDirection.ascending),
             ("Oldest", .age, .descending), ("Length · shortest", .length, .ascending),
             ("Title · A–Z", .alphabetical, .ascending), ("Show · A–Z", .alphabetical, .ascending)
         ] {
-            preferences.set(raw, forKey: WiltedMacModel.menuSortPreferenceKey)
+            preferences.set(raw, forKey: WiltedMacModel.larderSortPreferenceKey)
             let model = WiltedMacModel(arguments: [], preferences: preferences)
-            XCTAssertEqual(model.menuSort.canonical, mode)
-            XCTAssertEqual(model.menuSortDirection, direction)
+            XCTAssertEqual(model.larderSort.canonical, mode)
+            XCTAssertEqual(model.larderSortDirection, direction)
         }
         let first = WiltedMacModel(arguments: [], preferences: preferences)
-        first.menuSort = .length
-        first.menuSortDirection = .descending
+        first.larderSort = .length
+        first.larderSortDirection = .descending
         let restored = WiltedMacModel(arguments: [], preferences: preferences)
-        XCTAssertEqual(restored.menuSort, .length)
-        XCTAssertEqual(restored.menuSortDirection, .descending)
-        restored.menuSort = .custom
-        XCTAssertEqual(restored.menuSortDirection, .descending)
+        XCTAssertEqual(restored.larderSort, .length)
+        XCTAssertEqual(restored.larderSortDirection, .descending)
+        restored.larderSort = .custom
+        XCTAssertEqual(restored.larderSortDirection, .descending)
     }
 
     func testEveryLarderSortDirectionAnchorsCurrentEpisode() {
@@ -326,10 +326,10 @@ extension WiltedMacModelTests {
             downloadState: .completed, preparationState: .prepared(summary: "Ready"))
         model.installPlaybackStateForTesting(episode: current, isPlaying: true, position: 12,
             duration: 600, queue: ["z", current.id, "a"])
-        for direction in [WiltedMacMenuSortDirection.ascending, .descending] {
-            model.menuSortDirection = direction
-            for mode in WiltedMacMenuSort.presentationOptions {
-                XCTAssertEqual(model.sortedMenuEpisodeIDs(["z", current.id, "a"], by: mode)[1], current.id)
+        for direction in [WiltedMacLarderSortDirection.ascending, .descending] {
+            model.larderSortDirection = direction
+            for mode in WiltedMacLarderSort.presentationOptions {
+                XCTAssertEqual(model.sortedLarderEpisodeIDs(["z", current.id, "a"], by: mode)[1], current.id)
             }
         }
     }
@@ -350,7 +350,7 @@ extension WiltedMacModelTests {
         try await store.addPodcastQueueEpisode(third)
         let queue = [first, second, third]
 
-        let insertion = WiltedMacModel.menuInsertionIndex(source: 0, destination: queue.count)
+        let insertion = WiltedMacModel.larderInsertionIndex(source: 0, destination: queue.count)
         try await store.movePodcastQueueEpisode(from: 0, to: insertion)
         store = try LocalLibraryStore(url: storeURL)
         let reopened = try await store.podcastQueueState()
@@ -361,7 +361,7 @@ extension WiltedMacModelTests {
                        "the tail index equals the count of the queue it leaves behind")
     }
 
-    /// 1.5: a payload that is not one of the Menu's episodes is refused and
+    /// 1.5: a payload that is not one of the Larder's episodes is refused and
     /// the order is left exactly as it was.
     func testAForeignDropPayloadIsRejectedAndLeavesTheOrderAlone() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
@@ -375,9 +375,9 @@ extension WiltedMacModelTests {
         }
         let before = model.podcastQueueIDs
 
-        XCTAssertFalse(model.moveMenuEpisode("file:///Users/dave/Downloads/invoice.pdf", before: second.id),
+        XCTAssertFalse(model.moveLarderEpisode("file:///Users/dave/Downloads/invoice.pdf", before: second.id),
                        "a foreign payload is refused at a row")
-        XCTAssertFalse(model.moveMenuEpisodeToEnd("file:///Users/dave/Downloads/invoice.pdf"),
+        XCTAssertFalse(model.moveLarderEpisodeToEnd("file:///Users/dave/Downloads/invoice.pdf"),
                        "a foreign payload is refused at the tail")
         XCTAssertEqual(model.podcastQueueIDs, before, "the order is left exactly as it was")
     }

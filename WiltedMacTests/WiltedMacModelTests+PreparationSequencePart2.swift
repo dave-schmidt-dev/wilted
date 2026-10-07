@@ -361,7 +361,7 @@ extension WiltedMacModelTests {
                        "ordinary downloads overlap; ordering preparations must not serialize them")
     }
 
-    func testMenuAndLarderIndicatorsShareTheCurrentQueueSnapshot() throws {
+    func testLarderAndPlayerIndicatorsShareTheCurrentQueueSnapshot() throws {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
@@ -380,7 +380,7 @@ extension WiltedMacModelTests {
             queue: [current.id, queued.id]
         )
 
-        XCTAssertEqual(model.menuUpcomingEpisodeIDs, [queued.id])
+        XCTAssertEqual(model.larderUpcomingEpisodeIDs, [queued.id])
         XCTAssertEqual(model.episodePlaybackIndicators(for: current.id), ["Playing"])
         XCTAssertEqual(model.episodePlaybackIndicators(for: queued.id), ["In Larder"])
         XCTAssertFalse(model.episodePlaybackIndicators(for: current.id).contains("In Larder"))

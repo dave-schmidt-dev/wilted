@@ -84,21 +84,21 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
     }
 
     private func settle(_ model: WiltedMacModel) async {
-        await WiltedMacHeadless.eventually("the sort write settles") { !model.isApplyingMenuSort }
+        await WiltedMacHeadless.eventually("the sort write settles") { !model.isApplyingLarderSort }
     }
 
     func testSortChangesDuringOneDelayedWriteLeaveQueueAndCaptionOnTheLastRequest() async throws {
         let (model, store, ids) = try await model("sort-coalescing")
         let (a, b, c) = (ids[0], ids[1], ids[2])
         let gate = WriteGate()
-        model.menuSortWriteHookForTesting = { await gate.arrive() }
+        model.larderSortWriteHookForTesting = { await gate.arrive() }
 
-        model.menuSort = .age                    // younger first: [c, b, a]; its write is held open
+        model.larderSort = .age                    // younger first: [c, b, a]; its write is held open
         await waitForHeldWrite(gate)
         XCTAssertEqual(model.podcastQueueIDs, [c, b, a])
-        model.menuSortDirection = .descending    // older first: [a, b, c]
-        model.menuSort = .alphabetical           // descending titles: [c, b, a]
-        model.menuSortDirection = .ascending     // the last request: [a, b, c]
+        model.larderSortDirection = .descending    // older first: [a, b, c]
+        model.larderSort = .alphabetical           // descending titles: [c, b, a]
+        model.larderSortDirection = .ascending     // the last request: [a, b, c]
         XCTAssertEqual(model.podcastQueueIDs, [a, b, c], "the local order follows every request")
 
         await gate.open()
@@ -107,8 +107,8 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
         let durable = try await durableQueue(store)
         XCTAssertEqual(durable, [a, b, c], "the store holds the last request")
         XCTAssertEqual(model.podcastQueueIDs, durable)
-        XCTAssertEqual(model.menuSort.displayName, "Alphabetical", "the caption names the last request")
-        XCTAssertEqual(model.menuSortDirection, .ascending)
+        XCTAssertEqual(model.larderSort.displayName, "Alphabetical", "the caption names the last request")
+        XCTAssertEqual(model.larderSortDirection, .ascending)
         let writes = await gate.writes
         XCTAssertEqual(writes, 2, "one write for the held request, one for the newest")
     }
@@ -116,12 +116,12 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
     func testARequestThatEndsWhereTheHeldWriteStartedNeedsNoSecondWrite() async throws {
         let (model, store, ids) = try await model("sort-coalescing-same")
         let gate = WriteGate()
-        model.menuSortWriteHookForTesting = { await gate.arrive() }
+        model.larderSortWriteHookForTesting = { await gate.arrive() }
 
-        model.menuSort = .age
+        model.larderSort = .age
         await waitForHeldWrite(gate)
-        model.menuSortDirection = .descending
-        model.menuSortDirection = .ascending
+        model.larderSortDirection = .descending
+        model.larderSortDirection = .ascending
         await gate.open()
         await settle(model)
 
@@ -135,20 +135,20 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
     func testAFailedWriteKeepsTheDurableOrderAndSaysSoWithoutRetrying() async throws {
         let (model, store, ids) = try await model("sort-coalescing-failure")
         let gate = WriteGate()
-        model.menuSortWriteHookForTesting = {
+        model.larderSortWriteHookForTesting = {
             await gate.arrive()
             throw FailingWrite()
         }
 
         await gate.open()
-        model.menuSort = .age
+        model.larderSort = .age
         await settle(model)
 
         XCTAssertEqual(model.podcastOperationMessage, "The Larder order could not be saved.")
         let durable = try await durableQueue(store)
         XCTAssertEqual(durable, [ids[1], ids[0], ids[2]], "the durable order is untouched")
         XCTAssertEqual(model.podcastQueueIDs, durable, "the list shows the order that is actually saved")
-        XCTAssertEqual(model.menuSort, .custom, "the caption names the order the list shows")
+        XCTAssertEqual(model.larderSort, .custom, "the caption names the order the list shows")
         try await Task.sleep(for: .milliseconds(200))
         let writes = await gate.writes
         XCTAssertEqual(writes, 1, "a failed write is reported once, not retried forever")
@@ -156,10 +156,10 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
 
     func testUnknownStoredSortValuesFallBackToTheDefault() {
         let preferences = WiltedMacTestPreferences.ephemeral()
-        preferences.set("Sideways", forKey: WiltedMacModel.menuSortPreferenceKey)
-        preferences.set("upward", forKey: WiltedMacModel.menuSortDirectionPreferenceKey)
+        preferences.set("Sideways", forKey: WiltedMacModel.larderSortPreferenceKey)
+        preferences.set("upward", forKey: WiltedMacModel.larderSortDirectionPreferenceKey)
         let model = WiltedMacModel(arguments: [], preferences: preferences)
-        XCTAssertEqual(model.menuSort, .custom)
-        XCTAssertEqual(model.menuSortDirection, .ascending)
+        XCTAssertEqual(model.larderSort, .custom)
+        XCTAssertEqual(model.larderSortDirection, .ascending)
     }
 }

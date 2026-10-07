@@ -231,11 +231,11 @@ extension WiltedMacModel {
 #endif
     }
 
-    /// Feeds' Keep: add an episode to the Menu without touching its audio.
+    /// Feeds' Keep: add an episode to the Larder without touching its audio.
     ///
     /// Keeping is a decision about waiting, not about downloading or
     /// preparing, so the download, prepared cut and transcript are all left
-    /// exactly as they were. The Menu then offers the one step the episode's
+    /// exactly as they were. The Larder then offers the one step the episode's
     /// group says it is waiting for -- Download, then Prepare, then Play.
     func keepEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
@@ -278,9 +278,9 @@ extension WiltedMacModel {
     /// Appends every currently eligible prepared episode in Larder order.
     /// `addPodcastQueueEpisode` only mutates the durable queue; it never
     /// selects or starts an episode, so the current playback is untouched.
-    func addAllPreparedEpisodesToMenu() {
+    func addAllPreparedEpisodesToLarder() {
 #if canImport(WiltedProducer)
-        let eligible = preparedEpisodesReadyForMenu
+        let eligible = preparedEpisodesReadyForLarder
         guard !eligible.isEmpty, let playback else { return }
         // Publish the requested order immediately. The durable controller
         // still owns the final answer and the catch below reconciles a failed
@@ -311,8 +311,8 @@ extension WiltedMacModel {
 #endif
     }
 
-    func openMenu() {
-        selectedNavigation = .menu
+    func openLarder() {
+        selectedNavigation = .larder
     }
 
     func playEpisode(_ episode: WiltedMacEpisode) {
@@ -352,8 +352,8 @@ extension WiltedMacModel {
 
                 let isQueued = self.podcastQueueIDs.contains(episode.id)
                 if isLarderIntent && isQueued {
-                    if self.menuSort != .custom {
-                        let displayed = self.sortedMenuEpisodeIDs(self.podcastQueueIDs, by: self.menuSort)
+                    if self.larderSort != .custom {
+                        let displayed = self.sortedLarderEpisodeIDs(self.podcastQueueIDs, by: self.larderSort)
                         if displayed != self.podcastQueueIDs {
                             self.podcastQueueIDs = displayed
                             if let episodeIDs = try? displayed.map({ try ItemID(rawValue: $0) }),
@@ -385,7 +385,7 @@ extension WiltedMacModel {
                     // load's last await, so a Pause issued meanwhile wins.
                     try await playback.playPodcastQueueEpisodeNow(id, startsIf: { self.isCurrentPlaybackCommand(command) })
                     try self.ensureNewestSelection(command)
-                    self.menuSort = .custom
+                    self.larderSort = .custom
                     // A generic Play keeps the Larder-wide continuation
                     // contract, and it ends any queue-origin mode the
                     // previous session had.
@@ -458,20 +458,20 @@ extension WiltedMacModel {
     /// is active rather than silently acting on the rows that remain. Rows
     /// already queued or downloading are excluded, so the count is work the
     /// press will start.
-    var menuDownloadableEpisodes: [WiltedMacEpisode] {
-        menuUnfilteredEpisodes(in: .available).filter { !$0.downloadState.isInFlight }
+    var larderDownloadableEpisodes: [WiltedMacEpisode] {
+        larderUnfilteredEpisodes(in: .available).filter { !$0.downloadState.isInFlight }
     }
 
     /// Available rows whose downloads have been admitted and are still running.
-    var menuDownloadsInFlight: [WiltedMacEpisode] {
-        menuUnfilteredEpisodes(in: .available).filter { $0.downloadState.isInFlight }
+    var larderDownloadsInFlight: [WiltedMacEpisode] {
+        larderUnfilteredEpisodes(in: .available).filter { $0.downloadState.isInFlight }
     }
 
     /// Downloaded rows the bulk override can start now. This includes ordinary
     /// not-started rows and rows deferred for off-peak, but excludes a genuine
     /// running preparation so the action cannot duplicate work.
-    var menuPreparableEpisodes: [WiltedMacEpisode] {
-        menuUnfilteredEpisodes(in: .downloaded).filter {
+    var larderPreparableEpisodes: [WiltedMacEpisode] {
+        larderUnfilteredEpisodes(in: .downloaded).filter {
             isDeferredForOffPeak($0.id) || Self.isEligibleForPreparation($0)
         }
     }

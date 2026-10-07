@@ -91,18 +91,18 @@ struct WiltedMacSidebar: View {
             Divider()
             total(
                 "Ready",
-                summary: model.menuGroupAudioSummary(.playable),
+                summary: model.larderGroupAudioSummary(.playable),
                 identifier: "wilted-sidebar-ready-total"
             )
             total(
                 "Needs preparation",
-                summary: model.menuGroupAudioSummary(.downloaded),
+                summary: model.larderGroupAudioSummary(.downloaded),
                 identifier: "wilted-sidebar-downloaded-total"
             )
             total(
                 "In Larder",
-                summary: model.menuAudioSummary,
-                identifier: "wilted-sidebar-menu-total"
+                summary: model.larderAudioSummary,
+                identifier: "wilted-sidebar-larder-total"
             )
         }
         .padding(.horizontal, WiltedTheme.Spacing.medium)
@@ -116,7 +116,7 @@ struct WiltedMacSidebar: View {
     /// and accessibility label; an unknown duration count does not fit and
     /// stays with the full sidebar.
     private var railReadyTotal: some View {
-        let summary = model.menuGroupAudioSummary(.playable)
+        let summary = model.larderGroupAudioSummary(.playable)
         return VStack(spacing: WiltedTheme.Spacing.xSmall) {
             Divider()
             Image(systemName: "play.circle")
@@ -139,7 +139,7 @@ struct WiltedMacSidebar: View {
     }
 
     /// One sidebar waiting time. The figure and its unknown count come from
-    /// the same summary the matching Menu heading counts, so the two surfaces
+    /// the same summary the matching Larder heading counts, so the two surfaces
     /// cannot disagree, and an unknown duration is shown as a count rather
     /// than silently summed as zero.
     private func total(

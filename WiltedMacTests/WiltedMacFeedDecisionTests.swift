@@ -75,8 +75,8 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
             WiltedAutomationSettings(
                 refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
                 processingPolicy: .manual, transcriptPolicy: settings.transcriptPolicy,
-                removeAds: settings.removeAds, autoAddPreparedToMenu: settings.autoAddPreparedToMenu,
-                downloadEverythingOnMenu: true, prepareEverythingDownloaded: false
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: true, prepareEverythingDownloaded: false
             )
         }
         fixture.model.feedDecisionBeforeCommitForTesting = { await beforeCommit.hold() }

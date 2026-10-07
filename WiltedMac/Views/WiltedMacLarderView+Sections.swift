@@ -2,44 +2,44 @@ import AppKit
 import SwiftUI
 import WiltedDomain
 
-extension WiltedMacMenuView {
+extension WiltedMacLarderView {
     /// The group filter chips, each carrying the count of the rows it jumps
     /// to. "All waiting" is the unfiltered selection when no search is active;
     /// under a search it is the matching set, so the count and the rows agree.
     var filterBar: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             WiltedMacFlowLayout {
-                filterChip(nil, label: "All waiting", count: model.menuSearchResults.count)
-                ForEach(WiltedMacMenuGroup.allCases) { group in
-                    filterChip(group, label: group.displayName, count: model.menuEpisodes(in: group).count)
+                filterChip(nil, label: "All waiting", count: model.larderSearchResults.count)
+                ForEach(WiltedMacLarderGroup.allCases) { group in
+                    filterChip(group, label: group.displayName, count: model.larderEpisodes(in: group).count)
                 }
                 bulkAction(
-                    "Download all new (\(model.menuDownloadableEpisodes.count))",
-                    identifier: "wilted-menu-download-all",
-                    actionable: model.menuDownloadableEpisodes,
-                    inFlight: model.menuDownloadsInFlight,
+                    "Download all new (\(model.larderDownloadableEpisodes.count))",
+                    identifier: "wilted-larder-download-all",
+                    actionable: model.larderDownloadableEpisodes,
+                    inFlight: model.larderDownloadsInFlight,
                     inFlightVerb: "Downloading"
                 ) {
-                    model.downloadAllAvailableMenuEpisodes()
+                    model.downloadAllAvailableLarderEpisodes()
                 }
                 bulkAction(
-                    "Prepare all now (\(model.menuPreparableEpisodes.count))",
-                    identifier: "wilted-menu-prepare-all",
-                    actionable: model.menuPreparableEpisodes,
-                    inFlight: model.menuPreparationsInFlight,
+                    "Prepare all now (\(model.larderPreparableEpisodes.count))",
+                    identifier: "wilted-larder-prepare-all",
+                    actionable: model.larderPreparableEpisodes,
+                    inFlight: model.larderPreparationsInFlight,
                     inFlightVerb: "Preparing"
                 ) {
-                    model.prepareAllDownloadedMenuEpisodes()
+                    model.prepareAllDownloadedLarderEpisodes()
                 }
             }
             // A bulk action that covered rows the reader cannot see would be
             // the same defect as Skip deleting media: the control says what it
             // will do, and while a search is on it says it will not run.
-            if model.isSearchingMenu {
+            if model.isSearchingLarder {
                 Text("Search active — bulk actions are off until you clear it.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-menu-search-suppresses-bulk")
+                    .accessibilityIdentifier("wilted-larder-search-suppresses-bulk")
             }
         }
         .controlSize(.small)
@@ -67,7 +67,7 @@ extension WiltedMacMenuView {
         }
         if !actionable.isEmpty {
             Button(title, action: action)
-                .disabled(model.isSearchingMenu)
+                .disabled(model.isSearchingLarder)
                 .accessibilityIdentifier(identifier)
         } else if inFlight.isEmpty {
             Button(title, action: action)
@@ -76,10 +76,10 @@ extension WiltedMacMenuView {
         }
     }
 
-    private func filterChip(_ group: WiltedMacMenuGroup?, label: String, count: Int) -> some View {
-        let selected = model.menuFilter == group
+    private func filterChip(_ group: WiltedMacLarderGroup?, label: String, count: Int) -> some View {
+        let selected = model.larderFilter == group
         return Button {
-            model.menuFilter = group
+            model.larderFilter = group
         } label: {
             Text("\(label) \(count)")
                 .wiltedFont(.utility)
@@ -98,60 +98,60 @@ extension WiltedMacMenuView {
             selected ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24) : Color.clear,
             in: Capsule()
         )
-        .accessibilityIdentifier("wilted-menu-filter-\(group?.rawValue.lowercased() ?? "all")")
+        .accessibilityIdentifier("wilted-larder-filter-\(group?.rawValue.lowercased() ?? "all")")
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     /// A group's own bulk action and its non-destructive Larder removal.
-    @ViewBuilder private func groupActions(_ group: WiltedMacMenuGroup) -> some View {
+    @ViewBuilder private func groupActions(_ group: WiltedMacLarderGroup) -> some View {
         switch group {
         case .playable:
             Button("Play the first") {
-                if let first = model.menuEpisodes(in: .playable).first(where: { !model.isEpisodeFinished($0) }) {
+                if let first = model.larderEpisodes(in: .playable).first(where: { !model.isEpisodeFinished($0) }) {
                     model.playLarderEpisode(first)
                 }
             }
-            .disabled(model.menuEpisodes(in: .playable).allSatisfy { model.isEpisodeFinished($0) }
-                      || model.isSearchingMenu)
-            .accessibilityIdentifier("wilted-menu-play-first")
+            .disabled(model.larderEpisodes(in: .playable).allSatisfy { model.isEpisodeFinished($0) }
+                      || model.isSearchingLarder)
+            .accessibilityIdentifier("wilted-larder-play-first")
         case .downloaded:
             bulkAction(
-                "Prepare all now \(model.menuPreparableEpisodes.count)",
-                identifier: "wilted-menu-group-prepare-all",
-                actionable: model.menuPreparableEpisodes,
-                inFlight: model.menuPreparationsInFlight,
+                "Prepare all now \(model.larderPreparableEpisodes.count)",
+                identifier: "wilted-larder-group-prepare-all",
+                actionable: model.larderPreparableEpisodes,
+                inFlight: model.larderPreparationsInFlight,
                 inFlightVerb: "Preparing"
             ) {
-                model.prepareAllDownloadedMenuEpisodes()
+                model.prepareAllDownloadedLarderEpisodes()
             }
         case .available:
             bulkAction(
-                "Download all \(model.menuDownloadableEpisodes.count)",
-                identifier: "wilted-menu-group-download-all",
-                actionable: model.menuDownloadableEpisodes,
-                inFlight: model.menuDownloadsInFlight,
+                "Download all \(model.larderDownloadableEpisodes.count)",
+                identifier: "wilted-larder-group-download-all",
+                actionable: model.larderDownloadableEpisodes,
+                inFlight: model.larderDownloadsInFlight,
                 inFlightVerb: "Downloading"
             ) {
-                model.downloadAllAvailableMenuEpisodes()
+                model.downloadAllAvailableLarderEpisodes()
             }
         }
-        Button(model.menuGroupClearLabel(group)) {
-            model.clearMenuGroup(group)
+        Button(model.larderGroupClearLabel(group)) {
+            model.clearLarderGroup(group)
         }
-        .disabled(model.isSearchingMenu)
+        .disabled(model.isSearchingLarder)
         .help("Removes these rows from Larder without deleting audio, prepared cuts, transcripts, or listening history.")
         .accessibilityHint("Does not delete audio, prepared cuts, transcripts, or listening history.")
-        .accessibilityLabel("\(model.menuGroupClearLabel(group)) in \(group.displayName)")
+        .accessibilityLabel("\(model.larderGroupClearLabel(group)) in \(group.displayName)")
         .accessibilityIdentifier(groupClearIdentifier(group))
     }
 
     /// Literal identifiers, not an interpolation: the release gate greps the
     /// view source for each one.
-    private func groupClearIdentifier(_ group: WiltedMacMenuGroup) -> String {
+    private func groupClearIdentifier(_ group: WiltedMacLarderGroup) -> String {
         switch group {
-        case .playable: "wilted-menu-clear-ready"
-        case .downloaded: "wilted-menu-clear-downloaded"
-        case .available: "wilted-menu-clear-available"
+        case .playable: "wilted-larder-clear-ready"
+        case .downloaded: "wilted-larder-clear-downloaded"
+        case .available: "wilted-larder-clear-available"
         }
     }
 
@@ -159,21 +159,21 @@ extension WiltedMacMenuView {
     /// Feed and Date are neutral views over the same durable listening order.
     @ViewBuilder var groupList: some View {
         let sections = WiltedMacEpisodePresentationSections.displaySections(
-            model.menuSections(),
-            grouping: model.menuGrouping,
-            sort: model.menuSort,
+            model.larderSections(),
+            grouping: model.larderGrouping,
+            sort: model.larderSort,
             isDeferredForOffPeak: { model.isDeferredForOffPeak($0) }
         )
         let numbering = WiltedMacEpisodePresentationSections.visibleNumbering(sections)
         let total = numbering.count
-        if model.menuFilteredEpisodes.isEmpty {
-            Label(model.isSearchingMenu
+        if model.larderFilteredEpisodes.isEmpty {
+            Label(model.isSearchingLarder
                   ? (model.isSearchingTranscripts ? "Still reading transcripts…" : "No episodes match this search.")
-                  : emptyMenuCopy, symbol: .larder)
+                  : emptyLarderCopy, symbol: .larder)
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("wilted-menu-empty")
+                .accessibilityIdentifier("wilted-larder-empty")
         } else {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
                 ForEach(sections) { section in
@@ -185,7 +185,7 @@ extension WiltedMacMenuView {
                             Text("\(section.episodes.count)")
                                 .wiltedFont(.utility)
                                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                                .accessibilityIdentifier(menuSectionCountIdentifier(section))
+                                .accessibilityIdentifier(larderSectionCountIdentifier(section))
                             Spacer()
                             if let detail = section.detail {
                                 Text(detail)
@@ -200,7 +200,7 @@ extension WiltedMacMenuView {
                             ForEach(Array(section.episodes.enumerated()), id: \.element.id) { index, episode in
                                 if index > 0 { Divider() }
                                 let position = numbering.positions[episode.id, default: index + 1]
-                                menuRow(
+                                larderRow(
                                     episode,
                                     position: position,
                                     count: total,
@@ -211,8 +211,8 @@ extension WiltedMacMenuView {
                         .wiltedCard(colorScheme)
                     }
                     .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier(menuSectionIdentifier(section))
-                    .id("menu-section-\(section.id)")
+                    .accessibilityIdentifier(larderSectionIdentifier(section))
+                    .id("larder-section-\(section.id)")
                 }
                 tailDropTarget
             }
@@ -220,7 +220,7 @@ extension WiltedMacMenuView {
         }
     }
 
-    private var emptyLarderCopy: String {
+    private var emptyLarderPolicyCopy: String {
         switch model.automationSettings.downloadPolicy {
         case .manual:
             "Nothing is in Larder. Keep an episode from Feeds, then download it."
@@ -229,35 +229,35 @@ extension WiltedMacMenuView {
         }
     }
 
-    private var emptyMenuCopy: String {
-        if model.menuFilter == .downloaded { return emptyDownloadedCopy }
-        return model.menuWaitingEpisodes.isEmpty ? emptyLarderCopy : "No episode is in this group right now."
+    private var emptyLarderCopy: String {
+        if model.larderFilter == .downloaded { return emptyDownloadedCopy }
+        return model.larderWaitingEpisodes.isEmpty ? emptyLarderPolicyCopy : "No episode is in this group right now."
     }
 
     private var emptyDownloadedCopy: String {
-        model.automationSettings.downloadEverythingOnMenu
+        model.automationSettings.downloadEverythingOnLarder
             ? "Downloaded audio is empty. Kept episodes download automatically in Larder."
             : "Downloaded audio is empty. Keep an episode, then download it here."
     }
 
     /// Status keeps its established automation identifiers; the two new
     /// presentation modes use section identities that cannot collide with it.
-    private func menuSectionIdentifier(_ section: WiltedMacMenuSection) -> String {
+    private func larderSectionIdentifier(_ section: WiltedMacLarderSection) -> String {
         if let group = section.statusGroup {
-            return "wilted-menu-group-\(group.rawValue.lowercased())"
+            return "wilted-larder-group-\(group.rawValue.lowercased())"
         }
-        return "wilted-menu-section-\(section.id)"
+        return "wilted-larder-section-\(section.id)"
     }
 
-    private func menuSectionCountIdentifier(_ section: WiltedMacMenuSection) -> String {
+    private func larderSectionCountIdentifier(_ section: WiltedMacLarderSection) -> String {
         if let group = section.statusGroup {
-            return "wilted-menu-\(group.rawValue.lowercased())-count"
+            return "wilted-larder-\(group.rawValue.lowercased())-count"
         }
-        return "wilted-menu-section-\(section.id)-count"
+        return "wilted-larder-section-\(section.id)-count"
     }
 
     /// The strip below the last row is a real destination: a drop here appends
-    /// the dragged entry. A payload that is not one of the Menu's episodes is
+    /// the dragged entry. A payload that is not one of the Larder's episodes is
     /// refused and the order left alone.
     private var tailDropTarget: some View {
         VStack(spacing: 2) {
@@ -277,17 +277,17 @@ extension WiltedMacMenuView {
         .frame(maxWidth: .infinity, minHeight: 28)
         .contentShape(Rectangle())
         .dropDestination(for: String.self) { draggedIDs, _ in
-            model.dropMenuEpisodes(draggedIDs, before: nil)
+            model.dropLarderEpisodes(draggedIDs, before: nil)
         } isTargeted: { targeted in
             dropTargetID = targeted ? Self.tailDropTargetID : nil
         }
-        .accessibilityIdentifier("wilted-menu-drop-tail")
+        .accessibilityIdentifier("wilted-larder-drop-tail")
     }
 
-    private static let tailDropTargetID = "__menu_tail__"
+    private static let tailDropTargetID = "__larder_tail__"
 
     /// Articles are saved listening that is not part of the episode queue; the
-    /// Menu is their way in and out now that the Larder is gone. Kept as a
+    /// Larder is their way in and out now that the Larder is gone. Kept as a
     /// trailing section rather than a fourth group: the three groups are the
     /// episode steps, and an article has none of them.
     var articlesSection: some View {
@@ -299,9 +299,9 @@ extension WiltedMacMenuView {
                 Spacer()
                 addArticleButton
             }
-            if !model.menuSearchArticleResults.isEmpty {
+            if !model.larderSearchArticleResults.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(model.menuSearchArticleResults.enumerated()), id: \.element.id) { index, article in
+                    ForEach(Array(model.larderSearchArticleResults.enumerated()), id: \.element.id) { index, article in
                         if index > 0 { Divider() }
                         WiltedMacArticleRow(model: model, article: article)
                     }
@@ -312,11 +312,11 @@ extension WiltedMacMenuView {
         // The container goes on the section, not on the VStack that holds the
         // rows. A `.contain` element directly around rows that are themselves
         // `.contain` swallows them: the children are hoisted into the parent
-        // and the per-row identifiers never reach the tree. The Menu's own
-        // groups already use this shape, which is why `wilted-menu-row-` is
+        // and the per-row identifiers never reach the tree. The Larder's own
+        // groups already use this shape, which is why `wilted-larder-row-` is
         // queryable and `wilted-article-row-` was not.
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-menu-articles")
+        .accessibilityIdentifier("wilted-larder-articles")
     }
 
 }
@@ -331,7 +331,7 @@ enum WiltedMacEpisodePresentationSections {
 
     /// Continuous visible ordinals across the actual rendered sections.
     /// Only presentation changes: durable queue order and episode values stay intact.
-    static func visibleNumbering(_ sections: [WiltedMacMenuSection]) -> VisibleNumbering {
+    static func visibleNumbering(_ sections: [WiltedMacLarderSection]) -> VisibleNumbering {
         let episodes = sections.flatMap(\.episodes)
         let positions = Dictionary(uniqueKeysWithValues: episodes.enumerated().map {
             ($0.element.id, $0.offset + 1)
@@ -340,24 +340,24 @@ enum WiltedMacEpisodePresentationSections {
     }
 
     static func displaySections(
-        _ sections: [WiltedMacMenuSection],
-        grouping: WiltedMacMenuGrouping,
-        sort: WiltedMacMenuSort = .custom,
+        _ sections: [WiltedMacLarderSection],
+        grouping: WiltedMacLarderGrouping,
+        sort: WiltedMacLarderSort = .custom,
         calendar: Calendar = .autoupdatingCurrent,
         now: Date = Date(),
         isDeferredForOffPeak: (String) -> Bool = { _ in false }
-    ) -> [WiltedMacMenuSection] {
+    ) -> [WiltedMacLarderSection] {
         let active = sections.flatMap(\.episodes).filter { episode in
             episode.downloadState.isInFlight
                 || (episode.preparationState.isRunning && !isDeferredForOffPeak(episode.id))
         }
         let activeIDs = Set(active.map(\.id))
-        let remaining = sections.compactMap { section -> WiltedMacMenuSection? in
+        let remaining = sections.compactMap { section -> WiltedMacLarderSection? in
             let episodes = presentationOrder(
                 section.episodes.filter { !activeIDs.contains($0.id) }, sort: sort
             )
             guard !episodes.isEmpty else { return nil }
-            return WiltedMacMenuSection(
+            return WiltedMacLarderSection(
                 id: section.id, title: section.title, detail: section.detail,
                 statusGroup: section.statusGroup, episodes: episodes
             )
@@ -366,7 +366,7 @@ enum WiltedMacEpisodePresentationSections {
             ? publicationDateSections(remaining.flatMap(\.episodes), calendar: calendar, now: now)
             : remaining
         guard !active.isEmpty else { return content }
-        return [WiltedMacMenuSection(
+        return [WiltedMacLarderSection(
             id: "active-work", title: "Active work", detail: "download or preparation in progress",
             statusGroup: nil, episodes: active
         )] + content
@@ -376,7 +376,7 @@ enum WiltedMacEpisodePresentationSections {
     /// presents each existing status or feed section. It deliberately does
     /// not rewrite the model's durable comparator or merge lifecycle sections.
     static func presentationOrder(
-        _ episodes: [WiltedMacEpisode], sort: WiltedMacMenuSort
+        _ episodes: [WiltedMacEpisode], sort: WiltedMacLarderSort
     ) -> [WiltedMacEpisode] {
         guard sort == .newest else { return episodes }
         return episodes.filter { $0.publishedAt != nil }
@@ -388,7 +388,7 @@ enum WiltedMacEpisodePresentationSections {
     /// Unknown facts are collected last rather than borrowing intake time.
     static func publicationDateSections(
         _ episodes: [WiltedMacEpisode], calendar: Calendar, now: Date
-    ) -> [WiltedMacMenuSection] {
+    ) -> [WiltedMacLarderSection] {
         var dated: [(date: Date, episodes: [WiltedMacEpisode])] = []
         var unknown: [WiltedMacEpisode] = []
         for episode in episodes {
@@ -404,14 +404,14 @@ enum WiltedMacEpisodePresentationSections {
             }
         }
         let known = dated.map { value in
-            WiltedMacMenuSection(
+            WiltedMacLarderSection(
                 id: "publication-date-\(value.date.timeIntervalSinceReferenceDate)",
                 title: publicationDateTitle(value.date, calendar: calendar, now: now), detail: nil,
                 statusGroup: nil, episodes: value.episodes
             )
         }
         guard !unknown.isEmpty else { return known }
-        return known + [WiltedMacMenuSection(
+        return known + [WiltedMacLarderSection(
             id: "publication-date-unknown", title: "Unknown publication date", detail: nil,
             statusGroup: nil, episodes: unknown
         )]

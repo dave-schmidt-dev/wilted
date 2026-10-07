@@ -157,14 +157,14 @@ struct WiltedMacSettingsView: View {
                 Divider()
 
                 automationSectionTitle("Larder")
-                Toggle("Add prepared episodes to Larder", isOn: autoAddPreparedToMenuBinding)
-                    .accessibilityIdentifier("wilted-automation-auto-add-to-menu")
+                Toggle("Add prepared episodes to Larder", isOn: autoAddPreparedToLarderBinding)
+                    .accessibilityIdentifier("wilted-automation-auto-add-to-larder")
                 Text("An episode joins Larder when it finishes preparing. Episodes already "
                      + "played, already queued, or now playing are left alone.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-automation-auto-add-to-menu-explanation")
+                    .accessibilityIdentifier("wilted-automation-auto-add-to-larder-explanation")
                 Toggle("Download everything in Larder", isOn: downloadEverythingBinding)
                     .accessibilityIdentifier("wilted-automation-download-everything")
                 Toggle("Prepare everything downloaded", isOn: prepareEverythingBinding)
@@ -175,7 +175,7 @@ struct WiltedMacSettingsView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-automation-menu-overrides-explanation")
+                    .accessibilityIdentifier("wilted-automation-larder-overrides-explanation")
 
                 Divider()
 
@@ -276,14 +276,14 @@ struct WiltedMacSettingsView: View {
         Binding(get: { model.automationSettings.removeAds }, set: { replaceAutomationSettings(removeAds: $0) })
     }
 
-    private var autoAddPreparedToMenuBinding: Binding<Bool> {
-        Binding(get: { model.automationSettings.autoAddPreparedToMenu },
-                set: { replaceAutomationSettings(autoAddPreparedToMenu: $0) })
+    private var autoAddPreparedToLarderBinding: Binding<Bool> {
+        Binding(get: { model.automationSettings.autoAddPreparedToLarder },
+                set: { replaceAutomationSettings(autoAddPreparedToLarder: $0) })
     }
 
     private var downloadEverythingBinding: Binding<Bool> {
-        Binding(get: { model.automationSettings.downloadEverythingOnMenu },
-                set: { replaceAutomationSettings(downloadEverythingOnMenu: $0) })
+        Binding(get: { model.automationSettings.downloadEverythingOnLarder },
+                set: { replaceAutomationSettings(downloadEverythingOnLarder: $0) })
     }
 
     private var prepareEverythingBinding: Binding<Bool> {
@@ -340,8 +340,8 @@ struct WiltedMacSettingsView: View {
         processingPolicy: WiltedAutomationProcessingPolicy? = nil,
         transcriptPolicy: WiltedAutomationTranscriptPolicy? = nil,
         removeAds: Bool? = nil,
-        autoAddPreparedToMenu: Bool? = nil,
-        downloadEverythingOnMenu: Bool? = nil,
+        autoAddPreparedToLarder: Bool? = nil,
+        downloadEverythingOnLarder: Bool? = nil,
         prepareEverythingDownloaded: Bool? = nil,
         initialEpisodeMetadataCount: Int? = nil
     ) {
@@ -352,8 +352,8 @@ struct WiltedMacSettingsView: View {
                 processingPolicy: processingPolicy ?? settings.processingPolicy,
                 transcriptPolicy: transcriptPolicy ?? settings.transcriptPolicy,
                 removeAds: removeAds ?? settings.removeAds,
-                autoAddPreparedToMenu: autoAddPreparedToMenu ?? settings.autoAddPreparedToMenu,
-                downloadEverythingOnMenu: downloadEverythingOnMenu ?? settings.downloadEverythingOnMenu,
+                autoAddPreparedToLarder: autoAddPreparedToLarder ?? settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: downloadEverythingOnLarder ?? settings.downloadEverythingOnLarder,
                 prepareEverythingDownloaded: prepareEverythingDownloaded ?? settings.prepareEverythingDownloaded,
                 initialEpisodeMetadataCount: initialEpisodeMetadataCount ?? settings.initialEpisodeMetadataCount,
                 autoKeepNewEpisodes: settings.autoKeepNewEpisodes,

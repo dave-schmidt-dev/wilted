@@ -14,22 +14,22 @@ import CloudKit
 #endif
 
 extension WiltedMacModel {
-    /// The articles a search admits. Articles are the Menu's second list, so
+    /// The articles a search admits. Articles are the Larder's second list, so
     /// they narrow with the same rule rather than disappearing under a query.
-    var menuSearchArticleResults: [WiltedMacArticle] {
-        guard isSearchingMenu else { return articles }
+    var larderSearchArticleResults: [WiltedMacArticle] {
+        guard isSearchingLarder else { return articles }
         return articles.filter { article in
             Self.matches(.article(article), query: trimmedSearchQuery,
                          transcriptMatches: transcriptSearchMatches)
         }
     }
 
-    func matchesMenuSearch(_ episode: WiltedMacEpisode) -> Bool {
+    func matchesLarderSearch(_ episode: WiltedMacEpisode) -> Bool {
         Self.matches(.episode(episode), query: trimmedSearchQuery,
                      transcriptMatches: transcriptSearchMatches)
     }
 
-    /// What the Menu's search field matches.
+    /// What the Larder's search field matches.
     ///
     /// Separated from the list so the rule can be read and tested on its own:
     /// the field sits above rows that each show a line of show notes, and
@@ -75,19 +75,19 @@ extension WiltedMacModel {
     }
 
     /// Feeds asks one question, and this is its data: the episodes that
-    /// arrived and are not waiting on the Menu yet. An episode already on the
-    /// Menu is not in Feeds.
+    /// arrived and are not waiting on the Larder yet. An episode already on the
+    /// Larder is not in Feeds.
     var feedsEpisodes: [WiltedMacEpisode] {
         let waiting = Set(podcastQueueIDs)
         return Self.sortedLarderEpisodes(
             larderVisibleEpisodes.filter { !waiting.contains($0.id) },
-            by: larderSort
+            by: feedsSort
         )
     }
 
-    func sortedMenuEpisodeIDs(
+    func sortedLarderEpisodeIDs(
         _ ids: [String],
-        by sort: WiltedMacMenuSort
+        by sort: WiltedMacLarderSort
     ) -> [String] {
         guard sort != .custom else { return ids }
         // The episode playing now keeps its place, because the reader is in
@@ -96,20 +96,20 @@ extension WiltedMacModel {
         // after it, so entries before the current index never moved.
         guard let currentID = currentPodcastEpisodeID,
               let currentIndex = ids.firstIndex(of: currentID) else {
-            return ids.sorted { menuSortPrecedes($0, $1, by: sort) }
+            return ids.sorted { larderSortPrecedes($0, $1, by: sort) }
         }
         var rest = ids
         rest.remove(at: currentIndex)
-        let sorted = rest.sorted { menuSortPrecedes($0, $1, by: sort) }
+        let sorted = rest.sorted { larderSortPrecedes($0, $1, by: sort) }
         var result = sorted
         result.insert(currentID, at: min(currentIndex, result.count))
         return result
     }
 
-    private func menuSortPrecedes(_ lhsID: String, _ rhsID: String, by sort: WiltedMacMenuSort) -> Bool {
+    private func larderSortPrecedes(_ lhsID: String, _ rhsID: String, by sort: WiltedMacLarderSort) -> Bool {
         let lhs = episodes.first(where: { $0.id == lhsID })
         let rhs = episodes.first(where: { $0.id == rhsID })
-        let ascending = (sort.legacyDirection ?? menuSortDirection) == .ascending
+        let ascending = (sort.legacyDirection ?? larderSortDirection) == .ascending
         switch sort.canonical {
         case .length, .age:
             let left: Double? = sort.canonical == .length ? lhs?.durationSeconds : lhs?.publishedAt?.timeIntervalSince1970
@@ -130,38 +130,38 @@ extension WiltedMacModel {
         return lhsID < rhsID
     }
 
-    /// Applies a non-custom Menu sort to the durable queue without moving the
+    /// Applies a non-custom Larder sort to the durable queue without moving the
     /// current item. The local snapshot changes first so the picker never
     /// appears to do nothing while SwiftData catches up. A request that
     /// arrives while a write is in flight updates the snapshot and nothing
     /// else: the running writer persists the newest order before it settles.
-    func applyMenuSortIfNeeded() {
-        guard menuSort != .custom else { return }
-        let sorted = sortedMenuEpisodeIDs(podcastQueueIDs, by: menuSort)
+    func applyLarderSortIfNeeded() {
+        guard larderSort != .custom else { return }
+        let sorted = sortedLarderEpisodeIDs(podcastQueueIDs, by: larderSort)
         guard sorted != podcastQueueIDs else { return }
         podcastQueueIDs = sorted
 #if canImport(WiltedProducer)
-        guard playback != nil, !isApplyingMenuSort else { return }
-        isApplyingMenuSort = true
-        Task { [weak self] in await self?.persistMenuOrder() }
+        guard playback != nil, !isApplyingLarderSort else { return }
+        isApplyingLarderSort = true
+        Task { [weak self] in await self?.persistLarderOrder() }
 #endif
     }
 
 #if canImport(WiltedProducer)
     /// Writes the local Larder order until the store holds the newest request.
     ///
-    /// `isApplyingMenuSort` stays set across the refresh that follows each
+    /// `isApplyingLarderSort` stays set across the refresh that follows each
     /// write, so that refresh updates the snapshot without starting a second
     /// writer. Only a changed request, never a store that disagrees with the
     /// order it was given, starts another pass. A failed write keeps the
     /// durable order, says so, and does not retry; the sort falls back to
     /// Custom so the caption names the order the list shows.
-    private func persistMenuOrder() async {
-        defer { isApplyingMenuSort = false }
+    private func persistLarderOrder() async {
+        defer { isApplyingLarderSort = false }
         var lastWritten: [String]?
-        var settled: (WiltedMacMenuSort, WiltedMacMenuSortDirection)
+        var settled: (WiltedMacLarderSort, WiltedMacLarderSortDirection)
         repeat {
-            settled = (menuSort, menuSortDirection)
+            settled = (larderSort, larderSortDirection)
             while let playback, podcastQueueIDs != lastWritten {
                 let order = podcastQueueIDs
                 guard let episodeIDs = try? order.map({ try ItemID(rawValue: $0) }),
@@ -172,18 +172,18 @@ extension WiltedMacModel {
                     return
                 }
                 do {
-                    try await menuSortWriteHookForTesting?()
+                    try await larderSortWriteHookForTesting?()
                     try await playback.replacePodcastQueue(state)
                     lastWritten = order
                 } catch {
                     podcastOperationMessage = "The Larder order could not be saved."
-                    menuSort = .custom
+                    larderSort = .custom
                     await refreshPodcastQueueState()
                     return
                 }
             }
             await refreshPodcastQueueState()
-        } while settled != (menuSort, menuSortDirection)
+        } while settled != (larderSort, larderSortDirection)
     }
 #endif
 
@@ -196,26 +196,26 @@ extension WiltedMacModel {
             episode.isReadyMediaAvailable
     }
 
-    func canAddEpisodeToMenu(_ episode: WiltedMacEpisode) -> Bool {
+    func canAddEpisodeToLarder(_ episode: WiltedMacEpisode) -> Bool {
         canPlayEpisode(episode) && currentPodcastEpisodeID != episode.id && !podcastQueueIDs.contains(episode.id)
     }
 
     /// Prepared podcast rows in the same newest/oldest order the Larder uses.
     /// This is intentionally independent of the current search or scope: the
-    /// bulk Menu action is a queue operation over the whole Larder, not just
+    /// bulk Larder action is a queue operation over the whole Larder, not just
     /// the rows currently visible through a filter.
     var readyToPlayEpisodes: [WiltedMacEpisode] {
         Self.sortedLarderEpisodes(
             larderVisibleEpisodes.filter { canPlayEpisode($0) },
-            by: larderSort
+            by: feedsSort
         )
     }
 
-    /// The exact set the Menu bulk action may append: prepared, not current,
+    /// The exact set the Larder bulk action may append: prepared, not current,
     /// and absent from the durable queue already. Keeping this predicate in
     /// the model makes the disabled state and the mutation share one answer.
-    var preparedEpisodesReadyForMenu: [WiltedMacEpisode] {
-        readyToPlayEpisodes.filter(canAddEpisodeToMenu)
+    var preparedEpisodesReadyForLarder: [WiltedMacEpisode] {
+        readyToPlayEpisodes.filter(canAddEpisodeToLarder)
     }
 
     static func isEligibleForPreparation(_ episode: WiltedMacEpisode) -> Bool {

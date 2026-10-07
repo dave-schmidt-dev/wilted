@@ -86,10 +86,10 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
 
     func testDownloadedFilterWithNothingDownloadedExplainsItself() async throws {
         let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
-        model.menuFilter = .downloaded
-        XCTAssertTrue(model.menuEpisodes(in: .downloaded).isEmpty)
+        model.larderFilter = .downloaded
+        XCTAssertTrue(model.larderEpisodes(in: .downloaded).isEmpty)
         let text = try WiltedMacHeadless.recognizedText(
-            WiltedMacMenuView(model: model, paneMode: .side), size: CGSize(width: 1_000, height: 1_200))
+            WiltedMacLarderView(model: model, paneMode: .side), size: CGSize(width: 1_000, height: 1_200))
         XCTAssertTrue(text.contains { $0.contains("Downloaded audio is empty") }, "\(text)")
     }
 

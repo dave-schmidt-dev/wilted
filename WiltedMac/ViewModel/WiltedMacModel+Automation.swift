@@ -67,14 +67,14 @@ extension WiltedMacModel {
         let previous = automationSettings
         automationSettings = settings
         preferences.set(data, forKey: Self.automationSettingsPreferenceKey)
-        // Turning an override on acts on the Menu the reader is looking at,
-        // through the same bulk admission the matching Menu button uses.
+        // Turning an override on acts on the Larder the reader is looking at,
+        // through the same bulk admission the matching Larder button uses.
         // Without this the setting would only ever affect later arrivals.
-        if settings.downloadEverythingOnMenu, !previous.downloadEverythingOnMenu {
-            downloadAllAvailableMenuEpisodes()
+        if settings.downloadEverythingOnLarder, !previous.downloadEverythingOnLarder {
+            downloadAllAvailableLarderEpisodes()
         }
         if settings.prepareEverythingDownloaded, !previous.prepareEverythingDownloaded {
-            prepareAllDownloadedMenuEpisodes()
+            prepareAllDownloadedLarderEpisodes()
         }
     }
 

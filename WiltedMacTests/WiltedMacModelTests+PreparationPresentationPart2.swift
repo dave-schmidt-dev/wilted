@@ -10,23 +10,23 @@ extension WiltedMacModelTests {
     /// with `try?`, and a failed `podcastQueueState()` read makes
     /// `refreshPodcastQueueState()` return early. Either way the episode that
     /// just finished can still be sitting at the head of `podcastQueueIDs`
-    /// when the search runs. Before the fix `nextMenuEpisodeToPlay()` took
+    /// when the search runs. Before the fix `nextLarderEpisodeToPlay()` took
     /// `podcastQueueIDs.first` unconditionally and handed back the episode the
     /// listener had just been told was done, restarting it instead of moving on.
-    func testNextMenuEpisodeSkipsTheJustFinishedEpisodeStillAtTheHeadOfTheQueue() {
+    func testNextLarderEpisodeSkipsTheJustFinishedEpisodeStillAtTheHeadOfTheQueue() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let finished = WiltedMacEpisode(
-            id: "next-menu-finished", title: "Finished", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-finished", title: "Finished", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 600,
             playbackSeconds: 600, downloadState: .completed,
             preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
         )
         let next = WiltedMacEpisode(
-            id: "next-menu-next", title: "Next", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-next", title: "Next", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_060), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .completed,
             preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
@@ -37,33 +37,33 @@ extension WiltedMacModelTests {
             queue: [finished.id, next.id]
         )
 
-        XCTAssertEqual(model.nextMenuEpisodeToPlay()?.id, next.id,
+        XCTAssertEqual(model.nextLarderEpisodeToPlay()?.id, next.id,
                        "the episode still marked current must never be handed back as its own successor")
     }
 
     /// A retired episode left at the head of the queue -- the ordinary case,
     /// not the swallowed-removal one -- is passed over the same way.
-    func testNextMenuEpisodeSkipsARetiredEpisodeAtTheHeadOfTheQueue() {
+    func testNextLarderEpisodeSkipsARetiredEpisodeAtTheHeadOfTheQueue() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         var retired = WiltedMacEpisode(
-            id: "next-menu-retired", title: "Retired", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-retired", title: "Retired", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 600,
             playbackSeconds: 600, downloadState: .completed,
             preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
         )
         retired.retiredAt = Date(timeIntervalSince1970: 1_700_000_500)
         let eligible = WiltedMacEpisode(
-            id: "next-menu-eligible", title: "Eligible", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-eligible", title: "Eligible", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_060), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .completed,
             preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
         )
         let unrelated = WiltedMacEpisode(
-            id: "next-menu-unrelated", title: "Unrelated", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-unrelated", title: "Unrelated", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_699_999_000), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .completed,
             preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
@@ -75,33 +75,33 @@ extension WiltedMacModelTests {
             queue: [retired.id, eligible.id]
         )
 
-        XCTAssertEqual(model.nextMenuEpisodeToPlay()?.id, eligible.id,
+        XCTAssertEqual(model.nextLarderEpisodeToPlay()?.id, eligible.id,
                        "a retired episode is off the shelf and can never be the next thing offered")
     }
 
     /// A dismissed (hidden) episode left at the head of the queue is skipped
     /// the same way -- dismissal is optimistic and in-memory, ahead of the
     /// durable round trip, so the search has to honor it immediately.
-    func testNextMenuEpisodeSkipsAHiddenEpisodeAtTheHeadOfTheQueue() {
+    func testNextLarderEpisodeSkipsAHiddenEpisodeAtTheHeadOfTheQueue() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let hidden = WiltedMacEpisode(
-            id: "next-menu-hidden", title: "Hidden", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-hidden", title: "Hidden", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .completed,
             preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
         )
         let eligible = WiltedMacEpisode(
-            id: "next-menu-eligible-2", title: "Eligible", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-eligible-2", title: "Eligible", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_060), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .completed,
             preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
         )
         let unrelated = WiltedMacEpisode(
-            id: "next-menu-unrelated-2", title: "Unrelated", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-unrelated-2", title: "Unrelated", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_699_999_000), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .completed,
             preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
@@ -114,39 +114,39 @@ extension WiltedMacModelTests {
         )
         model.removeEpisode(hidden)
 
-        XCTAssertEqual(model.nextMenuEpisodeToPlay()?.id, eligible.id,
+        XCTAssertEqual(model.nextLarderEpisodeToPlay()?.id, eligible.id,
                        "a dismissed episode is hidden immediately and can never be the next thing offered")
     }
 
     /// An empty queue has nothing to search; the fresh model's queue is empty
     /// before any playback has ever started.
-    func testNextMenuEpisodeReturnsNilForAnEmptyQueue() {
+    func testNextLarderEpisodeReturnsNilForAnEmptyQueue() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
 
-        XCTAssertNil(model.nextMenuEpisodeToPlay(),
+        XCTAssertNil(model.nextLarderEpisodeToPlay(),
                      "there is nothing to hand back when the queue itself is empty")
     }
 
     /// Every entry in the queue is ineligible -- neither downloaded nor
     /// prepared -- so the search has to exhaust the queue and come back empty
     /// rather than returning an episode nothing can actually play.
-    func testNextMenuEpisodeReturnsNilWhenEveryQueuedEpisodeIsIneligible() {
+    func testNextLarderEpisodeReturnsNilWhenEveryQueuedEpisodeIsIneligible() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         let firstIneligible = WiltedMacEpisode(
-            id: "next-menu-ineligible-1", title: "Not ready", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-ineligible-1", title: "Not ready", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .notDownloaded, preparationState: .notPrepared
         )
         let secondIneligible = WiltedMacEpisode(
-            id: "next-menu-ineligible-2", title: "Also not ready", feedTitle: "Fixtures", summary: "Fixture",
+            id: "next-larder-ineligible-2", title: "Also not ready", feedTitle: "Fixtures", summary: "Fixture",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_060), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .completed, preparationState: .notPrepared
         )
@@ -156,11 +156,11 @@ extension WiltedMacModelTests {
             queue: [firstIneligible.id, secondIneligible.id]
         )
 
-        XCTAssertNil(model.nextMenuEpisodeToPlay(),
+        XCTAssertNil(model.nextLarderEpisodeToPlay(),
                      "nothing in the queue can actually play, so the search must not invent a candidate")
     }
 
-    func testPreparedMenuCandidatesFollowLarderOrderAndExcludeCurrentAndQueued() {
+    func testPreparedLarderCandidatesFollowLarderOrderAndExcludeCurrentAndQueued() {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
@@ -177,10 +177,10 @@ extension WiltedMacModelTests {
             )
         }
 
-        let current = episode("menu-current", releasedAt: 100)
-        let queued = episode("menu-queued", releasedAt: 300)
-        let newest = episode("menu-newest", releasedAt: 400)
-        let unprepared = episode("menu-unprepared", releasedAt: 500, prepared: false)
+        let current = episode("larder-current", releasedAt: 100)
+        let queued = episode("larder-queued", releasedAt: 300)
+        let newest = episode("larder-newest", releasedAt: 400)
+        let unprepared = episode("larder-unprepared", releasedAt: 500, prepared: false)
         model.installEpisodeForTesting(current)
         model.installEpisodeForTesting(queued)
         model.installEpisodeForTesting(newest)
@@ -191,17 +191,17 @@ extension WiltedMacModelTests {
         )
 
         XCTAssertEqual(model.readyToPlayEpisodes.map(\.id), [newest.id, queued.id, current.id])
-        XCTAssertEqual(model.preparedEpisodesReadyForMenu.map(\.id), [newest.id])
+        XCTAssertEqual(model.preparedEpisodesReadyForLarder.map(\.id), [newest.id])
 
         model.installPlaybackStateForTesting(
             episode: current, isPlaying: true, position: 12, duration: 600,
             queue: [current.id, queued.id, newest.id]
         )
-        XCTAssertTrue(model.preparedEpisodesReadyForMenu.isEmpty)
+        XCTAssertTrue(model.preparedEpisodesReadyForLarder.isEmpty)
     }
 
     func testAddAllPreparedEpisodesAppendsDurableQueueWithoutChangingCurrent() async throws {
-        let root = temporaryDirectory("bulk-menu")
+        let root = temporaryDirectory("bulk-larder")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         let currentID = "item-" + String(repeating: "1", count: 64)
@@ -232,7 +232,7 @@ extension WiltedMacModelTests {
             episode: current, isPlaying: true, position: 12, duration: 600, queue: [currentID]
         )
 
-        model.addAllPreparedEpisodesToMenu()
+        model.addAllPreparedEpisodesToLarder()
         await model.waitForPlaybackOperationForTesting()
 
         let reopened = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
@@ -243,26 +243,26 @@ extension WiltedMacModelTests {
         XCTAssertTrue(model.isPlaying)
     }
 
-    func testBulkMenuAddShowsAQueueWhenNothingIsPlaying() async {
+    func testBulkLarderAddShowsAQueueWhenNothingIsPlaying() async {
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
-        guard let prepared = model.preparedEpisodesReadyForMenu.first else {
-            return XCTFail("prepared fixture must offer one Menu candidate")
+        guard let prepared = model.preparedEpisodesReadyForLarder.first else {
+            return XCTFail("prepared fixture must offer one Larder candidate")
         }
 
-        model.addAllPreparedEpisodesToMenu()
+        model.addAllPreparedEpisodesToLarder()
         await model.waitForPlaybackOperationForTesting()
 
         XCTAssertEqual(model.podcastQueueIDs, [prepared.id])
-        XCTAssertEqual(model.menuDisplayEpisodeIDs, [prepared.id])
-        XCTAssertEqual(model.menuWaitingEpisodes.map(\.id), [prepared.id])
+        XCTAssertEqual(model.larderDisplayEpisodeIDs, [prepared.id])
+        XCTAssertEqual(model.larderWaitingEpisodes.map(\.id), [prepared.id])
         XCTAssertEqual(model.episodePlaybackIndicators(for: prepared.id), ["In Larder"])
     }
 
-    func testMenuDownwardBeforeMoveUsesPostRemovalIndexAndPersists() async throws {
+    func testLarderDownwardBeforeMoveUsesPostRemovalIndexAndPersists() async throws {
         let root = wiltedTemporaryDirectory("model-state")
 
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -275,7 +275,7 @@ extension WiltedMacModelTests {
         try await store.addPodcastQueueEpisode(second)
         try await store.addPodcastQueueEpisode(third)
 
-        let insertion = WiltedMacModel.menuInsertionIndex(source: 0, destination: 2)
+        let insertion = WiltedMacModel.larderInsertionIndex(source: 0, destination: 2)
         try await store.movePodcastQueueEpisode(from: 0, to: insertion)
         store = try LocalLibraryStore(url: storeURL)
         let reopenedState = try await store.podcastQueueState()

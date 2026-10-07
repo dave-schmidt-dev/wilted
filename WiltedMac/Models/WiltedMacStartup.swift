@@ -14,7 +14,7 @@ import CloudKit
 #endif
 
 enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable {
-    case menu
+    case larder
     case feeds
     case settings
 
@@ -23,7 +23,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     var title: String {
         switch self {
         case .feeds: WiltedScreenCopy.feeds
-        case .menu: WiltedScreenCopy.library
+        case .larder: WiltedScreenCopy.library
         case .settings: WiltedScreenCopy.settings
         }
     }
@@ -31,7 +31,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     var symbolName: String {
         switch self {
         case .feeds: WiltedSymbol.broccoli.rawValue
-        case .menu: WiltedSymbol.larder.rawValue
+        case .larder: WiltedSymbol.larder.rawValue
         case .settings: "gearshape"
         }
     }
@@ -40,22 +40,25 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     /// this build no longer has.
     ///
     /// The retired Larder and Prep were both places episodes waited, and the
-    /// Menu is now the one place episodes wait, so a stored `library` or
+    /// Larder is now the one place episodes wait, so a stored `library` or
     /// `processor` resolves there. An unreadable or absent value takes the
-    /// same answer: the Menu is where the reader's episodes are.
+    /// same answer: the Larder is where the reader's episodes are. `menu` is the
+    /// raw value the Larder was stored under before it was renamed.
+    static let legacyLarderRawValue = "menu"
+
     static func restored(from rawValue: String?) -> WiltedMacNavigation {
         guard let rawValue, let restored = WiltedMacNavigation(rawValue: rawValue) else {
-            return .menu
+            return .larder
         }
         return restored
     }
 
     /// Compatibility names for the retired destinations. Neither is a case:
-    /// `allCases` is exactly Feeds, Menu and Settings, and source that still
-    /// says `library` or `processor` means the Menu now. Remove these when the
+    /// `allCases` is exactly Feeds, Larder and Settings, and source that still
+    /// says `library` or `processor` means the Larder now. Remove these when the
     /// host test target that still names them is updated.
-    static var library: WiltedMacNavigation { .menu }
-    static var processor: WiltedMacNavigation { .menu }
+    static var library: WiltedMacNavigation { .larder }
+    static var processor: WiltedMacNavigation { .larder }
 }
 
 #if canImport(WiltedProducer)

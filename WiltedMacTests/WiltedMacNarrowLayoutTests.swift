@@ -10,7 +10,7 @@ import XCTest
 final class WiltedMacNarrowLayoutTests: XCTestCase {
     private let page = URL(string: "https://example.test/show/episode-1")!
 
-    private func playingModel(link: URL?, navigation: WiltedMacNavigation = .menu) -> WiltedMacModel {
+    private func playingModel(link: URL?, navigation: WiltedMacNavigation = .larder) -> WiltedMacModel {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let episode = WiltedMacEpisode(
             id: "narrow-episode", title: "An episode with a rather long title that keeps going", feedTitle: "A show",
@@ -43,13 +43,13 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
     /// fixed-size scrubber row ran past the right edge, so the readout and the buttons were cut off.
     func testEveryBarControlIsDrawnInsideTheBarFromTheWindowMinimum() throws {
         for link in [page, nil] {
-            for navigation in [WiltedMacNavigation.menu, .feeds] {
+            for navigation in [WiltedMacNavigation.larder, .feeds] {
                 let model = playingModel(link: link, navigation: navigation)
                 for available in barWidths {
                     let lines = try WiltedMacHeadless.recognizedLines(
                         bar(model, scale: available.scale), size: CGSize(width: available.width, height: 260))
                     var expected = ["of 30:00", "Transcript", "Notes"]
-                    if navigation != .menu { expected.append("Larder") }
+                    if navigation != .larder { expected.append("Larder") }
                     if link == nil { expected.append("No episode page") }
                     for text in expected {
                         XCTAssertTrue(

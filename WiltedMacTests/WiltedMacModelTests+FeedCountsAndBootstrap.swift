@@ -56,7 +56,7 @@ extension WiltedMacModelTests {
                       "the Feeds row must render that count, not the raw snapshot one")
     }
 
-    func testMenuInProgressIndicatorUsesLiveOrSavedPositionAndExcludesFinishedRows() {
+    func testLarderInProgressIndicatorUsesLiveOrSavedPositionAndExcludesFinishedRows() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         func episode(_ id: String, position: TimeInterval, played: Bool = false) -> WiltedMacEpisode {
             WiltedMacEpisode(
@@ -127,9 +127,9 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.currentPlaybackShareText, "An episode — A show")
     }
 
-    /// The Menu row says Played only when the durable listening record says
+    /// The Larder row says Played only when the durable listening record says
     /// completed. Near-end progress is still a playable, explicit-completion row.
-    func testPlayedHasOneDurableDefinitionForTheMenuRow() throws {
+    func testPlayedHasOneDurableDefinitionForTheLarderRow() throws {
         let cases: [(position: TimeInterval, duration: TimeInterval?, isPlayed: Bool, finished: Bool)] = [
             (0, 100, true, true),       // finished by hand, never reached the end
             (96, 100, false, false),    // no durable completion at 96%
@@ -165,7 +165,7 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        // The Menu row asks the model's one predicate before it offers Play.
+        // The Larder row asks the model's one predicate before it offers Play.
         // A near-end row remains playable until the listening record exists.
         XCTAssertTrue(model.isEpisodeFinished(handFinished),
                       "finished by hand never reached the end")
@@ -181,7 +181,7 @@ extension WiltedMacModelTests {
                        "exactly one implementation of the finished predicate")
         let source = try WiltedMacSource.views(root: root)
         XCTAssertTrue(source.contains("model.isEpisodeFinished(episode)"),
-                      "the Menu row must read the model's one definition")
+                      "the Larder row must read the model's one definition")
         XCTAssertFalse(source.contains("0.95"), "the view must not infer Played from progress")
     }
 
