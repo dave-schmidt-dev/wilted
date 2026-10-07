@@ -21,6 +21,9 @@ public struct PodcastEpisodeBatchResult: Sendable {
     public let retiredAtByID: [ItemID: Timestamp]
     public let episodeRecordFetchCount: Int
     public let listeningRecordFetchCount: Int
+    /// Reads of the revision, download, and artwork records retirement
+    /// reclaims -- one read per type, and zero when nothing commits.
+    public let mediaRecordFetchCount: Int
     public let saveCount: Int
 }
 
@@ -60,9 +63,19 @@ extension LocalLibraryStore {
         )
     }
 
-    /// Retires a visible Feed selection in one context and one record fetch.
-    /// Missing and dismissed IDs are unresolved; an already-retired row is a
-    /// truthful idempotent success with its stored retirement timestamp.
+    /// Retires a visible Feed selection in one context, one episode-record
+    /// fetch, and one save. Missing and dismissed IDs are unresolved; an
+    /// already-retired row is a truthful idempotent success with its stored
+    /// retirement timestamp and is never deleted from twice.
+    ///
+    /// A newly retired episode's revision, download, and artwork records are
+    /// deleted in the same context and save, and only once that save commits
+    /// are the files they named deleted through `deleteMediaIfUnreferenced`.
+    /// The shared-file guard there keeps any file a surviving record still
+    /// names, so retiring one episode cannot take another's audio with it.
+    /// The episode row, decision records, listening history, and preparation
+    /// journal stay, so Restore and history work; the restored episode has no
+    /// download or ready revision and reads as not downloaded.
     public func retireEpisodes(_ requested: [ItemID], at retiredAt: Timestamp = Timestamp(Date())) throws -> PodcastEpisodeBatchResult {
         let unique = uniqueEpisodeIDs(requested)
         let context = ModelContext(container)
@@ -84,11 +97,20 @@ extension LocalLibraryStore {
             record.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
             committed.append(id)
         }
-        if !committed.isEmpty { try context.save() }
+        var mediaRecordFetchCount = 0
+        if !committed.isEmpty {
+            mediaRecordFetchCount = 3
+            let doomedMedia = try deleteMediaRecords(
+                forEpisodesWithIDs: Set(committed.map(\.rawValue)), in: context
+            )
+            try context.save()
+            deleteMediaIfUnreferenced(doomedMedia)
+        }
         return PodcastEpisodeBatchResult(
             committed: committed, alreadyAtTarget: alreadyAtTarget, unresolved: unresolved,
             retiredAtByID: retiredAtByID,
-            episodeRecordFetchCount: 1, listeningRecordFetchCount: 0, saveCount: committed.isEmpty ? 0 : 1
+            episodeRecordFetchCount: 1, listeningRecordFetchCount: 0,
+            mediaRecordFetchCount: mediaRecordFetchCount, saveCount: committed.isEmpty ? 0 : 1
         )
     }
 
@@ -118,13 +140,43 @@ extension LocalLibraryStore {
         return PodcastEpisodeBatchResult(
             committed: committed, alreadyAtTarget: alreadyAtTarget, unresolved: unresolved,
             retiredAtByID: [:],
-            episodeRecordFetchCount: 1, listeningRecordFetchCount: 1, saveCount: committed.isEmpty ? 0 : 1
+            episodeRecordFetchCount: 1, listeningRecordFetchCount: 1,
+            mediaRecordFetchCount: 0, saveCount: committed.isEmpty ? 0 : 1
         )
     }
 
     private func uniqueEpisodeIDs(_ requested: [ItemID]) -> [ItemID] {
         var seen = Set<ItemID>()
         return requested.filter { seen.insert($0).inserted }
+    }
+
+    /// Deletes the revision, download, and artwork records naming the given
+    /// episodes' media and returns the URLs they named. One fetch per record
+    /// type; the caller commits with one save and only then hands the URLs to
+    /// `deleteMediaIfUnreferenced`, so a failed save never deletes audio the
+    /// surviving records still name. Mirrors the collection dismissal and
+    /// unsubscribe read, so every removal reclaims the same set of files.
+    private func deleteMediaRecords(
+        forEpisodesWithIDs episodeIDs: Set<String>,
+        in context: ModelContext
+    ) throws -> [URL] {
+        var doomedMedia: [URL] = []
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        where episodeIDs.contains(record.itemID) {
+            if let value = record.mediaURL, let mediaURL = URL(string: value) { doomedMedia.append(mediaURL) }
+            context.delete(record)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
+        where episodeIDs.contains(record.episodeID) {
+            if let value = record.localURL, let mediaURL = URL(string: value) { doomedMedia.append(mediaURL) }
+            context.delete(record)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
+        where episodeIDs.contains(record.ownerID) {
+            if let value = record.localURL, let mediaURL = URL(string: value) { doomedMedia.append(mediaURL) }
+            context.delete(record)
+        }
+        return doomedMedia
     }
 
     public func savePreparationOutcome(_ outcome: PodcastPreparationOutcome) throws {
@@ -250,14 +302,24 @@ extension LocalLibraryStore {
     /// Idempotent: retiring an episode already retired or dismissed is a
     /// no-op returning `false`. Retiring cannot override a dismissal --
     /// dismissal is the stronger of the two removals; see `dismissPodcastEpisode`.
+    ///
+    /// A real retirement deletes the episode's revision, download, and
+    /// artwork records and, once the record save commits, the files they
+    /// named through `deleteMediaIfUnreferenced` -- subject to the same
+    /// shared-file guard dismissal uses, so a file another surviving episode
+    /// still names stays. The episode row, decision records, listening
+    /// history, and preparation journal survive, so Restore and history work.
     @discardableResult
     public func retireEpisode(_ episodeID: ItemID, at retiredAt: Timestamp = Timestamp(Date())) throws -> Bool {
         let context = ModelContext(container)
+        let identifier = episodeID.rawValue
         guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-            .first(where: { $0.id == episodeID.rawValue }), record.removalKind == nil else { return false }
+            .first(where: { $0.id == identifier }), record.removalKind == nil else { return false }
+        let doomedMedia = try deleteMediaRecords(forEpisodesWithIDs: [identifier], in: context)
         record.retiredAt = retiredAt.date
         record.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
         try context.save()
+        deleteMediaIfUnreferenced(doomedMedia)
         return true
     }
 
