@@ -112,20 +112,19 @@ extension WiltedMacModelTests {
         model.playEpisode(prepared)
         await model.waitForPlaybackOperationForTesting()
         try await settle(model)
-        // Reaching the end records the durable listening fact. Finishing the
-        // episode is left out on purpose: finishing retires it, and retiring
-        // reclaims its audio and revision records (W-INV-025), which would
-        // leave no ready revision to lose the file from.
-        await model.simulatePodcastPlaybackReachedEndForTesting()
-        try await settle(model)
-
         let verifyStore = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
         let readyRevision = try await verifyStore.readyRevision(for: episodeID)
         let revisionID = try XCTUnwrap(readyRevision?.revision.revisionID)
+        // The listening fact is written directly. Playing to the end instead
+        // would start the controller's own completion sequence, which retires
+        // the episode and reclaims its audio and revision records (W-INV-025)
+        // while this test is deleting the same file by hand.
+        try await verifyStore.saveListening(PodcastListeningState(
+            episodeID: episodeID, completedAt: created, lastRevisionID: revisionID, updatedAt: created
+        ))
         let outcomeBefore = try await verifyStore.preparationOutcome(for: episodeID, revisionID: revisionID)
         let listeningBefore = try await verifyStore.listeningState(for: episodeID)
         XCTAssertNotNil(listeningBefore?.completedAt)
-        XCTAssertTrue(try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue }).isPlayed, "reaching the end marks the episode played")
 
         try FileManager.default.removeItem(at: directory.appendingPathComponent("media-missing-1.m4a"))
 
@@ -210,6 +209,63 @@ extension WiltedMacModelTests {
         let reclaimedDownload = try await verifyStore.download(for: episodeID)
         XCTAssertNil(reclaimedDownload, "retiring deletes the download record")
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path), "retiring deletes the audio file")
+    }
+
+    /// W-INV-025 across a relaunch: once natural completion has reclaimed the
+    /// audio and its revision records, the snapshot still reads the listening
+    /// and retirement facts without any revision row.
+    func testARelaunchAfterNaturalCompletionKeepsTheEpisodePlayedAndRetiredWithItsAudioReclaimed() async throws {
+        let directory = temporaryDirectory("natural-completion-relaunch")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/natural-relaunch.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/natural-relaunch-1.mp3"))
+        let episodeID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "natural-relaunch-1", enclosureURL: enclosureURL
+        )
+        let audioURL = directory.appendingPathComponent("natural-relaunch-1.m4a")
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Relaunch", createdAt: created
+                ))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                try await Self.addReadyEpisode(
+                    episodeID, guid: "natural-relaunch-1", feedID: feedID, feedURL: feedURL,
+                    enclosureURL: enclosureURL, publishedAt: created.date,
+                    directory: directory, store: store, created: created
+                )
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        let prepared = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue })
+        model.playEpisode(prepared)
+        await model.waitForPlaybackOperationForTesting()
+        try await settle(model)
+        await model.simulatePodcastPlaybackReachedEndForTesting()
+        try await settle(model)
+        model.simulatePodcastPlaybackFinishedForTesting()
+        try await settle(model)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioURL.path), "completion reclaimed the audio")
+
+        let relaunched = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        relaunched.startStoreBootstrap()
+        await relaunched.waitForStoreBootstrap()
+
+        let row = try XCTUnwrap(relaunched.episodes.first { $0.id == episodeID.rawValue })
+        XCTAssertTrue(row.isPlayed, "the snapshot reads the listening fact without a revision row")
+        XCTAssertNotNil(row.retiredAt, "and the retirement")
+        XCTAssertEqual(row.downloadState, .notDownloaded, "the audio records went with the audio")
+        XCTAssertFalse(row.isReadyMediaAvailable)
     }
 
     /// Plan gate: "a test asserting no hashing occurs during snapshot
