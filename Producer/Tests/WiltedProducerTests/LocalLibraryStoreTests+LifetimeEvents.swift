@@ -15,7 +15,7 @@ final class LocalLibraryLifetimeEventTests: XCTestCase {
     }
 
     private func makeStoreURL() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = OwnedTestTemp.root
             .appendingPathComponent("wilted-lifetime-events-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         directories.append(directory)

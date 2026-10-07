@@ -37,7 +37,7 @@ final class PlaybackControllerTests: XCTestCase {
     }
 
     func storeURL(_ name: String = #function) -> URL {
-        FileManager.default.temporaryDirectory
+        OwnedTestTemp.root
             .appendingPathComponent("wilted-playback-\(name)-\(UUID().uuidString)")
             .appendingPathComponent("library.sqlite")
     }
@@ -1257,7 +1257,7 @@ final class PlaybackControllerTests: XCTestCase {
     /// generation. Only natural completion used to prune, which left an entry behind
     /// for every superseded load and every explicit stop.
     func testBackendDoesNotRetainGenerationKeysForPlayersItNoLongerOwns() throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = OwnedTestTemp.root
             .appendingPathComponent("wilted-generation-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1289,7 +1289,7 @@ final class PlaybackControllerTests: XCTestCase {
     /// A load failure leaves the backend owning the player it already had, so its
     /// generation entry has to survive.
     func testFailedLoadKeepsTheExistingPlayersGenerationEntry() throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = OwnedTestTemp.root
             .appendingPathComponent("wilted-generation-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }

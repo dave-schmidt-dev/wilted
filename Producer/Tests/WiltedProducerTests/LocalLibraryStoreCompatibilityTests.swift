@@ -128,7 +128,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
     }
 
     func testNewerStoreIsRefusedWithoutAnyWrite() throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = OwnedTestTemp.root
             .appendingPathComponent("wilted-future-store-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("library.sqlite")
@@ -170,7 +170,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
     }
 
     private func copiedFixture() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = OwnedTestTemp.root
             .appendingPathComponent("wilted-v13-fixture-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let copied = directory.appendingPathComponent("library-v13.store")

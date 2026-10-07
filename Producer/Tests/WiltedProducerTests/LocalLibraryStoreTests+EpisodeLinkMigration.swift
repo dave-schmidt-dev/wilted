@@ -21,7 +21,7 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
     }
 
     private func makeStoreURL(_ name: String = "library.sqlite") throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = OwnedTestTemp.root
             .appendingPathComponent("wilted-episode-links-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         directories.append(directory)

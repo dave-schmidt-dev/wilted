@@ -91,6 +91,32 @@ class TempLeakChecks(unittest.TestCase):
             self.assertEqual(module.compare(before, after, "parent", own), 1, name)
             shutil.rmtree(self.root / name)
 
+    def test_producer_swift_tests_use_the_owned_root_only(self) -> None:
+        # A Producer fixture that asks FileManager/NSTemporaryDirectory directly writes
+        # unmarked wilted-* dirs into the shared parent, failing every concurrent audit.
+        tests = ROOT / "Producer" / "Tests" / "WiltedProducerTests"
+        helper = "OwnedTestTemp.swift"
+        offenders = [
+            f"{path.name}:{number}"
+            for path in sorted(tests.glob("*.swift")) if path.name != helper
+            for number, line in enumerate(path.read_text().splitlines(), 1)
+            if "FileManager.default.temporaryDirectory" in line or "NSTemporaryDirectory" in line
+        ]
+        self.assertEqual(offenders, [])
+        self.assertIn("ScratchParent.url(", (ROOT / "Producer/Sources/WiltedProducer/LocalLibrary/LocalLibraryStore+Migration.swift").read_text())
+
+    def test_producer_owned_root_marker_is_exempt_for_a_live_neighbour(self) -> None:
+        neighbour = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(neighbour.wait)
+        self.addCleanup(neighbour.kill)
+        started = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(neighbour.pid)], capture_output=True, text=True, check=True
+        ).stdout
+        before = self.save("before.json")
+        self.marked_root(f"wilted-producer-tests-{neighbour.pid}-ABCD", str(neighbour.pid), started)
+        after = self.save("after.json")
+        self.assertEqual(module.compare(before, after, "parent", str(os.getpid())), 0)
+
     def test_missing_root_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "root-unverifiable"):
             module.snapshot(self.root / "missing")

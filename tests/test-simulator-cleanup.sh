@@ -138,7 +138,7 @@ mkdir -p "$recorder_repo/scripts/lib" "$recorder_repo/WiltediOSUITests/__Snapsho
 for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents; do
   mkdir -p "$recorder_repo/$directory"
 done
-for package in WiltedKit Producer CloudSync Listener; do
+for package in WiltedKit Producer CloudSync Playback; do
   mkdir -p "$recorder_repo/$package/Sources" "$recorder_repo/$package/Tests"
   : >"$recorder_repo/$package/Package.swift"
 done

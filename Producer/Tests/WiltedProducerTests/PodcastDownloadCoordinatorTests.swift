@@ -516,7 +516,7 @@ private final class Fixture: @unchecked Sendable {
         self.declaredBytes = declaredBytes
         self.mediaType = mediaType
         enclosureURL = URL(string: "https://cdn.example.test/episode")!
-        root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        root = OwnedTestTemp.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         libraryDirectory = root.appendingPathComponent("Library", isDirectory: true)
         try FileManager.default.createDirectory(at: libraryDirectory, withIntermediateDirectories: true)
         store = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))

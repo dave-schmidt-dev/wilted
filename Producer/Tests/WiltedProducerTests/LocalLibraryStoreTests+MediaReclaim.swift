@@ -12,7 +12,7 @@ extension LocalLibraryStoreTests {
     /// A store and a dedicated media root, so the audit never scans the store's
     /// own files.
     private func mediaSweepRoot(_ name: String) throws -> (root: URL, media: URL, store: LocalLibraryStore) {
-        let root = FileManager.default.temporaryDirectory
+        let root = OwnedTestTemp.root
             .appendingPathComponent("wilted-media-sweep-\(name)-\(UUID().uuidString)")
         let media = root.appendingPathComponent("media", isDirectory: true)
         try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)

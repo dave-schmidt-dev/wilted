@@ -6,7 +6,7 @@ import WiltedDomain
 @Suite("Preparation coordinator")
 struct PreparationCoordinatorTests {
     @Test func invalidURLProducesOneActionableTerminalFailure() async throws {
-        let directory = FileManager.default.temporaryDirectory.appending(path: "wilted-coordinator-\(UUID().uuidString)")
+        let directory = OwnedTestTemp.root.appending(path: "wilted-coordinator-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try LocalLibraryStore(url: directory.appending(path: "library.sqlite"))
         let coordinator = PreparationCoordinator(store: store, mediaDirectory: directory.appending(path: "media"))
@@ -181,7 +181,7 @@ private struct CoordinatorFixture {
     let articleURL = URL(string: "https://example.test/article")!
 
     init() throws {
-        directory = FileManager.default.temporaryDirectory.appending(path: "wilted-coordinator-\(UUID().uuidString)")
+        directory = OwnedTestTemp.root.appending(path: "wilted-coordinator-\(UUID().uuidString)")
         mediaDirectory = directory.appending(path: "media")
         try FileManager.default.createDirectory(at: mediaDirectory, withIntermediateDirectories: true)
         store = try LocalLibraryStore(url: directory.appending(path: "library.sqlite"))

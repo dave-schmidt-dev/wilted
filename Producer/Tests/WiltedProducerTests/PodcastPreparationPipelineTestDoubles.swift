@@ -127,7 +127,7 @@ struct Fixture {
     let transcriptStatusCode: Int
 
     static func temporaryDirectory() throws -> URL {
-        let url = FileManager.default.temporaryDirectory
+        let url = OwnedTestTemp.root
             .appendingPathComponent("wilted-pipeline-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url

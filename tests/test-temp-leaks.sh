@@ -381,7 +381,7 @@ printf 'fixture\n' >"$capture_repo/project.yml"
 for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltediOSUITests; do
   mkdir -p "$capture_repo/$directory"
 done
-for package in WiltedKit Producer CloudSync Listener; do
+for package in WiltedKit Producer CloudSync Playback; do
   mkdir -p "$capture_repo/$package/Sources" "$capture_repo/$package/Tests"
   printf 'fixture\n' >"$capture_repo/$package/Package.swift"
 done
