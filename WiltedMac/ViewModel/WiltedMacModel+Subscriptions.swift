@@ -179,11 +179,11 @@ extension WiltedMacModel {
     /// anything on screen changes.
     ///
     /// The store's cascade is one save, so a throw means nothing was removed
-    /// and the row, selection and player stay as they were for a retry. Audio
-    /// already downloaded stays on disk: an audio revision is identified by
-    /// its content, so removing files here could break an episode from another
-    /// feed that happens to share them. There is no Undo; resubscribing is the
-    /// way back.
+    /// and the row, selection and player stay as they were for a retry. The
+    /// feed's downloaded audio is deleted once the save lands (W-INV-025),
+    /// except a file another surviving episode still names: an audio revision
+    /// is identified by its content, so episodes can share one. There is no
+    /// Undo; resubscribing is the way back.
     @discardableResult
     func commitUnsubscribe(_ subscription: WiltedMacSubscription) async throws -> Int {
         guard let store, pendingFeedWrites[subscription.id] == nil else { throw WiltedMacRemovalUnavailable() }

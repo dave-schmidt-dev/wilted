@@ -46,6 +46,8 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
         let feed = try fieldNotes(model)
         let quiet = try quietSeasonID(model)
         let episodeID = try XCTUnwrap(model.currentPodcastEpisodeID)
+        let bystander = model.mediaDirectory.appendingPathComponent("bystander.mp3")
+        try Data("bystander".utf8).write(to: bystander)
         let before = try await durable(model)
         let flow = WiltedMacRemovalFlow()
         let probe = StageProbe()
@@ -63,7 +65,7 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
 
         XCTAssertEqual(probe.stages, LocalLibraryStageList.unsubscribe, "a duplicate confirm must coalesce")
         XCTAssertEqual(flow.phase, .saved)
-        XCTAssertEqual(flow.statusText, "Unsubscribed. Downloaded audio files stay on disk.")
+        XCTAssertEqual(flow.statusText, "Unsubscribed. Downloaded audio was deleted.")
         XCTAssertEqual(model.subscriptions.map(\.id), [quiet])
         XCTAssertFalse(model.episodes.contains { $0.id == episodeID })
         XCTAssertNil(model.undoableRemoval, "a feed cascade must not offer Undo")
@@ -75,7 +77,10 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
         XCTAssertEqual(after.tombstones, before.tombstones)
         XCTAssertFalse(after.queue.contains(episodeID))
         XCTAssertNotEqual(after.currentQueued, episodeID)
-        XCTAssertTrue(mediaExists(model), "downloaded media stays on disk")
+        // W-INV-025: the unsubscribed feed's audio goes with its records, and
+        // nothing else in the media directory is touched.
+        XCTAssertFalse(mediaExists(model), "the unsubscribed feed's downloaded audio is deleted")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bystander.path), "other media stays")
 
         // Stopped after the commit, with nothing left to play or show.
         XCTAssertNil(model.currentPodcastEpisodeID)

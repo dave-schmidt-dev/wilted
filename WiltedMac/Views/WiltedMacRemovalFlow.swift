@@ -16,7 +16,7 @@ enum WiltedMacRemovalTarget: Hashable {
 
     var dialogMessage: String {
         switch self {
-        case .feed: "Removes this subscription, its episodes and their saved positions. Downloaded audio files stay on disk."
+        case .feed: "Removes this subscription, its episodes, their saved positions and their downloaded audio."
         case .article: "Delete this article and queue its library removal together."
         }
     }
@@ -30,7 +30,7 @@ enum WiltedMacRemovalTarget: Hashable {
 
     var removedCopy: String {
         switch self {
-        case .feed: "Unsubscribed. Downloaded audio files stay on disk."
+        case .feed: "Unsubscribed. Downloaded audio was deleted."
         case .article: "Article deleted."
         }
     }
