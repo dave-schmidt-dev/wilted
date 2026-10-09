@@ -13,12 +13,15 @@ let package = Package(
         .library(name: "WiltedSync", targets: ["WiltedSync"]),
         .library(name: "WiltedLibrary", targets: ["WiltedLibrary"]),
         .library(name: "WiltedSyncTesting", targets: ["WiltedSyncTesting"]),
+        .library(name: "WiltedCatalog", targets: ["WiltedCatalog"]),
     ],
     targets: [
         .target(name: "WiltedDomain"),
         .target(name: "WiltedSync", dependencies: ["WiltedDomain"]),
         .target(name: "WiltedLibrary", dependencies: ["WiltedDomain"]),
         .target(name: "WiltedSyncTesting", dependencies: ["WiltedSync"]),
+        .target(name: "WiltedCatalog"),
+        .testTarget(name: "WiltedCatalogTests", dependencies: ["WiltedCatalog"]),
         .testTarget(
             name: "WiltedDomainTests",
             dependencies: ["WiltedDomain"],

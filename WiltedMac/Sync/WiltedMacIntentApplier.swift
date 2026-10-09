@@ -176,6 +176,12 @@ final class WiltedMacIntentApplier {
         func rejected(_ reason: String) throws -> IntentOutcome { try .rejected(for: intent, reason: reason, at: at) }
         func result(_ took: Bool) throws -> IntentOutcome { try took ? applied() : rejected(IntentOutcome.reasonFailed) }
 
+        // Temporary: Task 3.2 replaces this with the subscribe and addArticle handlers. Their entry
+        // IDs name items the Mac does not hold yet, so they must not reach the unknownEntry check.
+        switch intent.action {
+        case .subscribe, .addArticle: return try rejected(IntentOutcome.reasonNotApplicable)
+        default: break
+        }
         guard let host else { return try rejected(IntentOutcome.reasonFailed) }
         let entryID = intent.action.entryID
         let state = host.decisionState(of: entryID)
@@ -224,7 +230,7 @@ final class WiltedMacIntentApplier {
             }
             guard let index = host.decisionQueue.firstIndex(of: entryID) else { return try rejected(notApplicable) }
             return try result(await host.moveQueueEntry(from: index, to: index, resulting: host.decisionQueue))
-        case .requestMedia, .mediaCached:
+        case .requestMedia, .mediaCached, .subscribe, .addArticle:
             return try rejected(notApplicable)
         }
     }

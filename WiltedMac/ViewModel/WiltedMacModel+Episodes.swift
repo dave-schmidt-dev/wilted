@@ -50,6 +50,11 @@ extension WiltedMacModel {
         let wasAlreadySubscribed: Bool
     }
 
+    /// A subscription fetch whose feed carries no audio enclosure at all: an article feed.
+    struct PodcastFeedHasNoAudio: Error {
+        static let message = "Wilted can't follow article feeds yet; add single articles instead."
+    }
+
     func refreshPodcastURLs(
         _ urls: [URL], subscribing: Bool, initialMetadataLimit: Int? = nil, requestID: UUID? = nil
     ) async throws -> PodcastRefreshResult {
@@ -74,6 +79,9 @@ extension WiltedMacModel {
                 guard requestID == nil || podcastSubscriptionRequestID == requestID else {
                     throw CancellationError()
                 }
+                // The parser keeps only items with an audio enclosure, so an empty list is an article feed.
+                // Refuse before anything is written.
+                if subscribing, loaded.episodes.isEmpty { throw PodcastFeedHasNoAudio() }
                 try await store.save(feed: loaded.feed)
                 try Task.checkCancellation()
                 if subscribing {

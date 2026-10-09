@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 - Your own Keep, Skip and Restore, on the Mac or the iPhone, are recorded as yours, and automation never reverses them.
 
 ### Changed
+- The Mac refuses to subscribe to a feed with no audio episodes and says article feeds aren't supported yet, instead of adding an empty subscription.
 - Mac startup and work recovery show counted progress for each step instead of a single waiting message.
 - The Mac Now Playing pane's episode title is smaller, and the narrow sidebar rail shows the Ready audio time under a play icon.
 - iPhone Larder: rows grouped by feed no longer repeat the feed name, Sort and Group are titled sections ("None" is now "No Grouping"), Sort and Filter show a filled icon while active, and episode detail puts Share below Play and Download.

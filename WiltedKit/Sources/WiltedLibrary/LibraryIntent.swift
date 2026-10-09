@@ -24,10 +24,20 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// Move a queued entry to just after `afterEntryID`; nil moves it to the front. The Mac
         /// converts this entry-relative request to its own index-based queue move.
         case reorder(entryID: ItemID, afterEntryID: ItemID?)
+        /// Follow the podcast feed at an HTTPS URL. The Mac answers with an `IntentOutcome`.
+        case subscribe(feedURL: URL)
+        /// Add the single article at an HTTPS URL. The Mac answers with an `IntentOutcome`.
+        case addArticle(url: URL)
 
-        /// The entry this action is about.
+        /// The entry this action is about. For `subscribe` and `addArticle` it is the namespaced
+        /// ID the Mac assigns to that feed or article (W-INV-003); `LibraryIntent.init` rejects a
+        /// URL that cannot derive one, so the sentinel is reachable only from an unwrapped action.
         public var entryID: ItemID {
             switch self {
+            case let .subscribe(feedURL):
+                return (try? ItemID.derivePodcastFeed(from: feedURL)) ?? Self.invalidURLEntryID
+            case let .addArticle(url):
+                return (try? ItemID.derive(from: url)) ?? Self.invalidURLEntryID
             case let .requestMedia(entryID), let .mediaCached(entryID, _, _), let .keep(entryID), let .skip(entryID),
                  let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _):
                 return entryID
@@ -37,8 +47,19 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// True for the decision actions the Mac answers with an `IntentOutcome`.
         public var isDecision: Bool {
             switch self {
-            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder: return true
+            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle: return true
             case .requestMedia, .mediaCached: return false
+            }
+        }
+
+        // swiftlint:disable:next force_try
+        private static let invalidURLEntryID = try! ItemID(rawValue: "item-invalid-url")
+
+        /// The URL an add-flow action carries, or nil for every other action.
+        fileprivate var addURL: URL? {
+            switch self {
+            case let .subscribe(url), let .addArticle(url): url
+            default: nil
             }
         }
     }
@@ -53,6 +74,14 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         guard !deviceID.isEmpty else { throw DomainError.invalidValue(field: "deviceID", reason: "must not be empty") }
         if case let .reorder(entryID, after) = action, after == entryID {
             throw DomainError.invalidValue(field: "afterEntryID", reason: "an entry cannot be placed after itself")
+        }
+        if let url = action.addURL {
+            guard let canonical = try? ItemID.canonicalURL(url) else {
+                throw DomainError.invalidValue(field: "url", reason: "must be an HTTPS URL")
+            }
+            guard canonical.user == nil, canonical.password == nil else {
+                throw DomainError.invalidValue(field: "url", reason: "must not carry credentials")
+            }
         }
         self.id = id
         self.deviceID = deviceID
@@ -109,6 +138,16 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         entryID: ItemID, afterEntryID: ItemID?, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString
     ) throws -> LibraryIntent {
         try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .reorder(entryID: entryID, afterEntryID: afterEntryID))
+    }
+
+    /// Ask the Mac to follow the podcast feed at `feedURL`.
+    public static func subscribe(feedURL: URL, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
+        try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .subscribe(feedURL: feedURL))
+    }
+
+    /// Ask the Mac to add the single article at `url`.
+    public static func addArticle(url: URL, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
+        try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .addArticle(url: url))
     }
 
     private enum CodingKeys: String, CodingKey { case id, deviceID, createdAt, action }

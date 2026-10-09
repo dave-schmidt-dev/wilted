@@ -17,6 +17,9 @@ public struct LibraryStats: Codable, Equatable, Sendable {
     public var minutesSkipped: Double?
     /// When the Mac last published these values.
     public var updatedAt: Date?
+    /// Names of the intent actions this Mac applies (for example `subscribe`, `addArticle`). Nil
+    /// from a Mac that predates the field, so a phone sends only what it sees listed.
+    public var supportedIntentActions: [String]?
 
     public init(
         audioProcessedSeconds: Double = 0,
@@ -26,7 +29,8 @@ public struct LibraryStats: Codable, Equatable, Sendable {
         minutesPlayed: Double? = nil,
         gigabytesDownloaded: Double? = nil,
         minutesSkipped: Double? = nil,
-        updatedAt: Date? = nil
+        updatedAt: Date? = nil,
+        supportedIntentActions: [String]? = nil
     ) {
         self.audioProcessedSeconds = audioProcessedSeconds
         self.speechGeneratedSeconds = speechGeneratedSeconds
@@ -36,6 +40,7 @@ public struct LibraryStats: Codable, Equatable, Sendable {
         self.gigabytesDownloaded = gigabytesDownloaded
         self.minutesSkipped = minutesSkipped
         self.updatedAt = updatedAt
+        self.supportedIntentActions = supportedIntentActions
     }
 
     /// Maps the Mac's four lifetime counters onto the wire value. Negative or non-finite

@@ -467,6 +467,11 @@ extension WiltedMacModel {
                 let prefix = partial.wasAlreadySubscribed ? "Already following \(partial.feedTitle)" : "\(partial.feedTitle) was added"
                 self.podcastFeedDraftStatus = "\(prefix), but its episode metadata could not be saved. Retry refresh."
                 self.podcastOperationMessage = self.podcastFeedDraftStatus
+            } catch is PodcastFeedHasNoAudio {
+                guard self.podcastRefreshOperationID == operationID,
+                      requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
+                self.podcastFeedDraftStatus = PodcastFeedHasNoAudio.message
+                self.podcastOperationMessage = PodcastFeedHasNoAudio.message
             } catch {
                 guard self.podcastRefreshOperationID == operationID,
                       requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }

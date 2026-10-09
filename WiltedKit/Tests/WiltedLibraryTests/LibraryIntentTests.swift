@@ -49,6 +49,59 @@ final class LibraryIntentTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(LibraryIntent.self, from: Data(forged.utf8)))
     }
 
+    /// Adding the add-flow actions must not change one byte of what an older Mac or phone reads.
+    func testPreExistingActionsEncodeToTheirOriginalJSON() throws {
+        let a = try item("a"), b = try item("b")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let cases: [(LibraryIntent.Action, String)] = [
+            (.requestMedia(entryID: a), #"{"requestMedia":{"entryID":"item-a"}}"#),
+            (.mediaCached(entryID: a, revisionID: try RevisionID(rawValue: "rev-1"), deviceID: "phone"),
+             #"{"mediaCached":{"deviceID":"phone","entryID":"item-a","revisionID":"rev-1"}}"#),
+            (.keep(entryID: a), #"{"keep":{"entryID":"item-a"}}"#),
+            (.skip(entryID: a), #"{"skip":{"entryID":"item-a"}}"#),
+            (.markDone(entryID: a), #"{"markDone":{"entryID":"item-a"}}"#),
+            (.removeFromLarder(entryID: a), #"{"removeFromLarder":{"entryID":"item-a"}}"#),
+            (.restore(entryID: a), #"{"restore":{"entryID":"item-a"}}"#),
+            (.reorder(entryID: a, afterEntryID: b), #"{"reorder":{"afterEntryID":"item-b","entryID":"item-a"}}"#),
+            (.reorder(entryID: a, afterEntryID: nil), #"{"reorder":{"entryID":"item-a"}}"#),
+        ]
+        for (action, json) in cases {
+            XCTAssertEqual(String(decoding: try encoder.encode(action), as: UTF8.self), json)
+            XCTAssertEqual(try JSONDecoder().decode(LibraryIntent.Action.self, from: Data(json.utf8)), action)
+        }
+    }
+
+    func testSubscribeAndAddArticleRoundTripWithNamespacedEntryIDs() throws {
+        let feed = try XCTUnwrap(URL(string: "https://Example.com/feed.xml"))
+        let page = try XCTUnwrap(URL(string: "https://example.com/post#top"))
+        let subscribe = try LibraryIntent.subscribe(feedURL: feed, deviceID: "phone", createdAt: created, id: "sub")
+        let article = try LibraryIntent.addArticle(url: page, deviceID: "phone", createdAt: created, id: "art")
+        for intent in [subscribe, article] {
+            let data = try JSONEncoder().encode(intent)
+            XCTAssertEqual(try JSONDecoder().decode(LibraryIntent.self, from: data), intent)
+            XCTAssertTrue(intent.action.isDecision)
+        }
+        XCTAssertEqual(subscribe.action.entryID, try ItemID.derivePodcastFeed(from: feed))
+        XCTAssertEqual(article.action.entryID, try ItemID.derive(from: page))
+        XCTAssertNotEqual(subscribe.action.entryID, article.action.entryID)
+    }
+
+    func testAddIntentsRejectNonHTTPSAndCredentialedURLsAtInitAndDecode() throws {
+        let bad = ["http://example.com/feed.xml", "ftp://example.com/f", "https://user:pw@example.com/f",
+                   "https://user@example.com/f", "https:///nohost"]
+        for text in bad {
+            let url = try XCTUnwrap(URL(string: text), text)
+            XCTAssertThrowsError(try LibraryIntent.subscribe(feedURL: url, deviceID: "phone", id: "x"), text)
+            XCTAssertThrowsError(try LibraryIntent.addArticle(url: url, deviceID: "phone", id: "x"), text)
+        }
+        let good = try LibraryIntent.subscribe(feedURL: XCTUnwrap(URL(string: "https://example.com/f")), deviceID: "phone", id: "x")
+        let forged = String(decoding: try JSONEncoder().encode(good), as: UTF8.self)
+            .replacingOccurrences(of: "https:", with: "http:")
+        XCTAssertTrue(forged.contains("http:"))
+        XCTAssertThrowsError(try JSONDecoder().decode(LibraryIntent.self, from: Data(forged.utf8)))
+    }
+
     func testOutcomeRoundTripAndValidation() throws {
         let intent = try LibraryIntent.keep(entryID: item("a"), deviceID: "phone", createdAt: created, id: "k")
         let applied = try IntentOutcome.applied(for: intent, at: Date(timeIntervalSince1970: 2_000))

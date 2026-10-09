@@ -71,6 +71,15 @@ final class LibraryStatsTests: XCTestCase {
         XCTAssertEqual(stats, LibraryStats(audioProcessedSeconds: 1, speechGeneratedSeconds: 2, confirmedAdTimeRemovedSeconds: 3, fasterPlaybackTimeSavedSeconds: 4))
     }
 
+    func testSupportedIntentActionsIsNilWhenAbsentAndRoundTripsWhenPresent() throws {
+        let old = #"{"audioProcessedSeconds":1,"speechGeneratedSeconds":2,"confirmedAdTimeRemovedSeconds":3,"fasterPlaybackTimeSavedSeconds":4}"#
+        XCTAssertNil(try JSONDecoder().decode(LibraryStats.self, from: Data(old.utf8)).supportedIntentActions)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(LibraryStats()), as: UTF8.self).contains("supportedIntentActions"))
+        let stats = LibraryStats(supportedIntentActions: ["subscribe", "addArticle"])
+        XCTAssertEqual(try JSONDecoder().decode(LibraryStats.self, from: JSONEncoder().encode(stats)).supportedIntentActions,
+                       ["subscribe", "addArticle"])
+    }
+
     func testAFutureFieldIsIgnoredByThisReader() throws {
         let json = #"{"audioProcessedSeconds":1,"speechGeneratedSeconds":2,"confirmedAdTimeRemovedSeconds":3,"fasterPlaybackTimeSavedSeconds":4,"someFutureMetric":9}"#
         XCTAssertEqual(try JSONDecoder().decode(LibraryStats.self, from: Data(json.utf8)).audioProcessedSeconds, 1)

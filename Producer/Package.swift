@@ -15,6 +15,7 @@ let package = Package(
         .target(
             name: "WiltedProducer",
             dependencies: [
+                .product(name: "WiltedCatalog", package: "WiltedKit"),
                 .product(name: "WiltedDomain", package: "WiltedKit"),
                 .product(name: "WiltedSync", package: "WiltedKit"),
             ]

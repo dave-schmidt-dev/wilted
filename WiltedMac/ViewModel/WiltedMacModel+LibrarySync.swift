@@ -140,6 +140,8 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
             try await record(intent, describing: "restore for \(entryID.rawValue)")
         case let .reorder(entryID, afterEntryID):
             try await record(intent, describing: "reorder of \(entryID.rawValue) after \(afterEntryID?.rawValue ?? "front")")
+        case .subscribe, .addArticle:
+            try await record(intent, describing: "add-flow intent for \(intent.action.entryID.rawValue)")
         }
     }
 

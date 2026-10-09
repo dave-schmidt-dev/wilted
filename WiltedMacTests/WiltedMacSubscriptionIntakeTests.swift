@@ -104,6 +104,40 @@ final class WiltedMacSubscriptionIntakeTests: XCTestCase {
         XCTAssertTrue(model.subscriptions.isEmpty)
     }
 
+    func testFeedWithoutAudioEnclosuresPersistsNothingAndNamesTheArticleFeedRefusal() async throws {
+        let directory = wiltedTemporaryDirectory("subscription-intake-article-feed")
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/articles.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let xml = "<rss version=\"2.0\"><channel><title>Articles only</title>"
+            + "<item><guid>a1</guid><title>Post one</title><link>https://feeds.example.test/post-1</link></item>"
+            + "<item><guid>a2</guid><title>Post two</title><link>https://feeds.example.test/post-2</link></item>"
+            + "</channel></rss>"
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(loader: FixedBodyLoader(body: Data(xml.utf8))),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        addTeardownBlock { await model.close() }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.startPodcastSubscriptionIntake(feedURL)
+        await model.waitForPodcastOperations()
+
+        let store = try XCTUnwrap(model.store)
+        let persistedFeed = try await store.podcastFeed(for: feedID)
+        let persistedSubscription = try await store.subscription(for: feedID)
+        let message = "Wilted can't follow article feeds yet; add single articles instead."
+        XCTAssertNil(persistedFeed)
+        XCTAssertNil(persistedSubscription)
+        XCTAssertTrue(model.subscriptions.isEmpty)
+        XCTAssertTrue(model.episodes.isEmpty)
+        XCTAssertEqual(model.podcastFeedDraftStatus, message)
+        XCTAssertEqual(model.podcastOperationMessage, message)
+        XCTAssertFalse(model.isCheckingPodcastSubscription)
+        XCTAssertNil(model.podcastSubscriptionRequestID)
+    }
+
     func testEpisodeAdmissionFailureKeepsTheDurableSubscriptionAndNamesThePartialResult() async throws {
         let directory = wiltedTemporaryDirectory("subscription-intake-partial")
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/partial.xml"))
