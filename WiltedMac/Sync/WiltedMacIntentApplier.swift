@@ -314,6 +314,7 @@ final class WiltedMacIntentApplier {
 /// end, so the answer to the phone reflects what the Mac actually holds afterwards.
 extension WiltedMacModel: WiltedMacDecisionHost {
     private static let decisionMoveAttempts = 80
+    private static let subscribeSlotWaitLimit = 40
     private static let decisionMovePoll: Duration = .milliseconds(50)
 
     func decisionState(of entryID: ItemID) -> WiltedMacDecisionEntryState {
@@ -405,11 +406,23 @@ extension WiltedMacModel: WiltedMacDecisionHost {
         guard case .podcastFeed = kind else { return .notAPodcastFeed }
         if subscriptions.contains(where: { $0.id == feedID.rawValue }) { return .alreadyFollowed }
         // The intake takes the single fetch slot; wait for a running refresh rather than lose the request.
-        await podcastRefreshTask?.value
+        // Loop, because another request can take the slot before this continuation resumes. The model is
+        // @MainActor, so nothing runs between the loop's exit and the intake start below.
+        var waits = 0
+        while let running = podcastRefreshTask {
+            waits += 1
+            guard waits <= Self.subscribeSlotWaitLimit else { return .failed }
+            await running.value
+        }
+        // A competing request may have followed this feed while we waited.
+        if subscriptions.contains(where: { $0.id == feedID.rawValue }) { return .alreadyFollowed }
         let before = subscriptions.count
         podcastFeedDraftStatus = nil
+        let priorRequestID = podcastSubscriptionRequestID
         startPodcastSubscriptionIntake(url)
-        guard let task = podcastRefreshTask else { return .failed }
+        // An intake that declined leaves no request ID; never read another request's outcome as ours.
+        guard let requestID = podcastSubscriptionRequestID, requestID != priorRequestID,
+              let task = podcastRefreshTask else { return .failed }
         await task.value
         if podcastFeedDraftStatus == PodcastFeedHasNoAudio.message { return .noAudio }
         if subscriptions.count > before { return .added }
