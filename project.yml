@@ -130,6 +130,8 @@ targets:
         product: WiltedSync
       - package: WiltedKit
         product: WiltedLibrary
+      - package: WiltedKit
+        product: WiltedCatalog
       - package: WiltedCloudKit
         product: WiltedCloudKit
       - package: WiltedCloudKit
@@ -398,6 +400,8 @@ targets:
         product: WiltedSync
       - package: WiltedKit
         product: WiltedLibrary
+      - package: WiltedKit
+        product: WiltedCatalog
       - package: WiltedCloudKit
         product: WiltedCloudKit
       - package: WiltedCloudKit

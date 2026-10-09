@@ -61,6 +61,17 @@ final class LibraryAppModel: ObservableObject {
     @Published var decisions: [PendingDecision] = []
     /// Why a decision was rolled back, per entry, in words.
     @Published var decisionNotices: [ItemID: String] = [:]
+    /// Adds sent to the Mac (a podcast to follow, an article to add) and not yet cleared; written by
+    /// `LibraryAppModel+Add`. Kept apart from `decisions`: an add names an item the Mac does not hold yet.
+    @Published var adds: [PendingAdd] = []
+    /// Why the last add was not sent, in words; nil when it was.
+    @Published var addNotice: String?
+    /// The add actions the Mac says it applies (`supportedIntentActions`); nil until read.
+    @Published var macAddActions: Set<String>?
+    /// True when the last read of the Mac's published actions failed.
+    @Published var macAddCheckFailed = false
+    /// What is typed in the Add sheet, kept so closing the sheet does not lose it.
+    @Published var addDraft = ""
 
     /// Why iCloud calls are paused (rate limited, unavailable) and until when; nil while they run.
     /// Set by the shared `TransportGate`, cleared by the next call that succeeds. Written by
@@ -284,6 +295,7 @@ final class LibraryAppModel: ObservableObject {
         continuation = nil
         completedDisplayRows = nil
         discardDecisionsAfterAccountChange()
+        discardAddsAfterAccountChange()
         await discardMediaAfterAccountChange()
         await refresh()
     }
@@ -322,7 +334,7 @@ final class LibraryAppModel: ObservableObject {
         }
         var options: LibraryPollOptions = [.deviceRecords]
         if plan.readsOffers { options.insert(.offers) }
-        if !decisions.isEmpty { options.insert(.outcomes) }
+        if !decisions.isEmpty || hasAddAwaitingAnswer { options.insert(.outcomes) }
         let beforePoll = await roundStore.state()
         guard await current() else { return }
         var polled: LibraryPollResult?
@@ -377,6 +389,7 @@ final class LibraryAppModel: ObservableObject {
             guard await current() else { return }
         }
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
+        await resolveAdds(outcomes: polled?.outcomes ?? [])
         guard await current() else { return }
         if let failure { errorMessage = failure is TransportThrottled ? nil : Self.message(for: failure) }
         else if plan.readsState { errorMessage = nil; lastSynchronizedAt = now() }

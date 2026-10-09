@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- iPhone Add (Larder toolbar): search Apple Podcasts or paste a link, and the phone asks your Mac to subscribe or add the article, showing "Sent to your Mac" until the Mac answers; an older Mac shows "Update Wilted on your Mac to add from iPhone" and nothing is sent.
 - One Add sheet on the Mac (toolbar Add or ⌘N) replaces the Feeds Subscribe popover and the Larder article field: paste a podcast or article link, or search Apple Podcasts by name, and shows you already follow are marked.
 - The Mac answers subscribe and add-article requests sent from a phone, and rejects requests it cannot read instead of silently dropping them.
 - An Apple Watch remote for the iPhone (Development builds): Now Playing with play, pause, skip, speed and sleep, and Up Next; it always shows the phone's last update and its age, and disables its controls with a note while the phone is out of reach.

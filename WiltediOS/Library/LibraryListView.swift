@@ -11,6 +11,7 @@ struct LibraryRoot: View {
     @StateObject private var settings: LibrarySettingsStore
     @State private var isPlayerPresented = false
     @State private var isSettingsPresented = false
+    @State private var isAddPresented = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
 
@@ -41,6 +42,12 @@ struct LibraryRoot: View {
                             .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                             .accessibilityIdentifier("wilted-library-settings-button")
                     }
+                    // Add sits in the root's bar, beside the list's own Sort and Filter menus.
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { isAddPresented = true } label: { Label("Add", systemImage: "plus") }
+                            .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                            .accessibilityIdentifier("wilted-library-add-button")
+                    }
                 }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -57,6 +64,11 @@ struct LibraryRoot: View {
             LibraryPlayerView(
                 player: player, model: model, onClose: { isPlayerPresented = false }, command: model.playbackCommand,
                 onRetry: { Task { await model.retryFailedStart() } })
+                .environment(\.wiltedTextScale, settings.textScale)
+                .presentationDetents([.large])
+        }
+        .sheet(isPresented: $isAddPresented) {
+            LibraryAddSheet(model: model) { isAddPresented = false }
                 .environment(\.wiltedTextScale, settings.textScale)
                 .presentationDetents([.large])
         }

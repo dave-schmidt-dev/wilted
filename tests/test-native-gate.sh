@@ -606,7 +606,7 @@ mvp_missing_log="$tmp_dir/mvp-missing.log"
 mvp_missing_status="$(run_case mvp-missing "$mvp_missing_log" \
   env NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY=1 bash "$gate")"
 [[ "$mvp_missing_status" -ne 0 ]] || { cat "$mvp_missing_log" >&2; exit 1; }
-assert_contains 'native.insufficient-tests label=ios-pixel-snapshot-tests reported=14 expected_minimum=15' "$mvp_missing_log"
+assert_contains 'native.insufficient-tests label=ios-pixel-snapshot-tests reported=22 expected_minimum=23' "$mvp_missing_log"
 assert_contains 'native.failed count=1' "$mvp_missing_log"
 
 package_zero_log="$tmp_dir/package-zero.log"
@@ -787,8 +787,8 @@ assert_contains '|| "$name" == watchos-*' "$gate"
 assert_contains 'self_test_watchos_failure_evidence' "$gate"
 assert_contains 'self_test_watchos_zero_test_evidence' "$gate"
 
-# The shipping phone lane keeps the original eight captures and verifies pixels, not hidden labels.
-assert_validation_contains 'iOS pixel snapshot method membership must remain exactly eight'
+# The shipping phone lane keeps the original eight captures, adds the eight Add sheet captures, and verifies pixels, not hidden labels.
+assert_validation_contains 'iOS pixel snapshot method membership must remain exactly sixteen'
 assert_validation_contains 'iOS pixel test does not verify painted date and Storage geometry'
 assert_contains 'VNRecognizeTextRequest()' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'value.frame.minY, label.frame.maxY' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"

@@ -42,8 +42,52 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         assertSnapshot(launchLibraryRoot(.settings, dark: true), named: "library-settings-dark")
     }
 
+    func testLibraryAddSearchLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.addSearch, dark: false), named: "library-add-search-light")
+    }
+
+    func testLibraryAddSearchDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.addSearch, dark: true), named: "library-add-search-dark")
+    }
+
+    func testLibraryAddSentLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.addSent, dark: false), named: "library-add-sent-light")
+    }
+
+    func testLibraryAddSentDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.addSent, dark: true), named: "library-add-sent-dark")
+    }
+
+    func testLibraryAddRejectedLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.addRejected, dark: false), named: "library-add-rejected-light")
+    }
+
+    func testLibraryAddRejectedDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.addRejected, dark: true), named: "library-add-rejected-dark")
+    }
+
+    func testLibraryAddUpdateMacLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.addUpdateMac, dark: false), named: "library-add-update-mac-light")
+    }
+
+    func testLibraryAddUpdateMacDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.addUpdateMac, dark: true), named: "library-add-update-mac-dark")
+    }
+
     private enum LibraryScreen {
         case larder, larderGrouped, episodeDetail, settings
+        // The Add sheet's four states (Task 4.1): results, sent and waiting, refused, and an old Mac.
+        case addSearch, addSent, addRejected, addUpdateMac
+
+        /// What the DEBUG fixture's stand-in Mac does for this screen (`LibraryAddUITestSeam`); nil for the rest.
+        var addMac: String? {
+            switch self {
+            case .addSearch, .addSent: "ready"
+            case .addRejected: "rejects-no-audio"
+            case .addUpdateMac: "old"
+            default: nil
+            }
+        }
     }
 
     /// Launches the production `LibraryRoot` over the fixed-clock `pixel` fixture and drives it to `screen`.
@@ -54,6 +98,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             "--wilted-library-root-fixture", "--wilted-library-root-scenario=pixel",
             "--wilted-library-root-appearance=\(dark ? "dark" : "light")"
         ]
+        if let mac = screen.addMac { app.launchArguments.append("--wilted-library-add-mac=\(mac)") }
         // Probe hook: WILTED_PIXEL_PROBE_TZ (as TEST_RUNNER_WILTED_PIXEL_PROBE_TZ) launches the app in another
         // zone; the fixture pins its own, so the captures must not move.
         if let zone = ProcessInfo.processInfo.environment["WILTED_PIXEL_PROBE_TZ"] { app.launchEnvironment["TZ"] = zone }
@@ -76,6 +121,8 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             XCTAssertTrue(title.waitForExistence(timeout: 5))
             title.tap()
             XCTAssertTrue(any["wilted-library-detail"].waitForExistence(timeout: 5))
+        case .addSearch, .addSent, .addRejected, .addUpdateMac:
+            driveAddSheet(screen, app: app)
         case .settings:
             app.buttons["wilted-library-settings-button"].tap()
             XCTAssertTrue(any["wilted-library-settings"].waitForExistence(timeout: 5))
@@ -90,6 +137,38 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         add(attachment)
         assertShippingFacts(screen, app: app, image: screenshot)
         return normalized(screenshot)
+    }
+
+    /// Opens the Add sheet and types into it, as a listener would, until `screen`'s state shows. Search
+    /// answers come from the DEBUG fixture, never from Apple.
+    private func driveAddSheet(_ screen: LibraryScreen, app: XCUIApplication) {
+        let any = app.descendants(matching: .any)
+        app.buttons["wilted-library-add-button"].tap()
+        let field = app.textFields["wilted-add-field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "The Add sheet did not open.")
+        field.tap()
+        switch screen {
+        case .addSearch:
+            field.typeText("garden\n")
+            XCTAssertTrue(any["wilted-add-result-show-9001"].waitForExistence(timeout: 10))
+        case .addRejected:
+            field.typeText("garden\n")
+            XCTAssertTrue(any["wilted-add-result-show-9001"].waitForExistence(timeout: 10))
+            app.buttons["wilted-add-subscribe-show-9001"].tap()
+            // The refusal lands in the requests list and the row offers Subscribe again.
+            XCTAssertTrue(app.staticTexts["That feed has no audio episodes, so your Mac did not add it."].waitForExistence(timeout: 10))
+        case .addSent:
+            field.typeText("https://example.com/podcast\n")
+            XCTAssertTrue(any["wilted-add-result-link"].waitForExistence(timeout: 10))
+            app.buttons["wilted-add-feed-link"].tap()
+            XCTAssertTrue(app.staticTexts["Sent to your Mac"].waitForExistence(timeout: 10))
+        case .addUpdateMac:
+            field.typeText("https://example.com/podcast\n")
+            XCTAssertTrue(any["wilted-add-result-link"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.staticTexts["Update Wilted on your Mac to add from iPhone"].waitForExistence(timeout: 10))
+        default:
+            XCTFail("Not an Add sheet screen")
+        }
     }
 
     /// Reads the actual rendered pixels: accessibility labels alone can conceal clipped text.

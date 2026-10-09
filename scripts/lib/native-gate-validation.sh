@@ -188,8 +188,8 @@ validate_ios_pixel_snapshot_baselines() {
     fail 'iOS pixel test does not exercise the production LibraryRoot fixture'
   grep -Fq 'assertShippingFacts(screen, app: app, image: screenshot)' "$source" ||
     fail 'iOS pixel test does not verify painted date and Storage geometry'
-  [[ "$(grep -Ec '^[[:space:]]*func[[:space:]]+test.*PixelBaseline\(' "$source")" -eq 8 ]] ||
-    fail 'iOS pixel snapshot method membership must remain exactly eight'
+  [[ "$(grep -Ec '^[[:space:]]*func[[:space:]]+test.*PixelBaseline\(' "$source")" -eq 16 ]] ||
+    fail 'iOS pixel snapshot method membership must remain exactly sixteen'
   for method in \
     testLibraryLarderDarkPixelBaseline \
     testLibraryLarderLightPixelBaseline \
@@ -197,18 +197,26 @@ validate_ios_pixel_snapshot_baselines() {
     testLibraryLarderGroupedLightPixelBaseline \
     testLibraryEpisodeDetailDarkPixelBaseline \
     testLibraryEpisodeDetailLightPixelBaseline \
+    testLibraryAddSearchDarkPixelBaseline \
+    testLibraryAddSearchLightPixelBaseline \
+    testLibraryAddSentDarkPixelBaseline \
+    testLibraryAddSentLightPixelBaseline \
+    testLibraryAddRejectedDarkPixelBaseline \
+    testLibraryAddRejectedLightPixelBaseline \
+    testLibraryAddUpdateMacDarkPixelBaseline \
+    testLibraryAddUpdateMacLightPixelBaseline \
     testLibrarySettingsDarkPixelBaseline \
     testLibrarySettingsLightPixelBaseline; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$source" ||
       fail "iOS pixel snapshot test method is missing: $method"
   done
 
-  expected=$'library-episode-detail-dark.png\nlibrary-episode-detail-light.png\nlibrary-larder-dark.png\nlibrary-larder-grouped-dark.png\nlibrary-larder-grouped-light.png\nlibrary-larder-light.png\nlibrary-settings-dark.png\nlibrary-settings-light.png'
+  expected=$'library-add-rejected-dark.png\nlibrary-add-rejected-light.png\nlibrary-add-search-dark.png\nlibrary-add-search-light.png\nlibrary-add-sent-dark.png\nlibrary-add-sent-light.png\nlibrary-add-update-mac-dark.png\nlibrary-add-update-mac-light.png\nlibrary-episode-detail-dark.png\nlibrary-episode-detail-light.png\nlibrary-larder-dark.png\nlibrary-larder-grouped-dark.png\nlibrary-larder-grouped-light.png\nlibrary-larder-light.png\nlibrary-settings-dark.png\nlibrary-settings-light.png'
   actual="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; | LC_ALL=C sort)"
   [[ "$actual" == "$expected" ]] || fail 'iOS pixel baseline selectors are missing or unexpected'
   bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; | grep -vc 'PNG image data, 390 x 844' || true)"
   [[ "$bad_pngs" -eq 0 ]] || fail "iOS pixel baselines are invalid or wrong-sized: $bad_pngs"
-  printf 'native.ios-snapshots.baselines count=8 library-root-light-dark\n'
+  printf 'native.ios-snapshots.baselines count=16 library-root-light-dark\n'
 }
 
 parse_result_bundle_test_count() {
@@ -256,7 +264,7 @@ expected_test_count_floor() {
   case "$1" in
     macos-unit-tests) printf '30\n' ;;
     macos-ui-tests) mac_ui_declared_test_count ;;
-    ios-pixel-snapshot-tests) printf '15\n' ;;
+    ios-pixel-snapshot-tests) printf '23\n' ;;
     watchos-build) printf '4\n' ;;
     *) printf '1\n' ;;
   esac
@@ -301,7 +309,7 @@ assert_result_bundle_tests() {
     elif is_forced_zero "$label"; then
       printf '%s\n' '{"totalTestCount":0,"passedTests":0,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" && "$forced_missing_ios_mvp_journey" == "1" ]]; then
-      printf '%s\n' '{"totalTestCount":14,"passedTests":14,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":22,"passedTests":22,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     elif [[ "$label" == "watchos-build" ]]; then
       local watch_count="${NATIVE_SELF_TEST_WATCH_COUNT:-4}"
       printf '{"totalTestCount":%s,"passedTests":%s,"failedTests":0,"skippedTests":0,"result":"Passed"}\n' "$watch_count" "$watch_count" >"$summary_file"
@@ -312,7 +320,7 @@ assert_result_bundle_tests() {
       ui_count="$(mac_ui_declared_test_count)"
       printf '{"totalTestCount":%s,"passedTests":%s,"failedTests":0,"skippedTests":0,"result":"Passed"}\n' "$ui_count" "$ui_count" >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" ]]; then
-      printf '%s\n' '{"totalTestCount":15,"passedTests":15,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
+      printf '%s\n' '{"totalTestCount":23,"passedTests":23,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     else
       printf '%s\n' '{"totalTestCount":2,"passedTests":2,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     fi
