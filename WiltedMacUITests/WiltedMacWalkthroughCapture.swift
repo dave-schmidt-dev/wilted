@@ -90,11 +90,12 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertTrue(element(app, "wilted-mac-feeds-detail").waitForExistence(timeout: 15))
         try write(app, "4.1-feeds-inbox", into: root)
 
-        // Subscribing sits behind Add feed; the composer is a popover and a
-        // window of its own, so the main window's frame cannot show it.
-        element(app, "wilted-add-feed-button").click()
-        XCTAssertTrue(element(app, "wilted-podcast-feed-url").waitForExistence(timeout: 10))
-        try write(popover: app.popovers.firstMatch, "4.2-feeds-add-feed", into: root)
+        // Subscribing is the toolbar Add button's sheet (B6.2 Task 3.1); the sheet is a
+        // window of its own, so the main window's frame cannot show it. It is recorded
+        // through the uninset own-window path the popovers used.
+        element(app, "wilted-add-button").click()
+        XCTAssertTrue(element(app, "wilted-add-field").waitForExistence(timeout: 10))
+        try write(popover: app.sheets.firstMatch, "4.2-feeds-add-feed", into: root)
         app.typeKey(.escape, modifierFlags: [])
 
         // The title opens the full feed notes without leaving the inbox. Its
@@ -186,11 +187,10 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         XCTAssertEqual(sort.label, "Sort Larder: Custom")
         try write(app, "5.1-larder-idle", into: root)
 
-        // The address box moved from the Larder's header to here; the
-        // popover keeps its own identifier and is captured at its own size.
-        element(app, "wilted-add-article-button").click()
-        XCTAssertTrue(element(app, "wilted-link-url").waitForExistence(timeout: 10))
-        try write(popover: app.popovers.firstMatch, "5.2-larder-add-article", into: root)
+        // The empty Larder's Add button opens the same Add sheet as the toolbar.
+        element(app, "wilted-larder-add-button").click()
+        XCTAssertTrue(element(app, "wilted-add-field").waitForExistence(timeout: 10))
+        try write(popover: app.sheets.firstMatch, "5.2-larder-add-article", into: root)
         app.typeKey(.escape, modifierFlags: [])
         app.terminate()
 

@@ -4,16 +4,12 @@ import WiltedDomain
 
 // MARK: - Feeds
 
-/// Subscribing, and feed upkeep, on one page.
-///
-/// Subscribing used to happen in Larder's single add box, which asked the
-/// listener to paste a feed into a control labelled for articles. This page now
-/// owns the decision: its composer takes the feed, and the list below is what
-/// the app does with it once followed -- refresh it, hide it, or drop it.
+/// Feed upkeep on one page: what arrived, and what the app does with each
+/// followed feed -- refresh it, hide it, or drop it. Following a new show is
+/// the Add sheet's job, opened from the toolbar.
 struct WiltedMacFeedsView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
-    @State private var choosesCustomMetadataCount = false
     /// Kept on the model, so leaving Feeds and coming back (or relaunching) finds both as they were.
     private var isOffListExpanded: Bool {
         get { model.navigationState.isOffListExpanded }
@@ -23,8 +19,6 @@ struct WiltedMacFeedsView: View {
         get { model.navigationState.selectedFeedEpisodeIDs }
         nonmutating set { model.navigationState.selectedFeedEpisodeIDs = newValue }
     }
-    /// This changes one request only; Settings remains the saved default.
-    @State private var subscriptionInitialMetadataOverride: Int?
     @State private var feedRemoval = WiltedMacRemovalFlow()
     @State private var policyBoard: WiltedMacFeedPolicyBoard
 
@@ -44,7 +38,6 @@ struct WiltedMacFeedsView: View {
                 WiltedMacPodcastOperationMessage(model: model)
             }
             .id("feeds-refresh")
-            addFeedControl.id("feeds-add")
             inbox.id("feeds-inbox")
             feedManagement.id("feeds-subscriptions")
             restorableEpisodes.id("feeds-off-list")
@@ -230,123 +223,6 @@ struct WiltedMacFeedsView: View {
         .onChange(of: visibleIDs) { _, currentVisibleIDs in
             selectedFeedEpisodeIDs.formIntersection(currentVisibleIDs)
         }
-    }
-
-    /// Subscribing behind a button, matching the Larder's Add article. The
-    /// composer keeps its own identifier so what the popover holds is the same
-    /// element it was when it sat on the page.
-    private var addFeedControl: some View {
-        HStack {
-            Spacer()
-            Button {
-                subscriptionInitialMetadataOverride = nil
-        choosesCustomMetadataCount = false
-                model.isPresentingSubscribeComposer = true
-            } label: {
-                Label(WiltedScreenCopy.subscribeToPodcast, systemImage: "plus")
-            }
-            .accessibilityIdentifier("wilted-add-feed-button")
-            .popover(isPresented: $model.isPresentingSubscribeComposer, arrowEdge: .bottom) {
-                subscribeComposer
-                    .frame(width: 460)
-                    .padding(WiltedTheme.Spacing.large)
-                    .background(WiltedTheme.color(.card, scheme: colorScheme))
-            }
-        }
-    }
-
-    /// The subscription composer.
-    ///
-    /// Classifying an address needs the document, so Subscribe can sit on a
-    /// network round trip. The progress control and its Cancel are the reason
-    /// that pause reads as work rather than as a button that did nothing.
-    private var subscribeComposer: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text(WiltedScreenCopy.subscribeToPodcastDetail)
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: WiltedTheme.Spacing.medium) {
-                Picker("Episodes listed", selection: initialMetadataPreset) {
-                    Text("5").tag(5)
-                    Text("10").tag(10)
-                    Text("Custom").tag(0)
-                }
-                .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-count")
-                if initialMetadataPreset.wrappedValue == 0 {
-                    TextField("Custom episodes (1–100)", value: subscriptionInitialMetadataCount, format: .number)
-                        .frame(width: 120)
-                        .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-custom")
-                }
-                Text("Titles and notes only; audio follows your download settings.")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-podcast-subscribe-initial-metadata-note")
-            }
-            HStack(spacing: WiltedTheme.Spacing.medium) {
-                WiltedMacLinkField(
-                    text: $model.podcastFeedDraft,
-                    placeholder: "https://example.com/podcast/feed.xml",
-                    identifier: "wilted-podcast-feed-url"
-                )
-                if model.isCheckingPodcastSubscription {
-                    ProgressView().controlSize(.small)
-                        .accessibilityIdentifier("wilted-podcast-subscribe-progress")
-                    Button("Cancel") { model.cancelPodcastSubscriptionCheck() }
-                        .accessibilityIdentifier("wilted-podcast-subscribe-cancel")
-                } else {
-                    Button("Subscribe") {
-                        subscribe()
-                    }
-                        .keyboardShortcut(.return)
-                        .accessibilityIdentifier("wilted-podcast-subscribe")
-                }
-            }
-            if let status = model.podcastFeedDraftStatus {
-                Text(status)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-podcast-subscribe-status")
-            }
-            if let advertised = model.advertisedFeed {
-                WiltedMacAdvertisedFeedOffer(
-                    model: model, feedURL: advertised, identifier: "wilted-podcast-advertised-feed"
-                )
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-podcast-subscribe-composer")
-    }
-
-    private var initialMetadataPreset: Binding<Int> {
-        Binding(
-            get: {
-                let count = subscriptionInitialMetadataCount.wrappedValue
-                return choosesCustomMetadataCount || ![5, 10].contains(count) ? 0 : count
-            },
-            set: { preset in
-                choosesCustomMetadataCount = preset == 0
-                if preset != 0 { subscriptionInitialMetadataCount.wrappedValue = preset }
-            }
-        )
-    }
-
-    private var subscriptionInitialMetadataCount: Binding<Int> {
-        Binding(
-            get: { subscriptionInitialMetadataOverride ?? model.automationSettings.initialEpisodeMetadataCount },
-            set: { value in
-                guard WiltedAutomationSettings.validInitialEpisodeMetadataCount(value) != nil else { return }
-                subscriptionInitialMetadataOverride = value
-            }
-        )
-    }
-
-    private func subscribe() {
-        let initialMetadataCount = subscriptionInitialMetadataOverride
-        model.addPodcastFeedDraft(initialMetadataCount: initialMetadataCount)
-        subscriptionInitialMetadataOverride = nil
-        choosesCustomMetadataCount = false
     }
 
     /// Feeds owns its refresh action at the page header, ahead of either list.

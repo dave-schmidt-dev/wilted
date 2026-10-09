@@ -105,6 +105,11 @@ struct WiltedMacApp: App {
                 }
         }
         .commands {
+            // New opens the Add sheet (B6.2 Task 3.1); the toolbar Add button carries no shortcut of its own.
+            CommandGroup(replacing: .newItem) {
+                Button("Add\u{2026}") { model.presentAddSheet() }
+                    .keyboardShortcut("n", modifiers: .command)
+            }
             // The sidebar is a column of the window, not a split view, so the
             // system's Toggle Sidebar has nothing to act on: this is the
             // command, with the same ⌃⌘S.

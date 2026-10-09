@@ -459,3 +459,44 @@ private extension CKRecord {
         return self
     }
 }
+
+/// An intent from a newer phone whose action this build cannot decode is not dropped: poll and
+/// listIntents hand it over as an unsupported placeholder, and the intents after it still arrive.
+final class UnsupportedIntentRecordTests: XCTestCase {
+    func testAnUndecodableActionArrivesAsAPlaceholderAndLaterIntentsStillArrive() async throws {
+        let fixture = try MediaFixture()
+        let mac = try fixture.endpoint("mac", writer: true)
+        let phone = try fixture.endpoint("phone", writer: false)
+        let first = try LibraryIntent.keep(entryID: item("ep-1"), deviceID: "phone", createdAt: Date(timeIntervalSince1970: 5), id: "i-1")
+        let second = try LibraryIntent.keep(entryID: item("ep-2"), deviceID: "phone", createdAt: Date(timeIntervalSince1970: 6), id: "i-2")
+        try await phone.transport.send(intent: first)
+        try await phone.transport.send(intent: second)
+
+        let mapper = LibraryRecordMapper()
+        let forged = CKRecord(recordType: LibraryRecordType.intent.rawValue, recordID: try mapper.recordID(intentID: "i-1", deviceID: "phone"))
+        forged[LibraryRecordMapper.payloadField] = Data(
+            #"{"action":{"teleport":{"entryID":"item-ep-1"}},"createdAt":-978307195,"deviceID":"phone","id":"i-1"}"#.utf8) as CKRecordValue
+        await fixture.server.putRaw(forged)
+        await mac.transport.track(devices: ["phone"])
+
+        let polled = try await mac.transport.poll([.intents])
+        XCTAssertEqual(polled.intents.map(\.id), ["i-1", "i-2"])
+        XCTAssertEqual(polled.intents.first?.action, .unsupported)
+        XCTAssertEqual(polled.intents.last, second)
+        let listed = try await mac.transport.listIntents()
+        XCTAssertEqual(listed.map(\.id), ["i-1", "i-2"])
+        XCTAssertThrowsError(try JSONEncoder().encode(try XCTUnwrap(polled.intents.first)), "never written back")
+    }
+
+    func testAForgedRecordWhoseNameDisagreesWithItsPayloadIsNotAPlaceholder() async throws {
+        let mapper = LibraryRecordMapper()
+        let other = CKRecord(recordType: LibraryRecordType.intent.rawValue, recordID: try mapper.recordID(intentID: "i-9", deviceID: "phone"))
+        other[LibraryRecordMapper.payloadField] = Data(
+            #"{"action":{"teleport":{}},"createdAt":5,"deviceID":"phone","id":"i-1"}"#.utf8) as CKRecordValue
+        let transport = try CloudKitLibraryTransport(
+            deviceID: "mac", isLibraryWriter: true, driver: FakeMediaDriver(server: FakeMediaServer(), outbox: CloudKitLibraryOutbox()),
+            driverFactory: { _ in FakeMediaDriver(server: FakeMediaServer(), outbox: CloudKitLibraryOutbox()) },
+            outbox: CloudKitLibraryOutbox(), mediaWatchdogInterval: 300)
+        await XCTAssertThrowsErrorAsync(try await transport.decodeTolerant(other)) { _ in }
+    }
+}

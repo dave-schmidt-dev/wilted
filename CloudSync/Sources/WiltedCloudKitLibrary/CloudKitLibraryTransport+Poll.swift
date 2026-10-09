@@ -6,6 +6,28 @@ import WiltedLibrary
 // MARK: - One round's reads as one batch
 
 extension CloudKitLibraryTransport {
+    /// Decodes a fetched record. An intent record whose action this build cannot decode (a newer
+    /// phone sent it) becomes a decode-side placeholder carrying its id, device and time, so the
+    /// Mac can answer `unsupportedAction`; every other failure still throws. Shared by poll,
+    /// fetch and `listIntents`.
+    func decodeTolerant(_ record: CKRecord) throws -> LibraryDecodedRecord {
+        do { return try mapper.decode(record) } catch {
+            guard record.recordType == LibraryRecordType.intent.rawValue,
+                  record.recordID.zoneID == mapper.zoneID,
+                  let data = record[LibraryRecordMapper.payloadField] as? Data,
+                  let head = try? LibraryRecordMapper.decoder.decode(IntentHead.self, from: data),
+                  let placeholder = try? LibraryIntent.unsupported(id: head.id, deviceID: head.deviceID, createdAt: head.createdAt),
+                  (try? mapper.recordID(intent: placeholder)) == record.recordID else { throw error }
+            return .intent(placeholder)
+        }
+    }
+
+    private struct IntentHead: Decodable {
+        let id: String
+        let deviceID: String
+        let createdAt: Date
+    }
+
     /// Everything a sync round reads from the zone, by name, in as few requests as the names allow.
     ///
     /// The first request holds every name that is known up front: the intent and outcome indexes,
@@ -38,7 +60,7 @@ extension CloudKitLibraryTransport {
 
         func absorb(_ records: [CKRecord]) {
             for record in records {
-                switch try? mapper.decode(record) {
+                switch try? decodeTolerant(record) {
                 case let .intentIndex(index)?:
                     peers.note(device: index.deviceID)
                     if index.deviceID == deviceID { sawOwnIntentIndex = true }

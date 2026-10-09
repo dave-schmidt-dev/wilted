@@ -107,8 +107,7 @@ final class WiltedMacOwnerFeedbackJourneyTests: XCTestCase {
         XCTAssertEqual(model.feedsEpisodes.count, 10)
     }
 
-    /// Was `testSubscriptionOverrideResetsForTheNextFeed`. The model takes the override per call; the
-    /// view clears its own copy after each Subscribe, which the source check pins.
+    /// Was `testSubscriptionOverrideResetsForTheNextFeed`. The model takes the override per call.
     func testSubscriptionOverrideResetsForTheNextFeed() async throws {
         let model = await WiltedMacHeadless.model(self, intake)
         await subscribe(
@@ -117,12 +116,8 @@ final class WiltedMacOwnerFeedbackJourneyTests: XCTestCase {
         await subscribe(model, "https://feeds.example.test/fixture-default.xml", expectedAdded: 5)
         XCTAssertEqual(model.feedsEpisodes.count, 15)
 
-        let feeds = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
-        let subscribe = try XCTUnwrap(feeds.range(of: "private func subscribe() {"))
-        let tail = String(feeds[subscribe.upperBound...].prefix(260))
-        XCTAssertTrue(tail.contains("model.addPodcastFeedDraft(initialMetadataCount: initialMetadataCount)"))
-        XCTAssertTrue(tail.contains("subscriptionInitialMetadataOverride = nil"),
-                      "the override resets for the next feed")
+        // The view half (the Feeds popover clearing its own override) was retired: the Feeds popover
+        // was replaced by the Add sheet in B6.2 Task 3.1, which has no per-subscribe override.
     }
 
     /// Was `testBulkSkipDoesNotReselectAnEpisodeAfterRestore`. Selection is view state, so the headless

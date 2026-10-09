@@ -158,12 +158,10 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         XCTAssertTrue(text.contains { $0.contains("Downloaded audio is empty") }, "\(text)")
     }
 
-    func testAddFeedCountControlIsLabelledEpisodesListedWithFiveTenAndCustom() throws {
+    // The Feeds subscribe popover and its per-feed Episodes listed picker were
+    // replaced by the Add sheet in B6.2 Task 3.1; Settings keeps the default.
+    func testFeedsViewMountsThePodcastOperationMessageOnce() throws {
         let source = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
-        XCTAssertTrue(source.contains("Picker(\"Episodes listed\", selection: initialMetadataPreset)"))
-        for option in ["Text(\"5\").tag(5)", "Text(\"10\").tag(10)", "Text(\"Custom\").tag(0)"] {
-            XCTAssertTrue(source.contains(option), option)
-        }
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "WiltedMacPodcastOperationMessage(model: model)", in: source), 1,
                        "the message component is mounted once")
     }

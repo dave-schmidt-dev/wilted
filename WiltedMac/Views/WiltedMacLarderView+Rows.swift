@@ -255,55 +255,17 @@ extension WiltedMacLarderView {
         }
     }
 
-    /// The way in to the address box, moved here with the Larder's remaining
-    /// jobs: an article is saved listening, and the Larder is where listening
-    /// starts now.
-    var addArticleButton: some View {
-        Button {
-            model.isPresentingComposer = true
-        } label: {
-            Label(WiltedScreenCopy.addLink, systemImage: "plus")
-        }
-        .accessibilityIdentifier("wilted-add-article-button")
-        .popover(isPresented: $model.isPresentingComposer, arrowEdge: .bottom) {
-            composer
-                .frame(width: 420)
-                .padding(WiltedTheme.Spacing.large)
-                .background(WiltedTheme.color(.card, scheme: colorScheme))
-        }
-    }
-
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text(WiltedScreenCopy.addLinkTitle)
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Text(WiltedScreenCopy.addLinkDetail)
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: WiltedTheme.Spacing.medium) {
-                WiltedMacLinkField(text: $model.urlDraft)
-                Button(WiltedScreenCopy.addLink) {
-                    model.addPastedLink()
-                }
-                .keyboardShortcut(.return)
-                .accessibilityIdentifier("wilted-add-link")
+    /// Add, kept in the Larder where there is nothing to read: no articles yet,
+    /// or none matching the search (W-INV-010). Otherwise the toolbar's Add is
+    /// the way in. It opens the same Add sheet.
+    @ViewBuilder var addArticleButton: some View {
+        if model.larderSearchArticleResults.isEmpty {
+            Button {
+                model.presentAddSheet()
+            } label: {
+                Label("Add", systemImage: "plus")
             }
-            if let status = model.linkDraftStatus {
-                Text(status)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-link-status")
-            }
-            if let advertised = model.advertisedFeed {
-                WiltedMacAdvertisedFeedOffer(
-                    model: model, feedURL: advertised, identifier: "wilted-advertised-feed"
-                )
-            }
+            .accessibilityIdentifier("wilted-larder-add-button")
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-mac-composer")
     }
 }

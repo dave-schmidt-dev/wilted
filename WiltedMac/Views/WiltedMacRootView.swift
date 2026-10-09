@@ -162,7 +162,10 @@ struct WiltedMacRootView: View {
             detail
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-        .toolbar { wordmark; sidebarToggle }
+        .toolbar { wordmark; sidebarToggle; addButton }
+        .sheet(isPresented: $model.isPresentingAddSheet) {
+            WiltedMacAddSheet(model: model)
+        }
         // One place the chosen size enters the window. Every typographic
         // site reads it back out through `wiltedFont`.
         .environment(\.wiltedTextScale, model.textScale)
@@ -269,6 +272,25 @@ struct WiltedMacRootView: View {
         .help(model.sidebarToggleTitle)
         .accessibilityLabel(model.sidebarToggleTitle)
         .accessibilityIdentifier("wilted-sidebar-toggle")
+    }
+
+    /// The one way in for anything new: a podcast search, a feed, an article.
+    @ToolbarContentBuilder
+    private var addButton: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            addButtonContent
+        }
+    }
+
+    /// Also renders without AppKit chrome in headless tests. The ⌘N shortcut lives on the File > New command in WiltedMacApp.
+    var addButtonContent: some View {
+        Button {
+            model.presentAddSheet()
+        } label: {
+            Label("Add", systemImage: "plus")
+        }
+        .help("Add a podcast or article (\u{2318}N)")
+        .accessibilityIdentifier("wilted-add-button")
     }
 
     var wordmarkContent: some View { WiltedWordmark(height: 16) }
@@ -416,30 +438,6 @@ extension View {
                     value: proxy.frame(in: .named(WiltedMacRowsTopKey.space)).minY)
             }
         }
-    }
-}
-
-/// The offer to follow a feed an added page advertises.
-struct WiltedMacAdvertisedFeedOffer: View {
-    let model: WiltedMacModel
-    let feedURL: URL
-    let identifier: String
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        HStack(spacing: WiltedTheme.Spacing.medium) {
-            Text("That page publishes a feed at \(feedURL.host ?? feedURL.absoluteString).")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Subscribe") { model.subscribeToAdvertisedFeed() }
-                .accessibilityIdentifier("\(identifier)-subscribe")
-            Button("Not Now") { model.dismissAdvertisedFeed() }
-                .accessibilityIdentifier("\(identifier)-dismiss")
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(identifier)
     }
 }
 

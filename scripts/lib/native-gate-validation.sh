@@ -69,7 +69,7 @@ validate_pixel_snapshot_baselines() {
     "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
     fail 'Mac persistent compact-player journey selector is missing'
 
-  expected_count=168
+  expected_count=176
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
@@ -107,7 +107,7 @@ validate_pixel_snapshot_baselines() {
       expected_selectors+="state-$state_id-$variant\n"
     done <<<"$expected_variants"
   done <<<"$expected_state_ids"
-  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\n'
+  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\n'
   expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
   actual_selectors="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; |
     sed -E 's/^.*\.(state-[^.]+|mac-shell-[^.]+)\.png$/\1/' | sort)"
@@ -132,7 +132,15 @@ validate_pixel_snapshot_baselines() {
     testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-light.png \
     testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-dark.png \
     testMacToolbarPixelBaselines.mac-shell-toolbar-light.png \
-    testMacToolbarPixelBaselines.mac-shell-toolbar-dark.png; do
+    testMacToolbarPixelBaselines.mac-shell-toolbar-dark.png \
+    testMacAddSheetPixelBaselines.mac-shell-add-sheet-link-light.png \
+    testMacAddSheetPixelBaselines.mac-shell-add-sheet-link-dark.png \
+    testMacAddSheetPixelBaselines.mac-shell-add-sheet-results-light.png \
+    testMacAddSheetPixelBaselines.mac-shell-add-sheet-results-dark.png \
+    testMacAddSheetPixelBaselines.mac-shell-add-sheet-followed-light.png \
+    testMacAddSheetPixelBaselines.mac-shell-add-sheet-followed-dark.png \
+    testMacAddSheetPixelBaselines.mac-shell-add-sheet-error-light.png \
+    testMacAddSheetPixelBaselines.mac-shell-add-sheet-error-dark.png; do
     [[ -s "$snapshot_dir/$shell_name" ]] || fail "missing Mac shell baseline: $shell_name"
   done
   # Component baselines render at card scale. The two window shells render at
@@ -156,6 +164,7 @@ validate_pixel_snapshot_baselines() {
       testMacSidebarFullPixelBaselines.mac-shell-sidebar-full-*.png) expected_size='240 x 260' ;;
       testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-*.png) expected_size='56 x 260' ;;
       testMacToolbarPixelBaselines.mac-shell-toolbar-*.png) expected_size='256 x 56' ;;
+      testMacAddSheetPixelBaselines.mac-shell-add-sheet-*.png) expected_size='520 x 420' ;;
     esac
     grep -Fq "PNG image data, $expected_size" <<<"$(file "$png_path")" || {
       bad_pngs=$((bad_pngs + 1))
@@ -163,7 +172,7 @@ validate_pixel_snapshot_baselines() {
     }
   done < <(find "$snapshot_dir" -type f -name '*.png' -print)
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=16 window_shells=4\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=24 window_shells=4\n' "$expected_count"
 }
 
 validate_ios_pixel_snapshot_baselines() {

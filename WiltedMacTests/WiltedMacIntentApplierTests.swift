@@ -11,6 +11,8 @@ final class FakeDecisionHost: WiltedMacDecisionHost {
     var states: [ItemID: WiltedMacDecisionEntryState] = [:]
     var queue: [ItemID] = []
     var succeeds = true
+    /// What the model reports for the add-flow intents; `.added` also records the URL as held.
+    var addResult: WiltedMacAddResult = .added
     private(set) var calls: [String] = []
 
     func decisionState(of entryID: ItemID) -> WiltedMacDecisionEntryState { states[entryID] ?? .unknown }
@@ -23,6 +25,15 @@ final class FakeDecisionHost: WiltedMacDecisionHost {
     func moveQueueEntry(from source: Int, to destination: Int, resulting: [ItemID]) async -> Bool {
         calls.append("move \(source)->\(destination) \(resulting.map(\.rawValue).joined(separator: ","))")
         return succeeds
+    }
+
+    func subscribeFeed(_ url: URL) async -> WiltedMacAddResult {
+        calls.append("subscribe \(url.absoluteString)")
+        return addResult
+    }
+    func addArticleLink(_ url: URL) async -> WiltedMacAddResult {
+        calls.append("addArticle \(url.absoluteString)")
+        return addResult
     }
 
     private func record(_ name: String, _ entryID: ItemID) -> Bool {
@@ -191,6 +202,104 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         let published = try await outcomes(r)
         XCTAssertEqual(published.count, 3)
         XCTAssertTrue(published.allSatisfy(\.isApplied))
+    }
+
+    // MARK: Add flow
+
+    private let feedURL = URL(string: "https://feeds.example.test/show.xml")!
+    private let articleURL = URL(string: "https://example.test/post")!
+
+    func testSubscribeAddsOneSubscriptionAndARepeatedIntentIdAddsNone() async throws {
+        let r = rig()
+        let subscribe = try intent(.subscribe(feedURL: feedURL), id: "sub-1")
+        try await r.applier.apply(subscribe)
+        try await r.applier.apply(subscribe)
+        XCTAssertEqual(r.host.calls, ["subscribe https://feeds.example.test/show.xml"])
+        let published = try await outcomes(r)
+        XCTAssertEqual(published.map(\.intentID), ["sub-1"])
+        XCTAssertEqual(published.first?.disposition, .applied)
+        XCTAssertEqual(r.appliedCount.value, 1)
+    }
+
+    func testRepeatedIntentIdIsNotReappliedAfterARestart() async throws {
+        let directory = wiltedTemporaryDirectory("applier-add-restart")
+        let first = rig(directory: directory)
+        let subscribe = try intent(.subscribe(feedURL: feedURL), id: "sub-restart")
+        try await first.applier.apply(subscribe)
+        let second = rig(directory: directory, server: first.server)
+        try await second.applier.apply(subscribe)
+        XCTAssertEqual(second.host.calls, [])
+        let published = try await outcomes(second)
+        XCTAssertEqual(published.count, 1)
+    }
+
+    func testSubscribeToAFollowedFeedIsRejected() async throws {
+        let r = rig()
+        r.host.addResult = .alreadyFollowed
+        try await r.applier.apply(intent(.subscribe(feedURL: feedURL), id: "sub-dup"))
+        let published = try await outcomes(r)
+        XCTAssertEqual(published.first?.disposition, .rejected)
+        XCTAssertEqual(published.first?.reason, WiltedMacIntentApplier.reasonAlreadyFollowed)
+        XCTAssertEqual(r.appliedCount.value, 0)
+    }
+
+    func testSubscribeToAFeedWithoutAudioEnclosuresIsRejected() async throws {
+        let r = rig()
+        r.host.addResult = .noAudio
+        try await r.applier.apply(intent(.subscribe(feedURL: feedURL), id: "sub-noaudio"))
+        let published = try await outcomes(r)
+        XCTAssertEqual(published.first?.disposition, .rejected)
+        XCTAssertEqual(published.first?.reason, WiltedMacIntentApplier.reasonNoAudio)
+    }
+
+    func testSubscribeToANonFeedAndAFailedFetchAreRejectedWithTheirOwnReasons() async throws {
+        let r = rig()
+        r.host.addResult = .notAPodcastFeed
+        try await r.applier.apply(intent(.subscribe(feedURL: articleURL), id: "sub-article"))
+        r.host.addResult = .failed
+        try await r.applier.apply(intent(.subscribe(feedURL: feedURL), id: "sub-failed"))
+        let published = Dictionary(uniqueKeysWithValues: try await outcomes(r).map { ($0.intentID, $0) })
+        XCTAssertEqual(published["sub-article"]?.reason, WiltedMacIntentApplier.reasonNotAPodcastFeed)
+        XCTAssertEqual(published["sub-failed"]?.reason, IntentOutcome.reasonFailed)
+    }
+
+    func testAddArticleAddsOnceAndRejectsAFeedOrAnArticleAlreadyHeld() async throws {
+        let r = rig()
+        let add = try intent(.addArticle(url: articleURL), id: "art-1")
+        try await r.applier.apply(add)
+        try await r.applier.apply(add)
+        XCTAssertEqual(r.host.calls, ["addArticle https://example.test/post"])
+        r.host.addResult = .isAFeed
+        try await r.applier.apply(intent(.addArticle(url: feedURL), id: "art-feed"))
+        r.host.addResult = .alreadyAdded
+        try await r.applier.apply(intent(.addArticle(url: articleURL), id: "art-dup"))
+        let published = Dictionary(uniqueKeysWithValues: try await outcomes(r).map { ($0.intentID, $0) })
+        XCTAssertEqual(published["art-1"]?.disposition, .applied)
+        XCTAssertEqual(published["art-feed"]?.reason, WiltedMacIntentApplier.reasonIsAFeed)
+        XCTAssertEqual(published["art-dup"]?.reason, WiltedMacIntentApplier.reasonAlreadyAdded)
+        XCTAssertEqual(r.appliedCount.value, 1)
+    }
+
+    func testAddIntentsBypassTheUnknownEntryCheckAndExpire() async throws {
+        let r = rig()
+        try await r.applier.apply(intent(.subscribe(feedURL: feedURL), id: "sub-old", age: IntentRetention.maximumAge + 60))
+        XCTAssertEqual(r.host.calls, [])
+        let published = try await outcomes(r)
+        XCTAssertEqual(published.first?.reason, IntentOutcome.reasonExpired)
+    }
+
+    func testAnUnsupportedActionIsRejectedAndTheNextIntentStillApplies() async throws {
+        let r = rig()
+        r.host.states[ids[0]] = .live(queued: false, started: false)
+        let placeholder = try LibraryIntent.unsupported(id: "u-1", deviceID: phone, createdAt: clock)
+        let keep = try intent(.keep(entryID: ids[0]), id: "k-after")
+        try await r.applier.apply(placeholder)
+        try await r.applier.apply(keep)
+        XCTAssertEqual(r.host.calls, ["keep item-a"])
+        let published = Dictionary(uniqueKeysWithValues: try await outcomes(r).map { ($0.intentID, $0) })
+        XCTAssertEqual(published["u-1"]?.disposition, .rejected)
+        XCTAssertEqual(published["u-1"]?.reason, IntentOutcome.reasonUnsupportedAction)
+        XCTAssertEqual(published["k-after"]?.disposition, .applied)
     }
 
     func testQueueMoveMath() throws {

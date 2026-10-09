@@ -202,3 +202,16 @@ final class LibraryIntentTests: XCTestCase {
         } catch { XCTAssertTrue(error is LibraryTransportError) }
     }
 }
+
+final class UnsupportedIntentTests: XCTestCase {
+    func testAnUnsupportedPlaceholderIsADecisionAndNeverEncodes() throws {
+        let placeholder = try LibraryIntent.unsupported(id: "u", deviceID: "phone", createdAt: Date(timeIntervalSince1970: 1))
+        XCTAssertTrue(placeholder.action.isDecision)
+        XCTAssertThrowsError(try JSONEncoder().encode(placeholder))
+    }
+
+    func testAnUnknownActionStillFailsLibraryIntentDecode() {
+        let json = #"{"action":{"teleport":{}},"createdAt":1,"deviceID":"phone","id":"x"}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(LibraryIntent.self, from: Data(json.utf8)))
+    }
+}

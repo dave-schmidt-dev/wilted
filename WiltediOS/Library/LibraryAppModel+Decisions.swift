@@ -111,7 +111,7 @@ struct PendingDecision: Identifiable, Equatable, Sendable {
         case .restore: placement.removal == .none
         case let .reorder(_, after): placement.isQueued && placement.predecessor == after
         // Add-flow intents are not row decisions; nothing on a row can satisfy them.
-        case .requestMedia, .mediaCached, .subscribe, .addArticle: true
+        case .requestMedia, .mediaCached, .subscribe, .addArticle, .unsupported: true
         }
     }
 }
@@ -166,7 +166,7 @@ enum LibraryDecisionOverlay {
             }
             order.insert(entryID, at: index)
             for (offset, id) in order.enumerated() { next.slots[id] = try? QueueSlot(entryID: id, sortKey: Double(offset)) }
-        case .requestMedia, .mediaCached, .subscribe, .addArticle:
+        case .requestMedia, .mediaCached, .subscribe, .addArticle, .unsupported:
             return content
         }
         return next

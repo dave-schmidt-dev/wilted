@@ -69,7 +69,7 @@ extension CloudKitLibraryTransport {
         for record in records {
             let name = record.recordID.recordName
             do {
-                switch try mapper.decode(record) {
+                switch try decodeTolerant(record) {
                 case let .skipped(type):
                     log.notice("Skipping fetched record of unknown type \(type, privacy: .public)")
                 case let .library(change):

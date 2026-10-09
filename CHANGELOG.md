@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- One Add sheet on the Mac (toolbar Add or ⌘N) replaces the Feeds Subscribe popover and the Larder article field: paste a podcast or article link, or search Apple Podcasts by name, and shows you already follow are marked.
+- The Mac answers subscribe and add-article requests sent from a phone, and rejects requests it cannot read instead of silently dropping them.
 - An Apple Watch remote for the iPhone (Development builds): Now Playing with play, pause, skip, speed and sleep, and Up Next; it always shows the phone's last update and its age, and disables its controls with a note while the phone is out of reach.
 - Per-feed automation on the Mac: each feed in Feeds has a settings popover for Auto keep, Auto download, Auto prepare (On, Off or Use global) and a Kept limit, with resolved values shown inline beside Use global. Settings holds the global defaults (Auto keep Off, download Off, prepare On, no limit), so nothing changes until you turn something on.
 - A full feed makes new episodes wait for space instead of removing anything: an existing, playing or part-heard episode is never removed to make room, and finishing, completing or removing a kept episode lets the oldest waiting one in.
@@ -12,6 +14,7 @@ All notable changes to this project are documented in this file.
 - Your own Keep, Skip and Restore, on the Mac or the iPhone, are recorded as yours, and automation never reverses them.
 
 ### Changed
+- Subscribing on the Mac no longer asks how many episodes to list; new feeds use the Episodes listed default in Settings.
 - The Mac refuses to subscribe to a feed with no audio episodes and says article feeds aren't supported yet, instead of adding an empty subscription.
 - Mac startup and work recovery show counted progress for each step instead of a single waiting message.
 - The Mac Now Playing pane's episode title is smaller, and the narrow sidebar rail shows the Ready audio time under a play icon.

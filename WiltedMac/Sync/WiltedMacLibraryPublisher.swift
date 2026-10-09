@@ -278,7 +278,8 @@ actor WiltedMacLibraryPublisher {
     private func publishStats(context: Context, into report: inout LibraryPublishReport) async throws {
         guard let statsProvider, let lifetime = await statsProvider() else { return }
         try await verify(context)
-        let next = LibraryStats(lifetime, updatedAt: clock())
+        var next = LibraryStats(lifetime, updatedAt: clock())
+        next.supportedIntentActions = Self.supportedIntentActions
         if let publishedStats, publishedStats.hasSameMetrics(as: next) { return }
         do {
             try await transport.publishStats(next)
@@ -290,6 +291,10 @@ actor WiltedMacLibraryPublisher {
             report.statsFailures += 1
         }
     }
+
+    /// The phone intents this Mac answers beyond the media and decision actions, so a phone sends
+    /// only what it sees listed.
+    static let supportedIntentActions = ["subscribe", "addArticle"]
 
     // MARK: - Intents
 

@@ -28,6 +28,10 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case subscribe(feedURL: URL)
         /// Add the single article at an HTTPS URL. The Mac answers with an `IntentOutcome`.
         case addArticle(url: URL)
+        /// An action this build cannot decode (a newer phone sent it). Decode-side only: the
+        /// transport builds it so the Mac can answer `unsupportedAction`, and `LibraryIntent`
+        /// refuses to encode it, so it is never written back as a valid action.
+        case unsupported
 
         /// The entry this action is about. For `subscribe` and `addArticle` it is the namespaced
         /// ID the Mac assigns to that feed or article (W-INV-003); `LibraryIntent.init` rejects a
@@ -41,6 +45,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             case let .requestMedia(entryID), let .mediaCached(entryID, _, _), let .keep(entryID), let .skip(entryID),
                  let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _):
                 return entryID
+            case .unsupported:
+                return Self.invalidURLEntryID
             }
         }
 
@@ -49,6 +55,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             switch self {
             case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle: return true
             case .requestMedia, .mediaCached: return false
+            case .unsupported: return true
             }
         }
 
@@ -150,7 +157,24 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .addArticle(url: url))
     }
 
+    /// The stand-in for an intent whose action this build cannot decode, built from the fields
+    /// that did decode. It carries no usable action and cannot be encoded.
+    public static func unsupported(id: String, deviceID: String, createdAt: Date) throws -> LibraryIntent {
+        try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .unsupported)
+    }
+
     private enum CodingKeys: String, CodingKey { case id, deviceID, createdAt, action }
+
+    public func encode(to encoder: Encoder) throws {
+        if case .unsupported = action {
+            throw EncodingError.invalidValue(self, .init(codingPath: [], debugDescription: "an unsupported action is never encoded"))
+        }
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(deviceID, forKey: .deviceID)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(action, forKey: .action)
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -174,6 +198,8 @@ public struct IntentOutcome: Codable, Sendable, Equatable {
     public static let reasonUnknownEntry = "unknownEntry"
     public static let reasonNotApplicable = "notApplicable"
     public static let reasonFailed = "failed"
+    /// The intent's action is one this Mac build does not know.
+    public static let reasonUnsupportedAction = "unsupportedAction"
 
     public let intentID: String
     /// The device that sent the intent, so it finds its outcomes by its own name.

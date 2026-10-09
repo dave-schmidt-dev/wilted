@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 import XCTest
 @testable import WiltedMac
+import WiltedDomain
+import WiltedProducer
 
 /// Offscreen snapshot contract for the canonical Mac renderer. The fixed
 /// canvas and explicit environment keep these baselines independent of the
@@ -48,7 +50,9 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: "sidebar-full", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "sidebar-rail", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "toolbar", appearance: appearance)
-            ]
+            ] + ["add-sheet-link", "add-sheet-results", "add-sheet-followed", "add-sheet-error"].map {
+                WiltedSnapshotContract.shellName(kind: $0, appearance: appearance)
+            }
         }
         XCTAssertEqual(names.count, WiltedSnapshotContract.expectedPixelBaselineCount)
         XCTAssertEqual(Set(names).count, names.count)
@@ -364,6 +368,62 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
+    /// The Add sheet's four reading states, rendered as the sheet's own content.
+    func testMacAddSheetPixelBaselines() async throws {
+        let feed = try XCTUnwrap(URL(string: "https://feeds.example.test/followed.xml"))
+        let shows = [
+            PodcastCatalogShow(collectionID: 1, title: "The Followed Hour", feedURL: feed, author: "Example Audio"),
+            PodcastCatalogShow(
+                collectionID: 2, title: "Field Notes",
+                feedURL: try XCTUnwrap(URL(string: "https://feeds.example.test/field-notes.xml")),
+                author: "Example Studio"),
+            PodcastCatalogShow(
+                collectionID: 3, title: "Slow Radio",
+                feedURL: try XCTUnwrap(URL(string: "https://feeds.example.test/slow.xml")), author: nil),
+        ]
+        let page = try XCTUnwrap(URL(string: "https://blog.example.test/posts/one"))
+        let advertised = try XCTUnwrap(URL(string: "https://blog.example.test/feed.xml"))
+        let cases: [(kind: String, text: String, followed: Bool, intake: String?,
+                     search: WiltedMacAddSession.Search, classify: WiltedMacAddSession.Classify)] = [
+            ("add-sheet-link", page.absoluteString, false, nil, { _ in [] }, { _ in .articleAdvertisingFeed(advertised) }),
+            ("add-sheet-results", "slow", false, nil, { _ in shows }, { _ in .article }),
+            ("add-sheet-followed", "hour", true, nil, { _ in shows }, { _ in .article }),
+            ("add-sheet-error", feed.absoluteString, false, WiltedMacModel.PodcastFeedHasNoAudio.message,
+             { _ in [] }, { _ in .podcastFeed }),
+        ]
+        for testCase in cases {
+            for appearance in WiltedAppearance.allCases {
+                let model = WiltedMacModel(
+                    arguments: ["--wilted-ui-fixture-ready"],
+                    stateDirectoryOverride: wiltedTemporaryDirectory(testCase.kind),
+                    preferences: WiltedMacTestPreferences.ephemeral())
+                if testCase.followed {
+                    model.subscriptions = [WiltedMacSubscription(
+                        id: try ItemID.derivePodcastFeed(from: feed).rawValue, title: "The Followed Hour",
+                        feedURL: feed, episodeCount: 5, subscribedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                        enabled: true)]
+                }
+                let session = model.makeAddSession(
+                    search: testCase.search, classify: testCase.classify, linkDebounce: .zero, searchDebounce: .zero)
+                session.text = testCase.text
+                await session.settle()
+                model.podcastFeedDraftStatus = testCase.intake
+                let content = WiltedMacAddSheetContent(session: session)
+                    .environment(\.wiltedTextScale, model.textScale)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background(WiltedTheme.color(.card, scheme: appearance == .dark ? .dark : .light))
+                let image = render(
+                    content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
+                    size: CGSize(width: 520, height: 420))
+                let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+                XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "\(testCase.kind) drew")
+                assertSnapshot(
+                    image, named: WiltedSnapshotContract.shellName(kind: testCase.kind, appearance: appearance),
+                    testName: "testMacAddSheetPixelBaselines")
+            }
+        }
+    }
+
     func testSnapshotBaselinePreservesExistingBytesWhenMatchingInRecordMode() throws {
         let baseline = try baselineTestURL(for: "matching-baseline")
         let existingBitmap = makeSolidBitmap(width: 4, height: 2, red: 17, green: 34, blue: 51, alpha: 255)
@@ -474,7 +534,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 enum WiltedSnapshotContract {
     static let stateCount = WiltedPreviewState.allCases.count
     static let variantCount = WiltedVisualVariant.matrix.count
-    static let shellCount = 16
+    static let shellCount = 24
     static let expectedPixelBaselineCount = stateCount * variantCount + shellCount
 
     static var recordMode: Bool {

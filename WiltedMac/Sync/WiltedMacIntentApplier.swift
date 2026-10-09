@@ -38,6 +38,23 @@ protocol WiltedMacDecisionHost: AnyObject {
     /// Moves within the full queue by the index API (`to` is a post-removal index); true once
     /// the queue reads `resulting`.
     func moveQueueEntry(from source: Int, to destination: Int, resulting: [ItemID]) async -> Bool
+    /// Classifies `url` and, when it is a podcast feed with audio, subscribes through the model's
+    /// subscription intake; answers what became of it. Persists nothing unless it answers `.added`.
+    func subscribeFeed(_ url: URL) async -> WiltedMacAddResult
+    /// Classifies `url` and, when it is not a feed, starts the single-article path; answers what
+    /// became of it. `.added` means the Mac accepted the article and began preparing it.
+    func addArticleLink(_ url: URL) async -> WiltedMacAddResult
+}
+
+/// What the Mac's add path concluded for one phone `subscribe` or `addArticle` request.
+enum WiltedMacAddResult: Equatable, Sendable {
+    case added
+    case alreadyFollowed
+    case alreadyAdded
+    case notAPodcastFeed
+    case isAFeed
+    case noAudio
+    case failed
 }
 
 // MARK: - Outcome book
@@ -106,8 +123,8 @@ actor WiltedMacIntentOutcomeBook {
 
 // MARK: - Applier
 
-/// Applies the phone's decision intents (`keep`, `skip`, `markDone`, `removeFromLarder`, `restore`, `reorder`) on the
-/// Mac and answers each with an `IntentOutcome`.
+/// Applies the phone's decision intents (`keep`, `skip`, `markDone`, `removeFromLarder`, `restore`, `reorder`,
+/// `subscribe`, `addArticle`) on the Mac and answers each with an `IntentOutcome`.
 ///
 /// An intent id goes into the ledger before anything is applied, so it is applied at most once
 /// even across a restart. An intent older than `IntentRetention.maximumAge` is answered `expired`
@@ -119,6 +136,13 @@ actor WiltedMacIntentOutcomeBook {
 /// The poller hands over intents one at a time, in order, so reorders see earlier keeps.
 @MainActor
 final class WiltedMacIntentApplier {
+    /// Reasons for the add-flow rejections; the phone shows any text it does not know as opaque.
+    static let reasonAlreadyFollowed = "alreadyFollowed"
+    static let reasonAlreadyAdded = "alreadyAdded"
+    static let reasonNotAPodcastFeed = "notAPodcastFeed"
+    static let reasonIsAFeed = "isAFeed"
+    static let reasonNoAudio = "noAudio"
+
     private weak var host: (any WiltedMacDecisionHost)?
     private let ledger: WiltedMacIntentLedger
     private let book: WiltedMacIntentOutcomeBook
@@ -176,13 +200,28 @@ final class WiltedMacIntentApplier {
         func rejected(_ reason: String) throws -> IntentOutcome { try .rejected(for: intent, reason: reason, at: at) }
         func result(_ took: Bool) throws -> IntentOutcome { try took ? applied() : rejected(IntentOutcome.reasonFailed) }
 
-        // Temporary: Task 3.2 replaces this with the subscribe and addArticle handlers. Their entry
-        // IDs name items the Mac does not hold yet, so they must not reach the unknownEntry check.
+        if case .unsupported = intent.action { return try rejected(IntentOutcome.reasonUnsupportedAction) }
+        guard let host else { return try rejected(IntentOutcome.reasonFailed) }
+        // Their entry IDs name items the Mac does not hold yet, so they must not reach the
+        // unknownEntry check below.
         switch intent.action {
-        case .subscribe, .addArticle: return try rejected(IntentOutcome.reasonNotApplicable)
+        case let .subscribe(feedURL):
+            switch await host.subscribeFeed(feedURL) {
+            case .added: return try applied()
+            case .alreadyFollowed, .alreadyAdded: return try rejected(Self.reasonAlreadyFollowed)
+            case .notAPodcastFeed, .isAFeed: return try rejected(Self.reasonNotAPodcastFeed)
+            case .noAudio: return try rejected(Self.reasonNoAudio)
+            case .failed: return try rejected(IntentOutcome.reasonFailed)
+            }
+        case let .addArticle(url):
+            switch await host.addArticleLink(url) {
+            case .added: return try applied()
+            case .alreadyAdded, .alreadyFollowed: return try rejected(Self.reasonAlreadyAdded)
+            case .isAFeed, .notAPodcastFeed, .noAudio: return try rejected(Self.reasonIsAFeed)
+            case .failed: return try rejected(IntentOutcome.reasonFailed)
+            }
         default: break
         }
-        guard let host else { return try rejected(IntentOutcome.reasonFailed) }
         let entryID = intent.action.entryID
         let state = host.decisionState(of: entryID)
         if state == .unknown { return try rejected(IntentOutcome.reasonUnknownEntry) }
@@ -230,6 +269,8 @@ final class WiltedMacIntentApplier {
             }
             guard let index = host.decisionQueue.firstIndex(of: entryID) else { return try rejected(notApplicable) }
             return try result(await host.moveQueueEntry(from: index, to: index, resulting: host.decisionQueue))
+        case .unsupported:
+            return try rejected(IntentOutcome.reasonUnsupportedAction)
         case .requestMedia, .mediaCached, .subscribe, .addArticle:
             return try rejected(notApplicable)
         }
@@ -355,6 +396,44 @@ extension WiltedMacModel: WiltedMacDecisionHost {
         }
         guard podcastQueueIDs == wanted else { return false }
         return await recordOwnerDecision(.keep, for: movedID.rawValue, store: store)
+    }
+
+    func subscribeFeed(_ url: URL) async -> WiltedMacAddResult {
+        guard let feedID = try? ItemID.derivePodcastFeed(from: url), store != nil else { return .failed }
+        let kind: PastedLinkKind
+        do { kind = try await pastedLinkClassifier.classify(url) } catch { return .failed }
+        guard case .podcastFeed = kind else { return .notAPodcastFeed }
+        if subscriptions.contains(where: { $0.id == feedID.rawValue }) { return .alreadyFollowed }
+        // The intake takes the single fetch slot; wait for a running refresh rather than lose the request.
+        await podcastRefreshTask?.value
+        let before = subscriptions.count
+        podcastFeedDraftStatus = nil
+        startPodcastSubscriptionIntake(url)
+        guard let task = podcastRefreshTask else { return .failed }
+        await task.value
+        if podcastFeedDraftStatus == PodcastFeedHasNoAudio.message { return .noAudio }
+        if subscriptions.count > before { return .added }
+        // A repeat of a followed feed whose redirect gave it another canonical ID lands here too.
+        if podcastFeedDraftStatus?.hasPrefix("Already following") == true { return .alreadyFollowed }
+        return .failed
+    }
+
+    func addArticleLink(_ url: URL) async -> WiltedMacAddResult {
+        guard let articleID = try? ItemID.derive(from: url) else { return .failed }
+        let kind: PastedLinkKind
+        do { kind = try await pastedLinkClassifier.classify(url) } catch { return .failed }
+        switch kind {
+        case .podcastFeed, .podcastCatalogShow: return .isAFeed
+        case .article, .articleAdvertisingFeed: break
+        }
+        if articles.contains(where: { $0.id == articleID.rawValue }) { return .alreadyAdded }
+        // The article path replaces a run in flight; a phone request must not cancel the owner's work.
+        guard !articlePreparationIsPending else { return .failed }
+        let draft = urlDraft
+        urlDraft = url.absoluteString
+        addArticle()
+        urlDraft = draft
+        return articlePreparationIsPending ? .added : .failed
     }
 
     /// Runs a model method that starts durable work and waits for the writers it registered, then

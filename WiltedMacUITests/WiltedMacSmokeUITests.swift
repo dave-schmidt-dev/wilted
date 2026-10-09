@@ -35,9 +35,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-keyboard-transports"].exists)
 
         let larderEmpty = app.descendants(matching: .any)["wilted-larder-empty"]
-        // The address box lives behind this button, so the button is what marks
-        // the Larder as the destination that takes an article.
-        let addArticle = app.descendants(matching: .any)["wilted-add-article-button"]
+        // The empty Larder keeps an Add button that opens the Add sheet (W-INV-010).
+        let addArticle = app.descendants(matching: .any)["wilted-larder-add-button"]
         let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
         XCTAssertTrue(larderEmpty.waitForExistence(timeout: 5))
         XCTAssertTrue(addArticle.exists)
@@ -51,18 +50,15 @@ final class WiltedMacSmokeUITests: XCTestCase {
             .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-sidebar-article-'"))
         XCTAssertEqual(duplicateRows.count, 0)
 
-        // The box is behind a button now, so opening it is part of the
-        // journey: a trigger that draws but opens nothing would otherwise
-        // leave the address field unreachable and this test still passing.
-        let trigger = app.descendants(matching: .any)["wilted-add-article-button"]
+        // Opening the sheet is part of the journey: a button that draws but opens
+        // nothing would leave the field unreachable and this test still passing.
+        let trigger = app.descendants(matching: .any)["wilted-larder-add-button"]
         XCTAssertTrue(trigger.waitForExistence(timeout: 8))
-        XCTAssertEqual(trigger.label, "Add article", "The Larder's button must name what it takes")
+        XCTAssertEqual(trigger.label, "Add", "The Larder's button opens the Add sheet")
         trigger.click()
 
-        let add = app.descendants(matching: .any)["wilted-add-link"]
-        XCTAssertTrue(add.waitForExistence(timeout: 8), "the trigger must open the address box")
-        let articleField = app.descendants(matching: .any)["wilted-link-url"]
-        XCTAssertTrue(articleField.waitForExistence(timeout: 5), "the opened box must carry its field")
+        let add = app.descendants(matching: .any)["wilted-add-field"]
+        XCTAssertTrue(add.waitForExistence(timeout: 8), "the trigger must open the Add sheet's field")
         app.typeKey(.escape, modifierFlags: [])
 
         let row = app.descendants(matching: .any)
@@ -143,33 +139,23 @@ final class WiltedMacSmokeUITests: XCTestCase {
         ).count
         XCTAssertLessThan(rowsAfter, rowsBefore, "unsubscribing must remove the feed's row")
 
-        let feedTrigger = app.descendants(matching: .any)["wilted-add-feed-button"]
-        XCTAssertTrue(feedTrigger.waitForExistence(timeout: 8), "Feeds asks for a subscription behind a button")
+        let feedTrigger = app.descendants(matching: .any)["wilted-add-button"]
+        XCTAssertTrue(feedTrigger.waitForExistence(timeout: 8), "the toolbar Add button opens the Add sheet")
         feedTrigger.click()
 
-        let composer = app.descendants(matching: .any)["wilted-podcast-subscribe-composer"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 8), "the trigger must open the subscribe box")
-        let field = app.descendants(matching: .any)["wilted-podcast-feed-url"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        let subscribe = app.descendants(matching: .any)["wilted-podcast-subscribe"]
-        XCTAssertTrue(subscribe.waitForExistence(timeout: 5))
-
-        // An address that is not a complete HTTPS one is refused before any
-        // network work, so the rejection is deterministic evidence that the
-        // button is wired to the composer rather than merely drawn.
+        let field = app.descendants(matching: .any)["wilted-add-field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 8), "the toolbar button must open the Add sheet")
         field.click()
         field.typeText("not-an-address")
-        subscribe.click()
-
-        let status = app.descendants(matching: .any)["wilted-podcast-subscribe-status"]
-        XCTAssertTrue(status.waitForExistence(timeout: 8))
-        let refused = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value CONTAINS[c] %@", "HTTPS"), object: status
+        // A string that is neither a link nor a catalogue hit offers no result action, so the
+        // sheet answers with a status instead of subscribing.
+        XCTAssertTrue(
+            app.descendants(matching: .any)["wilted-add-status"].waitForExistence(timeout: 8),
+            "an unusable entry must be answered in the sheet"
         )
-        XCTAssertEqual(XCTWaiter().wait(for: [refused], timeout: 5), .completed)
         XCTAssertTrue(
             app.descendants(matching: .any)["wilted-podcast-feeds"].exists,
-            "the subscription list stays on the page the composer subscribes into"
+            "the subscription list stays on the page the sheet subscribes into"
         )
         app.typeKey(.escape, modifierFlags: [])
 
@@ -189,7 +175,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         addArticle.click()
         XCTAssertTrue(
             add.waitForExistence(timeout: 8),
-            "Opening the Add article button after the roundtrip must expose the add-link control."
+            "Opening the Larder's Add button after the roundtrip must expose the Add sheet's field."
         )
         app.typeKey(.escape, modifierFlags: [])
     }

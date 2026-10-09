@@ -144,7 +144,7 @@ extension CloudKitLibraryTransport {
             .compactMap { try? mapper.recordID(intentID: $0.id, deviceID: $0.deviceID) }
         for record in try await fetchPresent(missing) {
             // An intent is immutable, so a cached one never needs refreshing.
-            if case let .intent(value)? = try? mapper.decode(record) { intentCache[record.recordID.recordName] = value }
+            if case let .intent(value)? = try? decodeTolerant(record) { intentCache[record.recordID.recordName] = value }
         }
         return wanted.compactMap { intentCache[$0.name] }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }

@@ -32,8 +32,8 @@ extension WiltedMacModelTests {
         let directory = temporaryDirectory("pasted-feed")
         let model = modelForPastedLink(
             directory: directory,
-            document: "<?xml version=\"1.0\"?><rss><channel><title>Pasted show</title></channel></rss>",
-            feedXML: "<rss><channel><title>Pasted show</title></channel></rss>"
+            document: "<?xml version=\"1.0\"?><rss><channel><title>Pasted show</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>",
+            feedXML: "<rss><channel><title>Pasted show</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>"
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -58,7 +58,7 @@ extension WiltedMacModelTests {
 
     func testOversizedFeedPrefixReachesSubscriptionComposer() async throws {
         let directory = temporaryDirectory("oversized-pasted-feed")
-        let feed = "<rss><channel><title>Large show</title></channel></rss>"
+        let feed = "<rss><channel><title>Large show</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>"
             + String(repeating: " ", count: PastedLinkClassifier.maximumSniffBytes)
         let model = WiltedMacModel(
             arguments: [],
@@ -92,7 +92,7 @@ extension WiltedMacModelTests {
             arguments: [],
             stateDirectoryOverride: directory,
             podcastFeedClient: PodcastFeedClient(
-                loader: FixedBodyLoader(body: Data("<rss><channel><title>Direct show</title></channel></rss>".utf8)),
+                loader: FixedBodyLoader(body: Data("<rss><channel><title>Direct show</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>".utf8)),
                 now: { Date(timeIntervalSince1970: 1_700_000_000) }
             ),
             pastedLinkClassifier: PastedLinkClassifier(loader: FailingLoader()), preferences: WiltedMacTestPreferences.ephemeral()
@@ -124,7 +124,7 @@ extension WiltedMacModelTests {
             <link rel="alternate" type="application/rss+xml" href="https://blog.example.test/Feed.xml">
             </head><body>Words</body></html>
             """,
-            feedXML: "<rss><channel><title>Blog cast</title></channel></rss>"
+            feedXML: "<rss><channel><title>Blog cast</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>"
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -148,8 +148,8 @@ extension WiltedMacModelTests {
         let directory = temporaryDirectory("composer-invalid")
         let model = modelForPastedLink(
             directory: directory,
-            document: "<rss><channel><title>Unused</title></channel></rss>",
-            feedXML: "<rss><channel><title>Unused</title></channel></rss>"
+            document: "<rss><channel><title>Unused</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>",
+            feedXML: "<rss><channel><title>Unused</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>"
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -177,7 +177,7 @@ extension WiltedMacModelTests {
             <link rel="alternate" type="application/rss+xml" href="https://blog.example.test/Feed.xml">
             </head><body>Words</body></html>
             """,
-            feedXML: "<rss><channel><title>Blog cast</title></channel></rss>"
+            feedXML: "<rss><channel><title>Blog cast</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>"
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -206,8 +206,8 @@ extension WiltedMacModelTests {
         let directory = temporaryDirectory("composer-duplicate")
         let model = modelForPastedLink(
             directory: directory,
-            document: "<rss><channel><title>Repeat show</title></channel></rss>",
-            feedXML: "<rss><channel><title>Repeat show</title></channel></rss>"
+            document: "<rss><channel><title>Repeat show</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>",
+            feedXML: "<rss><channel><title>Repeat show</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>"
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -237,13 +237,13 @@ extension WiltedMacModelTests {
         let feedURL = URL(string: "https://podcasts.example.test/gated")!
         let gate = GatedRoutingLoader(documents: [
             pageURL: Data("<!doctype html><html><body>Just words</body></html>".utf8),
-            feedURL: Data("<rss><channel><title>Gated show</title></channel></rss>".utf8),
+            feedURL: Data("<rss><channel><title>Gated show</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>".utf8),
         ])
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,
             podcastFeedClient: PodcastFeedClient(
-                loader: FixedBodyLoader(body: Data("<rss><channel><title>Gated show</title></channel></rss>".utf8)),
+                loader: FixedBodyLoader(body: Data("<rss><channel><title>Gated show</title><item><guid>g1</guid><title>Episode</title><pubDate>Mon, 29 Sep 2026 12:00:00 GMT</pubDate><enclosure url=\"https://media.example.test/g1.mp3\" type=\"audio/mpeg\" /></item></channel></rss>".utf8)),
                 now: { Date(timeIntervalSince1970: 1_700_000_000) }
             ),
             pastedLinkClassifier: PastedLinkClassifier(loader: gate),
@@ -270,7 +270,7 @@ extension WiltedMacModelTests {
         await model.waitForPodcastOperations()
 
         XCTAssertEqual(model.subscriptions.map(\.title), ["Gated show"])
-        XCTAssertEqual(model.podcastFeedDraftStatus, "Gated show added with 0 episodes.",
+        XCTAssertEqual(model.podcastFeedDraftStatus, "Gated show added with 1 episode.",
                        "the cancelled check must not report on the address that replaced it")
         XCTAssertFalse(model.isCheckingPodcastSubscription)
     }

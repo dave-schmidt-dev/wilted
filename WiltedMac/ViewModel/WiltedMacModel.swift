@@ -202,10 +202,6 @@ final class WiltedMacModel {
     /// is used once a session and was charging the library a card of room for
     /// it every time the reader looked at the list.
     var isPresentingComposer = false
-    /// The subscribe box, behind its own button for the same reason the
-    /// article one is: a control used once a session should not hold the
-    /// top of a page the reader scrolls every day.
-    var isPresentingSubscribeComposer = false
     var selectedNavigation: WiltedMacNavigation = .larder {
         didSet {
             preferences.set(selectedNavigation.rawValue, forKey: Self.selectedNavigationPreferenceKey)

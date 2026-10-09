@@ -455,18 +455,15 @@ extension WiltedVisualSystemTests {
 
     func testEpisodeCountControlsOnlyExposeNumericInputForCustomAndKeepValidation() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        // Settings keeps the saved default's long label; the add-feed popover names the control "Episodes listed".
-        for (name, label) in [
-            ("WiltedMacSettingsView.swift", "Episodes to list when adding a feed"),
-            ("WiltedMacFeedsView.swift", "Episodes listed"),
-        ] {
-            let source = try String(contentsOf: root.appendingPathComponent("WiltedMac/Views/\(name)"), encoding: .utf8)
-            XCTAssertTrue(source.contains("Picker(\"\(label)\""))
-            XCTAssertTrue(source.contains("Text(\"Custom\").tag(0)"))
-            XCTAssertTrue(source.contains("if initialMetadataPreset.wrappedValue == 0"))
-            XCTAssertTrue(source.contains("Titles and notes only; audio follows your download settings."))
-            XCTAssertTrue(source.contains("validInitialEpisodeMetadataCount(value)"))
-        }
+        // Settings keeps the saved default. The per-subscribe "Episodes listed" picker lived in the
+        // Feeds popover, which the Add sheet replaced in B6.2 Task 3.1, so only Settings is pinned.
+        let source = try String(
+            contentsOf: root.appendingPathComponent("WiltedMac/Views/WiltedMacSettingsView.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("Picker(\"Episodes to list when adding a feed\""))
+        XCTAssertTrue(source.contains("Text(\"Custom\").tag(0)"))
+        XCTAssertTrue(source.contains("if initialMetadataPreset.wrappedValue == 0"))
+        XCTAssertTrue(source.contains("Titles and notes only; audio follows your download settings."))
+        XCTAssertTrue(source.contains("validInitialEpisodeMetadataCount(value)"))
         XCTAssertNil(WiltedAutomationSettings.validInitialEpisodeMetadataCount(0))
         XCTAssertNil(WiltedAutomationSettings.validInitialEpisodeMetadataCount(101))
         XCTAssertEqual(WiltedAutomationSettings.validInitialEpisodeMetadataCount(7), 7)

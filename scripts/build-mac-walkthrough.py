@@ -137,15 +137,16 @@ def build(captures, commit, date_iso, date_human, previous):
             captures),
         "feeds-add": figure(
             "fig-feeds-add", "4.2-feeds-add-feed",
-            "The subscribe-composer popover with its feed address field and Subscribe button",
-            "<strong>4.2 Feeds, subscribing.</strong> Add feed (<code>wilted-add-feed-button</code>) opens this "
-            "popover, a window of its own: one field (<code>wilted-podcast-feed-url</code>) and one button "
-            "(<code>wilted-podcast-subscribe</code>), which becomes "
-            "<code>wilted-podcast-subscribe-progress</code> and "
-            "<code>wilted-podcast-subscribe-cancel</code> while classifying the address, with the result stated "
-            "in <code>wilted-podcast-subscribe-status</code>. A page that advertises a feed of its own offers it "
-            "separately at <code>wilted-podcast-advertised-feed</code> rather than following it silently. This "
-            "frame is the popover's own window, captured at its own size.",
+            "The Add sheet with its one field, opened from the toolbar Add button",
+            "<strong>4.2 Feeds, subscribing.</strong> The toolbar Add button (<code>wilted-add-button</code>, "
+            "&#8984;N) opens this sheet, a window of its own: one field (<code>wilted-add-field</code>) that takes "
+            "a search or a pasted link, with <code>wilted-add-progress</code> and <code>wilted-add-cancel</code> "
+            "while it works and the outcome stated in <code>wilted-add-status</code>. Each result carries one "
+            "action: Subscribe (<code>wilted-add-subscribe-&lt;id&gt;</code>), a Following mark for a show already "
+            "followed (<code>wilted-add-following-&lt;id&gt;</code>), or Add article "
+            "(<code>wilted-add-article-&lt;id&gt;</code>). A page that advertises a feed of its own offers it as a "
+            "separate row rather than following it silently. This frame is the sheet's own window, captured at "
+            "its own size.",
             captures),
         "feeds-off-the-list": figure(
             "fig-feeds-off-the-list", "4.3-feeds-off-the-list",
@@ -220,14 +221,13 @@ def build(captures, commit, date_iso, date_human, previous):
             captures),
         "menu-add": figure(
             "fig-menu-add-article", "5.2-menu-add-article",
-            "The Add article popover with its address field and Add button, now reached from the Menu",
-            "<strong>5.2 Menu, adding an article.</strong> Add article "
-            "(<code>wilted-add-article-button</code>) moved here from the retired Larder, opening the same "
-            "popover: one field (<code>wilted-link-url</code>) and one button (<code>wilted-add-link</code>), "
-            "with <code>wilted-link-status</code> reporting the fetch while Wilted works out for itself whether "
-            "the address is an article or a podcast feed. It stays open after Add so a feed the page advertises "
-            "(<code>wilted-advertised-feed</code>) arrives where the address was typed. This frame is the "
-            "popover's own window, captured at its own size.",
+            "The Add sheet, reached from the empty Larder's Add button",
+            "<strong>5.2 Menu, adding an article.</strong> The empty Larder keeps an Add button "
+            "(<code>wilted-larder-add-button</code>) that opens the same Add sheet as the toolbar: one field "
+            "(<code>wilted-add-field</code>), with <code>wilted-add-status</code> reporting the check while Wilted "
+            "works out for itself whether the address is an article or a podcast feed. A pasted article address "
+            "offers one Add article action; a feed it advertises arrives as its own row. This frame is the "
+            "sheet's own window, captured at its own size.",
             captures),
         "menu-prepared": figure(
             "fig-menu-prepared", "5.3-menu-prepared-episode",
@@ -436,7 +436,7 @@ def build(captures, commit, date_iso, date_human, previous):
 </section>
 
 <section id="onboarding"><h2>3. Onboarding and first run</h2>
-<p>Wilted has no account creation, sign-in, or welcome sequence. First run opens directly on Menu with an empty queue and the Add article button reachable from it; the app is usable without configuring anything. Sync is opt-in and lives in Settings; it is not part of first run and does not gate any Menu function.</p>
+<p>Wilted has no account creation, sign-in, or welcome sequence. First run opens directly on Menu with an empty queue and the Add button reachable from it; the app is usable without configuring anything. Sync is opt-in and lives in Settings; it is not part of first run and does not gate any Menu function.</p>
 <p>Subscribing to a podcast is likewise not an onboarding step, and it is not a separate skill to learn: the same box that saves an article, now on Menu, takes a feed address, and Feeds carries a composer of its own for the same purpose. The Feeds destination is empty until the listener adds a subscription, and it says so in place rather than hiding.</p>
 <p class="muted">No separate onboarding screen exists in this build, so none is captured. If one is added, this report must be refreshed.</p>
 </section>
@@ -512,7 +512,7 @@ def build(captures, commit, date_iso, date_human, previous):
 <section id="non-claims"><h2>12. Non-claims</h2><div class="card">Production CloudKit is not claimed. physical-device is not claimed. App Store Connect is not claimed. TestFlight is not claimed. deployment is not claimed. publication is not claimed. owner acceptance remains pending. This report is candidate evidence produced from a local signed build; it establishes what the app rendered on this machine at this commit and nothing beyond that.</div></section>
 
 <section id="owner-checklist"><h2>13. Owner acceptance checklist</h2><ol>
-<li>Paste an article address into the Menu's Add article box and confirm it is saved as an article.</li>
+<li>Paste an article address into the Add sheet (toolbar Add or the Larder's Add button) and confirm it is saved as an article.</li>
 <li>Paste a podcast address into the same box, or into Feeds' Add feed box, and confirm it subscribes, and that the feed appears on Feeds.</li>
 <li>Keep an episode from the Feeds inbox and confirm it appears on the Menu; skip another and confirm it leaves the inbox for Off the list.</li>
 <li>In Larder, group the same queue by Feed, Date, and Status; confirm each row keeps its release date and that changing Sort by changes order independently.</li>

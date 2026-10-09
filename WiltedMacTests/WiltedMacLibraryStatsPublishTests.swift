@@ -58,6 +58,18 @@ final class WiltedMacLibraryStatsPublishTests: XCTestCase {
         XCTAssertEqual(updated?.audioProcessedSeconds, 90)
     }
 
+    func testPublishedStatsAdvertiseSubscribeAndAddArticle() async throws {
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let box = StatsBox()
+        await box.set(LifetimeStatistics(audioProcessedSeconds: 1))
+        _ = try await makePublisher(server: server, box: box).sync()
+        let phone = InMemoryLibraryTransport(deviceID: "phone", server: server)
+        let published = try await phone.readStats()
+        let actions = try XCTUnwrap(published?.supportedIntentActions)
+        XCTAssertTrue(actions.contains("subscribe"))
+        XCTAssertTrue(actions.contains("addArticle"))
+    }
+
     func testNoProviderOrNoValuePublishesNothing() async throws {
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
         let phone = InMemoryLibraryTransport(deviceID: "phone", server: server)
