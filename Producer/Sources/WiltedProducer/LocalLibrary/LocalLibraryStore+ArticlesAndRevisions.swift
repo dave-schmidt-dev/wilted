@@ -7,19 +7,19 @@ import WiltedSync
 extension LocalLibraryStore {
     public func save(article: Article) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
         if let existing = records.first(where: { $0.id == article.itemID.rawValue }) {
             existing.canonicalURL = article.canonicalURL.absoluteString; existing.title = article.title
             existing.source = article.source; existing.author = article.author
             existing.publishedTime = article.publishedTime?.date; existing.createdAt = article.createdAt.date
             existing.isRemoved = article.isDeleted; existing.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
-        } else { context.insert(LocalLibrarySchemaV5Models.ArticleRecord(article)) }
+        } else { context.insert(LocalLibrarySchemaV17Models.ArticleRecord(article)) }
         try context.save()
     }
 
     public func article(for itemID: ItemID) throws -> Article? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return nil }
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return nil }
         return try Article(itemID: try ItemID(rawValue: record.id), canonicalURL: URL(string: record.canonicalURL)!,
                            title: record.title, source: record.source, author: record.author,
                            publishedTime: record.publishedTime.map(Timestamp.init), createdAt: Timestamp(record.createdAt), isDeleted: record.isRemoved)
@@ -27,7 +27,7 @@ extension LocalLibraryStore {
 
     public func articles() throws -> [Article] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
             .sorted { $0.createdAt > $1.createdAt }
             .compactMap { record in
                 guard let itemID = try? ItemID(rawValue: record.id),

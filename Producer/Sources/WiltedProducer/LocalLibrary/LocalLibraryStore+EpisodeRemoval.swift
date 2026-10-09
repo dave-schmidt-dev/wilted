@@ -128,9 +128,9 @@ extension LocalLibraryStore {
             try Self.reachRemovalStage(.subscription)
 
             stage = .feed
-            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.PodcastFeedRecord>())
             where record.id == feed { remove(record) }
-            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.PodcastFeedPolicyRecord>())
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.PodcastFeedPolicyRecord>())
             where record.feedID == feed { remove(record) }
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeMatchRuleRecord>())
             where record.feedID == feed { remove(record) }

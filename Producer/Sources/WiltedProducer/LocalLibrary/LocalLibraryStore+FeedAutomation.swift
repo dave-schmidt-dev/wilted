@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 import WiltedDomain
 
-private typealias FeedPolicyRecord = LocalLibrarySchemaV16Models.PodcastFeedPolicyRecord
+private typealias FeedPolicyRecord = LocalLibrarySchemaV17Models.PodcastFeedPolicyRecord
 private typealias MatchRuleRecord = LocalLibrarySchemaV16Models.EpisodeMatchRuleRecord
 private typealias DecisionRecord = LocalLibrarySchemaV16Models.EpisodeDecisionRecord
 

@@ -271,7 +271,7 @@ extension LocalLibraryStoreTests {
         }
         return LibraryFingerprint(tables: [
             "subscriptions": try rows(LocalLibrarySchemaV6Models.PodcastSubscriptionRecord.self) { $0.feedID },
-            "feeds": try rows(LocalLibrarySchemaV6Models.PodcastFeedRecord.self) { $0.id },
+            "feeds": try rows(LocalLibrarySchemaV17Models.PodcastFeedRecord.self) { $0.id },
             "episodes": try rows(LocalLibrarySchemaV13Models.PodcastEpisodeRecord.self) { "\($0.id)|\($0.removalKind ?? "-")" },
             "queue": try rows(LocalLibrarySchemaV6Models.PodcastQueueRecord.self) { "\($0.episodeID)|\($0.position)" },
             "downloads": try rows(LocalLibrarySchemaV10Models.PodcastDownloadRecord.self) { "\($0.episodeID)|\($0.status)" },
@@ -281,7 +281,7 @@ extension LocalLibraryStoreTests {
             "transcripts": try rows(LocalLibrarySchemaV7Models.TranscriptRecord.self) { "\($0.itemID)|\($0.id)" },
             "playback": try rows(LocalLibrarySchemaV3Models.PlaybackRecord.self) { "\($0.id)|\($0.positionSeconds)" },
             "preparations": try rows(LocalLibrarySchemaV3Models.PreparationRecord.self) { $0.id },
-            "articles": try rows(LocalLibrarySchemaV5Models.ArticleRecord.self) { "\($0.id)|\($0.isRemoved)" },
+            "articles": try rows(LocalLibrarySchemaV17Models.ArticleRecord.self) { "\($0.id)|\($0.isRemoved)" },
             "tombstones": try rows(LocalLibrarySchemaV3Models.TombstoneRecord.self) { $0.id },
         ])
     }

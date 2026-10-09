@@ -70,13 +70,16 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
         }
         XCTAssertEqual(try LocalLibraryStoreCompatibilityTests.sha256(of: backupURL), Self.v14FixtureSHA256,
                        "the backup is the untouched V14 store")
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(16))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(17))
 
         var after = try LocalLibraryStore.tableRowCounts(at: copied)
         XCTAssertEqual(after.removeValue(forKey: "ZPODCASTEPISODELINKRECORD"), 0, "the new table starts empty")
         XCTAssertEqual(after.removeValue(forKey: "ZPODCASTFEEDPOLICYRECORD"), 0)
         XCTAssertEqual(after.removeValue(forKey: "ZEPISODEMATCHRULERECORD"), 0)
         XCTAssertEqual(after.removeValue(forKey: "ZEPISODEDECISIONRECORD"), 0)
+        for table in ["ZAUDIOBOOKRECORD", "ZPLAYLISTRECORD", "ZPLAYLISTENTRYRECORD", "ZPLAYLISTRULERECORD"] {
+            XCTAssertEqual(after.removeValue(forKey: table), 0, "the V17 table \(table) starts empty")
+        }
         XCTAssertEqual(after, before, "every pre-existing table keeps its exact row count")
 
         let reopened = try LocalLibraryStore(url: copied)
@@ -90,7 +93,7 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
     func testFailureAfterV14MigrationRestoresTheV14Original() throws {
         let copied = try copiedV14Fixture()
         let hooks = LocalLibraryOpenHooks(afterMigration: {
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(16))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(17))
             throw InjectedMigrationFailure()
         })
         XCTAssertThrowsError(try LocalLibraryStore(url: copied, migrate: true, hooks: hooks)) { error in

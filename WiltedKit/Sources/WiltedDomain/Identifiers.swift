@@ -113,6 +113,50 @@ public struct ItemID: Codable, Hashable, Sendable, CustomStringConvertible {
         return try ItemID(rawValue: "item-\(digest)")
     }
 
+    /// Derives an article feed identity from its canonical HTTPS feed URL.
+    ///
+    /// The `article.feed` namespace keeps it distinct from the article ID of the
+    /// same URL (`derive(from:)`, unchanged) and from the podcast feed ID.
+    public static func articleFeed(canonicalFeedURL: URL) throws -> ItemID {
+        let normalized = try Self.canonicalURL(canonicalFeedURL)
+        let digest = namespacedSHA256("article.feed", value: normalized.absoluteString)
+        return try ItemID(rawValue: "item-\(digest)")
+    }
+
+    /// Digest of an ordered list of source files for `audiobook(contentDigest:layout:volume:)`.
+    ///
+    /// SHA-256 over each file's 8-byte big-endian length followed by its bytes, so
+    /// moving a byte across a file boundary changes the digest.
+    public static func audiobookContentDigest(of files: [Data]) -> String {
+        var hasher = AudiobookContentHasher()
+        for file in files {
+            hasher.beginFile(length: UInt64(file.count))
+            hasher.append(file)
+        }
+        return hasher.finalize()
+    }
+
+    /// Derives one audiobook volume's identity.
+    ///
+    /// - Parameters:
+    ///   - contentDigest: lowercase 64-hex digest from `AudiobookContentHasher`.
+    ///   - layout: layout key (layout version, encoding policy and, for EPUB/PDF,
+    ///     voice and synthesis settings), so regenerated boundaries never reuse an ID.
+    ///   - volume: zero-based volume index.
+    public static func audiobook(contentDigest: String, layout: String, volume: Int) throws -> ItemID {
+        guard contentDigest.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else {
+            throw DomainError.invalidValue(field: "contentDigest", reason: "must be a lowercase SHA-256 hex digest")
+        }
+        guard !layout.isEmpty, !layout.contains("\n") else {
+            throw DomainError.invalidValue(field: "layout", reason: "must be nonempty and single-line")
+        }
+        guard volume >= 0 else {
+            throw DomainError.invalidValue(field: "volume", reason: "must be non-negative")
+        }
+        let digest = namespacedSHA256("audiobook.content", value: "\(contentDigest)\n\(layout)\n\(volume)")
+        return try ItemID(rawValue: "item-\(digest)")
+    }
+
     /// Compatibility spelling for callers whose parsed model names the field `guid`.
     public static func derivePodcastEpisode(
         feedURL: URL,
@@ -210,4 +254,22 @@ public struct RevisionID: Codable, Hashable, Sendable, CustomStringConvertible {
         }
         return result
     }
+}
+
+/// Incremental form of `ItemID.audiobookContentDigest(of:)` for files too large to hold in memory.
+///
+/// Call `beginFile(length:)` with each file's exact byte count, then `append` its bytes.
+public struct AudiobookContentHasher: Sendable {
+    private var hasher = SHA256()
+
+    public init() {}
+
+    public mutating func beginFile(length: UInt64) {
+        var big = length.bigEndian
+        withUnsafeBytes(of: &big) { hasher.update(bufferPointer: $0) }
+    }
+
+    public mutating func append(_ data: Data) { hasher.update(data: data) }
+
+    public mutating func finalize() -> String { lowercaseHex(hasher.finalize()) }
 }

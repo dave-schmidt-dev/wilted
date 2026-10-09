@@ -82,7 +82,7 @@ extension LocalLibraryStore {
         let episodes = FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>(
             predicate: #Predicate { $0.id == identifier })
         if try context.fetchCount(episodes) > 0 { return true }
-        let articles = FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>(
+        let articles = FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>(
             predicate: #Predicate { $0.id == identifier })
         if try context.fetchCount(articles) > 0 { return true }
         let revisions = FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>(
@@ -207,7 +207,7 @@ extension LocalLibraryStore {
     /// Sets the local/remote status used by generation absence deletion.
     public func setSyncStatus(_ status: LocalLibrarySyncStatus, for itemID: ItemID) throws {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return }
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return }
         record.syncStatus = status.rawValue
         try context.save()
     }
@@ -215,7 +215,7 @@ extension LocalLibraryStore {
     /// Loads the sync status for one local item.
     public func syncStatus(for itemID: ItemID) throws -> LocalLibrarySyncStatus? {
         let context = ModelContext(container)
-        guard let raw = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue })?.syncStatus else { return nil }
+        guard let raw = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue })?.syncStatus else { return nil }
         return LocalLibrarySyncStatus(rawValue: raw)
     }
 
@@ -223,7 +223,7 @@ extension LocalLibraryStore {
     @discardableResult
     public func finalizeSnapshot(generationID: String, fetchComplete: Bool, seenRemoteItemIDs: Set<ItemID>) throws -> LocalLibrarySnapshotResult {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
         let seen = Set(seenRemoteItemIDs.map(\.rawValue))
         let deleted: [ItemID]
         if fetchComplete {
@@ -249,7 +249,7 @@ extension LocalLibraryStore {
     /// Applies one validated sync transaction in a single SwiftData context save.
     public func applySyncCommit(_ commit: LocalLibrarySyncCommit) throws {
         let context = ModelContext(container)
-        let articles = try context.fetch(FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>())
+        let articles = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
         let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
         let transcripts = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
         let playbacks = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
@@ -285,7 +285,7 @@ extension LocalLibraryStore {
                 existing.isRemoved = applied.article.isDeleted; existing.syncStatus = applied.status.rawValue
                 existing.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
             } else {
-                let record = LocalLibrarySchemaV5Models.ArticleRecord(applied.article)
+                let record = LocalLibrarySchemaV17Models.ArticleRecord(applied.article)
                 record.syncStatus = applied.status.rawValue
                 context.insert(record)
             }

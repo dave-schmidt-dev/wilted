@@ -12,6 +12,23 @@ final class LibraryModelTests: XCTestCase {
         try QueueSlot(entryID: id(digit), sortKey: key)
     }
 
+    func testAudiobookKindEntryDecodesOnExistingDecoder() throws {
+        let payload = try AudiobookPayload(
+            title: "Dune", durationSeconds: 10, chapters: [.init(title: "One", startSeconds: 0)],
+            sourceFormat: .audio
+        ).encoded()
+        let entry = try LibraryEntry(
+            id: id("a"), kind: .audiobook, sourceID: id("b"), title: "Dune", summary: "S",
+            publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 10, payload: payload
+        )
+        let decoded = try JSONDecoder().decode(LibraryEntry.self, from: JSONEncoder().encode(entry))
+        XCTAssertEqual(decoded, entry)
+        XCTAssertEqual(decoded.kind.rawValue, "audiobook")
+        XCTAssertEqual(try JSONDecoder().decode(AudiobookPayload.self, from: decoded.payload).title, "Dune")
+        XCTAssertEqual(LibraryKind.article.rawValue, "article")
+        XCTAssertEqual(LibraryKind.articleFeed.rawValue, "article.feed")
+    }
+
     func testSortKeyBetweenFirstAndLast() throws {
         XCTAssertEqual(QueueSlot.sortKey(after: nil, before: nil), 0)
         XCTAssertEqual(QueueSlot.sortKey(after: 1, before: 2), 1.5)

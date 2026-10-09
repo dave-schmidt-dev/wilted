@@ -74,5 +74,3 @@ enum LocalLibraryV16MigrationPlan: SchemaMigrationPlan {
     }
 }
 
-typealias LocalLibraryCurrentSchema = LocalLibrarySchemaV16
-typealias LocalLibraryCurrentMigrationPlan = LocalLibraryV16MigrationPlan

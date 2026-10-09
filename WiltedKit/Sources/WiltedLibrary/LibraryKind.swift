@@ -27,6 +27,12 @@ public struct LibraryKind: RawRepresentable, Codable, Hashable, Sendable, Expres
     public static let podcastEpisode: LibraryKind = "podcast.episode"
     /// A podcast feed source.
     public static let podcastFeed: LibraryKind = "podcast.feed"
+    /// A single article prepared for listening.
+    public static let article: LibraryKind = "article"
+    /// A followed feed of articles (no audio enclosures).
+    public static let articleFeed: LibraryKind = "article.feed"
+    /// One volume of an audiobook.
+    public static let audiobook: LibraryKind = "audiobook"
 }
 
 /// Removal state of an entry. The Mac is the single writer of this value.

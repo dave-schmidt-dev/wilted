@@ -288,6 +288,59 @@ final class DomainTests: XCTestCase {
         ))
     }
 
+    func testExistingArticleFeedAndEpisodeIdentitiesMatchFrozenValues() throws {
+        let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/feed.xml"))
+        let enclosure = try XCTUnwrap(URL(string: "https://cdn.example.test/episode-v1.mp3"))
+        XCTAssertEqual(
+            try ItemID.derive(from: enclosure).rawValue,
+            "item-44f117cdb76ba7a8a2c464151645cbaf36dd5af5abd3ecc5cbf7955668c55551"
+        )
+        XCTAssertEqual(
+            try ItemID.derivePodcastFeed(from: feedURL).rawValue,
+            "item-4461943b1b8c39e774101d49ce10bdd936f559b67854f0719c9c30156bf433a6"
+        )
+        XCTAssertEqual(
+            try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "episode-guid-001", enclosureURL: enclosure).rawValue,
+            "item-e6768c5361f10e6f3740e2fd3bd071b728dd372daf5e9eae9fd529434d676d62"
+        )
+        XCTAssertEqual(
+            try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: nil, enclosureURL: enclosure).rawValue,
+            "item-4113844a8e965fad8b17445bb6cc1da41ddfd2b452cd54dad87cd75695657859"
+        )
+    }
+
+    func testArticleFeedAndAudiobookIdentitiesAreDistinctNamespaces() throws {
+        let url = try XCTUnwrap(URL(string: "https://podcasts.example.test/feed.xml"))
+        let article = try ItemID.derive(from: url)
+        let podcastFeed = try ItemID.derivePodcastFeed(from: url)
+        let articleFeed = try ItemID.articleFeed(canonicalFeedURL: url)
+        let book = try ItemID.audiobook(contentDigest: String(repeating: "a", count: 64), layout: "v1", volume: 0)
+        XCTAssertEqual(articleFeed, try ItemID.articleFeed(canonicalFeedURL: XCTUnwrap(URL(string: "HTTPS://Podcasts.Example.TEST:443/feed.xml#x"))))
+        XCTAssertEqual(articleFeed.rawValue.count, 5 + 64)
+        XCTAssertNotEqual(articleFeed, article)
+        XCTAssertNotEqual(articleFeed, podcastFeed)
+        XCTAssertNotEqual(book, article)
+        XCTAssertNotEqual(book, articleFeed)
+        // Layout key and volume index both separate book identities.
+        XCTAssertNotEqual(book, try ItemID.audiobook(contentDigest: String(repeating: "a", count: 64), layout: "v2", volume: 0))
+        XCTAssertNotEqual(book, try ItemID.audiobook(contentDigest: String(repeating: "a", count: 64), layout: "v1", volume: 1))
+        XCTAssertNotEqual(book, try ItemID.audiobook(contentDigest: String(repeating: "b", count: 64), layout: "v1", volume: 0))
+        XCTAssertThrowsError(try ItemID.articleFeed(canonicalFeedURL: XCTUnwrap(URL(string: "http://podcasts.example.test/feed.xml"))))
+        XCTAssertThrowsError(try ItemID.audiobook(contentDigest: "", layout: "v1", volume: 0))
+        XCTAssertThrowsError(try ItemID.audiobook(contentDigest: String(repeating: "a", count: 64), layout: "v1", volume: -1))
+    }
+
+    func testAudiobookContentDigestLengthPrefixesEachFile() throws {
+        let ab = ItemID.audiobookContentDigest(of: [Data("ab".utf8), Data("c".utf8)])
+        let abc = ItemID.audiobookContentDigest(of: [Data("a".utf8), Data("bc".utf8)])
+        let joined = ItemID.audiobookContentDigest(of: [Data("abc".utf8)])
+        XCTAssertNotEqual(ab, abc)
+        XCTAssertNotEqual(ab, joined)
+        XCTAssertNotEqual(ItemID.audiobookContentDigest(of: [Data("x".utf8), Data("y".utf8)]),
+                          ItemID.audiobookContentDigest(of: [Data("y".utf8), Data("x".utf8)]))
+        XCTAssertEqual(ab.count, 64)
+    }
+
     func testExistingArticleAndTTSIdentifierShapesRemainByteStable() throws {
         XCTAssertEqual(
             try ItemID.derive(from: URL(string: "HTTPS://Example.COM:443/a?q=1#fragment")!).rawValue,

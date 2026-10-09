@@ -7,11 +7,11 @@ import WiltedSync
 extension LocalLibraryStore {
     public func save(feed: PodcastFeed) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.PodcastFeedRecord>())
         if let existing = records.first(where: { $0.id == feed.itemID.rawValue }) {
             existing.canonicalURL = feed.canonicalURL.absoluteString; existing.title = feed.title
             existing.author = feed.author; existing.artworkURL = feed.artworkURL?.absoluteString; existing.createdAt = feed.createdAt.date
-        } else { context.insert(LocalLibrarySchemaV6Models.PodcastFeedRecord(feed)) }
+        } else { context.insert(LocalLibrarySchemaV17Models.PodcastFeedRecord(feed)) }
         try context.save()
     }
 
@@ -19,7 +19,7 @@ extension LocalLibraryStore {
 
     public func podcastFeed(for feedID: ItemID) throws -> PodcastFeed? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>()).first(where: { $0.id == feedID.rawValue }),
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.PodcastFeedRecord>()).first(where: { $0.id == feedID.rawValue }),
               let canonicalURL = URL(string: record.canonicalURL) else { return nil }
         return try PodcastFeed(itemID: feedID, canonicalURL: canonicalURL, title: record.title,
                                author: record.author, artworkURL: record.artworkURL.flatMap(URL.init), createdAt: Timestamp(record.createdAt))
@@ -27,7 +27,7 @@ extension LocalLibraryStore {
 
     public func podcastFeeds() throws -> [PodcastFeed] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastFeedRecord>()).sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }.compactMap { record in
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.PodcastFeedRecord>()).sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }.compactMap { record in
             guard let id = try? ItemID(rawValue: record.id), let url = URL(string: record.canonicalURL) else { return nil }
             return try? PodcastFeed(itemID: id, canonicalURL: url, title: record.title, author: record.author,
                                     artworkURL: record.artworkURL.flatMap(URL.init), createdAt: Timestamp(record.createdAt))

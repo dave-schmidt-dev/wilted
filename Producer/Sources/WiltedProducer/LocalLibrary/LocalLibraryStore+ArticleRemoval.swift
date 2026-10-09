@@ -111,7 +111,7 @@ extension LocalLibraryStore {
         try Self.performRemoval(.removeArticle, startingAt: .articleFlag) { stage in
             let context = ModelContext(container)
             let identifier = itemID.rawValue
-            var articleQuery = FetchDescriptor<LocalLibrarySchemaV5Models.ArticleRecord>(
+            var articleQuery = FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>(
                 predicate: #Predicate { $0.id == identifier })
             articleQuery.fetchLimit = 1
             guard let article = try context.fetch(articleQuery).first else { return false }

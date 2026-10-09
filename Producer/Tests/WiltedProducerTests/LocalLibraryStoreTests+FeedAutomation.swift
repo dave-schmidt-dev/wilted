@@ -17,7 +17,7 @@ final class LocalLibraryFeedAutomationTests: XCTestCase {
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: fixtureURL("library-v15.store")), .known(15))
     }
 
-    func testV13V14AndV15FixturesMigrateToV16WithBackupAndRowsIntact() async throws {
+    func testV13V14AndV15FixturesMigrateToV17WithBackupAndRowsIntact() async throws {
         for name in ["library-v13.store", "library-v14.store", "library-v15.store"] {
             let source = fixtureURL(name)
             let before = try LocalLibraryStore.tableRowCounts(at: source)
@@ -30,7 +30,7 @@ final class LocalLibraryFeedAutomationTests: XCTestCase {
             }
             XCTAssertEqual(try LocalLibraryStoreCompatibilityTests.sha256(of: backup),
                            try LocalLibraryStoreCompatibilityTests.sha256(of: source))
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(16))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(17))
             let after = try LocalLibraryStore.tableRowCounts(at: copied)
             for (table, count) in before { XCTAssertEqual(after[table], count, "\(name): \(table)") }
         }
@@ -98,7 +98,7 @@ final class LocalLibraryFeedAutomationTests: XCTestCase {
     }
 
     private func copiedFixture(_ name: String) throws -> URL {
-        let directory = OwnedTestTemp.root.appendingPathComponent("wilted-v16-\(UUID().uuidString)", isDirectory: true)
+        let directory = OwnedTestTemp.root.appendingPathComponent("wilted-v17-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         directories.append(directory)
         let copied = directory.appendingPathComponent(name)

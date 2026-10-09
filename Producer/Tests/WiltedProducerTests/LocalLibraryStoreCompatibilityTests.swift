@@ -8,7 +8,7 @@ import WiltedSync
 
 final class LocalLibraryStoreCompatibilityTests: XCTestCase {
     /// SHA-256 of the checked-in V13 fixture. The fixture is frozen: this
-    /// build writes V16 stores, so it can no longer be regenerated, and every
+    /// build writes V17 stores, so it can no longer be regenerated, and every
     /// test below works on a copy.
     static let v13FixtureSHA256 = "3be8dc8875963cdc840443bf310dcdca0fd78c7ade5c04d55d42e605b2a8aeb3"
 
@@ -34,7 +34,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         }
         XCTAssertEqual(try Self.sha256(of: backupURL), Self.v13FixtureSHA256, "the backup is the untouched V13 store")
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: backupURL), .known(13))
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(16))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(17))
 
         let reopened = try LocalLibraryStore(url: copied)
         let secondBackup = await reopened.migrationBackupURL
@@ -64,7 +64,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
 
         let hooks = LocalLibraryOpenHooks(afterMigration: {
             // The source really was migrated before this failure.
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(16))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(17))
             throw InjectedMigrationFailure()
         })
         var backupURL: URL?
@@ -134,7 +134,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         let url = directory.appendingPathComponent("library.sqlite")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Keep the newer build's connection open so its sidecars are live.
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV17.self)
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV18.self)
         let futureWriter = try ModelContainer(for: schema, configurations: [
             ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none),
         ])
@@ -147,7 +147,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         XCTAssertGreaterThan(walBytes?.intValue ?? 0, 0, "the newer store's latest commit is still in its WAL")
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-shm"))
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url),
-                       .unrecognized("store matches no schema from V1 through V16"))
+                       .unrecognized("store matches no schema from V1 through V17"))
         let before = try Self.directorySnapshot(directory)
 
         for migrate in [true, false] {
@@ -246,7 +246,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
             requestedAt: values.timestamp, updatedAt: values.timestamp
         ))
         XCTAssertEqual(inspection, LocalLibraryInspection(
-            schemaVersion: .v16, articleCount: 1, revisionCount: 2, preparationCount: 1,
+            schemaVersion: .v17, articleCount: 1, revisionCount: 2, preparationCount: 1,
             playbackCount: 1, transcriptCount: 1
         ))
     }
@@ -415,9 +415,9 @@ extension LocalLibraryStoreCompatibilityTests {
     init(id: String) { self.id = id }
 }
 
-enum LocalLibrarySchemaV17: VersionedSchema {
-    static let versionIdentifier = Schema.Version(17, 0, 0)
-    static var models: [any PersistentModel.Type] { LocalLibrarySchemaV16.models + [FutureSchemaRecord.self] }
+enum LocalLibrarySchemaV18: VersionedSchema {
+    static let versionIdentifier = Schema.Version(18, 0, 0)
+    static var models: [any PersistentModel.Type] { LocalLibrarySchemaV17.models + [FutureSchemaRecord.self] }
 }
 
 struct InjectedMigrationFailure: Error {}
