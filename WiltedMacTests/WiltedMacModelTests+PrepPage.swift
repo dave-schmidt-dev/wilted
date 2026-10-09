@@ -22,7 +22,6 @@ extension WiltedMacModelTests {
         )
 
         let directory = temporaryDirectory("fixture-notes")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let fixture = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], stateDirectoryOverride: directory,
             preferences: WiltedMacTestPreferences.ephemeral()
@@ -239,7 +238,6 @@ extension WiltedMacModelTests {
     /// A failed run is retried from Prep, next to the reason it failed.
     func testRetryFromPrepPreparesTheRunsEpisode() throws {
         let directory = temporaryDirectory("retry-run")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
             stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
@@ -263,7 +261,6 @@ extension WiltedMacModelTests {
 
     func testFourRapidPrepRetriesPublishOneActiveProjectionAndThreeQueuedRows() async throws {
         let directory = temporaryDirectory("retry-projection")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },

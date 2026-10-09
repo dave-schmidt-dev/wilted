@@ -25,11 +25,10 @@ forced_missing_ios_mvp_journey="${NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY:-0}"
 forced_screen_locked="${NATIVE_FORCE_SCREEN_LOCKED:-0}"
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 wilted_mac_ui="${WILTED_MAC_UI:-0}"
-# Covers the whole Xcode build-and-test invocation, including the cold build: the integration root is a new
-# path every run, so the local packages and app recompile from scratch, which took over 300 s
-# on a loaded machine (the iOS leg was killed while still linking, not hung).
+# Build and test work have separate budgets; queue waits consume neither.
 xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-600}"
-native_leg_timeout_seconds="${WILTED_NATIVE_LEG_TIMEOUT_SECONDS:-1800}"
+native_leg_timeout_seconds="${WILTED_NATIVE_LEG_TIMEOUT_SECONDS:-600}"
+xcode_build_timeout_seconds="${WILTED_XCODE_BUILD_TIMEOUT_SECONDS:-1800}"
 # The iOS pixel baselines were recorded on iPhone 17 Pro. Selecting it by name
 # keeps the UI leg from silently using a different first-listed iPhone model.
 ios_ui_device_name='iPhone 17 Pro'
@@ -57,7 +56,33 @@ bounded_runner="${WILTED_BOUNDED_RUNNER:-$repo_root/scripts/run-bounded.py}"
 # the override keeps the meta-test hermetic.
 macos_ui_failure_diagnostics_dir="${WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR:-$repo_root/.logs/native-gate-diagnostics}"
 cleanup_mac_test_hosts() {
-  wilted_cleanup_mac_test_hosts "$repo_root"
+  # Never sweep a peer's active test host. Hold all Mac product locks while
+  # probing stale hosts; admission is nonblocking so cleanup cannot add a queue.
+  python3 - "$repo_root" <<'PYMAC'
+import fcntl
+import os
+from pathlib import Path
+import subprocess
+import sys
+root = Path(sys.argv[1])
+locks = [root / '.build/xcode.lock'] + [root / '.build/xcode-locks' / (key + '.lock')
+         for key in ('native-macos-unit-tests', 'native-macos-ui-tests')]
+fds = []
+try:
+    for lock in locks:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        fds.append(fd)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print('native.cleanup mac-test-hosts-deferred=product-live', file=sys.stderr)
+            sys.exit(0)
+    result = subprocess.run(['bash', '-c', 'source "$1/scripts/lib/mac-test-parent.sh"; wilted_cleanup_mac_test_hosts "$1"', '_', str(root)])
+    sys.exit(result.returncode)
+finally:
+    for fd in fds: os.close(fd)
+PYMAC
 }
 
 cleanup() {
@@ -72,6 +97,7 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 trap 'cleanup; exit 129' HUP
 # shellcheck source=lib/simctl_gate_lib.sh
+GATE_PROJECT_OWNED_CLONES_ONLY=1
 source "$repo_root/scripts/lib/simctl_gate_lib.sh"
 [[ -f "$bounded_runner" ]] || {
   printf 'native.error bounded runner is missing: %s\n' "$bounded_runner" >&2
@@ -97,6 +123,7 @@ leg_reports=(none xctest xctest xctest xctest count count count count)
 source "$repo_root/scripts/lib/native-gate-staging.sh"
 # shellcheck source=lib/native-gate-legs.sh
 source "$repo_root/scripts/lib/native-gate-legs.sh"
+source "$repo_root/scripts/lib/native-gate-parallel.sh"
 # shellcheck source=lib/native-gate-watch.sh
 source "$repo_root/scripts/lib/native-gate-watch.sh"
 wilted_gate_legs_validate "${leg_names[@]}" || exit 2
@@ -143,8 +170,10 @@ run_package_xctest_bundles() {
   for bundle in "${bundles[@]}"; do
     printf 'native.xctest.start label=%s bundle=%s\n' "$label" "$(basename "$bundle")"
     set +e
-    wilted_start_supervisor python3 "$bounded_runner" --timeout-seconds "$native_leg_timeout_seconds" -- \
-      xcrun xctest "$bundle" > >(tee -a "$log_path" >&2) 2>&1
+    local cache_key="$(basename "$scratch_path")"
+    wilted_start_supervisor env WILTED_EOF_BOUNDED_RUNNER="$repo_root/scripts/run-bounded.py" \
+      WILTED_TEST_TIMEOUT_SECONDS="$native_leg_timeout_seconds" WILTED_WORK_PHASE=test \
+      python3 "$build_with_cache" run-tests swiftpm "$cache_key" -- xcrun xctest "$bundle" > >(tee -a "$log_path" >&2) 2>&1
     wilted_wait_active_supervisor
     bundle_status=$?
     set -e
@@ -187,7 +216,46 @@ assert_test_sources() {
   printf 'native.discovery label=%s source_files=%s\n' "$label" "$file_count"
 }
 
+# A declared evidence root is private to this gate and never reuses prior output.
+prepare_native_results_dir() {
+  [[ -n "${native_results_dir:-}" ]] || return 0
+  printf 'native.results.prepare path=%s\n' "$native_results_dir" >&2
+  python3 - "$repo_root" "$native_results_dir" <<'PYRESULTDIR'
+import os
+from pathlib import Path
+import sys
+root, requested = Path(sys.argv[1]).resolve() / '.logs', Path(sys.argv[2])
+try:
+    relative = requested.relative_to(root)
+    if not relative.parts or any(p in ('.', '..') for p in relative.parts):
+        raise ValueError('destination must be a unique child of repository .logs')
+    current = root
+    for part in ('', *relative.parts):
+        if part: current /= part
+        if current.is_symlink(): raise ValueError('symlink destination ancestor')
+    if requested.exists(): raise ValueError('destination already exists')
+    requested.parent.mkdir(parents=True, exist_ok=True)
+    requested.mkdir(mode=0o700)
+except (OSError, ValueError) as error:
+    print(f'native.results.destination-refused reason={error}', file=sys.stderr)
+    sys.exit(1)
+PYRESULTDIR
+}
+
+retain_native_success_bundle() {
+  [[ -n "${native_results_dir:-}" ]] || return 0
+  case "$1" in macos-unit-tests|ios-unit-tests|ios-pixel-snapshot-tests) ;; *) return 0 ;; esac
+  local retained="$native_results_dir/$1.xcresult" staging="$native_results_dir/.$1.staging.$$"
+  status "native.results.start leg=$1 path=$retained"
+  copy_terminal_result_bundle "$2" "$staging" "$retained" 1 || return $?
+  status "native.results.complete leg=$1 path=$retained"
+}
+
 source "$repo_root/scripts/lib/native-gate-validation.sh"
+native_results_dir="${WILTED_NATIVE_RESULTS_DIR:-}"
+# Phase0's synthetic gates inherit the outer environment but cannot publish evidence.
+[[ "$native_self_test" != "1" ]] || native_results_dir=""
+prepare_native_results_dir || exit $?
 
 run_leg() {
   local name="$1"
@@ -211,6 +279,9 @@ run_leg() {
     if [[ "$native_self_test" == "1" && "$name" == "macos-ui-tests" ]]; then
       mkdir -p "$result_bundle"
       printf '%s\n' 'self_test_macos_ui_failure_evidence' >"$result_bundle/self-test-evidence"
+    elif [[ "$native_self_test" == "1" && "$name" == watchos-* ]]; then
+      mkdir -p "$result_bundle"
+      printf '%s\n' 'self_test_watchos_failure_evidence' >"$result_bundle/self-test-evidence"
     fi
     command_status=1
   elif is_forced_zero "$name"; then
@@ -218,6 +289,9 @@ run_leg() {
     if [[ "$native_self_test" == "1" && "$name" == "macos-ui-tests" ]]; then
       mkdir -p "$result_bundle"
       printf '%s\n' 'self_test_macos_ui_zero_test_evidence' >"$result_bundle/self-test-evidence"
+    elif [[ "$native_self_test" == "1" && "$name" == watchos-* ]]; then
+      mkdir -p "$result_bundle"
+      printf '%s\n' 'self_test_watchos_zero_test_evidence' >"$result_bundle/self-test-evidence"
     fi
     command_status=0
   elif [[ "$native_self_test" == "1" && "$name" != "interrupt-fixture" ]]; then
@@ -276,12 +350,15 @@ run_leg() {
   fi
 
   # Every app leg keeps its failing result bundle; the temp root does not survive.
-  if [[ "$name" == macos-* || "$name" == ios-* ]]; then
+  if [[ "$name" == macos-* || "$name" == ios-* || "$name" == watchos-* ]]; then
     if [[ "$command_status" -ne 0 ]]; then
-      retain_ui_failure_bundle "$name" "$result_bundle"
+      retain_ui_failure_bundle "$name" "$result_bundle" || status "native.results.failure-diagnostics-error leg=$name"
     else
-      clear_ui_failure_bundle "$name"
+      if ! clear_ui_failure_bundle "$name"; then command_status=1; fi
     fi
+  fi
+  if [[ "$command_status" -eq 0 ]]; then
+    retain_native_success_bundle "$name" "$result_bundle" || command_status=$?
   fi
 
   completed_legs+=1
@@ -310,12 +387,9 @@ build_cache_path() {
 run_with_build_cache() {
   local kind="$1" key="$2"
   shift 2
-  local timeout_seconds="$native_leg_timeout_seconds"
-  if [[ "$kind" == "xcode" ]]; then
-    timeout_seconds="$xcode_test_timeout_seconds"
-  fi
+  local timeout_seconds="$xcode_build_timeout_seconds"
   wilted_start_supervisor env WILTED_TEST_TIMEOUT_SECONDS="$timeout_seconds" \
-    python3 "$build_with_cache" run "$kind" "$key" -- "$@"
+    WILTED_WORK_PHASE=build python3 "$build_with_cache" run "$kind" "$key" -- "$@"
   wilted_wait_active_supervisor
 }
 
@@ -388,7 +462,7 @@ leg_wiltedkit_tests() {
   require_tool swift
   require_tool xcrun
   cache_path="$(build_cache_path swiftpm "$cache_key")"
-  run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests
+  run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests || return $?
   # The installed Swift toolchain accepts the SwiftPM xUnit flag but does not
   # emit the requested file for this package. Invoke the built XCTest bundles
   # directly; their runner log is authoritative and remains visible while running.
@@ -417,7 +491,7 @@ leg_wiltedproducer_tests() {
   require_tool swift
   require_tool xcrun
   cache_path="$(build_cache_path swiftpm "$cache_key")"
-  run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests
+  run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests || return $?
   set +e
   run_package_xctest_bundles WiltedProducer "$cache_path" "$tmp_root/wiltedproducer-tests.xctest.log"
   local xctest_status="$?"
@@ -430,128 +504,8 @@ find_project() {
   printf '%s\n' "$native_project"
 }
 
-select_ios_simulator_spec() {
-  require_tool xcrun
-  require_tool python3
-  xcrun simctl list devices available -j | python3 "$repo_root/scripts/select-ios-simulator.py"
-}
-
-create_gate_simulator() {
-  local purpose="$1" runtime device_type
-  read -r runtime device_type <<<"$(select_ios_simulator_spec)"
-  [[ -n "$runtime" && -n "$device_type" ]] || fail 'iOS 26.x simulator selector returned an empty runtime or device type'
-  local udid
-  udid="$(gate_sim_create wilted "$purpose" "$device_type" "$runtime")" ||
-    fail "failed to create Wilted simulator for $purpose"
-  printf 'native.simulator.create purpose=%s runtime=%s device_type=%s udid=%s\n' \
-    "$purpose" "$runtime" "$device_type" "$udid" >&2
-  xcrun simctl boot "$udid" >&2
-  xcrun simctl bootstatus "$udid" -b >&2
-  printf 'native.simulator.ready purpose=%s udid=%s\n' "$purpose" "$udid" >&2
-  printf '%s\n' "$udid"
-}
-
-cleanup_leg_simulator() {
-  local udid="$1" original_status="$2" cleanup_status=0
-  gate_sim_cleanup "$udid" || cleanup_status=$?
-  if [[ "$original_status" -eq 0 && "$cleanup_status" -ne 0 ]]; then
-    return "$cleanup_status"
-  fi
-  return "$original_status"
-}
-
-xcode_test_leg() {
-  local label="$1"
-  local source_dir="$2"
-  local scheme="$3"
-  local destination="$4"
-  local target="$5"
-  local project
-  local cache_key="native-$label"
-  local lock_pid_file="$tmp_root/$label.ui-lock.pid"
-  shift 5
-  local only_testing_args=(-only-testing:"$target")
-  for target in "$@"; do
-    only_testing_args+=(-only-testing:"$target")
-  done
-
-  [[ -f "$integration_root/project.yml" ]] || fail "missing integration XcodeGen source"
-  require_tool xcodebuild
-  require_tool jq
-  require_tool xmllint
-  assert_test_sources "$label" "$source_dir"
-  project="$(find_project)" || return 1
-  if [[ "$scheme" == "WiltedMac" ]]; then
-    # macOS 27 Foundation ignores TMPDIR for FileManager.temporaryDirectory, so
-    # the unit-test host would allocate every per-test root in the machine-wide
-    # temp directory (shared with other sessions' hosts, where a quit or killed
-    # host strands its root and this leg's own audit sees nothing). Hand it the
-    # leg-owned parent explicitly. Only the unit leg: the UI runner is sandboxed
-    # and cannot write a host-owned path, so its scheme keeps the key stripped.
-    local -a mac_test_env=()
-    if [[ "$label" == macos-unit-tests ]]; then mac_test_env=("WILTED_TEST_TMPDIR=$WILTED_TEMP_LEG_WORK"); fi
-    wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK" \
-      ${mac_test_env[@]+"${mac_test_env[@]}"} || fail "could not bind $label XCTest to its owned temp parent"
-  fi
-  [[ "$xcode_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
-    fail 'WILTED_XCODE_TEST_TIMEOUT_SECONDS must be a positive integer'
-  cleanup_mac_test_hosts
-  local -a test_command=(env WILTED_TEST_TIMEOUT_SECONDS="$xcode_test_timeout_seconds" \
-    python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test \
-    -project "$project" \
-    -scheme "$scheme" \
-    "${only_testing_args[@]}" \
-    -destination "$destination" \
-    -resultBundlePath "$tmp_root/$label.xcresult" \
-    -parallel-testing-enabled NO \
-    -quiet)
-  if [[ -n "${WILTED_UI_TEST_SIMULATOR_UDID:-}" ]]; then
-    WILTED_UI_LOCK_PID_FILE="$lock_pid_file"
-    GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock \
-      --label "$label" --simulator-udid "$WILTED_UI_TEST_SIMULATOR_UDID" \
-      "${test_command[@]}" &
-    WILTED_ACTIVE_SUPERVISOR_PID=$!
-  else
-    wilted_start_supervisor "${test_command[@]}"
-  fi
-  local xcode_pid="$WILTED_ACTIVE_SUPERVISOR_PID"
-  local elapsed_seconds=0
-  local xcode_status
-  while kill -0 "$xcode_pid" 2>/dev/null; do
-    if (( elapsed_seconds >= xcode_test_timeout_seconds )); then
-      local lock_wrapper_pid=""
-      if [[ -n "${WILTED_UI_TEST_SIMULATOR_UDID:-}" && -s "$lock_pid_file" ]]; then
-        lock_wrapper_pid="$(cat "$lock_pid_file")"
-      fi
-      if [[ "$lock_wrapper_pid" =~ ^[1-9][0-9]*$ ]]; then
-        # Signal apple-ui-test-lock directly; it forwards TERM to xcodebuild's
-        # process group before returning and releasing the simulator lane.
-        wilted_stop_active_ui_lock
-      else
-        wilted_stop_active_supervisor
-      fi
-      cleanup_mac_test_hosts
-      local timeout_phase=build
-      if grep -q 'Testing started' "$tmp_root/$label.log" 2>/dev/null; then
-        timeout_phase=test
-      fi
-      status "native.timeout label=$label seconds=$xcode_test_timeout_seconds phase=$timeout_phase"
-      return 124
-    fi
-    if (( elapsed_seconds > 0 && elapsed_seconds % 30 == 0 )); then
-      status "native.heartbeat label=$label elapsed_seconds=$elapsed_seconds"
-    fi
-    sleep 1
-    ((elapsed_seconds += 1))
-  done
-  set +e
-  wilted_wait_active_supervisor
-  xcode_status=$?
-  WILTED_UI_LOCK_PID_FILE=""
-  set -e
-  rm -f "$lock_pid_file"
-  return "$xcode_status"
-}
+source "$repo_root/scripts/lib/native-gate-simulator.sh"
+source "$repo_root/scripts/lib/native-gate-xcode.sh"
 
 leg_macos_unit_tests() {
   xcode_test_leg macos-unit-tests "$integration_root/WiltedMacTests" WiltedMac 'platform=macOS' WiltedMacTests
@@ -562,7 +516,7 @@ leg_ios_unit_tests() {
   udid="$(create_gate_simulator ios-units)" || return 1
   xcode_test_leg ios-unit-tests "$integration_root/WiltediOSTests" WiltediOS \
     "platform=iOS Simulator,id=$udid" WiltediOSTests || result=$?
-  cleanup_leg_simulator "$udid" "$result"
+  return "$result"
 }
 
 # XCUITest cannot bring an application forward while the login session is
@@ -589,7 +543,9 @@ leg_macos_ui_tests() {
   local label=macos-ui-tests
   local source_dir="$integration_root/WiltedMacUITests"
   local destination='platform=macOS'
-  local project="$native_project"
+  local project="$tmp_root/$label-project/$(basename "$native_project")"
+  mkdir -p "$(dirname "$project")"
+  cp -R "$(dirname "$native_project")/." "$(dirname "$project")/"
   local cache_key="native-$label"
   local label_data
   local runner host runner_metadata host_metadata metadata_info runner_signature_info host_signature_info
@@ -616,9 +572,30 @@ leg_macos_ui_tests() {
     fail 'WILTED_DEVELOPMENT_TEAM must be a ten-character Apple team identifier'
     return 1
   fi
-  cleanup_mac_test_hosts
   wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$WILTED_TEMP_LEG_WORK" || fail "could not bind $label XCTest to its owned temp parent"
   label_data="$(build_cache_path xcode "$cache_key")"
+  # Build pre-actions execute under the cache helper's lock, before Xcode
+  # copies/signs products. Clear only our staged inputs and owned product tree;
+  # the post-build audit still refuses any forbidden metadata that reappears.
+  if ! require_tool xattr; then return 1; fi
+  local products="$label_data/Build/Products" metadata_ready="$tmp_root/$label.metadata-ready"
+  python3 - "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$integration_root" "$products" "$metadata_ready" <<'PYMETADATA' || return 1
+import shlex, sys, xml.etree.ElementTree as ET
+scheme, staged, products, ready = sys.argv[1:]
+tree = ET.parse(scheme)
+build = tree.getroot().find("BuildAction")
+if build is None:
+    sys.exit("native.error Mac UI scheme has no BuildAction")
+actions = build.find("PreActions")
+if actions is None:
+    actions = ET.SubElement(build, "PreActions")
+action = ET.SubElement(actions, "ExecutionAction", ActionType="Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction")
+# -s prevents recursive stripping from dereferencing a staged symlink into
+# canonical sources, installed bundles or another cache.
+script = "set -eu\ntest ! -L " + shlex.quote(products) + "\nmkdir -p " + shlex.quote(products) + "\nxattr -crs " + shlex.quote(staged) + " " + shlex.quote(products) + "\ntouch " + shlex.quote(ready) + "\n"
+ET.SubElement(action, "ActionContent", title="Strip owned test-product metadata before signing", scriptText=script)
+tree.write(scheme, encoding="UTF-8", xml_declaration=True)
+PYMETADATA
   if ! run_with_build_cache xcode "$cache_key" xcodebuild build-for-testing \
     -project "$project" \
     -scheme WiltedMac \
@@ -631,6 +608,9 @@ leg_macos_ui_tests() {
     DEVELOPMENT_TEAM="$wilted_development_team"; then
     return 1
   fi
+
+  # Xcode may continue after a scheme action failure; require its success marker.
+  [[ -f "$metadata_ready" ]] || { fail 'Mac UI pre-sign metadata strip failed'; return 1; }
 
   runner="$label_data/Build/Products/Debug/WiltedMacUITests-Runner.app"
   if [[ ! -d "$runner" ]]; then
@@ -654,7 +634,8 @@ leg_macos_ui_tests() {
   if ! host_metadata="$(xattr -lr "$host" 2>/dev/null)"; then return 1; fi
   metadata_info="${runner_metadata}"$'\n'"${host_metadata}"
   if [[ "$metadata_info" == *'com.apple.quarantine'* ||
-    "$metadata_info" == *'com.apple.FinderInfo'* ]]; then
+    "$metadata_info" == *'com.apple.FinderInfo'* ||
+    "$metadata_info" == *'com.apple.fileprovider.fpfs#P'* ]]; then
     printf '%s\n' 'native.error forbidden Mac UI quarantine/FinderInfo metadata remains' >&2
     return 1
   fi
@@ -691,7 +672,7 @@ leg_macos_ui_tests() {
   local lock_pid_file="$tmp_root/$label.ui-lock.pid"
   WILTED_UI_LOCK_PID_FILE="$lock_pid_file"
   GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock --label "$label" \
-    env WILTED_TEST_TIMEOUT_SECONDS="$xcode_test_timeout_seconds" \
+    env WILTED_TEST_TIMEOUT_SECONDS="$xcode_test_timeout_seconds" WILTED_WORK_PHASE=test \
     python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building \
     -project "$project" \
     -scheme WiltedMac \
@@ -712,7 +693,7 @@ leg_ios_ui_tests() {
     "platform=iOS Simulator,id=$udid" \
     WiltediOSUITests/WiltediOSPixelSnapshotTests \
     WiltediOSUITests/WiltediOSMVPFlowUITests || result=$?
-  cleanup_leg_simulator "$udid" "$result"
+  return "$result"
 }
 
 if [[ "$native_self_test" != "1" ]]; then
@@ -759,6 +740,7 @@ fi
 
 leg_fns=(leg_xcodegen_reproducible leg_wiltedkit_tests leg_cloudsync_tests leg_playback_tests leg_wiltedproducer_tests
   leg_macos_unit_tests leg_ios_unit_tests leg_macos_ui_tests leg_ios_ui_tests)
+if [[ "$native_self_test" != 1 ]]; then cleanup_mac_test_hosts; fi
 wilted_gate_run_legs
 
 wilted_temp_remove_owned_child "$tmp_root" "$inherited_tmp" wilted-native-gate. || fail 'native temp root ownership changed before cleanup'

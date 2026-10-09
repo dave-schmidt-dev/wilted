@@ -37,7 +37,7 @@ enum LibrarySettingsFormat {
 
     /// "1.25x", "2x".
     static func speed(_ value: Double) -> String {
-        value == value.rounded() ? "\(Int(value))x" : String(format: "%gx", value)
+        PlaybackSpeedText.rate(value)
     }
 
     static func skip(_ seconds: Int) -> String { "\(seconds) seconds" }

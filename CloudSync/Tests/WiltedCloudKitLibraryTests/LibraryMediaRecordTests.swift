@@ -157,7 +157,8 @@ final class MediaFixture {
     func offer(_ entry: String = "ep-1", bytes: Int64 = 100, revision: String = "rev-1") throws -> LibraryMediaOffer {
         try LibraryMediaOffer(entryID: item(entry), revisionID: RevisionID(rawValue: revision),
                               contentHash: "sha256:" + String(repeating: "a", count: 64), byteCount: bytes,
-                              mediaType: "audio/mpeg", durationSeconds: 61)
+                              mediaType: "audio/mpeg", durationSeconds: 61,
+                              preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 946684800))))
     }
 }
 
@@ -165,6 +166,42 @@ final class MediaFixture {
 
 final class LibraryMediaRecordTests: XCTestCase {
     private let mapper = LibraryRecordMapper()
+
+    private func certifiedWireOffer() throws -> LibraryMediaOffer {
+        let legacy = try MediaFixture().offer()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        object["preparation"] = ["schemaVersion": 1, "preparedAt": "2000-01-01T00:00:00Z"]
+        return try JSONDecoder().decode(LibraryMediaOffer.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    private func assertWirePreparation(_ offer: LibraryMediaOffer, file: StaticString = #filePath,
+                                       line: UInt = #line) throws {
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(offer)) as? [String: Any],
+                                   file: file, line: line)
+        let proof = try XCTUnwrap(object["preparation"] as? [String: Any], file: file, line: line)
+        XCTAssertEqual(proof["schemaVersion"] as? Int, 1, file: file, line: line)
+        XCTAssertEqual(proof["preparedAt"] as? String, "2000-01-01T00:00:00Z", file: file, line: line)
+    }
+
+    func testCertifiedOfferPayloadRetainsPreparationThroughLibraryMapper() throws {
+        let record = try mapper.record(offer: certifiedWireOffer())
+        guard case let .offer(decoded) = try mapper.decode(record) else { return XCTFail("expected offer") }
+        try assertWirePreparation(decoded)
+        XCTAssertTrue(decoded.isPrepared)
+    }
+
+    func testCertifiedAudioAssetRecordRetainsExactPreparationAuthority() throws {
+        let fixture = try MediaFixture()
+        let input = try certifiedWireOffer()
+        let record = try LibraryMediaRecord.record(offer: input, assetURL: fixture.audioFile(), zoneID: mapper.mediaZoneID)
+        let decoded = try LibraryMediaRecord.offer(from: record)
+        XCTAssertEqual(decoded.entryID, input.entryID)
+        XCTAssertEqual(decoded.revisionID, input.revisionID)
+        XCTAssertEqual(decoded.contentHash, input.contentHash)
+        XCTAssertEqual(decoded.byteCount, input.byteCount)
+        XCTAssertEqual(decoded.mediaType, input.mediaType)
+        try assertWirePreparation(decoded)
+    }
 
     func testOfferRecordLivesInTheLibraryZoneAndRoundTripsIncludingNotReady() throws {
         let ready = try MediaFixture().offer()
@@ -255,8 +292,8 @@ final class LibraryMediaRecordTests: XCTestCase {
         let ready = try fixture.offer()
         try await mac.transport.publishMedia(offer: ready, fileURL: try fixture.audioFile())
         let available = try LibraryMediaOffer(
-            entryID: item("ep-1"), revisionID: RevisionID(rawValue: "rev-1"), contentHash: "", byteCount: 100,
-            mediaType: "audio/mpeg", durationSeconds: 61, state: .available)
+            entryID: item("ep-1"), revisionID: RevisionID(rawValue: "rev-1"), contentHash: ready.contentHash, byteCount: 100,
+            mediaType: "audio/mpeg", durationSeconds: 61, state: .available, preparation: ready.preparation)
         try await mac.transport.publishMedia(offer: available, fileURL: URL(fileURLWithPath: "/dev/null"))
         let audio = await fixture.server.records["audio:ep-1"]
         XCTAssertNil(audio, "going back to available drops the uploaded audio")
@@ -264,6 +301,25 @@ final class LibraryMediaRecordTests: XCTestCase {
         XCTAssertEqual(offers, [available])
         await XCTAssertThrowsErrorAsync(try await phone.transport.fetchMedia(available) { _ in }) {
             XCTAssertEqual($0 as? LibraryTransportError, .transport("no ready audio is offered for ep-1"))
+        }
+    }
+
+    func testFetchedAssetRejectsChangedEntryTypeAndPreparationForTheSameRevision() async throws {
+        for field in ["entryID", "mediaType", LibraryMediaRecord.preparationField] {
+            let fixture = try MediaFixture()
+            let mac = try fixture.endpoint("mac", writer: true)
+            let phone = try fixture.endpoint("phone", writer: false)
+            let offer = try fixture.offer()
+            try await mac.transport.publishMedia(offer: offer, fileURL: fixture.audioFile())
+            let changedProof = try JSONEncoder().encode(LibraryMediaPreparation(
+                preparedAt: Timestamp(Date(timeIntervalSince1970: 946771200))))
+            await fixture.server.mutate("audio:ep-1") { record in
+                if field == LibraryMediaRecord.preparationField { record[field] = changedProof as CKRecordValue }
+                else { record[field] = (field == "entryID" ? "different-episode" : "audio/mp4") as CKRecordValue }
+            }
+            await XCTAssertThrowsErrorAsync(try await phone.transport.fetchMedia(offer) { _ in }) {
+                guard case .transport? = $0 as? LibraryTransportError else { return XCTFail("\($0)") }
+            }
         }
     }
 

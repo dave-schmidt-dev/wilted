@@ -145,7 +145,22 @@ extension LibraryAppModel {
     /// Marks entries already cached as "On phone", drops "On phone" for files that are gone, and
     /// retries acknowledgements that did not reach the Mac. Never touches a running request.
     func refreshMediaFromCache() async {
-        let cached = await mediaCache.cachedEntries()
+        guard let context = await bindMediaOwner() else {
+            guard !Task.isCancelled else { return }
+            media = media.filter { $0.value != .onPhone }
+            handoffState.player?.invalidateLoadedItem()
+            return
+        }
+        let inventory = await mediaCache.cachedEntries()
+        guard await mediaContextIsCurrent(context) else { return }
+        var cached: [ItemID: CachedMedia] = [:]
+        for (entryID, candidate) in inventory {
+            guard await cachedPreparationIsCurrent(candidate, entryID: entryID, context: context),
+                  await mediaContextIsCurrent(context, entryID: entryID) else { continue }
+            cached[entryID] = candidate
+        }
+        guard await mediaContextIsCurrent(context) else { return }
+        cached = cached.filter { entryID, _ in !mediaRevocations.contains(entryID) && queued.contains { $0.id == entryID } }
         for (entryID, state) in media where state == .onPhone && cached[entryID] == nil && mediaRuns[entryID] == nil {
             media[entryID] = nil
         }
@@ -154,7 +169,7 @@ extension LibraryAppModel {
         }
         for entryID in cached.keys where mediaRuns[entryID] == nil {
             switch media[entryID] {
-            case .none, .some(.available), .some(.notPrepared), .some(.failed): media[entryID] = .onPhone
+            case .none, .some(.available), .some(.failed): media[entryID] = .onPhone
             default: break
             }
         }
@@ -163,15 +178,20 @@ extension LibraryAppModel {
 
     /// The account changed: audio belongs to the previous account's library.
     func discardMediaAfterAccountChange() async {
+        try? await mediaCache.bindOwner(ownerToken: nil, libraryScope: Self.mediaLibraryScope, held: true)
+        handoffState.player?.invalidateLoadedItem()
         for run in mediaRuns.values { run.task?.cancel() }
         mediaRuns = [:]
+        mediaRevocations = []
         unacknowledgedMedia = [:]
         for run in transcriptRuns.values { run.task?.cancel() }
         transcriptRuns = [:]
         transcriptRetried = [:]
         transcripts = [:]
-        for entryID in await mediaCache.cachedEntries().keys { try? await mediaCache.remove(entryID: entryID) }
         media = [:]
+        for entryID in await mediaCache.storedAudioByteCounts().keys {
+            await removeFromPhone(entryID: entryID)
+        }
     }
 
     // MARK: - Request flow
@@ -179,17 +199,32 @@ extension LibraryAppModel {
     private func runMediaRequest(_ entryID: ItemID, runID: UUID) async {
         defer { if isCurrent(entryID, runID) { mediaRuns[entryID] = nil } }
         do {
+            await loadLocalState()
+            guard isCurrent(entryID, runID), let context = await mediaContext(live: true),
+                  await mediaContextIsCurrent(context, entryID: entryID, live: true) else {
+                setMedia(.failed("The saved library account is not verified for downloading."), entryID, runID)
+                return
+            }
             let intent = try LibraryIntent.requestMedia(entryID: entryID, deviceID: deviceID, createdAt: now())
             try await transport.send(intent: intent)
-            guard let offer = try await awaitOffer(for: entryID, runID: runID) else {
+            guard let offer = try await awaitOffer(for: entryID, runID: runID, context: context) else {
                 setMedia(.failed("The Mac has not answered. Check that Wilted is running on it."), entryID, runID)
                 return
             }
-            guard offer.state == .ready else {
+            guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return }
+            guard offer.state == .ready, offer.isPrepared else {
                 setNotPrepared(entryID, runID)
                 return
             }
-            let outcome = try await download(offer, runID: runID)
+            guard let admission = await mediaCache.admission(entryID: entryID, ownerToken: context.ownerToken,
+                libraryScope: Self.mediaLibraryScope, transportGeneration: context.generation),
+                isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return }
+            let outcome = try await download(offer, runID: runID, admission: admission)
+            guard await mediaCache.permits(admission, for: offer),
+                  await mediaContextIsCurrent(context, entryID: entryID, live: true), isCurrent(entryID, runID) else {
+                setMedia(.failed("The saved library account changed during downloading."), entryID, runID)
+                return
+            }
             try Task.checkCancellation()
             switch outcome {
             case .cached:
@@ -218,16 +253,31 @@ extension LibraryAppModel {
     /// While the sync tick runs, its rounds read the offers (with the playback records, every round) and this
     /// only looks at what they found, so a request costs no reads of its own. Without a tick (the app is
     /// not in front) it reads the offers itself every `pollInterval`, which defaults to the tick interval.
-    private func awaitOffer(for entryID: ItemID, runID: UUID) async throws -> LibraryMediaOffer? {
+    private func awaitOffer(for entryID: ItemID, runID: UUID, context: LibraryMediaContext) async throws -> LibraryMediaOffer? {
         let deadline = ContinuousClock.now.advanced(by: mediaTiming.offerTimeout)
         let requestedAt = now()
         while true {
             try Task.checkCancellation()
+            guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else {
+                throw LibraryTransportError.superseded
+            }
             if tickState.tick != nil {
                 if let readAt = tickState.offersReadAt, readAt >= requestedAt,
                    let offer = tickState.offers[entryID], offer.state != .available { return offer }
-            } else if let offers = try? await transport.mediaOffers(), let offer = offers.first(where: { $0.entryID == entryID }), offer.state != .available {
-                return offer
+            } else if let offers = try? await transport.mediaOffers() {
+                // A request's notReady response settles this run after durable revocation; it must
+                // not cancel its own result while applying the response.
+                guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else { throw LibraryTransportError.superseded }
+                if let offer = offers.first(where: { $0.entryID == entryID }), offer.state != .available {
+                    if offer.state == .notReady {
+                        try await mediaCache.revokePreparation(entryID: entryID)
+                    } else if offer.isPrepared {
+                        let old = await mediaCache.cachedEntries()[entryID]?.preparation?.offer
+                        if let old, !Self.samePreparedIdentity(old, offer) { try await mediaCache.revokePreparation(entryID: entryID) }
+                    }
+                    guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else { throw LibraryTransportError.superseded }
+                    return offer
+                }
             }
             if ContinuousClock.now >= deadline { return nil }
             // Looking at the tick's findings costs nothing, so that check is quick.
@@ -236,7 +286,7 @@ extension LibraryAppModel {
     }
 
     /// Runs the fetcher and mirrors its states into `media` in the order they happened.
-    private func download(_ offer: LibraryMediaOffer, runID: UUID) async throws -> MediaFetchOutcome {
+    private func download(_ offer: LibraryMediaOffer, runID: UUID, admission: MediaCacheAdmission) async throws -> MediaFetchOutcome {
         let (states, continuation) = AsyncStream<MediaTransferState>.makeStream()
         let entryID = offer.entryID
         let mirror = Task { @MainActor [weak self] in
@@ -244,7 +294,7 @@ extension LibraryAppModel {
         }
         let fetcher = MediaFetcher(cache: mediaCache, watchdog: mediaTiming.watchdog)
         do {
-            let outcome = try await fetcher.fetch(offer, from: transport) { continuation.yield($0) }
+            let outcome = try await fetcher.fetch(offer, from: transport, admission: admission) { continuation.yield($0) }
             continuation.finish()
             await mirror.value
             return outcome
@@ -269,10 +319,13 @@ extension LibraryAppModel {
     }
 
     private func sendPendingMediaAcknowledgements() async {
+        guard let context = await mediaContext(live: true) else { return }
         for (entryID, revisionID) in unacknowledgedMedia {
+            guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return }
             guard let intent = try? LibraryIntent.mediaCached(
                 entryID: entryID, revisionID: revisionID, deviceID: deviceID, createdAt: now()) else { continue }
-            if (try? await transport.send(intent: intent)) != nil, unacknowledgedMedia[entryID] == revisionID {
+            if (try? await transport.send(intent: intent)) != nil,
+               await mediaContextIsCurrent(context, entryID: entryID, live: true), unacknowledgedMedia[entryID] == revisionID {
                 unacknowledgedMedia[entryID] = nil
             }
         }
@@ -286,6 +339,7 @@ extension LibraryAppModel {
     private func setNotPrepared(_ entryID: ItemID, _ runID: UUID) {
         guard isCurrent(entryID, runID) else { return }
         media[entryID] = .notPrepared
+        if handoffState.player?.item?.entryID == entryID { handoffState.player?.invalidateLoadedItem() }
         dropOffer(entryID)
     }
 

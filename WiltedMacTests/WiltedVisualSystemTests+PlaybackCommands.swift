@@ -1,4 +1,6 @@
 import XCTest
+import AppKit
+import SwiftUI
 import WiltedDomain
 import WiltedProducer
 @testable import WiltedMac
@@ -111,7 +113,192 @@ extension WiltedVisualSystemTests {
         XCTAssertFalse(model.audioRouteFault, "one fault, one button: no Recover audio beside Retry")
     }
 
+    @MainActor
+    func testDelayedPlayPauseUsesButtonFeedbackWithoutMovingPlayerDetails() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        await model.waitForFixturePodcastInstallForTesting()
+        await loadPausedThroughOwner(model, episode)
+        let larderEpisode = WiltedMacEpisode(
+            id: "larder-pixel-control-fixture", title: "Larder Pixel Control",
+            feedTitle: "Fixture", summary: "Ready fixture row", artworkURL: nil,
+            releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 600,
+            playbackSeconds: 0, downloadState: .completed, preparationState: .prepared(summary: "Ready")
+        )
+        model.installEpisodeForTesting(larderEpisode)
+        model.podcastQueueIDs.append(larderEpisode.id)
+        let gate = WiltedMacCommandGate()
+        model.installPlaybackCommandHookForTesting { await gate.hold($0) }
+        defer { gate.release() }
+        let views: [(String, AnyView, CGSize)] = [
+            ("rail-min", AnyView(WiltedMacCompactPlayer(model: model)), CGSize(width: 800, height: 300)),
+            ("rail-normal", AnyView(WiltedMacCompactPlayer(model: model)), CGSize(width: 1100, height: 300)),
+            ("pane-min", AnyView(WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))), CGSize(width: 400, height: 700)),
+            ("pane-normal", AnyView(WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))), CGSize(width: 520, height: 700)),
+            ("full-min", AnyView(WiltedMacFullWindowPlayer(model: model, presentation: .constant(.transcript), onSelect: { _ in }, onCollapse: { _ in })), CGSize(width: 800, height: 700)),
+            ("full-normal", AnyView(WiltedMacFullWindowPlayer(model: model, presentation: .constant(.transcript), onSelect: { _ in }, onCollapse: { _ in })), CGSize(width: 1100, height: 700)),
+            ("root-min", AnyView(WiltedMacRootView(model: model)), CGSize(width: 800, height: 700)),
+            ("root-normal", AnyView(WiltedMacRootView(model: model)), CGSize(width: 1100, height: 700))
+        ]
+        func capture(_ phase: String) throws -> [[(String, CGFloat)]] {
+            try views.map { name, view, size in
+                let lines = try WiltedMacHeadless.recognizedLines(view, size: size)
+                let text = lines.map(\.text).joined(separator: " ")
+                XCTAssertFalse(text.contains("Starting playback"), text)
+                XCTAssertFalse(text.contains("Pausing"), text)
+                let anchorLabels = [episode.title, "Mark completed", "Transcript", "Hide Transcript"]
+                let anchors = lines.filter { anchorLabels.contains($0.text) }
+                XCTAssertFalse(anchors.isEmpty, "\(name): player detail/transport anchors must be rendered")
+                let bitmap = try WiltedMacHeadless.render(view, size: size)
+                let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
+                attachment.name = "in-button-\(name)-\(phase)"; attachment.lifetime = .keepAlways; add(attachment)
+                return anchors.map { ($0.text, $0.top) }
+            }
+        }
+        func sameGeometry(_ baseline: [[(String, CGFloat)]], _ current: [[(String, CGFloat)]]) -> Bool {
+            guard baseline.count == current.count else { return false }
+            return zip(baseline, current).enumerated().allSatisfy { index, pair in
+                let (before, after) = pair
+                guard before.map({ $0.0 }) == after.map({ $0.0 }) else { return false }
+                return zip(before, after).allSatisfy { abs($0.1 - $1.1) <= 2 / views[index].2.height }
+            }
+        }
+        func compare(_ baseline: [[(String, CGFloat)]], _ current: [[(String, CGFloat)]]) {
+            XCTAssertTrue(sameGeometry(baseline, current), "Player anchors stay within two rendered pixels of their steady frames")
+        }
+        let larder = WiltedMacLarderView(model: model, paneMode: .side)
+        let larderSize = CGSize(width: 1100, height: 700)
+        XCTAssertEqual(WiltedMacModel.larderGroup(for: larderEpisode), .playable)
+        XCTAssertFalse(model.isEpisodeFinished(larderEpisode), "The visible row must render its Play now control")
+        XCTAssertTrue(model.larderUnfilteredEpisodes(in: .playable).contains { $0.id == larderEpisode.id })
+        let larderFrame = try WiltedMacHeadless.render(larder, size: larderSize)
+        let larderRowRect = try actualLarderRowCaptureRect(
+            larder, size: larderSize, bitmap: larderFrame, episode: larderEpisode)
+        func rowPixels() throws -> Data {
+            try actualLarderRowPixels(larder, size: larderSize, rect: larderRowRect)
+        }
+        let pausedRow = try rowPixels()
+        let paused = try capture("paused")
+        let insertedStatusRow = paused.enumerated().map { index, anchors in
+            anchors.map { ($0.0, $0.1 + 8 / views[index].2.height) }
+        }
+        XCTAssertFalse(sameGeometry(paused, insertedStatusRow),
+                       "The same geometry check must reject an eight-pixel status-row shift in every player")
+        gate.arm(); model.togglePlayback(); await gate.waitUntilHeld()
+        XCTAssertEqual(model.playbackCommands.pending?.command.kind, .start)
+        XCTAssertEqual(model.playbackCommands.pending?.usesPlayPauseButtonFeedback, true)
+        let generation = model.playbackCommands.generation; let starts = backend.playCount
+        model.togglePlayback(); model.togglePlayback()
+        XCTAssertEqual(model.playbackCommands.generation, generation)
+        compare(paused, try capture("starting"))
+        XCTAssertEqual(try rowPixels(), pausedRow, "A player start must not spin the unrelated Larder Play now button")
+        gate.release(); await model.waitForPlaybackOperationForTesting()
+        XCTAssertTrue(model.isPlaying); XCTAssertEqual(backend.playCount, starts + 1)
+        let playing = try capture("playing"); let playingRow = try rowPixels()
+        gate.arm(); model.togglePlayback(); await gate.waitUntilHeld()
+        XCTAssertEqual(model.playbackCommands.pending?.command.kind, .pause)
+        XCTAssertEqual(model.playbackCommands.pending?.usesPlayPauseButtonFeedback, true)
+        let pauseGeneration = model.playbackCommands.generation; let pauses = backend.pauseCount
+        model.togglePlayback(); model.pausePlayback()
+        XCTAssertEqual(model.playbackCommands.generation, pauseGeneration)
+        compare(playing, try capture("pausing"))
+        XCTAssertEqual(try rowPixels(), playingRow, "A player pause must not spin the unrelated Larder Play now button")
+        gate.release(); await model.waitForPlaybackOperationForTesting()
+        XCTAssertFalse(model.isPlaying); XCTAssertEqual(backend.pauseCount, pauses + 1)
+        XCTAssertNil(model.playbackCommands.pending)
+        compare(paused, try capture("settled"))
+        backend.refusesPlay = true; model.togglePlayback(); await model.waitForPlaybackOperationForTesting()
+        XCTAssertNil(model.playbackCommands.pending); XCTAssertTrue(model.canRetryPlayback)
+        let fault = try WiltedMacHeadless.recognizedText(
+            WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState())), size: CGSize(width: 520, height: 700)).joined(separator: " ")
+        XCTAssertTrue(fault.contains("Playback refused"), fault); XCTAssertTrue(fault.contains("Retry playback"), fault)
+    }
+
+    @MainActor
+    func testFirstSelectionKeepsIdlePlayerGeometryWhileItsLarderRowIsBusy() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        await model.waitForFixturePodcastInstallForTesting()
+        model.selectedNavigation = .larder
+        model.podcastQueueIDs = [episode.id]
+        let gate = WiltedMacCommandGate()
+        model.installPlaybackCommandHookForTesting { await gate.hold($0) }
+        defer { gate.release() }
+        func capture(_ phase: String) throws -> [CGFloat] {
+            try [CGFloat(800), 1100].map { width in
+                let view = WiltedMacRootView(model: model); let size = CGSize(width: width, height: 700)
+                let lines = try WiltedMacHeadless.recognizedLines(view, size: size)
+                let text = lines.map(\.text).joined(separator: " ")
+                XCTAssertFalse(text.contains("Opening"), "Opening feedback belongs to the clicked row's button")
+                let anchor = try XCTUnwrap(lines.first { $0.text == "Nothing is playing" })
+                let bitmap = try WiltedMacHeadless.render(view, size: size)
+                let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
+                attachment.name = "in-button-first-selection-root-\(Int(width))-\(phase)"; attachment.lifetime = .keepAlways; add(attachment)
+                return anchor.top
+            }
+        }
+        let larder = WiltedMacLarderView(model: model, paneMode: .side)
+        let larderSize = CGSize(width: 1100, height: 700)
+        XCTAssertEqual(WiltedMacModel.larderGroup(for: episode), .playable)
+        XCTAssertFalse(model.isEpisodeFinished(episode), "The visible row must render its Play now control")
+        XCTAssertTrue(model.larderUnfilteredEpisodes(in: .playable).contains { $0.id == episode.id })
+        let larderFrame = try WiltedMacHeadless.render(larder, size: larderSize)
+        let larderRowRect = try actualLarderRowCaptureRect(
+            larder, size: larderSize, bitmap: larderFrame, episode: episode)
+        func rowPixels() throws -> Data {
+            try actualLarderRowPixels(larder, size: larderSize, rect: larderRowRect)
+        }
+        let idleRow = try rowPixels()
+        let idle = try capture("idle")
+        gate.arm(); model.playLarderEpisode(episode); await gate.waitUntilHeld()
+        XCTAssertFalse(model.hasCurrentPlayback); XCTAssertEqual(backend.loadCount, 0)
+        XCTAssertEqual(model.playbackCommands.pending?.command.kind, .select)
+        XCTAssertEqual(model.playbackCommands.pending?.command.itemID, episode.id)
+        XCTAssertEqual(model.playbackCommands.pending?.usesInitiatingButtonFeedback, true)
+        XCTAssertNotEqual(try rowPixels(), idleRow, "The clicked first-selection row must still render its spinner")
+        for (before, held) in zip(idle, try capture("opening")) { XCTAssertEqual(before, held, accuracy: 0.004) }
+        model.handleRemoteCommand(.pause); gate.release(); await model.waitForPlaybackOperationForTesting()
+        XCTAssertNil(model.playbackCommands.pending); XCTAssertEqual(backend.loadCount, 0)
+        for (before, cancelled) in zip(idle, try capture("cancelled")) { XCTAssertEqual(before, cancelled, accuracy: 0.004) }
+    }
+
     // MARK: Helpers
+
+    @MainActor
+    private func actualLarderRowCaptureRect(
+        _ view: WiltedMacLarderView, size: CGSize, bitmap: NSBitmapImageRep, episode: WiltedMacEpisode
+    ) throws -> CGRect {
+        let image = try XCTUnwrap(bitmap.cgImage)
+        let lines = try WiltedMacHeadless.recognizedLines(view, size: size)
+        let title = try XCTUnwrap(
+            lines.first { $0.text.contains(episode.title) },
+            "The installed Larder row must remain visible in the pixel capture; recognized: "
+                + lines.map(\.text).joined(separator: " | ")
+        )
+        let imageBounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        // recognizedLines uses a 24pt margin around a 2× view render. Translate its normalized
+        // title top back to the 1× Larder image, then keep the surrounding row and trailing controls.
+        let titleTop = title.top * size.height - 24
+        let rowTop = max(0, titleTop - 36)
+        let rowBottom = min(CGFloat(image.height), titleTop + 51)
+        return CGRect(x: 0, y: rowTop, width: CGFloat(image.width), height: rowBottom - rowTop)
+            .integral.intersection(imageBounds)
+    }
+
+    @MainActor
+    private func actualLarderRowPixels(
+        _ view: WiltedMacLarderView, size: CGSize, rect: CGRect
+    ) throws -> Data {
+        let bitmap = try WiltedMacHeadless.render(view, size: size)
+        let image = try XCTUnwrap(bitmap.cgImage?.cropping(to: rect))
+        let row = NSBitmapImageRep(cgImage: image)
+        // The 28pt Play now slot follows the 58pt trailing actions, one 8pt gap,
+        // and the view's 16pt destination and card insets.
+        let playSlot = NSRect(
+            x: CGFloat(row.pixelsWide - 126), y: 0, width: 28, height: CGFloat(row.pixelsHigh)
+        )
+        XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: row, region: playSlot), 4,
+                             "The visible Play now control must be painted in the captured row")
+        return Data(bytes: try XCTUnwrap(row.bitmapData), count: row.bytesPerRow * row.pixelsHigh)
+    }
 
     @MainActor
     private func waitFor(_ condition: @MainActor () -> Bool) async throws {

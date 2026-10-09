@@ -32,6 +32,63 @@ private actor HeldCall {
 /// Task 5.0: the library publisher sends only for the persisted, hashed owner of this library.
 @MainActor
 final class WiltedMacLibraryAccountTests: XCTestCase {
+    func testPublicationOwnerRequiresCurrentLaunchApprovalNotOnlyStoredBinding() async throws {
+        let fixture = WiltedMacLibraryAccountFixture(); let owner = token(ownerName)
+        let account = WiltedMacLibraryAccountController(source: fixture.source,
+            persistence: .init(load: { try LocalLibraryAccountBinding(state: .bound, ownerToken: owner) }, save: { _ in }),
+            isLibraryEmpty: { true })
+        account.start(); try await eventually("restored awaiting identity") { account.binding != nil }
+        XCTAssertNil(account.approvedPublicationOwner)
+        fixture.signIn(recordName: ownerName); try await eventually("current owner approved") { account.status == .active }
+        XCTAssertEqual(account.approvedPublicationOwner, owner); await account.close()
+    }
+    func testPublicationOwnerClosesImmediatelyOnHeldOrStoppedAccount() async throws {
+        let fixture = WiltedMacLibraryAccountFixture(); let owner = token(ownerName)
+        let account = WiltedMacLibraryAccountController(source: fixture.source,
+            persistence: .init(load: { try LocalLibraryAccountBinding(state: .bound, ownerToken: owner) }, save: { _ in }),
+            isLibraryEmpty: { true })
+        account.start(); fixture.signIn(recordName: ownerName)
+        try await eventually("approved") { account.status == .active }; XCTAssertEqual(account.approvedPublicationOwner, owner)
+        fixture.emit(.quarantineRequired(.signOut)); try await eventually("held") { !account.gate.isOpen }
+        XCTAssertNil(account.approvedPublicationOwner); await account.close(); XCTAssertNil(account.approvedPublicationOwner)
+    }
+
+    func testPublicationReadAndWriteRespectAccountGateAndForwardMetadata() async throws {
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let inner = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "owner")
+        let gate = WiltedMacLibraryAccountGate(open: false)
+        let wrapped = WiltedMacAccountGatedLibraryTransport(inner: inner, gate: gate)
+        let value = try LibraryPublication(id: "p", publishedAt: Date(timeIntervalSince1970: 1), writerDeviceID: "mac")
+        do { try await wrapped.publishPublication(value); XCTFail("closed gate published") }
+        catch { XCTAssertEqual(error as? WiltedMacLibraryAccountError, .notApproved) }
+        do { _ = try await wrapped.readPublication(); XCTFail("closed gate read") }
+        catch { XCTAssertEqual(error as? WiltedMacLibraryAccountError, .notApproved) }
+        gate.reopen()
+        try await wrapped.publishPublication(value)
+        let seen = try await wrapped.readPublication()
+        let batch = try await wrapped.fetchChanges(since: nil)
+        XCTAssertEqual(seen, value)
+        XCTAssertEqual(batch.observedPublication, value)
+        XCTAssertEqual(batch.provenance?.ownerToken, "owner")
+    }
+
+    func testReceiptReadSuspendedAcrossCloseReopenIsSuperseded() async throws {
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let inner = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let gate = WiltedMacLibraryAccountGate(open: true)
+        let wrapped = WiltedMacAccountGatedLibraryTransport(inner: inner, gate: gate)
+        let value = try LibraryPublication(id: "p", publishedAt: Date(), writerDeviceID: "mac")
+        try await inner.publishPublication(value)
+        let held = HeldCall()
+        await inner.setAfterPublicationHook { await held.hold() }
+        let task = Task { try await wrapped.readPublication() }
+        await held.waitUntilHeld()
+        gate.close()
+        gate.reopen()
+        await held.release()
+        do { _ = try await task.value; XCTFail("old receipt returned across reopen") }
+        catch { XCTAssertEqual(error as? LibraryTransportError, .superseded) }
+    }
     private let flagOn = ["WILTED_LIBRARY_SYNC": "1"]
     private let ownerName = "_a71c-raw-icloud-owner-record"
     private let otherName = "_b82d-raw-icloud-other-record"
@@ -39,9 +96,11 @@ final class WiltedMacLibraryAccountTests: XCTestCase {
     private let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
 
     private func launch(_ directory: URL) async throws -> (WiltedMacModel, LocalLibraryStore) {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        preferences.set("mac-account", forKey: WiltedMacModel.libraryDeviceIDPreferenceKey)
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
-            storeBootstrap: { try LocalLibraryStore(url: $0) }, preferences: WiltedMacTestPreferences.ephemeral())
+            storeBootstrap: { try LocalLibraryStore(url: $0) }, preferences: preferences)
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
         return (model, try XCTUnwrap(model.store))

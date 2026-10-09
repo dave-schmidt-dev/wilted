@@ -26,6 +26,7 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
     case outcomeIndex = "IntentOutcomeIndexRecord"
     /// The Mac's lifetime statistics (`LibraryStats`); one record, only the library writer writes it.
     case stats = "LibraryStatsRecord"
+    case publication = "LibraryPublicationRecord"
 
     /// Record-name prefix. Names for device-written records embed the device id, so each
     /// record has exactly one writer and two devices can never collide on a name.
@@ -44,6 +45,7 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
         case .outcome: "outcome:"
         case .outcomeIndex: "outcomeindex:"
         case .stats: "stats:"
+        case .publication: "publication:"
         }
     }
 }
@@ -58,6 +60,7 @@ public enum LibraryRecordMapperError: Error, Equatable, Sendable {
     case identityMismatch(String)
     /// A removal-only change needs the server's current entry to apply the state to.
     case missingBaseEntry(String)
+    case missingVersion
 }
 
 /// One decoded fetched record. `skipped` covers record types this client does not know;
@@ -72,6 +75,7 @@ public enum LibraryDecodedRecord: Sendable, Equatable {
     case outcome(IntentOutcome)
     case outcomeIndex(IntentOutcomeIndex)
     case stats(LibraryStats)
+    case publication(LibraryPublication)
     case skipped(recordType: String)
 }
 
@@ -169,6 +173,11 @@ public struct LibraryRecordMapper: Sendable {
         return CKRecord.ID(recordName: name, zoneID: zoneID)
     }
 
+    /// Dedicated writer receipt, distinct from content changes and statistics.
+    public var publicationRecordID: CKRecord.ID {
+        CKRecord.ID(recordName: "publication:library", zoneID: zoneID)
+    }
+
     // MARK: Encoding
 
     /// Builds the operation for a pending change. `existing` is the last known server record
@@ -219,6 +228,10 @@ public struct LibraryRecordMapper: Sendable {
 
     public func record(stats: LibraryStats, existing: CKRecord? = nil) throws -> CKRecord {
         try save(.stats, statsRecordID, stats, existing)
+    }
+
+    public func record(publication: LibraryPublication, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.publication, publicationRecordID, publication, existing)
     }
 
     private func save<Value: Encodable>(_ type: LibraryRecordType, _ id: CKRecord.ID, _ value: Value, _ existing: CKRecord?) throws -> CKRecord {
@@ -296,6 +309,10 @@ public struct LibraryRecordMapper: Sendable {
                 let value = try Self.decoder.decode(IntentOutcomeIndex.self, from: data)
                 try expect(name, recordID(outcomeIndexFor: value.deviceID))
                 return .outcomeIndex(value)
+            case .publication:
+                let value = try Self.decoder.decode(LibraryPublication.self, from: data)
+                try expect(name, publicationRecordID)
+                return .publication(value)
             case .stats:
                 let value = try Self.decoder.decode(LibraryStats.self, from: data)
                 try expect(name, statsRecordID)
@@ -357,6 +374,8 @@ struct LibraryFetchAccumulator {
     var playback: [String: (channel: PlaybackChannel, observed: ObservedPlayback)] = [:]
     var intents: [String: LibraryIntent] = [:]
     var state: Data?
+    var publication: LibraryPublication?
+    var error: (any Error)?
 }
 struct LibrarySendAccumulator {
     var saved: [String: UInt64] = [:]
@@ -387,7 +406,8 @@ public extension CloudKitLibraryTransport {
     /// `WiltedLibraryZone` (not the legacy `WiltedZone` the shared factory defaults to).
     nonisolated static func makeLiveFactory(containerIdentifier: String, outbox: CloudKitLibraryOutbox,
                                             mapper: LibraryRecordMapper = LibraryRecordMapper()) -> CloudKitEngineDriverFactory {
-        let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
+        let container = CKContainer(identifier: containerIdentifier)
+        let database = container.privateCloudDatabase
         return { stateData in
             let serialization: CKSyncEngine.State.Serialization?
             if let stateData {
@@ -399,7 +419,10 @@ public extension CloudKitLibraryTransport {
             return LiveCloudKitEngineDriver(
                 database: database, stateSerialization: serialization,
                 zoneBootstrap: LiveCloudKitZoneBootstrap(database: database, zoneID: mapper.zoneID),
-                recordProvider: { outbox.record(for: $0) })
+                recordProvider: { outbox.record(for: $0) }, currentAccountResolver: {
+                    let recordID = try await container.userRecordID()
+                    return CloudKitAccountIdentity(currentOwnerToken: CloudKitAccountIdentity.token(for: recordID.recordName))
+                })
         }
     }
 }

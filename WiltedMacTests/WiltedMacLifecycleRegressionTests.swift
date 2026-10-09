@@ -220,7 +220,6 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
 
     private func makeRig(_ name: String, middle: Middle, queued: [Int] = [19, 20, 21]) async throws -> Rig {
         let directory = wiltedTemporaryDirectory(name)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/\(name).xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)

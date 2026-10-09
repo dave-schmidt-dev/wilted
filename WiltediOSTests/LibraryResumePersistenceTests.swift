@@ -25,13 +25,21 @@ final class LibraryResumePersistenceTests: XCTestCase {
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         positionsURL = scratch.appendingPathComponent("state/own-positions.json")
         cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
+        let entry = try LibraryEntry(id: entryID, kind: .podcastEpisode, sourceID: entryID,
+            title: "Episode", summary: "", publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 3_600)
+        _ = try await mac.push(changes: [
+            PendingLibraryChange(localSeq: 1, change: .entry(entry), baseVersion: 0),
+            PendingLibraryChange(localSeq: 2, change: .slot(try QueueSlot(entryID: entryID, sortKey: 0)), baseVersion: 0)])
+        let phone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
+        try await PreparedMediaFixture.bootstrap(FileLibraryStore(url: scratch.appendingPathComponent("library-state.json")), transport: phone)
         let file = scratch.appendingPathComponent("incoming.mp4")
         try payload.write(to: file)
         let hash = MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        let offer = try LibraryMediaOffer(
+        let offer = try PreparedMediaFixture.certified(LibraryMediaOffer(
             entryID: entryID, revisionID: revisionID, contentHash: hash, byteCount: Int64(payload.count),
-            mediaType: "audio/mp4", durationSeconds: 3_600)
-        _ = try await cache.adopt(verifiedFile: file, for: offer)
+            mediaType: "audio/mp4", durationSeconds: 3_600))
+        _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer, owner: "fixture-owner")
     }
 
     override func tearDown() async throws {
@@ -61,6 +69,7 @@ final class LibraryResumePersistenceTests: XCTestCase {
     private struct GatedTransport: LibraryTransport {
         let inner: InMemoryLibraryTransport
         let gate: NetworkGate
+        func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
         func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
         func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
         func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
@@ -142,12 +151,14 @@ final class LibraryResumePersistenceTests: XCTestCase {
 
     /// Holds exactly the first cache lookup so a local save can be overtaken deterministically.
     private actor GatedCache: LibraryMediaCache {
-        let entries: [ItemID: CachedMedia]
+        let base: FileMediaCache
         private var first = true
         private var pending: CheckedContinuation<Void, Never>?
         private var arrival: CheckedContinuation<Void, Never>?
-        init(entries: [ItemID: CachedMedia]) { self.entries = entries }
+        init(base: FileMediaCache) { self.base = base }
+        func storedAudioByteCounts() async -> [ItemID: Int64] { await base.storedAudioByteCounts() }
         func cachedEntries() async -> [ItemID: CachedMedia] {
+            let entries = await base.cachedEntries()
             if first {
                 first = false
                 await withCheckedContinuation { continuation in
@@ -162,11 +173,29 @@ final class LibraryResumePersistenceTests: XCTestCase {
             if pending == nil { await withCheckedContinuation { arrival = $0 } }
         }
         func release() { pending?.resume(); pending = nil }
-        func cachedFile(for offer: LibraryMediaOffer) async -> URL? { entries[offer.entryID]?.url }
-        func adopt(verifiedFile: URL, for offer: LibraryMediaOffer) async throws -> URL { verifiedFile }
-        func remove(entryID: ItemID) async throws {}
-        func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? { nil }
-        func storeTranscript(_ transcript: LibraryTranscript) async {}
+        func bindOwner(ownerToken: String?, libraryScope: String, held: Bool) async throws {
+            try await base.bindOwner(ownerToken: ownerToken, libraryScope: libraryScope, held: held)
+        }
+        func admission(entryID: ItemID, ownerToken: String, libraryScope: String, transportGeneration: UInt64) async -> MediaCacheAdmission? {
+            await base.admission(entryID: entryID, ownerToken: ownerToken, libraryScope: libraryScope, transportGeneration: transportGeneration)
+        }
+        func revokePreparation(entryID: ItemID) async throws { try await base.revokePreparation(entryID: entryID) }
+        func verifies(_ cached: CachedMedia) async -> Bool { await base.verifies(cached) }
+        func permits(_ admission: MediaCacheAdmission, for offer: LibraryMediaOffer) async -> Bool {
+            await base.permits(admission, for: offer)
+        }
+        func cachedFile(for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async -> URL? {
+            await base.cachedFile(for: offer, admission: admission)
+        }
+        func adopt(verifiedFile: URL, for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async throws -> URL {
+            try await base.adopt(verifiedFile: verifiedFile, for: offer, admission: admission)
+        }
+        func remove(entryID: ItemID) async throws { try await base.remove(entryID: entryID) }
+        func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? {
+            await base.cachedTranscript(entryID: entryID, revisionID: revisionID)
+        }
+        func storeTranscript(_ transcript: LibraryTranscript) async { await base.storeTranscript(transcript) }
+
     }
 
     private func makeModel(transport: any LibraryTransport, mediaCache: (any LibraryMediaCache)? = nil) -> LibraryAppModel {
@@ -174,7 +203,8 @@ final class LibraryResumePersistenceTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return LibraryAppModel(
-            transport: transport, deviceID: "phone", mediaCache: mediaCache ?? cache,
+            transport: transport, store: FileLibraryStore(url: scratch.appendingPathComponent("library-state.json")),
+            deviceID: "phone", mediaCache: mediaCache ?? cache,
             handoffTiming: LibraryHandoffTiming(
                 observeInterval: SyncCadence.phoneObserveInterval, sleep: { _ in try await Task.sleep(for: .seconds(3_600)) },
                 settleSleep: { _ in }),
@@ -219,9 +249,23 @@ final class LibraryResumePersistenceTests: XCTestCase {
 
     func testDifferentEpisodeDoesNotDiscardPendingLocalSave() async throws {
         let secondID = try ItemID(rawValue: "item-b")
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
+        let second = try LibraryEntry(id: secondID, kind: .podcastEpisode, sourceID: secondID,
+            title: "Episode", summary: "", publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 3_600)
+        _ = try await mac.push(changes: [
+            PendingLibraryChange(localSeq: 3, change: .entry(second), baseVersion: 0),
+            PendingLibraryChange(localSeq: 4, change: .slot(try QueueSlot(entryID: secondID, sortKey: 1)), baseVersion: 0)])
+        let phone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
+        try await PreparedMediaFixture.bootstrap(FileLibraryStore(url: scratch.appendingPathComponent("library-state.json")), transport: phone)
+        let secondFile = scratch.appendingPathComponent("incoming-second.mp4")
+        try payload.write(to: secondFile)
+        let secondOffer = try PreparedMediaFixture.certified(LibraryMediaOffer(
+            entryID: secondID, revisionID: revisionID, contentHash: PreparedMediaFixture.hash(payload),
+            byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 3_600))
+        _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: secondFile, for: secondOffer, owner: "fixture-owner")
         let cached = await cache.cachedEntries()
         let media = try XCTUnwrap(cached[entryID])
-        let gated = GatedCache(entries: [entryID: media, secondID: media])
+        let gated = GatedCache(base: cache)
         let model = makeModel(transport: UnavailableLibraryTransport(reason: "no signal"), mediaCache: gated)
         let (player, _) = makePlayer()
         // Wire only the local-save seam: unrelated player handoff tasks cannot consume the gate.
@@ -244,7 +288,7 @@ final class LibraryResumePersistenceTests: XCTestCase {
 
     func testNewerSameEpisodeSaveWins() async throws {
         let entries = await cache.cachedEntries()
-        let gated = GatedCache(entries: entries)
+        let gated = GatedCache(base: cache)
         let model = makeModel(transport: UnavailableLibraryTransport(reason: "no signal"), mediaCache: gated)
         let (player, _) = makePlayer()
         model.handoffState.player = player
@@ -260,7 +304,7 @@ final class LibraryResumePersistenceTests: XCTestCase {
     }
 
     func testAPauseBehindAHangingNetworkCallStillResumesAfterAColdLaunch() async throws {
-        let model = makeModel(transport: GatedTransport(inner: InMemoryLibraryTransport(deviceID: "phone", server: server), gate: gate))
+        let model = makeModel(transport: GatedTransport(inner: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), gate: gate))
         let (player, engine) = makePlayer()
         model.attachPlayer(player)
         player.start(try await loadedItem(), at: 0)
@@ -276,13 +320,13 @@ final class LibraryResumePersistenceTests: XCTestCase {
         XCTAssertEqual(relaunched.resumeStart(for: entryID, cachedRevision: revisionID), 1_234, "an offline cold launch resumes where it paused")
 
         // Back in signal, the server still holds the start of the session; it must not win.
-        let online = await coldLaunch(transport: InMemoryLibraryTransport(deviceID: "phone", server: server))
+        let online = await coldLaunch(transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"))
         await online.refresh()
         XCTAssertEqual(online.resumeStart(for: entryID, cachedRevision: revisionID), 1_234, "the saved position outranks the older server copy")
     }
 
     func testAKillDuringPlaybackLosesAtMostTheLastFewSeconds() async throws {
-        let model = makeModel(transport: GatedTransport(inner: InMemoryLibraryTransport(deviceID: "phone", server: server), gate: gate))
+        let model = makeModel(transport: GatedTransport(inner: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), gate: gate))
         let (player, engine) = makePlayer()
         model.attachPlayer(player)
         player.start(try await loadedItem(), at: 0)
@@ -299,7 +343,7 @@ final class LibraryResumePersistenceTests: XCTestCase {
     }
 
     func testEnteringTheBackgroundSavesThePlayingPositionBeforeAnyNetworkCall() async throws {
-        let model = makeModel(transport: GatedTransport(inner: InMemoryLibraryTransport(deviceID: "phone", server: server), gate: gate))
+        let model = makeModel(transport: GatedTransport(inner: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), gate: gate))
         let (player, engine) = makePlayer()
         model.attachPlayer(player)
         player.start(try await loadedItem(), at: 0)

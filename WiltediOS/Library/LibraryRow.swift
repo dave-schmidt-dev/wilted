@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import WiltedDomain
 import WiltedLibrary
 
@@ -155,5 +156,32 @@ enum LibraryRowBuilder {
         let state = observed.record.isPlaying ? "Playing" : "Paused"
         let position = LibraryClockFormat.duration(observed.record.positionSeconds)
         return "\(state) on Mac at \(position) (as of \(clock.clock(observed.serverModifiedAt)))"
+    }
+}
+
+/// One factual metadata line. Only the show yields space to the complete duration and date.
+struct LibraryRowMetadataView: View {
+    let row: LibraryRow
+    let namesShow: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if namesShow {
+                let show = row.showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                Text(show.isEmpty ? "Show unknown" : show)
+                    .lineLimit(1).truncationMode(.tail)
+                Text(" - ").fixedSize(horizontal: true, vertical: false)
+            }
+            Text(row.detailText(namesShow: false))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+        }
+        .wiltedFont(.utility)
+        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(row.detailText(namesShow: namesShow))
+        .accessibilityIdentifier("wilted-library-meta-\(row.id.rawValue)")
     }
 }

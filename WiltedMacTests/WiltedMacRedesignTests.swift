@@ -9,6 +9,47 @@ import WiltedDomain
 /// that the app accent is Wilted's leaf rather than the system blue.
 @MainActor
 final class WiltedMacRedesignTests: XCTestCase {
+    func testLarderHeaderTotalsFollowActualSidebarModeWithoutHidingSectionCounts() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        model.selectedNavigation = .larder
+        model.podcastQueueIDs = model.episodes.map(\.id)
+        let wide = WiltedMacShellLayout.fullSidebarMinimumWidth(scale: model.textScale) + 100
+        let rail = WiltedMacShellLayout.sidePaneMinimumWidth(scale: model.textScale) + 1
+        for (name, width, visible, summaryExpected) in [
+            ("full", wide, true, false), ("rail", rail, true, true), ("collapsed", wide, false, true)
+        ] {
+            model.isSidebarVisible = visible
+            let view = WiltedMacRootView(model: model)
+            let size = CGSize(width: width, height: 1_400)
+            let text = try WiltedMacHeadless.recognizedText(view, size: size).joined(separator: " ")
+            XCTAssertEqual(text.contains("Audio in Larder:"), summaryExpected, "\(name): \(text)")
+            XCTAssertEqual(text.contains("Ready:"), summaryExpected, "\(name): \(text)")
+            XCTAssertTrue(text.contains("Ready"), "section/standing total remains: \(text)")
+            if name == "full" {
+                XCTAssertTrue(text.localizedCaseInsensitiveContains("Needs preparation"), text)
+                XCTAssertTrue(text.localizedCaseInsensitiveContains("In Larder"), text)
+            }
+            XCTAssertFalse(text.contains("Playback follows Ready episodes"), text)
+            XCTAssertFalse(text.contains("downloaded and prepared, playable right now"), text)
+            try retainCopyEvidence(WiltedMacHeadless.render(view, size: size), name: "larder-\(name)-light")
+        }
+        let larder = WiltedMacLarderView(model: model, paneMode: .side)
+        let section = try XCTUnwrap(model.larderSections().first { $0.detail != nil })
+        let detail = try XCTUnwrap(section.detail)
+        let help = larder.sectionHelp(section, detail: detail)
+        let helpText = try WiltedMacHeadless.recognizedText(help, size: CGSize(width: 400, height: 240)).joined(separator: " ")
+        XCTAssertTrue(helpText.contains(section.title), helpText)
+        try retainCopyEvidence(WiltedMacHeadless.render(help, size: CGSize(width: 400, height: 240)), name: "larder-section-help-light")
+    }
+
+    private func retainCopyEvidence(_ bitmap: NSBitmapImageRep, name: String) throws {
+        let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+                                       uniformTypeIdentifier: "public.png")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     // MARK: Pane split
 
     func testPaneStaysInItsBandAndTheListTakesTheRest() {
@@ -96,7 +137,7 @@ final class WiltedMacRedesignTests: XCTestCase {
 
     /// Neither side area has a way to be hidden: the sidebar is a column of
     /// the root rather than a split-view column (which cannot change width at
-    /// run time, nor be kept from hiding), so there is no toggle to remove.
+    /// run time, nor be kept from hiding). The toggle collapses labels only.
     func testNothingCanHideTheRailOrThePane() throws {
         let views = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WiltedMac/Views")
@@ -104,6 +145,7 @@ final class WiltedMacRedesignTests: XCTestCase {
         let larder = try String(contentsOf: views.appendingPathComponent("WiltedMacLarderView.swift"), encoding: .utf8)
         XCTAssertFalse(root.contains("NavigationSplitView("))
         XCTAssertTrue(root.contains(".frame(width: sidebarColumnWidth)"))
+        XCTAssertFalse(root.contains("shell.sidebar != .hidden"), "collapse never removes navigation")
         XCTAssertTrue(root.contains(".frame(minWidth: WiltedMacShellLayout.windowMinimumWidth("))
         XCTAssertFalse(larder.contains("Hide Now Playing"))
         XCTAssertTrue(larder.contains("paneMode: WiltedMacPaneMode"))

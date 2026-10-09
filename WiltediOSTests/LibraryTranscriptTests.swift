@@ -11,7 +11,7 @@ import XCTest
 final class LibraryTranscriptTests: XCTestCase {
     private var scratch: URL!
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
-    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
     private let suite = "library-transcript-tests"
     private var defaults: UserDefaults!
 
@@ -44,17 +44,17 @@ final class LibraryTranscriptTests: XCTestCase {
     private func cacheEpisode(_ cache: FileMediaCache, _ raw: String, revision rev: String = "rev-a") async throws {
         let data = Data(repeating: 7, count: 500)
         let hash = MediaHash.prefix + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let offer = try LibraryMediaOffer(
+        let offer = try PreparedMediaFixture.certified(LibraryMediaOffer(
             entryID: id(raw), revisionID: revision(rev), contentHash: hash, byteCount: 500,
-            mediaType: "audio/mp4", durationSeconds: 60)
+            mediaType: "audio/mp4", durationSeconds: 60))
         let file = scratch.appendingPathComponent(UUID().uuidString)
         try data.write(to: file)
-        _ = try await cache.adopt(verifiedFile: file, for: offer)
+        _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer, owner: "fixture-owner")
     }
 
     private func makeModel(cache: FileMediaCache) -> LibraryAppModel {
         LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), store: FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json")), deviceID: "phone",
             mediaCache: cache, preferences: defaults, timeZone: TimeZone(identifier: "UTC")!)
     }
 
@@ -191,7 +191,7 @@ final class LibraryTranscriptTests: XCTestCase {
         try await cacheEpisode(cache, "a") // downloaded before transcripts shipped
         let clock = TranscriptTestClock()
         let model = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), store: FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json")), deviceID: "phone",
             mediaCache: cache, preferences: defaults, now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
 
         await model.prepareTranscript(entryID: id("a"))

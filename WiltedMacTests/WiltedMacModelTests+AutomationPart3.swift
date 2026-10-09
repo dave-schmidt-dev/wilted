@@ -67,7 +67,6 @@ extension WiltedMacModelTests {
     /// A bootstrapped model with one ready episode already playing.
     private func playingModel(_ name: String) async throws -> WiltedMacModel {
         let directory = temporaryDirectory(name)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://example.test/\(name).xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://example.test/\(name).mp3"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -109,7 +108,6 @@ extension WiltedMacModelTests {
     func testTheLastAutomaticRefreshTimeSurvivesRelaunch() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-last-refresh")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         XCTAssertNil(model.lastAutomationRefreshAt, "a first launch has nothing to space itself from")
@@ -136,7 +134,6 @@ extension WiltedMacModelTests {
     func testAutomationSettingsRoundTripThroughInjectedPreferences() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-round-trip")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let settings = WiltedAutomationSettings(
             refreshPolicy: .whileOpen(everyHours: 12),
             downloadPolicy: .newestThreePerEnabledFeed,
@@ -227,7 +224,6 @@ extension WiltedMacModelTests {
     func testEveryAutomationControlValueMapsAndPersists() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-control-values")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let window = try offPeakWindow()
 
         let refreshPolicies: [WiltedAutomationRefreshPolicy] = [
@@ -312,7 +308,6 @@ extension WiltedMacModelTests {
     func testAutomationSettingsSurviveRelaunch() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-relaunch")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let settings = WiltedAutomationSettings(
             refreshPolicy: .onLaunch,
             downloadPolicy: .allNewlyAdmittedUpToTwenty,
@@ -331,7 +326,6 @@ extension WiltedMacModelTests {
     func testCorruptAutomationSettingsFallClosedToDefaults() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-corrupt")
-        defer { try? FileManager.default.removeItem(at: directory) }
         preferences.set(Data("not settings data".utf8), forKey: WiltedMacModel.automationSettingsPreferenceKey)
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
@@ -342,7 +336,6 @@ extension WiltedMacModelTests {
     func testInvalidAutomationSettingsValuesFallClosedToDefaults() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-invalid")
-        defer { try? FileManager.default.removeItem(at: directory) }
         preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)
         preferences.set(1.5, forKey: WiltedMacModel.playbackRatePreferenceKey)
         let invalidPayloads = [
@@ -366,7 +359,6 @@ extension WiltedMacModelTests {
     func testAbsentAutomationSettingsUseCurrentDefaults() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-absent")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
 
@@ -377,7 +369,6 @@ extension WiltedMacModelTests {
     func testAutomationSettingsDoNotDisturbLegacyPreferenceKeys() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-legacy")
-        defer { try? FileManager.default.removeItem(at: directory) }
         preferences.set(WiltedMacLibraryOrder.oldest.rawValue, forKey: WiltedMacModel.libraryOrderPreferenceKey)
         preferences.set(1.5, forKey: WiltedMacModel.playbackRatePreferenceKey)
 

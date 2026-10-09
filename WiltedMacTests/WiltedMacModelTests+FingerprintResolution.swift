@@ -48,7 +48,6 @@ extension WiltedMacModelTests {
 
     func testTheReadoutNamesFingerprintingWhileResolutionIsStillInFlight() async throws {
         let directory = temporaryDirectory("fingerprint-in-flight")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let released = FingerprintGate()
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
@@ -71,7 +70,6 @@ extension WiltedMacModelTests {
 
     func testBootstrapAwaitsAResolvedFingerprintBeforeInvalidating() async throws {
         let directory = temporaryDirectory("fingerprint-await")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let released = FingerprintGate()
         let invalidated = FingerprintRecorder()
         let model = WiltedMacModel(
@@ -98,7 +96,6 @@ extension WiltedMacModelTests {
 
     func testAFailedResolutionSkipsInvalidationAndNeverPassesTheSentinel() async throws {
         let directory = temporaryDirectory("fingerprint-failed")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let invalidated = FingerprintRecorder()
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
@@ -188,7 +185,6 @@ extension WiltedMacModelTests {
     /// in place, the reversible exclusion the Larder mockup names.
     func testSkippingAStartedEpisodeMarksItPlayedAndKeepsItsMedia() async throws {
         let fixture = try await skipFixture("started")
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let episode = try XCTUnwrap(fixture.model.episodes.first { $0.id == fixture.episodeID.rawValue })
         fixture.model.installPlaybackStateForTesting(
             episode: episode, isPlaying: false, position: 120, duration: 12
@@ -213,7 +209,6 @@ extension WiltedMacModelTests {
     /// that completion and makes the same row active again without a feed read.
     func testCompletingLarderRowRetiresItFromFeedsAndUndoRestoresIt() async throws {
         let fixture = try await skipFixture("retired-feeds")
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let episode = try XCTUnwrap(fixture.model.episodes.first { $0.id == fixture.episodeID.rawValue })
         fixture.model.installPlaybackStateForTesting(
             episode: episode, isPlaying: false, position: 120, duration: 12
@@ -269,7 +264,6 @@ extension WiltedMacModelTests {
     /// disk; no feed is reachable, so a network-dependent restore would fail.
     func testUndoSkipRestoresPlaybackFromLocalMediaWithoutNetwork() async throws {
         let fixture = try await skipFixture("undo")
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let episode = try XCTUnwrap(fixture.model.episodes.first { $0.id == fixture.episodeID.rawValue })
         fixture.model.installPlaybackStateForTesting(
             episode: episode, isPlaying: false, position: 120, duration: 12
@@ -306,7 +300,6 @@ extension WiltedMacModelTests {
     /// and the row returns to the set Feeds renders.
     func testASkippedFeedEpisodeRestoresToFeedsFromFeeds() async throws {
         let fixture = try await skipFixture("feeds-restore")
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let store = try LocalLibraryStore(url: fixture.directory.appendingPathComponent("library.sqlite"))
         let episode = try XCTUnwrap(fixture.model.episodes.first { $0.id == fixture.episodeID.rawValue })
         XCTAssertTrue(fixture.model.feedsEpisodes.contains { $0.id == episode.id })
@@ -358,7 +351,6 @@ extension WiltedMacModelTests {
     /// restored through its own surface control.
     func testRetiredAndDismissedEpisodesBothRestoreThroughTheSameStoreOperation() async throws {
         let directory = temporaryDirectory("unified-restore")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let libraryURL = directory.appendingPathComponent("library.sqlite")
         let store = try LocalLibraryStore(url: libraryURL)
         let feedURL = URL(string: "https://podcasts.example.test/unified-restore.xml")!

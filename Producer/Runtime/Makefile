@@ -5,14 +5,15 @@
 # hidden .pth files — which breaks the editable install. See HISTORY.md.
 export UV_PROJECT_ENVIRONMENT := $(HOME)/.venvs/wilted
 
+# Static checkers reuse installed tools without loading unrelated runtime editables.
 lint:
-	uv run --group dev ruff check .
+	"$(UV_PROJECT_ENVIRONMENT)/bin/ruff" check .
 
 # Dead-code detection over src, baselined by vulture_allowlist.py (see the file
 # header and pyproject [tool.vulture]). Fails only on NEW dead code past the
 # baseline. Also runs as a pre-commit hook.
 deadcode:
-	uv run --group dev vulture
+	"$(UV_PROJECT_ENVIRONMENT)/bin/python" -B -S -c 'import runpy,sys,sysconfig; env=sys.argv[1]; sys.path.insert(0,sysconfig.get_path("purelib",vars={"base":env,"platbase":env})); sys.argv=["vulture",*sys.argv[2:]]; runpy.run_module("vulture",run_name="__main__")' "$(UV_PROJECT_ENVIRONMENT)"
 
 test:
 	uv run --group dev python ../../scripts/run-bounded.py --timeout-seconds "$${WILTED_TEST_TIMEOUT_SECONDS:-1800}" -- pytest

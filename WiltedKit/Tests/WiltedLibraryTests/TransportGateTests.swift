@@ -59,7 +59,89 @@ final class TransportPressureClassifierTests: XCTestCase {
     }
 }
 
+/// Uses the same concrete actor forwarding shape as the phone's scripted media transport.
+private struct ConcreteOwnerForwardingTransport: LibraryTransport {
+    let inner: InMemoryLibraryTransport
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
+    func send(intent: LibraryIntent) async throws { try await inner.send(intent: intent) }
+    func listIntents() async throws -> [LibraryIntent] { try await inner.listIntents() }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws { try await inner.publish(record, as: channel) }
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { try await inner.fetchDeviceRecords() }
+    func commitFetchedState(_ token: LibraryChangeToken?) async throws { try await inner.commitFetchedState(token) }
+    func commitSentState(_ token: LibraryChangeToken?) async throws { try await inner.commitSentState(token) }
+}
+
 final class TransportGateTests: XCTestCase {
+    func testConcreteOwnerForwardingPreservesIdentityAndInvalidationGeneration() async {
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let inner = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "configured-owner")
+        let forwarding = ConcreteOwnerForwardingTransport(inner: inner)
+        let wrapped = ThrottledLibraryTransport(wrapping: forwarding, gate: TransportGate())
+        let paths: [(String, any LibraryTransport)] = [("actor existential", inner), ("forwarding existential", forwarding), ("throttled wrapper", wrapped)]
+        let concreteOwner = await inner.verifiedOwnerToken()
+        let concreteGeneration = await inner.operationGeneration()
+        let forwardedOwner = await forwarding.verifiedOwnerToken()
+        let forwardedGeneration = await forwarding.operationGeneration()
+        XCTAssertEqual(concreteOwner, "configured-owner", "Concrete actor must read its configured owner")
+        XCTAssertEqual(concreteGeneration, 0)
+        XCTAssertEqual(forwardedOwner, "configured-owner", "Concrete forwarding must not select the nil protocol default")
+        XCTAssertEqual(forwardedGeneration, 0)
+        for (name, transport) in paths {
+            let owner = await transport.verifiedOwnerToken()
+            let generation = await transport.operationGeneration()
+            XCTAssertEqual(owner, "configured-owner", name)
+            XCTAssertEqual(generation, 0, name)
+        }
+        await inner.invalidateOperations()
+        let invalidatedOwner = await inner.verifiedOwnerToken()
+        let invalidatedGeneration = await inner.operationGeneration()
+        let invalidatedForwardedOwner = await forwarding.verifiedOwnerToken()
+        let invalidatedForwardedGeneration = await forwarding.operationGeneration()
+        XCTAssertNil(invalidatedOwner)
+        XCTAssertEqual(invalidatedGeneration, 1, "Concrete actor must expose the actual invalidation generation")
+        XCTAssertNil(invalidatedForwardedOwner)
+        XCTAssertEqual(invalidatedForwardedGeneration, 1, "Forwarding must not select the zero protocol default")
+        for (name, transport) in paths {
+            let owner = await transport.verifiedOwnerToken()
+            let generation = await transport.operationGeneration()
+            XCTAssertNil(owner, name)
+            XCTAssertEqual(generation, 1, name)
+        }
+    }
+
+    func testPublicationMethodsForwardReceiptAndBatchProvenance() async throws {
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let inner = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "owner")
+        let wrapped = ThrottledLibraryTransport(wrapping: inner, gate: TransportGate())
+        let value = try LibraryPublication(id: "p", publishedAt: Date(timeIntervalSince1970: 1), writerDeviceID: "mac")
+        try await wrapped.publishPublication(value)
+        let seen = try await wrapped.readPublication()
+        let batch = try await wrapped.fetchChanges(since: nil)
+        XCTAssertEqual(seen, value)
+        XCTAssertEqual(batch.observedPublication, value)
+        XCTAssertEqual(batch.provenance?.ownerToken, "owner")
+        let owner = await wrapped.verifiedOwnerToken()
+        XCTAssertEqual(owner, "owner")
+    }
+
+    func testPressureGateBlocksPublicationReadAndWriteBeforeReachingServer() async throws {
+        let clock = TestClock()
+        let gate = gate(clock)
+        _ = await attempt(gate, calls: Counter(), failing: limited)
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let inner = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let wrapped = ThrottledLibraryTransport(wrapping: inner, gate: gate)
+        let value = try LibraryPublication(id: "p", publishedAt: Date(), writerDeviceID: "mac")
+        do { try await wrapped.publishPublication(value); XCTFail("closed gate published") }
+        catch { XCTAssertTrue(error is TransportThrottled) }
+        do { _ = try await wrapped.readPublication(); XCTFail("closed gate read") }
+        catch { XCTAssertTrue(error is TransportThrottled) }
+        let stored = try await inner.readPublication()
+        XCTAssertNil(stored)
+    }
     private let limited = FakeCloudKitError.cloudKit(code: 7, message: "throttled. Retry after 1.5 seconds.")
 
     private func gate(_ clock: TestClock, log: ChangeLog = ChangeLog()) -> TransportGate {

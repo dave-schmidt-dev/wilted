@@ -18,7 +18,16 @@ struct WiltedMacLifetimeStatisticsCard: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-lifetime-statistics")
+        .overlay(alignment: .topTrailing) {
+            WiltedMacHelpButton(content: statisticsHelp, identifier: "wilted-statistics-help")
+                .padding(WiltedTheme.Spacing.medium)
+        }
         .task { await model.refreshLifetimeStatistics() }
+    }
+
+    var statisticsHelp: WiltedMacHelpContent {
+        WiltedMacHelpContent(title: "Lifetime statistics", text:
+            WiltedMacStatisticsCopy.empty + " Earlier listening was not measured.")
     }
 
     /// Every state but `ready` shows no totals: a zero would claim nothing was
@@ -45,31 +54,31 @@ struct WiltedMacLifetimeStatisticsCard: View {
         let measured = summary.measured
         WiltedSettingsRow(
             WiltedScreenCopy.audioProcessed,
-            value: WiltedDuration.spoken(legacy.audioProcessedSeconds),
+            value: WiltedMacEpisodePresentation.durationLabel(legacy.audioProcessedSeconds),
             identifier: WiltedScreenCopy.audioProcessedIdentifier
         )
         Divider()
         WiltedSettingsRow(
             WiltedScreenCopy.speechGenerated,
-            value: WiltedDuration.spoken(legacy.speechGeneratedSeconds),
+            value: WiltedMacEpisodePresentation.durationLabel(legacy.speechGeneratedSeconds),
             identifier: WiltedScreenCopy.speechGeneratedIdentifier
         )
         Divider()
         WiltedSettingsRow(
             WiltedScreenCopy.confirmedAdTimeRemoved,
-            value: WiltedDuration.spoken(legacy.confirmedAdTimeRemovedSeconds),
+            value: WiltedMacEpisodePresentation.durationLabel(legacy.confirmedAdTimeRemovedSeconds),
             identifier: WiltedScreenCopy.confirmedAdTimeRemovedIdentifier
         )
         Divider()
         WiltedSettingsRow(
             WiltedScreenCopy.fasterPlaybackTimeSaved,
-            value: WiltedDuration.spoken(legacy.fasterPlaybackTimeSavedSeconds),
+            value: WiltedMacEpisodePresentation.durationLabel(legacy.fasterPlaybackTimeSavedSeconds),
             identifier: WiltedScreenCopy.fasterPlaybackTimeSavedIdentifier
         )
         Divider()
         WiltedSettingsRow(
             WiltedMacStatisticsCopy.playedTime,
-            value: WiltedMacStatisticsCopy.minutes(milliseconds: measured.playedMilliseconds),
+            value: WiltedMacEpisodePresentation.durationLabel(Double(max(0, measured.playedMilliseconds) / 1_000)),
             identifier: WiltedMacStatisticsCopy.playedTimeIdentifier
         )
         Divider()
@@ -81,15 +90,16 @@ struct WiltedMacLifetimeStatisticsCard: View {
         Divider()
         WiltedSettingsRow(
             WiltedMacStatisticsCopy.manuallySkipped,
-            value: WiltedMacStatisticsCopy.minutes(milliseconds: measured.manuallySkippedMilliseconds),
+            value: WiltedMacEpisodePresentation.durationLabel(Double(max(0, measured.manuallySkippedMilliseconds) / 1_000)),
             identifier: WiltedMacStatisticsCopy.manuallySkippedIdentifier
         )
         Divider()
         if WiltedMacStatisticsCopy.isEmpty(summary) {
-            statisticsNote(WiltedMacStatisticsCopy.empty, identifier: WiltedMacStatisticsCopy.statusIdentifier)
+            statisticsNote("Nothing measured yet.", identifier: WiltedMacStatisticsCopy.statusIdentifier)
         }
         statisticsNote(
-            WiltedMacStatisticsCopy.trackingStart(summary.trackingStartedAt),
+            WiltedMacStatisticsCopy.trackingStart(summary.trackingStartedAt)
+                .replacingOccurrences(of: " Earlier listening was not measured.", with: ""),
             identifier: WiltedMacStatisticsCopy.trackingStartIdentifier
         )
     }

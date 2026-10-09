@@ -1,3 +1,4 @@
+import SwiftUI
 import Foundation
 import XCTest
 import AppKit
@@ -347,6 +348,33 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         guard let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
         return bitmap.representation(using: .png, properties: [:])
+    }
+
+    func testExpandedNotesNameThePaneOnlyOnceAndKeepBodyOrEmptyState() throws {
+        let (model, _, _) = makeModel()
+        for hasNotes in [true, false] {
+            var item = episode(id: hasNotes ? "notes-present" : "notes-absent")
+            item.notes = hasNotes ? "The fixture describes a quiet machine." : nil
+            model.installPlaybackStateForTesting(episode: item, isPlaying: false, position: 0, duration: 1_800)
+            let view = WiltedMacFullWindowPlayer(model: model, presentation: .constant(.notes),
+                                               onSelect: { _ in }, onCollapse: { _ in })
+            let size = CGSize(width: 1_100, height: 900)
+            let lines = try WiltedMacHeadless.recognizedText(view, size: size)
+            XCTAssertFalse(lines.contains("Notes"), "subtitle absent: \(lines)")
+            XCTAssertFalse(lines.contains("Show Notes"), "heading absent: \(lines)")
+            XCTAssertEqual(lines.filter { $0.contains("Hide Notes") }.count, 1, "\(lines)")
+            XCTAssertTrue(lines.joined(separator: " ").contains(hasNotes ? "quiet machine" : "did not include show notes"), "\(lines)")
+            try retainCopyEvidence(WiltedMacHeadless.render(view, size: size),
+                                   name: hasNotes ? "fullplayer-notes-light" : "fullplayer-notes-empty-light")
+        }
+    }
+
+    private func retainCopyEvidence(_ bitmap: NSBitmapImageRep, name: String) throws {
+        let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+                                       uniformTypeIdentifier: "public.png")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func makeModel() -> (WiltedMacModel, RecordingNowPlayingSink, RecordingRemoteCommandSource) {

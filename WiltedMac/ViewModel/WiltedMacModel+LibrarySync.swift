@@ -182,6 +182,7 @@ final class WiltedMacLibrarySyncController {
     private weak var model: WiltedMacModel?
     private let triggers: AsyncStream<Void>.Continuation
     private var loop: Task<Void, Never>?
+    var publicationHydration: Task<Void, Never>?
     private var offerReconcile: Task<Void, Never>?
     private var offerReconcileRequested = false
     private var passTail: Task<Bool, Never>?
@@ -251,6 +252,7 @@ final class WiltedMacLibrarySyncController {
         inbound?.stop()
         handoff?.stop()
         loop?.cancel()
+        publicationHydration?.cancel()
         offerReconcile?.cancel()
         triggers.finish()
     }
@@ -262,6 +264,7 @@ final class WiltedMacLibrarySyncController {
         await account?.close()
         await inbound?.close()
         await loop?.value
+        await publicationHydration?.value
         await offerReconcile?.value
         await syncNowTask?.value
         _ = await passTail?.value
@@ -320,7 +323,12 @@ final class WiltedMacLibrarySyncController {
             lastReport = report
             // What this pass diffed but iCloud did not acknowledge (conflicts and retries).
             let unsent = max(0, report.pushed - report.acknowledged)
-            updateActivity { $0.recordSend(acknowledged: report.acknowledged, unsent: unsent, at: Date()) }
+            updateActivity {
+                $0.recordSend(acknowledged: report.acknowledged, unsent: unsent,
+                              publicationCompleted: report.publicationCompleted, at: Date())
+                $0.publication = report.publication
+                $0.publicationOwner = account?.approvedPublicationOwner
+            }
             // Offers follow the same triggers as state (the queue and the prepared set) but run on
             // their own task: the media service serializes behind an upload in flight, and a long
             // upload must not hold up state publishing.
@@ -456,7 +464,9 @@ extension WiltedMacModel {
             source: source, transport: resolvedTransport, sink: sink, isEnabled: true,
             statsProvider: { try? await store.lifetimeStatistics() },
             // The sync round reads intents once for everything; the publisher does not read them again.
-            relaysIntents: false
+            relaysIntents: false,
+            publicationStore: account == nil ? nil : .store(store), deviceID: deviceID,
+            approvedOwner: { [weak account] in await account?.approvedPublicationOwner }
         )
         let controller = WiltedMacLibrarySyncController(
             model: self, publisher: publisher, sink: sink, debounce: debounce
@@ -477,7 +487,10 @@ extension WiltedMacModel {
                 startPolling()
                 controller?.requestPublish()
             }
-            account.didClose = { _ = inbound.stop() }
+            account.didClose = { [weak self, weak controller] in
+                _ = inbound.stop(); controller?.publicationHydration?.cancel()
+                self?.librarySyncActivity.publicationOwner = nil
+            }
             account.onStatus = { [weak self] status in self?.libraryAccountStatus = status }
             libraryAccountStatus = account.status
             account.start()
@@ -498,11 +511,13 @@ extension WiltedMacModel {
         controller.handoff = handoff
         handoff.start()
         objc_setAssociatedObject(self, &librarySyncControllerKey, controller, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        controller.publicationHydration = Task { [weak self] in await self?.hydrateSavedLibraryPublication() }
         return true
     }
 
     func stopLibrarySync() {
         if let controller = librarySyncController {
+            controller.publicationHydration?.cancel()
             controller.stop()
             let previous = librarySyncShutdown
             librarySyncShutdown = Task {

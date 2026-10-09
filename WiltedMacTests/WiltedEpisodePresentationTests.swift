@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import Foundation
 import XCTest
 import WiltedDomain
@@ -6,6 +8,37 @@ import WiltedProducer
 
 @MainActor
 final class WiltedEpisodePresentationTests: XCTestCase {
+    func testAllShippingEpisodeSurfacesUseOneNumericPublicationAndDash() throws {
+        let published = Date(timeIntervalSince1970: 1_700_000_000)
+        let value = episode(publishedAt: published, sourceDuration: 3723)
+        let date = published.formatted(date: .numeric, time: .omitted)
+        XCTAssertEqual(value.presentation.showAndPublicationLabel, "Canonical show - \(date)")
+        XCTAssertEqual(value.presentation.playerSubtitleLabel, "Canonical show - \(date)")
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        model.installPlaybackStateForTesting(episode: value, isPlaying: false, position: 0, duration: 3723)
+        let views: [(String, AnyView, CGSize)] = [
+            ("feeds", AnyView(WiltedMacEpisodeMetadata(episode: value, identifier: "feeds")), CGSize(width: 600, height: 180)),
+            ("off-list", AnyView(WiltedMacEpisodeMetadata(episode: value, lifecycleLabel: "Skipped", identifier: "off-list")), CGSize(width: 600, height: 180)),
+            ("larder", AnyView(WiltedMacEpisodeMetadata(episode: value, identifier: "larder", isLarder: true)), CGSize(width: 600, height: 180)),
+            ("notes", AnyView(WiltedMacEpisodeNotes(episode: value, prefix: "fixture") { EmptyView() }), CGSize(width: 460, height: 400)),
+            ("side", AnyView(WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))), CGSize(width: 600, height: 800)),
+            ("compact", AnyView(WiltedMacCompactPlayer(model: model)), CGSize(width: 800, height: 300)),
+            ("full-player", AnyView(WiltedMacFullWindowPlayer(model: model, presentation: .constant(.transcript), onSelect: { _ in }, onCollapse: { _ in })), CGSize(width: 1100, height: 700)),
+        ]
+        for (name, view, size) in views {
+            let text = try WiltedMacHeadless.recognizedText(view, size: size).joined(separator: " ")
+            XCTAssertTrue(text.contains(date), "\(name): \(text)")
+            for dark in [false, true] {
+                let bitmap = try WiltedMacHeadless.render(view.environment(\.colorScheme, dark ? .dark : .light), size: size)
+                let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
+                attachment.name = "formats-date-\(name)-\(dark ? "dark" : "light")"; attachment.lifetime = .keepAlways; add(attachment)
+            }
+        }
+        let unknown = episode(publishedAt: nil, sourceDuration: nil)
+        XCTAssertEqual(unknown.presentation.playerSubtitleLabel, unknown.presentation.showAndPublicationLabel)
+        XCTAssertTrue(unknown.presentation.playerSubtitleLabel.contains("Publication date unknown"))
+    }
+
     func testCanonicalFactsStayStableAcrossDecisionAndPreparationStates() {
         let publication = Date(timeIntervalSince1970: 1_700_000_000)
         let original = episode(publishedAt: publication, sourceDuration: 3_723)
@@ -38,7 +71,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
 
     func testUnknownPublicationAndMalformedDurationsRemainExplicitlyUnknown() {
         let unknown = episode(publishedAt: nil, sourceDuration: nil)
-        XCTAssertEqual(unknown.presentation.showAndPublicationLabel, "Canonical show · Publication date unknown")
+        XCTAssertEqual(unknown.presentation.showAndPublicationLabel, "Canonical show - Publication date unknown")
         XCTAssertEqual(unknown.presentation.sourceDurationLabel, "Source duration · Unknown")
         XCTAssertEqual(unknown.presentation.larderRowLabel, "Canonical show - Unknown - Publication date unknown")
 
@@ -121,7 +154,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertNil(unknownLive.publishedAt)
         XCTAssertNil(unknownLive.sourceDurationSeconds)
         XCTAssertEqual(unknownLive.presentation.showAndPublicationLabel,
-                       "Canonical show · Publication date unknown")
+                       "Canonical show - Publication date unknown")
         try await store.dismissPodcastEpisode(episodeID, at: Timestamp(Date(timeIntervalSince1970: 1_701_000_000)))
         try await store.dismissPodcastEpisode(unknownID, at: Timestamp(Date(timeIntervalSince1970: 1_701_500_000)))
 
@@ -143,7 +176,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         let tombstone = try XCTUnwrap(rows.first { $0.id == tombstoneID.rawValue })
         XCTAssertNil(tombstone.presentation.publishedAt)
         XCTAssertNil(tombstone.presentation.sourceDurationSeconds)
-        XCTAssertEqual(tombstone.presentation.showAndPublicationLabel, "Show unknown · Publication date unknown")
+        XCTAssertEqual(tombstone.presentation.showAndPublicationLabel, "Show unknown - Publication date unknown")
         XCTAssertEqual(tombstone.presentation.sourceDurationLabel, "Source duration · Unknown")
         XCTAssertEqual(tombstone.presentation.larderRowLabel, "Show unknown - Unknown - Publication date unknown")
 

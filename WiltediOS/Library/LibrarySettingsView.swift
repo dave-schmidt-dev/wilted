@@ -100,17 +100,7 @@ struct LibrarySettingsView: View {
 
     private var storageCard: some View {
         WiltedSettingsCard(title: "Storage") {
-            iconRow("internaldrive", "Downloaded audio") {
-                infoButton(
-                    "Removes the phone's copies only. Episodes stay in the Larder to fetch again from the Mac.",
-                    identifier: "wilted-library-settings-storage-info")
-                Spacer(minLength: 0)
-                Text(LibrarySettingsFormat.storage(count: cache.episodeCount, bytes: cache.byteCount))
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .multilineTextAlignment(.trailing)
-                    .accessibilityIdentifier("wilted-library-settings-cache-size")
-            }
+            LibraryStorageSummaryView(summary: cache)
             Button(role: .destructive) { isConfirmingRemoval = true } label: {
                 Label { Text("Remove all downloaded audio").wiltedFont(.body) } icon: { Image(systemName: "trash") }
                     .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
@@ -142,6 +132,8 @@ struct LibrarySettingsView: View {
     private var syncCard: some View {
         let sync = model.syncSummary
         return WiltedSettingsCard(title: WiltedScreenCopy.sync) {
+            WiltedPublicationNotice(summary: model.publicationSummary, detail: model.publicationDetail, qualifier: model.publicationQualifier)
+            if model.accountQuarantined { WiltedAccountRecoveryNotice(role: .phone) { Task { await model.recoverFromAccountChange() } } }
             iconRow("arrow.triangle.2.circlepath", "Status") {
                 Spacer(minLength: 0)
                 if sync.tone == .active { ProgressView().accessibilityIdentifier("wilted-library-settings-sync-progress") }
@@ -208,18 +200,7 @@ struct LibrarySettingsView: View {
     private func iconRow<Trailing: View>(
         _ symbol: String, _ label: String, @ViewBuilder trailing: () -> Trailing
     ) -> some View {
-        HStack(spacing: WiltedTheme.Spacing.medium) {
-            Image(symbol: symbol)
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                .frame(width: 26)
-                .accessibilityHidden(true)
-            Text(label).wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                .lineLimit(1).minimumScaleFactor(0.8)
-            trailing()
-        }
-        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+        LibrarySettingsIconRow(symbol: symbol, label: label, trailing: trailing)
     }
 
     /// One described settings row: the copy button rides along when the value should be copyable.
@@ -326,6 +307,57 @@ struct LibrarySettingsView: View {
         let removed = await model.removeAllDownloadedAudio(keeping: playingID)
         await reloadCache()
         removalNotice = removed == 0 ? nil : "Removed \(removed) episode\(removed == 1 ? "" : "s")."
+    }
+}
+
+/// The shipping Storage label, help, and formatted value; shared with layout regressions.
+struct LibraryStorageSummaryView: View {
+    let summary: LibraryCacheSummary
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            LibrarySettingsIconRow(symbol: "internaldrive", label: "Downloaded audio") {
+                SettingsInfoButton(
+                    text: "Removes the phone's copies only. Episodes stay in the Larder to fetch again from the Mac.",
+                    identifier: "wilted-library-settings-storage-info")
+                Spacer(minLength: 0)
+            }
+            Text(LibrarySettingsFormat.storage(count: summary.episodeCount, bytes: summary.byteCount))
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .lineLimit(1)
+                .multilineTextAlignment(.trailing)
+                .accessibilityIdentifier("wilted-library-settings-cache-size")
+        }
+    }
+}
+
+/// One native Settings label row, used by the sheet and its Storage summary.
+private struct LibrarySettingsIconRow<Trailing: View>: View {
+    let symbol: String
+    let label: String
+    let trailing: Trailing
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(symbol: String, label: String, @ViewBuilder trailing: () -> Trailing) {
+        self.symbol = symbol
+        self.label = label
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            Image(symbol: symbol).wiltedFont(.body)
+                .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                .frame(width: 26).accessibilityHidden(true)
+            Text(label).wiltedFont(.body)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .lineLimit(1).minimumScaleFactor(0.8)
+            trailing
+        }
+        .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
     }
 }
 

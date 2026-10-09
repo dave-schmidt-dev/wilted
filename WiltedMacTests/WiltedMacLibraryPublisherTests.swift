@@ -71,6 +71,143 @@ final class WiltedMacLibraryPublisherTests: XCTestCase {
         )
     }
 
+    func testCapturedFullPublicationProducesAuthorReceipt() async throws {
+        let fixture = try PublicationScenario()
+        let report = try await fixture.publisher().sync()
+        XCTAssertTrue(report.publicationCompleted)
+        let receipt = try await fixture.transport.readPublication()
+        XCTAssertNotNil(receipt, "complete captured library publication must produce author evidence")
+    }
+
+    private func assertIncomplete(_ failure: PublicationTransport.Failure) async throws {
+        let fixture = try PublicationScenario(); await fixture.transport.setFailure(failure)
+        let pub = fixture.publisher(); let report = try await pub.sync()
+        let observed = try await fixture.transport.readPublication()
+        let sidecar = try await fixture.bytes.store.load(owner: "owner")
+        XCTAssertNil(observed); XCTAssertNil(sidecar.fulfilled)
+        XCTAssertNotNil(sidecar.pending); XCTAssertNil(sidecar.pending?.publishedAt)
+        XCTAssertLessThan(report.acknowledged, report.pushed)
+        XCTAssertFalse(report.publicationCompleted, "an incomplete obligation cannot report completion")
+    }
+    func testMissingAcknowledgementRetainsAnUndatedObligation() async throws { try await assertIncomplete(.missing) }
+    func testConflictCannotFulfillCapturedPublication() async throws { try await assertIncomplete(.conflict) }
+    func testRetryableFailureCannotFulfillCapturedPublication() async throws { try await assertIncomplete(.retryable) }
+    func testTerminalFailureCannotFulfillCapturedPublication() async throws { try await assertIncomplete(.terminal) }
+
+    func testRequiredSlotDeletionMustBeAcknowledgedBeforeNewReceipt() async throws {
+        let fixture = try PublicationScenario(); let pub = fixture.publisher()
+        _ = try await pub.sync(); let first = try await fixture.transport.readPublication()
+        await fixture.source.set(try PublicationScenario.state(queued: false))
+        await fixture.transport.setFailure(.deletion)
+        let report = try await pub.sync(); let after = try await fixture.transport.readPublication()
+        XCTAssertEqual(report.pushed, 1); XCTAssertEqual(report.acknowledged, 0); XCTAssertEqual(after, first)
+        let pending = try await fixture.bytes.store.load(owner: "owner").pending
+        XCTAssertEqual(pending?.remaining.first?.key.kind, .slot)
+    }
+    func testSentTokenFailureRetriesEvenAfterBaselineAdoptionWithoutEarlyDate() async throws {
+        let fixture = try PublicationScenario(); let pub = fixture.publisher()
+        await fixture.transport.failToken(true)
+        do { _ = try await pub.sync(); XCTFail("token failure hidden") } catch {}
+        let before = try await fixture.bytes.store.load(owner: "owner")
+        XCTAssertTrue(before.pending?.contentAcknowledged == true); XCTAssertNil(before.pending?.publishedAt)
+        await fixture.transport.failToken(false)
+        let retried = try await pub.sync(); let pushes = await fixture.transport.pushes
+        XCTAssertEqual(retried.pushed, 0); XCTAssertEqual(pushes, 1)
+        XCTAssertEqual(retried.acknowledged, 0); XCTAssertTrue(retried.publicationCompleted)
+        XCTAssertEqual(retried.publication?.publishedAt, Date(timeIntervalSince1970: 100))
+    }
+    func testRemoteReceiptFailureReopensAndRetriesSameIdentityAndCompletionDate() async throws {
+        let fixture = try PublicationScenario(); await fixture.transport.failReceipt(true)
+        do { _ = try await fixture.publisher().sync(); XCTFail("receipt failure hidden") } catch {}
+        let retained = try await fixture.bytes.store.load(owner: "owner")
+        XCTAssertNil(retained.fulfilled); XCTAssertEqual(retained.pending?.publishedAt, Date(timeIntervalSince1970: 100))
+        await fixture.transport.failReceipt(false)
+        let retried = try await fixture.publisher(date: Date(timeIntervalSince1970: 999)).sync()
+        XCTAssertTrue(retried.publicationCompleted)
+        XCTAssertEqual(retried.pushed, 0); XCTAssertEqual(retried.acknowledged, 0)
+        let receipts = await fixture.transport.receipts
+        XCTAssertEqual(receipts.count, 2); XCTAssertEqual(receipts[0], receipts[1])
+    }
+    func testRemoteSuccessLocalCompletionFailureReopensSameReceipt() async throws {
+        let fixture = try PublicationScenario(); await fixture.bytes.fail(4)
+        do { _ = try await fixture.publisher().sync(); XCTFail("local completion failure hidden") } catch {}
+        let retained = try await fixture.bytes.store.load(owner: "owner")
+        XCTAssertNil(retained.fulfilled); XCTAssertNotNil(retained.pending?.publishedAt)
+        let remote = try await fixture.transport.readPublication(); XCTAssertNotNil(remote)
+        await fixture.bytes.fail(nil)
+        let report = try await fixture.publisher(date: Date(timeIntervalSince1970: 999)).sync()
+        XCTAssertEqual(report.publication, remote)
+        XCTAssertTrue(report.publicationCompleted); XCTAssertEqual(report.acknowledged, 0)
+        let receipts = await fixture.transport.receipts; XCTAssertEqual(receipts.count, 2); XCTAssertEqual(receipts[0], receipts[1])
+    }
+    func testHealthyNoopNeverCreatesOrRestampsAuthorReceipt() async throws {
+        let fixture = try PublicationScenario(); let pub = fixture.publisher()
+        let first = try await pub.sync(); let second = try await pub.sync()
+        let receipts = await fixture.transport.receipts
+        XCTAssertEqual(second.pushed, 0); XCTAssertEqual(first.publication, second.publication); XCTAssertEqual(receipts.count, 1)
+        XCTAssertTrue(first.publicationCompleted); XCTAssertFalse(second.publicationCompleted)
+    }
+    func testSameApprovedOwnerHydratesFulfilledEvidenceWithoutCloudReadsOrWrites() async throws {
+        let fixture = try PublicationScenario(); let first = try await fixture.publisher().sync()
+        await fixture.transport.failReceipt(true)
+        let reopened = fixture.publisher(date: Date(timeIntervalSince1970: 999))
+        let hydrated = try await reopened.fulfilledPublication()
+        XCTAssertEqual(hydrated, first.publication)
+        let report = try await reopened.sync()
+        XCTAssertEqual(report.publication, hydrated)
+        XCTAssertFalse(report.publicationCompleted, "hydrated history is not a receipt sent by this pass")
+        XCTAssertEqual(report.acknowledged, 0)
+        let receipts = await fixture.transport.receipts; XCTAssertEqual(receipts.count, 1)
+    }
+    func testUnapprovedOwnerCannotSendOrHydrateAnotherAccountReceipt() async throws {
+        let fixture = try PublicationScenario(); let owner = PublicationOwnerBox(); await owner.set(nil)
+        let pub = fixture.publisher(ownerProvider: { await owner.value })
+        do { _ = try await pub.sync(); XCTFail("unapproved owner sent") } catch {}
+        let pushes = await fixture.transport.pushes; XCTAssertEqual(pushes, 0)
+    }
+    func testMutatedSourceDuringPushDoesNotEnlargeCapturedPublication() async throws {
+        let fixture = try PublicationScenario(); let barrier = PublicationBarrier(); let pub = fixture.publisher()
+        await fixture.inner.setAfterPushHook { await barrier.hold() }
+        let pass = Task { try await pub.sync() }; await barrier.wait()
+        await fixture.source.set(try PublicationScenario.state(title: "Later")); await barrier.release()
+        let first = try await pass.value; let captured = await fixture.server.currentSnapshot
+        XCTAssertEqual(captured.entries.values.first?.title, "Captured"); XCTAssertNotNil(first.publication)
+        await fixture.inner.setAfterPushHook(nil)
+        let later = try await pub.sync(); XCTAssertEqual(later.pushed, 1); XCTAssertNotEqual(later.publication?.id, first.publication?.id)
+    }
+    private func assertReset(at boundary: String) async throws {
+        let fixture = try PublicationScenario(); let barrier = PublicationBarrier(); let owner = PublicationOwnerBox()
+        let pub = fixture.publisher(ownerProvider: { await owner.value })
+        switch boundary {
+        case "source": await fixture.source.setHook { await barrier.hold() }
+        case "seed": await fixture.inner.setAfterFetchHook { await barrier.hold() }
+        case "push": await fixture.inner.setAfterPushHook { await barrier.hold() }
+        case "token": await fixture.transport.setTokenHook { await barrier.hold() }
+        case "receipt": await fixture.inner.setAfterPublicationHook { await barrier.hold() }
+        default: await fixture.bytes.setHook { if $0 == 4 { await barrier.hold() } }
+        }
+        let task = Task { try await pub.sync() }; await barrier.wait()
+        await owner.set("new-owner"); await pub.resetForAccount(); await barrier.release()
+        do { _ = try await task.value; XCTFail("old account operation succeeded") }
+        catch { XCTAssertEqual(error as? LibraryTransportError, .superseded) }
+        let current = try await pub.fulfilledPublication(); XCTAssertNil(current)
+    }
+    func testResetDuringSourceCaptureSupersedesWholePass() async throws { try await assertReset(at: "source") }
+    func testResetDuringSeedSupersedesWholePass() async throws { try await assertReset(at: "seed") }
+    func testResetDuringPushSupersedesWholePass() async throws { try await assertReset(at: "push") }
+    func testResetDuringSentTokenSupersedesWholePass() async throws { try await assertReset(at: "token") }
+    func testResetDuringReceiptSupersedesWholePass() async throws { try await assertReset(at: "receipt") }
+    func testResetDuringLocalCompletionPersistenceCannotExposeOldOwnerReceipt() async throws { try await assertReset(at: "persist") }
+
+    func testUnrelatedFailureCannotDiscardOtherwiseAcknowledgedCapturedObligation() async throws {
+        let fixture = try PublicationScenario(); let pub = fixture.publisher()
+        await fixture.transport.setFailure(.unrelated); _ = try await pub.sync()
+        let pending = try await fixture.bytes.store.load(owner: "owner").pending
+        XCTAssertFalse(pending?.remaining.isEmpty ?? true); XCTAssertNil(pending?.publishedAt)
+        await fixture.transport.setFailure(nil); let retry = try await pub.sync()
+        XCTAssertGreaterThan(retry.pushed, 0); XCTAssertNotNil(retry.publication)
+    }
+
     func testFlagIsOffUnlessExactlyOne() {
         // The flag only forces the publisher on; whether it runs without one is the runtime
         // selection's decision (the live-build default), not the flag's.

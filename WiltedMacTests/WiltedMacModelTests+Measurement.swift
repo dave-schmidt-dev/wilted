@@ -18,7 +18,6 @@ extension WiltedMacModelTests {
     /// the cost is a dropped frame. Set `WILTED_MEASURE=1` to print.
     func testMeasureThePrepPollAndTheEagerlyBuiltQueueLists() async throws {
         let directory = temporaryDirectory("measure-queue-lists")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let created = Timestamp(Date(timeIntervalSince1970: 1_600_000_000))
         let feedCount = 12
         let perFeed = 30
@@ -146,7 +145,6 @@ extension WiltedMacModelTests {
     /// Replaces the UI test testLarderBulkActionsAreDisabledWithHonestEmptyState.
     func testAReadyLibraryWithNothingKeptOffersNoBulkLarderWork() throws {
         let directory = temporaryDirectory("ready-no-bulk-work")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"],
             stateDirectoryOverride: directory,
@@ -159,7 +157,6 @@ extension WiltedMacModelTests {
     /// Replaces the playback half of testSidebarListsDestinationsOnlyAndNotTheArticleList.
     func testAnArticleStillBeingReadCannotOpenThePlayer() throws {
         let directory = temporaryDirectory("preparing-no-player")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-preparing"],
             stateDirectoryOverride: directory,

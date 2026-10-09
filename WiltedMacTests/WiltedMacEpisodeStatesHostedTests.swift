@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import Vision
 import XCTest
 @testable import WiltedMac
 
@@ -9,9 +11,9 @@ import XCTest
 final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
     private let noNotes = "did not include show notes"
 
-    private func episode(notes: String?, published: Date?) -> WiltedMacEpisode {
+    private func episode(notes: String?, published: Date?, title: String = "Hosted episode") -> WiltedMacEpisode {
         var value = WiltedMacEpisode(
-            id: "hosted-episode", title: "Hosted episode", feedTitle: "Show", summary: "",
+            id: "hosted-episode", title: title, feedTitle: "Show", summary: "",
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_900_000_000), durationSeconds: 600,
             playbackSeconds: 0, downloadState: .completed, preparationState: .prepared(summary: "Ready"))
         value.notes = notes
@@ -28,6 +30,52 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
 
     private func text<V: View>(_ view: V, size: CGSize = WiltedMacHeadless.windowCanvas) throws -> String {
         try WiltedMacHeadless.recognizedText(view, size: size).joined(separator: "\n")
+    }
+
+    /// Measure the actual button's natural height and read only its drawn title pixels.
+    private func titleFacts<V: View>(_ view: V, name: String, width: CGFloat = 180) throws
+        -> (height: CGFloat, lines: [String]) {
+        let content = view.environment(\.colorScheme, .light).frame(width: width, alignment: .leading)
+        let hosting = NSHostingView(rootView: content)
+        hosting.layoutSubtreeIfNeeded()
+        let height = hosting.fittingSize.height
+        XCTAssertGreaterThan(height, 0)
+        let bitmap = try WiltedMacHeadless.render(
+            content.padding(16).background(WiltedTheme.color(.card, scheme: .light)),
+            size: CGSize(width: width + 32, height: height + 32))
+        let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true; request.recognitionLanguages = ["en-US"]
+        request.minimumTextHeight = 0.004
+        try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
+        let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+                                       uniformTypeIdentifier: "public.png")
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        return (height, (request.results ?? []).sorted { $0.boundingBox.maxY > $1.boundingBox.maxY }
+            .compactMap { $0.topCandidates(1).first?.string })
+    }
+
+    func testLarderTitleShowsASecondLineWhileOtherNotesTitlesKeepOne() throws {
+        let value = episode(notes: "Notes", published: Date(), title: "Evening garden report Harvest tomorrow")
+        let larder = try titleFacts(WiltedMacLarderEpisodeNotesTitle(episode: value), name: "larder-title-two-lines")
+        let other = try titleFacts(WiltedMacEpisodeNotesTitle(
+            episode: value, prefix: "wilted-feeds", isPresented: .constant(false)) { EmptyView() },
+            name: "feeds-title-one-line")
+        XCTAssertEqual(larder.lines.count, 2, "\(larder.lines)")
+        XCTAssertTrue(larder.lines.last?.contains("tomorrow") == true, "the unique suffix reaches line two: \(larder.lines)")
+        XCTAssertEqual(other.lines.count, 1, "\(other.lines)")
+        XCTAssertFalse(other.lines.joined(separator: " ").contains("tomorrow"), "the old one-line title clips the suffix")
+        XCTAssertGreaterThan(larder.height, other.height)
+    }
+
+    func testShortLarderTitleDoesNotReserveAnEmptySecondLine() throws {
+        let value = episode(notes: "Notes", published: Date())
+        let larder = try titleFacts(WiltedMacLarderEpisodeNotesTitle(episode: value), name: "larder-title-short")
+        let other = try titleFacts(WiltedMacEpisodeNotesTitle(
+            episode: value, prefix: "wilted-feeds", isPresented: .constant(false)) { EmptyView() },
+            name: "feeds-title-short")
+        XCTAssertEqual(larder.lines, ["Hosted episode"])
+        XCTAssertEqual(larder.lines.count, 1)
+        XCTAssertEqual(larder.height, other.height, accuracy: 0.5, "short titles retain their natural one-line height")
     }
 
     func testRowNotesPopoverShowsTheEpisodesNotesOrTheExplicitEmptyState() throws {
@@ -73,9 +121,9 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
     }
 
     func testEveryPlayerStatesAMissingPublicationDateInsteadOfTheIntakeDate() throws {
-        let intake = Date(timeIntervalSince1970: 1_900_000_000).formatted(date: .abbreviated, time: .omitted)
+        let intake = Date(timeIntervalSince1970: 1_900_000_000).formatted(date: .numeric, time: .omitted)
         let undated = model(playing: episode(notes: nil, published: nil))
-        XCTAssertEqual(undated.currentEpisode?.presentation.playerSubtitleLabel, "Show · Date unknown")
+        XCTAssertEqual(undated.currentEpisode?.presentation.playerSubtitleLabel, "Show - Publication date unknown")
 
         let surfaces: [(String, AnyView, CGSize)] = [
             ("side", AnyView(WiltedMacNowPlayingPane(model: undated, state: .constant(WiltedMacPaneState()))),
@@ -87,7 +135,7 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
         ]
         for (name, view, size) in surfaces {
             let shown = try text(view, size: size)
-            XCTAssertTrue(shown.contains("Date unknown"), "\(name) player states the missing date: \(shown)")
+            XCTAssertTrue(shown.contains("Publication date unknown"), "\(name) player states the missing date: \(shown)")
             XCTAssertFalse(shown.contains(intake), "\(name) player must not show the intake date")
         }
 
@@ -95,7 +143,7 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
         let dated = model(playing: episode(notes: nil, published: publication))
         XCTAssertEqual(
             dated.currentEpisode?.presentation.playerSubtitleLabel,
-            "Show · " + publication.formatted(date: .abbreviated, time: .omitted))
+            "Show - " + publication.formatted(date: .numeric, time: .omitted))
     }
 
     func testSortControlNamesItselfAndShowsADirectionOnlyForACalculatedSort() throws {

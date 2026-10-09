@@ -112,6 +112,8 @@ public struct CloudKitRecordFailure: @unchecked Sendable {
 /// An injectable seam around CKSyncEngine. Implementations own all mutable engine state.
 public protocol CloudKitEngineDriver: Sendable {
     var events: AsyncStream<CloudKitEngineEvent> { get async }
+    /// Optional current-owner observation. Stored engine identity is never a substitute.
+    func currentAccountIdentity() async throws -> CloudKitAccountIdentity?
     func ensureZone() async throws
     func fetchChanges() async throws
     /// Fetches only `zoneIDs`, so a zone holding bulk data (audio) is never staged by a state fetch.
@@ -143,6 +145,7 @@ public protocol CloudKitEngineDriver: Sendable {
 public typealias CloudKitEngineDriverFactory = @Sendable (Data?) throws -> any CloudKitEngineDriver
 
 public extension CloudKitEngineDriver {
+    func currentAccountIdentity() async throws -> CloudKitAccountIdentity? { nil }
     func ensureZone() async throws {}
     func resetZoneBootstrap() async {}
     func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws { try await fetchChanges() }
@@ -231,6 +234,7 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
     private let delegate: CloudKitEngineDelegateProxy
     private let zoneBootstrap: any CloudKitZoneBootstrap
     private let recordFetchCoordinator: CloudKitRecordFetchCoordinator
+    private let currentAccountResolver: (@Sendable () async throws -> CloudKitAccountIdentity?)?
     /// Zones `fetchChanges()` covers: the bootstrap's own zone unless a scope is given.
     public nonisolated let fetchScopeZoneIDs: Set<CKRecordZone.ID>?
     private var ensuredZones: Set<CKRecordZone.ID> = []
@@ -240,8 +244,10 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
                 zoneBootstrap: (any CloudKitZoneBootstrap)? = nil,
                 fetchScope: Set<CKRecordZone.ID>? = nil,
                 recordProvider: @escaping @Sendable (CKRecord.ID) async -> CKRecord? = { _ in nil },
-                recordFetcher: (@Sendable ([CKRecord.ID]) async throws -> [CKRecord])? = nil) {
+                recordFetcher: (@Sendable ([CKRecord.ID]) async throws -> [CKRecord])? = nil,
+                currentAccountResolver: (@Sendable () async throws -> CloudKitAccountIdentity?)? = nil) {
         self.database = database
+        self.currentAccountResolver = currentAccountResolver
         self.recordFetchCoordinator = CloudKitRecordFetchCoordinator(recordFetcher: recordFetcher ?? { ids in
             let results = try await database.records(for: ids)
             return try results.map { try $0.value.get() }
@@ -261,6 +267,7 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
     public nonisolated static func makeFactory(
         database: CKDatabase,
         automaticallySync: Bool = false,
+        currentAccountResolver: (@Sendable () async throws -> CloudKitAccountIdentity?)? = nil,
         recordProvider: @escaping @Sendable (CKRecord.ID) async -> CKRecord? = { _ in nil }
     ) -> CloudKitEngineDriverFactory {
         { stateData in
@@ -280,10 +287,11 @@ public actor LiveCloudKitEngineDriver: CloudKitEngineDriver {
                 database: database,
                 stateSerialization: serialization,
                 automaticallySync: automaticallySync,
-                recordProvider: recordProvider
+                recordProvider: recordProvider, currentAccountResolver: currentAccountResolver
             )
         }
     }
+    public func currentAccountIdentity() async throws -> CloudKitAccountIdentity? { try await currentAccountResolver?() }
 
     public var events: AsyncStream<CloudKitEngineEvent> { get async { delegate.events } }
     public func ensureZone() async throws { try await zoneBootstrap.ensureZone() }

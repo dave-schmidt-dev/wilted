@@ -53,14 +53,14 @@ wilted_gate_leg_selected() {
   return 1
 }
 
-# Runs every selected leg in order; relies on the gate's `leg_names`,
+# Launches independent legs concurrently; relies on the gate's `leg_names`,
 # `leg_reports` and `leg_fns` arrays and its `run_leg`.
 wilted_gate_run_legs() {
   local i name
   for i in "${!leg_names[@]}"; do
     name="${leg_names[$i]}"
     if wilted_gate_leg_selected "$name"; then
-      run_leg "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"
+      wilted_gate_parallel_launch "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"
     else
       skipped_leg_names+=("$name")
       printf 'native.leg.skipped name=%s reason=not-in-WILTED_GATE_LEGS\n' "$name" >&2
@@ -69,9 +69,10 @@ wilted_gate_run_legs() {
   for i in "${!optin_leg_names[@]}"; do
     name="${optin_leg_names[$i]}"
     if [[ -n "${WILTED_GATE_LEGS+x}" && ",$WILTED_GATE_LEGS," == *",$name,"* ]]; then
-      run_leg "$name" "${optin_leg_reports[$i]}" "${optin_leg_fns[$i]}"
+      wilted_gate_parallel_launch "$name" "${optin_leg_reports[$i]}" "${optin_leg_fns[$i]}"
     fi
   done
+  wilted_gate_parallel_collect
 }
 
 # Suffix for the native.passed line of a filtered run.

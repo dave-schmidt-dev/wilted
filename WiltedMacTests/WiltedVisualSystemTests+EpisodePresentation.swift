@@ -475,7 +475,7 @@ extension WiltedVisualSystemTests {
     func testAutomationSettingsPresentationFollowsThePipelineAndOnlyShowsLiveControls() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try WiltedMacSource.views(root: root)
-        let start = try XCTUnwrap(source.range(of: "private var automationCard")?.lowerBound)
+        let start = try XCTUnwrap(source.range(of: "var automationCard")?.lowerBound)
         let end = try XCTUnwrap(source.range(of: "private var syncCard", range: start..<source.endIndex)?.lowerBound)
         let card = source[start..<end]
 
@@ -483,7 +483,12 @@ extension WiltedVisualSystemTests {
         let processing = try XCTUnwrap(card.range(of: "automationSectionTitle(\"Processing\")")?.lowerBound)
         XCTAssertLessThan(feeds, processing)
         XCTAssertFalse(card.contains("wilted-automation-download-policy"))
-        XCTAssertTrue(card.contains("wilted-automation-feeds-admission-policy"))
+        XCTAssertFalse(card.contains("wilted-automation-feeds-admission-policy"))
+        let settings = try String(contentsOf: root.appendingPathComponent("WiltedMac/Views/WiltedMacSettingsView.swift"), encoding: .utf8)
+        let feedView = try String(contentsOf: root.appendingPathComponent("WiltedMac/Views/WiltedMacFeedsView.swift"), encoding: .utf8)
+        XCTAssertFalse(settings.contains("WiltedScreenCopy.feedsPolicy"))
+        XCTAssertTrue(feedView.contains("WiltedMacHelpButton(content: refreshHelp"))
+        XCTAssertTrue(feedView.contains("WiltedMacHelpContent(title: \"Subscriptions\", text: WiltedScreenCopy.feedsPolicy)"))
         XCTAssertTrue(card.contains("wilted-automation-refresh-policy"))
         XCTAssertTrue(card.contains("wilted-automation-processing-policy"))
         XCTAssertTrue(card.contains("wilted-automation-transcript-policy"))

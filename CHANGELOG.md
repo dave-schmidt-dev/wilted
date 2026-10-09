@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - An Apple Watch remote for the iPhone (Development builds): Now Playing with play, pause, skip, speed and sleep, and Up Next; it always shows the phone's last update and its age, and disables its controls with a note while the phone is out of reach.
-- Per-feed automation on the Mac: each feed in Feeds has a settings popover for Auto keep, Auto download, Auto prepare (On, Off or Use global) and a Kept limit, with a "Resolved now" summary. Settings holds the global defaults (Auto keep Off, download Off, prepare On, no limit), so nothing changes until you turn something on.
+- Per-feed automation on the Mac: each feed in Feeds has a settings popover for Auto keep, Auto download, Auto prepare (On, Off or Use global) and a Kept limit, with resolved values shown inline beside Use global. Settings holds the global defaults (Auto keep Off, download Off, prepare On, no limit), so nothing changes until you turn something on.
 - A full feed makes new episodes wait for space instead of removing anything: an existing, playing or part-heard episode is never removed to make room, and finishing, completing or removing a kept episode lets the oldest waiting one in.
 - Per-feed match rules: ordered patterns on title or notes that Keep or Skip new episodes, with inline errors, a preview of every episode's verdict, and "Apply to existing", which changes only undecided and automatically decided episodes, never your own choices or anything you have started, and can be undone.
 - Your own Keep, Skip and Restore, on the Mac or the iPhone, are recorded as yours, and automation never reverses them.
@@ -20,6 +20,18 @@ All notable changes to this project are documented in this file.
 - Re-downloading an episode deletes the copy it replaces, and the Mac startup has a "Reclaiming storage" step that deletes audio no record names and clears records whose audio is missing.
 
 ### Fixed
+- Mac Play/Pause pending feedback now stays inside the initiating button without shifting the player layout.
+- Collapsing the Mac sidebar now retains its icon rail and current selection; the same setting and control restore labels when width permits.
+- Mac prepared-media export no longer exposes raw or unprepared, off-Larder, retired, or mismatched-download audio.
+- iPhone storage totals and explicit removal now account for retained physical audio even when that audio is not admitted for playback.
+- Long Larder titles now wrap naturally to a second line when needed.
+- Apple Watch Up Next show names now use the system secondary color, so they stay readable on the grey row background.
+- Local source-qualified Siri behavior now rejects stale nameless selected requests, preserves the cached-list boundary while refusing unavailable media before playback, skips an ineligible automatic candidate, and keeps an explicitly removed loaded item unloaded even if its decision later rolls back. This local checkpoint does not claim installed or accepted device behavior.
+- iPhone playback now refuses stale, corrupt, unavailable, or no-longer-eligible audio before loading or resuming it, while verified offline downloads remain playable after the Mac withdraws its offer. Continue from Mac keeps the Mac playback rate and refuses a mismatched revision.
+- iPhone remote controls step 30 seconds forward or 15 seconds back; holding seeks at 8x, stops cleanly on release, and restores the prior rate and play or pause state.
+- Mac dismiss and iPhone Remove from Larder, reordering, and Restore preserve any operation that already committed if its manual decision cannot be recorded, identify that committed operation while stating when the choice could not be saved, and only call the choice recorded after durable confirmation. Automation keeps confirmed manual choices, including accepted no-op requests.
+- iOS snapshot recording now preserves existing baselines until every requested image succeeds, then publishes the complete requested set atomically.
+- Native gate work no longer stalls behind shared-host queueing or times out while waiting for it: independent legs use retained per-leg caches, shared test destinations wait with visible heartbeats, and iOS legs reuse a persistent project-owned simulator.
 - Attended iPhone builds now fail when the embedded Watch app's signature no longer verifies, instead of installing a Watch app the Watch silently refuses.
 - Ad removal no longer cuts most of a short episode when two sponsor reads bracket the programme: a confirmed cut that would push the episode past the total advertising ceiling, or a pod extension that would reach the next read, is now kept in the audio and recorded as held instead of removed.
 - An episode whose opening sponsor read cannot be told apart from the show's spoken ident is no longer refused outright: the opening is kept, the decision is recorded as held, and the rest of the episode (including its closing promo) is still prepared. The preparation report now also lists every commercial cue the review declined to cut, with its reason. Preparations made before this change are re-prepared once (`podcast-preparation-v6`).

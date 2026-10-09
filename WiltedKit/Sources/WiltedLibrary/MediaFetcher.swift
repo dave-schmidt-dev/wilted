@@ -19,6 +19,19 @@ public struct MediaFetcher: Sendable {
     private let cache: any MediaCacheStore
     private let watchdog: Duration
 
+    /// Verifies one local target off the caller's actor; cache listings never hash the whole cache.
+    public static func verifies(_ url: URL, byteCount: Int64, contentHash: String) async -> Bool {
+        await Task.detached(priority: .utility) {
+            guard url.isFileURL, MediaHash.isWellFormed(contentHash),
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+                  values.isRegularFile == true, values.isSymbolicLink != true,
+                  Int64(values.fileSize ?? -1) == byteCount,
+                  FileManager.default.isReadableFile(atPath: url.path),
+                  let hash = try? MediaHash.sha256(fileAt: url), hash == contentHash else { return false }
+            return true
+        }.value
+    }
+
     public init(cache: any MediaCacheStore, watchdog: Duration = MediaFetcher.defaultWatchdog) {
         self.cache = cache
         self.watchdog = watchdog
@@ -29,15 +42,25 @@ public struct MediaFetcher: Sendable {
     public func fetch(
         _ offer: LibraryMediaOffer,
         from transport: any LibraryTransport,
+        admission: MediaCacheAdmission,
         onState: @escaping StateHandler = { _ in }
     ) async throws -> MediaFetchOutcome {
-        guard offer.state == .ready else {
+        guard offer.state == .ready, offer.isPrepared else {
             onState(.notReady)
             return .notReady
         }
-        if let existing = await cache.cachedFile(for: offer) {
+        guard await liveAdmission(admission, offer: offer, transport: transport) else {
+            return fail(.cacheFailed("Media admission changed"), onState)
+        }
+        if let existing = await cache.cachedFile(for: offer, admission: admission),
+           await liveAdmission(admission, offer: offer, transport: transport),
+           await Self.verifies(existing, byteCount: offer.byteCount, contentHash: offer.contentHash),
+           await liveAdmission(admission, offer: offer, transport: transport) {
             onState(.cached)
             return .cached(existing)
+        }
+        guard await liveAdmission(admission, offer: offer, transport: transport) else {
+            return fail(.cacheFailed("Media admission changed"), onState)
         }
         onState(.awaiting)
         let tracker = ProgressTracker()
@@ -71,7 +94,19 @@ public struct MediaFetcher: Sendable {
             onState(.failed(reason))
             return .failed(reason)
         }
-        return try await accept(deliveredFile: delivered, for: offer, onState: onState)
+        guard await liveAdmission(admission, offer: offer, transport: transport) else {
+            discard(delivered)
+            return fail(.cacheFailed("Media admission changed"), onState)
+        }
+        let outcome = try await acceptDelivery(deliveredFile: delivered, for: offer, admission: admission,
+            validation: { await liveAdmission(admission, offer: offer, transport: transport) }) { state in
+            if state != .cached { onState(state) }
+        }
+        guard await liveAdmission(admission, offer: offer, transport: transport) else {
+            return fail(.cacheFailed("Media admission changed"), onState)
+        }
+        if case .cached = outcome { onState(.cached) }
+        return outcome
     }
 
     /// Verifies a delivered file and moves it into the cache. Re-delivering an offer that is
@@ -79,13 +114,27 @@ public struct MediaFetcher: Sendable {
     public func accept(
         deliveredFile: URL,
         for offer: LibraryMediaOffer,
+        admission: MediaCacheAdmission,
         onState: @escaping StateHandler = { _ in }
     ) async throws -> MediaFetchOutcome {
-        if let existing = await cache.cachedFile(for: offer) {
+        try await acceptDelivery(deliveredFile: deliveredFile, for: offer, admission: admission,
+            validation: { await cache.permits(admission, for: offer) }, onState: onState)
+    }
+
+    private func acceptDelivery(deliveredFile: URL, for offer: LibraryMediaOffer, admission: MediaCacheAdmission,
+                                validation: @escaping @Sendable () async -> Bool,
+                                onState: @escaping StateHandler) async throws -> MediaFetchOutcome {
+        guard offer.state == .ready, offer.isPrepared else { onState(.notReady); return .notReady }
+        guard await validation() else { return fail(.cacheFailed("Media admission changed"), onState) }
+        if let existing = await cache.cachedFile(for: offer, admission: admission),
+           await validation(),
+           await Self.verifies(existing, byteCount: offer.byteCount, contentHash: offer.contentHash),
+           await validation() {
             if existing != deliveredFile { discard(deliveredFile) }
             onState(.cached)
             return .cached(existing)
         }
+        guard await validation() else { return fail(.cacheFailed("Media admission changed"), onState) }
         onState(.verifying)
         let actual: Int64
         do {
@@ -104,12 +153,19 @@ public struct MediaFetcher: Sendable {
         } catch {
             return fail(.deliveryFailed("hashing failed: \(error.localizedDescription)"), onState)
         }
+        guard await validation() else {
+            discard(deliveredFile)
+            return fail(.cacheFailed("Media admission changed"), onState)
+        }
         guard hash == offer.contentHash else {
             discard(deliveredFile)
             return fail(.hashMismatch, onState)
         }
         do {
-            let stored = try await cache.adopt(verifiedFile: deliveredFile, for: offer)
+            let stored = try await cache.adopt(verifiedFile: deliveredFile, for: offer, admission: admission)
+            guard await validation() else {
+                return fail(.cacheFailed("Media admission changed"), onState)
+            }
             onState(.cached)
             return .cached(stored)
         } catch is CancellationError {
@@ -117,6 +173,16 @@ public struct MediaFetcher: Sendable {
         } catch {
             return fail(.cacheFailed(String(describing: error)), onState)
         }
+    }
+
+    private func liveAdmission(_ admission: MediaCacheAdmission, offer: LibraryMediaOffer,
+                               transport: any LibraryTransport) async -> Bool {
+        guard await transport.verifiedOwnerToken() == admission.ownerToken,
+              await transport.operationGeneration() == admission.transportGeneration,
+              await cache.permits(admission, for: offer),
+              await transport.verifiedOwnerToken() == admission.ownerToken,
+              await transport.operationGeneration() == admission.transportGeneration else { return false }
+        return true
     }
 
     private func fail(_ reason: MediaFailureReason, _ onState: StateHandler) -> MediaFetchOutcome {

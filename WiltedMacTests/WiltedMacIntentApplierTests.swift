@@ -149,7 +149,8 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         try await r.applier.apply(first)
         try await r.applier.apply(intent(.removeFromLarder(entryID: ids[1]), id: "l-b"))
         try await r.applier.apply(intent(.removeFromLarder(entryID: ids[2]), id: "l-c"))
-        XCTAssertEqual(r.host.calls, ["removeFromLarder item-a"], "a replay and an entry already off the Larder never reach the model")
+        XCTAssertEqual(r.host.calls, ["removeFromLarder item-a", "removeFromLarder item-b"],
+                       "a replay is not re-applied; already-off Remove still records provenance")
         let published = Dictionary(uniqueKeysWithValues: try await outcomes(r).map { ($0.intentID, $0) })
         XCTAssertEqual(published["l-a"]?.disposition, .applied)
         XCTAssertEqual(published["l-b"]?.disposition, .applied)
@@ -165,7 +166,8 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         for (index, id) in ids.prefix(3).enumerated() {
             try await r.applier.apply(intent(.restore(entryID: id), id: "r-\(index)"))
         }
-        XCTAssertEqual(r.host.calls, ["restore item-a", "restore item-b"], "a live entry is already restored")
+        XCTAssertEqual(r.host.calls, ["restore item-a", "restore item-b", "restore item-c"],
+                       "a live entry's explicit Restore still records provenance")
         let published = try await outcomes(r)
         XCTAssertTrue(published.allSatisfy(\.isApplied))
         XCTAssertEqual(published.count, 3)
@@ -180,7 +182,8 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         XCTAssertEqual(r.host.calls, ["move 3->1 item-a,item-d,item-b,item-c"])
 
         try await r.applier.apply(intent(.reorder(entryID: ids[0], afterEntryID: nil), id: "o-2"))
-        XCTAssertEqual(r.host.calls.count, 1, "already at the front: nothing to move")
+        XCTAssertEqual(r.host.calls.last, "move 0->0 item-a,item-b,item-c,item-d",
+                       "already at the front: preserve the order and record the moved entry's Keep")
 
         try await r.applier.apply(intent(.reorder(entryID: ids[0], afterEntryID: ids[2]), id: "o-3"))
         XCTAssertEqual(r.host.calls.last, "move 0->2 item-b,item-c,item-a,item-d")

@@ -7,6 +7,7 @@ import WiltedLibrary
 enum LibraryDecisionAction: Equatable, Sendable {
     case removeFromLarder, markDone
     /// Move to just after `afterEntryID`; nil moves to the front of the Larder.
+    /// The moved entry is the owner's Keep choice; the anchor's provenance is unchanged.
     case reorder(afterEntryID: ItemID?)
 
     var title: String {

@@ -6,7 +6,11 @@ public struct WatchCommand: Codable, Equatable, Sendable {
     public static let currentVersion = 1
 
     /// A control action the watch can ask the phone to perform.
+    public enum SeekPhase: String, Codable, Sendable { case begin, renew, end }
+    public enum SeekDirection: String, Codable, Sendable { case forward, backward }
+
     public enum Action: Equatable, Sendable {
+        case seek(phase: SeekPhase, direction: SeekDirection, holdID: UUID, episodeID: String, controlSessionID: UUID, seekSessionID: String)
         /// Play the queue row with the given episode.
         case playRow(episodeID: String)
         /// Toggle between play and pause.
@@ -39,12 +43,14 @@ public struct WatchCommand: Codable, Equatable, Sendable {
 extension WatchCommand.Action: Codable {
     private enum CodingKeys: String, CodingKey {
         case type
+        case phase, direction, holdID, controlSessionID, seekSessionID
         case episodeID
         case rate
         case minutes
     }
 
     private enum Kind: String, Codable {
+        case seek
         case playRow
         case toggle
         case skipForward
@@ -58,6 +64,19 @@ extension WatchCommand.Action: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .type) {
+        case .seek:
+            let episode = try container.decode(String.self, forKey: .episodeID)
+            let session = try container.decode(String.self, forKey: .seekSessionID)
+            guard !episode.isEmpty, episode.count <= 256, session.count <= 128,
+                  session.split(separator: ":").count == 2,
+                  UUID(uuidString: String(session.split(separator: ":")[0])) != nil,
+                  UInt64(session.split(separator: ":")[1]) != nil else {
+                throw DecodingError.dataCorruptedError(forKey: .seekSessionID, in: container, debugDescription: "Invalid seek identity")
+            }
+            self = .seek(phase: try container.decode(WatchCommand.SeekPhase.self, forKey: .phase),
+                direction: try container.decode(WatchCommand.SeekDirection.self, forKey: .direction),
+                holdID: try container.decode(UUID.self, forKey: .holdID), episodeID: episode,
+                controlSessionID: try container.decode(UUID.self, forKey: .controlSessionID), seekSessionID: session)
         case .playRow:
             let episodeID = try container.decode(String.self, forKey: .episodeID)
             self = .playRow(episodeID: episodeID)
@@ -83,6 +102,14 @@ extension WatchCommand.Action: Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
+        case let .seek(phase, direction, holdID, episodeID, controlSessionID, seekSessionID):
+            try container.encode(Kind.seek, forKey: .type)
+            try container.encode(phase, forKey: .phase)
+            try container.encode(direction, forKey: .direction)
+            try container.encode(holdID, forKey: .holdID)
+            try container.encode(episodeID, forKey: .episodeID)
+            try container.encode(controlSessionID, forKey: .controlSessionID)
+            try container.encode(seekSessionID, forKey: .seekSessionID)
         case let .playRow(episodeID):
             try container.encode(Kind.playRow, forKey: .type)
             try container.encode(episodeID, forKey: .episodeID)

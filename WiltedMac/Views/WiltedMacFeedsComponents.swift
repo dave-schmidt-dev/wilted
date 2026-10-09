@@ -376,3 +376,46 @@ struct WiltedMacLastRefreshedLabel: View {
         }
     }
 }
+
+/// The same resolved capacity and waiting set used by admission, shown beside the feed.
+struct WiltedMacFeedCapacityLabel: View {
+    let board: WiltedMacFeedPolicyBoard
+    let subscription: WiltedMacSubscription
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Text(label).wiltedFont(.utility)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
+    }
+
+    private var label: String {
+        guard board.isLoaded(subscription.id) else { return "Capacity loading" }
+        let kept = board.keptCount(forFeed: subscription.id)
+        let limit = board.resolved(for: subscription.id).keptLimit
+        let capacity = limit.map { "\(kept) of \($0) kept" } ?? "\(kept) kept · No limit"
+        let waiting = board.waitingEpisodes(forFeed: subscription.id).count
+        return "\(capacity) · \(waiting) waiting for space" + (subscription.enabled ? "" : " · Hidden")
+    }
+}
+
+/// Read-only feed defaults name the controls that own their inherited values.
+struct WiltedMacInheritedFeedDefaults: View {
+    let model: WiltedMacModel
+    @Environment(\.colorScheme) private var colorScheme
+    var body: some View {
+        ForEach(WiltedFeedAutomationSummary.globalRows(model.automationSettings).filter {
+            $0.label == "Auto download" || $0.label == "Auto prepare"
+        }, id: \.label) { row in
+            HStack {
+                Text(row.label).wiltedFont(.body)
+                Spacer()
+                Text("\(row.value) · Set in \(row.label == "Auto download" ? "Larder" : "Processing")")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            }
+            .accessibilityIdentifier("wilted-automation-feed-default-\(row.label.lowercased().replacingOccurrences(of: " ", with: "-"))")
+        }
+    }
+}

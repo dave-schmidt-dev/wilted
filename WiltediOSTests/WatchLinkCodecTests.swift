@@ -158,4 +158,57 @@ final class WatchLinkCodecTests: XCTestCase {
         let message = try WatchLinkCodec.encode(WatchCommand(action: .toggle))
         XCTAssertNotNil(message["wiltedWatchCommand"])
     }
+
+    func testConfiguredSkipIntervalsRoundTripInVersionOne() throws {
+        let snapshot = WatchSnapshot(skipBackSeconds: 10, skipForwardSeconds: 45)
+        let decoded = try WatchLinkCodec.decodeSnapshot(WatchLinkCodec.encode(snapshot))
+        XCTAssertEqual(decoded.skipBackSeconds, 10)
+        XCTAssertEqual(decoded.skipForwardSeconds, 45)
+        XCTAssertEqual(decoded.version, 1)
+    }
+
+    func testLegacyVersionOnePayloadDefaultsAbsentSkipFields() throws {
+        let legacy = Data(#"{"version":1,"upNext":[],"rate":1.25,"sleep":{"kind":"off"},"publishedAt":1700000000}"#.utf8)
+        let decoded = try WatchLinkCodec.decodeSnapshot([WatchLinkCodec.snapshotKey: legacy])
+        XCTAssertEqual(decoded.skipBackSeconds, 15)
+        XCTAssertEqual(decoded.skipForwardSeconds, 30)
+    }
+
+    func testWrongTypeSkipFieldRemainsMalformed() throws {
+        let wrong = Data(#"{"version":1,"upNext":[],"rate":1,"sleep":{"kind":"off"},"publishedAt":1700000000,"skipBackSeconds":"10"}"#.utf8)
+        XCTAssertThrowsError(try WatchLinkCodec.decodeSnapshot([WatchLinkCodec.snapshotKey: wrong])) {
+            XCTAssertEqual($0 as? WatchLinkError, .malformedPayload)
+        }
+    }
+
+    func testLegacyKeyedReaderIgnoresNewVersionOneFields() throws {
+        struct Legacy: Decodable { let version: Int; let rate: Double }
+        let context = try WatchLinkCodec.encode(WatchSnapshot(rate: 1.25, skipBackSeconds: 10, skipForwardSeconds: 45))
+        let legacy = try JSONDecoder().decode(Legacy.self, from: XCTUnwrap(context[WatchLinkCodec.snapshotKey] as? Data))
+        XCTAssertEqual(legacy.version, 1)
+        XCTAssertEqual(legacy.rate, 1.25)
+    }
+    func testSeekWireRoundTripsAllPhasesAndRejectsMalformedIdentity() throws {
+        let id = UUID(), session = UUID(), load = "\(UUID().uuidString):7"
+        for phase in [WatchCommand.SeekPhase.begin, .renew, .end] {
+            let command = WatchCommand(action: .seek(phase: phase, direction: .backward, holdID: id,
+                episodeID: "episode", controlSessionID: session, seekSessionID: load))
+            XCTAssertEqual(try WatchLinkCodec.decodeCommand(WatchLinkCodec.encode(command)), command)
+        }
+        for bad in ["", "unknown:1", "\(UUID().uuidString):-1"] {
+            let command = WatchCommand(action: .seek(phase: .begin, direction: .forward, holdID: id,
+                episodeID: "episode", controlSessionID: session, seekSessionID: bad))
+            XCTAssertThrowsError(try WatchLinkCodec.decodeCommand(WatchLinkCodec.encode(command)))
+        }
+    }
+
+    func testLegacyNowPlayingLeavesHoldCapabilityUnproven() throws {
+        let context = try WatchLinkCodec.encode(WatchSnapshot(nowPlaying: NowPlaying(
+            episodeID: "legacy", title: "Legacy", showTitle: "Show", positionSeconds: 0, isPlaying: true)))
+        let decoded = try WatchLinkCodec.decodeSnapshot(context)
+        XCTAssertNil(decoded.controlSessionID)
+        XCTAssertNil(decoded.nowPlaying?.seekSessionID)
+        XCTAssertNil(decoded.nowPlaying?.canSeek)
+    }
+
 }

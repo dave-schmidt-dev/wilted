@@ -10,6 +10,8 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$repo_root/scripts/test-gate.sh"
 native_gate_validation="$repo_root/scripts/lib/native-gate-validation.sh"
+native_gate_xcode="$repo_root/scripts/lib/native-gate-xcode.sh"
+native_gate_simulator="$repo_root/scripts/lib/native-gate-simulator.sh"
 # shellcheck source=../scripts/lib/mac-test-parent.sh
 source "$repo_root/scripts/lib/mac-test-parent.sh"
 # shellcheck source=../scripts/lib/temp-sweep.sh
@@ -74,9 +76,9 @@ assert_block_contains() {
 
 assert_gatekeeper_contract() {
   if rg -q 'CODE_SIGNING_(ALLOWED|REQUIRED)=NO' "$gate"; then
-    printf '%s\n' 'assertion failed: native gate still disables code signing' >&2
-    exit 1
+    printf '%s\n' 'assertion failed: native gate disables code signing' >&2; exit 1
   fi
+  assert_contains 'Strip owned test-product metadata before signing' "$gate"
   assert_contains 'build-for-testing' "$gate"
   assert_contains 'test-without-building' "$gate"
   assert_contains 'codesign --verify --deep --strict' "$gate"
@@ -120,8 +122,8 @@ assert_gatekeeper_contract() {
 assert_gatekeeper_contract
 
 assert_mac_test_parent_static_contract() {
-  assert_contains 'wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK"' "$gate"
-  assert_contains 'mac_test_env=("WILTED_TEST_TMPDIR=$WILTED_TEMP_LEG_WORK")' "$gate"
+  assert_contains 'wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK"' "$native_gate_xcode"
+  assert_contains 'mac_test_env=("WILTED_TEST_TMPDIR=$WILTED_TEMP_LEG_WORK")' "$native_gate_xcode"
   assert_contains 'wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$WILTED_TEMP_LEG_WORK"' "$gate"
   assert_contains 'TMPDIR="$WILTED_TEMP_LEG_WORK" "$@"' "$gate"
   assert_contains 'without exporting a host-owned' "$repo_root/scripts/lib/mac-test-parent.sh"
@@ -188,7 +190,7 @@ assert_build_cache_routing_contract() {
   assert_block_contains 'run_with_build_cache swiftpm "$cache_key" swift build' "$wiltedkit_block"
   assert_block_contains 'build_cache_path swiftpm "$cache_key"' "$producer_block"
   assert_block_contains 'run_with_build_cache swiftpm "$cache_key" swift build' "$producer_block"
-  xcode_test_block="$(sed -n '/^xcode_test_leg()/,/^}$/p' "$gate")"
+  xcode_test_block="$(sed -n '/^xcode_test_leg()/,/^}$/p' "$native_gate_xcode")"
   assert_block_contains 'python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test' "$xcode_test_block"
   mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
   assert_block_contains 'build_cache_path xcode "$cache_key"' "$mac_ui_block"
@@ -366,7 +368,7 @@ assert_capability_source_contract
 assert_macos_ui_leg_is_executed() {
   assert_contains 'leg_macos_ui_tests()' "$gate"
   assert_contains 'leg_macos_ui_tests' "$gate"
-  assert_contains 'run_leg "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"' "$repo_root/scripts/lib/native-gate-legs.sh"
+  assert_contains 'wilted_gate_parallel_launch "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"' "$repo_root/scripts/lib/native-gate-legs.sh"
   assert_contains '  macos-ui-tests' "$gate"
   assert_validation_contains 'macos-ui-tests) mac_ui_declared_test_count ;;'
   # A floor is a minimum, so a named journey can vanish while an unrelated new
@@ -387,7 +389,12 @@ assert_snapshot_contract() {
   assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_validation_contains 'expected_count=162'
+  assert_validation_contains 'expected_count=168'
+  assert_validation_contains 'shells=16'
+  assert_validation_contains 'WiltedPixelSnapshotTests+Rendering.swift'
+  assert_validation_contains "expected_size='240 x 260'"
+  assert_validation_contains "expected_size='56 x 260'"
+  assert_validation_contains "expected_size='256 x 56'"
   assert_validation_contains 'expected_state_ids='
   assert_validation_contains 'expected_variants='
   assert_validation_contains 'expected_selectors'
@@ -406,7 +413,7 @@ assert_snapshot_contract() {
   assert_contains 'validate_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines "$integration_root"' "$gate"
   assert_contains 'NATIVE_FORCE_SNAPSHOT_BASELINE' "$gate"
-  assert_contains 'wilted_cleanup_mac_test_hosts "$repo_root"' "$gate"
+  assert_contains 'mac-test-hosts-deferred=product-live' "$gate"
   assert_contains 'wilted_mac_test_host_pattern' "$repo_root/scripts/lib/mac-test-parent.sh"
   assert_contains 'canonical_root="$(cd -P "$repo_root"' "$repo_root/scripts/lib/mac-test-parent.sh"
   assert_contains 'cache_root="$canonical_root/.build/xcode"' "$repo_root/scripts/lib/mac-test-parent.sh"
@@ -418,11 +425,11 @@ assert_snapshot_contract() {
   assert_contains 'WILTED_NATIVE_LEG_TIMEOUT_SECONDS' "$gate"
   assert_contains 'scripts/run-bounded.py' "$gate"
   assert_contains 'WILTED_TEST_TIMEOUT_SECONDS="$timeout_seconds"' "$gate"
-  assert_contains 'native.timeout label=$label seconds=$xcode_test_timeout_seconds' "$gate"
-  assert_contains 'phase=$timeout_phase' "$gate"
-  assert_contains "grep -q 'Testing started' \"\$tmp_root/\$label.log\"" "$gate"
-  assert_contains 'native.heartbeat label=$label elapsed_seconds=$elapsed_seconds' "$gate"
-  assert_contains 'cleanup_mac_test_hosts' "$gate"
+  assert_contains 'WILTED_WORK_PHASE=build-and-test' "$native_gate_xcode"
+  assert_absent 'elapsed_seconds >= xcode_test_timeout_seconds' "$native_gate_xcode"
+  assert_contains 'xcodebuild test ' "$native_gate_xcode"
+  assert_absent 'xcodebuild build-for-testing' "$native_gate_xcode"
+  assert_absent 'xcodebuild test-without-building' "$native_gate_xcode"
 
   # The Mac result-bundle floor proves the four snapshot methods are included
   # in the executed target count, rather than merely present in source.
@@ -439,7 +446,10 @@ assert_snapshot_contract() {
     testMacPlayerShellPixelBaselines \
     testMacNavigationSelectionPixelBaselines \
     testShippingMacProducerPixelBaselines \
-    testShippingMacURLFocusPixelBaselines; do
+    testShippingMacURLFocusPixelBaselines \
+    testMacSidebarFullPixelBaselines \
+    testMacSidebarRailPixelBaselines \
+    testMacToolbarPixelBaselines; do
     assert_validation_contains "$method"
   done
 }
@@ -447,22 +457,15 @@ assert_snapshot_contract() {
 assert_snapshot_contract
 
 assert_private_simulator_contract() {
-  assert_contains 'scripts/select-ios-simulator.py' "$gate"
-  assert_contains 'gate_sim_create wilted "$purpose" "$device_type" "$runtime"' "$gate"
+  assert_contains 'scripts/select-ios-simulator.py' "$native_gate_simulator"
+  assert_contains "name = 'wilted-persistent-'" "$native_gate_simulator"
+  assert_contains 'boot_owned = True' "$native_gate_simulator"
+  assert_contains "if boot_owned and udid:" "$native_gate_simulator"
+  assert_absent "'delete', udid" "$native_gate_simulator"
   assert_contains 'gate_sweep wilted' "$gate"
-  assert_contains 'GATE_UI_TEST_LOCK_PID_FILE="$lock_pid_file" gate_ui_test_lock' "$gate"
-  assert_contains '--simulator-udid "$WILTED_UI_TEST_SIMULATOR_UDID"' "$gate"
-  assert_contains 'WILTED_UI_LOCK_PID_FILE="$lock_pid_file"' "$gate"
+  assert_contains 'gate_ui_test_lock --label persistent-tests --simulator-udid' "$native_gate_simulator"
   assert_contains 'gate_ui_test_lock --label "$label"' "$gate"
   assert_contains 'python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building' "$gate"
-  assert_contains 'leg_ios_ui_tests' "$gate"
-  assert_contains 'create_gate_simulator ios-units' "$gate"
-  assert_contains 'create_gate_simulator ios-pixel-ui' "$gate"
-  assert_contains 'cleanup_leg_simulator "$udid" "$result"' "$gate"
-  if rg -q 'find_simulator_udid|find_shutdown_iphone_udid|native.simulator.reuse|simctl list devices available \|' "$gate"; then
-    printf '%s\n' 'assertion failed: gate still selects or reuses simulators by list order' >&2
-    exit 1
-  fi
 }
 
 assert_private_simulator_contract
@@ -476,27 +479,25 @@ assert_fail_stops_its_leg_contract() {
   assert_contains 'command_status=$?' "$gate"
   assert_contains 'wilted_finish_logger' "$gate"
   assert_contains 'udid="$(create_gate_simulator ios-units)" || return 1' "$gate"
-  assert_contains 'project="$(find_project)" || return 1' "$gate"
+  assert_contains 'project="$(find_project)" || return 1' "$native_gate_xcode"
 }
 
 assert_fail_stops_its_leg_contract
 
 assert_stray_host_cleanup_contract() {
-  local xcode_leg_block mac_ui_block cleanup_line xcodebuild_line
-  xcode_leg_block="$(sed -n '/^xcode_test_leg()/,/^}$/p' "$gate")"
-  cleanup_line="$(printf '%s\n' "$xcode_leg_block" | rg -n 'cleanup_mac_test_hosts' | head -1 | cut -d: -f1)"
-  xcodebuild_line="$(printf '%s\n' "$xcode_leg_block" | rg -n 'run xcode.*xcodebuild test' | head -1 | cut -d: -f1)"
-  [[ -n "$cleanup_line" && -n "$xcodebuild_line" && "$cleanup_line" -lt "$xcodebuild_line" ]] || {
-    printf '%s\n' 'assertion failed: xcode test leg must sweep stray hosts before starting xcodebuild' >&2
-    exit 1
-  }
-  mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
-  cleanup_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'cleanup_mac_test_hosts' | head -1 | cut -d: -f1)"
-  xcodebuild_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'run_with_build_cache xcode.*xcodebuild build-for-testing' | head -1 | cut -d: -f1)"
-  [[ -n "$cleanup_line" && -n "$xcodebuild_line" && "$cleanup_line" -lt "$xcodebuild_line" ]] || {
-    printf '%s\n' 'assertion failed: macOS UI leg must sweep stray hosts before starting xcodebuild' >&2
-    exit 1
-  }
+  assert_contains 'if [[ "$native_self_test" != 1 ]]; then cleanup_mac_test_hosts; fi' "$gate"
+  assert_absent 'cleanup_mac_test_hosts' "$native_gate_xcode"
+  # One parent sweep must finish before workers launch; no sweep may race a
+  # sibling's newly built product inside the parallel leg helper.
+  python3 - "$gate" "$repo_root/scripts/lib/native-gate-parallel.sh" <<'PYORDER'
+import sys
+from pathlib import Path
+source = Path(sys.argv[1]).read_text()
+sweep = 'if [[ "$native_self_test" != 1 ]]; then cleanup_mac_test_hosts; fi'
+assert source.count(sweep) == 1
+assert source.index(sweep) < source.index('\nwilted_gate_run_legs\n')
+assert 'cleanup_mac_test_hosts' not in Path(sys.argv[2]).read_text()
+PYORDER
 }
 
 assert_stray_host_cleanup_contract
@@ -777,5 +778,18 @@ if [[ "$retained_bundle_before" != "$retained_bundle_after" ]]; then
     "assertion failed: the meta-test changed $real_bundle from $retained_bundle_before to $retained_bundle_after" >&2
   exit 1
 fi
+
+# Watch failure retention uses the shared configured lifecycle, including
+# count/summary failures; the opt-in leg never owns a second diagnostic path.
+assert_contains '|| "$name" == watchos-*' "$gate"
+assert_contains 'self_test_watchos_failure_evidence' "$gate"
+assert_contains 'self_test_watchos_zero_test_evidence' "$gate"
+
+# The shipping phone lane keeps the original eight captures and verifies pixels, not hidden labels.
+assert_validation_contains 'iOS pixel snapshot method membership must remain exactly eight'
+assert_validation_contains 'iOS pixel test does not verify painted date and Storage geometry'
+assert_contains 'VNRecognizeTextRequest()' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
+assert_contains 'value.frame.minY, label.frame.maxY' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
+assert_contains 'assertPaintedLine("Nov 14, 2023", frame: metadata.frame)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 
 printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed; the retained failure bundle is untouched)'

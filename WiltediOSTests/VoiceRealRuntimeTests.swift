@@ -62,7 +62,7 @@ final class VoiceRealRuntimeTests: XCTestCase {
     ) async throws -> Rig {
         let id = { (raw: String) in try! ItemID(rawValue: raw) }
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
-        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
         let show = LibrarySource(id: id("show"), kind: .podcastFeed, title: "The Show")
         var changes: [LibraryChange] = [.source(show)]
         for (index, spec) in episodes.enumerated() {
@@ -78,7 +78,7 @@ final class VoiceRealRuntimeTests: XCTestCase {
         let cacheRoot = scratch.appendingPathComponent("cache")
         let cache = FileMediaCache(rootURL: cacheRoot)
         let online = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server),
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
             store: FileLibraryStore(url: storeURL), deviceID: "phone", mediaCache: cache, preferences: defaults())
         await online.refresh()
 
@@ -87,10 +87,10 @@ final class VoiceRealRuntimeTests: XCTestCase {
         for spec in episodes where onPhone.contains(spec.raw) {
             let file = scratch.appendingPathComponent("incoming-\(spec.raw).wav")
             try clip.write(to: file)
-            let offer = try LibraryMediaOffer(
+            let offer = try PreparedMediaFixture.certified(LibraryMediaOffer(
                 entryID: id(spec.raw), revisionID: RevisionID(rawValue: "rev-\(spec.raw)"), contentHash: hash,
-                byteCount: Int64(clip.count), mediaType: "audio/wav", durationSeconds: Double(clipSeconds))
-            _ = try await cache.adopt(verifiedFile: file, for: offer)
+                byteCount: Int64(clip.count), mediaType: "audio/wav", durationSeconds: Double(clipSeconds)))
+            _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer, owner: "fixture-owner")
         }
 
         let engine = LibraryAudioEngine()

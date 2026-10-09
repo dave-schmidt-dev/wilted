@@ -1,5 +1,8 @@
+import AppKit
 import SwiftUI
 import XCTest
+import WiltedDomain
+import WiltedProducer
 @testable import WiltedMac
 
 /// Feeds as the reader sees it: the view is hosted headlessly and its rendered text is read back, so
@@ -14,8 +17,33 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         try WiltedMacHeadless.recognizedLines(WiltedMacFeedsView(model: model), size: tall)
     }
 
+    func testRefreshKeepExplanationIsHelpRatherThanRepeatedInlineCopy() async throws {
+        let model = await WiltedMacHeadless.model(self, arguments)
+        let view = WiltedMacFeedsView(model: model)
+        let text = try WiltedMacHeadless.recognizedText(view, size: tall).joined(separator: " ")
+        XCTAssertFalse(text.contains("Refresh only admits metadata"), text)
+        XCTAssertFalse(text.contains("Refresh adds metadata only"), text)
+        XCTAssertFalse(text.contains("Download and preparation begin"), text)
+        XCTAssertTrue(text.contains("Subscriptions"), text)
+        try retainCopyEvidence(WiltedMacHeadless.render(view, size: tall), name: "feeds-inline-light")
+        let help = try WiltedMacHeadless.recognizedText(view.refreshHelp, size: CGSize(width: 400, height: 300)).joined(separator: " ")
+        XCTAssertTrue(help.contains("Refresh"), help)
+        XCTAssertTrue(help.contains("Keep"), help)
+        try retainCopyEvidence(WiltedMacHeadless.render(view.refreshHelp, size: CGSize(width: 400, height: 300)), name: "feeds-refresh-help-light")
+        try retainCopyEvidence(WiltedMacHeadless.render(view.refreshHelp.environment(\.colorScheme, .dark), size: CGSize(width: 400, height: 300)), name: "feeds-refresh-help-dark")
+    }
+
+    private func retainCopyEvidence(_ bitmap: NSBitmapImageRep, name: String) throws {
+        let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+                                       uniformTypeIdentifier: "public.png")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func index(of prefix: String, in lines: [(text: String, top: CGFloat)]) -> Int? {
-        lines.firstIndex { $0.text.hasPrefix(prefix) || $0.text.hasPrefix("> \(prefix)") }
+        lines.firstIndex { $0.text.lowercased().hasPrefix(prefix.lowercased())
+            || $0.text.lowercased().hasPrefix("> \(prefix.lowercased())") }
     }
 
     func testFeedsDrawsOneHeadingAndOneMessageWithOneUndoPerOperation() async throws {
@@ -46,7 +74,7 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         XCTAssertLessThan(heading, refreshed, "the heading, then the operation status")
         XCTAssertLessThan(refreshed, subscriptions, "active operations before subscriptions")
         XCTAssertLessThan(subscriptions, offList, "Off the list last")
-        XCTAssertEqual(shown.map(\.text).filter { $0.contains("Off the list") }.count, 1)
+        XCTAssertEqual(shown.map(\.text).filter { $0.localizedCaseInsensitiveContains("Off the list") }.count, 1)
     }
 
     func testPerFeedCountsExcludeRetiredAndHiddenEpisodes() async throws {
@@ -71,9 +99,46 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
 
         XCTAssertEqual(model.larderEpisodeCount(forFeedID: feedID), before + 1,
                        "only the visible, unretired episode is counted")
-        let text = try lines(model).map(\.text)
-        let noun = before + 1 == 1 ? "episode" : "episodes"
-        XCTAssertTrue(text.contains { $0.contains("\(before + 1) \(noun) from this feed") }, "\(text)")
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
+        XCTAssertTrue(model.subscriptions.allSatisfy { board.isLoaded($0.id) })
+        let kept = model.episodes.filter {
+            $0.feedID == feedID && $0.removalKind == nil && model.podcastQueueIDs.contains($0.id)
+        }.count
+        XCTAssertEqual(board.keptCount(forFeed: feedID), kept)
+        let text = try WiltedMacHeadless.recognizedText(
+            WiltedMacFeedsView(model: model, policyBoard: board), size: tall).joined(separator: " ")
+        XCTAssertTrue(text.contains("\(kept) kept"), text)
+        XCTAssertTrue(text.contains("No limit"), text)
+        XCTAssertTrue(text.contains("0 waiting for space"), text)
+        XCTAssertFalse(text.contains("Capacity loading"), text)
+    }
+
+    /// Capacity follows committed Keep/Skip/removal, while raw feed metadata retains all three records.
+    func testCapacityRendersCommittedKeepRetirementAndDismissalExcludingRawMetadataCount() async throws {
+        let fixture = try await WiltedMacCapacityCountFixture.make(self, autoKeep: .off)
+        let model = fixture.model
+        try await fixture.assertRendered(kept: 1, waiting: 0)
+        let added = try XCTUnwrap(model.feedsEpisodes.first { $0.id == fixture.ids[1] })
+        model.decideFeedEpisodes(.keep, episodes: [added])
+        await WiltedMacHeadless.drainDecisions(model)
+        await model.refreshPodcastQueueState()
+        XCTAssertTrue(model.podcastQueueIDs.contains(added.id))
+        try await fixture.assertRendered(kept: 2, waiting: 0)
+        let retired = try XCTUnwrap(model.episodes.first { $0.id == fixture.ids[0] })
+        model.decideFeedEpisodes(.skip, episodes: [retired])
+        await WiltedMacHeadless.drainDecisions(model)
+        await model.refreshPodcastQueueState()
+        XCTAssertEqual(model.episodes.first { $0.id == retired.id }?.removalKind, .retired)
+        XCTAssertFalse(model.larderVisibleEpisodes.contains { $0.id == retired.id })
+        try await fixture.assertRendered(kept: 1, waiting: 0)
+        let dismissed = try XCTUnwrap(model.episodes.first { $0.id == added.id })
+        model.removeEpisode(dismissed)
+        await WiltedMacHeadless.drainDecisions(model)
+        await model.refreshPodcastQueueState()
+        XCTAssertFalse(model.podcastQueueIDs.contains(dismissed.id), "assert after the durable removal, not the optimistic hide")
+        XCTAssertFalse(model.larderVisibleEpisodes.contains { $0.id == dismissed.id })
+        try await fixture.assertRendered(kept: 0, waiting: 0)
     }
 
     func testKeepIsFilledAndSkipIsOutlined() throws {
@@ -101,5 +166,73 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         }
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "WiltedMacPodcastOperationMessage(model: model)", in: source), 1,
                        "the message component is mounted once")
+    }
+}
+
+/// A real store-backed capacity snapshot shared by the count regressions; no fabricated board state.
+@MainActor
+struct WiltedMacCapacityCountFixture {
+    let model: WiltedMacModel
+    let feedID: String
+    let ids: [String]
+
+    static func make(_ test: XCTestCase, autoKeep: FeedAutomationOverride) async throws -> Self {
+        let feedURL = URL(string: "https://fixtures.example.test/capacity.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let ids = try (0..<3).map { index in
+            try ItemID.derivePodcastEpisode(
+                feedURL: feedURL, rssGUID: "capacity-episode-\(index)",
+                enclosureURL: URL(string: "https://fixtures.example.test/\(index).mp3")!)
+        }
+        let timestamp = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: test.wiltedTemporaryDirectory("capacity-counts"),
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: try PodcastFeed(
+                    itemID: feedID, canonicalURL: feedURL, title: "Capacity Feed", createdAt: timestamp))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: timestamp))
+                for (index, id) in ids.enumerated() {
+                    try await store.save(episode: try PodcastEpisode(
+                        itemID: id, feedID: feedID, feedURL: feedURL, rssGUID: "capacity-episode-\(index)",
+                        title: "Capacity episode \(index)", publishedTime: Timestamp(timestamp.date.addingTimeInterval(Double(index))),
+                        enclosureURL: URL(string: "https://fixtures.example.test/\(index).mp3")!,
+                        enclosureMediaType: "audio/mpeg", createdAt: timestamp))
+                }
+                try await store.replacePodcastQueue(try PodcastQueueState(episodeIDs: [ids[0]], currentEpisodeID: nil))
+                try await store.save(episodeDecision: .init(
+                    episodeID: ids[0], decision: .keep, source: .manual, decidedAt: timestamp))
+                try await store.save(feedAutomationPolicy: .init(
+                    autoKeep: autoKeep, autoDownload: .off, autoPrepare: .off, keptLimit: .explicit(2)), for: feedID)
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral())
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        test.addTeardownBlock { await model.close() }
+        XCTAssertEqual(model.startupState, .ready, "the seeded store must finish real bootstrap")
+        let store = try XCTUnwrap(model.store, "bootstrap must publish the seeded store")
+        let snapshot = try await store.podcastLibrarySnapshot()
+        XCTAssertEqual(Set(snapshot.episodes.map(\.itemID)), Set(ids))
+        XCTAssertEqual(Set(model.episodes.map(\.id)), Set(ids.map(\.rawValue)),
+                       "real bootstrap must load the seeded episodes before capacity reload")
+        return Self(model: model, feedID: feedID.rawValue, ids: ids.map(\.rawValue))
+    }
+
+    func assertRendered(kept: Int, waiting: Int, file: StaticString = #filePath, line: UInt = #line) async throws {
+        XCTAssertEqual(model.startupState, .ready, file: file, line: line)
+        _ = try XCTUnwrap(model.store, "capacity reload requires a booted real store", file: file, line: line)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
+        XCTAssertTrue(board.isLoaded(feedID), file: file, line: line)
+        XCTAssertEqual(board.keptCount(forFeed: feedID), kept, file: file, line: line)
+        XCTAssertEqual(board.waitingEpisodes(forFeed: feedID).count, waiting, file: file, line: line)
+        XCTAssertEqual(model.subscriptions.first { $0.id == feedID }?.episodeCount, 3, "raw snapshot retains every metadata row", file: file, line: line)
+        let text = try WiltedMacHeadless.recognizedText(
+            WiltedMacFeedsView(model: model, policyBoard: board).environment(\.wiltedTextScale, .largest),
+            size: CGSize(width: 1000, height: 2000)).joined(separator: " ")
+        XCTAssertTrue(text.contains("\(kept) of 2 kept"), text, file: file, line: line)
+        XCTAssertTrue(text.contains("\(waiting) waiting for space"), text, file: file, line: line)
+        XCTAssertFalse(text.contains("3 of 2 kept"), "raw snapshot count must never masquerade as kept capacity: \(text)", file: file, line: line)
+        XCTAssertFalse(text.contains("Capacity loading"), text, file: file, line: line)
     }
 }

@@ -124,6 +124,70 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertTrue(condition(), file: file, line: line)
     }
 
+    func testNaturalCompletionInvalidationClearsResumeAccessButPreservesCapturedOwnership() async throws {
+        let rig = makeRig()
+        XCTAssertTrue(rig.player.start(item, at: 0))
+        rig.player.setRate(1.5)
+        let retainedRemote = try XCTUnwrap(rig.remote.handler)
+        rig.engine.finishNaturally()
+        await waitUntil { rig.player.status == .ended }
+        let completion = try XCTUnwrap(rig.player.naturalCompletion(after: item.entryID))
+        var commanded = 0
+        rig.player.onCommand = { commanded += 1 }
+        rig.player.invalidateLoadedItem()
+        XCTAssertNil(rig.player.item)
+        XCTAssertNil(rig.remote.handler)
+        XCTAssertEqual(rig.nowPlaying.clears, 1)
+        XCTAssertFalse(rig.engine.isPlaying)
+        XCTAssertEqual(rig.player.status, .idle)
+        XCTAssertEqual(completion.duration, 600)
+        XCTAssertEqual(completion.rate, 1.5)
+        XCTAssertTrue(rig.player.owns(completion))
+        XCTAssertEqual(commanded, 0)
+        XCTAssertFalse(retainedRemote(.play), "an old remote closure cannot reload invalidated audio")
+        XCTAssertTrue(rig.player.owns(completion))
+        XCTAssertFalse(rig.player.play(), "direct play has no loaded item to replay")
+        XCTAssertFalse(rig.player.owns(completion), "a real direct play command still supersedes natural continuation")
+        XCTAssertEqual(commanded, 1)
+        XCTAssertEqual(rig.engine.loads, [item.fileURL])
+    }
+
+    func testEveryListenerTransportRevokesInvalidatedNaturalCompletion() async throws {
+        for command in 0..<4 {
+            let rig = makeRig()
+            XCTAssertTrue(rig.player.start(item, at: 0))
+            rig.engine.finishNaturally()
+            await waitUntil { rig.player.status == .ended }
+            let completion = try XCTUnwrap(rig.player.naturalCompletion(after: item.entryID))
+            rig.player.invalidateLoadedItem()
+            switch command {
+            case 0: rig.player.pause()
+            case 1: rig.player.seek(to: 50)
+            case 2: rig.player.stop()
+            default:
+                let next = LibraryPlayer.Item(entryID: try ItemID(rawValue: "entry-2"), title: "Next", showTitle: "Show",
+                    fileURL: URL(fileURLWithPath: "/nonexistent/next.mp3"))
+                XCTAssertTrue(rig.player.start(next, at: 0))
+            }
+            XCTAssertFalse(rig.player.owns(completion))
+            XCTAssertNil(rig.player.naturalCompletion(after: item.entryID))
+            rig.player.stop()
+        }
+    }
+
+    func testPausedLibraryInvalidationRemainsACommandAndHasNoCompletionOwnership() {
+        let rig = makeRig()
+        XCTAssertTrue(rig.player.start(item, at: 100))
+        rig.player.pause()
+        var commanded = 0
+        rig.player.onCommand = { commanded += 1 }
+        rig.player.invalidateLoadedItem()
+        XCTAssertEqual(commanded, 1)
+        XCTAssertNil(rig.player.item)
+        XCTAssertNil(rig.player.naturalCompletion(after: item.entryID))
+        XCTAssertFalse(rig.player.play())
+    }
+
     // MARK: Play, pause, seek
 
     func testPlayLoadsActivatesSessionAndPublishesNowPlaying() {

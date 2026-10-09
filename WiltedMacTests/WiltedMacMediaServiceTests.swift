@@ -67,7 +67,8 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         try Data(repeating: UInt8(revision.utf8.last ?? 1), count: bytes).write(to: file)
         return WiltedMacReadyAudio(
             revisionID: try RevisionID(rawValue: revision), contentHash: try MediaHash.sha256(fileAt: file),
-            byteCount: Int64(bytes), mediaType: "audio/mp4", durationSeconds: 60, fileURL: file
+            byteCount: Int64(bytes), mediaType: "audio/mp4", durationSeconds: 60, fileURL: file,
+            preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_800_000_000)))
         )
     }
 
@@ -240,7 +241,8 @@ final class WiltedMacMediaServiceTests: XCTestCase {
 
         await runtime.consume(try cached(rig, entry, "rev-1", from: tabletID, intentID: "a-4"))
         offers = try await rig.phone.mediaOffers()
-        XCTAssertTrue(offers.isEmpty)
+        XCTAssertEqual(offers.first?.state, .notReady)
+        XCTAssertFalse(offers.contains { $0.isPrepared })
         let held = await runtime.service.accountedAssetCount
         XCTAssertEqual(held, 0)
     }
@@ -266,7 +268,8 @@ final class WiltedMacMediaServiceTests: XCTestCase {
 
         await runtime.consume(try cached(rig, entry, "rev-2", from: tabletID, intentID: "v-4"))
         offers = try await rig.phone.mediaOffers()
-        XCTAssertTrue(offers.isEmpty)
+        XCTAssertEqual(offers.first?.state, .notReady)
+        XCTAssertFalse(offers.contains { $0.isPrepared })
     }
 
     func testAnAckForAnUnknownRevisionChangesNothing() async throws {
@@ -297,7 +300,8 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         rig.clock.advance(120)
         await runtime.service.sweepExpired()
         offers = try await rig.phone.mediaOffers()
-        XCTAssertTrue(offers.isEmpty)
+        XCTAssertEqual(offers.first?.state, .notReady)
+        XCTAssertFalse(offers.contains { $0.isPrepared })
     }
 
     func testAccountingSurvivesARestart() async throws {
@@ -310,7 +314,8 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         await restarted.consume(try cached(rig, entry, "rev-1", from: phoneID, intentID: "d-2"))
 
         let offers = try await rig.phone.mediaOffers()
-        XCTAssertTrue(offers.isEmpty)
+        XCTAssertEqual(offers.first?.state, .notReady)
+        XCTAssertFalse(offers.contains { $0.isPrepared })
     }
 
     // MARK: Poller

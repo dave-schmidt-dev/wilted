@@ -20,7 +20,7 @@ suite="$repo_root/Producer/Workers/test_wilted_pipeline.py"
 output_file="$(mktemp -t wilted-pipeline-worker.XXXXXX)"
 trap 'rm -f "$output_file"' EXIT
 pipeline_python="${WILTED_PIPELINE_PYTHON:-$repo_root/Producer/Runtime/.venv/bin/python}"
-expected_test_files=21
+expected_test_files=22
 
 [[ -x "$pipeline_python" ]] || { printf 'missing required Python interpreter: %s\n' "$pipeline_python" >&2; exit 1; }
 [[ -f "$worker" ]] || { printf 'missing worker: %s\n' "$worker" >&2; exit 1; }

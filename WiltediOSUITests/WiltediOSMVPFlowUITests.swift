@@ -163,6 +163,178 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         assertNoLiveTransport(in: app)
     }
 
+    /// The native cancel action keeps the real saved mirror despite an empty fixture Mac queue.
+    func testLibraryRootKeepHeldPreservesSavedLibraryAndDownloads() {
+        let app = launchLibraryRoot(.heldAccount)
+        let review = openHeldSettings(in: app)
+        assertCachedEpisodes(2, in: app)
+        review.tap()
+        guard let alert = accountAlert(in: app),
+              let action = accountAlertAction(identifier: "wilted-account-keep-held", label: "Keep held", in: alert) else { return }
+        action.tap()
+        XCTAssertTrue(waitForDisappearance(of: alert))
+        XCTAssertTrue(review.exists)
+        assertCachedEpisodes(2, in: app)
+        app.buttons["wilted-library-settings-done"].tap()
+        for episode in 1...2 {
+            XCTAssertTrue(app.descendants(matching: .any)["wilted-library-row-fixture-episode-\(episode)"].exists)
+        }
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-library-empty"].exists)
+        _ = openHeldSettings(in: app)
+        assertCachedEpisodes(2, in: app)
+        assertNoLiveTransport(in: app)
+    }
+
+    /// Native approval executes production recovery, removes scratch audio and fetches the empty Mac.
+    func testLibraryRootConfirmedReplacementClearsDownloadsAndFetchesEmptyLibrary() {
+        let app = launchLibraryRoot(.heldAccount)
+        let review = openHeldSettings(in: app)
+        assertCachedEpisodes(2, in: app)
+        review.tap()
+        guard let alert = accountAlert(in: app),
+              let action = accountAlertAction(identifier: "wilted-account-confirm", label: "Replace saved library", in: alert) else { return }
+        action.tap()
+        XCTAssertTrue(waitForDisappearance(of: alert))
+        XCTAssertTrue(waitForDisappearance(of: review))
+        let status = app.staticTexts["wilted-library-settings-sync-status"]
+        XCTAssertTrue(waitForPrefix("Fetched · ", on: status), status.label)
+        let count = app.staticTexts["wilted-library-settings-cache-size"]
+        XCTAssertTrue(waitForLabel("None", on: count), count.label)
+        app.buttons["wilted-library-settings-done"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-library-empty"].waitForExistence(timeout: 10))
+        for episode in 1...2 {
+            XCTAssertFalse(app.descendants(matching: .any)["wilted-library-row-fixture-episode-\(episode)"].exists)
+        }
+        XCTAssertFalse(app.buttons["wilted-player-mini-toggle"].exists)
+        _ = settingsSyncStatus(in: app)
+        XCTAssertFalse(app.buttons["wilted-use-current-account"].exists)
+        assertCachedEpisodes(0, in: app)
+        assertNoLiveTransport(in: app)
+    }
+
+    /// Native presses exercise the shipping hold gesture over real prepared fixture audio.
+    func testLibraryRootTapSkipsAndHeldSeekingStopOnRelease() throws {
+        let app = launchLibraryRoot(.normal)
+        let play = app.buttons["wilted-library-play-\(Self.firstEpisode)"]
+        XCTAssertTrue(play.waitForExistence(timeout: 10))
+        play.tap()
+        let miniToggle = app.buttons["wilted-player-mini-toggle"]
+        XCTAssertTrue(waitForLabel("Pause", on: miniToggle))
+        miniToggle.tap()
+        XCTAssertTrue(waitForLabel("Play", on: miniToggle))
+        XCTAssertEqual(fullPlayerStatus(in: app), "Paused")
+
+        let scrubber = app.descendants(matching: .any)["wilted-player-scrubber"].firstMatch
+        XCTAssertTrue(scrubber.waitForExistence(timeout: 5))
+        let initial = try holdJourneyPosition(scrubber)
+        let forward = app.buttons["wilted-player-forward"]
+        let backward = app.buttons["wilted-player-back"]
+        XCTAssertTrue(forward.isHittable)
+        XCTAssertTrue(backward.isHittable)
+        forward.tap()
+        XCTAssertEqual(try holdJourneyPosition(scrubber), initial + 30)
+        forward.tap()
+        XCTAssertEqual(try holdJourneyPosition(scrubber), initial + 60)
+        backward.tap()
+        let beforeForwardHold = try holdJourneyPosition(scrubber)
+        XCTAssertEqual(beforeForwardHold, initial + 45)
+
+        forward.press(forDuration: 1.4)
+        let afterForwardHold = try holdJourneyPosition(scrubber)
+        XCTAssertGreaterThan(afterForwardHold - beforeForwardHold, 0)
+        XCTAssertLessThan(afterForwardHold - beforeForwardHold, 15,
+                          "8x hold movement must exclude an accidental 30-second tap")
+        XCTAssertTrue(waitForLabel("Play", on: app.buttons["wilted-player-toggle"]))
+        let forwardReleased = try XCTUnwrap(scrubber.value as? String)
+        let forwardChanges = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != %@", forwardReleased), object: scrubber)
+        forwardChanges.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [forwardChanges], timeout: 1.4), .completed,
+                       "release must stop seeking while the prepared fixture remains paused")
+
+        backward.press(forDuration: 1.4)
+        let afterBackwardHold = try holdJourneyPosition(scrubber)
+        XCTAssertGreaterThan(afterForwardHold - afterBackwardHold, 0)
+        XCTAssertLessThan(afterForwardHold - afterBackwardHold, 15,
+                          "a recognized backward hold must not also perform its 15-second tap")
+        XCTAssertTrue(waitForLabel("Play", on: app.buttons["wilted-player-toggle"]))
+        let backwardReleased = try XCTUnwrap(scrubber.value as? String)
+        let backwardChanges = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != %@", backwardReleased), object: scrubber)
+        backwardChanges.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [backwardChanges], timeout: 1.4), .completed)
+
+        app.buttons["wilted-player-done"].tap()
+        let miniScrubber = app.descendants(matching: .any)["wilted-player-mini-scrubber"].firstMatch
+        XCTAssertTrue(miniScrubber.waitForExistence(timeout: 5))
+        XCTAssertEqual(try holdJourneyPosition(miniScrubber), afterBackwardHold)
+        let miniBack = app.buttons["wilted-player-mini-back"]
+        XCTAssertTrue(miniBack.isHittable)
+        miniBack.press(forDuration: 1.4)
+        let afterMiniHold = try holdJourneyPosition(miniScrubber)
+        XCTAssertGreaterThan(afterBackwardHold - afterMiniHold, 0)
+        XCTAssertLessThan(afterBackwardHold - afterMiniHold, 15)
+        XCTAssertTrue(waitForLabel("Play", on: miniToggle))
+        let miniReleased = try XCTUnwrap(miniScrubber.value as? String)
+        let miniChanges = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != %@", miniReleased), object: miniScrubber)
+        miniChanges.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [miniChanges], timeout: 1.4), .completed)
+        XCTAssertEqual(fullPlayerStatus(in: app), "Paused")
+        XCTAssertEqual(try holdJourneyPosition(scrubber), afterMiniHold)
+        assertNoLiveTransport(in: app)
+    }
+
+    private func openHeldSettings(in app: XCUIApplication) -> XCUIElement {
+        let status = settingsSyncStatus(in: app)
+        XCTAssertTrue(status.label.hasPrefix("Needs review"), status.label)
+        let settings = app.descendants(matching: .any)["wilted-library-settings"]
+        let review = settings.buttons["wilted-use-current-account"]
+        for _ in 0..<6 where !review.isHittable { app.swipeUp() }
+        XCTAssertTrue(review.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(review.isHittable)
+        return review
+    }
+
+    private func accountAlert(in app: XCUIApplication) -> XCUIElement? {
+        let alerts = app.alerts.matching(NSPredicate(format: "label == %@", "Review this library"))
+        let unique = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in alerts.count == 1 }, object: nil)
+        guard XCTWaiter.wait(for: [unique], timeout: 5) == .completed else {
+            XCTFail("Expected one native account review alert. \(app.debugDescription)")
+            return nil
+        }
+        let alert = alerts.element(boundBy: 0)
+        XCTAssertNotNil(accountAlertAction(identifier: "wilted-account-keep-held", label: "Keep held", in: alert))
+        XCTAssertNotNil(accountAlertAction(identifier: "wilted-account-confirm", label: "Replace saved library", in: alert))
+        let message = alert.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " ")
+        XCTAssertTrue(message.contains("attempt removal of its old downloads"), message)
+        XCTAssertTrue(message.contains("Keep held preserves"), message)
+        return alert
+    }
+
+    /// Native alert accessibility exposes a parent and child Button for each action.
+    private func accountAlertAction(identifier: String, label: String, in alert: XCUIElement) -> XCUIElement? {
+        let leaves = alert.buttons.matching(identifier: identifier).allElementsBoundByIndex.filter {
+            $0.label == label && $0.descendants(matching: .button).count == 0
+        }
+        guard leaves.count == 1 else {
+            XCTFail("Expected one leaf action \(identifier). \(alert.debugDescription)")
+            return nil
+        }
+        let action = leaves[0]
+        guard action.isHittable else {
+            XCTFail("Native account action is not hittable: \(identifier). \(alert.debugDescription)")
+            return nil
+        }
+        return action
+    }
+
+    private func assertCachedEpisodes(_ expected: Int, in app: XCUIApplication) {
+        let count = app.staticTexts["wilted-library-settings-cache-size"]
+        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        XCTAssertTrue(expected == 0 ? count.label == "None" : count.label.hasPrefix("\(expected) episodes"), count.label)
+    }
+
     private static let firstEpisode = "fixture-episode-1"
     /// `LibraryUITestFixture.startDelay` (3 s) less a margin for the two processes' clocks.
     private static let delayedStartHold: TimeInterval = 2.5
@@ -176,6 +348,7 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         case delayedStart = "delayed-start"
         case startError = "start-error"
         case throttled
+        case heldAccount = "held-account"
     }
 
     /// Launches the production `LibraryRoot` over the fixture and checks it is that root.
@@ -264,4 +437,23 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         )
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
+    /// Parses the shipping LibraryPlayerText.position clock, never slider percentages.
+    private func holdJourneyPosition(_ scrubber: XCUIElement) throws -> Double {
+        let value = try XCTUnwrap(scrubber.value as? String)
+        let clocks = value.components(separatedBy: " of ")
+        XCTAssertEqual(clocks.count, 2, value)
+        XCTAssertEqual(clocks.last, "10:00", "the prepared fixture engine has 600-second duration")
+        let clock = try XCTUnwrap(clocks.first)
+        let parts = clock.split(separator: ":", omittingEmptySubsequences: false)
+        XCTAssertTrue(parts.count == 2 || parts.count == 3, value)
+        var seconds = 0
+        for part in parts {
+            let component = try XCTUnwrap(Int(part), value)
+            XCTAssertGreaterThanOrEqual(component, 0, value)
+            seconds = seconds * 60 + component
+        }
+        return Double(seconds)
+    }
+
+
 }

@@ -17,7 +17,7 @@ struct WiltedMacLibrarySyncActivity: Equatable, Sendable {
     var isSyncing = false
     /// Changes the last pass computed that iCloud has not acknowledged; nil when unknown.
     var unsentChanges: Int?
-    /// When iCloud last acknowledged library changes this Mac sent.
+    /// When iCloud last acknowledged library content or an author receipt this Mac sent.
     var lastSentAt: Date?
     /// The last publish pass failed for a reason other than a pause (throttle or account).
     var sendFailed = false
@@ -29,12 +29,15 @@ struct WiltedMacLibrarySyncActivity: Equatable, Sendable {
     var accountReviewed = false
     /// At least one publish pass finished this launch.
     var hasFinishedPass = false
+    /// Durable author evidence, kept distinct from this launch’s local send/read times.
+    var publication: LibraryPublication?
+    var publicationOwner: String?
 
-    mutating func recordSend(acknowledged: Int, unsent: Int?, at date: Date) {
+    mutating func recordSend(acknowledged: Int, unsent: Int?, publicationCompleted: Bool = false, at date: Date) {
         hasFinishedPass = true
         sendFailed = false
         unsentChanges = unsent
-        guard acknowledged > 0 else { return }
+        guard acknowledged > 0 || publicationCompleted else { return }
         lastSentAt = date
         accountReviewed = false
     }
@@ -64,7 +67,7 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
     }
 
     static let reviewTitle = "Review this library"
-    static let reviewExplanation = "Keep it held, or deliberately allow this library for the reviewed account."
+    static let reviewExplanation = WiltedScreenCopy.macAccountReviewDetail
     static let approveReview = "Use reviewed account"
     static let keepHeld = "Keep held"
     /// Says whose times the card shows, so a send is never read as the phone's fetch.
@@ -242,6 +245,19 @@ extension WiltedMacModel {
     /// fixture scripts it. A selected publisher never falls back to the legacy "Disabled" card.
     var showsLibraryPublisherSync: Bool {
         librarySyncFixture != nil || libraryRuntimeSelection().engine == .libraryPublisher
+    }
+
+    var libraryPublicationVerified: Bool {
+        guard let owner = librarySyncActivity.publicationOwner else { return false }
+        return libraryAccount?.approvedPublicationOwner == owner && libraryAccountStatus == .active
+    }
+    var libraryPublicationSummary: String {
+        WiltedPublicationAge.summary(librarySyncActivity.publication?.publishedAt, verified: libraryPublicationVerified)
+    }
+    var libraryPublicationDetail: String { WiltedPublicationAge.detail(librarySyncActivity.publication?.publishedAt) }
+    var libraryPublicationQualifier: String? {
+        WiltedPublicationAge.qualifier(verified: libraryPublicationVerified, pending: librarySyncActivity.isSyncing,
+            failed: librarySyncActivity.sendFailed || librarySyncActivity.checkFailed, held: libraryAccountStatus?.needsReview == true)
     }
 
     var librarySyncStatus: WiltedMacLibrarySyncStatus {

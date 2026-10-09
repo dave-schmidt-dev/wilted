@@ -9,6 +9,24 @@ import XCTest
 private actor TempMediaCache: MediaCacheStore {
     let root: URL
     private(set) var adoptCount = 0
+    private let ownerEpoch = UUID()
+    private let cacheGeneration = UUID()
+    private var revocation: UInt64 = 0
+    private var offers: [String: LibraryMediaOffer] = [:]
+    private var returnGate: FetcherAwaitGate?
+    private var adoptGate: FetcherAwaitGate?
+    func holdCacheReturn(_ gate: FetcherAwaitGate) { returnGate = gate }
+    func holdAdoptReturn(_ gate: FetcherAwaitGate) { adoptGate = gate }
+    func admission(for offer: LibraryMediaOffer) -> MediaCacheAdmission {
+        MediaCacheAdmission(entryID: offer.entryID, ownerToken: "owner", libraryScope: "scope",
+            ownerEpoch: ownerEpoch, entryRevocationEpoch: revocation,
+            cacheGeneration: cacheGeneration, transportGeneration: 0)
+    }
+    func permits(_ token: MediaCacheAdmission, for offer: LibraryMediaOffer) -> Bool {
+        offer.isPrepared && token == admission(for: offer)
+    }
+    func revoke() { revocation += 1 }
+
 
     init(root: URL) { self.root = root }
 
@@ -16,12 +34,16 @@ private actor TempMediaCache: MediaCacheStore {
         root.appendingPathComponent("\(offer.entryID.rawValue)-\(offer.revisionID?.rawValue ?? "none")-\(offer.contentHash.dropFirst(7).prefix(16))")
     }
 
-    func cachedFile(for offer: LibraryMediaOffer) -> URL? {
+    func cachedFile(for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async -> URL? {
+        guard permits(admission, for: offer), offers[location(offer).path] == offer else { return nil }
         let url = location(offer)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        await returnGate?.hold()
+        return exists ? url : nil
     }
 
-    func adopt(verifiedFile: URL, for offer: LibraryMediaOffer) throws -> URL {
+    func adopt(verifiedFile: URL, for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async throws -> URL {
+        guard permits(admission, for: offer) else { throw CocoaError(.fileWriteUnknown) }
         let destination = location(offer)
         if FileManager.default.fileExists(atPath: destination.path) {
             try? FileManager.default.removeItem(at: verifiedFile)
@@ -29,7 +51,9 @@ private actor TempMediaCache: MediaCacheStore {
         }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.moveItem(at: verifiedFile, to: destination)
+        offers[destination.path] = offer
         adoptCount += 1
+        await adoptGate?.hold()
         return destination
     }
 
@@ -43,6 +67,7 @@ private actor TempMediaCache: MediaCacheStore {
 
 /// Never delivers, and reports one early burst of progress; honors cancellation.
 private struct StalledTransport: LibraryTransport {
+    func verifiedOwnerToken() async -> String? { "owner" }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { fatalError() }
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { fatalError() }
     func send(intent: LibraryIntent) async throws {}
@@ -88,7 +113,8 @@ final class MediaFetcherTests: XCTestCase {
         return try LibraryMediaOffer(
             entryID: entry, revisionID: revision,
             contentHash: hash ?? MediaHash.prefix + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
-            byteCount: byteCount ?? Int64(data.count), mediaType: "audio/mp4", durationSeconds: 60
+            byteCount: byteCount ?? Int64(data.count), mediaType: "audio/mp4", durationSeconds: 60,
+            preparation: .init(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)))
         )
     }
 
@@ -97,10 +123,36 @@ final class MediaFetcherTests: XCTestCase {
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
         let source = try makeFile(payload)
         let cache = TempMediaCache(root: scratch.appendingPathComponent("cache"))
-        return (InMemoryLibraryTransport(deviceID: "mac", server: server), source, cache)
+        return (InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "owner"), source, cache)
     }
 
     // MARK: model
+
+    func testCorruptedExactCacheIsNotReturnedAfterOfferWithdrawal() async throws {
+        let (transport, source, cache) = try await fixture([1, 2, 3, 4])
+        let ready = try offer(for: source)
+        try await transport.publishMedia(offer: ready, fileURL: source)
+        let fetcher = MediaFetcher(cache: cache)
+        guard case let .cached(file) = try await fetcher.fetch(ready, from: transport, admission: await cache.admission(for: ready)) else { return XCTFail("initial cache") }
+        try Data([4, 3, 2, 1]).write(to: file)
+        try await transport.removeMedia(entryID: entry)
+        let result = try await fetcher.fetch(ready, from: transport, admission: await cache.admission(for: ready))
+        guard case .failed(.deliveryFailed) = result else { return XCTFail("corrupt cache reused: \(result)") }
+    }
+
+    func testSingleTargetVerifierRejectsSymlinkAndSameSizeReplacement() async throws {
+        let file = try makeFile([1, 2, 3, 4])
+        let expected = try offer(for: file)
+        let valid = await MediaFetcher.verifies(file, byteCount: 4, contentHash: expected.contentHash)
+        XCTAssertTrue(valid)
+        let link = scratch.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        let linked = await MediaFetcher.verifies(link, byteCount: 4, contentHash: expected.contentHash)
+        XCTAssertFalse(linked)
+        try Data([4, 3, 2, 1]).write(to: file)
+        let changed = await MediaFetcher.verifies(file, byteCount: 4, contentHash: expected.contentHash)
+        XCTAssertFalse(changed)
+    }
 
     func testOfferValidationAndCoding() throws {
         let file = try makeFile([1, 2, 3])
@@ -177,7 +229,7 @@ final class MediaFetcherTests: XCTestCase {
         let ready = try offer(for: source)
         try await transport.publishMedia(offer: ready, fileURL: source)
         let log = StateLog()
-        let outcome = try await MediaFetcher(cache: cache).fetch(ready, from: transport) { log.append($0) }
+        let outcome = try await MediaFetcher(cache: cache).fetch(ready, from: transport, admission: await cache.admission(for: ready)) { log.append($0) }
         guard case let .cached(url) = outcome else { return XCTFail("\(outcome)") }
         XCTAssertEqual(try Data(contentsOf: url), try Data(contentsOf: source))
         let states = log.states
@@ -198,10 +250,10 @@ final class MediaFetcherTests: XCTestCase {
         let delivered = try makeFile(Array(repeating: 9, count: 100), name: "delivered")
         let wrong = try offer(for: source, byteCount: 100)
         let log = StateLog()
-        let outcome = try await MediaFetcher(cache: cache).accept(deliveredFile: delivered, for: wrong) { log.append($0) }
+        let outcome = try await MediaFetcher(cache: cache).accept(deliveredFile: delivered, for: wrong, admission: await cache.admission(for: wrong)) { log.append($0) }
         XCTAssertEqual(outcome, .failed(.hashMismatch))
         XCTAssertFalse(FileManager.default.fileExists(atPath: delivered.path), "bad file must be deleted")
-        let cached = await cache.cachedFile(for: wrong)
+        let cached = await cache.cachedFile(for: wrong, admission: await cache.admission(for: wrong))
         XCTAssertNil(cached)
         XCTAssertEqual(log.states.last, .failed(.hashMismatch))
     }
@@ -210,7 +262,7 @@ final class MediaFetcherTests: XCTestCase {
         let (_, source, cache) = try await fixture()
         let delivered = try makeFile(Array(repeating: 9, count: 50), name: "short")
         let claimed = try offer(for: source, byteCount: 51)
-        let outcome = try await MediaFetcher(cache: cache).accept(deliveredFile: delivered, for: claimed)
+        let outcome = try await MediaFetcher(cache: cache).accept(deliveredFile: delivered, for: claimed, admission: await cache.admission(for: claimed))
         XCTAssertEqual(outcome, .failed(.byteCountMismatch(expected: 51, actual: 50)))
         XCTAssertFalse(FileManager.default.fileExists(atPath: delivered.path))
         let adopted = await cache.adoptCount
@@ -224,7 +276,7 @@ final class MediaFetcherTests: XCTestCase {
         let log = StateLog()
         let started = ContinuousClock.now
         let outcome = try await MediaFetcher(cache: cache, watchdog: .milliseconds(300))
-            .fetch(ready, from: StalledTransport()) { log.append($0) }
+            .fetch(ready, from: StalledTransport(), admission: await cache.admission(for: ready)) { log.append($0) }
         XCTAssertEqual(outcome, .failed(.timedOut))
         XCTAssertEqual(log.states.last, .failed(.timedOut))
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(10))
@@ -234,7 +286,7 @@ final class MediaFetcherTests: XCTestCase {
     func testNotReadyOfferNeverFetches() async throws {
         let cache = TempMediaCache(root: scratch.appendingPathComponent("cache"))
         let log = StateLog()
-        let outcome = try await MediaFetcher(cache: cache).fetch(.notReady(entryID: entry), from: StalledTransport()) { log.append($0) }
+        let outcome = try await MediaFetcher(cache: cache).fetch(.notReady(entryID: entry), from: StalledTransport(), admission: await cache.admission(for: .notReady(entryID: entry))) { log.append($0) }
         XCTAssertEqual(outcome, .notReady)
         XCTAssertEqual(log.states, [.notReady])
     }
@@ -242,7 +294,7 @@ final class MediaFetcherTests: XCTestCase {
     func testFetchOfWithdrawnOfferFailsAsDelivery() async throws {
         let (transport, source, cache) = try await fixture()
         let ready = try offer(for: source)
-        let outcome = try await MediaFetcher(cache: cache).fetch(ready, from: transport)
+        let outcome = try await MediaFetcher(cache: cache).fetch(ready, from: transport, admission: await cache.admission(for: ready))
         guard case .failed(.deliveryFailed) = outcome else { return XCTFail("\(outcome)") }
     }
 
@@ -251,12 +303,12 @@ final class MediaFetcherTests: XCTestCase {
         let ready = try offer(for: source)
         try await transport.publishMedia(offer: ready, fileURL: source)
         let fetcher = MediaFetcher(cache: cache)
-        guard case let .cached(first) = try await fetcher.fetch(ready, from: transport) else { return XCTFail("first") }
-        guard case let .cached(second) = try await fetcher.fetch(ready, from: transport) else { return XCTFail("second") }
+        guard case let .cached(first) = try await fetcher.fetch(ready, from: transport, admission: await cache.admission(for: ready)) else { return XCTFail("first") }
+        guard case let .cached(second) = try await fetcher.fetch(ready, from: transport, admission: await cache.admission(for: ready)) else { return XCTFail("second") }
         XCTAssertEqual(first, second)
         // A duplicate delivery of already-cached bytes is discarded, not re-adopted.
         let duplicate = try makeFile(try Data(contentsOf: source).map { $0 }, name: "duplicate")
-        guard case let .cached(third) = try await fetcher.accept(deliveredFile: duplicate, for: ready) else { return XCTFail("third") }
+        guard case let .cached(third) = try await fetcher.accept(deliveredFile: duplicate, for: ready, admission: await cache.admission(for: ready)) else { return XCTFail("third") }
         XCTAssertEqual(third, first)
         XCTAssertFalse(FileManager.default.fileExists(atPath: duplicate.path))
         let adopted = await cache.adoptCount
@@ -280,6 +332,40 @@ final class MediaFetcherTests: XCTestCase {
         try await mac.removeMedia(entryID: entry)
         let remaining = try await phone.mediaOffers()
         XCTAssertEqual(remaining.map(\.entryID.rawValue), ["item-b"])
+    }
+
+    func testFetcherRejectsRevocationWhileCachedFileReturnIsAwaited() async throws {
+        let (transport, source, cache) = try await fixture([1, 2, 3, 4])
+        let ready = try offer(for: source)
+        let token = await cache.admission(for: ready)
+        let initial = try await MediaFetcher(cache: cache).accept(deliveredFile: source, for: ready, admission: token)
+        guard case .cached = initial else { return XCTFail("initial certified cache") }
+        let gate = FetcherAwaitGate()
+        await cache.holdCacheReturn(gate)
+        let log = StateLog()
+        let pending = Task { try await MediaFetcher(cache: cache).fetch(ready, from: transport, admission: token) { log.append($0) } }
+        await gate.waitUntilHeld()
+        await cache.revoke()
+        await gate.release()
+        let outcome = try await pending.value
+        guard case .failed(.cacheFailed) = outcome else { return XCTFail("Stale cache return: \(outcome)") }
+        XCTAssertFalse(log.states.contains(.cached))
+    }
+
+    func testAcceptRejectsRevocationBeforeAwaitedAdoptionReturns() async throws {
+        let (_, source, cache) = try await fixture([1, 2, 3, 4])
+        let ready = try offer(for: source)
+        let token = await cache.admission(for: ready)
+        let gate = FetcherAwaitGate()
+        await cache.holdAdoptReturn(gate)
+        let log = StateLog()
+        let pending = Task { try await MediaFetcher(cache: cache).accept(deliveredFile: source, for: ready, admission: token) { log.append($0) } }
+        await gate.waitUntilHeld()
+        await cache.revoke()
+        await gate.release()
+        let outcome = try await pending.value
+        guard case .failed(.cacheFailed) = outcome else { return XCTFail("Stale adoption return: \(outcome)") }
+        XCTAssertFalse(log.states.contains(.cached))
     }
 
     // MARK: memory sampling
@@ -322,4 +408,16 @@ final class MediaFetcherTests: XCTestCase {
 
         var growth: UInt64 { lock.lock(); defer { lock.unlock() }; return peak - baseline }
     }
+}
+
+private actor FetcherAwaitGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var held = false
+    func hold() async { await withCheckedContinuation { continuation = $0; held = true } }
+    func waitUntilHeld() async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !held, ContinuousClock.now < deadline { await Task.yield() }
+        XCTAssertTrue(held)
+    }
+    func release() { continuation?.resume(); continuation = nil }
 }

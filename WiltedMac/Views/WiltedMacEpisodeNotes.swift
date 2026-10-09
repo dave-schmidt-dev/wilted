@@ -5,6 +5,7 @@ struct WiltedMacEpisodeNotesTitle<Content: View>: View {
     let episode: WiltedMacEpisode
     let prefix: String
     @Binding var isPresented: Bool
+    var titleLineLimit = 1
     @ViewBuilder let content: () -> Content
     @Environment(\.colorScheme) private var colorScheme
     @State private var isHovering = false
@@ -14,7 +15,8 @@ struct WiltedMacEpisodeNotesTitle<Content: View>: View {
             Text(episode.title)
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                .lineLimit(1)
+                .lineLimit(titleLineLimit)
+                .fixedSize(horizontal: false, vertical: true)
                 .underline(isHovering)
         }
         .buttonStyle(.plain)
@@ -76,7 +78,7 @@ struct WiltedMacLarderEpisodeNotesTitle: View {
     @State private var isPresented = false
 
     var body: some View {
-        WiltedMacEpisodeNotesTitle(episode: episode, prefix: "wilted-larder", isPresented: $isPresented) {
+        WiltedMacEpisodeNotesTitle(episode: episode, prefix: "wilted-larder", isPresented: $isPresented, titleLineLimit: 2) {
             WiltedMacEpisodeNotes(episode: episode, prefix: "wilted-larder") { EmptyView() }
         }
     }

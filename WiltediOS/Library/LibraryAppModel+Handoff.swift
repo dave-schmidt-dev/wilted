@@ -6,55 +6,6 @@ import WiltedLibrary
 
 private let handoffLog = Logger(subsystem: "com.zerodelta.wilted", category: "LibraryHandoff")
 
-/// What "Continue from Mac" would do, decided from the device records and what the phone caches.
-enum LibraryContinuation: Equatable, Sendable {
-    /// The same revision is on the phone: play it at `positionSeconds`.
-    case ready(entryID: ItemID, positionSeconds: Double, rate: Double, wasPlaying: Bool, sourceDeviceID: String)
-    /// Nothing is cached for the entry: request the audio first, then continue.
-    case needsAudio(entryID: ItemID, revision: RevisionID)
-    /// The phone holds a different revision than the other device plays; continuing would resume the wrong audio.
-    case refused(entryID: ItemID, reason: String)
-
-    var entryID: ItemID {
-        switch self {
-        case let .ready(entryID, _, _, _, _), let .needsAudio(entryID, _), let .refused(entryID, _): entryID
-        }
-    }
-}
-
-/// Pure decision for the Continue banner. No I/O, so it is testable without a player.
-enum LibraryContinuationPlanner {
-    static let mismatchReason = "This phone has a different version of the episode than the Mac is playing. "
-        + "Remove it from the phone, then get the Mac's version."
-
-    /// Nil when no other device has playback, or this device's own record already outranks it
-    /// (the phone was the last to play, so the Mac's older checkpoint is not something to continue).
-    static func plan(
-        records: LibraryDeviceRecords, deviceID: String, cachedRevisions: [ItemID: RevisionID],
-        durations: [ItemID: Double], now: Date, clockOffset: TimeInterval
-    ) -> LibraryContinuation? {
-        let own = records.nowPlaying.first { $0.record.deviceID == deviceID }
-        let others = records.nowPlaying.filter { $0.record.deviceID != deviceID }
-        guard let winner = HandoffResolver.winner(among: others) else { return nil }
-        if let own, !HandoffResolver.supersedes(winner, over: own) { return nil }
-        let target = HandoffResolver.resumeTarget(
-            observed: records.nowPlaying, localDeviceID: deviceID, localRevision: { cachedRevisions[$0] },
-            now: now, clockOffset: clockOffset, durationSeconds: { durations[$0] })
-        switch target {
-        case .nothing:
-            return nil
-        case let .resume(resume):
-            return .ready(
-                entryID: resume.entryID, positionSeconds: resume.positionSeconds, rate: resume.rate,
-                wasPlaying: resume.wasPlaying, sourceDeviceID: resume.sourceDeviceID)
-        case let .needsMedia(entryID, revision):
-            return cachedRevisions[entryID] == nil
-                ? .needsAudio(entryID: entryID, revision: revision)
-                : .refused(entryID: entryID, reason: mismatchReason)
-        }
-    }
-}
-
 /// Waits the phone's sync tick uses. Injected so tests drive the cadence without real time.
 struct LibraryHandoffTiming: Sendable {
     /// The tick interval (`SyncCadence.phoneObserveInterval`, 30 s): the gap between rounds that look at
@@ -428,10 +379,11 @@ extension LibraryAppModel {
         var plan = LibraryContinuationPlanner.plan(
             records: records, deviceID: deviceID, cachedRevisions: cached, durations: entryDurations,
             now: now(), clockOffset: handoffState.clockOffset)
-        if case let .needsAudio(entryID, revision) = plan, handoffState.refusedRevisions[entryID] == revision {
-            plan = .refused(entryID: entryID, reason: Self.offerMismatchReason)
+        if case let .needsAudio(entryID, revision, source) = plan, handoffState.refusedRevisions[entryID] == revision {
+            plan = .refused(entryID: entryID, reason: Self.offerMismatchReason, source: source)
         }
-        if plan != continuation { continuation = plan }
+        // Publish each existing sync observation so the displayed record age stays current.
+        continuation = plan
     }
 
     static let offerMismatchReason = "The Mac has a different version of this episode ready than the one it is playing."
@@ -451,14 +403,15 @@ extension LibraryAppModel {
         handoffState.continueInFlight = true
         defer { handoffState.continueInFlight = false }
         guard var plan = await freshPlan() else { continuation = nil; return }
-        if case let .needsAudio(entryID, revision) = plan {
-            guard await fetchAudio(entryID, revision: revision) else { return }
+        if case let .needsAudio(entryID, revision, source) = plan {
+            guard await fetchAudio(entryID, revision: revision, source: source) else { return }
             guard let replanned = await freshPlan() else { continuation = nil; return }
             plan = replanned
         }
         switch plan {
-        case let .ready(entryID, position, rate, _, _):
-            guard let cached = await mediaCache.cachedEntries()[entryID] else { return }
+        case let .ready(entryID, position, rate, _, _, source):
+            guard let cached = await verifiedCachedMedia(entryID, token: token),
+                  cached.revisionID == source.record.revision else { return }
             let entry = decisionContent.entries[entryID]
             let item = LibraryPlayer.Item(
                 entryID: entryID, title: entry?.title ?? "Episode",
@@ -466,13 +419,13 @@ extension LibraryAppModel {
                 artworkURL: LibraryRowBuilder.artworkURL(entry?.artworkRef))
             let forwardSequence = manualForwardSuffix(from: entryID)
             guard commandState.token == token else { return }
-            player.setRate(rate)
             continuation = nil
-            let started = player.start(item, at: position)
-            if started {
-                handoffState.forwardSequenceIDs = forwardSequence
+            // Loading applies phone defaults; the winning Mac rate belongs to this continuation.
+            if player.start(item, at: position, autoplay: false) {
+                player.setRate(rate)
+                if player.playAdmitted() { handoffState.forwardSequenceIDs = forwardSequence }
             }
-        case let .refused(_, reason):
+        case let .refused(_, reason, _):
             handoffMessage = reason
             continuation = plan
         case .needsAudio:
@@ -493,12 +446,12 @@ extension LibraryAppModel {
 
     /// Requests the audio and waits for it. Returns false when it did not arrive on the phone or
     /// the Mac offers a different revision than the one being continued.
-    private func fetchAudio(_ entryID: ItemID, revision: RevisionID) async -> Bool {
+    private func fetchAudio(_ entryID: ItemID, revision: RevisionID, source: ObservedPlayback) async -> Bool {
         if let offers = try? await transport.mediaOffers(),
            let offer = offers.first(where: { $0.entryID == entryID }), offer.isPrepared,
            let offered = offer.revisionID, offered != revision {
             handoffState.refusedRevisions[entryID] = revision
-            continuation = .refused(entryID: entryID, reason: Self.offerMismatchReason)
+            continuation = .refused(entryID: entryID, reason: Self.offerMismatchReason, source: source)
             handoffMessage = Self.offerMismatchReason
             return false
         }

@@ -37,6 +37,8 @@ private struct ScriptedTransport: LibraryTransport {
     var delivery: Delivery = .normal
     var failAcknowledgements: Flag = Flag(false)
 
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
     func listIntents() async throws -> [LibraryIntent] { try await inner.listIntents() }
@@ -69,6 +71,17 @@ private struct ScriptedTransport: LibraryTransport {
     }
 }
 
+private actor MediaModelStore: LibraryStore {
+    private var saved: LibraryStoreState
+    init(_ saved: LibraryStoreState) { self.saved = saved }
+    func state() -> LibraryStoreState { saved }
+    func commit(_ staged: StagedLibraryBatch) { saved = staged.nextState; saved.revision += 1 }
+    func enqueue(_ change: LibraryChange) { saved.enqueue(change) }
+    func acknowledge(_ result: LibraryPushResult, sent: [PendingLibraryChange]) { saved.acknowledge(result, sent: sent) }
+    func resolveConflict(_ key: LibraryRecordKey, keepLocal: Bool) { saved.resolveConflict(key, keepLocal: keepLocal) }
+    func hold() { saved.reviewHold = true; saved.revision += 1 }
+}
+
 @MainActor
 final class LibraryMediaModelTests: XCTestCase {
     private var scratch: URL!
@@ -82,6 +95,11 @@ final class LibraryMediaModelTests: XCTestCase {
     override func setUp() async throws {
         scratch = FileManager.default.temporaryDirectory.appendingPathComponent("library-media-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let entry = try LibraryEntry(id: entryID, kind: .podcastEpisode, sourceID: ItemID(rawValue: "show"),
+                                     title: "Episode", summary: "", publishedAt: Date(timeIntervalSince1970: 1_000))
+        let slot = try QueueSlot(entryID: entryID, sortKey: 0)
+        _ = try await mac.push(changes: [PendingLibraryChange(localSeq: 1, change: .entry(entry), baseVersion: 0),
+                                       PendingLibraryChange(localSeq: 2, change: .slot(slot), baseVersion: 0)])
     }
 
     override func tearDown() async throws { try? FileManager.default.removeItem(at: scratch) }
@@ -96,7 +114,8 @@ final class LibraryMediaModelTests: XCTestCase {
         let bytes = data ?? payload
         return try LibraryMediaOffer(
             entryID: entryID, revisionID: revisionID, contentHash: hash(other ?? bytes),
-            byteCount: Int64(bytes.count), mediaType: "audio/mp4", durationSeconds: 60)
+            byteCount: Int64(bytes.count), mediaType: "audio/mp4", durationSeconds: 60,
+            preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_000))))
     }
 
     /// The Mac publishing `data` under an offer, as its media service would.
@@ -110,14 +129,30 @@ final class LibraryMediaModelTests: XCTestCase {
 
     private func makeModel(
         _ delivery: ScriptedTransport.Delivery = .normal, cache: FileMediaCache? = nil,
-        timing: LibraryMediaTiming? = nil, failAcknowledgements: Flag = Flag(false)
+        timing: LibraryMediaTiming? = nil, failAcknowledgements: Flag = Flag(false), store: MediaModelStore? = nil
     ) -> LibraryAppModel {
         let transport = ScriptedTransport(
-            inner: InMemoryLibraryTransport(deviceID: "phone", server: server),
+            inner: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "media-model-owner"),
             delivery: delivery, failAcknowledgements: failAcknowledgements)
         return LibraryAppModel(
-            transport: transport, deviceID: "phone", mediaCache: cache ?? makeCache(),
+            transport: transport, store: store ?? fixtureStore(), deviceID: "phone", mediaCache: cache ?? makeCache(),
             mediaTiming: timing ?? fast, timeZone: TimeZone(identifier: "UTC")!)
+    }
+
+    private func fixtureStore() -> MediaModelStore {
+        var state = LibraryStoreState()
+        state.ownerToken = "media-model-owner"
+        let row = try! LibraryEntry(id: entryID, kind: .podcastEpisode, sourceID: ItemID(rawValue: "show"),
+                                   title: "Episode", summary: "", publishedAt: Date(timeIntervalSince1970: 1_000))
+        state.content = LibrarySnapshot(entries: [row], slots: [try! QueueSlot(entryID: entryID, sortKey: 0)])
+        return MediaModelStore(state)
+    }
+
+    private func cacheAdmission(_ cache: FileMediaCache) async throws -> MediaCacheAdmission {
+        try await cache.bindOwner(ownerToken: "media-model-owner", libraryScope: LibraryAppModel.mediaLibraryScope, held: false)
+        let admission = await cache.admission(entryID: entryID, ownerToken: "media-model-owner",
+            libraryScope: LibraryAppModel.mediaLibraryScope, transportGeneration: 0)
+        return try XCTUnwrap(admission)
     }
 
     private func eventually(_ what: String, timeout: Duration = .seconds(5), _ condition: () async -> Bool) async throws {
@@ -132,12 +167,60 @@ final class LibraryMediaModelTests: XCTestCase {
         try await InMemoryLibraryTransport(deviceID: "mac", server: server).listIntents()
     }
 
+    /// Records only synthetic fixture facts; this does not load or mutate the cold mirror.
+    private func recordColdRequestContext(_ model: LibraryAppModel, phase: String) async {
+        let saved = await model.mediaStoreState()
+        let generation = await model.transport.operationGeneration()
+        let owner = await model.transport.verifiedOwnerToken()
+        let runID = model.mediaRuns[entryID]?.id
+        let context = await model.mediaContext(live: true)
+        let contextCurrent: Bool
+        let entryCurrent: Bool
+        if let context {
+            contextCurrent = await model.mediaContextIsCurrent(context, live: true)
+            entryCurrent = await model.mediaContextIsCurrent(context, entryID: entryID, live: true)
+        } else {
+            contextCurrent = false
+            entryCurrent = false
+        }
+        let finalGeneration = await model.transport.operationGeneration()
+        let facts: [String: String] = [
+            "phase": phase,
+            "savedOwnerPresent": String(saved.ownerToken != nil),
+            "savedOwnerMatchesFixture": String(saved.ownerToken == "media-model-owner"),
+            "transportOwnerMatchesSaved": String(owner == saved.ownerToken),
+            "reviewHold": String(saved.reviewHold),
+            "accountQuarantined": String(model.accountQuarantined),
+            "savedEntryPresent": String(saved.content.entries[entryID] != nil),
+            "decisionEntryPresent": String(model.decisionContent.entries[entryID] != nil),
+            "entryEqualsSaved": String(model.decisionContent.entries[entryID] == saved.content.entries[entryID]),
+            "savedQueueContainsEntry": String(saved.content.queue.contains { $0.entryID == entryID }),
+            "modelQueueContainsEntry": String(model.queued.contains { $0.id == entryID }),
+            "contextPresent": String(context != nil),
+            "contextCurrent": String(contextCurrent),
+            "entryContextCurrent": String(entryCurrent),
+            "generation": String(generation),
+            "finalGeneration": String(finalGeneration),
+            "runPresent": String(runID != nil),
+            "runCurrent": String(runID != nil && model.mediaRuns[entryID]?.id == runID),
+            "taskCancelled": String(Task.isCancelled),
+            "mediaState": String(describing: model.mediaState(for: entryID))
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: facts, options: [.sortedKeys, .prettyPrinted])
+        XCTContext.runActivity(named: "Cold request context: \(phase)") { activity in
+            let attachment = XCTAttachment(string: String(decoding: data, as: UTF8.self))
+            attachment.lifetime = .keepAlways
+            activity.add(attachment)
+        }
+    }
+
     // MARK: transitions
 
     func testRequestWaitsForOfferThenDownloadsVerifiesAndCaches() async throws {
         let cache = makeCache()
         let model = makeModel(cache: cache)
         XCTAssertEqual(model.mediaState(for: entryID), .available)
+        await recordColdRequestContext(model, phase: "before cold request")
 
         model.performMediaAction(.request, entryID: entryID)
         guard case .requested = model.mediaState(for: entryID) else { return XCTFail("expected requested, got \(model.mediaState(for: entryID))") }
@@ -148,6 +231,7 @@ final class LibraryMediaModelTests: XCTestCase {
 
         try await macPublish(makeOffer())
         await model.waitForMedia(entryID: entryID)
+        await recordColdRequestContext(model, phase: "after cold request wait")
 
         XCTAssertEqual(model.mediaState(for: entryID), .onPhone)
         let cached = await cache.cachedEntries()
@@ -181,8 +265,9 @@ final class LibraryMediaModelTests: XCTestCase {
         let model = makeModel()
         try await macPublish(
             try LibraryMediaOffer(
-                entryID: entryID, revisionID: revisionID, contentHash: "", byteCount: Int64(payload.count),
-                mediaType: "audio/mp4", durationSeconds: 60, state: .available),
+                entryID: entryID, revisionID: revisionID, contentHash: hash(payload), byteCount: Int64(payload.count),
+                mediaType: "audio/mp4", durationSeconds: 60, state: .available,
+                preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_000)))),
             data: Data())
 
         model.performMediaAction(.request, entryID: entryID)
@@ -239,7 +324,8 @@ final class LibraryMediaModelTests: XCTestCase {
     func testByteCountMismatchFails() async throws {
         let short = payload.prefix(1_000)
         let offer = try LibraryMediaOffer(
-            entryID: entryID, revisionID: revisionID, contentHash: hash(payload), byteCount: Int64(payload.count), mediaType: "audio/mp4")
+            entryID: entryID, revisionID: revisionID, contentHash: hash(payload), byteCount: Int64(payload.count), mediaType: "audio/mp4",
+            preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_000))))
         try await macPublish(offer, data: Data(short))
         let model = makeModel()
         model.performMediaAction(.request, entryID: entryID)
@@ -336,7 +422,7 @@ final class LibraryMediaModelTests: XCTestCase {
         let offer = try makeOffer()
         let file = scratch.appendingPathComponent("seed")
         try payload.write(to: file)
-        _ = try await cache.adopt(verifiedFile: file, for: offer)
+        _ = try await cache.adopt(verifiedFile: file, for: offer, admission: try await cacheAdmission(cache))
 
         let model = makeModel(cache: cache)
         await model.refresh()
@@ -371,7 +457,7 @@ final class LibraryMediaModelTests: XCTestCase {
             mediaCache: makeCache(), mediaTiming: fast)
         model.performMediaAction(.request, entryID: entryID)
         await model.waitForMedia(entryID: entryID)
-        XCTAssertEqual(model.mediaState(for: entryID), .failed("iCloud is off."))
+        XCTAssertEqual(model.mediaState(for: entryID), .failed("The saved library account is not verified for downloading."))
     }
 
     func testAccountChangeDiscardsCachedAudioAndStates() async throws {
@@ -399,33 +485,68 @@ final class LibraryMediaModelTests: XCTestCase {
         XCTAssertEqual(LibraryMediaState.notPrepared.statusText(), "Not prepared on Mac")
     }
 
+    func testLegacyReadyOfferCannotDownloadOrPromoteToOnPhone() async throws {
+        let legacy = try LibraryMediaOffer(entryID: entryID, revisionID: revisionID,
+            contentHash: hash(payload), byteCount: Int64(payload.count), mediaType: "audio/mp4")
+        try await macPublish(legacy)
+        let model = makeModel()
+        model.startMediaRequest(entryID: entryID)
+        await model.waitForMedia(entryID: entryID)
+        XCTAssertEqual(model.mediaState(for: entryID), .notPrepared)
+        let inventory = await model.mediaCache.cachedEntries()
+        XCTAssertNil(inventory[entryID])
+    }
+
+    func testReviewHoldDuringActualDownloadPreventsOnPhoneAndPlaybackAdmission() async throws {
+        let gate = Gate()
+        let store = fixtureStore()
+        let cache = makeCache()
+        try await macPublish(makeOffer())
+        let model = makeModel(.holdAfter(bytes: 4096, gate: gate), cache: cache, store: store)
+        model.startMediaRequest(entryID: entryID)
+        try await eventually("held download") {
+            if case .downloading = model.mediaState(for: self.entryID) { return true }
+            return false
+        }
+        await store.hold()
+        await gate.open()
+        await model.waitForMedia(entryID: entryID)
+        XCTAssertNotEqual(model.mediaState(for: entryID), .onPhone)
+        let admitted = await model.verifiedCachedMedia(entryID, token: model.beginExternalStart())
+        XCTAssertNil(admitted)
+        await model.refreshMediaFromCache()
+        let inventory = await cache.cachedEntries()
+        XCTAssertNil(inventory[entryID], "binding the durable hold leaves any completed bytes inert")
+    }
+
     // MARK: FileMediaCache
 
     func testFileMediaCacheAdoptsIdempotentlyAndKeysByHash() async throws {
         let cache = makeCache()
         let offer = try makeOffer()
-        let missing = await cache.cachedFile(for: offer)
+        let missing = await cache.cachedFile(for: offer, admission: try await cacheAdmission(cache))
         XCTAssertNil(missing)
 
         let first = scratch.appendingPathComponent("first")
         try payload.write(to: first)
-        let stored = try await cache.adopt(verifiedFile: first, for: offer)
+        let stored = try await cache.adopt(verifiedFile: first, for: offer, admission: try await cacheAdmission(cache))
         XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
         XCTAssertEqual(stored.pathExtension, "m4a")
-        let found = await cache.cachedFile(for: offer)
+        let found = await cache.cachedFile(for: offer, admission: try await cacheAdmission(cache))
         XCTAssertEqual(found, stored)
 
         let second = scratch.appendingPathComponent("second")
         try payload.write(to: second)
-        let again = try await cache.adopt(verifiedFile: second, for: offer)
+        let again = try await cache.adopt(verifiedFile: second, for: offer, admission: try await cacheAdmission(cache))
         XCTAssertEqual(again, stored)
         XCTAssertFalse(FileManager.default.fileExists(atPath: second.path))
 
         let other = try LibraryMediaOffer(
-            entryID: entryID, revisionID: revisionID, contentHash: hash(Data([9])), byteCount: 1, mediaType: "audio/mp4")
-        let differentBytes = await cache.cachedFile(for: other)
+            entryID: entryID, revisionID: revisionID, contentHash: hash(Data([9])), byteCount: 1, mediaType: "audio/mp4",
+            preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_000))))
+        let differentBytes = await cache.cachedFile(for: other, admission: try await cacheAdmission(cache))
         XCTAssertNil(differentBytes)
-        let notReady = await cache.cachedFile(for: .notReady(entryID: entryID))
+        let notReady = await cache.cachedFile(for: .notReady(entryID: entryID), admission: try await cacheAdmission(cache))
         XCTAssertNil(notReady)
     }
 
@@ -435,20 +556,20 @@ final class LibraryMediaModelTests: XCTestCase {
         let file = scratch.appendingPathComponent("v1")
         try bytes.write(to: file)
         let offer = try makeOffer(bytes)
-        _ = try await cache.adopt(verifiedFile: file, for: offer)
+        _ = try await cache.adopt(verifiedFile: file, for: offer, admission: try await cacheAdmission(cache))
         let entries = await cache.cachedEntries()
         XCTAssertEqual(entries[entryID]?.byteCount, 4)
         let root = scratch.appendingPathComponent("cache")
         let hidden = try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix(".") }
-        XCTAssertTrue(hidden.isEmpty, "staging files must not outlive an adopt: \(hidden)")
+        XCTAssertEqual(Set(hidden), [".preparation-ledger.json"], "only the durable admission ledger may remain at the root")
 
         let missingSource = scratch.appendingPathComponent("nope")
         let otherOffer = try makeOffer(Data([5, 6]))
         do {
-            _ = try await cache.adopt(verifiedFile: missingSource, for: otherOffer)
+            _ = try await cache.adopt(verifiedFile: missingSource, for: otherOffer, admission: try await cacheAdmission(cache))
             XCTFail("adopting a missing file must throw")
         } catch {}
         let afterFailure = try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.hasPrefix(".") }
-        XCTAssertTrue(afterFailure.isEmpty)
+        XCTAssertEqual(Set(afterFailure), [".preparation-ledger.json"])
     }
 }

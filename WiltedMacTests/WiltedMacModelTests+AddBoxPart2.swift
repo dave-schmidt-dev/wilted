@@ -13,7 +13,6 @@ extension WiltedMacModelTests {
     /// feed to reconstruct it; that path no longer exists.)
     func testKnownFeedRestoreReappearsInLarderAndClearsRemovedWithoutAnyFetch() async throws {
         let directory = temporaryDirectory("restore-known-feed")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let libraryURL = directory.appendingPathComponent("library.sqlite")
         let store = try LocalLibraryStore(url: libraryURL)
         let feedURL = URL(string: "https://podcasts.example.test/restore.xml")!
@@ -85,7 +84,6 @@ extension WiltedMacModelTests {
     /// through the model, the way Skip actually does.
     func testRestoringAnEpisodeSkippedThisSessionReturnsItToTheLarder() async throws {
         let directory = temporaryDirectory("restore-same-session")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let libraryURL = directory.appendingPathComponent("library.sqlite")
         let store = try LocalLibraryStore(url: libraryURL)
         let feedURL = URL(string: "https://podcasts.example.test/waveform.xml")!
@@ -151,7 +149,6 @@ extension WiltedMacModelTests {
     /// still say a preparation happened.
     func testARestoredEpisodeDoesNotPresentItsOldFinishedCutAsReady() async throws {
         let directory = temporaryDirectory("restore-clears-old-cut")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let libraryURL = directory.appendingPathComponent("library.sqlite")
         let store = try LocalLibraryStore(url: libraryURL)
         let feedURL = URL(string: "https://podcasts.example.test/waveform.xml")!
@@ -246,7 +243,6 @@ extension WiltedMacModelTests {
     /// second time, and must actually bring the episode back to the Larder.
     func testUndoingARemovalClearsTheRecordAndRestoresTheEpisode() async throws {
         let directory = temporaryDirectory("restore-same-session-undo")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let libraryURL = directory.appendingPathComponent("library.sqlite")
         let store = try LocalLibraryStore(url: libraryURL)
         let feedURL = URL(string: "https://podcasts.example.test/waveform.xml")!
@@ -306,7 +302,6 @@ extension WiltedMacModelTests {
     /// episode on.
     func testDismissingAnEpisodeWithNoRowStillCreatesADismissalAndRestoresWithoutAnyFetch() async throws {
         let directory = temporaryDirectory("restore-feedless")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
         let episodeID = try ItemID(rawValue: "legacy-" + String(repeating: "1", count: 64))
         let created = try await store.dismissPodcastEpisode(episodeID)
@@ -335,7 +330,6 @@ extension WiltedMacModelTests {
 
     func testRetryForRemovedPrepRunPublishesActionableProcessorMessage() {
         let directory = temporaryDirectory("removed-prep-retry")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory,
             preferences: WiltedMacTestPreferences.ephemeral()

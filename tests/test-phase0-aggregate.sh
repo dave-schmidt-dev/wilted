@@ -18,6 +18,7 @@ wilted_sweep_stale_temp_dirs
 expected_legs=(
   "test-build-with-cache"
   "test-bounded-entry"
+  "test-runtime-static-admission"
   "test-no-global-tmp"
   "assert-mac-first-docs"
   "test-contract-fixtures"
@@ -38,12 +39,15 @@ expected_legs=(
   "test-git-hooks"
   "test-simulator-cleanup"
   "test-native-ui-receipt"
+  "test-native-gate-parallel"
+  "test-native-gate-xcode"
   "test-native-gate-legs"
   "test-release-wrappers"
   "test-file-size"
   "test-attended-library-sync"
   "test-attended-nested-signature"
   "test-test-product-metadata"
+  "test-record-ios-snapshots"
 )
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   expected_legs+=("test-audio-contract-ios-build")
@@ -264,5 +268,12 @@ assert_nonzero_exit "$forced_status" "forced phase0 self-test"
 assert_contains "phase0.failed count=1" "$forced_output"
 assert_contains "phase0.leg.complete name=$forced_leg status=1 reason=self-test-forced-failure" "$forced_output"
 assert_contains "forced_self_test_failure" "$forced_output"
+
+static_forced_output="$tmp_dir/static-forced.log"
+static_forced_status="$(run_phase0_self_test "$static_forced_output" "test-runtime-static-admission")"
+run_and_capture "static-forced" "$static_forced_output" "$static_forced_status"
+assert_nonzero_exit "$static_forced_status" "forced static admission leg"
+assert_contains "phase0.failed count=1" "$static_forced_output"
+assert_contains "phase0.leg.complete name=test-runtime-static-admission status=1 reason=self-test-forced-failure" "$static_forced_output"
 
 printf '%s\n' "phase0 aggregate meta-test passed (self-test count=${expected_count})"

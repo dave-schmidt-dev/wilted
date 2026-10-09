@@ -106,7 +106,8 @@ struct LibraryListView: View {
         List {
             if let banner = model.syncBanner {
                 Section {
-                    LibrarySyncBannerView(banner: banner) { Task { await model.recoverFromAccountChange() } }
+                    LibrarySyncBannerView(banner: banner, publicationSummary: model.publicationSummary,
+                        publicationDetail: model.publicationDetail, publicationQualifier: model.publicationQualifier) { Task { await model.recoverFromAccountChange() } }
                 }
             }
             if rows.isEmpty {
@@ -191,6 +192,7 @@ struct LibraryListView: View {
         .swipeActions(edge: .leading, allowsFullSwipe: true) { swipeButtons(leading(for: row), row: row) }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) { swipeButtons(trailing(for: row), row: row) }
         .listRowBackground(WiltedTheme.color(.card, scheme: colorScheme))
+        .disabled(!model.queued.contains { $0.id == row.id })
     }
 
     private var isConfirming: Binding<Bool> {
@@ -361,11 +363,7 @@ struct LibraryRowView: View {
                         ForEach(voiceOverActions, id: \.name) { action in Button(action.name, action: action.perform) }
                     }
                     .accessibilityIdentifier("wilted-library-title-\(row.id.rawValue)")
-                Text(detail)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(secondary)
-                    .lineLimit(1)
-                    .accessibilityIdentifier("wilted-library-meta-\(row.id.rawValue)")
+                LibraryRowMetadataView(row: row, namesShow: showsShowName)
                 if let status = Self.listeningStatus(row: row, progress: progress, completed: isCompleted) {
                     Text(status)
                         .wiltedFont(.utility)
@@ -401,11 +399,6 @@ struct LibraryRowView: View {
         .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-row-\(row.id.rawValue)")
-    }
-
-    /// Feed - TOTAL duration - date, without the feed under a feed section header.
-    private var detail: String {
-        row.detailText(namesShow: showsShowName)
     }
 
     static func detail(

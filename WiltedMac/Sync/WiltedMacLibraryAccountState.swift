@@ -163,6 +163,13 @@ final class WiltedMacLibraryAccountController {
     var didClose: (@MainActor () -> Void)?
     var onStatus: (@MainActor (WiltedMacLibraryAccountStatus) -> Void)?
 
+    /// Current approved owner, not merely a restored binding or transport constructor token.
+    var approvedPublicationOwner: String? {
+        guard !stopped, status == .active, gate.isOpen, binding?.state == .bound,
+              sessionAdoptedToken == binding?.ownerToken else { return nil }
+        return binding?.ownerToken
+    }
+
     private let source: WiltedMacLibraryAccountSource
     private let persistence: WiltedMacLibraryAccountPersistence
     private let isLibraryEmpty: @Sendable () async -> Bool

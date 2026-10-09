@@ -1,6 +1,7 @@
 """Worker module split from wilted_pipeline.py."""
 from __future__ import annotations
 import contextlib
+from contextvars import ContextVar
 import difflib
 import errno
 import fcntl
@@ -28,6 +29,17 @@ class WorkerError(RuntimeError):
         super().__init__(message)
         self.code = code
 
+_summary_request_id: ContextVar[str | None] = ContextVar("summary_request_id", default=None)
+
+@contextlib.contextmanager
+def summary_scope(request_id: str | None):
+    """Correlate this summary's progress without affecting preparation records."""
+    token = _summary_request_id.set(request_id)
+    try:
+        yield
+    finally:
+        _summary_request_id.reset(token)
+
 def progress(stage: str, detail: str = "", fraction: float | None = None) -> None:
     """Emit one progress record on stderr.
 
@@ -35,7 +47,12 @@ def progress(stage: str, detail: str = "", fraction: float | None = None) -> Non
     feedback channel cannot tell a working transcription from a hung one, so
     this is part of the contract rather than logging.
     """
+    request_id = _summary_request_id.get()
+    if request_id is not None:
+        stage = stage if stage.startswith("summary.") else "summary." + stage
     record = {"stage": stage, "detail": detail}
+    if request_id is not None:
+        record["requestID"] = request_id
     if fraction is not None:
         record["fraction"] = round(max(0.0, min(1.0, fraction)), 4)
     sys.stderr.write(json.dumps(record, separators=(",", ":")) + "\n")
@@ -57,6 +74,8 @@ class ForwardedWarnings(logging.Handler):
         self.limit = limit
         self.forwarded = 0
         self.suppressed = 0
+        # Logging handlers may run on threads that do not inherit ContextVars.
+        self.summary_request_id = _summary_request_id.get()
 
     def emit(self, record: logging.LogRecord) -> None:
         if self.forwarded >= self.limit:
@@ -64,13 +83,24 @@ class ForwardedWarnings(logging.Handler):
             return
         self.forwarded += 1
         try:
-            progress(f"log.{record.levelname.lower()}.{self.forwarded}", f"{record.name}: {record.getMessage()}")
+            if self.summary_request_id is not None:
+                with summary_scope(self.summary_request_id):
+                    progress(f"log.{record.levelname.lower()}.{self.forwarded}", "Local summarizer warning.")
+            else:
+                progress(f"log.{record.levelname.lower()}.{self.forwarded}", f"{record.name}: {record.getMessage()}")
         except Exception:  # noqa: BLE001 - a handler must never unwind its caller
-            self.handleError(record)
+            # handleError can print the original message and traceback. Summary
+            # records may contain transcript text supplied by a model library.
+            if self.summary_request_id is None:
+                self.handleError(record)
 
     def summarize(self) -> None:
         if self.suppressed:
-            progress("log.suppressed", f"{self.suppressed} further warnings not relayed")
+            if self.summary_request_id is not None:
+                with summary_scope(self.summary_request_id):
+                    progress("log.suppressed", f"{self.suppressed} further warnings not relayed")
+            else:
+                progress("log.suppressed", f"{self.suppressed} further warnings not relayed")
 
 DISCARDED_RUN_REPORT_LIMIT = 12
 

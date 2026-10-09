@@ -26,28 +26,6 @@ enum LibrarySessionEvent: Equatable, Sendable {
     func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void)
 }
 
-/// A lock-screen or headset control the player understands.
-enum LibraryRemoteCommand: Equatable, Sendable {
-    case play, pause, togglePlayPause
-    case skipForward(TimeInterval)
-    case skipBackward(TimeInterval)
-    case seek(to: TimeInterval)
-    /// The speed chosen on a system rate control (CarPlay's speed button, Control Center).
-    case setRate(Double)
-}
-
-@MainActor protocol LibraryRemoteCommands: AnyObject {
-    /// The handler returns whether the command did anything.
-    func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool)
-    func uninstall()
-    /// The lengths the lock-screen skip buttons advertise. Optional: doubles need not care.
-    func setSkipIntervals(back: TimeInterval, forward: TimeInterval)
-}
-
-extension LibraryRemoteCommands {
-    func setSkipIntervals(back: TimeInterval, forward: TimeInterval) {}
-}
-
 /// Plays one cached episode file at a time through a `ListenerAudioEngine`.
 ///
 /// This is the Larder's own transport: it needs no `WiltedAsset`, article codec or
@@ -95,15 +73,35 @@ final class LibraryPlayer: ObservableObject {
     /// Called with the entry that just played to its end and whether "Auto-play next episode" is on.
     /// Never called for a pause, a stop, a seek away from the end or a superseded load.
     var onFinished: ((ItemID, _ autoPlayNext: Bool) -> Void)?
-    /// Counts every transport action (start, play, pause, seek, stop); `isUntouchedSinceEnd` compares it
+    /// Counts every transport action (start, play, pause, seek, stop); `owns(_:)` compares it
     /// with its value when the item finished, so a command given after the end cancels what follows it.
     private var transportCount = 0
+    var admissionEpoch: UInt64 = 0
+    var admissionTask: Task<Void, Never>?
+    var authorizePlayback: (@MainActor (Item) async -> Bool)?
     private var endedAtTransportCount = -1
+    /// A natural finish survives unloading an ineligible item, but never a transport command.
+    struct NaturalCompletion: Equatable {
+        let entryID: ItemID
+        let duration: TimeInterval
+        let rate: Double
+        fileprivate let transportCount: Int
+    }
+    private var lastNaturalCompletion: NaturalCompletion?
+
+    func naturalCompletion(after entryID: ItemID) -> NaturalCompletion? {
+        guard let completion = lastNaturalCompletion, completion.entryID == entryID,
+              owns(completion) else { return nil }
+        return completion
+    }
+
+    func owns(_ completion: NaturalCompletion) -> Bool {
+        lastNaturalCompletion == completion && transportCount == completion.transportCount
+            && endedAtTransportCount == completion.transportCount
+    }
     /// Set by the sleep timer's "end of episode": the next natural end reports auto-play off, once, so the
     /// next episode does not start. Cleared when used, when the timer is cancelled and when playback stops.
     @Published private(set) var stopsAfterCurrentItem = false
-    /// True while the item that just played out is still loaded and nothing has been commanded since.
-    var isUntouchedSinceEnd: Bool { status == .ended && transportCount == endedAtTransportCount }
     /// Artwork bytes for the loaded item, read once from the local cache when it starts.
     private var artworkData: Data?
     private let artwork: LibraryArtworkCache?
@@ -119,8 +117,14 @@ final class LibraryPlayer: ObservableObject {
     private let remoteCommands: any LibraryRemoteCommands
     private let tickInterval: Duration
     private var loadGeneration: UInt64 = 0
+    private let seekInstanceID = UUID()
+    var seekSessionID: String? { item == nil ? nil : "\(seekInstanceID.uuidString):\(loadGeneration)" }
+    var ownedSeekRequest: (id: UUID, direction: LibrarySeekDirection, sessionID: String, epoch: UInt64)?
     private var resumeAfterInterruption = false
     private var tickTask: Task<Void, Never>?
+    var remoteSeekState: LibraryRemoteSeekState?
+    let remoteSeekSleep: @Sendable (Duration) async throws -> Void
+    let remoteSeekNow: @Sendable () -> TimeInterval
     /// When listening was last counted; nil unless playing.
     private var lastAccrual: ContinuousClock.Instant?
     /// Told how many real seconds were just played and at what speed, for the phone's own totals.
@@ -138,7 +142,9 @@ final class LibraryPlayer: ObservableObject {
         remoteCommands: any LibraryRemoteCommands,
         sessionEvents: any LibrarySessionEvents,
         artwork: LibraryArtworkCache? = nil,
-        tickInterval: Duration = .milliseconds(500)
+        tickInterval: Duration = .milliseconds(500),
+        remoteSeekSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        remoteSeekNow: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.artwork = artwork
         self.engine = engine
@@ -146,6 +152,8 @@ final class LibraryPlayer: ObservableObject {
         self.nowPlaying = nowPlaying
         self.remoteCommands = remoteCommands
         self.tickInterval = tickInterval
+        self.remoteSeekSleep = remoteSeekSleep
+        self.remoteSeekNow = remoteSeekNow
         engine.installCompletionHandler { [weak self] generation in
             Task { @MainActor in self?.engineFinished(generation: generation) }
         }
@@ -176,8 +184,9 @@ final class LibraryPlayer: ObservableObject {
     /// sets `.failed` when the file cannot be loaded or the session or engine refuses.
     @discardableResult
     func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true) -> Bool {
+        _ = cancelRemoteSeeking()
         onCommand?()
-        transportCount &+= 1
+        transportCount &+= 1; cancelAdmission()
         stopTicking()
         resumeAfterInterruption = false
         // "End of this episode" belongs to the episode it was set on, not to whatever plays next.
@@ -206,14 +215,21 @@ final class LibraryPlayer: ObservableObject {
             publishNowPlaying()
             return true
         }
-        return play()
+        return playAdmitted()
     }
 
     /// Starts or resumes; after the end, starts over.
     @discardableResult
     func play() -> Bool {
+        authorizePlayback == nil ? playAdmitted() : handle(LibraryRemoteCommand.play)
+    }
+
+    /// Synchronous effect consumed only after the model or system boundary admitted this target.
+    @discardableResult
+    func playAdmitted() -> Bool {
+        _ = cancelRemoteSeeking()
         onCommand?()
-        transportCount &+= 1
+        transportCount &+= 1; cancelAdmission()
         guard item != nil else { return false }
         do { try session.activate() } catch { return fail(.audioSession) }
         if status == .ended { engine.currentTime = 0 }
@@ -228,8 +244,9 @@ final class LibraryPlayer: ObservableObject {
     }
 
     func pause() {
+        _ = cancelRemoteSeeking()
         onCommand?()
-        transportCount &+= 1
+        transportCount &+= 1; cancelAdmission()
         guard item != nil else { return }
         resumeAfterInterruption = false
         accrueListening()
@@ -246,8 +263,14 @@ final class LibraryPlayer: ObservableObject {
     }
 
     func seek(to seconds: TimeInterval) {
+        if authorizePlayback != nil, remoteSeekState?.wasPlaying == true { _ = handle(.seek(to: seconds)); return }
+        seekAdmitted(to: seconds)
+    }
+
+    func seekAdmitted(to seconds: TimeInterval) {
+        _ = cancelRemoteSeeking(resume: true)
         onCommand?()
-        transportCount &+= 1
+        transportCount &+= 1; cancelAdmission()
         guard item != nil else { return }
         let target = min(max(0, seconds), duration)
         engine.currentTime = target
@@ -293,11 +316,28 @@ final class LibraryPlayer: ObservableObject {
     /// Stops and forgets the item; the audio session and system controls are released.
     func stop() {
         onCommand?()
-        transportCount &+= 1
+        transportCount &+= 1; cancelAdmission()
+        clearLoadedItem()
+    }
+
+    /// Library eligibility loss clears resume access immediately. An untouched natural finish
+    /// still owns its automatic successor; unloading it is not a listener transport command.
+    func invalidateLoadedItem() {
+        guard let entryID = item?.entryID, naturalCompletion(after: entryID) != nil else {
+            stop()
+            return
+        }
+        clearLoadedItem()
+    }
+
+    private func clearLoadedItem() {
+        _ = cancelRemoteSeeking()
         stopsAfterCurrentItem = false
         guard item != nil || status != .idle else { return }
         accrueListening()
         engine.pause()
+        (engine as? LibraryAudioUnloading)?.clearAudio()
+        cancelAdmission()
         stopTicking()
         lastAccrual = nil
         resumeAfterInterruption = false
@@ -312,7 +352,7 @@ final class LibraryPlayer: ObservableObject {
 
     /// Syncs the readout with the engine; the timer calls this while playing.
     func refreshPosition() {
-        guard item != nil else { return }
+        guard item != nil, !isRemoteSeeking else { return }
         accrueListening()
         position = min(max(0, engine.currentTime), duration)
         // The engine stopped on its own without a completion (something else took the output).
@@ -346,37 +386,30 @@ final class LibraryPlayer: ObservableObject {
         case let .interruptionEnded(shouldResume):
             let resume = resumeAfterInterruption && shouldResume && item != nil
             resumeAfterInterruption = false
-            if resume { play() }
+            if resume { handle(LibraryRemoteCommand.play) }
         case .routeLost:
             // Never resumes on its own: audio must not jump to the speaker when headphones leave.
             pause()
         }
     }
 
-    @discardableResult
-    func handle(_ command: LibraryRemoteCommand) -> Bool {
-        guard item != nil else { return false }
-        switch command {
-        case .play: play()
-        case .pause: pause()
-        case .togglePlayPause: togglePlayPause()
-        case let .skipForward(seconds): skip(by: seconds)
-        case let .skipBackward(seconds): skip(by: -seconds)
-        case let .seek(seconds): seek(to: seconds)
-        case let .setRate(newRate): setRate(newRate)
-        }
-        return true
-    }
-
     // MARK: Internals
 
     private func engineFinished(generation: UInt64) {
         guard generation == loadGeneration, item != nil, status == .playing else { return }
+        if isRemoteSeeking {
+            position = min(max(0, engine.currentTime), duration)
+            _ = cancelRemoteSeeking()
+            return
+        }
         stopTicking()
+        endedAtTransportCount = transportCount
+        lastNaturalCompletion = item.map {
+            NaturalCompletion(entryID: $0.entryID, duration: duration, rate: rate, transportCount: transportCount)
+        }
         position = duration
         status = .ended
         publishNowPlaying()
-        endedAtTransportCount = transportCount
         let holdAtEnd = stopsAfterCurrentItem
         stopsAfterCurrentItem = false
         if let entryID = item?.entryID { onFinished?(entryID, autoPlayNext && !holdAtEnd) }
@@ -384,12 +417,39 @@ final class LibraryPlayer: ObservableObject {
 
     @discardableResult
     private func fail(_ failure: LibraryStartFailure) -> Bool {
+        _ = cancelRemoteSeeking()
         stopTicking()
         engine.pause()
+        if item == nil { (engine as? LibraryAudioUnloading)?.clearAudio() }
+        cancelAdmission()
         lastFailure = failure
         status = .failed(failure.playerReason)
         nowPlaying.clear()
         return false
+    }
+
+    /// Pauses the engine so shuttling cannot produce a natural end or accrue listening time.
+    func prepareRemoteSeeking() -> Bool {
+        guard item != nil, status == .playing || status == .paused, duration.isFinite, duration > 0 else { return false }
+        onCommand?(); transportCount &+= 1; cancelAdmission()
+        accrueListening(); engine.pause(); stopTicking(); lastAccrual = nil
+        return true
+    }
+
+    func moveRemoteSeeking(by distance: TimeInterval) -> Bool {
+        let target = min(max(0, position + distance), duration)
+        engine.currentTime = target; position = target
+        publishNowPlaying()
+        return target > 0 && target < duration
+    }
+
+    func restoreRemoteSeekingPlayback(resume: Bool) -> Bool {
+        if resume, status == .playing {
+            guard engine.play() else { return fail(.engineRefused) }
+            lastAccrual = .now; startTicking()
+        } else if status == .playing { status = .paused }
+        publishNowPlaying()
+        return true
     }
 
     private func applyRateToEngine() {
@@ -410,11 +470,11 @@ final class LibraryPlayer: ObservableObject {
         }
     }
 
-    private func publishNowPlaying() {
+    func publishNowPlaying() {
         guard let item else { return }
         nowPlaying.update(ListenerNowPlayingInfo(
             title: item.title, artist: item.showTitle, duration: duration, position: position,
-            rate: isPlaying ? rate : 0, defaultRate: rate, artworkData: artworkData))
+            rate: isPlaying && !isRemoteSeeking ? rate : 0, defaultRate: rate, artworkData: artworkData))
     }
 
     private func startTicking() {
@@ -432,152 +492,5 @@ final class LibraryPlayer: ObservableObject {
     private func stopTicking() {
         tickTask?.cancel()
         tickTask = nil
-    }
-}
-
-// MARK: - Production adapters
-
-/// `AVAudioPlayer` with speed control and a completion callback per loaded file.
-///
-/// A separate class from `AVFoundationAudioEngine` because speed needs `enableRate` set before
-/// the player prepares, and that engine's player is private to its package.
-nonisolated final class LibraryAudioEngine: NSObject, ListenerAudioEngine, LibraryRateAdjustable, AVAudioPlayerDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private var player: AVAudioPlayer?
-    private var generation: UInt64 = 0
-    private var completion: (@Sendable (UInt64) -> Void)?
-    private var desiredRate: Float = 1
-
-    var duration: Double { lock.withLock { player?.duration ?? 0 } }
-    var isPlaying: Bool { lock.withLock { player?.isPlaying ?? false } }
-    var currentTime: Double {
-        get { lock.withLock { player?.currentTime ?? 0 } }
-        set { lock.withLock { player?.currentTime = newValue } }
-    }
-    var rate: Float {
-        get { lock.withLock { desiredRate } }
-        set { lock.withLock { desiredRate = newValue; player?.rate = newValue } }
-    }
-
-    func load(url: URL) throws { try load(url: url, completionGeneration: 0) }
-
-    func load(url: URL, completionGeneration: UInt64) throws {
-        let loaded = try AVAudioPlayer(contentsOf: url)
-        loaded.delegate = self
-        loaded.enableRate = true
-        loaded.prepareToPlay()
-        lock.withLock {
-            player?.stop()
-            loaded.rate = desiredRate
-            player = loaded
-            generation = completionGeneration
-        }
-    }
-
-    func play() -> Bool { lock.withLock { player?.play() ?? false } }
-    func pause() { lock.withLock { player?.pause() } }
-
-    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) {
-        lock.withLock { completion = handler }
-    }
-
-    func audioPlayerDidFinishPlaying(_ finished: AVAudioPlayer, successfully flag: Bool) {
-        guard flag else { return }
-        let report: (UInt64, (@Sendable (UInt64) -> Void)?)? = lock.withLock {
-            player === finished ? (generation, completion) : nil
-        }
-        if let (generation, handler) = report { handler?(generation) }
-    }
-}
-
-/// Lock-screen, headset and Control Center transport controls.
-@MainActor
-final class MediaPlayerLibraryRemoteCommands: LibraryRemoteCommands {
-    private let center: MPRemoteCommandCenter
-    private var installed: [(command: MPRemoteCommand, token: Any)] = []
-    private var skipBack = LibraryPlayer.skipBackSeconds
-    private var skipForward = LibraryPlayer.skipForwardSeconds
-
-    init(center: MPRemoteCommandCenter = .shared()) { self.center = center }
-
-    func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {
-        uninstall()
-        publishSkipIntervals()
-        add(center.playCommand) { _ in .play }
-        add(center.pauseCommand) { _ in .pause }
-        add(center.togglePlayPauseCommand) { _ in .togglePlayPause }
-        add(center.skipForwardCommand) { event in
-            .skipForward((event as? MPSkipIntervalCommandEvent)?.interval ?? LibraryPlayer.skipForwardSeconds)
-        }
-        add(center.skipBackwardCommand) { event in
-            .skipBackward((event as? MPSkipIntervalCommandEvent)?.interval ?? LibraryPlayer.skipBackSeconds)
-        }
-        add(center.changePlaybackPositionCommand) { event in
-            (event as? MPChangePlaybackPositionCommandEvent).map { .seek(to: $0.positionTime) }
-        }
-        // CarPlay's speed button follows this command (Apple: CPNowPlayingPlaybackRateButton "uses
-        // MPRemoteCommandCenter to observe changes to the playback rate"). Without it enabled and
-        // advertising rates, the button reads 0x even while the episode plays.
-        center.changePlaybackRateCommand.supportedPlaybackRates = PlaybackSpeeds.all.map { NSNumber(value: $0) }
-        add(center.changePlaybackRateCommand) { event in
-            (event as? MPChangePlaybackRateCommandEvent).map { .setRate(Double($0.playbackRate)) }
-        }
-        self.handler = handler
-    }
-
-    func setSkipIntervals(back: TimeInterval, forward: TimeInterval) {
-        skipBack = back
-        skipForward = forward
-        publishSkipIntervals()
-    }
-
-    private func publishSkipIntervals() {
-        center.skipForwardCommand.preferredIntervals = [NSNumber(value: skipForward)]
-        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: skipBack)]
-    }
-
-    func uninstall() {
-        for (command, token) in installed { command.removeTarget(token) }
-        installed = []
-        handler = nil
-    }
-
-    private var handler: (@MainActor (LibraryRemoteCommand) -> Bool)?
-
-    /// The system may call from any thread; the command is delivered on the main actor in order.
-    private func add(_ command: MPRemoteCommand, translate: @escaping @Sendable (MPRemoteCommandEvent) -> LibraryRemoteCommand?) {
-        command.isEnabled = true
-        let token = command.addTarget { [weak self] event in
-            guard let translated = translate(event) else { return .commandFailed }
-            Task { @MainActor in _ = self?.handler?(translated) }
-            return .success
-        }
-        installed.append((command, token))
-    }
-}
-
-/// Forwards `AVAudioSession` interruption and route-change notifications.
-@MainActor
-final class AVAudioSessionEvents: LibrarySessionEvents {
-    private var tokens: [NSObjectProtocol] = []
-
-    func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void) {
-        #if os(iOS)
-        let center = NotificationCenter.default
-        tokens.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { note in
-            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-            let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt).map(AVAudioSession.InterruptionOptions.init(rawValue:))
-            let event: LibrarySessionEvent = type == .began
-                ? .interruptionBegan
-                : .interruptionEnded(shouldResume: options?.contains(.shouldResume) ?? false)
-            MainActor.assumeIsolated { handler(event) }
-        })
-        tokens.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { note in
-            guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-                  AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
-            MainActor.assumeIsolated { handler(.routeLost) }
-        })
-        #endif
     }
 }

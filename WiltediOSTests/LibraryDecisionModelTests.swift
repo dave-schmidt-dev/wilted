@@ -16,7 +16,7 @@ private final class DecisionClock: @unchecked Sendable {
 @MainActor
 final class LibraryDecisionModelTests: XCTestCase {
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
-    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
     private let clock = DecisionClock()
     private var versions: [LibraryRecordKey: UInt64] = [:]
     private var localSeq: UInt64 = 0
@@ -58,17 +58,19 @@ final class LibraryDecisionModelTests: XCTestCase {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("decision-audio-\(UUID().uuidString)")
         try Data([1, 2, 3]).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        let offer = try LibraryMediaOffer(
+        let offer = try PreparedMediaFixture.certified(LibraryMediaOffer(
             entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"),
-            contentHash: MediaHash.prefix + String(repeating: "0", count: 64), byteCount: 3, mediaType: "audio/mp4")
+            contentHash: PreparedMediaFixture.hash(Data([1, 2, 3])), byteCount: 3, mediaType: "audio/mp4"))
         try await mac.publishMedia(offer: offer, fileURL: file)
     }
 
     private func makeModel() -> LibraryAppModel {
         let clock = clock
+        let mirror = FileManager.default.temporaryDirectory.appendingPathComponent("decision-mirror-\(UUID()).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: mirror) }
         UserDefaults(suiteName: "library-decision-tests")!.removePersistentDomain(forName: "library-decision-tests")
         return LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), store: FileLibraryStore(url: mirror), deviceID: "phone",
             decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60),
             preferences: UserDefaults(suiteName: "library-decision-tests")!,
             now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
@@ -231,6 +233,25 @@ final class LibraryDecisionModelTests: XCTestCase {
         // The next decision clears the notice.
         await model.decide(.removeFromLarder, entryID: id("b"))
         XCTAssertEqual(model.decisionStatus(for: id("b")), .waiting)
+    }
+
+    func testReorderNamesMovedEntryAndFailedProvenanceRollsBack() async throws {
+        try await seed()
+        let model = makeModel()
+        await model.refresh()
+        await model.decide(.reorder(afterEntryID: nil), entryID: id("c"))
+        XCTAssertEqual(ids(model.queued), ["c", "a", "b"])
+        XCTAssertEqual(model.decisionContent.queue.map(\.entryID.rawValue), ["a", "b", "c"])
+        let intent = try await firstIntent()
+        XCTAssertEqual(intent.action, .reorder(entryID: id("c"), afterEntryID: nil))
+        await model.decide(.reorder(afterEntryID: id("a")), entryID: id("c"))
+        let sent = try await intents()
+        XCTAssertEqual(sent.count, 1)
+        try await macAnswers(intent, applied: false, reason: IntentOutcome.reasonFailed)
+        await model.refresh()
+        XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
+        XCTAssertTrue(model.decisions.isEmpty)
+        XCTAssertEqual(model.decisionStatus(for: id("c")), .failed("The Mac could not apply it."))
     }
 
     func testAContradictingPublishDropsTheOptimisticState() async throws {

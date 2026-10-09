@@ -11,7 +11,6 @@ extension WiltedMacModelTests {
     /// fires on this path -- it needs its own repair in `playEpisode`'s catch.
     func testManuallyPlayingAnEpisodeWithMissingMediaDisablesItImmediately() async throws {
         let directory = temporaryDirectory("manual-play-media-missing")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-play-missing.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -62,7 +61,6 @@ extension WiltedMacModelTests {
     /// the flag for this path.
     func testManuallySkippingToAnEpisodeWithMissingMediaDisablesItImmediately() async throws {
         let directory = temporaryDirectory("manual-skip-media-missing")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-missing.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -137,7 +135,6 @@ extension WiltedMacModelTests {
     func testCanSelectNextEpisodeIsFalseWhenTheQueuedSuccessorsMediaIsMissing() {
         let root = temporaryDirectory("can-select-next-media-missing")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
         let currentID = "item-" + String(repeating: "1", count: 64)
         let missingID = "item-" + String(repeating: "2", count: 64)
         let model = WiltedMacModel(
@@ -170,7 +167,6 @@ extension WiltedMacModelTests {
 
     func testManualNextWithABCSkipsUnpreparedBAndAdvancesToC() async throws {
         let directory = temporaryDirectory("manual-skip-abc")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-abc.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -243,7 +239,6 @@ extension WiltedMacModelTests {
 
     func testManualAndRemoteNextWithABCSkipsRetiredReadyBAndAdvancesToC() async throws {
         let directory = temporaryDirectory("manual-skip-abc-retired")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-abc-retired.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)

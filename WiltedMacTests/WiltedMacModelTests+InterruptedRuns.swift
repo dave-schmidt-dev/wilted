@@ -15,7 +15,6 @@ extension WiltedMacModelTests {
     /// "Preparing…" with a Stop that stopped nothing.
     func testBootstrapClosesARunTheJournalStillCallsLive() async throws {
         let directory = temporaryDirectory("interrupted-run")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
         let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
         let feedURL = URL(string: "https://podcasts.example.test/interrupted.xml")!
@@ -105,7 +104,6 @@ extension WiltedMacModelTests {
     /// outcome, or one that predates this run) gets closed.
     func testBootstrapDoesNotCloseALiveRunAnOutcomeAlreadyProves() async throws {
         let directory = temporaryDirectory("interrupted-run-proven")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
         let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
         let feedURL = URL(string: "https://podcasts.example.test/proven.xml")!

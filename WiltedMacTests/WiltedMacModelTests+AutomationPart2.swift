@@ -35,7 +35,6 @@ extension WiltedMacModelTests {
 
     func testExplicitPreparationStartsEvenWhenAutomaticProcessingIsManual() async throws {
         let directory = temporaryDirectory("manual-preparation-policy")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"],
             stateDirectoryOverride: directory,
@@ -66,7 +65,6 @@ extension WiltedMacModelTests {
     func testAutomationStatusIsObservableAndCancellationIsAnnounced() throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-status")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         XCTAssertEqual(model.automationStatus, .idle)
@@ -87,7 +85,6 @@ extension WiltedMacModelTests {
     func testLaunchStartsAutomationAndTheDefaultPolicyDoesNothing() async throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-launch")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         XCTAssertEqual(model.automationSettings.refreshPolicy, .manual)
@@ -120,7 +117,6 @@ extension WiltedMacModelTests {
     func testThePlaybackCheckpointTickerOutlivesFocusLoss() async throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("playback-checkpoint-ticker")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         XCTAssertFalse(model.playbackCheckpointTickerIsRunning, "nothing ticks before a store is loaded")
@@ -156,7 +152,6 @@ extension WiltedMacModelTests {
     func testTheTestHostNeverDrivesAudioOutput() async throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("silent-playback")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         model.startStoreBootstrap()
@@ -172,7 +167,6 @@ extension WiltedMacModelTests {
     func testTheOpenWindowTickerRestartsAfterBeingStopped() async throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("automation-ticker-restart")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         XCTAssertFalse(model.automationTickerIsRunning, "nothing ticks before a store is loaded")
@@ -204,7 +198,6 @@ extension WiltedMacModelTests {
     func testTheTicketDrainTickerSurvivesGoingToBackground() async throws {
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("ticket-drain-ticker-restart")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         XCTAssertFalse(model.ticketDrainTickerIsRunning, "nothing ticks before a store is loaded")
@@ -305,7 +298,6 @@ extension WiltedMacModelTests {
     /// remains a poll because the production ticker reads the real clock.
     func testAPendingTicketAdvancesWhileTheWindowIsNotFrontmost() async throws {
         let directory = temporaryDirectory("ticket-drain-background-progress")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://example.test/ticket-drain.xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://example.test/ticket-drain.mp3"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)

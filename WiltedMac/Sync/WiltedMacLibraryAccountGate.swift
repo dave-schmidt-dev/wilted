@@ -63,6 +63,9 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
 
     /// Changes whenever the inner transport's generation or the account gate's does.
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() &+ gate.generation }
+    func verifiedOwnerToken() async -> String? {
+        try? await run { await inner.verifiedOwnerToken() }
+    }
 
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
         try await run { try await inner.fetchChanges(since: token) }
@@ -100,6 +103,12 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
     func removeMedia(entryID: ItemID) async throws { try await run { try await inner.removeMedia(entryID: entryID) } }
     func publishStats(_ stats: LibraryStats) async throws { try await run { try await inner.publishStats(stats) } }
     func readStats() async throws -> LibraryStats? { try await run { try await inner.readStats() } }
+    func publishPublication(_ publication: LibraryPublication) async throws {
+        try await run { try await inner.publishPublication(publication) }
+    }
+    func readPublication() async throws -> LibraryPublication? {
+        try await run { try await inner.readPublication() }
+    }
     func publishTranscript(_ transcript: LibraryTranscript) async throws {
         try await run { try await inner.publishTranscript(transcript) }
     }

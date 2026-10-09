@@ -33,6 +33,8 @@ public struct NowPlaying: Codable, Equatable, Sendable {
     public let durationSeconds: Double?
     /// Whether the phone is playing rather than paused.
     public let isPlaying: Bool
+    public let seekSessionID: String?
+    public let canSeek: Bool?
 
     public init(
         episodeID: String,
@@ -40,7 +42,7 @@ public struct NowPlaying: Codable, Equatable, Sendable {
         showTitle: String,
         positionSeconds: Double,
         durationSeconds: Double? = nil,
-        isPlaying: Bool
+        isPlaying: Bool, seekSessionID: String? = nil, canSeek: Bool? = nil
     ) {
         self.episodeID = episodeID
         self.title = title
@@ -48,6 +50,8 @@ public struct NowPlaying: Codable, Equatable, Sendable {
         self.positionSeconds = positionSeconds
         self.durationSeconds = durationSeconds
         self.isPlaying = isPlaying
+        self.seekSessionID = seekSessionID
+        self.canSeek = canSeek
     }
 }
 
@@ -112,10 +116,14 @@ public struct WatchSnapshot: Codable, Equatable, Sendable {
     public let version: Int
     /// The playing episode, or nil when the phone is idle.
     public let nowPlaying: NowPlaying?
+    public let controlSessionID: UUID?
     /// Upcoming queue rows, never more than `upNextLimit`.
     public let upNext: [UpNextRow]
     /// Current playback rate.
     public let rate: Double
+    /// Configured skip intervals, in seconds. Legacy version1 payloads default to15/30.
+    public let skipBackSeconds: Int
+    public let skipForwardSeconds: Int
     /// Current sleep-timer state.
     public let sleep: SleepState
     /// When the phone produced this snapshot.
@@ -123,26 +131,34 @@ public struct WatchSnapshot: Codable, Equatable, Sendable {
 
     public init(
         version: Int = WatchSnapshot.currentVersion,
-        nowPlaying: NowPlaying? = nil,
+        nowPlaying: NowPlaying? = nil, controlSessionID: UUID? = nil,
         upNext: [UpNextRow] = [],
         rate: Double = 1,
         sleep: SleepState = .off,
+        skipBackSeconds: Int = 15,
+        skipForwardSeconds: Int = 30,
         publishedAt: Date = Date()
     ) {
         self.version = version
         self.nowPlaying = nowPlaying
+        self.controlSessionID = controlSessionID
         self.upNext = Array(upNext.prefix(Self.upNextLimit))
         self.rate = rate
         self.sleep = sleep
+        self.skipBackSeconds = skipBackSeconds
+        self.skipForwardSeconds = skipForwardSeconds
         self.publishedAt = publishedAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case version
         case nowPlaying
+        case controlSessionID
         case upNext
         case rate
         case sleep
+        case skipBackSeconds
+        case skipForwardSeconds
         case publishedAt
     }
 
@@ -152,10 +168,13 @@ public struct WatchSnapshot: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decode(Int.self, forKey: .version)
         nowPlaying = try container.decodeIfPresent(NowPlaying.self, forKey: .nowPlaying)
+        controlSessionID = try container.decodeIfPresent(UUID.self, forKey: .controlSessionID)
         let rows = try container.decode([UpNextRow].self, forKey: .upNext)
         upNext = Array(rows.prefix(Self.upNextLimit))
         rate = try container.decode(Double.self, forKey: .rate)
         sleep = try container.decode(SleepState.self, forKey: .sleep)
+        skipBackSeconds = try container.decodeIfPresent(Int.self, forKey: .skipBackSeconds) ?? 15
+        skipForwardSeconds = try container.decodeIfPresent(Int.self, forKey: .skipForwardSeconds) ?? 30
         publishedAt = try container.decode(Date.self, forKey: .publishedAt)
     }
 }

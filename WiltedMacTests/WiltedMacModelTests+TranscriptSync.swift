@@ -59,7 +59,6 @@ extension WiltedMacModelTests {
     /// unconditionally, so a timed transcript in the library was unreachable.
     func testPlayingAnEpisodeSurfacesItsSyncedTranscript() async throws {
         let directory = temporaryDirectory("episode-transcript")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let audioURL = directory.appendingPathComponent("episode.m4a")
 
@@ -161,7 +160,6 @@ extension WiltedMacModelTests {
     /// did nothing.
     func testMarkingTheCurrentEpisodeCompletedRetiresItFromTheLarder() async throws {
         let directory = temporaryDirectory("episode-mark-completed")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let audioURL = directory.appendingPathComponent("episode.m4a")
 
@@ -250,7 +248,6 @@ extension WiltedMacModelTests {
     /// that was not.
     func testAnEpisodeAlreadyMarkedCompletedCanStillBeRetired() async throws {
         let directory = temporaryDirectory("episode-completed-not-retired")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let audioURL = directory.appendingPathComponent("episode.m4a")
 

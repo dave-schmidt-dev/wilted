@@ -81,6 +81,10 @@ struct WiltedMacRootView: View {
     private var detail: some View {
         ZStack {
             VStack(spacing: 0) {
+                if model.selectedNavigation != .settings || !model.showsLibraryPublisherSync {
+                    WiltedPublicationNotice(summary: model.libraryPublicationSummary, detail: model.libraryPublicationDetail,
+                        qualifier: model.libraryPublicationQualifier).padding(WiltedTheme.Spacing.small)
+                }
                 GeometryReader { geometry in
                     HStack(spacing: 0) {
                         Group {
@@ -88,7 +92,7 @@ struct WiltedMacRootView: View {
                             case .feeds:
                                 WiltedMacFeedsView(model: model)
                             case .larder:
-                                WiltedMacLarderView(model: model, paneMode: shell.pane)
+                                WiltedMacLarderView(model: model, paneMode: shell.pane, sidebarMode: shell.sidebar)
                             case .settings:
                                 WiltedMacSettingsView(model: model)
                             }
@@ -150,13 +154,11 @@ struct WiltedMacRootView: View {
     /// sidebar already draws its own page background, so nothing native is lost.
     private var splitView: some View {
         HStack(spacing: 0) {
-            if shell.sidebar != .hidden {
-                WiltedMacSidebar(model: model, mode: shell.sidebar) {
-                    model.selectedNavigation = $0
-                }
-                .frame(width: sidebarColumnWidth)
-                Divider()
+            WiltedMacSidebar(model: model, mode: shell.sidebar) {
+                model.selectedNavigation = $0
             }
+            .frame(width: sidebarColumnWidth)
+            Divider()
             detail
         }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
@@ -249,20 +251,27 @@ struct WiltedMacRootView: View {
         .accessibilityIdentifier(WiltedMacStartupAccessibility.recovery)
     }
 
-    /// Hide or show the sidebar. ⌃⌘S does the same from the View menu.
+    /// Collapse or expand sidebar labels. ⌃⌘S does the same from the View menu.
     @ToolbarContentBuilder
     private var sidebarToggle: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
-            Button {
-                model.toggleSidebar()
-            } label: {
-                Image(systemName: "sidebar.leading")
-            }
-            .help(model.sidebarToggleTitle)
-            .accessibilityLabel(model.sidebarToggleTitle)
-            .accessibilityIdentifier("wilted-sidebar-toggle")
+            sidebarToggleContent
         }
     }
+
+    /// Shipping toolbar contents also render without AppKit chrome in headless tests.
+    var sidebarToggleContent: some View {
+        Button {
+            model.toggleSidebar()
+        } label: {
+            Image(systemName: "sidebar.leading")
+        }
+        .help(model.sidebarToggleTitle)
+        .accessibilityLabel(model.sidebarToggleTitle)
+        .accessibilityIdentifier("wilted-sidebar-toggle")
+    }
+
+    var wordmarkContent: some View { WiltedWordmark(height: 16) }
 
     /// The wordmark states the brand at the top of the window. macOS 26 gives
     /// every toolbar item a glass capsule, which reads as a stray button
@@ -272,12 +281,12 @@ struct WiltedMacRootView: View {
     private var wordmark: some ToolbarContent {
         if #available(macOS 26.0, *) {
             ToolbarItem(placement: .navigation) {
-                WiltedWordmark(height: 16)
+                wordmarkContent
             }
             .sharedBackgroundVisibility(.hidden)
         } else {
             ToolbarItem(placement: .navigation) {
-                WiltedWordmark(height: 16)
+                wordmarkContent
             }
         }
     }
@@ -431,5 +440,45 @@ struct WiltedMacAdvertisedFeedOffer: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(identifier)
+    }
+}
+
+/// Shared explanatory content, rendered by the same native popover and focused captures.
+struct WiltedMacHelpContent: View {
+    let title: String
+    let text: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            Text(title).wiltedFont(.title)
+            Text(text).wiltedFont(.body)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+        .padding(WiltedTheme.Spacing.medium)
+        .frame(maxWidth: 360, alignment: .leading)
+        .background(WiltedTheme.color(.card, scheme: colorScheme))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A native info button keeps explanatory copy beside its section, outside the main flow.
+struct WiltedMacHelpButton: View {
+    let content: WiltedMacHelpContent
+    let identifier: String
+    @State private var isPresented = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button { isPresented = true } label: {
+            Image(systemName: "info.circle").wiltedFont(.body)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+        .help("About \(content.title)")
+        .accessibilityLabel("About \(content.title)")
+        .accessibilityIdentifier(identifier)
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) { content }
     }
 }

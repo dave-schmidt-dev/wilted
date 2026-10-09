@@ -17,6 +17,7 @@ struct WiltedMacReadyAudio: Sendable, Equatable {
     var mediaType: String
     var durationSeconds: Double
     var fileURL: URL
+    var preparation: LibraryMediaPreparation
 }
 
 /// Read-only view of what the Mac has ready. It never starts or triggers preparation.
@@ -48,24 +49,41 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
     let store: LocalLibraryStore
 
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? {
-        try await store.podcastLibrarySnapshot().readyRevisions[entryID].map(Self.audio)
+        let snapshot = try await store.podcastLibrarySnapshot()
+        return Self.preparedAudio(in: snapshot)[entryID]
     }
 
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
         let snapshot = try await store.podcastLibrarySnapshot()
-        let queue = try await store.podcastQueueState().episodeIDs
+        return Self.preparedAudio(in: snapshot)
+    }
+
+    /// Generic ready revisions include raw downloads; only exact preparation proof authorizes export.
+    private static func preparedAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
+        let episodes = Set(snapshot.episodes.map(\.itemID))
         var prepared: [ItemID: WiltedMacReadyAudio] = [:]
-        for id in queue where snapshot.retiredAtByEpisode[id] == nil {
-            if let stored = snapshot.readyRevisions[id] { prepared[id] = Self.audio(stored) }
+        for id in snapshot.podcastQueue.episodeIDs {
+            guard episodes.contains(id), snapshot.removalKindByEpisode[id] == nil,
+                  snapshot.retiredAtByEpisode[id] == nil,
+                  let stored = snapshot.readyRevisions[id], stored.mediaURL.isFileURL,
+                  let download = snapshot.downloads[id], download.status == .completed,
+                  download.localURL == stored.mediaURL,
+                  download.contentHash == stored.revision.contentHash,
+                  download.bytesReceived == stored.revision.byteCount,
+                  let outcome = snapshot.preparationOutcomes["\(id.rawValue)|\(stored.revision.revisionID.rawValue)"],
+                  outcome.episodeID == id, outcome.revisionID == stored.revision.revisionID,
+                  outcome.eligibility != .invalid else { continue }
+            prepared[id] = Self.audio(stored, preparedAt: outcome.producedAt)
         }
         return prepared
     }
 
-    private static func audio(_ stored: StoredAudioRevision) -> WiltedMacReadyAudio {
+    private static func audio(_ stored: StoredAudioRevision, preparedAt: Timestamp) -> WiltedMacReadyAudio {
         let revision = stored.revision
         return WiltedMacReadyAudio(
             revisionID: revision.revisionID, contentHash: revision.contentHash, byteCount: revision.byteCount,
-            mediaType: revision.mediaType, durationSeconds: revision.durationSeconds, fileURL: stored.mediaURL
+            mediaType: revision.mediaType, durationSeconds: revision.durationSeconds, fileURL: stored.mediaURL,
+            preparation: LibraryMediaPreparation(preparedAt: preparedAt)
         )
     }
 
@@ -233,8 +251,14 @@ actor WiltedMacMediaService {
                 try await publishNotReady(entryID, why: "the audio file is missing or changed")
                 return
             }
+            let offer = try LibraryMediaOffer(
+                entryID: entryID, revisionID: ready.revisionID, contentHash: ready.contentHash,
+                byteCount: ready.byteCount, mediaType: ready.mediaType, durationSeconds: ready.durationSeconds,
+                preparation: ready.preparation
+            )
             let key = AssetKey(entryID: entryID.rawValue, revisionID: ready.revisionID.rawValue)
-            if published[entryID.rawValue] == key.revisionID, var existing = records[key] {
+            if published[entryID.rawValue] == key.revisionID, offered[entryID.rawValue] == offer,
+               var existing = records[key] {
                 existing.requesters.insert(requester)
                 existing.acked.remove(requester)
                 existing.touchedAt = now()
@@ -244,10 +268,6 @@ actor WiltedMacMediaService {
                 mediaLog.notice("Audio for \(entryID.rawValue, privacy: .public) is already offered; added a requester")
                 return
             }
-            let offer = try LibraryMediaOffer(
-                entryID: entryID, revisionID: ready.revisionID, contentHash: ready.contentHash,
-                byteCount: ready.byteCount, mediaType: ready.mediaType, durationSeconds: ready.durationSeconds
-            )
             mediaLog.notice("Uploading \(ready.byteCount, privacy: .public) bytes of audio for \(entryID.rawValue, privacy: .public)")
             let started = Date()
             try await transport.publishMedia(offer: offer, fileURL: ready.fileURL)
@@ -315,8 +335,8 @@ actor WiltedMacMediaService {
                     } else {
                         // Transcript first: if it fails the audio stays held, so the next sweep retries both.
                         try await removeTranscriptIfHeld(for: key.entryID)
-                        try await transport.removeMedia(entryID: entryID)
-                        offered[key.entryID] = nil
+                        try await transport.publishMedia(offer: .notReady(entryID: entryID), fileURL: URL(fileURLWithPath: "/dev/null"))
+                        offered[key.entryID] = .notReady(entryID: entryID)
                     }
                 } catch {
                     lastFailure = String(describing: error)
@@ -348,8 +368,8 @@ actor WiltedMacMediaService {
         var desired: [String: LibraryMediaOffer] = [:]
         for (entryID, audio) in prepared where audio.byteCount <= Self.maximumByteCount && Self.fileSize(audio.fileURL) == audio.byteCount {
             desired[entryID.rawValue] = try? LibraryMediaOffer(
-                entryID: entryID, revisionID: audio.revisionID, contentHash: "", byteCount: audio.byteCount,
-                mediaType: audio.mediaType, durationSeconds: audio.durationSeconds, state: .available
+                entryID: entryID, revisionID: audio.revisionID, contentHash: audio.contentHash, byteCount: audio.byteCount,
+                mediaType: audio.mediaType, durationSeconds: audio.durationSeconds, state: .available, preparation: audio.preparation
             )
         }
         availableOffers = desired
@@ -358,9 +378,9 @@ actor WiltedMacMediaService {
         for (raw, offer) in offered.sorted(by: { $0.key < $1.key }) where desired[raw] == nil && offer.state != .notReady {
             do {
                 await withdrawTranscript(for: raw)
-                try await transport.removeMedia(entryID: offer.entryID)
+                try await transport.publishMedia(offer: .notReady(entryID: offer.entryID), fileURL: URL(fileURLWithPath: "/dev/null"))
                 dropBooks(for: raw)
-                offered[raw] = nil
+                offered[raw] = .notReady(entryID: offer.entryID)
                 mediaLog.notice("Withdrew the offer for \(raw, privacy: .public): it left the Larder or is no longer prepared")
             } catch {
                 succeeded = false
@@ -368,7 +388,9 @@ actor WiltedMacMediaService {
             }
         }
         for (raw, want) in desired.sorted(by: { $0.key < $1.key }) {
-            if let current = offered[raw], current.revisionID == want.revisionID {
+            if let current = offered[raw], current.revisionID == want.revisionID,
+               current.contentHash == want.contentHash, current.byteCount == want.byteCount,
+               current.mediaType == want.mediaType, current.preparation == want.preparation {
                 if current.state == .available { continue }
                 if current.state == .ready, published[raw] == want.revisionID?.rawValue { continue }
             }

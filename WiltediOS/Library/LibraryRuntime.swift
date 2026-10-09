@@ -58,6 +58,12 @@ final class LibraryRuntime {
 
     private func performPrepare() async {
         model.attachPlayer(player)
+        player.authorizePlayback = { [weak model] item in
+            guard let model else { return false }
+            let token = model.beginExternalStart()
+            guard let cached = await model.verifiedCachedMedia(item.entryID, token: token) else { return false }
+            return cached.url == item.fileURL
+        }
         let model = model
         LibraryPushHandler.shared.attach { await model.handleSilentPush() }
         player.apply(settings.playback)
@@ -70,13 +76,15 @@ final class LibraryRuntime {
                 MainActor.assumeIsolated { self.map { $0.player.apply($0.settings.playback) } }
             }
             .store(in: &subscriptions)
-        // Removing the file from the phone must not leave its audio playing.
-        model.$media
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] media in
+        // Published emits before storage changes. Use both emitted full-library values
+        // synchronously so queue/media removal clears Now Playing before a remote resume.
+        model.$queued.combineLatest(model.$media)
+            .sink { [weak self] queued, media in
                 MainActor.assumeIsolated {
                     guard let player = self?.player, let playing = player.item else { return }
-                    if media[playing.entryID] != .onPhone { player.stop() }
+                    if !queued.contains(where: { $0.id == playing.entryID }) || media[playing.entryID] != .onPhone {
+                        player.invalidateLoadedItem()
+                    }
                 }
             }
             .store(in: &subscriptions)

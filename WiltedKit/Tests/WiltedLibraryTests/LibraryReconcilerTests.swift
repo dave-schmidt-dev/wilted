@@ -264,4 +264,66 @@ final class LibraryReconcilerTests: XCTestCase {
         XCTAssertEqual(converged.content.queue.map(\.entryID), [id("a"), id("b")])
         XCTAssertEqual(converged.content.slots[id("b")], slot("b", 0.5))
     }
+    func testVerifiedBatchGenerationMustMatchCapturedOperation() async throws {
+        let transport = ReconcilerContextTransport(owner: "owner", proofOwner: "owner", proofGeneration: 9)
+        let store = InMemoryLibraryStore()
+        let result = await LibraryReconciler(transport: transport, store: store).synchronize()
+        guard case .failure = result else { return XCTFail("mismatched proof generation committed") }
+        let state = await store.state()
+        XCTAssertNil(state.cursor)
+    }
+
+    func testVerifiedBatchOwnerMustMatchCurrentObservedOwner() async throws {
+        let transport = ReconcilerContextTransport(owner: "current", proofOwner: "different")
+        let store = InMemoryLibraryStore()
+        let result = await LibraryReconciler(transport: transport, store: store).synchronize()
+        guard case .failure = result else { return XCTFail("mismatched proof owner committed") }
+        let state = await store.state()
+        XCTAssertNil(state.cursor)
+    }
+
+    func testStoredBatchOwnerWithoutCurrentVerificationCannotCommit() async throws {
+        let transport = ReconcilerContextTransport(owner: nil, proofOwner: "stored")
+        let store = InMemoryLibraryStore()
+        let result = await LibraryReconciler(transport: transport, store: store).synchronize()
+        guard case .failure = result else { return XCTFail("unverified current identity committed") }
+        let state = await store.state()
+        XCTAssertNil(state.cursor)
+    }
+
+    func testTokenAcknowledgementFailureKeepsTheAlreadyCommittedBatch() async throws {
+        let transport = ReconcilerContextTransport(owner: "owner", proofOwner: "owner", failAcknowledgement: true)
+        let store = InMemoryLibraryStore()
+        let result = await LibraryReconciler(transport: transport, store: store).synchronize()
+        guard case .failure = result else { return XCTFail("acknowledgement error must surface") }
+        let state = await store.state()
+        XCTAssertEqual(state.cursor?.rawValue, "new-cursor")
+        XCTAssertEqual(state.revision, 1)
+    }
+
+}
+
+
+private actor ReconcilerContextTransport: LibraryTransport {
+    let owner: String?
+    let proofOwner: String
+    let proofGeneration: UInt64
+    let failAcknowledgement: Bool
+    init(owner: String?, proofOwner: String, proofGeneration: UInt64 = 0, failAcknowledgement: Bool = false) {
+        self.owner = owner; self.proofOwner = proofOwner; self.proofGeneration = proofGeneration
+        self.failAcknowledgement = failAcknowledgement
+    }
+    func verifiedOwnerToken() -> String? { owner }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
+        .init(generationID: "proof", changes: [], token: .init(rawValue: "new-cursor"),
+              provenance: .init(ownerToken: proofOwner, operationGeneration: proofGeneration, isFullBootstrap: true))
+    }
+    func commitFetchedState(_ token: LibraryChangeToken?) throws {
+        if failAcknowledgement { throw LibraryTransportError.transport("acknowledgement failed") }
+    }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { .init() }
+    func send(intent: LibraryIntent) async throws {}
+    func listIntents() async throws -> [LibraryIntent] { [] }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {}
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { .init() }
 }

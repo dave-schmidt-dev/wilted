@@ -30,7 +30,7 @@ final class LibraryLocalStateTests: XCTestCase {
     func testOfflineLaunchListsTheEpisodeAlreadyOnThePhone() async throws {
         // A first session syncs once, leaving the library in the store and the audio in the cache.
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
-        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
         let show = LibrarySource(id: try ItemID(rawValue: "show"), kind: .podcastFeed, title: "The Show")
         let entry = try LibraryEntry(
             id: entryID, kind: .podcastEpisode, sourceID: show.id, title: "Episode A", summary: "",
@@ -39,10 +39,10 @@ final class LibraryLocalStateTests: XCTestCase {
         let pending = changes.enumerated().map { PendingLibraryChange(localSeq: UInt64($0.offset + 1), change: $0.element, baseVersion: 0) }
         _ = try await mac.push(changes: pending)
 
-        let store = InMemoryLibraryStore()
+        let store = FileLibraryStore(url: scratch.appendingPathComponent("library-state.json"))
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         let online = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), store: store, deviceID: "phone",
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), store: store, deviceID: "phone",
             mediaCache: cache, preferences: defaults())
         await online.refresh()
         XCTAssertEqual(online.queued.map(\.id), [entryID])
@@ -50,10 +50,10 @@ final class LibraryLocalStateTests: XCTestCase {
         let file = scratch.appendingPathComponent("incoming.mp4")
         try payload.write(to: file)
         let hash = MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        let offer = try LibraryMediaOffer(
+        let offer = try PreparedMediaFixture.certified(LibraryMediaOffer(
             entryID: entryID, revisionID: revisionID, contentHash: hash, byteCount: Int64(payload.count),
-            mediaType: "audio/mp4", durationSeconds: 60)
-        _ = try await cache.adopt(verifiedFile: file, for: offer)
+            mediaType: "audio/mp4", durationSeconds: 60))
+        _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer, owner: "fixture-owner")
 
         // A later launch with no network: nothing is fetched, yet the row and "On phone" are there.
         let offline = LibraryAppModel(
@@ -72,7 +72,7 @@ final class LibraryLocalStateTests: XCTestCase {
 
     func testOfflineLaunchWithNothingOnThePhoneStaysEmpty() async {
         let model = LibraryAppModel(
-            transport: UnavailableLibraryTransport(reason: "no signal"), deviceID: "phone",
+            transport: UnavailableLibraryTransport(reason: "no signal"), store: FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json")), deviceID: "phone",
             mediaCache: FileMediaCache(rootURL: scratch.appendingPathComponent("cache")), preferences: defaults())
         await model.loadLocalState()
         XCTAssertTrue(model.queued.isEmpty)

@@ -25,6 +25,8 @@ extension WiltedMacLarderView {
             rowArtwork(episode)
             VStack(alignment: .leading, spacing: 2) {
                 WiltedMacLarderEpisodeNotesTitle(episode: episode)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(-1)
                 WiltedMacEpisodeMetadata(
                     episode: episode,
                     lifecycleLabel: showsGroupName ? group.displayName : nil,
@@ -169,7 +171,8 @@ extension WiltedMacLarderView {
                     .accessibilityIdentifier("wilted-larder-played-\(episode.id)")
             } else {
                 // The press is answered on the row it came from while it opens.
-                let opening = model.playbackCommands.pending?.command.itemID == episode.id
+                let opening = model.playbackCommands.pending?.command.kind == .select
+                    && model.playbackCommands.pending?.command.itemID == episode.id
                 Button { model.playLarderEpisode(episode) } label: {
                     if opening {
                         ProgressView().controlSize(.small)

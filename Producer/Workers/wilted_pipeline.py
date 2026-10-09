@@ -166,6 +166,10 @@ from wilted_worker.transcript_sources import parse_published_transcript
 from wilted_worker.transcript_sources import published_transcript_matches_audio
 
 def run(request: dict) -> dict:
+    if request.get("operation") == "summary":
+        from wilted_worker.transcript_summary import run_summary, summary_request_id
+        with _worker_reporting.summary_scope(summary_request_id(request)):
+            return run_summary(request)
     audio_path = Path(request["audioPath"])
     if not audio_path.exists():
         raise WorkerError("audio-missing", f"no audio at {audio_path}")
@@ -337,6 +341,35 @@ def main() -> int:
     if not isinstance(request, dict):
         json.dump({"ok": False, "code": "bad-request", "message": "request must be an object"}, sys.stdout)
         return 2
+
+    if request.get("operation") == "summary":
+        from wilted_worker.transcript_summary import summary_request_id
+        request_id = summary_request_id(request)
+        with _worker_reporting.summary_scope(request_id):
+            warnings = ForwardedWarnings()
+            logging.getLogger().addHandler(warnings)
+            try:
+                data_dir = Path(request.get("workDir") or tempfile.gettempdir()) / "wilted-pipeline"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                from wilted.execution_capability import execution_capability_scope
+                with execution_capability_scope(owner_id="wilted-native-summary", data_dir=data_dir):
+                    result = run(request)
+            except WorkerError as error:
+                warnings.summarize()
+                json.dump({"ok": False, "operation": "summary", "protocolVersion": PROTOCOL_VERSION,
+                           "requestID": request_id, "code": error.code, "message": str(error)}, sys.stdout)
+                return 1
+            except Exception:
+                warnings.summarize()
+                json.dump({"ok": False, "operation": "summary", "protocolVersion": PROTOCOL_VERSION,
+                           "requestID": request_id, "code": "summary-failed",
+                           "message": "Local transcript summary failed."}, sys.stdout)
+                return 1
+            finally:
+                logging.getLogger().removeHandler(warnings)
+            warnings.summarize()
+            json.dump(result, sys.stdout)
+            return 0
 
     data_dir = Path(request.get("workDir") or tempfile.gettempdir()) / "wilted-pipeline"
     data_dir.mkdir(parents=True, exist_ok=True)

@@ -285,6 +285,7 @@ fi
 
 run_leg_async "test-build-with-cache" "$repo_root/tests/test-build-with-cache.sh"
 run_leg_async "test-bounded-entry" "$repo_root/tests/test-bounded-entry.sh"
+run_leg_async "test-runtime-static-admission" "$repo_root/tests/test-runtime-static-admission.sh"
 run_leg_async "test-no-global-tmp" "$repo_root/tests/test-no-global-tmp.sh"
 run_leg_async "assert-mac-first-docs" "$repo_root/tests/test-mac-first-docs.sh"
 run_leg_async "test-contract-fixtures" "$repo_root/tests/test-contract-fixtures.sh"
@@ -305,12 +306,15 @@ run_leg_async "test-temp-leaks" "$repo_root/tests/test-temp-leaks.sh"
 run_leg_async "test-git-hooks" "$repo_root/tests/test-git-hooks.sh"
 run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"
 run_leg_async "test-native-ui-receipt" "$repo_root/tests/test-native-ui-receipt.sh"
+run_leg_async "test-native-gate-parallel" "$repo_root/tests/test-native-gate-parallel.sh"
+run_leg_async "test-native-gate-xcode" "$repo_root/tests/test-native-gate-xcode.sh"
 run_leg_async "test-native-gate-legs" "$repo_root/tests/test-native-gate-legs.sh"
 run_leg_async "test-release-wrappers" "$repo_root/tests/test-release-wrappers.sh"
 run_leg_async "test-file-size" "$repo_root/tests/test-file-size.sh"
 run_leg_async "test-attended-library-sync" "$repo_root/tests/test-attended-library-sync.sh"
 run_leg_async "test-attended-nested-signature" "$repo_root/tests/test-attended-nested-signature.sh"
 run_leg_async "test-test-product-metadata" "$repo_root/tests/test-test-product-metadata.sh"
+run_leg_async "test-record-ios-snapshots" "$repo_root/tests/test-record-ios-snapshots.sh"
 if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
   run_leg_async "test-audio-contract-ios-build" "$repo_root/tests/test-audio-contract-ios-build.sh"
 fi

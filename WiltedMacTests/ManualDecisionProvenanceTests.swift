@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 import WiltedDomain
 import WiltedLibrary
@@ -128,6 +129,184 @@ final class ManualDecisionProvenanceTests: XCTestCase {
         try await assertAutomationLeavesUnchanged(rig)
     }
 
+    func testDismissWritesManualSkipAndSurvivesAutomation() async throws {
+        let rig = try await makeRig(.live, title: Self.bonus)
+        rig.model.removeEpisode(try rig.episode())
+        await rig.drain()
+        try await assertManual(.skip, rig)
+        try await assertAutomationLeavesUnchanged(rig)
+    }
+
+    func testAlreadyRestoredDismissalWritesManualKeep() async throws {
+        let rig = try await makeRig(.dismissed, title: Self.sponsored)
+        let dismissal = try rig.dismissal()
+        _ = try await rig.store.restoreEpisode(rig.itemID)
+        await rig.model.restoreEpisode(dismissal, episodeID: rig.itemID, store: rig.store)
+        try await assertManual(.keep, rig)
+        try await assertAutomationLeavesUnchanged(rig)
+    }
+
+    func testPhoneRemoveWritesManualSkipIncludingAlreadyOffLarder() async throws {
+        for seed in [Seed.kept, .live, .retired] {
+            let rig = try await makeRig(seed, title: Self.bonus)
+            try await rig.phone(.removeFromLarder(entryID: rig.itemID, deviceID: Self.phone))
+            try await assertManual(.skip, rig)
+            try await assertAutomationLeavesUnchanged(rig)
+        }
+    }
+
+    func testPhoneUnchangedReorderConvertsPolicyKeepToManual() async throws {
+        let rig = try await makeRig(.policyKept, title: Self.sponsored)
+        let before = rig.model.podcastQueueIDs
+        try await rig.phone(.reorder(entryID: rig.itemID, afterEntryID: nil, deviceID: Self.phone))
+        XCTAssertEqual(rig.model.podcastQueueIDs, before)
+        try await assertManual(.keep, rig)
+        try await assertAutomationLeavesUnchanged(rig)
+    }
+
+    func testPhoneReorderRecordsOnlyMovedEntryAndSurvivesAutomation() async throws {
+        let rig = try await makeRig(.policyKeptWithAnchor, title: Self.sponsored)
+        let anchor = try ItemID.derivePodcastEpisode(
+            feedURL: rig.feedURL, rssGUID: "anchor", enclosureURL: Self.enclosure("anchor")
+        )
+        try await rig.phone(.reorder(entryID: rig.itemID, afterEntryID: nil, deviceID: Self.phone))
+        XCTAssertEqual(rig.model.decisionQueue, [rig.itemID, anchor])
+        let anchorRecord = try await rig.store.episodeDecision(for: anchor)
+        XCTAssertNil(anchorRecord, "the anchor is not the owner's Keep choice")
+        try await assertManual(.keep, rig)
+        try await assertAutomationLeavesUnchanged(rig)
+    }
+
+    func testProvenanceWriteFailureRejectsRestoreAndNewIntentCanRetry() async throws {
+        let rig = try await makeRig(.live, title: Self.sponsored)
+        let storeURL = await rig.store.url
+        try rejectDecisionWrites(storeURL)
+        let intent = try LibraryIntent.restore(entryID: rig.itemID, deviceID: Self.phone)
+        try await rig.phone(intent)
+        let outcome = await rig.book.entry(for: intent.id)?.outcome
+        XCTAssertEqual(outcome?.isApplied, false)
+        XCTAssertEqual(outcome?.reason, IntentOutcome.reasonFailed)
+        try await assertNoRecord(rig)
+        try executeFixtureSQL("DROP TRIGGER reject_manual_insert; DROP TRIGGER reject_manual_update;", at: storeURL)
+        try await rig.phone(.restore(entryID: rig.itemID, deviceID: Self.phone))
+        try await assertManual(.keep, rig)
+        try await assertAutomationLeavesUnchanged(rig)
+    }
+
+    func testPhoneLiveRestoreWritesManualKeep() async throws {
+        let rig = try await makeRig(.live, title: Self.sponsored)
+        try await rig.phone(.restore(entryID: rig.itemID, deviceID: Self.phone))
+        try await assertManual(.keep, rig)
+        try await assertAutomationLeavesUnchanged(rig)
+    }
+
+    func testPhoneRetiredSkipAndMarkDoneWriteManualSkip() async throws {
+        for done in [false, true] {
+            let rig = try await makeRig(.retired, title: Self.bonus)
+            try await rig.phone(done
+                ? .markDone(entryID: rig.itemID, deviceID: Self.phone)
+                : .skip(entryID: rig.itemID, deviceID: Self.phone))
+            try await assertManual(.skip, rig)
+            try await assertAutomationLeavesUnchanged(rig)
+        }
+    }
+
+    func testMissingProvenanceStoreRejectsLiveRestoreAndRetainsOutcomeOnReplay() async throws {
+        let rig = try await makeRig(.live, title: Self.sponsored)
+        let intent = try LibraryIntent.restore(entryID: rig.itemID, deviceID: Self.phone)
+        rig.model.store = nil
+        try await rig.phone(intent)
+        let outcome = await rig.book.entry(for: intent.id)?.outcome
+        XCTAssertEqual(outcome?.reason, IntentOutcome.reasonFailed)
+        XCTAssertEqual(outcome?.isApplied, false)
+        rig.model.store = rig.store
+        try await rig.phone(intent)
+        try await assertNoRecord(rig)
+        let replay = await rig.book.entry(for: intent.id)?.outcome
+        XCTAssertEqual(replay, outcome, "a rejected intent is not silently re-applied on replay")
+    }
+
+    func testDismissCommittedWithoutManualRecordKeepsUndoAndReleasesWaitingEpisode() async throws {
+        let rig = try await makeRig(.kept, title: Self.bonus)
+        try await rig.store.save(feedAutomationPolicy: FeedAutomationPolicy(
+            autoKeep: .on, autoDownload: .off, autoPrepare: .off, keptLimit: .explicit(1)
+        ), for: rig.feedID)
+        _ = try await rig.model.automaticRefresh(rig.feedURL, claimingNewest: 0)
+        await rig.drain()
+        let waitingBefore = try await rig.store.episodeDecision(for: rig.freshID)
+        XCTAssertNil(waitingBefore, "the kept target fills the only slot")
+        XCTAssertEqual(rig.model.podcastQueueIDs, [rig.itemID.rawValue])
+        try rejectDecisionWrites(await rig.store.url)
+        rig.model.removeEpisode(try rig.episode())
+        await rig.drain()
+        let removal = try await rig.store.removalKind(for: rig.itemID)
+        XCTAssertEqual(removal, .dismissed)
+        XCTAssertEqual(try rig.dismissal().id, rig.itemID.rawValue)
+        XCTAssertEqual(rig.model.undoableRemoval?.id, rig.itemID.rawValue)
+        XCTAssertEqual(rig.model.podcastOperationMessage,
+                       "Removed \(Self.bonus), but the choice could not be saved.")
+        try await assertNoRecord(rig)
+        let released = try await rig.store.episodeDecision(for: rig.freshID)
+        XCTAssertEqual(released?.source, .policy, "the manual-only fault must allow actual automatic admission")
+        XCTAssertEqual(released?.decision, .keep)
+        XCTAssertEqual(rig.model.podcastQueueIDs, [rig.freshID.rawValue])
+    }
+
+    func testSkipCommittedWithoutManualRecordKeepsUndoAndReportsChoiceFailure() async throws {
+        let rig = try await makeRig(.kept, title: Self.bonus)
+        try rejectDecisionWrites(await rig.store.url)
+        rig.model.skipEpisode(try rig.episode(), requireStarted: false)
+        await rig.drain()
+        let removal = try await rig.store.removalKind(for: rig.itemID)
+        XCTAssertEqual(removal, .retired)
+        XCTAssertEqual(rig.model.undoableSkip?.id, rig.itemID.rawValue)
+        XCTAssertFalse(rig.model.podcastQueueIDs.contains(rig.itemID.rawValue))
+        XCTAssertEqual(rig.model.podcastOperationMessage,
+                       "Marked \(Self.bonus) completed, but the choice could not be saved. Undo completion restores it.")
+        try await assertNoRecord(rig)
+    }
+
+    func testUndoSkipCommittedWithoutManualRecordReportsChoiceFailure() async throws {
+        let rig = try await makeRig(.completedRetired, title: Self.sponsored)
+        try rejectDecisionWrites(await rig.store.url)
+        rig.model.undoSkipEpisode(try rig.episode())
+        await rig.drain()
+        let removal = try await rig.store.removalKind(for: rig.itemID)
+        XCTAssertNil(removal)
+        XCTAssertNil(rig.model.undoableSkip)
+        XCTAssertEqual(rig.model.podcastOperationMessage,
+                       "Restored \(Self.sponsored), but the choice could not be saved.")
+        try await assertNoRecord(rig)
+    }
+
+    func testRestoreCommittedWithoutManualRecordLeavesDismissedUIAndReportsChoiceFailure() async throws {
+        let rig = try await makeRig(.dismissed, title: Self.sponsored)
+        let dismissal = try rig.dismissal()
+        try rejectDecisionWrites(await rig.store.url)
+        await rig.model.restoreEpisode(dismissal, episodeID: rig.itemID, store: rig.store)
+        let removal = try await rig.store.removalKind(for: rig.itemID)
+        let restored = try await rig.store.podcastEpisode(for: rig.itemID)
+        let message = try XCTUnwrap(rig.model.podcastOperationMessage)
+        XCTAssertNil(removal)
+        XCTAssertNotNil(restored)
+        XCTAssertNil(rig.model.dismissedEpisodes.first { $0.id == rig.itemID.rawValue })
+        XCTAssertEqual(message, "Restored \(Self.sponsored), but the choice could not be saved.")
+        XCTAssertFalse(message.contains("Retry"))
+        try await assertNoRecord(rig)
+    }
+
+    func testRestoreAfterUnsubscribeCannotCreateAnOrphanManualKeep() async throws {
+        let rig = try await makeRig(.dismissed, title: Self.sponsored)
+        let dismissal = try rig.dismissal()
+        _ = try await rig.store.unsubscribeFromPodcast(feedID: rig.feedID)
+        let absent = try await rig.store.podcastEpisode(for: rig.itemID)
+        XCTAssertNil(absent, "the fixture feed cascade really removed the episode")
+        await rig.model.restoreEpisode(dismissal, episodeID: rig.itemID, store: rig.store)
+        try await assertNoRecord(rig)
+        XCTAssertEqual(rig.model.podcastOperationMessage,
+                       "\(Self.sponsored) could not be restored because it is no longer in the library.")
+    }
+
     // MARK: Assertions
 
     private func assertNoRecord(_ rig: Rig, file: StaticString = #filePath, line: UInt = #line) async throws {
@@ -179,6 +358,32 @@ final class ManualDecisionProvenanceTests: XCTestCase {
         XCTAssertEqual(fresh?.source, .policy, "the refresh did run and admit the fresh episode", file: file, line: line)
     }
 
+    /// Fault only the fixture's decision table; queue/removal writes keep their real behavior.
+    private func rejectDecisionWrites(_ url: URL) throws {
+        try executeFixtureSQL("""
+            CREATE TRIGGER reject_manual_insert BEFORE INSERT ON ZEPISODEDECISIONRECORD
+            WHEN NEW.ZSOURCE = 'manual'
+            BEGIN SELECT RAISE(ABORT, 'fixture decision write failure'); END;
+            CREATE TRIGGER reject_manual_update BEFORE UPDATE ON ZEPISODEDECISIONRECORD
+            WHEN NEW.ZSOURCE = 'manual'
+            BEGIN SELECT RAISE(ABORT, 'fixture decision write failure'); END;
+            """, at: url)
+    }
+
+    private func executeFixtureSQL(_ sql: String, at url: URL) throws {
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            if let database { sqlite3_close(database) }
+            throw NSError(domain: "ProvenanceFixture", code: 1)
+        }
+        defer { sqlite3_close(database) }
+        guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+            throw NSError(domain: "ProvenanceFixture", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(database))])
+        }
+    }
+
     private static func candidate(title: String, id: String) -> EpisodeAdmissionService.Candidate {
         .init(id: id, title: title, notes: nil, releasedAt: Date(timeIntervalSince1970: 1_704_086_400))
     }
@@ -194,7 +399,7 @@ private extension ManualDecisionProvenanceTests {
     static let freshGUID = "fresh"
 
     /// Where the target episode starts, before the entry point under test.
-    enum Seed { case live, kept, policyKept, retired, completedRetired, dismissed }
+    enum Seed { case live, kept, policyKept, policyKeptWithAnchor, retired, completedRetired, dismissed }
 
     /// Skip anything "Sponsored"; keep anything "Bonus".
     static let rules: EpisodeMatchRules = {
@@ -221,6 +426,7 @@ private extension ManualDecisionProvenanceTests {
         let freshID: ItemID
         let title: String
         let applier: WiltedMacIntentApplier
+        let book: WiltedMacIntentOutcomeBook
 
         func episode() throws -> WiltedMacEpisode {
             try XCTUnwrap(model.episodes.first { $0.id == itemID.rawValue })
@@ -261,6 +467,8 @@ private extension ManualDecisionProvenanceTests {
         let freshID = try ItemID.derivePodcastEpisode(
             feedURL: feedURL, rssGUID: Self.freshGUID, enclosureURL: Self.enclosure(Self.freshGUID)
         )
+        let anchorURL = Self.enclosure("anchor")
+        let anchorID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "anchor", enclosureURL: anchorURL)
         let at = Timestamp(Date(timeIntervalSince1970: 1_704_000_000))
         let item: (String, String, Int) -> String = { guid, title, day in
             """
@@ -286,9 +494,17 @@ private extension ManualDecisionProvenanceTests {
                 ))
                 switch seed {
                 case .live: break
-                case .kept, .policyKept:
-                    try await store.replacePodcastQueue(try PodcastQueueState(episodeIDs: [itemID], currentEpisodeID: nil))
-                    if seed == .policyKept {
+                case .kept, .policyKept, .policyKeptWithAnchor:
+                    var queue = [itemID]
+                    if seed == .policyKeptWithAnchor {
+                        try await store.save(episode: PodcastEpisode(
+                            itemID: anchorID, feedID: feedID, feedURL: feedURL, rssGUID: "anchor", title: "Anchor",
+                            enclosureURL: anchorURL, enclosureMediaType: "audio/mpeg", createdAt: at
+                        ))
+                        queue.insert(anchorID, at: 0)
+                    }
+                    try await store.replacePodcastQueue(try PodcastQueueState(episodeIDs: queue, currentEpisodeID: nil))
+                    if seed == .policyKept || seed == .policyKeptWithAnchor {
                         try await store.save(episodeDecision: .init(
                             episodeID: itemID, decision: .keep, source: .policy, decidedAt: at
                         ))
@@ -312,15 +528,16 @@ private extension ManualDecisionProvenanceTests {
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
         addTeardownBlock { await MainActor.run { model.stopLibrarySync() }; await model.close() }
+        let book = WiltedMacIntentOutcomeBook(fileURL: nil)
         let applier = WiltedMacIntentApplier(
-            host: model, ledger: WiltedMacIntentLedger(fileURL: nil), book: WiltedMacIntentOutcomeBook(fileURL: nil),
+            host: model, ledger: WiltedMacIntentLedger(fileURL: nil), book: book,
             transport: InMemoryLibraryTransport(
                 deviceID: "mac-test", server: InMemoryLibraryServer(writerDeviceID: "mac-test")
             )
         )
         return Rig(
             model: model, store: try XCTUnwrap(model.store), feedURL: feedURL, feedID: feedID, itemID: itemID,
-            freshID: freshID, title: title, applier: applier
+            freshID: freshID, title: title, applier: applier, book: book
         )
     }
 

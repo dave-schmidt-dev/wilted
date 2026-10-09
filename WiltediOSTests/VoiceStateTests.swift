@@ -104,7 +104,7 @@ final class VoiceStateTests: XCTestCase {
             remoteCommands: VoiceFakeRemote(), sessionEvents: VoiceFakeEvents(), tickInterval: .seconds(3600))
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
         let model = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), store: FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json")), deviceID: "phone",
             mediaCache: FileMediaCache(rootURL: scratch.appendingPathComponent("cache")),
             preferences: defaults, now: { Date(timeIntervalSince1970: 1_000) }, timeZone: TimeZone(identifier: "UTC")!)
         let settings = LibrarySettingsStore(defaults: defaults)

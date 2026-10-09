@@ -96,6 +96,8 @@ private struct OfflineSwitchTransport: LibraryTransport {
         if offlineSwitch.offline { throw LibraryTransportError.transport("offline") }
     }
 
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
     func send(intent: LibraryIntent) async throws { try await inner.send(intent: intent) }
@@ -118,8 +120,8 @@ final class LibraryHandoffModelTests: XCTestCase {
     private var scratch: URL!
     private let clock = HandoffClock()
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
-    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
-    private lazy var phoneTransport = InMemoryLibraryTransport(deviceID: "phone", server: server)
+    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
+    private lazy var phoneTransport = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
     private let sleeper = TickSleeper()
     private let entryID = try! ItemID(rawValue: "item-a")
     private let rev1 = try! RevisionID(rawValue: "rev-1")
@@ -156,9 +158,9 @@ final class LibraryHandoffModelTests: XCTestCase {
     }
 
     private func offer(_ revision: RevisionID) throws -> LibraryMediaOffer {
-        try LibraryMediaOffer(
+        try PreparedMediaFixture.certified(LibraryMediaOffer(
             entryID: entryID, revisionID: revision, contentHash: hash(payload), byteCount: Int64(payload.count),
-            mediaType: "audio/mp4", durationSeconds: 3_600)
+            mediaType: "audio/mp4", durationSeconds: 3_600))
     }
 
     private func macPublishMedia(_ revision: RevisionID) async throws {
@@ -169,11 +171,23 @@ final class LibraryHandoffModelTests: XCTestCase {
 
     /// A phone whose cache already holds `cachedRevision` (nil for an empty cache).
     private func makeRig(cached cachedRevision: RevisionID? = nil, transport: (any LibraryTransport)? = nil) async throws -> Rig {
+        let entry = try LibraryEntry(
+            id: entryID, kind: .podcastEpisode, sourceID: entryID, title: "Episode", summary: "",
+            publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 3_600)
+        let slot = try QueueSlot(entryID: entryID, sortKey: 0)
+        let seeded = try await mac.push(changes: [
+            PendingLibraryChange(localSeq: 1, change: .entry(entry), baseVersion: 0),
+            PendingLibraryChange(localSeq: 2, change: .slot(slot), baseVersion: 0),
+        ])
+        XCTAssertTrue(seeded.failures.isEmpty)
+        let actualTransport = transport ?? phoneTransport
+        let mirror = FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json"))
+        try await PreparedMediaFixture.bootstrap(mirror, transport: actualTransport)
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         if let cachedRevision {
             let file = scratch.appendingPathComponent(UUID().uuidString)
             try payload.write(to: file)
-            _ = try await cache.adopt(verifiedFile: file, for: offer(cachedRevision))
+            _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer(cachedRevision), owner: "fixture-owner")
         }
         let engine = HandoffFakeEngine()
         let player = LibraryPlayer(
@@ -182,12 +196,13 @@ final class LibraryHandoffModelTests: XCTestCase {
         let sleeper = sleeper
         let clock = clock
         let model = LibraryAppModel(
-            transport: transport ?? phoneTransport, deviceID: "phone", mediaCache: cache,
+            transport: actualTransport, store: mirror, deviceID: "phone", mediaCache: cache,
             mediaTiming: LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30)),
             handoffTiming: LibraryHandoffTiming(
                 observeInterval: SyncCadence.phoneObserveInterval, sleep: { try await sleeper.sleep($0) }, settleSleep: { _ in }),
             now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
         model.attachPlayer(player)
+        await model.refresh()
         return Rig(model: model, player: player, engine: engine, cache: cache)
     }
 
@@ -398,15 +413,40 @@ final class LibraryHandoffModelTests: XCTestCase {
 
     // MARK: Continue from Mac
 
+    func testContinueKeepsMacRateInsteadOfThePhoneDefault() async throws {
+        let rig = try await makeRig(cached: rev1)
+        rig.player.apply(LibraryPlaybackPreferences(defaultSpeed: 1.5, skipBackSeconds: 15, skipForwardSeconds: 30))
+        try await macPublishes(epoch: 1, playing: true, position: 100, at: 1_000)
+        await rig.model.refresh()
+        await rig.model.continueFromMac()
+        XCTAssertTrue(rig.player.isPlaying)
+        XCTAssertEqual(rig.player.rate, 1)
+        XCTAssertEqual(rig.engine.rate, 1)
+    }
+
+    func testContinueRejectsSameSizeCorruptedReadyAudio() async throws {
+        let rig = try await makeRig(cached: rev1)
+        try await macPublishes(epoch: 1, playing: true, position: 100, at: 1_000)
+        await rig.model.refresh()
+        let entries = await rig.cache.cachedEntries()
+        let file = try XCTUnwrap(entries[entryID]?.url)
+        try Data(repeating: 42, count: payload.count).write(to: file)
+        await rig.model.continueFromMac()
+        XCTAssertFalse(rig.engine.isPlaying)
+        XCTAssertNil(rig.player.item)
+    }
+
     func testContinueFromMacWithCachedMediaResumesAtTheRateAwarePosition() async throws {
         let rig = try await makeRig(cached: rev1)
         try await macPublishes(epoch: 1, playing: true, position: 100, at: 1_000)
         await setTime(1_010)
         await rig.model.refresh()
 
+        let records = try await mac.fetchDeviceRecords()
+        let source = try XCTUnwrap(records.nowPlaying.first { $0.record.deviceID == "mac" })
         XCTAssertEqual(
             rig.model.continuation,
-            .ready(entryID: entryID, positionSeconds: 110, rate: 1, wasPlaying: true, sourceDeviceID: "mac"))
+            .ready(entryID: entryID, positionSeconds: 110, rate: 1, wasPlaying: true, sourceDeviceID: "mac", source: source))
         await rig.model.continueFromMac()
         await rig.model.waitForHandoff()
 
@@ -422,7 +462,9 @@ final class LibraryHandoffModelTests: XCTestCase {
         let rig = try await makeRig()
         try await macPublishes(epoch: 1, playing: false, position: 240, at: 1_000)
         await rig.model.refresh()
-        XCTAssertEqual(rig.model.continuation, .needsAudio(entryID: entryID, revision: rev1))
+        let records = try await mac.fetchDeviceRecords()
+        let source = try XCTUnwrap(records.nowPlaying.first { $0.record.deviceID == "mac" })
+        XCTAssertEqual(rig.model.continuation, .needsAudio(entryID: entryID, revision: rev1, source: source))
 
         let resumed = Task { await rig.model.continueFromMac() }
         try await eventually("media request") {
@@ -444,12 +486,12 @@ final class LibraryHandoffModelTests: XCTestCase {
         try await macPublishes(epoch: 1, playing: true, position: 100, revision: rev2, at: 1_000)
         await rig.model.refresh()
 
-        guard case let .refused(refusedEntry, reason) = rig.model.continuation else {
+        guard case let .refused(refusedEntry, reason, source) = rig.model.continuation else {
             return XCTFail("expected refused, got \(String(describing: rig.model.continuation))")
         }
         XCTAssertEqual(refusedEntry, entryID)
         XCTAssertTrue(reason.contains("different version"))
-        XCTAssertNil(LibraryContinueBanner.actionTitle(.refused(entryID: entryID, reason: reason), media: .onPhone))
+        XCTAssertNil(LibraryContinueBanner.actionTitle(.refused(entryID: entryID, reason: reason, source: source), media: .onPhone))
 
         await rig.model.continueFromMac()
         XCTAssertNil(rig.player.item, "a mismatched revision is never played")
@@ -464,7 +506,9 @@ final class LibraryHandoffModelTests: XCTestCase {
         try await macPublishes(epoch: 1, playing: true, position: 100, revision: rev1, at: 1_000)
         try await macPublishMedia(rev2)
         await rig.model.refresh()
-        XCTAssertEqual(rig.model.continuation, .needsAudio(entryID: entryID, revision: rev1))
+        let records = try await mac.fetchDeviceRecords()
+        let source = try XCTUnwrap(records.nowPlaying.first { $0.record.deviceID == "mac" })
+        XCTAssertEqual(rig.model.continuation, .needsAudio(entryID: entryID, revision: rev1, source: source))
 
         await rig.model.continueFromMac()
         guard case .refused = rig.model.continuation else {
@@ -512,7 +556,7 @@ final class LibraryHandoffModelTests: XCTestCase {
         let plan = LibraryContinuationPlanner.plan(
             records: LibraryDeviceRecords(nowPlaying: [observed]), deviceID: "phone", cachedRevisions: [entryID: rev1],
             durations: [:], now: Date(timeIntervalSince1970: 1_600), clockOffset: 0)
-        XCTAssertEqual(plan, .ready(entryID: entryID, positionSeconds: 300, rate: 1.5, wasPlaying: false, sourceDeviceID: "mac"))
+        XCTAssertEqual(plan, .ready(entryID: entryID, positionSeconds: 300, rate: 1.5, wasPlaying: false, sourceDeviceID: "mac", source: observed))
     }
 
     // MARK: Play resumes at the last position

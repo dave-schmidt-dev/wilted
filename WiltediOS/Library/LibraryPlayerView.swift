@@ -54,7 +54,7 @@ struct LibraryMiniPlayer: View {
                         .accessibilityLabel(LibraryPlayerText.retry)
                         .accessibilityIdentifier("wilted-player-mini-retry")
                 } else if player.item != nil {
-                    Button { player.skipBack() } label: { Image(systemName: "gobackward.\(player.skipBackSeconds)") }
+                    LibraryHeldSkipButton(player: player, direction: .backward, symbol: "gobackward.\(player.skipBackSeconds)")
                         .accessibilityLabel("Back \(player.skipBackSeconds) seconds")
                         .accessibilityIdentifier("wilted-player-mini-back")
                     Button { player.togglePlayPause() } label: {
@@ -77,72 +77,6 @@ struct LibraryMiniPlayer: View {
     }
 
     private var summary: String { command?.text ?? LibraryPlayerText.summary(for: player) }
-}
-
-/// "Continue from Mac": shown above the mini-player when another device outranks this phone.
-/// Says what it will do in words, including the resumed position, and spells out a refusal.
-struct LibraryContinueBanner: View {
-    @ObservedObject var model: LibraryAppModel
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            if let message = model.handoffMessage {
-                Text(message)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
-                    .accessibilityIdentifier("wilted-handoff-message")
-            }
-            if let continuation = model.continuation {
-                HStack(spacing: WiltedTheme.Spacing.medium) {
-                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                        Text(model.continuationTitle(continuation.entryID)).wiltedFont(.body).lineLimit(1)
-                        Text(Self.detail(continuation, media: model.mediaState(for: continuation.entryID)))
-                            .wiltedFont(.utility)
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            .lineLimit(3)
-                    }
-                    Spacer(minLength: 0)
-                    if let title = Self.actionTitle(continuation, media: model.mediaState(for: continuation.entryID)) {
-                        Button(title) { Task { await model.continueFromMac() } }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-                            .accessibilityIdentifier("wilted-handoff-continue")
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, WiltedTheme.Spacing.large)
-        .padding(.vertical, WiltedTheme.Spacing.small)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(WiltedTheme.color(.card, scheme: colorScheme))
-        .overlay(alignment: .top) { Divider() }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-handoff-banner")
-    }
-
-    /// True when there is anything to show.
-    static func isVisible(_ model: LibraryAppModel) -> Bool { model.continuation != nil || model.handoffMessage != nil }
-
-    static func detail(_ continuation: LibraryContinuation, media: LibraryMediaState) -> String {
-        switch continuation {
-        case let .ready(_, position, _, wasPlaying, _):
-            "\(wasPlaying ? "Playing" : "Paused") on Mac at \(LibraryClockFormat.duration(position))"
-        case .needsAudio:
-            media.isInFlight ? media.statusText() : "On the Mac. Get the audio, then continue."
-        case let .refused(_, reason): reason
-        }
-    }
-
-    /// Nil when nothing can be done: refused, or a transfer is already running.
-    static func actionTitle(_ continuation: LibraryContinuation, media: LibraryMediaState) -> String? {
-        switch continuation {
-        case .ready: "Continue from Mac"
-        case .needsAudio: media.isInFlight ? nil : "Get audio and continue"
-        case .refused: nil
-        }
-    }
 }
 
 /// The full player: scrubber, transport, speed.
@@ -240,7 +174,7 @@ struct LibraryPlayerView: View {
 
     private var transport: some View {
         HStack(spacing: WiltedTheme.Spacing.section) {
-            Button { player.skipBack() } label: { Image(systemName: "gobackward.\(player.skipBackSeconds)") }
+            LibraryHeldSkipButton(player: player, direction: .backward, symbol: "gobackward.\(player.skipBackSeconds)")
                 .accessibilityLabel("Back \(player.skipBackSeconds) seconds")
                 .accessibilityIdentifier("wilted-player-back")
             Button { player.togglePlayPause() } label: {
@@ -248,7 +182,7 @@ struct LibraryPlayerView: View {
             }
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             .accessibilityIdentifier("wilted-player-toggle")
-            Button { player.skipForward() } label: { Image(systemName: "goforward.\(player.skipForwardSeconds)") }
+            LibraryHeldSkipButton(player: player, direction: .forward, symbol: "goforward.\(player.skipForwardSeconds)")
                 .accessibilityLabel("Forward \(player.skipForwardSeconds) seconds")
                 .accessibilityIdentifier("wilted-player-forward")
         }
@@ -355,7 +289,7 @@ private struct LibraryPlayerButtonStyle: ButtonStyle {
     }
 
     static func rate(_ rate: Double) -> String {
-        rate == rate.rounded() ? "\(Int(rate))x" : String(format: "%gx", rate)
+        PlaybackSpeedText.rate(rate)
     }
 
     static let retry = "Retry playback"
@@ -373,5 +307,70 @@ private struct LibraryPlayerButtonStyle: ButtonStyle {
         case .ended: .positive
         case .failed: .failure
         }
+    }
+}
+
+/// One touch owns either a short skip or a load-bound hold on the existing control.
+struct LibraryHeldSkipButton: View {
+    @ObservedObject var player: LibraryPlayer
+    let direction: LibrarySeekDirection
+    let symbol: String
+    @Environment(\.scenePhase) private var scenePhase
+    @GestureState private var contact = false
+    @State private var touchID: UUID?
+    @State private var touchLoadID: String?
+    @State private var thresholdTask: Task<Void, Never>?
+    @State private var recognized = false
+    @State private var holdID: UUID?
+    @State private var loadID: String?
+
+    var body: some View {
+        // The drag owns physical touches; the native default accessibility action remains a skip.
+        Button {} label: { Image(systemName: symbol) }
+            .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+            .contentShape(Rectangle())
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { tap() }
+            .highPriorityGesture(DragGesture(minimumDistance: 0)
+                .updating($contact) { _, state, _ in state = true }
+                .onChanged { _ in startTouch() }
+                .onEnded { _ in finishTouch() })
+            .onChange(of: contact) { _, value in if !value { cancelTouch() } }
+            .onChange(of: player.seekSessionID) { _, _ in cancelTouch() }
+            .onChange(of: scenePhase) { _, phase in if phase != .active { cancelTouch() } }
+            .onDisappear { cancelTouch() }
+    }
+
+    private func tap() {
+        if direction == .forward { player.skipForward() } else { player.skipBack() }
+    }
+
+    private func startTouch() {
+        guard touchID == nil, let session = player.seekSessionID else { return }
+        let id = UUID()
+        touchID = id; touchLoadID = session; recognized = false
+        thresholdTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            guard !Task.isCancelled, touchID == id, contact, scenePhase == .active,
+                  player.seekSessionID == session else { return }
+            recognized = true; holdID = id; loadID = session
+            _ = await player.beginOwnedSeeking(direction, holdID: id, sessionID: session)
+        }
+    }
+
+    private func finishTouch() {
+        guard touchID != nil else { return }
+        let shouldTap = !recognized && touchLoadID == player.seekSessionID && scenePhase == .active
+        cancelTouch()
+        if shouldTap { tap() }
+    }
+
+    /// Contact reset is cancellation, so it cannot turn an interrupted hold into a tap.
+    private func cancelTouch() {
+        touchID = nil; touchLoadID = nil; recognized = false
+        thresholdTask?.cancel(); thresholdTask = nil
+        guard let id = holdID, let session = loadID else { return }
+        holdID = nil; loadID = nil
+        Task { @MainActor in _ = await player.endOwnedSeeking(direction, holdID: id, sessionID: session) }
     }
 }

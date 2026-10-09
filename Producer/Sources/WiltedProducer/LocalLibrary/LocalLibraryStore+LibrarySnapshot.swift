@@ -75,6 +75,8 @@ extension LocalLibraryStore {
         public let episodes: [PodcastEpisode]
         public let feeds: [ItemID: PodcastFeed]
         public let subscriptions: [PodcastSubscription]
+        /// Ordered membership and current item from the same non-suspending actor read.
+        public let podcastQueue: PodcastQueueState
         public let downloads: [ItemID: PodcastDownload]
         public let readyRevisions: [ItemID: StoredAudioRevision]
         /// Keyed `"itemID|revisionID"`, matching every other composite-keyed table in this store.
@@ -117,6 +119,9 @@ extension LocalLibraryStore {
 
         podcastLibrarySnapshotFetchCount += 1
         let subscriptionValues = try subscriptions()
+
+        podcastLibrarySnapshotFetchCount += 1
+        let podcastQueue = try podcastQueueState()
 
         podcastLibrarySnapshotFetchCount += 1
         let downloads = Dictionary(uniqueKeysWithValues: try self.downloads().map { ($0.episodeID, $0) })
@@ -178,6 +183,7 @@ extension LocalLibraryStore {
 
         return PodcastLibrarySnapshot(
             articles: articleValues, episodes: episodeValues, feeds: feeds, subscriptions: subscriptionValues,
+            podcastQueue: podcastQueue,
             downloads: downloads, readyRevisions: readyRevisions, playbackStates: playbackStates,
             transcripts: transcripts, preparationOutcomes: preparationOutcomes, listeningStates: listeningStates,
             retiredAtByEpisode: retiredAtByEpisode, removalKindByEpisode: removalKindByEpisode,

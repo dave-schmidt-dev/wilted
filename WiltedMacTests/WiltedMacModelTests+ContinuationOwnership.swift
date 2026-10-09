@@ -59,7 +59,6 @@ extension WiltedMacModelTests {
         _ name: String
     ) async throws -> (WiltedMacModel, [WiltedMacEpisode]) {
         let directory = temporaryDirectory(name)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/\(name).xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)

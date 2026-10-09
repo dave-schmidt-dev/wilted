@@ -140,6 +140,7 @@ actor GatedMediaCache: LibraryMediaCache {
         isHeld = false
     }
 
+    func storedAudioByteCounts() async -> [ItemID: Int64] { await base.storedAudioByteCounts() }
     func cachedEntries() async -> [ItemID: CachedMedia] {
         let entries = await base.cachedEntries()
         guard armed else { return entries }
@@ -149,9 +150,22 @@ actor GatedMediaCache: LibraryMediaCache {
         return entries
     }
 
-    func cachedFile(for offer: LibraryMediaOffer) async -> URL? { await base.cachedFile(for: offer) }
-    func adopt(verifiedFile: URL, for offer: LibraryMediaOffer) async throws -> URL {
-        try await base.adopt(verifiedFile: verifiedFile, for: offer)
+    func bindOwner(ownerToken: String?, libraryScope: String, held: Bool) async throws {
+        try await base.bindOwner(ownerToken: ownerToken, libraryScope: libraryScope, held: held)
+    }
+    func admission(entryID: ItemID, ownerToken: String, libraryScope: String, transportGeneration: UInt64) async -> MediaCacheAdmission? {
+        await base.admission(entryID: entryID, ownerToken: ownerToken, libraryScope: libraryScope, transportGeneration: transportGeneration)
+    }
+    func revokePreparation(entryID: ItemID) async throws { try await base.revokePreparation(entryID: entryID) }
+    func verifies(_ cached: CachedMedia) async -> Bool { await base.verifies(cached) }
+    func permits(_ admission: MediaCacheAdmission, for offer: LibraryMediaOffer) async -> Bool {
+        await base.permits(admission, for: offer)
+    }
+    func cachedFile(for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async -> URL? {
+        await base.cachedFile(for: offer, admission: admission)
+    }
+    func adopt(verifiedFile: URL, for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async throws -> URL {
+        try await base.adopt(verifiedFile: verifiedFile, for: offer, admission: admission)
     }
     func remove(entryID: ItemID) async throws { try await base.remove(entryID: entryID) }
     func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? {
@@ -164,6 +178,7 @@ actor GatedMediaCache: LibraryMediaCache {
 struct SendFailingTransport: LibraryTransport {
     let base: InMemoryLibraryTransport
 
+    func verifiedOwnerToken() async -> String? { await base.verifiedOwnerToken() }
     func operationGeneration() async -> UInt64 { await base.operationGeneration() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await base.fetchChanges(since: token) }
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await base.push(changes: changes) }

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Runs every SwiftPM and Xcode build through one shared, gitignored cache.
+"""Runs SwiftPM and Xcode commands through stable, locked project caches.
 
     python3 scripts/build-with-cache.py path <swiftpm|xcode> <key>
     python3 scripts/build-with-cache.py run <swiftpm|xcode> <key> -- <command> [args...]
+    python3 scripts/build-with-cache.py run-tests swiftpm <key> -- xcrun xctest <bundle>
 
 `path` prints the cache directory for a key on stdout. `run` injects that
 directory into the child build command -- `--scratch-path` directly after the
@@ -11,13 +12,16 @@ directory into the child build command -- `--scratch-path` directly after the
 death become the helper's own and stdout stays the child's.
 
 Every build command is supervised by ``run-bounded.py``.  Its default 300s
-deadline can be changed for a gate with ``WILTED_TEST_TIMEOUT_SECONDS``;
-``WILTED_BUILD_LOCK_TIMEOUT_SECONDS`` similarly bounds cache-lock waiting.
+work budget can be changed with ``WILTED_TEST_TIMEOUT_SECONDS``. Lock waits
+are unbounded with heartbeats unless explicitly bounded for a diagnostic by
+``WILTED_BUILD_LOCK_TIMEOUT_SECONDS``; work timing starts after acquisition.
 
-SwiftPM caches live at `.build/swiftpm/<key>` and Xcode DerivedData at
-`.build/xcode`, under the checkout root resolved from this file. The
+SwiftPM caches live at `.build/swiftpm/<key>`, native Xcode DerivedData at
+`.build/xcode/<native-key>`, and installer products at `.build/xcode`, under
+the checkout root resolved from this file. The
 repository `.gitignore` covers the whole tree. SwiftPM builds sharing a stable
-package key serialize; all Xcode builds serialize on an advisory flock whose descriptor
+package key serialize; each native Xcode key and the shared installer cache
+have separate advisory locks whose descriptor
 is inherited across the exec, so the lock is held for exactly the child's
 lifetime and is released by the child's exit; while another build holds the
 lock, a wait heartbeat is emitted at least every 15 seconds. The start line
@@ -47,7 +51,8 @@ LABEL = "build-with-cache"
 USAGE = (
     "usage: build-with-cache.py path <swiftpm|xcode> <key>\n"
     "       build-with-cache.py run <swiftpm|xcode> <key> "
-    "[--clean-app-product] -- <command> [args...]"
+    "[--clean-app-product] -- <command> [args...]\n"
+    "       build-with-cache.py run-tests swiftpm <key> -- xcrun xctest <bundle>"
 )
 KINDS = ("swiftpm", "xcode")
 SWIFT_SUBCOMMANDS = ("build", "test", "run")
@@ -79,8 +84,13 @@ def cache_paths(root: Path, kind: str, key: str) -> tuple[Path, Path]:
         cache = root / ".build" / "swiftpm" / key
         lock = root / ".build" / "swiftpm" / ".locks" / f"{key}.lock"
     else:
-        cache = root / ".build" / "xcode"
-        lock = root / ".build" / "xcode.lock"
+        # Native legs own separate products; installers retain their shared cache.
+        if key.startswith("native-"):
+            cache = root / ".build" / "xcode" / key
+            lock = root / ".build" / "xcode-locks" / f"{key}.lock"
+        else:
+            cache = root / ".build" / "xcode"
+            lock = root / ".build" / "xcode.lock"
     return cache, lock
 
 
@@ -134,7 +144,7 @@ def acquire_lock(
     key: str,
     heartbeat_seconds: float = HEARTBEAT_SECONDS,
     poll_seconds: float = LOCK_POLL_SECONDS,
-    timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = None,
     report: Callable[[str], None] = emit,
 ) -> int:
     """Hold the advisory lock for a key, heartbeating while it is contended.
@@ -155,7 +165,7 @@ def acquire_lock(
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             now = time.monotonic()
-            if now - started >= timeout_seconds:
+            if timeout_seconds is not None and now - started >= timeout_seconds:
                 os.close(descriptor)
                 raise ValueError(f"lock-timeout: kind={kind} key={key} waited={now - started:.0f}s")
             if last_heartbeat is None or now - last_heartbeat >= heartbeat_seconds:
@@ -183,7 +193,7 @@ def environment_timeout(name: str, default: float) -> float:
 
 def parse_arguments(argv: list[str]) -> tuple[str, str, str, bool, list[str]]:
     """Return (action, kind, key, clean product, child argv)."""
-    if len(argv) < 3 or argv[0] not in ("path", "run"):
+    if len(argv) < 3 or argv[0] not in ("path", "run", "run-tests"):
         raise ValueError(USAGE)
     action, kind, key = argv[0], argv[1], argv[2]
     if kind not in KINDS:
@@ -200,10 +210,10 @@ def parse_arguments(argv: list[str]) -> tuple[str, str, str, bool, list[str]]:
             raise ValueError("clean-app-product-requires-xcode")
         rest = rest[1:]
     if not rest or rest[0] != "--":
-        raise ValueError("usage: run separates the child command with --")
+        raise ValueError(f"usage: {action} separates the child command with --")
     child = rest[1:]
     if not child:
-        raise ValueError("usage: run needs a command after --")
+        raise ValueError(f"usage: {action} needs a command after --")
     return action, kind, key, clean_product, child
 
 
@@ -241,16 +251,23 @@ def main(argv: list[str]) -> int:
             ensure_cache(cache)
             print(cache)
             return 0
-        plan = plan_child(kind, cache, child)
+        if action == "run-tests":
+            if (kind != "swiftpm" or child[:2] != ["xcrun", "xctest"] or len(child) != 3
+                    or child[2].startswith("-") or not child[2].endswith(".xctest")):
+                raise ValueError("run-tests requires one SwiftPM XCTest bundle")
+            plan = child
+        else:
+            plan = plan_child(kind, cache, child)
         ensure_cache(cache)
         emit(f"start kind={kind} key={key} cache={cache}")
-        lock_timeout = environment_timeout(
-            "WILTED_BUILD_LOCK_TIMEOUT_SECONDS", DEFAULT_LOCK_TIMEOUT_SECONDS
-        )
+        lock_timeout = (environment_timeout("WILTED_BUILD_LOCK_TIMEOUT_SECONDS", DEFAULT_LOCK_TIMEOUT_SECONDS)
+                        if "WILTED_BUILD_LOCK_TIMEOUT_SECONDS" in os.environ else None)
         command_timeout = environment_timeout(
             "WILTED_TEST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS
         )
         acquire_lock(lock, kind, key, timeout_seconds=lock_timeout)
+        os.environ.setdefault("WILTED_WORK_PHASE", "test" if action == "run-tests" else "build")
+        emit(f"work-start kind={kind} key={key} phase={os.environ.get('WILTED_WORK_PHASE', 'build')} budget={command_timeout:g}s")
         if clean_product:
             clean_app_product(cache)
         sys.stderr.flush()

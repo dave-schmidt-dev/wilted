@@ -16,7 +16,12 @@ struct WiltedWatchApp: App {
     var body: some Scene {
         WindowGroup {
             WatchRootView(model: session.model)
-                .task { session.start() }
+                .task {
+                    // Hosted fixture tests never activate a live phone session.
+                    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+                        session.start()
+                    }
+                }
         }
     }
 }

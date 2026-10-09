@@ -111,6 +111,10 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PATH"] = configuration.workerPATH(inherited: environment["PATH"])
         process.environment = environment
+        let exitObservation = ProcessExitObservation()
+        process.terminationHandler = { child in
+            exitObservation.record(terminationStatus: child.terminationStatus)
+        }
 
         let input = Pipe(), output = Pipe(), errors = Pipe()
         // A worker that dies before reading its request leaves the write end
@@ -122,25 +126,26 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         process.standardError = errors
 
         let collector = WorkerOutputCollector(onProgress: onProgress)
-        errors.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
-                return
+        errors.fileHandleForReading.readabilityHandler = { collector.read($0, progress: true) }
+        output.fileHandleForReading.readabilityHandler = { collector.read($0, progress: false) }
+        defer {
+            errors.fileHandleForReading.readabilityHandler = nil
+            output.fileHandleForReading.readabilityHandler = nil
+            collector.stopReading()
+            // Stop/read synchronization prevents queued handlers touching a
+            // closed descriptor, including failed launches and cancellation.
+            for handle in [input.fileHandleForReading, input.fileHandleForWriting,
+                           output.fileHandleForReading, output.fileHandleForWriting,
+                           errors.fileHandleForReading, errors.fileHandleForWriting] {
+                try? handle.close()
             }
-            collector.appendProgress(data)
-        }
-        output.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else {
-                handle.readabilityHandler = nil
-                return
-            }
-            collector.appendResult(data)
         }
         do { try process.run() } catch {
             throw PodcastPreparationError.workerUnavailable(String(describing: error))
         }
+        // The child owns its duplicated stdin reader now. Keeping this parent's
+        // reader open would let a blocked writer wait forever after child exit.
+        try? input.fileHandleForReading.close()
         // Off the calling task on purpose. A request carrying a published
         // transcript is larger than a pipe buffer, so a synchronous write
         // blocks until the worker drains it -- and a worker that dies first
@@ -153,22 +158,42 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         }
         defer { writer.cancel() }
 
+        let processID = process.processIdentifier
         let deadline = Date().addingTimeInterval(configuration.timeout)
-        defer {
-            errors.fileHandleForReading.readabilityHandler = nil
-            output.fileHandleForReading.readabilityHandler = nil
-        }
-        while process.isRunning {
+        var interrupted: PodcastPreparationError?
+        while exitObservation.terminationStatus == nil {
             if Task.isCancelled {
-                process.terminate()
-                throw PodcastPreparationError.cancelled
+                interrupted = .cancelled
+                break
             }
             if Date() >= deadline {
-                process.terminate()
-                throw PodcastPreparationError.workerTimedOut
+                interrupted = .workerTimedOut
+                break
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
+        if let interrupted {
+            try await terminateAndReap(process, exitObservation: exitObservation)
+            await writer.value
+            throw interrupted
+        }
+        guard let terminationStatus = exitObservation.terminationStatus else {
+            throw PodcastPreparationError.workerFailed(
+                code: "worker-cleanup", message: "owned worker exit was not observed"
+            )
+        }
+        let wasReaped = await Task.detached {
+            Self.waitForReapedProcess(processID, until: Date().addingTimeInterval(1))
+        }.value
+        guard wasReaped else {
+            throw PodcastPreparationError.workerFailed(
+                code: "worker-cleanup", message: "owned worker exited but was not reaped"
+            )
+        }
+        await writer.value
+        errors.fileHandleForReading.readabilityHandler = nil
+        output.fileHandleForReading.readabilityHandler = nil
+        collector.stopReading()
         // The handlers stop firing at exit with bytes possibly still buffered
         // in the pipe, so the tail is drained explicitly. Without this a fast
         // worker's entire result can be lost.
@@ -179,10 +204,62 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         guard !result.isEmpty else {
             throw PodcastPreparationError.workerFailed(
                 code: "no-output",
-                message: "the worker exited with status \(process.terminationStatus) and produced no result"
+                message: "the worker exited with status \(terminationStatus) and produced no result"
             )
         }
         return result
+    }
+
+    /// Observe exit without `Process.waitUntilExit()`, which can wait forever
+    /// while polling a run loop that is not being serviced by this async task.
+    private func terminateAndReap(
+        _ process: Process,
+        exitObservation: ProcessExitObservation
+    ) async throws {
+        try await Task.detached {
+            let pid = process.processIdentifier
+            if process.isRunning { process.terminate() }
+            let termDeadline = Date().addingTimeInterval(1)
+            while exitObservation.terminationStatus == nil && Date() < termDeadline { usleep(20_000) }
+            if process.isRunning && exitObservation.terminationStatus == nil { _ = kill(pid, SIGKILL) }
+            let killDeadline = Date().addingTimeInterval(3)
+            while exitObservation.terminationStatus == nil && Date() < killDeadline { usleep(20_000) }
+            guard exitObservation.terminationStatus != nil,
+                  Self.waitForReapedProcess(pid, until: Date().addingTimeInterval(1)) else {
+                throw PodcastPreparationError.workerFailed(
+                    code: "worker-cleanup", message: "owned worker did not exit after termination escalation"
+                )
+            }
+        }.value
+    }
+
+    /// Foundation owns this child PID; ESRCH confirms its exit has been reaped.
+    private static func waitForReapedProcess(_ pid: Int32, until deadline: Date) -> Bool {
+        while Date() < deadline {
+            let result = kill(pid, 0)
+            let error = errno
+            if result == -1 && error == ESRCH { return true }
+            usleep(20_000)
+        }
+        let result = kill(pid, 0)
+        return result == -1 && errno == ESRCH
+    }
+}
+
+/// Receives Foundation's asynchronous termination observation without making
+/// an async caller block on Process.waitUntilExit()'s current run loop.
+private final class ProcessExitObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var status: Int32?
+
+    var terminationStatus: Int32? {
+        lock.lock(); defer { lock.unlock() }
+        return status
+    }
+
+    func record(terminationStatus: Int32) {
+        lock.lock(); defer { lock.unlock() }
+        status = terminationStatus
     }
 }
 
@@ -192,12 +269,31 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
 /// rather than relying on the caller's isolation.
 private final class WorkerOutputCollector: @unchecked Sendable {
     private let lock = NSLock()
+    private let readLock = NSLock()
+    private var reading = true
     private var stdoutBuffer = Data()
     private var stderrBuffer = Data()
     private let onProgress: @Sendable (PodcastPreparationProgress) -> Void
 
     init(onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void) {
         self.onProgress = onProgress
+    }
+
+    /// Serialize descriptor reads with shutdown; queued handlers become no-ops.
+    func read(_ handle: FileHandle, progress: Bool) {
+        readLock.lock(); defer { readLock.unlock() }
+        guard reading else { return }
+        let data = handle.availableData
+        guard !data.isEmpty else {
+            handle.readabilityHandler = nil
+            return
+        }
+        if progress { appendProgress(data) } else { appendResult(data) }
+    }
+
+    func stopReading() {
+        readLock.lock(); defer { readLock.unlock() }
+        reading = false
     }
 
     func appendResult(_ data: Data) {
@@ -239,6 +335,7 @@ private final class WorkerOutputCollector: @unchecked Sendable {
               let stage = object["stage"] as? String else { return }
         onProgress(PodcastPreparationProgress(stage: stage,
                                               detail: object["detail"] as? String ?? "",
-                                              fraction: object["fraction"] as? Double))
+                                              fraction: object["fraction"] as? Double,
+                                              requestID: (object["requestID"] as? String).flatMap(UUID.init(uuidString:))))
     }
 }

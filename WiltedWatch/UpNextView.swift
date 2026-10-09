@@ -18,6 +18,14 @@ struct UpNextView: View {
         .navigationTitle("Up Next")
     }
 
+    /// Shipping rows/status without the native List/navigation chrome.
+    var captureContent: some View {
+        VStack(alignment: .leading) {
+            queue
+            statusContent
+        }
+    }
+
     private var rows: [UpNextRow] { model.snapshot?.upNext ?? [] }
 
     @ViewBuilder private var queue: some View {
@@ -29,32 +37,38 @@ struct UpNextView: View {
                 Button {
                     model.play(episodeID: row.episodeID)
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.title)
-                            .lineLimit(1)
-                        Text(row.showTitle)
-                            .font(.caption)
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            .lineLimit(1)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.title)
+                                .lineLimit(1)
+                            Text(row.showTitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        if model.isPending(.playRow(episodeID: row.episodeID)) { Image(systemName: "hourglass").accessibilityLabel("Pending") }
                     }
                     .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
                 }
-                .disabled(!model.controlsEnabled)
+                .disabled(!model.canSend(.playRow(episodeID: row.episodeID)))
+                .accessibilityValue(model.isPending(.playRow(episodeID: row.episodeID)) ? "Pending" : "")
                 .accessibilityLabel("Play \(row.title), \(row.showTitle)")
             }
         }
     }
 
     private var status: some View {
-        Section {
-            if let note = model.unreachableNote {
-                Text(note)
-                    .font(.caption2)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            }
-            Text(model.ageText)
+        Section { statusContent }
+    }
+
+    @ViewBuilder private var statusContent: some View {
+        if let note = model.unreachableNote {
+            Text(note)
                 .font(.caption2)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
+        Text(model.ageText)
+            .font(.caption2)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
     }
 }

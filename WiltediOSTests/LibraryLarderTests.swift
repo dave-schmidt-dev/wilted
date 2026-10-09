@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import SwiftUI
 import UIKit
+import Vision
 import WiltedDomain
 import WiltedLibrary
 import XCTest
@@ -12,7 +13,7 @@ import XCTest
 @MainActor
 final class LibraryLarderTests: XCTestCase {
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
-    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
     private let suite = "library-larder-tests"
     private var scratch: URL!
     private var versions: [LibraryRecordKey: UInt64] = [:]
@@ -123,7 +124,7 @@ final class LibraryLarderTests: XCTestCase {
 
     private func makeModel(preferences: UserDefaults? = nil, cache: FileMediaCache? = nil) -> LibraryAppModel {
         LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), store: FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json")), deviceID: "phone",
             mediaCache: cache ?? FileMediaCache(rootURL: scratch.appendingPathComponent("cache")),
             mediaTiming: LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30)),
             preferences: preferences ?? UserDefaults(suiteName: suite)!, timeZone: TimeZone(identifier: "UTC")!)
@@ -158,9 +159,9 @@ final class LibraryLarderTests: XCTestCase {
         }
         if state == .available {
             try await mac.publishMedia(
-                offer: try LibraryMediaOffer(
-                    entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: "",
-                    byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 600, state: .available),
+                offer: try PreparedMediaFixture.certified(LibraryMediaOffer(
+                    entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: PreparedMediaFixture.hash(payload),
+                    byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 600, state: .available)),
                 fileURL: URL(fileURLWithPath: "/dev/null"))
             return
         }
@@ -168,9 +169,9 @@ final class LibraryLarderTests: XCTestCase {
         try payload.write(to: file)
         let digest = MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         try await mac.publishMedia(
-            offer: try LibraryMediaOffer(
+            offer: try PreparedMediaFixture.certified(LibraryMediaOffer(
                 entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: digest,
-                byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 600),
+                byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 600)),
             fileURL: file)
     }
 
@@ -233,7 +234,7 @@ final class LibraryLarderTests: XCTestCase {
         try await seed(["a", "b"])
         try await offer("a")
         try await offer("b")
-        try await InMemoryLibraryTransport(deviceID: "mac", server: server).publish(
+        try await InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner").publish(
             try DevicePlaybackPosition(
                 deviceID: "mac", entryID: id("a"), revision: RevisionID(rawValue: "rev-1"),
                 positionSeconds: 254, isPlaying: false, epoch: 1),
@@ -361,6 +362,35 @@ final class LibraryLarderTests: XCTestCase {
         invalid.durationSeconds = .nan
         XCTAssertNil(LibraryRowView.listeningStatus(row: invalid, progress: nil, completed: false))
     }
+    func testLongShowMetadataKeepsWholeDateAtPhoneWidths() throws {
+        try assertFactualMetadata(showsShowName: true)
+    }
+
+    func testGroupedMetadataKeepsWholeDurationAndDate() throws {
+        try assertFactualMetadata(showsShowName: false)
+    }
+
+    private func assertFactualMetadata(showsShowName: Bool) throws {
+        let episode = row("long-show", title: "Metadata layout",
+            show: "An exceptionally long program name that keeps going across the entire metadata line",
+            published: 1_700_000_000, duration: 600)
+        let expectedDate = LibraryDateFormat.day(episode.publishedAt)
+        for width: CGFloat in [320, 390] {
+            for scheme in [ColorScheme.light, .dark] {
+                let capture = try PhoneLayoutCapture(
+                    LibraryRowView(row: episode, media: .onPhone, onPlay: {}, showsShowName: showsShowName),
+                    width: width, scheme: scheme)
+                XCTAssertNotNil(capture.line(containing: expectedDate),
+                    "The complete date must be rendered, not a clipped prefix: \(capture.text)")
+                XCTAssertNotNil(capture.line(containing: "10:00"), "Total duration remains visible")
+                let attachment = XCTAttachment(image: capture.image)
+                attachment.name = "larder-date-\(showsShowName ? "ungrouped" : "grouped")-\(Int(width))-\(scheme == .dark ? "dark" : "light")"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+    }
+
     func testPodcastLarderRowsRenderAtPhoneWidthInLightAndDark() throws {
         let published = Date(timeIntervalSince1970: 1790942400)
         let episode = row("render-podcast", title: "A practical guide to everyday listening",
@@ -391,4 +421,37 @@ final class LibraryLarderTests: XCTestCase {
         }
     }
 
+}
+
+/// Native rendering and text bounds of synthetic shipping content, not a copied UI.
+@MainActor
+struct PhoneLayoutCapture {
+    let image: UIImage
+    private let lines: [VNRecognizedTextObservation]
+    var text: [String] { lines.compactMap { $0.topCandidates(1).first?.string } }
+
+    init<Content: View>(_ content: Content, width: CGFloat, scheme: ColorScheme) throws {
+        let renderer = ImageRenderer(content: content.padding(16).frame(width: width).clipped()
+            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: scheme))
+            .background(WiltedTheme.color(.page, scheme: scheme))
+            .environment(\.colorScheme, scheme).environment(\.locale, Locale(identifier: "en_US")))
+        renderer.scale = 2
+        image = try XCTUnwrap(renderer.uiImage)
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage), options: [:]).perform([request])
+        lines = request.results ?? []
+        XCTAssertEqual(image.size.width, width, accuracy: 0.1)
+    }
+
+    func line(containing value: String) -> CGRect? {
+        func compact(_ text: String) -> String {
+            text.lowercased().filter { $0.isLetter || $0.isNumber }
+        }
+        return lines.first { observation in
+            observation.topCandidates(1).first.map { compact($0.string).contains(compact(value)) } ?? false
+        }?.boundingBox
+    }
 }

@@ -45,8 +45,15 @@ final class WatchSessionClient: NSObject, WCSessionDelegate {
         guard let payload = try? WatchLinkCodec.encode(command) else { return }
         session.sendMessage(
             payload,
-            replyHandler: { _ in },
-            errorHandler: { _ in })
+            replyHandler: { [weak self] reply in
+                let accepted = reply["ok"] as? Bool == true
+                guard !accepted, case let .seek(_, _, id, _, _, _) = command.action else { return }
+                Task { @MainActor in self?.model.holdCommandFailed(id) }
+            },
+            errorHandler: { [weak self] _ in
+                guard case let .seek(_, _, id, _, _, _) = command.action else { return }
+                Task { @MainActor in self?.model.holdCommandFailed(id) }
+            })
     }
 
     private func activationCompleted() {

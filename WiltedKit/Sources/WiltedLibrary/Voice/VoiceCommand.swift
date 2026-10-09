@@ -103,8 +103,12 @@ public struct VoiceSnapshot: Sendable, Equatable {
 
 /// What to do to the player or library. The adapter maps each case onto `LibraryPlayer` and
 /// `LibraryAppModel`; `none` means only the dialog is spoken.
+public enum VoiceSeekDirection: String, Sendable, Equatable { case forward, backward }
+
 public enum VoiceAction: Sendable, Equatable {
     case none
+    case seekBegin(holdID: UUID, direction: VoiceSeekDirection, entryID: ItemID, seekSessionID: String)
+    case seekEnd(holdID: UUID, direction: VoiceSeekDirection, entryID: ItemID, seekSessionID: String)
     /// Start this downloaded episode where it was left.
     case play(ItemID)
     case pause

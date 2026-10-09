@@ -5,7 +5,7 @@ validate_pixel_snapshot_baselines() {
   local expected_variants actual_variants variant_count shell_name bad_pngs
   local expected_selectors actual_selectors duplicate_selectors empty_pngs
   local window_baselines window_name png_path png_name
-  local snapshot_test_source method
+  local snapshot_test_source snapshot_render_source method
 
   require_tool file
   [[ -d "$snapshot_dir" ]] || fail "missing Mac pixel snapshot directory: $snapshot_dir"
@@ -13,7 +13,9 @@ validate_pixel_snapshot_baselines() {
   [[ -f "$snapshot_test_source" ]] || fail "missing Mac pixel snapshot test source: $snapshot_test_source"
   grep -Fq 'assertSnapshot' "$snapshot_test_source" ||
     fail 'Mac pixel snapshot test has no image assertions'
-  grep -Fq 'NSHostingView' "$snapshot_test_source" ||
+  snapshot_render_source="$root/WiltedMacTests/WiltedPixelSnapshotTests+Rendering.swift"
+  [[ -f "$snapshot_render_source" ]] || fail "missing Mac pixel rendering helper: $snapshot_render_source"
+  grep -Fq 'NSHostingView' "$snapshot_render_source" ||
     fail 'Mac pixel snapshot test does not render real AppKit views'
   grep -Fq 'WILTED_RECORD_SNAPSHOTS' "$snapshot_test_source" ||
     fail 'Mac pixel snapshots have no explicit recording mode'
@@ -24,7 +26,10 @@ validate_pixel_snapshot_baselines() {
     testPixelSnapshotSelectorsAreUniqueAndComplete \
     testLibraryAndPreparingBaselinesContainRenderedControls \
     testMacLibraryShellPixelBaselines \
-    testMacPlayerShellPixelBaselines; do
+    testMacPlayerShellPixelBaselines \
+    testMacSidebarFullPixelBaselines \
+    testMacSidebarRailPixelBaselines \
+    testMacToolbarPixelBaselines; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$snapshot_test_source" ||
       fail "Mac pixel snapshot test method is missing: $method"
   done
@@ -64,7 +69,7 @@ validate_pixel_snapshot_baselines() {
     "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
     fail 'Mac persistent compact-player journey selector is missing'
 
-  expected_count=162
+  expected_count=168
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
@@ -102,7 +107,7 @@ validate_pixel_snapshot_baselines() {
       expected_selectors+="state-$state_id-$variant\n"
     done <<<"$expected_variants"
   done <<<"$expected_state_ids"
-  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\n'
+  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\n'
   expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
   actual_selectors="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; |
     sed -E 's/^.*\.(state-[^.]+|mac-shell-[^.]+)\.png$/\1/' | sort)"
@@ -121,7 +126,13 @@ validate_pixel_snapshot_baselines() {
     testShippingMacProducerPixelBaselines.mac-shell-producer-library-light.png \
     testShippingMacProducerPixelBaselines.mac-shell-producer-library-dark.png \
     testShippingMacURLFocusPixelBaselines.mac-shell-producer-url-focus-light.png \
-    testShippingMacURLFocusPixelBaselines.mac-shell-producer-url-focus-dark.png; do
+    testShippingMacURLFocusPixelBaselines.mac-shell-producer-url-focus-dark.png \
+    testMacSidebarFullPixelBaselines.mac-shell-sidebar-full-light.png \
+    testMacSidebarFullPixelBaselines.mac-shell-sidebar-full-dark.png \
+    testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-light.png \
+    testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-dark.png \
+    testMacToolbarPixelBaselines.mac-shell-toolbar-light.png \
+    testMacToolbarPixelBaselines.mac-shell-toolbar-dark.png; do
     [[ -s "$snapshot_dir/$shell_name" ]] || fail "missing Mac shell baseline: $shell_name"
   done
   # Component baselines render at card scale. The two window shells render at
@@ -140,13 +151,19 @@ validate_pixel_snapshot_baselines() {
     png_name="$(basename "$png_path")"
     # Here-strings, not pipes: under pipefail an early-exiting grep -q SIGPIPEs the writer and fails the test at random.
     grep -Fxq "$png_name" <<<"$window_baselines" && continue
-    grep -Fq 'PNG image data, 520 x 260' <<<"$(file "$png_path")" || {
+    local expected_size='520 x 260'
+    case "$png_name" in
+      testMacSidebarFullPixelBaselines.mac-shell-sidebar-full-*.png) expected_size='240 x 260' ;;
+      testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-*.png) expected_size='56 x 260' ;;
+      testMacToolbarPixelBaselines.mac-shell-toolbar-*.png) expected_size='256 x 56' ;;
+    esac
+    grep -Fq "PNG image data, $expected_size" <<<"$(file "$png_path")" || {
       bad_pngs=$((bad_pngs + 1))
       printf 'native.snapshots.unexpected-size name=%s\n' "$png_name" >&2
     }
   done < <(find "$snapshot_dir" -type f -name '*.png' -print)
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=10 window_shells=4\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=16 window_shells=4\n' "$expected_count"
 }
 
 validate_ios_pixel_snapshot_baselines() {
@@ -160,6 +177,10 @@ validate_ios_pixel_snapshot_baselines() {
   [[ -d "$snapshot_dir" ]] || fail "missing iOS pixel snapshot directory: $snapshot_dir"
   grep -Fq 'wilted-library-root-fixture' "$source" ||
     fail 'iOS pixel test does not exercise the production LibraryRoot fixture'
+  grep -Fq 'assertShippingFacts(screen, app: app, image: screenshot)' "$source" ||
+    fail 'iOS pixel test does not verify painted date and Storage geometry'
+  [[ "$(grep -Ec '^[[:space:]]*func[[:space:]]+test.*PixelBaseline\(' "$source")" -eq 8 ]] ||
+    fail 'iOS pixel snapshot method membership must remain exactly eight'
   for method in \
     testLibraryLarderDarkPixelBaseline \
     testLibraryLarderLightPixelBaseline \
@@ -227,6 +248,7 @@ expected_test_count_floor() {
     macos-unit-tests) printf '30\n' ;;
     macos-ui-tests) mac_ui_declared_test_count ;;
     ios-pixel-snapshot-tests) printf '15\n' ;;
+    watchos-build) printf '4\n' ;;
     *) printf '1\n' ;;
   esac
 }
@@ -271,6 +293,9 @@ assert_result_bundle_tests() {
       printf '%s\n' '{"totalTestCount":0,"passedTests":0,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     elif [[ "$label" == "ios-pixel-snapshot-tests" && "$forced_missing_ios_mvp_journey" == "1" ]]; then
       printf '%s\n' '{"totalTestCount":14,"passedTests":14,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
+    elif [[ "$label" == "watchos-build" ]]; then
+      local watch_count="${NATIVE_SELF_TEST_WATCH_COUNT:-4}"
+      printf '{"totalTestCount":%s,"passedTests":%s,"failedTests":0,"skippedTests":0,"result":"Passed"}\n' "$watch_count" "$watch_count" >"$summary_file"
     elif [[ "$label" == "macos-unit-tests" ]]; then
       printf '%s\n' '{"totalTestCount":30,"passedTests":30,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     elif [[ "$label" == "macos-ui-tests" ]]; then
@@ -415,6 +440,47 @@ assert_xctest_output() {
   printf 'native.tests label=%s reported=%s evidence=xctest\n' "$label" "$reported"
 }
 
+# Copy only terminal trees; the existing supervisor supplies timeout and progress.
+copy_terminal_result_bundle() (
+  local source="$1" staging="$2" retained="$3" exclusive="$4"
+  [[ ! -e "$staging" && ! -L "$staging" ]] || return 1
+  local cleanup_command
+  printf -v cleanup_command 'rm -rf -- %q' "$staging"
+  trap "$cleanup_command" EXIT
+  trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+  python3 "$bounded_runner" --timeout-seconds "$native_leg_timeout_seconds" -- \
+    python3 - "$source" "$staging" "$retained" "$exclusive" <<'PYRESULTCOPY'
+import ctypes
+import os
+from pathlib import Path
+import shutil
+import sys
+source, staging, retained = map(Path, sys.argv[1:4])
+exclusive = sys.argv[4] == '1'
+try:
+    if exclusive and (not (source / 'Info.plist').is_file() or not (source / 'Data').is_dir()):
+        raise ValueError('terminal result bundle is incomplete')
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, staging)
+    if exclusive:
+        # Darwin's exclusive rename atomically refuses even an empty foreign directory.
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(os.fsencode(staging), os.fsencode(retained), 0x4):
+            raise OSError(ctypes.get_errno(), 'exclusive result publication failed')
+    else:
+        if retained.exists(): shutil.rmtree(retained)
+        staging.rename(retained)
+except (OSError, ValueError, shutil.Error) as error:
+    print(f'native.results.copy-failed reason={error}', file=sys.stderr)
+    sys.exit(1)
+finally:
+    if staging.exists(): shutil.rmtree(staging)
+PYRESULTCOPY
+)
+
 retain_ui_failure_bundle() {
   local leg_name="$1"
   local result_bundle="$2"
@@ -422,19 +488,14 @@ retain_ui_failure_bundle() {
   local staging_bundle="$macos_ui_failure_diagnostics_dir/.$leg_name.xcresult.$$"
 
   [[ -d "$result_bundle" ]] || return 0
-  mkdir -p "$macos_ui_failure_diagnostics_dir"
-  rm -rf "$staging_bundle"
-  cp -R "$result_bundle" "$staging_bundle"
-  rm -rf "$retained_bundle"
-  mv "$staging_bundle" "$retained_bundle"
+  copy_terminal_result_bundle "$result_bundle" "$staging_bundle" "$retained_bundle" 0 || return $?
   status "native.ui-leg.failure-bundle leg=$leg_name path=$retained_bundle"
 }
 
 clear_ui_failure_bundle() {
-  local leg_name="$1"
-  local retained_bundle="$macos_ui_failure_diagnostics_dir/$leg_name.xcresult"
+  local retained_bundle="$macos_ui_failure_diagnostics_dir/$1.xcresult"
 
   [[ -e "$retained_bundle" || -L "$retained_bundle" ]] || return 0
   rm -rf "$retained_bundle"
-  status "native.ui-leg.failure-bundle-cleared leg=$leg_name path=$retained_bundle"
+  status "native.ui-leg.failure-bundle-cleared leg=$1 path=$retained_bundle"
 }

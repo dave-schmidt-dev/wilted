@@ -14,6 +14,7 @@ struct WiltedMacFeedRulesView: View {
     let subscription: WiltedMacSubscription
     let resolved: EffectiveFeedAutomationPolicy
     let back: () -> Void
+    var dismiss: () -> Void = {}
     /// How tall the rules and preview may grow before they scroll. Nil never
     /// scrolls, which is how a headless render sees all of it.
     var maximumHeight: CGFloat? = 460
@@ -29,6 +30,7 @@ struct WiltedMacFeedRulesView: View {
                 content
             }
         }
+        .frame(width: Self.width)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-feed-rules-\(subscription.id)")
         .task { editor.loadIfNeeded() }
@@ -58,15 +60,20 @@ struct WiltedMacFeedRulesView: View {
     private var header: some View {
         HStack(spacing: WiltedTheme.Spacing.small) {
             Button(action: back) {
-                Image(systemName: "chevron.left").accessibilityHidden(true)
+                Label("Feed settings", systemImage: "chevron.left")
             }
             .buttonStyle(.borderless)
+            .help("Feed settings")
             .accessibilityLabel("Back to feed settings for \(subscription.title)")
             .accessibilityIdentifier("wilted-feed-rules-back")
             Text("Match rules")
                 .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Spacer()
+            Button("Done", action: dismiss)
+                .keyboardShortcut(.defaultAction)
+                .accessibilityLabel("Close feed settings for \(subscription.title)")
+                .accessibilityIdentifier("wilted-feed-rules-done")
         }
     }
 
@@ -108,6 +115,8 @@ struct WiltedMacFeedRulesEntry: View {
                 Image(systemName: "chevron.right").accessibilityHidden(true)
             }
         }
+        .wiltedFont(.body)
+        .padding(.vertical, WiltedTheme.Spacing.small)
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .accessibilityLabel("Edit match rules for \(subscription.title)")
@@ -130,7 +139,8 @@ private struct WiltedMacFeedRuleRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             HStack(spacing: WiltedTheme.Spacing.small) {
-                Toggle("Rule \(number)", isOn: binding(\.isEnabled))
+                Text("Rule \(number)").wiltedFont(.body)
+                Toggle("On", isOn: binding(\.isEnabled))
                     .accessibilityLabel("Rule \(number) enabled for \(feedTitle)")
                     .accessibilityIdentifier("wilted-feed-rule-enabled-\(number)")
                 Picker("Action", selection: binding(\.action)) {
@@ -196,6 +206,9 @@ private struct WiltedMacFeedRuleRow: View {
         _ prompt: String, text: Binding<String>, error: String?, label: String, identifier: String
     ) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            Text(identifier == "include" ? "Matches" : "Unless it also matches")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             TextField(prompt, text: text)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel(label)
@@ -227,7 +240,7 @@ private struct WiltedMacFeedRulesPreview: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            Text("Preview")
+            Text("Rule results")
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             HStack(spacing: WiltedTheme.Spacing.small) {
@@ -324,7 +337,7 @@ extension FeedRulesPreviewRow {
         switch result {
         case .keep: return "Keep\(rule)"
         case .skip: return "Skip\(rule)"
-        case .noMatch: return "No match"
+        case .noMatch: return outcome == .keep ? "No match (Kept by Auto keep)" : "No match"
         case .timedOut: return "Timed out\(rule)"
         }
     }

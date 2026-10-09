@@ -14,7 +14,6 @@ extension WiltedMacModelTests {
     /// implementation that never touches the coordinator at all.
     func testDownloadEpisodeDrivesTheRealCoordinatorThroughAnInjectedTransport() async throws {
         let directory = temporaryDirectory("real-wiring-download")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/real-wiring.xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/real-wiring.mp3"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -81,7 +80,6 @@ extension WiltedMacModelTests {
     /// one at a time.
     func testBootstrapRecoveryDownloadsAreSerializedNotFiredAllAtOnce() async throws {
         let directory = temporaryDirectory("bootstrap-recovery-serialized")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/bootstrap-recovery.xml"))
         let firstEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/bootstrap-recovery-1.mp3"))
         let secondEnclosure = try XCTUnwrap(URL(string: "https://media.example.test/bootstrap-recovery-2.mp3"))
@@ -168,7 +166,6 @@ extension WiltedMacModelTests {
     /// on the whole set.
     func testWaitForPodcastOperationsSwallowsAFailedDownload() async throws {
         let directory = temporaryDirectory("failed-download-swallow")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/swallow.xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/swallow.mp3"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -229,7 +226,6 @@ extension WiltedMacModelTests {
     /// `maximumRetries + 1` attempts total for a retryable failure.
     func testAutomationAdapterPropagatesADownloadFailureThroughBoundedRetries() async throws {
         let directory = temporaryDirectory("automation-retry-propagation")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/retry.xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/retry.mp3"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -292,7 +288,6 @@ extension WiltedMacModelTests {
     /// stops `withRetries` from trying this three more times.
     func testAutomationAdapterMakesExactlyOneAttemptForATerminalFailure() async throws {
         let directory = temporaryDirectory("automation-terminal-no-retry")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/terminal.xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/terminal.mp3"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -357,7 +352,6 @@ extension WiltedMacModelTests {
     /// `.failed` row (not `.queued`) reaching `startClaimedDownload`.
     func testRelaunchResumesAFailedRetryableDownloadThroughTheSameSerialQueue() async throws {
         let directory = temporaryDirectory("automation-resume-retryable")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/resume.xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/resume.mp3"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -418,7 +412,6 @@ extension WiltedMacModelTests {
     /// at it -- it needs a person, not another automatic try.
     func testRelaunchNeverResumesAFailedTerminalDownload() async throws {
         let directory = temporaryDirectory("automation-resume-terminal")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/noresume.xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/noresume.mp3"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)

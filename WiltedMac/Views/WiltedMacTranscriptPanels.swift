@@ -108,8 +108,6 @@ struct WiltedMacNotesPanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                Text("Show Notes")
-                    .wiltedFont(.title)
                 if let notes = model.currentEpisode.flatMap(WiltedMacEpisodeNotes<EmptyView>.linkedNotes(for:)) {
                     Text(notes)
                         .wiltedFont(.body)

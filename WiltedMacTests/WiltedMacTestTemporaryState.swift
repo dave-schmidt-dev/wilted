@@ -25,6 +25,7 @@ enum WiltedMacTestTemporaryState {
             }
             do {
                 try WiltedMacTemporaryState.markTestRoot(root)
+                try WiltedMacTestRootOwnership.bindCreatedRoot(root, parent: root.deletingLastPathComponent())
             } catch {
                 XCTFail("Could not create temporary test root: \(error)")
             }
@@ -60,29 +61,23 @@ enum WiltedMacTestTemporaryState {
     /// Tests call this directly so malformed runner state fails a test rather
     /// than terminating the test host through the caller's fail-closed guard.
     static func validatedTestTemporaryParent(rawValue: String?) throws -> URL {
-        guard let rawValue else { return FileManager.default.temporaryDirectory }
-        guard rawValue.hasPrefix("/") else { throw TestTemporaryParentError.invalid }
-        let supplied = URL(fileURLWithPath: rawValue, isDirectory: true).standardizedFileURL
-        let canonical = supplied.resolvingSymlinksInPath().standardizedFileURL
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: canonical.path, isDirectory: &isDirectory)
-        let isSymbolicLink = (try? supplied.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
-        guard supplied.path == canonical.path, exists, isDirectory.boolValue, !isSymbolicLink else {
-            throw TestTemporaryParentError.invalid
-        }
-        return canonical
+        try WiltedMacTestRootOwnership.parent(rawValue: rawValue)
     }
 
     static func close(root: URL, identifier: ObjectIdentifier) async throws {
         await WiltedMacTemporaryState.closeRegisteredModels(forTestRoot: root)
         defer { roots.removeValue(forKey: identifier) }
+        try dispose(root: root)
+    }
+
+    static func dispose(root: URL) throws {
+        if try WiltedMacTestRootOwnership.isManaged(root) { return }
         if FileManager.default.fileExists(atPath: root.path) {
             try FileManager.default.removeItem(at: root)
         }
     }
 }
 
-private enum TestTemporaryParentError: Error { case invalid }
 
 extension XCTestCase {
     @MainActor

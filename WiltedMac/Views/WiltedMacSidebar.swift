@@ -42,44 +42,11 @@ struct WiltedMacSidebar: View {
         .accessibilityIdentifier("wilted-mac-sidebar")
     }
 
-    private func row(_ destination: WiltedMacNavigation) -> some View {
-        let isSelected = model.selectedNavigation == destination
-        return Button {
-            onSelect(destination)
-        } label: {
-            // An explicit Image + Text rather than a Label: on
-            // macOS 26+ the sidebar list style tints a Label's
-            // icon with the system accent whatever foreground
-            // style the Label carries, which is the blue the
-            // owner saw. Both halves name their colour here.
-            HStack(spacing: WiltedTheme.Spacing.small) {
-                Image(symbol: destination.symbolName)
-                    .foregroundStyle(
-                        WiltedMacSidebarStyle.iconColor(isSelected: isSelected, scheme: colorScheme)
-                    )
-                    .frame(width: WiltedTheme.scaled(20, scale: model.textScale))
-                    .accessibilityHidden(true)
-                if mode == .full {
-                    Text(destination.title)
-                        .foregroundStyle(
-                            WiltedMacSidebarStyle.titleColor(isSelected: isSelected, scheme: colorScheme)
-                        )
-                }
-            }
-            .wiltedFont(.body)
-            .frame(maxWidth: .infinity, alignment: mode == .full ? .leading : .center)
-        }
-        .buttonStyle(.plain)
-        .contentShape(Rectangle())
-        .listRowBackground(
-            isSelected
-                ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
-                : Color.clear
-        )
-        .help(destination.title)
-        .accessibilityLabel(destination.title)
-        .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    func row(_ destination: WiltedMacNavigation) -> some View {
+        WiltedMacSidebarRow(
+            destination: destination, mode: mode,
+            isSelected: model.selectedNavigation == destination, textScale: model.textScale
+        ) { onSelect(destination) }
     }
 
     /// The three waiting times, pinned to the bottom of the sidebar column.
@@ -159,4 +126,53 @@ struct WiltedMacSidebar: View {
         .accessibilityIdentifier(identifier)
     }
 
+}
+
+/// Shipping row contents resolve appearance within the view graph, including focused captures.
+struct WiltedMacSidebarRow: View {
+    let destination: WiltedMacNavigation
+    let mode: WiltedMacSidebarMode
+    let isSelected: Bool
+    let textScale: WiltedTheme.TextScale
+    let onSelect: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button {
+            onSelect()
+        } label: {
+            // An explicit Image + Text rather than a Label: on
+            // macOS 26+ the sidebar list style tints a Label's
+            // icon with the system accent whatever foreground
+            // style the Label carries, which is the blue the
+            // owner saw. Both halves name their colour here.
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Image(symbol: destination.symbolName)
+                    .foregroundStyle(
+                        WiltedMacSidebarStyle.iconColor(isSelected: isSelected, scheme: colorScheme)
+                    )
+                    .frame(width: WiltedTheme.scaled(20, scale: textScale))
+                    .accessibilityHidden(true)
+                if mode == .full {
+                    Text(destination.title)
+                        .foregroundStyle(
+                            WiltedMacSidebarStyle.titleColor(isSelected: isSelected, scheme: colorScheme)
+                        )
+                }
+            }
+            .wiltedFont(.body)
+            .frame(maxWidth: .infinity, alignment: mode == .full ? .leading : .center)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .listRowBackground(
+            isSelected
+                ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
+                : Color.clear
+        )
+        .help(destination.title)
+        .accessibilityLabel(destination.title)
+        .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
 }

@@ -195,8 +195,10 @@ struct WiltedMacFeedPolicyButton: View {
         } label: {
             Image(systemName: "gearshape")
                 .accessibilityHidden(true)
+                .frame(minWidth: 28, minHeight: 28)
         }
         .buttonStyle(.borderless)
+        .help("Feed settings")
         .accessibilityLabel("Feed settings for \(subscription.title)")
         .accessibilityIdentifier("wilted-feed-policy-button-\(subscription.id)")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
@@ -226,13 +228,13 @@ struct WiltedMacFeedPolicyContent: View {
             if showsRules {
                 WiltedMacFeedRulesView(
                     editor: board.rulesEditor(for: feedID), subscription: subscription,
-                    resolved: board.resolved(for: feedID), back: { showsRules = false }
+                    resolved: board.resolved(for: feedID), back: { showsRules = false }, dismiss: dismiss
                 )
             } else {
                 settingsPage
             }
         }
-        .frame(width: showsRules ? WiltedMacFeedRulesView.width : 380)
+        .frame(width: WiltedMacFeedRulesView.width)
     }
 
     private var settingsPage: some View {
@@ -277,7 +279,6 @@ struct WiltedMacFeedPolicyContent: View {
                 open: { showsRules = true }
             )
             Divider()
-            resolvedNow
             Text("A lower limit never removes an episode already in Larder.")
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -294,24 +295,6 @@ struct WiltedMacFeedPolicyContent: View {
         .accessibilityIdentifier("wilted-feed-policy-\(subscription.id)")
     }
 
-    /// Stated from the resolved policy alone, so it cannot drift from what
-    /// admission will do.
-    private var resolvedNow: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-            Text("Resolved now")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            ForEach(board.summary(for: feedID), id: \.label) { row in
-                WiltedSettingsRow(
-                    row.label, value: row.value,
-                    identifier: "wilted-feed-policy-resolved-\(row.label.lowercased().replacingOccurrences(of: " ", with: "-"))"
-                )
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-feed-policy-resolved")
-    }
-
     private func overrideRow(
         _ title: String, label: String, identifier: String, selection: Binding<FeedAutomationOverride>
     ) -> some View {
@@ -320,7 +303,7 @@ struct WiltedMacFeedPolicyContent: View {
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
             Picker(title, selection: selection) {
-                Text("Use global").tag(FeedAutomationOverride.useGlobal)
+                Text("Use global (\(globalValue(title)))").tag(FeedAutomationOverride.useGlobal)
                 Text("On").tag(FeedAutomationOverride.on)
                 Text("Off").tag(FeedAutomationOverride.off)
             }
@@ -331,28 +314,29 @@ struct WiltedMacFeedPolicyContent: View {
         }
     }
 
-    @ViewBuilder private var keptLimitRows: some View {
+    private func globalValue(_ title: String) -> String {
+        WiltedFeedAutomationSummary.globalRows(board.model.automationSettings)
+            .first { $0.label == title }?.value ?? "Unknown"
+    }
+
+    private var keptLimitRows: some View {
         GridRow {
-            Text("Kept limit")
-                .wiltedFont(.body)
+            Text("Kept limit").wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Picker("Kept limit", selection: limitModeBinding) {
-                Text("Use global").tag(false)
-                Text("Set a limit").tag(true)
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .accessibilityLabel("Kept limit for \(subscription.title)")
-            .accessibilityIdentifier("wilted-feed-policy-kept-limit-mode")
-        }
-        if case let .explicit(count) = policy.keptLimit {
-            GridRow {
-                Color.clear.frame(width: 1, height: 1)
-                HStack(spacing: WiltedTheme.Spacing.small) {
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Picker("Kept limit", selection: limitModeBinding) {
+                    Text("Use global (\(globalValue("Kept limit")))").tag(false)
+                    Text("Set a limit").tag(true)
+                }
+                .labelsHidden().pickerStyle(.menu)
+                .accessibilityLabel("Kept limit for \(subscription.title)")
+                .accessibilityIdentifier("wilted-feed-policy-kept-limit-mode")
+                if case let .explicit(count) = policy.keptLimit {
                     TextField("Episodes", value: limitBinding(current: count), format: .number)
-                        .frame(width: 72)
+                        .frame(width: 48)
                         .accessibilityLabel("Number of episodes kept for \(subscription.title)")
                         .accessibilityIdentifier("wilted-feed-policy-kept-limit")
+                    Text("episodes").wiltedFont(.utility)
                     Stepper("Episodes kept", value: limitBinding(current: count), in: 1...999)
                         .labelsHidden()
                         .accessibilityLabel("Adjust episodes kept for \(subscription.title)")

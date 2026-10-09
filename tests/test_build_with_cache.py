@@ -28,6 +28,7 @@ class BuildWithCacheTests(unittest.TestCase):
         self.bin_dir = self.temp_path / "bin"
         self.bin_dir.mkdir()
         self.events = self.temp_path / "events.txt"
+        self.fixture_products: list[tuple[Path, Path]] = []
         self.env = os.environ.copy()
         self.env["PATH"] = f"{self.bin_dir}{os.pathsep}{self.env.get('PATH', '')}"
         self.env["BUILD_CACHE_TEST_EVENTS"] = str(self.events)
@@ -35,7 +36,24 @@ class BuildWithCacheTests(unittest.TestCase):
         self.write_fake_tool("xcodebuild")
 
     def tearDown(self) -> None:
+        for cache, lock in self.fixture_products:
+            shutil.rmtree(cache, ignore_errors=True)
+            lock.unlink(missing_ok=True)
         self.temp.cleanup()
+
+    def track_fixture_cache(self, kind: str, key: str) -> None:
+        if str(os.getpid()) not in key:
+            return
+        if kind == "swiftpm":
+            cache = ROOT / ".build/swiftpm" / key
+            lock = ROOT / ".build/swiftpm/.locks" / f"{key}.lock"
+        elif kind == "xcode" and key.startswith("native-"):
+            cache = ROOT / ".build/xcode" / key
+            lock = ROOT / ".build/xcode-locks" / f"{key}.lock"
+        else:
+            return
+        if not cache.exists() and not lock.exists() and (cache, lock) not in self.fixture_products:
+            self.fixture_products.append((cache, lock))
 
     def write_fake_tool(self, name: str) -> None:
         tool = self.bin_dir / name
@@ -46,6 +64,10 @@ class BuildWithCacheTests(unittest.TestCase):
             "with open(os.environ['BUILD_CACHE_TEST_EVENTS'], 'a', encoding='utf-8') as f:\n"
             "    f.write(name + '\\t' + '\\t'.join(sys.argv[1:]) + '\\n')\n"
             "args = sys.argv[1:]\n"
+            "if '--wait-release' in args:\n"
+            "    from pathlib import Path\n"
+            "    release = Path(args[args.index('--wait-release') + 1])\n"
+            "    while not release.exists(): time.sleep(.05)\n"
             "if '--sleep-seconds' in args:\n"
             "    time.sleep(float(args[args.index('--sleep-seconds') + 1]))\n"
             "if '--terminate-self' in args:\n"
@@ -57,6 +79,8 @@ class BuildWithCacheTests(unittest.TestCase):
         tool.chmod(0o755)
 
     def run_helper(self, *args: str, timeout: float = 10) -> subprocess.CompletedProcess[str]:
+        if len(args) >= 3:
+            self.track_fixture_cache(args[1], args[2])
         return subprocess.run(
             [PYTHON, str(HELPER), *args],
             cwd=ROOT,
@@ -113,6 +137,62 @@ class BuildWithCacheTests(unittest.TestCase):
         self.assertEqual(xcode_args[:2], ["xcodebuild", "-derivedDataPath"])
         self.assertEqual(xcode_args[2], str(ROOT / ".build" / "xcode"))
         self.assertEqual(xcode_args[3:], ["-scheme", "Sample"])
+
+    def test_run_tests_validates_command_and_does_not_inject_scratch(self) -> None:
+        self.write_fake_tool("xcrun")
+        key = f"test-bundle-{os.getpid()}"
+        result = self.run_helper("run-tests", "swiftpm", key, "--", "xcrun", "xctest", "Current.xctest")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("phase=test", result.stderr)
+        self.assertEqual(self.read_events(), ["xcrun\txctest\tCurrent.xctest"])
+        for args in (("xcode", "xcrun", "xctest", "Current.xctest"),
+                     ("swiftpm", "swift", "test", "Current.xctest"),
+                     ("swiftpm", "xcrun", "xctest", "--scratch-path"),
+                     ("swiftpm", "xcrun", "xctest", "Current.xctest", "extra")):
+            kind, *child = args
+            invalid = self.run_helper("run-tests", kind, key, "--", *child)
+            self.assertEqual(invalid.returncode, 2, invalid.stderr)
+            self.assertIn("run-tests requires", invalid.stderr)
+        self.assertEqual(len(self.read_events()), 1)
+        self.env["WILTED_WORK_PHASE"] = "explicit-phase"
+        result = self.run_helper("run-tests", "swiftpm", key, "--", "xcrun", "xctest", "Current.xctest")
+        self.assertIn("phase=explicit-phase", result.stderr)
+
+    def test_default_and_explicit_lock_wait_policy(self) -> None:
+        import fcntl
+        key = f"test-wait-policy-{os.getpid()}"
+        self.track_fixture_cache("swiftpm", key)
+        lock = ROOT / ".build/swiftpm/.locks" / f"{key}.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with lock.open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.env["WILTED_BUILD_LOCK_TIMEOUT_SECONDS"] = "2"
+            bounded = self.run_helper("run", "swiftpm", key, "--", "swift", "build", timeout=15)
+            self.assertNotEqual(bounded.returncode, 0)
+            self.assertIn("lock-timeout", bounded.stderr)
+            self.assertEqual(self.read_events(), [])
+            self.env.pop("WILTED_BUILD_LOCK_TIMEOUT_SECONDS")
+            with (self.temp_path / "wait.log").open("w+") as log:
+                waiting = subprocess.Popen([PYTHON, str(HELPER), "run", "swiftpm", key,
+                                            "--", "swift", "build"], cwd=ROOT, env=self.env,
+                                           stdout=subprocess.PIPE, stderr=log, text=True)
+                try:
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        log.seek(0)
+                        if "waiting kind=swiftpm" in log.read():
+                            break
+                        time.sleep(.05)
+                    else:
+                        self.fail("default wait never reported lock contention")
+                    self.assertIsNone(waiting.poll())
+                    fcntl.flock(held, fcntl.LOCK_UN)
+                    waiting.communicate(timeout=15)
+                    self.assertEqual(waiting.returncode, 0)
+                    self.assertEqual(len(self.read_events()), 1)
+                finally:
+                    if waiting.poll() is None:
+                        waiting.terminate(); waiting.communicate(timeout=15)
 
     def test_installer_product_cleanup_is_bounded(self) -> None:
         import importlib.util
@@ -319,7 +399,36 @@ class BuildWithCacheTests(unittest.TestCase):
         invoke_phase({}, "300")
         invoke_phase({"WILTED_TEST_TIMEOUT_SECONDS": "17"}, "17")
 
-    def test_xcode_labels_share_a_lock(self) -> None:
+    def test_native_xcode_keys_build_independently(self) -> None:
+        first_key = f"native-first-fixture-{os.getpid()}"
+        second_key = f"native-second-fixture-{os.getpid()}"
+        self.track_fixture_cache("xcode", first_key)
+        release = self.temp_path / "first.release"
+        first = subprocess.Popen(
+            [PYTHON, str(HELPER), "run", "xcode", first_key, "--", "xcodebuild",
+             "--wait-release", str(release)], cwd=ROOT, env=self.env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 20
+            while not self.read_events() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(self.read_events(), "first native build never reached its release barrier")
+            self.assertIn(f"xcode/{first_key}", self.read_events()[0])
+            second = self.run_helper("run", "xcode", second_key, "--", "xcodebuild", timeout=20)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIsNone(first.poll(), "independent native keys serialized")
+            self.assertNotIn("waiting kind=xcode", second.stderr)
+            self.assertIn(f"xcode/{second_key}", self.read_events()[-1])
+            release.touch()
+            first.communicate(timeout=20)
+            self.assertEqual(first.returncode, 0)
+        finally:
+            if first.poll() is None:
+                first.terminate()
+                first.communicate(timeout=5)
+
+    def test_installer_xcode_labels_share_a_lock(self) -> None:
         first = subprocess.Popen(
             [PYTHON, str(HELPER), "run", "xcode", "first", "--", "xcodebuild",
              "--sleep-seconds", "1.3"],
@@ -345,6 +454,7 @@ class BuildWithCacheTests(unittest.TestCase):
 
     def test_same_key_waits_and_reports_contention(self) -> None:
         key = f"test-lock-{os.getpid()}"
+        self.track_fixture_cache("swiftpm", key)
         first = subprocess.Popen(
             [PYTHON, str(HELPER), "run", "swiftpm", key, "--", "swift", "build",
              "--sleep-seconds", "1.3"],

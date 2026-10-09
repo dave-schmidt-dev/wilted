@@ -26,47 +26,46 @@ enum LibraryEnvironment {
     static func makeModel(
         defaults: UserDefaults = .standard,
         directory: URL = defaultDirectory(),
-        isLiveAllowed: Bool = NSClassFromString("XCTestCase") == nil
+        isLiveAllowed: Bool = NSClassFromString("XCTestCase") == nil,
+        transportFactory: TransportFactory? = nil
     ) -> LibraryAppModel {
         let deviceID = stableDeviceID(defaults: defaults)
         let storeURL = directory.appendingPathComponent("library-state.json")
         let (events, quarantine) = AsyncStream<Void>.makeStream()
-        let (built, store) = buildTransport(deviceID: deviceID, storeURL: storeURL, defaults: defaults, isLiveAllowed: isLiveAllowed)
-        monitorAccountChanges(built.signals, defaults: defaults, quarantine: quarantine)
+        let (built, store) = buildTransport(deviceID: deviceID, storeURL: storeURL, defaults: defaults, isLiveAllowed: isLiveAllowed, factory: transportFactory)
+        monitorAccountChanges(built.signals, store: store, quarantine: quarantine)
         let reset = built.reset
         // UserDefaults is documented thread-safe; it just is not annotated Sendable.
         nonisolated(unsafe) let sharedDefaults = defaults
         let recovery = LibraryAccountRecovery(quarantineEvents: events) {
-            await reset()
-            sharedDefaults.removeObject(forKey: ownerTokenKey)
-            store.discard()
-            return FileLibraryStore(url: storeURL)
+            do {
+                try await reset()
+                try await store.discard()
+                sharedDefaults.removeObject(forKey: ownerTokenKey)
+                return FileLibraryStore(url: storeURL)
+            } catch {
+                try? await store.quarantine()
+                throw error
+            }
         }
         return LibraryAppModel(
             transport: built.transport, store: store, deviceID: deviceID, recovery: recovery,
             ownPositionsURL: directory.appendingPathComponent("own-positions.json"))
     }
 
-    /// Tries the persisted cursor first, then a clean start; a cursor the engine cannot read is
-    /// dropped along with the content it belongs to.
+    /// Constructor failure retains the same mirror and expected owner; it never retries unowned.
     private static func buildTransport(
-        deviceID: String, storeURL: URL, defaults: UserDefaults, isLiveAllowed: Bool
+        deviceID: String, storeURL: URL, defaults: UserDefaults, isLiveAllowed: Bool, factory: TransportFactory?
     ) -> (Built, FileLibraryStore) {
-        var store = FileLibraryStore(url: storeURL)
-        var owner = defaults.string(forKey: ownerTokenKey)
-        for _ in 0..<2 {
-            do {
-                let built = try makeCloudKitTransport(
-                    deviceID: deviceID, cursor: store.initialCursor, owner: owner, isLiveAllowed: isLiveAllowed)
-                return (built, store)
-            } catch {
-                log.error("Library transport unavailable: \(String(describing: error), privacy: .public)")
-                store.discard()
-                store = FileLibraryStore(url: storeURL)
-                owner = nil
-            }
+        let store = FileLibraryStore(url: storeURL, historicalOwner: defaults.string(forKey: ownerTokenKey))
+        do {
+            let create = factory ?? makeCloudKitTransport
+            let built = try create(deviceID, store.initialCursor, store.initialOwnerToken, isLiveAllowed, store.initialReviewHold)
+            return (built, store)
+        } catch {
+            log.error("Library transport could not start; retained the saved library.")
+            return ((UnavailableLibraryTransport(reason: "iCloud library sync could not start."), {}, nil), store)
         }
-        return ((UnavailableLibraryTransport(reason: "iCloud library sync could not start."), {}, nil), store)
     }
 
     /// A random id created once per install and kept in UserDefaults.
@@ -83,11 +82,14 @@ enum LibraryEnvironment {
             .appendingPathComponent("Library", isDirectory: true)
     }
 
-    private typealias Built = (transport: any LibraryTransport, reset: @Sendable () async -> Void,
+    typealias Built = (transport: any LibraryTransport, reset: @Sendable () async throws -> Void,
                                signals: AsyncStream<CloudKitAccountChangeSignal>?)
 
+    /// Narrow constructor seam; tests can fail construction without any account or cloud access.
+    typealias TransportFactory = @MainActor (String, LibraryChangeToken?, String?, Bool, Bool) throws -> Built
+
     private static func makeCloudKitTransport(
-        deviceID: String, cursor: LibraryChangeToken?, owner: String?, isLiveAllowed: Bool
+        _ deviceID: String, _ cursor: LibraryChangeToken?, _ owner: String?, _ isLiveAllowed: Bool, _ initialReviewHold: Bool
     ) throws -> Built {
 #if WILTED_CLOUDKIT_LIVE
         guard isLiveAllowed else {
@@ -101,7 +103,7 @@ enum LibraryEnvironment {
         }
         let transport = try CloudKitLibraryTransport(
             deviceID: deviceID, isLibraryWriter: false, driver: try factory(state), driverFactory: factory,
-            outbox: outbox, state: cursor, knownOwnerToken: owner)
+            outbox: outbox, state: cursor, knownOwnerToken: owner, initialReviewHold: initialReviewHold)
         return (transport, { await transport.resetAfterAccountChange() }, transport.accountChanges)
 #else
         return (UnavailableLibraryTransport(reason: "iCloud sync is not enabled in this build."), {}, nil)
@@ -113,7 +115,8 @@ enum LibraryEnvironment {
     /// `makeLiveFactory` is compiled out because the package target does not carry the live flag, so
     /// the same construction is done here from public API.
     private static func makeDriverFactory(outbox: CloudKitLibraryOutbox) -> CloudKitEngineDriverFactory {
-        let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
+        let container = CKContainer(identifier: containerIdentifier)
+        let database = container.privateCloudDatabase
         let zoneID = LibraryRecordMapper().zoneID
         return { stateData in
             let serialization = try stateData.map { data -> CKSyncEngine.State.Serialization in
@@ -125,22 +128,27 @@ enum LibraryEnvironment {
             return LiveCloudKitEngineDriver(
                 database: database, stateSerialization: serialization,
                 zoneBootstrap: LiveCloudKitZoneBootstrap(database: database, zoneID: zoneID),
-                recordProvider: { outbox.record(for: $0) })
+                recordProvider: { outbox.record(for: $0) }, currentAccountResolver: {
+                    let recordID = try await container.userRecordID()
+                    return CloudKitAccountIdentity(currentOwnerToken: CloudKitAccountIdentity.token(for: recordID.recordName))
+                })
         }
     }
 #endif
 
-    /// Persists an adopted owner and turns a quarantine into a model event.
+    /// Saves the hold fence before notifying the model; account confirmation never binds legacy content.
     private static func monitorAccountChanges(
-        _ signals: AsyncStream<CloudKitAccountChangeSignal>?, defaults: UserDefaults, quarantine: AsyncStream<Void>.Continuation
+        _ signals: AsyncStream<CloudKitAccountChangeSignal>?, store: FileLibraryStore, quarantine: AsyncStream<Void>.Continuation
     ) {
         guard let signals else { return }
         Task {
             for await signal in signals {
                 switch signal {
-                case let .ownershipAdopted(token): defaults.set(token, forKey: ownerTokenKey)
-                case .quarantineRequired: quarantine.yield()
-                case .ownershipConfirmed: break
+                case .ownershipAdopted, .ownershipConfirmed: break
+                case .quarantineRequired:
+                    do { try await store.quarantine() }
+                    catch { log.error("Account review hold could not be saved; sync remains held locally.") }
+                    quarantine.yield()
                 }
             }
         }
@@ -162,61 +170,4 @@ struct UnavailableLibraryTransport: LibraryTransport {
     func mediaOffers() async throws -> [LibraryMediaOffer] { throw failure }
     func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL { throw failure }
     func removeMedia(entryID: ItemID) async throws { throw failure }
-}
-
-/// Read-only mirror persisted as JSON. The iPhone queues no local changes, so content, per-record
-/// versions and the cursor are all there is to keep; the cursor is written in the same file as the
-/// content it describes, so a launch can never resume from a position its content does not match.
-actor FileLibraryStore: LibraryStore {
-    private struct Versioned: Codable { let key: LibraryRecordKey; let version: UInt64 }
-    private struct Persisted: Codable {
-        var sources: [LibrarySource]
-        var entries: [LibraryEntry]
-        var slots: [QueueSlot]
-        var listening: [ListeningRecord]
-        var versions: [Versioned]
-        var cursor: LibraryChangeToken?
-    }
-
-    private let url: URL
-    private var current = LibraryStoreState()
-    nonisolated let initialCursor: LibraryChangeToken?
-
-    init(url: URL) {
-        self.url = url
-        var loaded = LibraryStoreState()
-        if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode(Persisted.self, from: data) {
-            loaded.content = LibrarySnapshot(sources: saved.sources, entries: saved.entries, slots: saved.slots, listening: saved.listening)
-            loaded.versions = Dictionary(saved.versions.map { ($0.key, $0.version) }, uniquingKeysWith: { _, last in last })
-            loaded.cursor = saved.cursor
-        }
-        current = loaded
-        initialCursor = loaded.cursor
-    }
-
-    nonisolated func discard() { try? FileManager.default.removeItem(at: url) }
-
-    func state() -> LibraryStoreState { current }
-
-    func commit(_ staged: StagedLibraryBatch) throws {
-        guard current.revision == staged.priorState.revision else { throw LibraryTransportError.staleStagedBatch }
-        var next = staged.nextState
-        next.revision += 1
-        try write(next)
-        current = next
-    }
-
-    func enqueue(_ change: LibraryChange) throws { throw LibraryTransportError.ownershipViolation("The iPhone does not edit the library") }
-    func acknowledge(_ result: LibraryPushResult, sent: [PendingLibraryChange]) throws {}
-    func resolveConflict(_ key: LibraryRecordKey, keepLocal: Bool) throws {}
-
-    private func write(_ state: LibraryStoreState) throws {
-        let content = state.content
-        let saved = Persisted(
-            sources: Array(content.sources.values), entries: Array(content.entries.values), slots: Array(content.slots.values),
-            listening: Array(content.listening.values), versions: state.versions.map { Versioned(key: $0.key, version: $0.value) },
-            cursor: state.cursor)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(saved).write(to: url, options: [.atomic, LibraryFileProtection.writingOption])
-    }
 }

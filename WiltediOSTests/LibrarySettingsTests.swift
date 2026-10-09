@@ -1,5 +1,7 @@
 import CryptoKit
 import Foundation
+import SwiftUI
+import UIKit
 import WiltedDomain
 import WiltedLibrary
 import XCTest
@@ -122,6 +124,31 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertEqual(reloaded.stats, LibraryPhoneStats(listenedSeconds: 4, downloadedBytes: 1_000, savedSeconds: 4))
     }
 
+    func testLongStorageValueUsesFullWidthBelowLabel() throws {
+        let summaries = [LibraryCacheSummary(episodeCount: 123_456, byteCount: 3_000_000_000_000), LibraryCacheSummary()]
+        for width: CGFloat in [320, 390] {
+            for scheme in [ColorScheme.light, .dark] {
+                for summary in summaries {
+                    let expected = LibrarySettingsFormat.storage(count: summary.episodeCount, bytes: summary.byteCount)
+                    let capture = try PhoneLayoutCapture(LibraryStorageSummaryView(summary: summary), width: width, scheme: scheme)
+                    let attachment = XCTAttachment(image: capture.image)
+                    attachment.name = "storage-\(summary.episodeCount == 0 ? "none" : "long")-\(Int(width))-\(scheme == .dark ? "dark" : "light")"
+                    attachment.lifetime = .keepAlways
+                    add(attachment)
+                    let label = try XCTUnwrap(capture.line(containing: "Downloaded audio"), "Shipping Storage label must render: \(capture.text)")
+                    let value = try XCTUnwrap(capture.line(containing: expected),
+                        "The complete value must occupy one deliberate line: \(capture.text)")
+                    // Vision uses a bottom-left origin: the value must be below the label.
+                    XCTAssertLessThanOrEqual(value.maxY, label.minY,
+                        "Storage deliberately stacks its full-width value below the label")
+                    XCTAssertGreaterThanOrEqual(value.minX, 0)
+                    XCTAssertLessThanOrEqual(value.maxX, 1)
+
+                }
+            }
+        }
+    }
+
     func testStorageSpeedVersionAndSyncWording() {
         XCTAssertEqual(LibrarySettingsFormat.storage(count: 0, bytes: 0), "None")
         XCTAssertTrue(LibrarySettingsFormat.storage(count: 1, bytes: 1_000_000).hasPrefix("1 episode · "))
@@ -184,28 +211,49 @@ final class LibrarySettingsTests: XCTestCase {
     // MARK: model seam
 
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
+    private lazy var mediaPhone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
+    private lazy var mediaMirror = FileLibraryStore(url: scratch.appendingPathComponent("media-mirror.json"))
+    private var mediaFixtureSequence: UInt64 = 0
     private func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
 
-    private func makeModel(cache: FileMediaCache) -> LibraryAppModel {
-        LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
+    private func makeModel(cache: FileMediaCache) async throws -> LibraryAppModel {
+        try await PreparedMediaFixture.bootstrap(mediaMirror, transport: mediaPhone)
+        let model = LibraryAppModel(transport: mediaPhone, store: mediaMirror, deviceID: "phone",
             mediaCache: cache, preferences: defaults, timeZone: TimeZone(identifier: "UTC")!)
+        await model.loadLocalState()
+        return model
     }
 
     private func cacheEpisode(_ cache: FileMediaCache, _ raw: String, bytes: Int) async throws {
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
+        let showID = id("show")
+        var changes: [LibraryChange] = []
+        if mediaFixtureSequence == 0 {
+            changes.append(.source(LibrarySource(id: showID, kind: .podcastFeed, title: "Show")))
+        }
+        changes.append(.entry(try LibraryEntry(id: id(raw), kind: .podcastEpisode, sourceID: showID,
+            title: raw, summary: "", publishedAt: Date(timeIntervalSince1970: 1_000), durationSeconds: 60)))
+        changes.append(.slot(try QueueSlot(entryID: id(raw), sortKey: Double(mediaFixtureSequence))))
+        let pending = changes.map { change in
+            mediaFixtureSequence += 1
+            return PendingLibraryChange(localSeq: mediaFixtureSequence, change: change, baseVersion: 0)
+        }
+        let pushed = try await mac.push(changes: pending)
+        XCTAssertTrue(pushed.failures.isEmpty)
+        try await PreparedMediaFixture.bootstrap(mediaMirror, transport: mediaPhone)
         let data = Data(repeating: 7, count: bytes)
         let hash = MediaHash.prefix + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let offer = try LibraryMediaOffer(
+        let offer = try PreparedMediaFixture.certified(LibraryMediaOffer(
             entryID: id(raw), revisionID: try RevisionID(rawValue: "rev-\(raw)"), contentHash: hash,
-            byteCount: Int64(bytes), mediaType: "audio/mp4", durationSeconds: 60)
+            byteCount: Int64(bytes), mediaType: "audio/mp4", durationSeconds: 60))
         let file = scratch.appendingPathComponent(UUID().uuidString)
         try data.write(to: file)
-        _ = try await cache.adopt(verifiedFile: file, for: offer)
+        _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer, owner: "fixture-owner")
     }
 
     func testCacheSummaryCountsEpisodesAndBytes() async throws {
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
-        let model = makeModel(cache: cache)
+        let model = try await makeModel(cache: cache)
         let empty = await model.cacheSummary()
         XCTAssertEqual(empty, LibraryCacheSummary())
         try await cacheEpisode(cache, "a", bytes: 1_000)
@@ -216,12 +264,61 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertEqual(withoutPlaying, LibraryCacheSummary(episodeCount: 1, byteCount: 1_000))
     }
 
+    func testHeldStorageSummaryAndExplicitClearCountRetainedBytesWithoutGrantingPlayback() async throws {
+        let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("held-cache"))
+        try await cacheEpisode(cache, "a", bytes: 1_000)
+        try await cacheEpisode(cache, "b", bytes: 2_500)
+        let model = try await makeModel(cache: cache)
+        let certified = await cache.cachedEntries()
+        let first = try XCTUnwrap(certified[id("a")])
+        let second = try XCTUnwrap(certified[id("b")])
+        XCTAssertEqual(certified.count, 2, "the storage regression starts with actual admitted audio")
+
+        try await mediaMirror.quarantine()
+        await model.loadLocalState()
+        XCTAssertTrue(model.accountQuarantined)
+        let heldInventory = await cache.cachedEntries()
+        XCTAssertTrue(heldInventory.isEmpty, "held audio remains playback-inert")
+        let firstPlayable = await cache.verifies(first)
+        let secondPlayable = await cache.verifies(second)
+        XCTAssertFalse(firstPlayable)
+        XCTAssertFalse(secondPlayable)
+        let admission = await cache.admission(entryID: id("a"), ownerToken: "fixture-owner",
+            libraryScope: LibraryAppModel.mediaLibraryScope, transportGeneration: 0)
+        XCTAssertNil(admission)
+        XCTAssertEqual(try Data(contentsOf: first.url), Data(repeating: 7, count: 1_000))
+        XCTAssertEqual(try Data(contentsOf: second.url), Data(repeating: 7, count: 2_500))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.url.path))
+        let heldSummary = await model.cacheSummary()
+        XCTAssertEqual(heldSummary, LibraryCacheSummary(episodeCount: 2, byteCount: 3_500))
+        let excludingKept = await model.cacheSummary(excluding: id("b"))
+        XCTAssertEqual(excludingKept, LibraryCacheSummary(episodeCount: 1, byteCount: 1_000))
+
+        let removed = await model.removeAllDownloadedAudio(keeping: id("b"))
+        XCTAssertEqual(removed, 1, "explicit clear removes retained audio even while admission is held")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.url.path))
+        let keptSummary = await model.cacheSummary()
+        XCTAssertEqual(keptSummary, LibraryCacheSummary(episodeCount: 1, byteCount: 2_500))
+        let stillHeld = await cache.cachedEntries()
+        XCTAssertTrue(stillHeld.isEmpty, "storage accounting never grants playable inventory")
+        let rest = await model.removeAllDownloadedAudio(keeping: nil)
+        XCTAssertEqual(rest, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: second.url.path))
+        let emptySummary = await model.cacheSummary()
+        XCTAssertEqual(emptySummary, LibraryCacheSummary())
+        let afterClear = await cache.admission(entryID: id("b"), ownerToken: "fixture-owner",
+            libraryScope: LibraryAppModel.mediaLibraryScope, transportGeneration: 0)
+        XCTAssertNil(afterClear)
+    }
+
     func testRemoveAllKeepsTheEpisodePlayingNow() async throws {
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         try await cacheEpisode(cache, "a", bytes: 1_000)
         try await cacheEpisode(cache, "b", bytes: 1_000)
         try await cacheEpisode(cache, "c", bytes: 1_000)
-        let model = makeModel(cache: cache)
+        let model = try await makeModel(cache: cache)
         await model.refresh()
 
         let removed = await model.removeAllDownloadedAudio(keeping: id("b"))

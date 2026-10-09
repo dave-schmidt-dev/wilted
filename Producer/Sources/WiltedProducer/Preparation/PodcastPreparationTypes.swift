@@ -103,12 +103,15 @@ public struct PodcastPreparationProgress: Equatable, Sendable {
     public let detail: String
     public let fraction: Double?
     public let evidence: PreparationEvidence?
+    public let requestID: UUID?
 
-    public init(stage: String, detail: String = "", fraction: Double? = nil, evidence: PreparationEvidence? = nil) {
+    public init(stage: String, detail: String = "", fraction: Double? = nil,
+                evidence: PreparationEvidence? = nil, requestID: UUID? = nil) {
         self.stage = stage
         self.detail = detail
         self.fraction = fraction
         self.evidence = evidence
+        self.requestID = requestID
     }
 }
 

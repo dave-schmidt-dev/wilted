@@ -12,7 +12,7 @@ import XCTest
 final class LibraryAutoContinueTests: XCTestCase {
     private var scratch: URL!
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
-    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+    lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
     private let revision = try! RevisionID(rawValue: "rev-1")
     private let payload = Data((0..<2_000).map { UInt8($0 % 251) })
     private var versions: [LibraryRecordKey: UInt64] = [:]
@@ -25,13 +25,13 @@ final class LibraryAutoContinueTests: XCTestCase {
 
     override func tearDown() async throws { try? FileManager.default.removeItem(at: scratch) }
 
-    private struct Rig {
+    struct Rig {
         let model: LibraryAppModel
         let player: LibraryPlayer
         let engine: AutoEngine
     }
 
-    private func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
+    func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
 
     private func macPush(_ changes: [LibraryChange]) async throws {
         let pending = changes.map { change -> PendingLibraryChange in
@@ -45,7 +45,7 @@ final class LibraryAutoContinueTests: XCTestCase {
 
     /// Entries in the order given, published first to last, queued in the order given, all on the phone.
     /// `gate` wraps the media cache so a test can hold a cache lookup at a chosen moment.
-    private func makeRig(
+    func makeRig(
         entries: [String] = ["a", "b", "c", "d"],
         queue: [String]? = nil, autoPlayNext: Bool = true, feedDuration: Double = 600,
         gate: LookupGate? = nil
@@ -59,17 +59,23 @@ final class LibraryAutoContinueTests: XCTestCase {
                 id: id(raw), kind: .podcastEpisode, sourceID: id("show"), title: "Title \(raw)", summary: "",
                 publishedAt: Date(timeIntervalSince1970: 1_600_000_000 + Double(offset) * 86_400), durationSeconds: feedDuration,
                 removal: .none, removedAt: nil)))
-            let file = scratch.appendingPathComponent(UUID().uuidString)
-            try payload.write(to: file)
-            _ = try await cache.adopt(
-                verifiedFile: file,
-                for: LibraryMediaOffer(
-                    entryID: id(raw), revisionID: revision,
-                    contentHash: MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined(),
-                    byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 600))
+
         }
         for (position, raw) in q.enumerated() { changes.append(.slot(try QueueSlot(entryID: id(raw), sortKey: Double(position)))) }
         try await macPush(changes)
+        let phone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
+        let mirror = FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json"))
+        try await PreparedMediaFixture.bootstrap(mirror, transport: phone)
+        for raw in entries {
+            let file = scratch.appendingPathComponent(UUID().uuidString)
+            try payload.write(to: file)
+            _ = try await PreparedMediaFixture.adopt(into: cache,
+                verifiedFile: file,
+                for: PreparedMediaFixture.certified(LibraryMediaOffer(
+                    entryID: id(raw), revisionID: revision,
+                    contentHash: MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined(),
+                    byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 600)), owner: "fixture-owner")
+        }
         let engine = AutoEngine()
         let player = LibraryPlayer(
             engine: engine, session: AutoSession(), nowPlaying: AutoNowPlaying(), remoteCommands: AutoRemote(),
@@ -77,7 +83,7 @@ final class LibraryAutoContinueTests: XCTestCase {
         player.apply(LibraryPlaybackPreferences(
             defaultSpeed: 1.25, skipBackSeconds: 15, skipForwardSeconds: 30, autoPlayNext: autoPlayNext))
         let model = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone", mediaCache: cache,
+            transport: phone, store: mirror, deviceID: "phone", mediaCache: cache,
             handoffTiming: LibraryHandoffTiming(
                 observeInterval: SyncCadence.phoneObserveInterval, sleep: { _ in try await Task.sleep(for: .seconds(3600)) },
                 settleSleep: { _ in }),
@@ -88,7 +94,7 @@ final class LibraryAutoContinueTests: XCTestCase {
         return Rig(model: model, player: player, engine: engine)
     }
 
-    private func inProgressOnMac(_ raw: String, position: Double = 100, at seconds: TimeInterval = 1_650_000_000) async throws {
+    func inProgressOnMac(_ raw: String, position: Double = 100, at seconds: TimeInterval = 1_650_000_000) async throws {
         await server.setClock(Date(timeIntervalSince1970: seconds))
         let record = try DevicePlaybackPosition(
             deviceID: "mac", entryID: id(raw), revision: revision, positionSeconds: position, rate: 1, isPlaying: false, epoch: 1,
@@ -96,18 +102,18 @@ final class LibraryAutoContinueTests: XCTestCase {
         try await mac.publish(record, as: .progress)
     }
 
-    private func complete(_ raw: String, at seconds: TimeInterval) async throws {
+    func complete(_ raw: String, at seconds: TimeInterval) async throws {
         try await macPush([.listening(ListeningRecord(
             itemID: id(raw), completedAt: Date(timeIntervalSince1970: seconds), updatedAt: Date(timeIntervalSince1970: seconds),
             deviceID: "mac"))])
     }
 
-    private func start(_ rig: Rig, _ raw: String) async {
+    func start(_ rig: Rig, _ raw: String) async {
         let row = try! XCTUnwrap(rig.model.queued.first { $0.id == id(raw) })
         await rig.model.playCached(row)
     }
 
-    private func eventually(_ what: String, _ condition: @MainActor () -> Bool) async throws {
+    func eventually(_ what: String, _ condition: @escaping @MainActor () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while !condition() {
             if ContinuousClock.now >= deadline { return XCTFail("timed out waiting for \(what)") }
@@ -115,7 +121,7 @@ final class LibraryAutoContinueTests: XCTestCase {
         }
     }
 
-    private func settle() async { for _ in 0..<40 { await Task.yield() }; try? await Task.sleep(for: .milliseconds(100)) }
+    func settle() async { for _ in 0..<40 { await Task.yield() }; try? await Task.sleep(for: .milliseconds(100)) }
 
     /// One fixture, four views of the order: the phone's list, CarPlay's list, Siri's list and what
     /// auto-continue plays, which must all be the same sequence.
@@ -363,165 +369,6 @@ final class LibraryAutoContinueTests: XCTestCase {
         XCTAssertFalse(LibrarySettingsStore(defaults: defaults).autoPlayNext)
         XCTAssertFalse(store.playback.autoPlayNext)
         defaults.removePersistentDomain(forName: suite)
-    }
-
-    func testMiddle19AdvancesThrough20And21AndStopsWithoutRestartingEarlierUnfinished() async throws {
-        let rig = try await makeRig(entries: ["18", "19", "20", "21"])
-        try await inProgressOnMac("18", position: 50)
-        await rig.model.refresh()
-        for raw in ["18", "19", "20", "21"] { rig.model.media[id(raw)] = .onPhone }
-        let listed = rig.model.playOrderRows.map(\.id.rawValue)
-        XCTAssertEqual(listed, ["18", "19", "20", "21"])
-
-        await start(rig, "19")
-        var played = ["19"]
-        for _ in 0..<5 {
-            let current = try XCTUnwrap(rig.player.item?.entryID)
-            rig.engine.finishNaturally()
-            await settle()
-            guard let next = rig.player.item?.entryID, next != current else { break }
-            played.append(next.rawValue)
-        }
-        XCTAssertEqual(played, ["19", "20", "21"], "walks 19 -> 20 -> 21 and stops at end without restarting 18")
-        XCTAssertEqual(rig.player.status, .ended)
-        XCTAssertEqual(rig.player.item?.entryID, id("21"))
-    }
-
-    func testMissingLaterCacheSkipAdvancesPastMissingCandidate() async throws {
-        let rig = try await makeRig(entries: ["19", "20", "21"])
-        try await rig.model.mediaCache.remove(entryID: id("20"))
-        await start(rig, "19")
-        rig.engine.finishNaturally()
-        await settle()
-        XCTAssertEqual(rig.player.item?.entryID, id("21"), "skips cache-missing 20 and advances to 21")
-        rig.engine.finishNaturally()
-        await settle()
-        XCTAssertEqual(rig.player.status, .ended)
-        XCTAssertEqual(rig.player.item?.entryID, id("21"))
-    }
-
-    func testCompletionRemovalAndReorderingDoesNotJumpBackwards() async throws {
-        let rig = try await makeRig(entries: ["18", "19", "20", "21"])
-        await start(rig, "19")
-        try await complete("20", at: 1_695_000_000)
-        try await inProgressOnMac("18", position: 200)
-        await rig.model.refresh()
-        for raw in ["18", "19", "20", "21"] { rig.model.media[id(raw)] = .onPhone }
-
-        rig.engine.finishNaturally()
-        await settle()
-        XCTAssertEqual(rig.player.item?.entryID, id("21"), "completion of 20 and earlier progress does not jump back to 18")
-        rig.engine.finishNaturally()
-        await settle()
-        XCTAssertEqual(rig.player.status, .ended)
-        XCTAssertEqual(rig.player.item?.entryID, id("21"))
-    }
-
-    func testSupersedingManualCommandWinsOverAutoContinue() async throws {
-        let rig = try await makeRig(entries: ["19", "20", "21"])
-        await start(rig, "19")
-        rig.engine.finishNaturally()
-        rig.player.pause()
-        await settle()
-        XCTAssertEqual(rig.player.item?.entryID, id("19"))
-        XCTAssertEqual(rig.player.status, .paused)
-
-        await start(rig, "19")
-        rig.engine.finishNaturally()
-        await start(rig, "21")
-        await settle()
-        XCTAssertEqual(rig.player.item?.entryID, id("21"))
-        XCTAssertEqual(rig.player.status, .playing)
-    }
-
-    /// A command given while the final position is being remembered (the cache and coordinator
-    /// lookups inside it) must not lose the completion: it was accepted before the first await,
-    /// so the Mac is still told the episode played out. Only the advance is cancelled.
-    func testACommandDuringTheFinalPositionLookupStillSendsTheCompletionAndStartsNothing() async throws {
-        let gate = LookupGate()
-        let rig = try await makeRig(entries: ["19", "20", "21"], gate: gate)
-        await start(rig, "19")
-        await gate.arm()
-        rig.engine.finishNaturally()
-        // Hold the lookups one at a time until the completion has been accepted; the held
-        // lookup is then inside the final-position remember, before the completion is sent.
-        while true {
-            try await gate.waitForHold()
-            if rig.model.playedOut[id("19")] != nil { break }
-            await gate.releaseNext()
-        }
-        rig.player.pause()   // the intervening command, given while the lookup is held
-        await gate.disarm()
-        try await eventually("the completion") {
-            rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("19") }
-        }
-        let sent = try await mac.listIntents().map(\.action)
-        XCTAssertTrue(sent.contains(.markDone(entryID: id("19"))), "the durable completion still reaches the Mac")
-        XCTAssertEqual(rig.model.handoffState.ownPositions[id("19")]?.record.positionSeconds, 600,
-                       "the end position is still recorded")
-        await settle()
-        XCTAssertEqual(rig.player.item?.entryID, id("19"), "no unintended audio start")
-        XCTAssertEqual(rig.player.status, .ended)
-    }
-
-    /// A file can disappear between the continuation's snapshot and the candidate's own start
-    /// lookup. The walk has to try the next candidate instead of stopping: 20 vanishes between
-    /// the two lookups, 21 plays.
-    func testACandidateThatDisappearsBetweenTheLookupsIsSkippedForTheNextOne() async throws {
-        let gate = LookupGate()
-        let rig = try await makeRig(entries: ["19", "20", "21"], autoPlayNext: false, gate: gate)
-        await start(rig, "19")
-        rig.engine.finishNaturally()
-        try await eventually("the completion") {
-            rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("19") }
-        }
-        await rig.model.waitForHandoff()
-        await settle()
-        // Drive the continuation directly so its snapshot and the start's lookup are the only
-        // lookups in flight; the gate holds the snapshot after it captured the entries.
-        await gate.arm()
-        let advance = Task { await rig.model.autoContinue(after: self.id("19")) }
-        try await gate.waitForHold()
-        try await rig.model.mediaCache.remove(entryID: id("20"))
-        await gate.disarm()
-        await advance.value
-        XCTAssertEqual(rig.player.item?.entryID, id("21"),
-                       "20 disappeared between the lookups; the walk reaches 21")
-        XCTAssertTrue(rig.player.isPlaying)
-    }
-
-    func testRemovedCachedCandidateDuringStartLookupIsSkippedForTheNextOne() async throws {
-        try await assertDecisionDuringCandidateLookupSkipsToNext(.removeFromLarder)
-    }
-
-    func testCompletedCachedCandidateDuringStartLookupIsSkippedForTheNextOne() async throws {
-        try await assertDecisionDuringCandidateLookupSkipsToNext(.markDone)
-    }
-
-    private func assertDecisionDuringCandidateLookupSkipsToNext(_ action: LibraryDecisionAction) async throws {
-        let gate = LookupGate()
-        let rig = try await makeRig(entries: ["19", "20", "21"], autoPlayNext: false, gate: gate)
-        await start(rig, "19")
-        rig.engine.finishNaturally()
-        try await eventually("the completion") {
-            rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("19") }
-        }
-        await rig.model.waitForHandoff()
-        await settle()
-
-        await gate.arm()
-        let advance = Task { await rig.model.autoContinue(after: self.id("19")) }
-        try await gate.waitForHold() // initial candidate snapshot
-        await gate.releaseNext()
-        try await gate.waitForHold() // candidate 20's start lookup
-        await rig.model.decide(action, entryID: id("20"))
-        await gate.disarm()
-        await advance.value
-
-        let cached = await rig.model.mediaCache.cachedEntries()
-        XCTAssertNotNil(cached[id("20")], "the decision does not remove the cached audio")
-        XCTAssertEqual(rig.player.item?.entryID, id("21"), "an ineligible cached candidate is skipped")
-        XCTAssertTrue(rig.player.isPlaying)
     }
 
     /// An item the player already holds (a restored session) has no captured suffix. A manual

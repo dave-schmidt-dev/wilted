@@ -96,6 +96,18 @@ extension WiltedMacModel {
                         self?.podcastOperationMessage = "Downloading \(episode.title)…"
                     }
                 }
+                let resolvedFingerprint: String?
+                if let fingerprint = self.pipelineFingerprint {
+                    resolvedFingerprint = fingerprint
+                } else {
+                    resolvedFingerprint = await self.pipelineFingerprintResolution()
+                }
+                // Resolution can suspend while shutdown cancels this download.
+                // Do not commit its checkpoint into a closing/replaced store.
+                try Task.checkCancellation()
+                guard !self.isClosingTemporaryState, self.store === store else {
+                    throw CancellationError()
+                }
                 let recoveryCheckpointSaved: Bool
                 do {
                     // The marker is durable, so an unresolved fingerprint must
@@ -103,8 +115,7 @@ extension WiltedMacModel {
                     // pipeline once a real fingerprint resolves. Leaving the
                     // forced marker in place is the same conservative outcome
                     // as a failed write below.
-                    guard let fingerprint = self.pipelineFingerprint
-                        ?? PodcastPreparationPipeline.semanticFingerprintResolution else {
+                    guard let fingerprint = resolvedFingerprint else {
                         throw WiltedMacUnresolvedFingerprint()
                     }
                     try await store.markForcedRedownloadCompleted(

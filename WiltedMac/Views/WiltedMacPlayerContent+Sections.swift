@@ -8,7 +8,8 @@ extension WiltedMacPlayerContent {
         // The play/pause transport already speaks these two states. Do not
         // create a second visible or accessible status row for them.
         if model.playbackStatusMessage != "Playing",
-           model.playbackStatusMessage != "Paused" {
+           model.playbackStatusMessage != "Paused",
+           model.playbackCommands.pending?.usesPlayPauseButtonFeedback != true {
             HStack(spacing: WiltedTheme.Spacing.small) {
                 Text(model.playbackStatusMessage)
                     .wiltedFont(.utility)
@@ -19,11 +20,13 @@ extension WiltedMacPlayerContent {
         }
     }
 
-    /// Idle until a command is issued: a pending start or its failure answers
-    /// the press here, outside the idle element so its label stays stable.
+    /// First selection answers in its initiating row, keeping the idle player stable.
+    /// A refused selection still explains the failure and offers retry here.
     var minimizedIdlePlayer: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-            minimizedIdleSummary
+            if model.playbackCommands.pending == nil || model.playbackCommands.pending?.usesInitiatingButtonFeedback == true {
+                minimizedIdleSummary
+            }
             WiltedMacPlaybackStartResult(model: model)
         }
     }
@@ -118,24 +121,38 @@ extension WiltedMacPlayerContent {
         id: String,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        let busy = id == WiltedScreenCopy.playerPlayPauseIdentifier
+            && model.playbackCommands.pending?.usesPlayPauseButtonFeedback == true
+        return Button(action: action) {
             Image(systemName: symbol)
                 .wiltedSquare(28)
+                .opacity(busy ? 0 : 1)
+                .overlay {
+                    if busy { ProgressView().controlSize(.small).accessibilityHidden(true) }
+                }
         }
         .buttonStyle(.borderless)
         .accessibilityLabel(label)
+        .accessibilityValue(busy ? model.playbackCommands.pending?.message ?? "" : "")
         .accessibilityIdentifier(id)
     }
 }
 
-/// The answer to the newest playback command while nothing is current: the
-/// pending start, or why it failed, with a retry when retrying can help.
+extension WiltedMacPlaybackPending {
+    /// Presentation only: the command owner remains the source of pending state.
+    var usesPlayPauseButtonFeedback: Bool { command.kind == .start || command.kind == .pause }
+    var usesInitiatingButtonFeedback: Bool { usesPlayPauseButtonFeedback || command.kind == .select }
+}
+
+/// A failure or recovery while nothing is current. Selection and transport
+/// progress stays in the button that initiated it.
 struct WiltedMacPlaybackStartResult: View {
     let model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        if model.showsPlaybackCommandResult {
+        if model.showsPlaybackCommandResult,
+           model.playbackCommands.pending?.usesInitiatingButtonFeedback != true {
             HStack(spacing: WiltedTheme.Spacing.small) {
                 if model.playbackCommands.pending != nil {
                     ProgressView().controlSize(.small).accessibilityHidden(true)

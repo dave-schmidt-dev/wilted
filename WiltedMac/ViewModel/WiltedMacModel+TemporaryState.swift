@@ -28,16 +28,20 @@ final class WiltedMacTemporaryState {
     /// The marker remains the recovery proof for a later process; this identity
     /// permits this live instance to close an otherwise unmarked root safely.
     private let createdDirectoryIdentity: FixtureDirectoryIdentity?
+    /// Trusted at creation through the existing runner proof, never marker presence alone.
+    private let managedByTestRunner: Bool
     private(set) var ownerMarkerWriteError: Error? = nil
     private var isClosed = false
 
     fileprivate init(
         directory: URL,
         createdDirectoryIdentity: FixtureDirectoryIdentity?,
+        managedByTestRunner: Bool = false,
         markerWriter: OwnerMarkerWriter = WiltedMacTemporaryState.writeOwnerMarker
     ) {
         self.directory = directory
         self.createdDirectoryIdentity = createdDirectoryIdentity
+        self.managedByTestRunner = managedByTestRunner
         guard createdDirectoryIdentity != nil else { return }
         do {
             try markerWriter(directory)
@@ -54,6 +58,8 @@ final class WiltedMacTemporaryState {
     func closeSynchronously(fileManager: FileManager = .default) {
         guard !isClosed else { return }
         isClosed = true
+        // Only the existing terminal-host gate can unlink this SQLite root.
+        guard !managedByTestRunner else { return }
         // This check binds cleanup to the factory's exact live directory. The
         // owner marker remains required for stale-process sweeping below.
         guard let createdDirectoryIdentity,
@@ -61,6 +67,12 @@ final class WiltedMacTemporaryState {
                   directory, identity: createdDirectoryIdentity, fileManager: fileManager
               )
         else { return }
+        // A drained model can still have a retained SwiftData container. Retire
+        // database roots under their PID marker; the dead-owner sweep reclaims
+        // them later. Exact owned media-only roots can still close immediately.
+        guard !["library.sqlite", "library.sqlite-wal", "library.sqlite-shm"].contains(where: {
+            fileManager.fileExists(atPath: directory.appendingPathComponent($0).path)
+        }) else { return }
         try? fileManager.removeItem(at: directory)
     }
 
@@ -184,16 +196,38 @@ func closeOwnedTemporaryStateAfterDeinit(
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
     static func makeOwnedFixtureState(
-        in root: URL = FileManager.default.temporaryDirectory,
+        in explicitParent: URL? = nil,
         markerWriter: @escaping WiltedMacTemporaryState.OwnerMarkerWriter = WiltedMacTemporaryState.writeOwnerMarker
     ) -> WiltedMacTemporaryState {
-        sweepStaleFixtureDirectories(in: root)
+        let managed = explicitParent == nil && hostsTests
+        let parent: URL
+        if managed {
+            do {
+                guard let supplied = ProcessInfo.processInfo.environment["WILTED_TEST_TMPDIR"] else {
+                    fatalError("XCTest fixture requires the runner-owned temporary parent")
+                }
+                parent = try WiltedMacTestRootOwnership.parent(rawValue: supplied)
+            } catch { fatalError("Invalid XCTest fixture parent: \(error)") }
+        } else {
+            parent = explicitParent ?? FileManager.default.temporaryDirectory
+        }
+        sweepStaleFixtureDirectories(in: parent)
         sweepStaleFixturePreferenceSuites()
-        let directory = root.appendingPathComponent(
-            "wilted-ui-fixture-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
-            isDirectory: true
-        )
-        return makeOwnedFixtureState(at: directory, markerWriter: markerWriter)
+        let prefix = managed ? "wilted-mac-test-ui-fixture" : "wilted-ui-fixture"
+        let directory = parent.appendingPathComponent(
+            "\(prefix)-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)", isDirectory: true)
+        guard managed else { return makeOwnedFixtureState(at: directory, markerWriter: markerWriter) }
+        guard let identity = WiltedMacTemporaryState.createFixtureDirectory(at: directory) else {
+            fatalError("Could not create XCTest fixture root")
+        }
+        do {
+            try WiltedMacTestRootOwnership.bindCreatedRoot(directory, parent: parent)
+            guard try WiltedMacTestRootOwnership.isManaged(directory) else {
+                fatalError("XCTest fixture requires verified runner ownership")
+            }
+        } catch { fatalError("Invalid XCTest fixture ownership: \(error)") }
+        return WiltedMacTemporaryState(directory: directory, createdDirectoryIdentity: identity,
+            managedByTestRunner: true, markerWriter: markerWriter)
     }
 
     static func makeOwnedFixtureState(

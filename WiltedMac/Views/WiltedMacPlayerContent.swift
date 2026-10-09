@@ -38,9 +38,11 @@ struct WiltedMacPlayerContent: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Now Playing")
                             .wiltedFont(.display)
-                        Text(presentation?.title ?? "")
-                            .wiltedFont(.utility)
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        if presentation != .notes {
+                            Text(presentation?.title ?? "")
+                                .wiltedFont(.utility)
+                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        }
                     }
                     Spacer()
                     Button("Collapse") { collapsePresentation() }
@@ -161,7 +163,8 @@ struct WiltedMacPlayerContent: View {
                 }
             }
 
-            if model.playbackError != nil {
+            if model.playbackError != nil,
+               model.playbackCommands.pending?.usesPlayPauseButtonFeedback != true {
                 // The status is the sole fault sentence. This container keeps
                 // the established recovery identifier without rendering it a
                 // second time.
@@ -180,8 +183,9 @@ struct WiltedMacPlayerContent: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            // A pending command already speaks through the status line above.
-            if let status = model.playbackOperationStatus, status != model.playbackStatusMessage {
+            // Play/Pause progress belongs to its button, never an inserted row.
+            if let status = model.playbackOperationStatus, status != model.playbackStatusMessage,
+               status != WiltedMacPlaybackCopy.starting, status != WiltedMacPlaybackCopy.pausing {
                 Text(status)
                     .wiltedFont(.utility)
                     .accessibilityIdentifier("wilted-player-operation-status")
@@ -360,5 +364,8 @@ struct WiltedMacPlaybackShareLink: View {
             .accessibilityHint(WiltedMacModel.noEpisodePageText)
             .accessibilityIdentifier("wilted-player-share")
         }
+        #if canImport(WiltedProducer)
+        WiltedMacShareComposer(model: model)
+        #endif
     }
 }

@@ -177,16 +177,34 @@ actor ScriptedDriver: CloudKitEngineDriver {
     private let continuation: AsyncStream<CloudKitEngineEvent>.Continuation
     private let onFetch: Script
     private let onSend: Script
+    private let identity: @Sendable () async throws -> CloudKitAccountIdentity?
+    private let zone: @Sendable () async throws -> Void
     private(set) var pending: [CKSyncEngine.PendingRecordZoneChange] = []
+    private var fetched = false
+    private var fetchWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(fetch: @escaping Script = { [.fetchCompleted] }, send: @escaping Script = { [.sendCompleted] }) {
+    init(fetch: @escaping Script = { [.fetchCompleted] }, send: @escaping Script = { [.sendCompleted] },
+         identity: @escaping @Sendable () async throws -> CloudKitAccountIdentity? = { nil },
+         zone: @escaping @Sendable () async throws -> Void = {}) {
         (stream, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream()
         onFetch = fetch
         onSend = send
+        self.identity = identity
+        self.zone = zone
     }
 
     var events: AsyncStream<CloudKitEngineEvent> { get async { stream } }
-    func fetchChanges() async throws { for event in try onFetch() { continuation.yield(event) } }
+    func currentAccountIdentity() async throws -> CloudKitAccountIdentity? { try await identity() }
+    func ensureZone() async throws { try await zone() }
+    func fetchChanges() async throws {
+        fetched = true
+        fetchWaiters.forEach { $0.resume() }
+        fetchWaiters.removeAll()
+        for event in try onFetch() { continuation.yield(event) }
+    }
+    func waitForFetch() async {
+        if !fetched { await withCheckedContinuation { fetchWaiters.append($0) } }
+    }
     func sendChanges() async throws { for event in try onSend() { continuation.yield(event) } }
     func cancelOperations() async {}
     func emit(_ event: CloudKitEngineEvent) { continuation.yield(event) }
@@ -348,6 +366,30 @@ final class CloudKitLibraryTransportTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await transport.fetchChanges(since: nil)) {
             XCTAssertEqual($0 as? CloudKitSyncError, .quarantined)
         }
+    }
+
+    func testMalformedKnownLibraryRecordFailsInsteadOfAdvancingCursor() async throws {
+        let record = CKRecord(recordType: LibraryRecordType.entry.rawValue,
+                              recordID: mapper.recordID(for: .init(kind: .entry, id: try item("broken"))))
+        record[LibraryRecordMapper.payloadField] = Data("not-json".utf8) as CKRecordValue
+        let state = self.stateB
+        let driver = ScriptedDriver(fetch: { [.fetched(modifications: [record], deletions: []), .stateUpdated(state), .fetchCompleted] })
+        let transport = try makeTransport(first: driver)
+        await XCTAssertThrowsErrorAsync(try await transport.fetchChanges(since: nil)) { _ in }
+        let provisional = await transport.provisionalFetchToken
+        let committed = await transport.committedFetchToken
+        XCTAssertNil(provisional)
+        XCTAssertNil(committed)
+    }
+
+    func testKnownLibraryRecordWithoutVersionFailsTheFetch() async throws {
+        guard case let .save(record) = try mapper.operation(for: .entry(makeEntry()), existing: nil) else { return XCTFail() }
+        let state = self.stateB
+        let driver = ScriptedDriver(fetch: { [.fetched(modifications: [record], deletions: []), .stateUpdated(state), .fetchCompleted] })
+        let transport = try makeTransport(first: driver)
+        await XCTAssertThrowsErrorAsync(try await transport.fetchChanges(since: nil)) { _ in }
+        let provisional = await transport.provisionalFetchToken
+        XCTAssertNil(provisional)
     }
 }
 

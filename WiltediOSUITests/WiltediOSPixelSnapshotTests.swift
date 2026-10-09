@@ -1,4 +1,5 @@
 import UIKit
+import Vision
 import XCTest
 
 /// Pixel coverage for the production `LibraryRoot`. Captures normalize simulator density while keeping the rendered
@@ -82,7 +83,63 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         }
         // Let the menu dismissal, sheet presentation and list layout finish before the capture.
         Thread.sleep(forTimeInterval: 1.5)
-        return normalized(app.screenshot().image)
+        let screenshot = app.screenshot().image
+        let attachment = XCTAttachment(image: screenshot)
+        attachment.name = "shipping-\(screen)-\(dark ? "dark" : "light")"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        assertShippingFacts(screen, app: app, image: screenshot)
+        return normalized(screenshot)
+    }
+
+    /// Reads the actual rendered pixels: accessibility labels alone can conceal clipped text.
+    private func assertShippingFacts(_ screen: LibraryScreen, app: XCUIApplication, image: UIImage) {
+        guard screen == .larder || screen == .settings else { return }
+        do {
+            func assertPaintedLine(_ expected: String, frame: CGRect) throws {
+                let bounds = CGRect(origin: .zero, size: image.size)
+                XCTAssertTrue(bounds.contains(frame), "Factual text stays inside the shipping screen")
+                let region = frame.insetBy(dx: -2, dy: -3).intersection(bounds)
+                let scale = CGFloat(try XCTUnwrap(image.cgImage).width) / image.size.width
+                let crop = try XCTUnwrap(image.cgImage?.cropping(to: CGRect(
+                    x: region.minX * scale, y: region.minY * scale,
+                    width: region.width * scale, height: region.height * scale).integral))
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                request.recognitionLanguages = ["en-US"]
+                request.usesLanguageCorrection = false
+                try VNImageRequestHandler(cgImage: crop, options: [:]).perform([request])
+                let lines = (request.results ?? []).sorted { $0.boundingBox.minX < $1.boundingBox.minX }
+                let text = lines.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                func compact(_ text: String) -> String {
+                    text.lowercased().filter { $0.isLetter || $0.isNumber }
+                }
+                XCTAssertTrue(compact(text).contains(compact(expected)),
+                    "The complete factual text must be painted: expected \(expected), pixels \(text)")
+                let centers = lines.map { $0.boundingBox.midY * region.height }
+                XCTAssertLessThanOrEqual((centers.max() ?? 0) - (centers.min() ?? 0), 6,
+                    "Recognized tokens belong to one painted line, including a separately recognized year")
+            }
+            if screen == .larder {
+                // Frame-bound pixels prove each date, including the longer second show's row.
+                for episode in 1...3 {
+                    let metadata = app.descendants(matching: .any)["wilted-library-meta-fixture-episode-\(episode)"].firstMatch
+                    XCTAssertTrue(metadata.exists)
+                    try assertPaintedLine("Nov 14, 2023", frame: metadata.frame)
+                }
+            } else {
+                let value = app.staticTexts["wilted-library-settings-cache-size"]
+                XCTAssertTrue(value.exists)
+                let label = app.staticTexts["Downloaded audio"].firstMatch
+                XCTAssertTrue(label.exists)
+                XCTAssertGreaterThanOrEqual(value.frame.minY, label.frame.maxY,
+                    "Storage paints its value below the label in its own full-width line")
+                try assertPaintedLine("Downloaded audio", frame: label.frame)
+                try assertPaintedLine(value.label, frame: value.frame)
+            }
+        } catch {
+            XCTFail("Shipping factual layout could not be verified: \(error)")
+        }
     }
 
     private func normalized(_ image: UIImage) -> UIImage {

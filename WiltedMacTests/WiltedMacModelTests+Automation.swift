@@ -38,8 +38,7 @@ extension WiltedMacModelTests {
     }
 
     func testAutomaticAdmissionStartsImmediatePreparation() async throws {
-        let (directory, model, episode) = try automationFixture("automatic-immediate")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("automatic-immediate")
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
             transcriptPolicy: .alwaysTranscribe, removeAds: false
@@ -54,8 +53,7 @@ extension WiltedMacModelTests {
     }
 
     func testAutomaticAdmissionSkipsPreparationUnderManualPolicy() throws {
-        let (directory, model, episode) = try automationFixture("automatic-manual")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("automatic-manual")
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
             transcriptPolicy: .alwaysTranscribe, removeAds: false
@@ -75,8 +73,7 @@ extension WiltedMacModelTests {
     /// `isRunning` true, so the row is indistinguishable from one actually
     /// being prepared unless something else answers the question.
     func testADeferredEpisodeIsDistinguishableFromOneBeingPrepared() throws {
-        let (directory, model, episode) = try automationFixture("deferred-is-distinguishable")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("deferred-is-distinguishable")
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual,
             processingPolicy: .offPeak(try offPeakWindow()),
@@ -97,8 +94,7 @@ extension WiltedMacModelTests {
     /// should not have to edit a Settings policy and wait for the next
     /// re-evaluation to get this one episode prepared.
     func testPreparingADeferredEpisodeNowTakesItOutOfTheOffPeakQueue() throws {
-        let (directory, model, episode) = try automationFixture("prepare-now-overrides")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("prepare-now-overrides")
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual,
             processingPolicy: .offPeak(try offPeakWindow()),
@@ -122,7 +118,6 @@ extension WiltedMacModelTests {
     /// first render and the control never appeared.
     func testADeferredFixtureLaunchStillHoldsItsDeferralAfterInitialisation() async throws {
         let directory = temporaryDirectory("deferred-fixture-survives-init")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
                         "--wilted-ui-fixture-deferred"],
@@ -154,16 +149,14 @@ extension WiltedMacModelTests {
     /// An episode nothing deferred has no deferral to override, and saying so
     /// keeps the control from appearing to do something on a row it cannot act on.
     func testPreparingANonDeferredEpisodeNowReportsThatItDidNothing() throws {
-        let (directory, model, episode) = try automationFixture("prepare-now-no-deferral")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("prepare-now-no-deferral")
 
         XCTAssertFalse(model.prepareDeferredEpisodeNow(episode))
         XCTAssertTrue(model.preparationQueue.isEmpty)
     }
 
     func testSkippingAnEpisodeGivesUpItsPlaceInThePreparationQueue() throws {
-        let (directory, model, episode) = try automationFixture("skip-leaves-queue")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("skip-leaves-queue")
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual,
             processingPolicy: .offPeak(try offPeakWindow()),
@@ -180,8 +173,7 @@ extension WiltedMacModelTests {
     }
 
     func testOffPeakAdmissionKeepsItsOriginalWindowAndSnapshotUntilEligible() async throws {
-        let (directory, model, episode) = try automationFixture("automatic-off-peak")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("automatic-off-peak")
         let originalWindow = try offPeakWindow()
         let originalSettings = WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .offPeak(originalWindow),
@@ -223,8 +215,7 @@ extension WiltedMacModelTests {
     /// policy snapshot, so the job came back under whatever Settings said at
     /// the time rather than what it was admitted with.
     func testAQueuedOffPeakJobCanBeRunWithoutCancellingIt() async throws {
-        let (directory, model, episode) = try automationFixture("off-peak-prepare-now")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("off-peak-prepare-now")
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual,
             processingPolicy: .offPeak(try offPeakWindow()),
@@ -259,8 +250,7 @@ extension WiltedMacModelTests {
     /// single-run admission gate says "Queued" too, and starting it early would
     /// run two preparations at once, which is what the gate is for.
     func testARowThatIsNotWaitingOnTheClockIsNotOfferedTheButton() throws {
-        let (directory, model, episode) = try automationFixture("off-peak-not-offered")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, model, episode) = try automationFixture("off-peak-not-offered")
         XCTAssertFalse(model.isDeferredToOffPeak(episode.id),
                        "nothing is deferred before anything is admitted")
 
@@ -275,7 +265,6 @@ extension WiltedMacModelTests {
     /// capture harness rather than re-argued from scratch.
     func testStartingAnEpisodeWhileAnArticlePlaysSwitchesCleanly() async throws {
         let directory = temporaryDirectory("article-to-episode")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: directory,
@@ -331,7 +320,6 @@ extension WiltedMacModelTests {
         // it would lose every other preference saved beside it.
         let preferences = try automationSettingsPreferences()
         let directory = temporaryDirectory("blocked-transcript-policy")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory, preferences: preferences)
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,

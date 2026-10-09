@@ -53,11 +53,11 @@ public actor PodcastPreparationPipeline {
     /// The worker is part of the semantic pipeline even though it lives in a
     /// separate Python source tree. Update this alongside the fingerprint when
     /// that worker changes.
-    public static let workerSourceHash = "sha256:097a493311722ea2dacb74c82e07ba4881c438dadca336b09ad59702ca4c1728"
+    public static let workerSourceHash = "sha256:508da7fe649ee45c9b61e111a7d48076a882e376e745affd00b54cadd599d4de"
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:f7111a1301431d7ed3427abf3f37911e7f8672163f782b93e41d1924d8210311"
+    public static let pipelineSourceHash = "sha256:f15ac740adec36a0982e57f7a80fbdd6bfcd7f3e45949b216730b5cb8b97b873"
 
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,

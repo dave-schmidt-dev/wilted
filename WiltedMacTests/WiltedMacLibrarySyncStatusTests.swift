@@ -12,12 +12,17 @@ private final class LedgerCounts: @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
     private var failing = false
+    private var publicationFailing = false
     func bump(_ name: String, by amount: Int = 1) { lock.withLock { counts[name, default: 0] += amount } }
     func count(_ name: String) -> Int { lock.withLock { counts[name] ?? 0 } }
     var media: Int { ["publishMedia", "mediaOffers", "fetchMedia", "removeMedia"].map(count).reduce(0, +) }
     var pushFails: Bool {
         get { lock.withLock { failing } }
         set { lock.withLock { failing = newValue } }
+    }
+    var publicationFails: Bool {
+        get { lock.withLock { publicationFailing } }
+        set { lock.withLock { publicationFailing = newValue } }
     }
 }
 
@@ -53,6 +58,12 @@ private struct LedgerTransport: LibraryTransport {
         throw Offline()
     }
     func removeMedia(entryID: ItemID) async throws { counts.bump("removeMedia") }
+    func publishPublication(_ publication: LibraryPublication) async throws {
+        counts.bump("publishPublication")
+        if counts.publicationFails { throw Offline() }
+        try await inner.publishPublication(publication)
+    }
+    func readPublication() async throws -> LibraryPublication? { try await inner.readPublication() }
 }
 
 private actor ScriptedSource: LibraryStateSource {
@@ -285,7 +296,7 @@ final class WiltedMacLibrarySyncStatusTests: XCTestCase {
         let (model, store) = try await launch("library-status-review")
         try await seed(store)
         let fixture = WiltedMacLibraryAccountFixture()
-        let (_, transport, counts) = ledger("mac-review")
+        let (_, transport, counts) = ledger(model.libraryDeviceID())
         XCTAssertTrue(model.startLibrarySyncIfEnabled(
             environment: flagOn, transport: transport, debounce: .milliseconds(10), account: fixture.source))
         XCTAssertEqual(model.librarySyncStatus.phase, .awaitingAccount)
@@ -299,6 +310,60 @@ final class WiltedMacLibrarySyncStatusTests: XCTestCase {
         XCTAssertEqual(model.libraryAccountStatus, .active)
         try await eventually("the reviewed library's first send") { model.librarySyncStatus.phase == .sent }
         XCTAssertFalse(model.librarySyncActivity.accountReviewed, "the acknowledged send replaces the review note")
+        await shut(model)
+    }
+
+    func testAccountReviewedReceiptRetrySettlesTheRealOwnerStatus() async throws {
+        let (model, store) = try await launch("library-status-receipt-retry")
+        try await seed(store)
+        let fixture = WiltedMacLibraryAccountFixture()
+        let (server, transport, counts) = ledger(model.libraryDeviceID())
+        counts.publicationFails = true
+        XCTAssertTrue(model.startLibrarySyncIfEnabled(
+            environment: flagOn, transport: transport, debounce: .milliseconds(10), account: fixture.source))
+        fixture.signIn(recordName: "_status-receipt-retry-owner")
+        try await eventually("the held receipt-retry review") {
+            model.libraryAccountStatus == .reviewRequired(.unboundLibrary)
+        }
+        XCTAssertEqual(counts.count("push"), 0)
+        XCTAssertEqual(counts.count("publishPublication"), 0, "nothing publishes before review")
+        await model.reviewLibraryAccount().value
+        let controller = try XCTUnwrap(model.librarySyncController)
+        let owner = try XCTUnwrap(controller.account?.approvedPublicationOwner)
+        try await eventually("the controlled receipt failure") { model.librarySyncActivity.sendFailed }
+        let publicationStore = WiltedMacLibraryPublicationStore.store(store)
+        let failed = try await publicationStore.load(owner: owner)
+        let pending = try XCTUnwrap(failed.pending)
+        XCTAssertTrue(pending.contentAcknowledged)
+        XCTAssertTrue(pending.remaining.isEmpty)
+        XCTAssertNotNil(pending.publishedAt)
+        XCTAssertNil(failed.fulfilled)
+        let remoteBefore = try await transport.readPublication()
+        XCTAssertNil(remoteBefore)
+        XCTAssertEqual(counts.count("push"), 1, "content is acknowledged in one actual push")
+        XCTAssertEqual(counts.count("pushedChanges"), pending.captured.count)
+        XCTAssertGreaterThan(counts.count("publishPublication"), 0)
+        XCTAssertNotNil(controller.lastFailure)
+        XCTAssertTrue(model.librarySyncActivity.accountReviewed)
+        XCTAssertNil(model.librarySyncActivity.lastSentAt)
+        counts.publicationFails = false
+        let retry = try XCTUnwrap(model.syncLibraryNow())
+        await retry.value
+        let fulfilled = try await publicationStore.load(owner: owner)
+        let remoteAfter = try await transport.readPublication()
+        let expected = try XCTUnwrap(pending.receipt())
+        XCTAssertEqual(remoteAfter, expected, "retry fulfills the original receipt identity and date")
+        XCTAssertEqual(fulfilled.fulfilled, expected)
+        XCTAssertNil(fulfilled.pending)
+        XCTAssertEqual(counts.count("push"), 1, "receipt retry must not re-push acknowledged content")
+        XCTAssertEqual(counts.count("pushedChanges"), pending.captured.count)
+        XCTAssertFalse(model.librarySyncActivity.sendFailed)
+        XCTAssertNil(controller.lastFailure)
+        XCTAssertEqual(model.librarySyncActivity.publication, expected)
+        XCTAssertEqual(model.librarySyncActivity.publicationOwner, owner)
+        XCTAssertFalse(model.librarySyncActivity.accountReviewed, "fulfilled retry settles the review note")
+        XCTAssertNotNil(model.librarySyncActivity.lastSentAt, "the original acknowledged send must be reported")
+        XCTAssertEqual(model.librarySyncStatus.phase, .sent)
         await shut(model)
     }
 

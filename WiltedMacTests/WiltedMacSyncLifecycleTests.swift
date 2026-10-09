@@ -108,7 +108,7 @@ private actor SyncFactoryProbe {
 @MainActor
 final class WiltedMacSyncLifecycleTests: XCTestCase {
     private func storeURL(_ name: String = #function) -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("wilted-mac-sync-\(name)-\(UUID().uuidString)").appendingPathComponent("library.sqlite")
+        wiltedTemporaryDirectory("sync-\(name)").appendingPathComponent("library.sqlite")
     }
 
     private func article(_ suffix: String = "article") throws -> Article {
@@ -132,7 +132,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testObservabilityDefaultsToUnavailableIdentityAndRestoresTimestamps() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let store = try LocalLibraryStore(url: url)
         let fetched = Timestamp(Date(timeIntervalSince1970: 1_700_000_100))
         let sent = Timestamp(Date(timeIntervalSince1970: 1_700_000_200))
@@ -149,7 +149,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testRefreshReturnsWithCurrentObservability() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let store = try LocalLibraryStore(url: url)
         let lifecycle = lifecycle(store, transport: LifecycleFakeTransport(
             batch: try SyncFetchBatch(generationID: "observability-fetch", records: [], engineState: Data([1]))
@@ -164,7 +164,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testUploadReturnsWithCurrentObservability() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let store = try LocalLibraryStore(url: url)
         let lifecycle = lifecycle(store, transport: LifecycleFakeTransport(
             batch: try SyncFetchBatch(generationID: "observability-upload", records: [], engineState: Data([1]))
@@ -182,7 +182,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testQueuesItemRevisionAndPlaybackThenUploads() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article(); let revisionID = try RevisionID(rawValue: "revision-mac")
         let bytes = Data("mac-media".utf8)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -208,7 +208,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testQueuesManifestAndChunkRecordsWithoutCatalogAudioAsset() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("chunked-publication")
         let revisionID = try RevisionID(rawValue: "revision-chunked-publication")
         let bytes = Data("chunked-mac-media".utf8)
@@ -240,7 +240,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testRetryingChunkedPublicationIsIdempotent() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("chunked-retry")
         let revisionID = try RevisionID(rawValue: "revision-chunked-retry")
         let bytes = Data("retryable-chunked-media".utf8)
@@ -267,7 +267,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testAutomaticUploadCoalescesTriggersAndDrainsQueuedPublication() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("automatic-publication")
         let revisionID = try RevisionID(rawValue: "revision-automatic-publication")
         let batch = try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
@@ -294,7 +294,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testAutomaticUploadSchedulesFollowUpForWorkCompletedDuringActiveSend() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let first = try article("automatic-first")
         let second = try article("automatic-second")
         let batch = try SyncFetchBatch(generationID: "empty", records: [], engineState: Data([1]))
@@ -326,9 +326,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testStartupReconciliationQueuesReadyRevisionAndAutomaticallySends() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wilted-mac-startup-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = wiltedTemporaryDirectory("startup")
         let libraryURL = root.appendingPathComponent("library.sqlite")
         let mediaURL = root.appendingPathComponent("media.m4a")
         let item = try article("startup-reconciliation")
@@ -386,9 +384,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testStartupReconciliationSendsAlreadyQueuedManifestAndChunks() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wilted-mac-startup-pending-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = wiltedTemporaryDirectory("startup-pending")
         let libraryURL = root.appendingPathComponent("library.sqlite")
         let mediaURL = root.appendingPathComponent("media.m4a")
         let item = try article("startup-pending")
@@ -445,9 +441,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testStartupReconciliationRepairsSupersededReadyItemPointerWithoutRequeueingChunks() async throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wilted-mac-startup-item-pointer-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        let root = wiltedTemporaryDirectory("startup-item-pointer")
         let libraryURL = root.appendingPathComponent("library.sqlite")
         let mediaURL = root.appendingPathComponent("media.m4a")
         let item = try article("startup-item-pointer")
@@ -551,7 +545,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
         // queueRevision's Result is discarded by the model, so the status is the only
         // surface a failure can reach. Without a terminal status the panel sits on
         // "Queued WiltedRevision publication." forever and reads as still working.
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("unqueueable")
         let revisionID = try RevisionID(rawValue: "revision-unqueueable")
         let hash = "sha256:" + SHA256.hash(data: Data("absent-media".utf8)).map { String(format: "%02x", $0) }.joined()
@@ -571,7 +565,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testRefreshAndUploadExposeOfflineErrorCancellationQuarantineAndRelaunchState() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("relaunch")
         let itemRecord = try WiltedRecordCodec().encode(article: item, currentRevisionID: try RevisionID(rawValue: "revision-relaunch"))
         let batch = try SyncFetchBatch(generationID: "generation", records: [itemRecord], engineState: Data([2]))
@@ -623,7 +617,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testAccountReviewResetsTheExistingTransportBeforeNextRefresh() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("account-review")
         let revisionID = try RevisionID(rawValue: "revision-account-review")
         let record = try WiltedRecordCodec().encode(article: item, currentRevisionID: revisionID)
@@ -665,7 +659,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testAccountReviewReleasesQuarantinedWorkSoTheNextUploadDrainsIt() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("account-release")
         let revisionID = try RevisionID(rawValue: "revision-account-release")
         let recordID = try WiltedRecordID.item(item.itemID)
@@ -700,7 +694,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testRelaunchKeepsTheAccountReviewReachableAndNeverReportsABlockedUploadAsDone() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("relaunch-quarantine")
         let revisionID = try RevisionID(rawValue: "revision-relaunch-quarantine")
         let recordID = try WiltedRecordID.item(item.itemID)
@@ -751,7 +745,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testRestoringTheQuarantineIgnoresAGenuineRemoteConflict() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("remote-conflict")
         let revisionID = try RevisionID(rawValue: "revision-remote-conflict")
         let record = try WiltedRecordCodec().encode(article: item, currentRevisionID: revisionID)
@@ -778,7 +772,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testAPartlyBlockedUploadNamesWhatMovedAndWhatIsStillHeld() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let held = try article("partly-held")
         let heldRecord = try WiltedRecordCodec().encode(article: held, currentRevisionID: try RevisionID(rawValue: "revision-partly-held"))
         let clean = try article("partly-clean")
@@ -807,7 +801,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testAnAdoptedFirstSignInRecordsTheOwnerAndLetsTheUploadFinish() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("adopted")
         let recordID = try WiltedRecordID.item(item.itemID)
         let batch = try SyncFetchBatch(generationID: "adopted", records: [], engineState: Data([3]))
@@ -838,7 +832,7 @@ final class WiltedMacSyncLifecycleTests: XCTestCase {
     }
 
     func testASignInTheAdapterFlaggedForReviewStillQuarantinesAndStaysReviewable() async throws {
-        let url = storeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let url = storeURL()
         let item = try article("flagged")
         let recordID = try WiltedRecordID.item(item.itemID)
         let batch = try SyncFetchBatch(generationID: "flagged", records: [], engineState: Data([3]))

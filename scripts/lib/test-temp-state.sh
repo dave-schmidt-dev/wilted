@@ -58,6 +58,7 @@ wilted_temp_cleanup_native_gate() {
   wilted_stop_active_ui_lock
   wilted_stop_active_supervisor
   wilted_finish_logger || true
+  if declare -F wilted_gate_stop_parallel >/dev/null; then wilted_gate_stop_parallel; fi
   cleanup_mac_test_hosts
   wilted_temp_remove_owned_child "$root" "$parent" wilted-native-gate. || true
   wilted_temp_finish_audit "$parent" "$audit" "$audit/parent-before.json" native-parent "$audit_parent" native-temp-audit. || true
@@ -212,7 +213,11 @@ _wilted_full_run_worker() {
       rmdir "$wilted_full_run_recovery"
       wilted_full_run_recovery_owned=0
     fi
-    (( wilted_full_run_attempt += 1 )); (( wilted_full_run_attempt <= 300 )) || exit 1
+    (( wilted_full_run_attempt += 1 ))
+    if [[ -n "${WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS:-}" ]]; then
+      [[ "$WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || exit 2
+      (( wilted_full_run_attempt <= WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS )) || exit 1
+    fi
     (( wilted_full_run_attempt % 10 == 0 )) && printf 'temp.full-run.wait seconds=%s\n' "$wilted_full_run_attempt" >&2
     sleep 1
   done
@@ -227,7 +232,9 @@ _wilted_full_run_worker() {
   wilted_full_run_runner="$wilted_full_run_repo/scripts/run-bounded.py"
   [[ -f "$wilted_full_run_runner" ]] || exit 1
   wilted_full_run_launching=1
-  WILTED_FULL_RUN_LOCK_HELD=1 python3 "$wilted_full_run_runner" --timeout-seconds "${WILTED_FULL_RUN_TIMEOUT_SECONDS:-1800}" -- "$@" &
+  local budget_args=(--no-timeout)
+  if [[ -n "${WILTED_FULL_RUN_TIMEOUT_SECONDS:-}" ]]; then budget_args=(--timeout-seconds "$WILTED_FULL_RUN_TIMEOUT_SECONDS"); fi
+  WILTED_FULL_RUN_LOCK_HELD=1 python3 "$wilted_full_run_runner" "${budget_args[@]}" -- "$@" &
   wilted_full_run_supervisor=$!
   wilted_full_run_launching=0
   (( wilted_full_run_signal_status == 0 )) || exit "$wilted_full_run_signal_status"

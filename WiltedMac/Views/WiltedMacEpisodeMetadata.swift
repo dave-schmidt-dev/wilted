@@ -11,22 +11,19 @@ struct WiltedMacEpisodePresentation: Equatable, Sendable {
     let sourceDurationSeconds: TimeInterval?
     let playableDurationSeconds: TimeInterval?
 
-    var showAndPublicationLabel: String {
+    var showLabel: String {
         let show = showTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let showLabel = (show?.isEmpty == false ? show! : "Show unknown")
-        let publicationLabel = publishedAt?.formatted(date: .numeric, time: .omitted)
-            ?? "Publication date unknown"
-        return "\(showLabel) · \(publicationLabel)"
+        return show?.isEmpty == false ? show! : "Show unknown"
     }
 
-    /// The one-line subtitle the players share. A missing publication date is
-    /// stated, never replaced by the date the episode reached the Larder.
-    var playerSubtitleLabel: String {
-        let show = showTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let showLabel = (show?.isEmpty == false ? show! : "Show unknown")
-        let dateLabel = publishedAt?.formatted(date: .abbreviated, time: .omitted) ?? "Date unknown"
-        return "\(showLabel) · \(dateLabel)"
+    /// The feed's publication date, shared by rows, notes and every player.
+    var publicationLabel: String {
+        publishedAt?.formatted(date: .numeric, time: .omitted) ?? "Publication date unknown"
     }
+
+    var showAndPublicationLabel: String { "\(showLabel) - \(publicationLabel)" }
+
+    var playerSubtitleLabel: String { showAndPublicationLabel }
 
     var sourceDurationLabel: String {
         "Source duration · \(Self.durationLabel(sourceDurationSeconds))"
@@ -37,12 +34,7 @@ struct WiltedMacEpisodePresentation: Equatable, Sendable {
     }
 
     var larderRowLabel: String {
-        let show = showTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let showLabel = (show?.isEmpty == false ? show! : "Show unknown")
-        let duration = Self.durationLabel(sourceDurationSeconds)
-        let publicationLabel = publishedAt?.formatted(date: .numeric, time: .omitted)
-            ?? "Publication date unknown"
-        return "\(showLabel) - \(duration) - \(publicationLabel)"
+        "\(showLabel) - \(Self.durationLabel(sourceDurationSeconds)) - \(publicationLabel)"
     }
 
     var larderPresentationLabel: String {
@@ -107,7 +99,17 @@ struct WiltedMacEpisodeMetadata: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if isLarder {
-                Text(presentation.larderRowLabel)
+                ViewThatFits(in: .horizontal) {
+                    Text(presentation.larderRowLabel).fixedSize(horizontal: true, vertical: false)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 0) {
+                            Text(presentation.showLabel).lineLimit(1)
+                            Text(" - \(WiltedMacEpisodePresentation.durationLabel(presentation.sourceDurationSeconds))")
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        Text(presentation.publicationLabel).fixedSize(horizontal: true, vertical: false)
+                    }
+                }
             } else {
                 Text(presentation.showAndPublicationLabel)
                 Text(presentation.sourceDurationLabel)

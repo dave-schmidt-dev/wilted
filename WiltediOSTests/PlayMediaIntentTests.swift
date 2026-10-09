@@ -123,6 +123,71 @@ final class PlayMediaIntentTests: XCTestCase {
         XCTAssertEqual(fallback?.id, a.id, "an episode no longer on the phone falls back to the search")
     }
 
+    func testHandleUsesEligibleResolutionForStaleAndMalformedChosenItems() async throws {
+        let eligible = try episode("eligible", "Garden Morning", "Garden Radio")
+        for chosenID in ["removed", "queued-but-not-on-phone", ""] {
+            let target = install([eligible])
+            let chosen = INMediaItem(identifier: chosenID, title: "Stale choice", type: .podcastEpisode, artwork: nil, artist: "Other Radio")
+            let request = intent(search: search(type: .podcastEpisode, name: eligible.title, artist: eligible.showTitle), items: [chosen])
+            let resolved = await PlayMediaIntentHandler.resolvedEpisode(for: request)
+            let response = await PlayMediaIntentHandler().handle(intent: request)
+            XCTAssertEqual(resolved?.id, eligible.id)
+            XCTAssertEqual(response.code, .success)
+            XCTAssertEqual(target.performed, [.play(eligible.id)], "handling must agree with current eligible resolution")
+        }
+    }
+
+    func testEligibleChosenItemStillWinsOverDifferentSearch() async throws {
+        let a = try episode("a", "Garden Morning", "Garden Radio")
+        let b = try episode("b", "River Walk", "Outside Radio")
+        let target = install([a, b])
+        let chosen = INMediaItem(identifier: b.id.rawValue, title: b.title, type: .podcastEpisode, artwork: nil, artist: b.showTitle)
+        let request = intent(search: search(type: .podcastEpisode, name: a.title, artist: a.showTitle), items: [chosen])
+        let resolved = await PlayMediaIntentHandler.resolvedEpisode(for: request)
+        let response = await PlayMediaIntentHandler().handle(intent: request)
+        XCTAssertEqual(resolved?.id, b.id)
+        XCTAssertEqual(response.code, .success)
+        XCTAssertEqual(target.performed, [.play(b.id)])
+    }
+
+    func testStaleChosenItemWithUnknownNamedShowFailsWithoutUnrelatedAction() async throws {
+        let target = install([try episode("a", "Garden Morning", "Garden Radio")])
+        let stale = INMediaItem(identifier: "removed", title: "Stale choice", type: .podcastEpisode, artwork: nil, artist: nil)
+        let request = intent(search: search(type: .podcastShow, name: "Unknown Radio"), items: [stale])
+        let resolved = await PlayMediaIntentHandler.resolvedEpisode(for: request)
+        let response = await PlayMediaIntentHandler().handle(intent: request)
+        XCTAssertNil(resolved)
+        XCTAssertEqual(response.code, .failure)
+        XCTAssertTrue(target.performed.isEmpty)
+    }
+
+    func testStaleChosenNamelessRequestCannotFallBackToUnrelatedDefault() async throws {
+        for chosenID in ["removed", "", "   "] {
+            for query in [nil, search(name: "   ", artist: "   "), search(sort: .newest)] {
+                let target = install([try episode("eligible", "Garden Morning", "Garden Radio")])
+                let chosen = INMediaItem(identifier: chosenID, title: "Stale", type: .podcastEpisode, artwork: nil, artist: nil)
+                let request = intent(search: query, items: [chosen])
+                let resolved = await PlayMediaIntentHandler.resolvedEpisode(for: request)
+                let resolution = await PlayMediaIntentHandler().resolveMediaItems(for: request)
+                let response = await PlayMediaIntentHandler().handle(intent: request)
+                XCTAssertNil(resolved)
+                XCTAssertEqual(resolution.count, 1)
+                XCTAssertEqual(response.code, .failure)
+                XCTAssertTrue(target.performed.isEmpty)
+            }
+        }
+    }
+
+    func testGenericRequestWithoutChosenIdentifierStillPlaysDefault() async throws {
+        for query in [nil, search(name: "   "), search(sort: .newest)] {
+            let episode = try episode("eligible", "Garden Morning", "Garden Radio")
+            let target = install([episode])
+            let response = await PlayMediaIntentHandler().handle(intent: intent(search: query))
+            XCTAssertEqual(response.code, .success)
+            XCTAssertEqual(target.performed, [.play(episode.id)])
+        }
+    }
+
     // MARK: wiring
 
     func testAppDelegateRoutesPlayMediaIntentsToTheHandler() {

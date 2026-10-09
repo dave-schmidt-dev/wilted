@@ -18,6 +18,7 @@ public struct ThrottledLibraryTransport: LibraryTransport {
     }
 
     public func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    public func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
 
     public func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
         try await gate.run { try await inner.fetchChanges(since: token) }
@@ -81,6 +82,14 @@ public struct ThrottledLibraryTransport: LibraryTransport {
 
     public func readStats() async throws -> LibraryStats? {
         try await gate.run { try await inner.readStats() }
+    }
+
+    public func publishPublication(_ publication: LibraryPublication) async throws {
+        try await gate.run { try await inner.publishPublication(publication) }
+    }
+
+    public func readPublication() async throws -> LibraryPublication? {
+        try await gate.run { try await inner.readPublication() }
     }
 
     public func publishTranscript(_ transcript: LibraryTranscript) async throws {

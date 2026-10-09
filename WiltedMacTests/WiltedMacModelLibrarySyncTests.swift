@@ -59,6 +59,48 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTFail("Timed out waiting for \(what)")
     }
 
+    func testManagedPublisherWiresStableDeviceAndDurableApprovedOwnerReceipt() async throws {
+        let (model, store) = try await bootstrapped("publication-model-managed")
+        let device = model.libraryDeviceID(); let server = InMemoryLibraryServer(writerDeviceID: device)
+        let fixture = WiltedMacLibraryAccountFixture()
+        XCTAssertTrue(model.startLibrarySyncIfEnabled(environment: flagOn,
+            transport: InMemoryLibraryTransport(deviceID: device, server: server), debounce: .milliseconds(20), account: fixture.source))
+        fixture.signIn(recordName: "publication-model-owner")
+        try await eventually("approved") { model.libraryAccountStatus == .active }
+        let controller = try XCTUnwrap(model.librarySyncController); await controller.tickRound()
+        _ = try await seedEpisodes(store); await controller.tickRound()
+        let observed = try await model.fulfilledLibraryPublication()
+        let owner = CloudKitAccountIdentity.token(for: "publication-model-owner")
+        let durable = try await WiltedMacLibraryPublicationStore.store(store).load(owner: owner)
+        XCTAssertNotNil(observed); XCTAssertEqual(observed?.writerDeviceID, device); XCTAssertEqual(observed, durable.fulfilled)
+        model.stopLibrarySync(); await model.waitForLibrarySyncShutdown()
+    }
+    func testStoppedManagedPublisherReleasesItsApprovedAccountOwner() async throws {
+        var model: WiltedMacModel? = try await bootstrapped("publication-owner-lifetime").0
+        let device = try XCTUnwrap(model).libraryDeviceID()
+        let fixture = WiltedMacLibraryAccountFixture()
+        XCTAssertTrue(try XCTUnwrap(model).startLibrarySyncIfEnabled(environment: flagOn,
+            transport: InMemoryLibraryTransport(deviceID: device, server: InMemoryLibraryServer(writerDeviceID: device)),
+            debounce: .milliseconds(20), account: fixture.source))
+        weak var account = model?.libraryAccount; let publisher = try XCTUnwrap(model?.librarySyncController?.publisher)
+        XCTAssertNotNil(account)
+        model?.stopLibrarySync(); await model?.waitForLibrarySyncShutdown(); model = nil
+        await Task.yield()
+        XCTAssertNil(account, "Stopped publisher must not retain its approved owner through willOpen")
+        do { _ = try await publisher.fulfilledPublication(); XCTFail("Released owner must fail closed") }
+        catch { XCTAssertEqual(error as? WiltedMacLibraryAccountError, .notApproved) }
+    }
+    func testUnmanagedFixturePublishesContentWithoutInventingApprovedAuthorEvidence() async throws {
+        let (model, store) = try await bootstrapped("publication-model-unmanaged"); _ = try await seedEpisodes(store)
+        let server = InMemoryLibraryServer(writerDeviceID: "fixture")
+        XCTAssertTrue(model.startLibrarySyncIfEnabled(environment: flagOn,
+            transport: InMemoryLibraryTransport(deviceID: "fixture", server: server), debounce: .milliseconds(20)))
+        await model.librarySyncController?.tickRound()
+        let observed = try await model.fulfilledLibraryPublication(); let content = await server.currentSnapshot
+        XCTAssertNil(observed); XCTAssertEqual(content.entries.count, 3)
+        model.stopLibrarySync(); await model.waitForLibrarySyncShutdown()
+    }
+
     // MARK: State source
 
     func testStateSourceMapsFeedsEpisodesQueueRemovalAndListening() async throws {
@@ -376,10 +418,11 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
     /// The real CloudKit library transport over an engine that never reaches iCloud: the account
     /// events CKSyncEngine reports drive the binding, and recovery clears the transport itself.
     func testTheCloudKitTransportIsAlwaysManagedAndRecoversThroughItsOwnReset() async throws {
-        let driver = WiltedMacInertEngineDriver()
+        let events = WiltedMacInertEngineEvents()
+        let driver = WiltedMacInertEngineDriver(events: events)
         let transport = try CloudKitLibraryTransport(
             deviceID: "mac-test", isLibraryWriter: true, driver: driver,
-            driverFactory: { _ in WiltedMacInertEngineDriver() }, outbox: CloudKitLibraryOutbox())
+            driverFactory: { _ in WiltedMacInertEngineDriver(events: events) }, outbox: CloudKitLibraryOutbox())
         XCTAssertNotNil(WiltedMacLibraryAccountSource.transport(transport), "a live transport is always managed")
 
         let (model, store) = try await liveBootstrapped("library-sync-cloudkit-account")
@@ -408,14 +451,33 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
 
 /// A CloudKit engine that never reaches iCloud: every operation fails, and the test injects the
 /// account events CKSyncEngine would report.
+/// The fixture must reach whichever fresh driver the transport now owns, just as an account
+/// change reaches newly constructed engines. Old epochs still get ignored by production code.
+private final class WiltedMacInertEngineEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [AsyncStream<CloudKitEngineEvent>.Continuation] = []
+    func register(_ continuation: AsyncStream<CloudKitEngineEvent>.Continuation) {
+        lock.withLock { continuations.append(continuation) }
+    }
+    func emit(_ event: CloudKitEngineEvent) {
+        let targets = lock.withLock { continuations }
+        for target in targets { target.yield(event) }
+    }
+}
+
 private final class WiltedMacInertEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
     private struct Offline: Error {}
     private let stream: AsyncStream<CloudKitEngineEvent>
     private let continuation: AsyncStream<CloudKitEngineEvent>.Continuation
+    private let fixtureEvents: WiltedMacInertEngineEvents
 
-    init() { (stream, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream() }
+    init(events: WiltedMacInertEngineEvents) {
+        fixtureEvents = events
+        (stream, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream()
+        events.register(continuation)
+    }
 
-    func emit(_ event: CloudKitEngineEvent) { continuation.yield(event) }
+    func emit(_ event: CloudKitEngineEvent) { fixtureEvents.emit(event) }
 
     var events: AsyncStream<CloudKitEngineEvent> { get async { stream } }
     func ensureZone() async throws { throw Offline() }

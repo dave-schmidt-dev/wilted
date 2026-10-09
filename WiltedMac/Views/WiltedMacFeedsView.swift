@@ -44,10 +44,6 @@ struct WiltedMacFeedsView: View {
                 WiltedMacPodcastOperationMessage(model: model)
             }
             .id("feeds-refresh")
-            Text("New episodes from your subscriptions are undecided. Refresh only admits metadata; Keep moves an episode to Larder, where its next step becomes available.")
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
             addFeedControl.id("feeds-add")
             inbox.id("feeds-inbox")
             feedManagement.id("feeds-subscriptions")
@@ -374,20 +370,20 @@ struct WiltedMacFeedsView: View {
         }
     }
 
-    /// The subscription list itself, a per-feed switch, and unsubscribe. The
-    /// card also states the refresh and download policy, because an app with no
-    /// schedule at all should say so rather than let its absence read as a
-    /// setting the reader cannot find.
+    /// The single refresh and Keep explanation belongs to Subscriptions.
+    var refreshHelp: WiltedMacHelpContent {
+        WiltedMacHelpContent(title: "Subscriptions", text: WiltedScreenCopy.feedsPolicy)
+    }
+
     private var feedManagement: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text("Subscriptions")
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Text(WiltedScreenCopy.feedsPolicy)
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("wilted-podcast-feeds-policy")
+            HStack {
+                Text("Subscriptions")
+                    .wiltedFont(.title)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                WiltedMacHelpButton(content: refreshHelp, identifier: "wilted-podcast-feeds-policy")
+                Spacer()
+            }
             if model.withheldPodcastEpisodeCount > 0 {
                 Text(model.withheldPodcastEpisodeCount == 1
                      ? "1 older episode stayed in its feed."
@@ -421,18 +417,6 @@ struct WiltedMacFeedsView: View {
 
     /// What one feed currently contributes, in words rather than a bare count,
     /// because "1 episodes" in a shipping window reads as a defect.
-    ///
-    /// `count` comes from `WiltedMacModel.larderEpisodeCount(forFeedID:)`, the
-    /// same visible set every waiting and inbox row draws from, not the raw
-    /// snapshot count on the subscription -- that one includes retired and
-    /// hidden records no list draws.
-    private static func feedCountSummary(_ subscription: WiltedMacSubscription, count: Int) -> String {
-        let noun = count == 1 ? "episode" : "episodes"
-        return subscription.enabled
-            ? "\(count) \(noun) from this feed"
-            : "\(count) \(noun) kept, hidden"
-    }
-
     /// One feed's row.
     ///
     /// The text column claims the remaining width with a frame rather than a
@@ -452,13 +436,7 @@ struct WiltedMacFeedsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(Self.feedCountSummary(
-                    subscription,
-                    count: model.larderEpisodeCount(forFeedID: subscription.id)
-                ))
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
+                WiltedMacFeedCapacityLabel(board: policyBoard, subscription: subscription)
                 if let status = model.feedRowStatus(subscription.id) {
                     Text(status)
                         .wiltedFont(.utility)

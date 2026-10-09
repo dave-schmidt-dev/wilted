@@ -12,15 +12,15 @@ import XCTest
 /// handoff and media tests use: an in-memory Mac and phone, a file media cache and a fake engine.
 @MainActor
 final class LibraryVoiceTargetTests: XCTestCase {
-    private var scratch: URL!
-    private let server = InMemoryLibraryServer(writerDeviceID: "mac")
-    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
-    private lazy var phoneTransport = InMemoryLibraryTransport(deviceID: "phone", server: server)
-    private let sleeper = VoiceSleeper()
-    private let suite = "library-voice-target-tests"
-    private var versions: [LibraryRecordKey: UInt64] = [:]
-    private var localSeq: UInt64 = 0
-    private let payload = Data((0..<20_000).map { UInt8($0 % 251) })
+    var scratch: URL!
+    let server = InMemoryLibraryServer(writerDeviceID: "mac")
+    lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+    lazy var phoneTransport = InMemoryLibraryTransport(deviceID: "phone", server: server)
+    let sleeper = VoiceSleeper()
+    let suite = "library-voice-target-tests"
+    var versions: [LibraryRecordKey: UInt64] = [:]
+    var localSeq: UInt64 = 0
+    let payload = Data((0..<20_000).map { UInt8($0 % 251) })
 
     override func setUp() async throws {
         UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite)
@@ -35,100 +35,109 @@ final class LibraryVoiceTargetTests: XCTestCase {
         try? FileManager.default.removeItem(at: scratch)
     }
 
-    // MARK: fixtures
-
-    private struct Rig {
-        let target: LibraryVoiceTarget
-        let model: LibraryAppModel
-        let player: LibraryPlayer
-        let engine: VoiceFakeEngine
-        let cache: GatedMediaCache
-        let cachedURLs: [ItemID: URL]
-    }
-
-    private func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
-
-    private func hash(_ data: Data) -> String {
-        MediaHash.prefix + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func macPush(_ changes: [LibraryChange]) async throws {
-        let pending = changes.map { change -> PendingLibraryChange in
-            localSeq += 1
-            return PendingLibraryChange(localSeq: localSeq, change: change, baseVersion: versions[change.key] ?? 0)
+    func testResumeAndRestartRejectMissingCachedBytesBeforePlayerEffect() async throws {
+        for action in [VoiceAction.resume, .restart] {
+            let rig = try await loadedRig()
+            try await rig.cache.remove(entryID: id("a"))
+            let outcome = await rig.target.perform(action)
+            XCTAssertEqual(outcome, .failed)
+            XCTAssertFalse(rig.engine.isPlaying)
+            XCTAssertEqual(rig.player.position, 120, "failed restart must not seek before validation")
+            rig.player.stop()
         }
-        let result = try await mac.push(changes: pending)
-        XCTAssertTrue(result.failures.isEmpty)
-        for ack in result.acknowledged { versions[ack.key] = ack.version }
     }
 
-    /// The Mac's queue: shows, episodes and their slot order.
-    private func seed(shows: [ShowSpec], episodes: [EpisodeSpec]) async throws {
-        var changes = shows.map { LibraryChange.source(LibrarySource(id: id($0.raw), kind: .podcastFeed, title: $0.title)) }
-        for spec in episodes {
-            changes.append(.entry(try LibraryEntry(
-                id: id(spec.raw), kind: .podcastEpisode, sourceID: id(spec.show), title: spec.title, summary: "",
-                publishedAt: Date(timeIntervalSince1970: spec.published), durationSeconds: 600)))
-            changes.append(.slot(try QueueSlot(entryID: id(spec.raw), sortKey: spec.sortKey)))
+    func testResumeAndRestartRejectDeletedURLCapturedBeforeHeldLookupReturns() async throws {
+        for action in [VoiceAction.resume, .restart] {
+            let rig = try await loadedRig()
+            let original = try XCTUnwrap(rig.player.item?.fileURL)
+            XCTAssertEqual(try Data(contentsOf: original), payload)
+            await rig.cache.arm()
+            let spoken = Task { @MainActor in await rig.target.perform(action) }
+            try await eventually("loaded voice command held after capturing cached URL") { await rig.cache.isHeld }
+            try await rig.cache.remove(entryID: id("a"))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: original.path))
+            await rig.cache.release()
+            let outcome = await spoken.value
+            XCTAssertEqual(outcome, .failed)
+            XCTAssertFalse(rig.engine.isPlaying, "a stale cache answer cannot resume the retained engine")
+            XCTAssertEqual(rig.player.position, 120, "failed restart must not seek")
+            XCTAssertEqual(rig.engine.loadedURLs, [original])
+            rig.player.stop()
         }
-        try await macPush(changes)
     }
 
-    /// The Mac's stored position for a paused episode: what marks a row as started.
-    private func macPublishesProgress(_ raw: String, position: Double) async throws {
-        let record = try DevicePlaybackPosition(
-            deviceID: "mac", entryID: id(raw), revision: RevisionID(rawValue: "rev-1"),
-            positionSeconds: position, isPlaying: false, epoch: 1)
-        try await mac.publish(record, as: .progress)
-    }
-
-    private func seedStartedEpisodeA() async throws {
-        try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
-            EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
-        ])
-        try await macPublishesProgress("a", position: 100)
-    }
-
-    /// A phone whose media cache already holds `raws`, verified against the Mac's offer for them.
-    private func makeRig(cached raws: [String], sendsIntents: Bool = true) async throws -> Rig {
-        let files = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
-        let cache = GatedMediaCache(files)
-        var cachedURLs: [ItemID: URL] = [:]
-        for raw in raws {
-            let file = scratch.appendingPathComponent(UUID().uuidString)
-            try payload.write(to: file)
-            let offer = try LibraryMediaOffer(
-                entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: hash(payload),
-                byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 600)
-            cachedURLs[id(raw)] = try await files.adopt(verifiedFile: file, for: offer)
+    func testResumeAndRestartLoadActualReplacementRevisionURL() async throws {
+        for action in [VoiceAction.resume, .restart] {
+            let rig = try await loadedRig()
+            let original = try XCTUnwrap(rig.player.item?.fileURL)
+            let replacement = try await replaceCachedA(rig)
+            XCTAssertNotEqual(replacement, original)
+            let outcome = await rig.target.perform(action)
+            XCTAssertEqual(outcome, .done)
+            XCTAssertEqual(rig.player.item?.fileURL, replacement)
+            XCTAssertEqual(rig.engine.loadedURLs, [original, replacement])
+            XCTAssertTrue(rig.engine.isPlaying)
+            if action == .restart { XCTAssertEqual(rig.player.position, 0) }
+            rig.player.stop()
         }
-        let engine = VoiceFakeEngine()
-        let player = LibraryPlayer(
-            engine: engine, session: VoiceFakeSession(), nowPlaying: VoiceFakeNowPlaying(),
-            remoteCommands: VoiceFakeRemote(), sessionEvents: VoiceFakeEvents(), tickInterval: .seconds(3600))
-        let sleeper = sleeper
-        let model = LibraryAppModel(
-            transport: sendsIntents ? phoneTransport : SendFailingTransport(base: phoneTransport),
-            deviceID: "phone", mediaCache: cache,
-            mediaTiming: LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30)),
-            handoffTiming: LibraryHandoffTiming(
-                observeInterval: SyncCadence.phoneObserveInterval, sleep: { try await sleeper.sleep($0) }, settleSleep: { _ in }),
-            decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60),
-            preferences: UserDefaults(suiteName: suite)!, now: { Date(timeIntervalSince1970: 1_000) },
-            timeZone: TimeZone(identifier: "UTC")!)
-        model.attachPlayer(player)
-        await model.refresh()
-        return Rig(
-            target: LibraryVoiceTarget(model: model, player: player), model: model, player: player,
-            engine: engine, cache: cache, cachedURLs: cachedURLs)
     }
 
-    private func eventually(_ what: String, timeout: Duration = .seconds(5), _ condition: @MainActor () async -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while await !condition() {
-            if ContinuousClock.now >= deadline { return XCTFail("timed out waiting for \(what)") }
-            try await Task.sleep(for: .milliseconds(5))
+    func testRestartSupersededByDifferentSelectionDoesNotSeekNewItem() async throws {
+        let rig = try await loadedRig(twoEpisodes: true)
+        defer { rig.player.stop() }
+        await rig.cache.arm()
+        var finished = false
+        let restart = Task { @MainActor in
+            defer { finished = true }
+            return await rig.target.perform(.restart)
         }
+        try await eventually("restart validates cache or finishes") { await rig.cache.isHeld || finished }
+        guard await rig.cache.isHeld else {
+            _ = await restart.value
+            return XCTFail("restart must await shared cached-play validation")
+        }
+        let selected = await rig.target.perform(.play(id("b")))
+        XCTAssertEqual(selected, .done)
+        rig.player.seek(to: 75)
+        await rig.cache.release()
+        let outcome = await restart.value
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(rig.player.item?.entryID, id("b"))
+        XCTAssertEqual(rig.player.position, 75)
+        XCTAssertTrue(rig.engine.isPlaying)
+    }
+
+    func testFailedExplicitPlayDoesNotClaimSuccessFromAlreadyPlayingStaleEngine() async throws {
+        let rig = try await loadedRig()
+        defer { rig.player.stop() }
+        rig.player.play()
+        await settleVoiceRig(rig)
+        try await rig.cache.remove(entryID: id("a"))
+        let outcome = await rig.target.perform(.play(id("a")))
+        XCTAssertEqual(outcome, .failed, "missing-cache outcome is not success because old same-ID engine plays")
+    }
+
+    func testDeclinedExplicitPlayDoesNotClaimSuccessFromRemovedPlayingItem() async throws {
+        let rig = try await loadedRig()
+        let originalFile = try XCTUnwrap(rig.cachedURLs[id("a")])
+        defer { rig.player.stop() }
+        rig.player.play()
+        await settleVoiceRig(rig)
+        await rig.cache.arm()
+        let spoken = Task { @MainActor in await rig.target.perform(.play(self.id("a"))) }
+        try await eventually("explicit play inside cache") { await rig.cache.isHeld }
+        try await macPush([.slotRemoved(entryID: id("a"))])
+        await rig.model.refresh()
+        await rig.cache.release()
+        let outcome = await spoken.value
+        XCTAssertEqual(outcome, .failed, "declined removed entry must not succeed through same-ID playing fallback")
+        let cached = await rig.cache.cachedEntries()
+        XCTAssertNil(cached[id("a")], "confirmed removal revokes admitted inventory")
+        XCTAssertEqual(rig.model.media[id("a")], .notPrepared)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: originalFile.path))
+        XCTAssertEqual(try Data(contentsOf: originalFile), payload)
+        XCTAssertNil(rig.player.item)
     }
 
     // MARK: snapshot: downloaded
@@ -302,6 +311,66 @@ final class LibraryVoiceTargetTests: XCTestCase {
         XCTAssertTrue(rig.engine.isPlaying)
     }
 
+    /// Characterizes retained cached playback, not Siri routing or playback on an owner device.
+    func testRemovedCachedLoadedEpisodeCannotResumeAfterConfirmedRemovalFromLarder() async throws {
+        try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
+            EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
+        ])
+        let rig = try await makeRig(cached: ["a"])
+        let file = try XCTUnwrap(rig.cachedURLs[id("a")])
+        let runtime = LibraryRuntime(
+            model: rig.model, player: rig.player,
+            settings: LibrarySettingsStore(defaults: UserDefaults(suiteName: suite)!))
+        defer { runtime.player.stop() }
+        await runtime.prepare()
+        // Drain the serial queue that delivers the production runtime's media observer.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        let played = await rig.target.perform(.play(id("a")))
+        XCTAssertEqual(played, .done)
+        await rig.target.perform(.pause)
+        await rig.model.waitForHandoff()
+        XCTAssertEqual(rig.player.status, .paused)
+        XCTAssertFalse(rig.engine.isPlaying)
+
+        await rig.model.decide(.removeFromLarder, entryID: id("a"))
+        let sent = try await mac.listIntents().filter { $0.action == .removeFromLarder(entryID: id("a")) }
+        XCTAssertEqual(sent.count, 1)
+        let intent = try XCTUnwrap(sent.first)
+        try await mac.publishIntentOutcome(IntentOutcome.applied(for: intent, at: Date(timeIntervalSince1970: 1_000)))
+        await rig.model.refresh()
+        XCTAssertEqual(rig.model.decisionStatus(for: id("a")), .confirming)
+        try await macPush([.slotRemoved(entryID: id("a"))])
+        await rig.model.refresh()
+        await rig.model.waitForHandoff()
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertNil(rig.model.pendingDecision(for: id("a")), "the Mac's publish confirmed removal")
+        XCTAssertTrue(rig.model.queued.isEmpty)
+        XCTAssertTrue(rig.model.visibleRows.isEmpty)
+        let snapshot = await rig.target.voiceSnapshot()
+        XCTAssertTrue(snapshot.downloaded.isEmpty)
+        XCTAssertNil(snapshot.nowPlaying)
+        XCTAssertEqual(rig.model.media[id("a")], .notPrepared)
+        let cached = await rig.cache.cachedEntries()
+        XCTAssertNil(cached[id("a")], "confirmed removal revokes admitted inventory")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(try Data(contentsOf: file), payload, "verified cached bytes remain despite list absence")
+        XCTAssertNil(rig.player.item)
+        XCTAssertEqual(rig.player.status, .idle, "queue invalidation cleared loaded audio, retaining inert bytes")
+        XCTAssertFalse(rig.player.handle(.play), "system remote resume cannot reanimate the invalidated item")
+
+        let dialog = try await VoiceCommandRunner.run(.resume, on: rig.target, confirm: { _ in XCTFail("resume needs no confirmation") })
+        await rig.model.waitForHandoff()
+        XCTAssertEqual(dialog, "Nothing to resume.")
+        XCTAssertNil(rig.player.item)
+        XCTAssertEqual(rig.player.status, .idle)
+        XCTAssertFalse(rig.engine.isPlaying)
+        XCTAssertEqual(rig.engine.loadedURLs, [file], "refused resume made no second load")
+    }
+
     func testSkipForwardAndSkipBackMoveByThePlayersSkipLengths() async throws {
         try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
             EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
@@ -442,6 +511,61 @@ final class LibraryVoiceTargetTests: XCTestCase {
         let outcome = await spoken.value
         XCTAssertEqual(outcome, .done)
         XCTAssertTrue(rig.player.isPlaying, "the spoken play resumed the loaded episode instead of toggling it off")
+    }
+
+    func testExplicitVoicePlayRefusesSlotRemovedDuringItsCacheLookup() async throws {
+        try await seed(shows: [ShowSpec(raw: "show", title: "Garden Radio")], episodes: [
+            EpisodeSpec(raw: "a", title: "Garden Morning", show: "show", sortKey: 0),
+        ])
+        let rig = try await makeRig(cached: ["a"])
+        let originalFile = try XCTUnwrap(rig.cachedURLs[id("a")])
+        await rig.cache.arm()
+        let spoken = Task { @MainActor in await rig.target.perform(.play(self.id("a"))) }
+        try await eventually("Siri inside cache read") { await rig.cache.isHeld }
+        try await macPush([.slotRemoved(entryID: id("a"))])
+        await rig.model.refresh()
+        let cached = await rig.cache.cachedEntries()
+        XCTAssertNil(cached[id("a")], "confirmed removal revokes admitted inventory")
+        XCTAssertEqual(rig.model.media[id("a")], .notPrepared)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: originalFile.path))
+        XCTAssertEqual(try Data(contentsOf: originalFile), payload)
+        XCTAssertNil(rig.player.item)
+        XCTAssertTrue(rig.model.queued.isEmpty)
+        await rig.cache.release()
+        let outcome = await spoken.value
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertNil(rig.player.item)
+        XCTAssertFalse(rig.engine.isPlaying)
+        XCTAssertTrue(rig.engine.loadedURLs.isEmpty)
+    }
+
+    func testExplicitVoicePlayRefusesQueuedButNotOnPhoneEvenWithRetainedCache() async throws {
+        try await seed(shows: [ShowSpec(raw: "show", title: "Garden Radio")], episodes: [
+            EpisodeSpec(raw: "a", title: "Garden Morning", show: "show", sortKey: 0),
+        ])
+        let rig = try await makeRig(cached: ["a"])
+        rig.model.media[id("a")] = .available
+        let snapshot = await rig.target.voiceSnapshot()
+        XCTAssertTrue(snapshot.downloaded.isEmpty)
+        let cached = await rig.cache.cachedEntries()
+        XCTAssertNotNil(cached[id("a")])
+        let outcome = await rig.target.perform(.play(id("a")))
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertNil(rig.player.item)
+        XCTAssertTrue(rig.engine.loadedURLs.isEmpty)
+    }
+
+    func testFailedNamedRequestLeavesPreviouslyPlayingUnrelatedAudioAlone() async throws {
+        try await seed(shows: [ShowSpec(raw: "show", title: "Garden Radio")], episodes: [
+            EpisodeSpec(raw: "a", title: "Garden Morning", show: "show", sortKey: 0),
+        ])
+        let rig = try await makeRig(cached: ["a"])
+        await rig.target.perform(.play(id("a")))
+        let dialog = try await VoiceCommandRunner.run(.playNext(show: "Unknown Radio"), on: rig.target, confirm: { _ in XCTFail("play needs no confirmation") })
+        XCTAssertEqual(rig.player.item?.entryID, id("a"))
+        XCTAssertTrue(rig.engine.isPlaying, "a named miss does not pause existing unrelated audio")
+        XCTAssertEqual(rig.engine.loadedURLs.count, 1)
+        XCTAssertFalse(dialog.hasPrefix("Playing"))
     }
 
     func testPlayingTheLoadedEpisodeNeverPausesIt() async throws {

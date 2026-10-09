@@ -35,7 +35,9 @@ extension WiltedMacMediaServiceTests {
         XCTAssertEqual(offer.byteCount, audio.byteCount)
         XCTAssertEqual(offer.mediaType, audio.mediaType)
         XCTAssertEqual(offer.durationSeconds, audio.durationSeconds)
-        XCTAssertEqual(offer.contentHash, "", "no upload yet, so no hash")
+        XCTAssertEqual(offer.contentHash, audio.contentHash, "prepared available certifies the exact audio without uploading")
+        XCTAssertEqual(offer.preparation, audio.preparation)
+        XCTAssertTrue(offer.isPrepared)
         do {
             _ = try await rig.phone.fetchMedia(offer) { _ in }
             XCTFail("an available offer cannot be fetched")
@@ -69,6 +71,8 @@ extension WiltedMacMediaServiceTests {
         let offer = try await onlyOffer(rig)
         XCTAssertEqual(offer.state, .available)
         XCTAssertEqual(offer.revisionID, audio.revisionID)
+        XCTAssertEqual(offer.contentHash, audio.contentHash)
+        XCTAssertEqual(offer.preparation, audio.preparation)
         let holding = await runtime.service.isHolding(entryID: entry, revisionID: audio.revisionID)
         XCTAssertFalse(holding)
         let books = await runtime.service.accountedAssetCount
@@ -82,11 +86,17 @@ extension WiltedMacMediaServiceTests {
         let (rig, entry, _, runtime) = try availableRig("available-withdraw")
         await runtime.service.reconcileAvailable()
         await runtime.consume(try request(rig, entry, from: phoneID, intentID: "x-1"))
+        let priorReady = try await onlyOffer(rig)
 
         rig.source.setQueued(entry, false)
         await runtime.service.reconcileAvailable()
         var offers = try await rig.phone.mediaOffers()
-        XCTAssertTrue(offers.isEmpty, "an entry that left the Larder loses its offer, ready or not")
+        XCTAssertEqual(offers.first?.state, .notReady, "leaving the Larder explicitly revokes preparation")
+        XCTAssertFalse(offers.contains { $0.isPrepared })
+        do {
+            _ = try await rig.phone.fetchMedia(priorReady) { _ in }
+            XCTFail("withdrawal removes the prior ready asset, not only its offer authority")
+        } catch {}
         let books = await runtime.service.accountedAssetCount
         XCTAssertEqual(books, 0)
 
@@ -98,7 +108,8 @@ extension WiltedMacMediaServiceTests {
         rig.source.set(entry, nil)
         await runtime.service.reconcileAvailable()
         offers = try await rig.phone.mediaOffers()
-        XCTAssertTrue(offers.isEmpty, "an unprepared entry has nothing to offer")
+        XCTAssertEqual(offers.first?.state, .notReady, "an unprepared entry explicitly revokes preparation")
+        XCTAssertFalse(offers.contains { $0.isPrepared })
     }
 
     func testANewRevisionReplacesTheOfferAndItsAsset() async throws {
@@ -118,6 +129,32 @@ extension WiltedMacMediaServiceTests {
         XCTAssertEqual(books, 0, "the old revision's audio is gone from the transport")
     }
 
+    func testSameRevisionPreparationRenewalChangesTheOfferAndDropsTheOldAsset() async throws {
+        let (rig, entry, audio, runtime) = try availableRig("available-proof-renewal")
+        await runtime.service.reconcileAvailable()
+        await runtime.consume(try request(rig, entry, from: phoneID, intentID: "proof-1"))
+        var renewed = audio
+        renewed.preparation = LibraryMediaPreparation(preparedAt: Timestamp(audio.preparation.preparedAt.date.addingTimeInterval(60)))
+        rig.source.set(entry, renewed)
+        let reconciled = await runtime.service.reconcileAvailable()
+        XCTAssertTrue(reconciled)
+        let offer = try await onlyOffer(rig)
+        XCTAssertEqual(offer.state, .available)
+        XCTAssertEqual(offer.revisionID, audio.revisionID)
+        XCTAssertEqual(offer.contentHash, audio.contentHash)
+        XCTAssertEqual(offer.preparation, renewed.preparation)
+        let books = await runtime.service.accountedAssetCount
+        XCTAssertEqual(books, 0)
+        do {
+            _ = try await rig.phone.fetchMedia(offer) { _ in }
+            XCTFail("renewal drops the prior asset until a new request")
+        } catch {}
+        await runtime.consume(try request(rig, entry, from: phoneID, intentID: "proof-2"))
+        let ready = try await onlyOffer(rig)
+        XCTAssertEqual(ready.state, .ready)
+        XCTAssertEqual(ready.preparation, renewed.preparation)
+    }
+
     func testAStartedServiceWithdrawsAStaleOfferItFindsOnTheTransport() async throws {
         let (rig, _, _, first) = try availableRig("available-restart")
         await first.service.reconcileAvailable()
@@ -131,7 +168,8 @@ extension WiltedMacMediaServiceTests {
         await restarted.service.reconcileAvailable()
 
         let offers = try await rig.phone.mediaOffers()
-        XCTAssertEqual(offers.map(\.entryID.rawValue), ["episode-available"])
+        XCTAssertEqual(offers.filter { $0.isPrepared }.map(\.entryID.rawValue), ["episode-available"])
+        XCTAssertEqual(offers.first { $0.entryID == stale }?.state, .notReady)
     }
 }
 

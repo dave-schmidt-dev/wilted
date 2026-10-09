@@ -7,6 +7,37 @@ import WiltedSync
 @testable import WiltedProducer
 
 extension LocalLibraryStoreTests {
+    func testPodcastSnapshotCapturesOrderedQueueAndRemovalInOneImmutableValue() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/snapshot-queue.xml")!
+        let (feed, values) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2, 3])
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        for episode in values { try await store.save(episode: episode) }
+        let ids = values.map(\.itemID)
+        let ordered = [ids[2], ids[0], ids[1]]
+        try await store.replacePodcastQueue(try PodcastQueueState(episodeIDs: ordered, currentEpisodeID: ids[0]))
+        let before = try await store.podcastLibrarySnapshot()
+        XCTAssertEqual(before.podcastQueue.episodeIDs, ordered)
+        XCTAssertEqual(before.podcastQueue.currentEpisodeID, ids[0])
+        XCTAssertNil(before.removalKindByEpisode[ids[1]])
+
+        try await store.removePodcastQueueEpisode(ids[2])
+        let retired = try await store.completeAndRetireEpisode(listening: .init(
+            episodeID: ids[1], completedAt: Timestamp(origin), lastRevisionID: nil, updatedAt: Timestamp(origin)))
+        XCTAssertTrue(retired)
+        let after = try await store.podcastLibrarySnapshot()
+        XCTAssertEqual(after.podcastQueue.episodeIDs, [ids[0], ids[1]])
+        XCTAssertEqual(after.podcastQueue.currentEpisodeID, ids[0])
+        XCTAssertEqual(after.removalKindByEpisode[ids[1]], .retired)
+        XCTAssertNotNil(after.retiredAtByEpisode[ids[1]])
+        XCTAssertEqual(before.podcastQueue.episodeIDs, ordered, "later commits cannot rewrite a captured membership")
+        XCTAssertEqual(before.podcastQueue.currentEpisodeID, ids[0])
+        XCTAssertNil(before.removalKindByEpisode[ids[1]], "later retirement cannot rewrite captured eligibility")
+        XCTAssertNil(before.retiredAtByEpisode[ids[1]])
+    }
+
     func save(revision id: String, of itemID: ItemID, at second: TimeInterval,
                       saying text: String, into store: LocalLibraryStore, near url: URL) async throws {
         let revisionID = try RevisionID(rawValue: id)

@@ -151,7 +151,7 @@ targets:
         script: |
           if [ "$CONFIGURATION" != "Release" ]; then
             mkdir -p "$TARGET_BUILD_DIR/$PLUGINS_FOLDER_PATH"
-            rsync -a --delete "$BUILT_PRODUCTS_DIR/WiltediOSIntents.appex" "$TARGET_BUILD_DIR/$PLUGINS_FOLDER_PATH/"
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/rsync -a --delete "$BUILT_PRODUCTS_DIR/WiltediOSIntents.appex" "$TARGET_BUILD_DIR/$PLUGINS_FOLDER_PATH/"
           fi
       # The Watch app is a separate platform product, so it lands in its own products directory, not this one.
       # Release leaves it out, like the Intents extension: no Watch App ID or distribution profile exists yet.
@@ -166,7 +166,7 @@ targets:
             watch_app="$(dirname "$BUILT_PRODUCTS_DIR")/$CONFIGURATION-$watch_platform/WiltedWatch.app"
             [ -d "$watch_app" ] || { echo "error: $watch_app was not built" >&2; exit 1; }
             mkdir -p "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Watch"
-            rsync -a --delete "$watch_app" "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Watch/"
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/rsync -a --delete "$watch_app" "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Watch/"
           fi
     settings:
       base:
@@ -337,6 +337,19 @@ targets:
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.zerodelta.wilted.ios
 
+  WiltedWatchTests:
+    type: bundle.unit-test
+    platform: watchOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: WiltedWatchTests
+    dependencies:
+      - target: WiltedWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.watch.tests
+        GENERATE_INFOPLIST_FILE: YES
+
   WiltedMacTests:
     type: bundle.unit-test
     platform: macOS
@@ -447,3 +460,7 @@ schemes:
     build:
       targets:
         WiltedWatch: all
+    test:
+      captureScreenshotsAutomatically: false
+      targets:
+        - WiltedWatchTests

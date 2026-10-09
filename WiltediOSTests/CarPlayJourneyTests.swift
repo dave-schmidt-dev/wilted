@@ -42,7 +42,7 @@ final class CarPlayJourneyTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
 
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
-        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
         let show = LibrarySource(id: try ItemID(rawValue: "show"), kind: .podcastFeed, title: "The Show")
         var changes: [LibraryChange] = [.source(show)]
         for (index, raw) in queued.enumerated() {
@@ -60,7 +60,7 @@ final class CarPlayJourneyTests: XCTestCase {
         let storeURL = scratch.appendingPathComponent("state/library-state.json")
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         let online = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server),
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
             store: FileLibraryStore(url: storeURL), deviceID: "phone", mediaCache: cache, preferences: defaults)
         await online.refresh()
         for raw in onPhone {
@@ -73,7 +73,7 @@ final class CarPlayJourneyTests: XCTestCase {
             remoteCommands: RuntimeFakeRemote(), sessionEvents: RuntimeFakeEvents(), tickInterval: .seconds(3600))
         let transport: any LibraryTransport
         if reachable {
-            transport = InMemoryLibraryTransport(deviceID: "phone", server: server)
+            transport = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
         } else {
             transport = UnavailableLibraryTransport(reason: "no signal")
         }
@@ -89,11 +89,11 @@ final class CarPlayJourneyTests: XCTestCase {
         let incoming = scratch.appendingPathComponent("incoming-\(raw).mp4")
         try payload.write(to: incoming)
         let hash = MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        _ = try await cache.adopt(
+        _ = try await PreparedMediaFixture.adopt(into: cache,
             verifiedFile: incoming,
-            for: try LibraryMediaOffer(
+            for: try PreparedMediaFixture.certified(LibraryMediaOffer(
                 entryID: try ItemID(rawValue: raw), revisionID: try RevisionID(rawValue: "rev-\(raw)"),
-                contentHash: hash, byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 60))
+                contentHash: hash, byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 60)), owner: "fixture-owner")
     }
 
     private func carEpisodes(_ model: LibraryAppModel, playingID: ItemID? = nil) -> [CarEpisodeRow] {

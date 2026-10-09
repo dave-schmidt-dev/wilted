@@ -27,7 +27,10 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from .gguf_summary import PreparedSummary
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +281,18 @@ class GgufBackend:
         )
 
         return response, token_count
+
+    def prepare_summary(self, system_prompt: str, user_content: str) -> PreparedSummary:
+        """Prepare a summary prompt with exact chat/context/output token budgets."""
+        from .gguf_summary import prepare_summary
+
+        return prepare_summary(self._llm, system_prompt, user_content, self.max_tokens)
+
+    def generate_summary(self, prepared: PreparedSummary) -> tuple[str, int]:
+        """Generate a complete summary using its measured, model-bound prompt."""
+        from .gguf_summary import generate_summary
+
+        return generate_summary(self._llm, prepared, temperature=self.temperature, seed=self.seed)
 
     def close(self) -> None:
         """Unload the GGUF model."""

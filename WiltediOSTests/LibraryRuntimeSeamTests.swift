@@ -61,7 +61,7 @@ final class LibraryRuntimeSeamTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         let entryID = try ItemID(rawValue: "item-a")
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
-        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
         let show = LibrarySource(id: try ItemID(rawValue: "show"), kind: .podcastFeed, title: "The Show")
         let entry = try LibraryEntry(
             id: entryID, kind: .podcastEpisode, sourceID: show.id, title: "Episode A", summary: "",
@@ -70,21 +70,21 @@ final class LibraryRuntimeSeamTests: XCTestCase {
         _ = try await mac.push(changes: changes.enumerated().map {
             PendingLibraryChange(localSeq: UInt64($0.offset + 1), change: $0.element, baseVersion: 0)
         })
-        let store = InMemoryLibraryStore()
+        let store = FileLibraryStore(url: scratch.appendingPathComponent("library-state.json"))
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         let online = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), store: store, deviceID: "phone",
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"), store: store, deviceID: "phone",
             mediaCache: cache, preferences: defaults)
         await online.refresh()
         let payload = Data((0..<2_000).map { UInt8($0 % 251) })
         let file = scratch.appendingPathComponent("incoming.mp4")
         try payload.write(to: file)
         let hash = MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        _ = try await cache.adopt(
+        _ = try await PreparedMediaFixture.adopt(into: cache,
             verifiedFile: file,
-            for: try LibraryMediaOffer(
+            for: try PreparedMediaFixture.certified(LibraryMediaOffer(
                 entryID: entryID, revisionID: try RevisionID(rawValue: "rev-1"), contentHash: hash,
-                byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 60))
+                byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 60)), owner: "fixture-owner")
 
         let remote = RuntimeFakeRemote(), session = RuntimeFakeSession()
         let player = LibraryPlayer(

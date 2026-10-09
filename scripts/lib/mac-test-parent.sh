@@ -58,27 +58,54 @@ wilted_cleanup_mac_test_hosts() {
 ## checkout's cache and must be terminated; the other models a peer worktree
 ## and must remain alive. No application or Xcode process is launched.
 wilted_mac_test_host_cleanup_selftest() (
+  # A checkout-shaped host is live work: hold the same real product lock as XCTest.
+  python3 - "$2" "$1" "${BASH_SOURCE[0]}" <<'PYFIXTURELOCK'
+import importlib.util
+import os
+from pathlib import Path
+import sys
+root, scratch, helper = sys.argv[1:]
+spec = importlib.util.spec_from_file_location('fixture_cache', Path(root) / 'scripts/build-with-cache.py')
+cache = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cache)
+key = 'native-macos-ui-tests'
+_, lock = cache.cache_paths(Path(root).resolve(), 'xcode', key)
+cache.acquire_lock(lock, 'xcode', key)
+print(f'native.cleanup.fixture product-lock-held={key}', file=sys.stderr, flush=True)
+os.execv('/bin/bash', ['/bin/bash', '-c',
+    'source "$1"; wilted_mac_test_host_cleanup_fixture "$2" "$3"', '_', helper, scratch, root])
+PYFIXTURELOCK
+)
+
+wilted_mac_test_host_cleanup_fixture() (
   set -Eeuo pipefail
-  local scratch="$1" repo_root="$2" pattern owned_host foreign_host owned_pid foreign_pid
-  local owned_matches="" attempt
-  pattern="$(wilted_mac_test_host_pattern "$repo_root")"
-  owned_host="$(cd -P "$repo_root" && pwd)/.build/xcode/native-cleanup-selftest/WiltedMac.app/Contents/MacOS/WiltedMac"
+  local scratch="$1" repo_root="$2" pattern owned_repo owned_host foreign_host protected_host
+  local owned_pid foreign_pid protected_pid owned_matches="" attempt
+  mkdir -p "$scratch/mac-cleanup-owned-worktree"
+  owned_repo="$(cd -P "$scratch/mac-cleanup-owned-worktree" && pwd)"
+  pattern="$(wilted_mac_test_host_pattern "$owned_repo")"
+  owned_host="$owned_repo/.build/xcode/native-cleanup-selftest/WiltedMac.app/Contents/MacOS/WiltedMac"
   foreign_host="$scratch/peer-worktree/.build/xcode/native-cleanup-selftest/WiltedMac.app/Contents/MacOS/WiltedMac"
+  protected_host="$(cd -P "$repo_root" && pwd)/.build/xcode/native-macos-ui-tests/WiltedMac.app/Contents/MacOS/WiltedMac"
   /bin/bash -c 'exec -a "$1" /bin/sleep 60' _ "$owned_host" &
   owned_pid=$!
   /bin/bash -c 'exec -a "$1" /bin/sleep 60' _ "$foreign_host" &
   foreign_pid=$!
-  trap 'kill "$owned_pid" "$foreign_pid" 2>/dev/null || true; wait "$owned_pid" 2>/dev/null || true; wait "$foreign_pid" 2>/dev/null || true' EXIT
+  /bin/bash -c 'exec -a "$1" /bin/sleep 60' _ "$protected_host" &
+  protected_pid=$!
+  # Bash 3.2 unwinds these locals before the subshell EXIT trap runs.
+  trap "kill $owned_pid $foreign_pid $protected_pid 2>/dev/null || true; wait $owned_pid 2>/dev/null || true; wait $foreign_pid 2>/dev/null || true; wait $protected_pid 2>/dev/null || true" EXIT
   for attempt in {1..50}; do
     owned_matches="$(pgrep -f "$pattern" 2>/dev/null || true)"
     if printf '%s\n' "$owned_matches" | grep -Fxq -- "$owned_pid"; then break; fi
     sleep 0.1
   done
   printf '%s\n' "$owned_matches" | grep -Fxq -- "$owned_pid"
-  wilted_cleanup_mac_test_hosts "$repo_root"
+  wilted_cleanup_mac_test_hosts "$owned_repo"
   ! kill -0 "$owned_pid" 2>/dev/null
   kill -0 "$foreign_pid" 2>/dev/null
-  printf 'native.cleanup.fixture owned-host-matched=1 foreign-peer-preserved=1\n'
+  kill -0 "$protected_pid" 2>/dev/null
+  printf 'native.cleanup.fixture owned-host-matched=1 foreign-peer-preserved=1 live-checkout-shaped-preserved=1\n'
 )
 
 wilted_mac_test_scheme_configure() {
@@ -96,6 +123,8 @@ wilted_mac_test_scheme_configure() {
   python3 - "$scheme" "$parent" "$@" <<'PY'
 import copy
 import os
+from pathlib import Path
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -109,6 +138,46 @@ for assignment in assignments:
     if not separator or not key or not key.replace("_", "a").isalnum() or key[0].isdigit():
         raise SystemExit(f"mac-test-parent.error invalid TestAction environment assignment: {assignment!r}")
     updates[key] = value
+
+proof_keys = {"WILTED_TEST_OWNER_PID", "WILTED_TEST_OWNER_STARTED", "WILTED_TEST_OWNER_PATH"}
+bundle_keys = proof_keys | {"WILTED_TEST_TMPDIR"}
+if proof_keys.intersection(updates):
+    raise SystemExit("mac-test-parent.error owner proof is generated only by the launcher")
+if "WILTED_TEST_TMPDIR" in updates:
+    if updates["WILTED_TEST_TMPDIR"] != parent:
+        raise SystemExit("mac-test-parent.error delivered parent differs from canonical parent")
+    marker_parent = next((p for p in [Path(parent), *Path(parent).parents]
+                          if os.path.lexists(p / ".wilted-temp-owned")), None)
+    if marker_parent is not None:
+        marker = marker_parent / ".wilted-temp-owned"
+        if marker.is_symlink() or not marker.is_file():
+            raise SystemExit("mac-test-parent.error unsafe controlling marker")
+        fields = {}
+        for line in marker.read_text().splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key in fields:
+                raise SystemExit("mac-test-parent.error malformed controlling marker")
+            fields[key] = value.strip()
+        if set(fields) != {"pid", "started", "path"} or fields["path"] != str(marker_parent) or not fields["pid"].isdigit() or int(fields["pid"]) <= 0:
+            raise SystemExit("mac-test-parent.error invalid controlling owner")
+        def probe(pid, field):
+            value = subprocess.run(["/bin/ps", "-o", field + "=", "-p", str(pid)], text=True, capture_output=True)
+            if value.returncode or value.stderr or not value.stdout.strip():
+                raise SystemExit("mac-test-parent.error controlling identity uninspectable")
+            return value.stdout.strip()
+        owner_pid = int(fields["pid"])
+        if probe(owner_pid, "lstart") != fields["started"]:
+            raise SystemExit("mac-test-parent.error stale controlling owner")
+        current = os.getppid()
+        for _ in range(128):
+            if current == owner_pid: break
+            if current <= 1:
+                raise SystemExit("mac-test-parent.error foreign live controlling owner")
+            current = int(probe(current, "ppid"))
+        else:
+            raise SystemExit("mac-test-parent.error controlling ancestry exceeded")
+        updates.update(WILTED_TEST_OWNER_PID=fields["pid"],
+                       WILTED_TEST_OWNER_STARTED=fields["started"], WILTED_TEST_OWNER_PATH=fields["path"])
 
 tree = ET.parse(scheme)
 root = tree.getroot()
@@ -132,9 +201,18 @@ for item in list(test_env):
 # Older generated schemes injected a host-owned path that the UI-test sandbox
 # cannot write. Remove it even when this helper reconfigures an existing scheme.
 for item in list(test_env):
-    if item.get("key") == "WILTED_TEST_TMPDIR":
+    if item.get("key") in bundle_keys:
         test_env.remove(item)
-test_by_key.pop("WILTED_TEST_TMPDIR", None)
+for key in bundle_keys:
+    test_by_key.pop(key, None)
+# Reserved ownership fields never survive LaunchAction inheritance or a
+# managed-to-standalone/UI reconfiguration.
+launch_action = root.find("LaunchAction")
+launch_env = launch_action.find("EnvironmentVariables") if launch_action is not None else None
+if launch_env is not None:
+    for item in list(launch_env):
+        if item.get("key") in bundle_keys:
+            launch_env.remove(item)
 
 # Materialize only missing LaunchAction values before disabling inheritance.
 if test_action.get("shouldUseLaunchSchemeArgsEnv") == "YES":
@@ -143,7 +221,7 @@ if test_action.get("shouldUseLaunchSchemeArgsEnv") == "YES":
     if launch_env is not None:
         for item in launch_env.findall("EnvironmentVariable"):
             key = item.get("key")
-            if key and key not in test_by_key:
+            if key and key not in bundle_keys and key not in test_by_key:
                 clone = copy.deepcopy(item)
                 test_env.append(clone)
                 test_by_key[key] = clone
@@ -270,4 +348,84 @@ SH
   [[ "$status" -eq 143 && -z "$(find "$interrupted_parent" -mindepth 1 -maxdepth 1 -name 'wilted-native-gate.*' -print -quit)" ]] || {
     cat "$interrupted_log" >&2; return 1;
   }
+}
+
+# The bounded supervisor must be terminal first. Remove only host-created,
+# identity-bound roots; unknown work remains visible to the following leak audit.
+wilted_mac_test_cleanup_roots() {
+  python3 - "$1" <<'PY'
+import json, os, shutil, stat, subprocess, sys
+from pathlib import Path
+
+def refuse(message):
+    raise RuntimeError(message)
+def canonical(path):
+    path=Path(path)
+    if not path.is_absolute() or path.is_symlink() or path.resolve()!=path or not path.is_dir():
+        refuse('noncanonical root')
+    return path
+def probe(pid, field):
+    return subprocess.run(['/bin/ps','-o',field+'=','-p',str(pid)],text=True,capture_output=True)
+def read_owner(path):
+    marker=path/'.wilted-temp-owned'
+    if marker.is_symlink() or not marker.is_file(): refuse('unsafe owner marker')
+    fields={}
+    for line in marker.read_text().splitlines():
+        key,separator,value=line.partition('=')
+        if not separator or key in fields: refuse('malformed owner marker')
+        fields[key]=value.strip()
+    if set(fields)!= {'pid','started','path'} or fields['path']!=str(path): refuse('foreign owner path')
+    pid=int(fields['pid'])
+    if pid<=0: refuse('invalid owner pid')
+    result=probe(pid,'lstart')
+    if result.returncode or result.stderr or result.stdout.strip()!=fields['started']: refuse('owner identity not live')
+    # The controlling runner is this cleanup caller or an actual ancestor;
+    # an unrelated live process cannot authorize removal merely by its PID.
+    current=os.getppid()
+    for _ in range(128):
+        if current==pid: return fields
+        result=probe(current,'ppid')
+        if result.returncode or result.stderr or not result.stdout.strip(): break
+        current=int(result.stdout.strip())
+        if current<=1: break
+    refuse('foreign live controlling owner')
+
+try:
+    parent=canonical(sys.argv[1]); removed=0
+    owner_path=next((p for p in [parent,*parent.parents] if (p/'.wilted-temp-owned').exists() or (p/'.wilted-temp-owned').is_symlink()),None)
+    if owner_path is None: refuse('managed cleanup has no runner owner')
+    owner_path=canonical(owner_path); owner=read_owner(owner_path)
+    candidates=[]
+    for root in parent.iterdir():
+        if not root.name.startswith(('wilted-mac-test-','wilted-test-host-')): continue
+        canonical(root)
+        marker=root/'.wilted-managed-test-root'
+        if marker.is_symlink() or not marker.is_file(): refuse(f'missing or unsafe root receipt: {root}')
+        receipt=json.loads(marker.read_text())
+        if set(receipt)!= {'path','device','inode','host_pid','host_started','owner_path','owner_pid','owner_started'}: refuse('malformed root receipt')
+        if not isinstance(receipt['host_started'],str) or not receipt['host_started'].strip(): refuse('invalid host start identity')
+        for field in ['device','inode','host_pid','owner_pid']:
+            if type(receipt[field]) is not int or receipt[field]<=0: refuse('invalid receipt number')
+        if receipt['path']!=str(root) or receipt['owner_path']!=str(owner_path) or receipt['owner_pid']!=int(owner['pid']) or receipt['owner_started']!=owner['started']: refuse('foreign root receipt')
+        identity=root.stat()
+        if (identity.st_dev,identity.st_ino)!=(receipt['device'],receipt['inode']): refuse('replaced root')
+        result=probe(receipt['host_pid'],'stat')
+        if not (result.returncode==1 and not result.stdout and not result.stderr):
+            # A reaped/zombie process has no descriptors; all other live or
+            # ambiguous process states, including PID reuse, fail closed.
+            if result.returncode or result.stderr or not result.stdout.strip().startswith('Z'): refuse('creating host is live or uninspectable')
+        live=subprocess.run(['/usr/sbin/lsof','-t','+D',str(root)],text=True,capture_output=True)
+        if live.returncode!=1 or live.stdout or live.stderr: refuse('root still open or descriptor inspection failed')
+        candidates.append((root,identity.st_dev,identity.st_ino,marker.read_bytes()))
+    # Validate every candidate before deleting any, then recheck identity and
+    # marker immediately before each exact-root unlink.
+    for root,device,inode,marker_bytes in candidates:
+        identity=root.lstat()
+        if not stat.S_ISDIR(identity.st_mode) or (identity.st_dev,identity.st_ino)!=(device,inode) or (root/'.wilted-managed-test-root').is_symlink() or (root/'.wilted-managed-test-root').read_bytes()!=marker_bytes: refuse('root changed during cleanup')
+        shutil.rmtree(root); removed+=1
+    print(f'mac-test-parent.cleanup terminal-owned-roots={removed} unknown-work-preserved=true')
+except (OSError,ValueError,TypeError,RuntimeError,KeyError) as error:
+    print(f'mac-test-parent.cleanup.error {error}',file=sys.stderr)
+    raise SystemExit(1)
+PY
 }

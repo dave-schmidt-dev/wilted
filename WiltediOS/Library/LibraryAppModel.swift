@@ -8,7 +8,7 @@ import WiltedLibrary
 struct LibraryAccountRecovery: Sendable {
     let quarantineEvents: AsyncStream<Void>
     /// Discards everything tied to the previous account and returns an empty store.
-    let recover: @Sendable () async -> any LibraryStore
+    let recover: @Sendable () async throws -> any LibraryStore
 }
 
 /// Owns the iPhone's library replica: fetches on launch, foreground, pull-to-refresh and
@@ -23,6 +23,9 @@ final class LibraryAppModel: ObservableObject {
     /// Entries whose media offer from the Mac says the audio is prepared: `ready` (fetchable now) or
     /// `available` (prepared on the Mac; asking for it starts the upload).
     @Published private(set) var readyOffers: Set<ItemID> = []
+    private var cachedDisplayIDs: Set<ItemID> = []
+    private var completedDisplayRows: [LibraryRow]?
+    private var displayContext: (generation: UInt64, admissionRevision: UInt64)?
     @Published var filter: LibraryFilter = .all
     @Published var searchText = ""
     /// The most authoritative record per entry from any device other than this one.
@@ -38,6 +41,10 @@ final class LibraryAppModel: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastSynchronizedAt: Date?
+    /// Successful local mirror installation, even if transport token acknowledgement later failed.
+    @Published private(set) var lastCacheCommittedAt: Date?
+    /// Account-associated author evidence; never describes exact displayed snapshot equality.
+    @Published private(set) var lastObservedPublication: LibraryPublication?
     @Published private(set) var accountQuarantined = false
     /// On-demand audio state per entry; an entry with no value is `.available`. Written by
     /// `LibraryAppModel+Media`, which owns the request, download, verify and cache flow.
@@ -108,6 +115,7 @@ final class LibraryAppModel: ObservableObject {
     var mediaRuns: [ItemID: LibraryMediaRun] = [:]
     /// Verified files that still need their `mediaCached` acknowledgement sent to the Mac.
     var unacknowledgedMedia: [ItemID: RevisionID] = [:]
+    var mediaRevocations: Set<ItemID> = []
     /// Transcripts for audio on the phone, keyed by entry; each is for the cached revision.
     @Published var transcripts: [ItemID: LibraryTranscript] = [:]
     /// One load per entry, so a cancelled or replaced load can never write for its successor.
@@ -117,11 +125,16 @@ final class LibraryAppModel: ObservableObject {
     let clockFormat: LibraryClockFormat
     private let preferences: UserDefaults
     private let recovery: LibraryAccountRecovery?
+    var playbackStoreIdentity: ObjectIdentifier { ObjectIdentifier(store as AnyObject) }
+    func mediaStoreState() async -> LibraryStoreState { await store.state() }
+    func mediaAdmissionFailed(_ message: String) { errorMessage = message }
     private var store: any LibraryStore
     private var reconciler: LibraryReconciler
     private var refreshTask: Task<Void, Never>?
+    var hasPendingRefresh: Bool { refreshTask != nil }
     private var refreshRequested = false
     private(set) var started = false
+    private var localStateLoaded = false
 
     init(
         transport: any LibraryTransport,
@@ -170,10 +183,15 @@ final class LibraryAppModel: ObservableObject {
             started = true
             if let events = recovery?.quarantineEvents {
                 Task { [weak self] in
-                    for await _ in events { self?.accountQuarantined = true }
+                    for await _ in events {
+                        guard let self else { return }
+                        self.accountQuarantined = true
+                        await self.loadLocalState()
+                    }
                 }
             }
         }
+        await loadLocalState()
         // The first sync is a full one; with the tick running it also restarts the 30 s timer.
         tickState.forceFull = true
         await updateSyncTick()
@@ -183,7 +201,12 @@ final class LibraryAppModel: ObservableObject {
     /// Shows the persisted library and the audio already on the phone without any network call, so a
     /// launch with no signal still lists and plays what is downloaded. `start()` follows with the sync.
     func loadLocalState() async {
-        let content = await store.state().content
+        let saved = await store.state()
+        applyStoreMetadata(saved)
+        _ = await bindMediaOwner()
+        displayContext = (await transport.operationGeneration(), saved.displayAdmissionRevision)
+        let content = saved.content
+        localStateLoaded = true
         entryDurations = content.entries.compactMapValues(\.durationSeconds)
         decisionContent = content
         // The phone's own last positions, so an offline launch resumes where it left off.
@@ -216,8 +239,10 @@ final class LibraryAppModel: ObservableObject {
                 await self.performRefresh(next)
                 next = .full
             } while self?.refreshRequested == true
+            self?.objectWillChange.send()
             self?.refreshTask = nil
         }
+        objectWillChange.send()
         refreshTask = task
         await task.value
     }
@@ -239,74 +264,137 @@ final class LibraryAppModel: ObservableObject {
     /// Discards the quarantined account's replica and starts from an empty one.
     func recoverFromAccountChange() async {
         guard let recovery else { return }
-        let fresh = await recovery.recover()
+        let fresh: any LibraryStore
+        do { fresh = try await recovery.recover() }
+        catch {
+            accountQuarantined = true
+            errorMessage = "Account recovery failed. The saved library is still held."
+            return
+        }
         store = fresh
         reconciler = LibraryReconciler(transport: transport, store: fresh)
         accountQuarantined = false
         queued = []
         readyOffers = []
+        cachedDisplayIDs = []
+        displayContext = nil
         checkpoints = [:]
         handoffState.savedCheckpoints = [:]
         handoffState.ownPositions = [:]
         continuation = nil
+        completedDisplayRows = nil
         discardDecisionsAfterAccountChange()
         await discardMediaAfterAccountChange()
         await refresh()
     }
 
     private func performRefresh(_ plan: LibraryRefreshPlan) async {
+        if !localStateLoaded { await loadLocalState() }
+        let priorQueue = Set(decisionContent.queue.map(\.entryID))
+        let roundStore = store, roundReconciler = reconciler
+        let generation = await transport.operationGeneration()
+        func current() async -> Bool {
+            let liveGeneration = await transport.operationGeneration()
+            let state = await roundStore.state()
+            let owner = await transport.verifiedOwnerToken()
+            let finalGeneration = await transport.operationGeneration()
+            return !Task.isCancelled && liveGeneration == generation && finalGeneration == generation
+                && (state.ownerToken == nil || state.ownerToken == owner) && !state.reviewHold && !accountQuarantined
+                && ObjectIdentifier(store as AnyObject) == ObjectIdentifier(roundStore as AnyObject)
+        }
+        guard await current() else { return }
+        if plan.readsState && plan.readsOffers {
+            do { try await roundStore.beginDisplayRefresh(transport: transport, expectedGeneration: generation) }
+            catch { errorMessage = Self.message(for: error); return }
+        }
+        guard await current() else { return }
+        let startingState = await roundStore.state()
+        guard await current() else { return }
+        applyStoreMetadata(startingState)
         if plan.showsProgress { isRefreshing = true }
-        // A refresh that starts once the gate's wait is over is the retry, whoever asked for it.
         let isRetry = throttleIsDue
         if isRetry { throttleRetrying = true }
-        defer {
-            if plan.showsProgress { isRefreshing = false }
-            if isRetry { throttleRetrying = false }
-        }
+        defer { if plan.showsProgress { isRefreshing = false }; if isRetry { throttleRetrying = false } }
+        var failure: (any Error)?
         if plan.readsState {
-            switch await reconciler.synchronize() {
-            case .success:
-                errorMessage = nil
-                lastSynchronizedAt = now()
-            case let .failure(error):
-                // A refusal from the closed gate is the throttle banner's to say; storing it too would show it twice.
-                errorMessage = error is TransportThrottled ? nil : Self.message(for: error)
-            }
+            if case let .failure(error) = await roundReconciler.synchronize() { failure = error }
+            guard await current() else { return }
         }
-        // One batched read: the playback records, the offers when due, and this phone's outcomes while
-        // a decision waits. A failed read keeps what was last known: a flaky fetch must not empty the Larder.
         var options: LibraryPollOptions = [.deviceRecords]
         if plan.readsOffers { options.insert(.offers) }
         if !decisions.isEmpty { options.insert(.outcomes) }
-        let polled = try? await transport.poll(options)
-        let records = polled?.records
-        if let records {
+        let beforePoll = await roundStore.state()
+        guard await current() else { return }
+        var polled: LibraryPollResult?
+        do {
+            let result = try await transport.poll(options)
+            let owner = await transport.verifiedOwnerToken()
+            guard await current(), beforePoll.ownerToken == nil || beforePoll.ownerToken == owner else { return }
+            if let offers = result.offers {
+                try await roundStore.recordDisplayOffers(offers, transport: transport,
+                    expectedGeneration: generation, expectedRevision: beforePoll.revision)
+                guard await current() else { return }
+                if let context = await bindMediaOwner() {
+                    guard await applyMediaOffers(offers, context: context) else { return }
+                }
+                noteOffers(offers); readyOffers = Set(offers.filter(\.isPrepared).map(\.entryID))
+                for entryID in readyOffers where media[entryID] == .notPrepared { media[entryID] = nil }
+            }
+            polled = result
+        } catch { if failure == nil { failure = error } }
+        guard await current() else { return }
+        if failure == nil, plan.readsState && plan.readsOffers {
+            do {
+                let revision = await roundStore.state().revision
+                guard await current() else { return }
+                try await roundStore.completeDisplayRefresh(transport: transport, expectedGeneration: generation, expectedRevision: revision)
+            } catch { failure = error }
+        }
+        let saved = await roundStore.state()
+        guard await current() else { return }
+        applyStoreMetadata(saved)
+        if let context = await bindMediaOwner() {
+            guard await revokeRemovedQueueMedia(previous: priorQueue, current: Set(saved.content.queue.map(\.entryID)), context: context) else { return }
+        }
+        displayContext = (generation, saved.displayAdmissionRevision)
+        entryDurations = saved.content.entries.compactMapValues(\.durationSeconds)
+        decisionContent = saved.content
+        if let records = polled?.records {
             checkpoints = Self.checkpoints(from: records, excluding: deviceID)
             handoffState.savedCheckpoints = checkpoints
             var own = Self.ownPositions(from: records, deviceID: deviceID)
-            // A position saved here and not yet published is newer than the server's copy.
             for entryID in handoffState.unpublished.keys {
                 if let local = handoffState.ownPositions[entryID] { own[entryID] = local }
             }
-            handoffState.ownPositions = own
+            handoffState.ownPositions = own; startedEntries = Self.startedEntries(from: records)
         }
-        if let offers = polled?.offers {
-            noteOffers(offers)
-            readyOffers = Set(offers.filter(\.isPrepared).map(\.entryID))
-            // An entry the Mac offers again is no longer "not prepared".
-            for entryID in readyOffers where media[entryID] == .notPrepared { media[entryID] = nil }
-        }
-        let content = await store.state().content
-        entryDurations = content.entries.compactMapValues(\.durationSeconds)
-        decisionContent = content
-        if let records { startedEntries = Self.startedEntries(from: records) }
-        rebuildRows()
-        await refreshMediaFromCache()
-        if let records {
+        rebuildRows(); await refreshMediaFromCache()
+        guard await current() else { return }
+        if let records = polled?.records {
             await updateContinuation(from: records)
+            guard await current() else { return }
             await observeHandoff(records)
+            guard await current() else { return }
         }
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
+        guard await current() else { return }
+        if let failure { errorMessage = failure is TransportThrottled ? nil : Self.message(for: failure) }
+        else if plan.readsState { errorMessage = nil; lastSynchronizedAt = now() }
+        // A quiet offer-only success cannot clear an unresolved library-state failure.
+    }
+
+    private func applyStoreMetadata(_ saved: LibraryStoreState) {
+        accountQuarantined = accountQuarantined || saved.reviewHold
+        cachedDisplayIDs = saved.displayPreparedIDs ?? []
+        if saved.ownerToken != nil, saved.displayRefreshPending, let content = saved.completedDisplay {
+            let ids = saved.completedDisplayPreparedIDs ?? []
+            completedDisplayRows = LibraryRowBuilder.rows(content: content, checkpoints: checkpoints, clock: clockFormat, started: startedEntries).filter { ids.contains($0.id) }
+        } else { completedDisplayRows = nil }
+        lastCacheCommittedAt = saved.cacheCommittedAt
+        lastObservedPublication = saved.ownerToken == nil ? nil : saved.observedPublication
+        if saved.reviewHoldPersistenceFailed {
+            errorMessage = "Account review is required. The hold could not be saved; keep sync paused."
+        }
     }
 
     /// Projects the fetched content, with unsettled decisions laid over it, into queue-ordered rows.
@@ -338,7 +426,28 @@ final class LibraryAppModel: ObservableObject {
     }
 
     /// Stops listing `entryID` until a refresh sees the Mac offer it again.
-    func dropOffer(_ entryID: ItemID) { readyOffers.remove(entryID) }
+    func dropOffer(_ entryID: ItemID) {
+        readyOffers.remove(entryID)
+        cachedDisplayIDs.remove(entryID)
+        guard let context = displayContext else { return }
+        let store = store, transport = transport
+        let identity = ObjectIdentifier(store as AnyObject)
+        Task { [weak self] in
+            do {
+                try await store.removeDisplayOffer(entryID, transport: transport,
+                    expectedGeneration: context.generation, expectedDisplayRevision: context.admissionRevision)
+                guard let self, ObjectIdentifier(self.store as AnyObject) == identity,
+                      self.displayContext?.generation == context.generation,
+                      self.displayContext?.admissionRevision == context.admissionRevision else { return }
+                self.cachedDisplayIDs.remove(entryID)
+            } catch {
+                guard let self, ObjectIdentifier(self.store as AnyObject) == identity,
+                      self.displayContext?.generation == context.generation,
+                      self.displayContext?.admissionRevision == context.admissionRevision else { return }
+                self.errorMessage = Self.message(for: error)
+            }
+        }
+    }
 
     /// Queued entries the phone can play or fetch: a ready or available offer, a transfer under way, or audio
     /// already cached.
@@ -352,7 +461,7 @@ final class LibraryAppModel: ObservableObject {
     var visibleRows: [LibraryRow] {
         let ids = preparedIDs
         return LibraryListing.rows(
-            queued, offered: ids.offered, onPhone: ids.onPhone, filter: filter, query: searchText,
+            completedDisplayRows ?? queued, offered: completedDisplayRows.map { Set($0.map(\.id)) } ?? ids.offered.union(cachedDisplayIDs), onPhone: ids.onPhone, filter: filter, query: searchText,
             progress: progress, finished: finished)
     }
 
@@ -360,12 +469,7 @@ final class LibraryAppModel: ObservableObject {
     /// from an empty result.
     var preparedCount: Int {
         let ids = preparedIDs
-        return LibraryListing.prepared(queued, offered: ids.offered, onPhone: ids.onPhone).count
-    }
-
-    /// Entries any device, this one included, has played past the start.
-    static func startedEntries(from records: LibraryDeviceRecords) -> Set<ItemID> {
-        Set((records.nowPlaying + records.progress).filter { $0.record.positionSeconds > 0 }.map(\.record.entryID))
+        return LibraryListing.prepared(queued, offered: ids.offered.union(cachedDisplayIDs), onPhone: ids.onPhone).count
     }
 
     /// The winning record per entry among every device except this one, across both

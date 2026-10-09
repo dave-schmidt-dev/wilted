@@ -12,6 +12,9 @@ private actor LibraryShutdownGate {
     private var releases: [CheckedContinuation<Void, Never>] = []
     private(set) var drainObserved = false
     private(set) var rootExistedAtDrain = false
+    private(set) var writerFinished = false
+
+    func recordWriterFinished() { writerFinished = true }
 
     func hold() async {
         arrived = true
@@ -117,7 +120,7 @@ final class WiltedMacLibraryShutdownTests: XCTestCase {
     private func checkMaintenanceDrain(explicitStop: Bool) async throws {
         let directory = wiltedTemporaryDirectory("library-shutdown-maintenance")
         let root = directory.deletingLastPathComponent()
-        let accounting = directory.appendingPathComponent("library-sync/media-accounting.json")
+        let accounting = directory.appendingPathComponent("controlled-maintenance-\(UUID().uuidString).txt")
         let gate = LibraryShutdownGate()
         let writerFinished = expectation(description: "controlled maintenance writer finished")
         let model = WiltedMacModel(
@@ -134,6 +137,7 @@ final class WiltedMacLibraryShutdownTests: XCTestCase {
                 await gate.hold()
                 try? FileManager.default.createDirectory(at: accounting.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? Data("controlled-maintenance".utf8).write(to: accounting)
+                await gate.recordWriterFinished()
                 writerFinished.fulfill()
             }
         ))
@@ -146,18 +150,22 @@ final class WiltedMacLibraryShutdownTests: XCTestCase {
         }
         let identifier = ObjectIdentifier(self)
         let closing = Task { try await WiltedMacTestTemporaryState.close(root: root, identifier: identifier) }
-        // On the baseline close returns without draining, so releasing the writer recreates its
-        // removed root. A draining controller releases it at the observed join instead.
-        let fallbackRelease = Task { _ = try? await closing.value; await gate.release() }
         try await closing.value
-        await fallbackRelease.value
+        // Capture the join boundary before this test can release a non-draining writer.
+        let accountingBytesAtClose = try? Data(contentsOf: accounting)
+        let writerFinishedAtClose = await gate.writerFinished
+        await gate.release()
         await fulfillment(of: [writerFinished], timeout: 3)
+        XCTAssertTrue(writerFinishedAtClose, "close must finish the writer before returning")
+        XCTAssertEqual(accountingBytesAtClose, Data("controlled-maintenance".utf8),
+                       "the controlled write must be complete at the close-return boundary")
         let drainObserved = await gate.drainObserved
         let rootExistedAtDrain = await gate.rootExistedAtDrain
         XCTAssertTrue(drainObserved, "model close must retain and await a stopped controller")
         XCTAssertTrue(rootExistedAtDrain, "the root must remain owned while maintenance is pending")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path), "maintenance must not recreate the removed root")
-        // Baseline failures still clean their intentionally recreated root.
-        if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path),
+                      "the managed SQLite root remains retained until terminal host cleanup")
+        XCTAssertTrue(try WiltedMacTestRootOwnership.isManaged(root),
+                      "close must preserve the exact managed root and its ownership marker")
     }
 }

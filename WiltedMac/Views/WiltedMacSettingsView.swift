@@ -26,7 +26,7 @@ struct WiltedMacSettingsView: View {
 
     /// The Mac inherits no text size from the system the way iPhone does, so
     /// this is the only place the reader can change it.
-    private var appearanceCard: some View {
+    var appearanceCard: some View {
         WiltedSettingsCard(title: "Appearance") {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Picker("Text and icon size", selection: Binding(
@@ -39,20 +39,30 @@ struct WiltedMacSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("wilted-text-scale")
-                Text("Applies to every screen. Icons and artwork grow with the text.")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-appearance-controls")
+        .overlay(alignment: .topTrailing) {
+            WiltedMacHelpButton(content: appearanceHelp, identifier: "wilted-appearance-help")
+                .padding(WiltedTheme.Spacing.medium)
+        }
+    }
+
+    var appearanceHelp: WiltedMacHelpContent {
+        WiltedMacHelpContent(title: "Appearance", text: "Applies to every screen. Icons and artwork grow with the text.")
+    }
+
+    var automationHelp: WiltedMacHelpContent {
+        WiltedMacHelpContent(title: "Larder automation", text:
+            "An episode joins Larder when it finishes preparing. Episodes already played, already queued, or now playing are left alone. "
+            + "Both overrides stay on until you turn them off, and each takes the same step the matching Larder group action takes. Downloads cost disk and bandwidth; preparing spends the machine's speech and detection models.")
     }
 
     /// Automation follows the path an admitted episode actually takes. The
     /// quiet rules make that sequence scannable without introducing another
     /// settings surface or a decorative treatment competing with the cards.
-    private var automationCard: some View {
+    var automationCard: some View {
         WiltedSettingsCard(title: "Automation") {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 WiltedSettingsRow(
@@ -95,11 +105,6 @@ struct WiltedMacSettingsView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
 
-                Text("Refresh adds metadata only. Download and preparation begin after Keep moves an episode to Larder.")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-automation-feeds-admission-policy")
 
                 Divider()
 
@@ -156,41 +161,23 @@ struct WiltedMacSettingsView: View {
 
                 Divider()
 
-                automationSectionTitle("Larder")
+                HStack {
+                    automationSectionTitle("Larder")
+                    WiltedMacHelpButton(content: automationHelp, identifier: "wilted-automation-larder-overrides-explanation")
+                    Spacer()
+                }
                 Toggle("Add prepared episodes to Larder", isOn: autoAddPreparedToLarderBinding)
                     .accessibilityIdentifier("wilted-automation-auto-add-to-larder")
-                Text("An episode joins Larder when it finishes preparing. Episodes already "
-                     + "played, already queued, or now playing are left alone.")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-automation-auto-add-to-larder-explanation")
                 Toggle("Download everything in Larder", isOn: downloadEverythingBinding)
                     .accessibilityIdentifier("wilted-automation-download-everything")
                 Toggle("Prepare everything downloaded", isOn: prepareEverythingBinding)
                     .accessibilityIdentifier("wilted-automation-prepare-everything")
-                Text("Both overrides stay on until you turn them off, and each takes the same "
-                     + "step the matching Larder group action takes. Downloads cost disk and "
-                     + "bandwidth; preparing spends the machine's speech and detection models.")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-automation-larder-overrides-explanation")
-
                 Divider()
 
                 automationSectionTitle("Feed defaults")
                 WiltedMacGlobalFeedDefaultsControls(model: model)
-                ForEach(WiltedFeedAutomationSummary.globalRows(model.automationSettings).filter {
-                    $0.label == "Auto download" || $0.label == "Auto prepare"
-                }, id: \.label) { row in
-                    WiltedSettingsRow(
-                        row.label, value: row.value,
-                        identifier: "wilted-automation-feed-default-\(row.label.lowercased().replacingOccurrences(of: " ", with: "-"))"
-                    )
-                }
-                Text("Feeds set to Use global follow these. Auto download and Auto prepare follow the Larder "
-                     + "and Processing settings above. Change one feed from the gear beside it in Feeds.")
+                WiltedMacInheritedFeedDefaults(model: model)
+                Text("Use global follows these defaults. Change one feed from Feed settings in Feeds.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
@@ -371,7 +358,7 @@ struct WiltedMacSettingsView: View {
         }
     }
 
-    private var legacySyncCard: some View {
+    var legacySyncCard: some View {
         WiltedSettingsCard(title: WiltedScreenCopy.sync) {
             WiltedSettingsRow(
                 "Status",
@@ -379,32 +366,34 @@ struct WiltedMacSettingsView: View {
                 identifier: "wilted-sync-status",
                 tone: model.syncStatus.phase.tone
             )
-            Divider()
-            WiltedSettingsRow(
-                "Detail",
-                value: model.syncStatus.detail,
-                identifier: "wilted-sync-detail"
-            )
+            if model.syncStatus.phase != .disabled {
+                Divider()
+                WiltedSettingsRow(
+                    "Detail",
+                    value: model.syncStatus.detail,
+                    identifier: "wilted-sync-detail"
+                )
+            }
             Divider()
             WiltedSettingsRow("Last fetch", value: lastFetchLabel, identifier: "wilted-sync-last-fetch")
             Divider()
             WiltedSettingsRow("Last send", value: lastSendLabel, identifier: "wilted-sync-last-send")
 
-            HStack(spacing: WiltedTheme.Spacing.small) {
-                Button("Refresh") { model.refreshSync() }
-                    .disabled(syncActionsDisabled)
-                    .accessibilityIdentifier("wilted-sync-refresh")
-                Button("Upload") { model.uploadPendingSync() }
-                    .disabled(syncActionsDisabled)
-                    .accessibilityIdentifier("wilted-sync-upload")
-                if model.syncStatus.phase == .fetching
-                    || model.syncStatus.phase == .sending
-                    || model.syncStatus.phase == .staging {
-                    Button("Cancel") { model.cancelSync() }
-                        .accessibilityIdentifier("wilted-sync-cancel")
+            if !syncActionsDisabled {
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    Button("Refresh") { model.refreshSync() }
+                        .accessibilityIdentifier("wilted-sync-refresh")
+                    Button("Upload") { model.uploadPendingSync() }
+                        .accessibilityIdentifier("wilted-sync-upload")
+                    if model.syncStatus.phase == .fetching
+                        || model.syncStatus.phase == .sending
+                        || model.syncStatus.phase == .staging {
+                        Button("Cancel") { model.cancelSync() }
+                            .accessibilityIdentifier("wilted-sync-cancel")
+                    }
                 }
+                .padding(.top, WiltedTheme.Spacing.xSmall)
             }
-            .padding(.top, WiltedTheme.Spacing.xSmall)
 
             if model.syncStatus.phase == .quarantined {
                 WiltedAccountRecoveryNotice(identifier: "wilted-sync-use-current-account") {
@@ -442,6 +431,8 @@ private struct WiltedMacLibrarySyncCard: View {
         let status = model.librarySyncStatus
         let activity = model.librarySyncActivity
         WiltedSettingsCard(title: WiltedScreenCopy.sync) {
+            WiltedPublicationNotice(summary: model.libraryPublicationSummary, detail: model.libraryPublicationDetail,
+                qualifier: model.libraryPublicationQualifier)
             WiltedSettingsRow("Status", value: status.headline, identifier: "wilted-sync-status", tone: status.tone)
             if let throttle = model.libraryThrottle {
                 Divider()

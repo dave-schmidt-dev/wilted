@@ -64,7 +64,8 @@ final class WiltedMacTranscriptPublishTests: XCTestCase {
         try Data(repeating: 7, count: 2_048).write(to: file)
         return WiltedMacReadyAudio(
             revisionID: try rev(revision), contentHash: try MediaHash.sha256(fileAt: file), byteCount: 2_048,
-            mediaType: "audio/mp4", durationSeconds: 30, fileURL: file)
+            mediaType: "audio/mp4", durationSeconds: 30, fileURL: file,
+            preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_800_000_000))))
     }
 
     private func transcript(_ entry: ItemID, revision: String, cues: Int = 3) throws -> LibraryTranscript {
@@ -99,7 +100,8 @@ final class WiltedMacTranscriptPublishTests: XCTestCase {
         let gone = try await rig.phone.transcript(entryID: entry, revisionID: rev("rev-1"))
         XCTAssertNil(gone, "withdrawn once every requester cached the audio")
         let remaining = try await rig.phone.mediaOffers()
-        XCTAssertTrue(remaining.isEmpty)
+        XCTAssertEqual(remaining.first?.state, .notReady)
+        XCTAssertFalse(remaining.contains { $0.isPrepared })
     }
 
     func testTheTranscriptStaysUntilEveryRequesterHasCachedTheAudio() async throws {

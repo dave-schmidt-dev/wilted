@@ -87,7 +87,10 @@ public actor LibraryReconciler {
         emit(.fetching, "Fetching changes")
         do {
             let generation = await transport.operationGeneration()
-            let cursor = await store.state().cursor
+            guard !(await store.state().reviewHold) else {
+                throw LibraryTransportError.ownershipViolation("Account review is required")
+            }
+            let cursor = await store.fetchCursor()
             let batch = try await transport.fetchChanges(since: cursor)
             for attempt in 1...Self.maximumStaleStageAttempts {
                 let prior = await store.state()
@@ -95,7 +98,7 @@ public actor LibraryReconciler {
                 try await ensureCurrent(generation)
                 emit(.committing, "Committing fetched changes")
                 do {
-                    try await store.commit(staged)
+                    try await store.commit(staged, transport: transport, expectedGeneration: generation)
                     try await transport.commitFetchedState(batch.token)
                     emit(.completed, "Sync completed")
                     return .success(batch)
@@ -116,6 +119,7 @@ public actor LibraryReconciler {
     public func sendPending() async -> Result<LibraryPushResult, Error> {
         do {
             let state = await store.state()
+            guard !state.reviewHold else { throw LibraryTransportError.ownershipViolation("Account review is required") }
             let sendable = state.sendable
             guard !sendable.isEmpty else {
                 let blocked = state.conflictBlocked.count

@@ -64,7 +64,6 @@ extension WiltedMacModelTests {
     /// not arrived.
     func testAModelDrivenLaterEligibleRequestIsAdmittedRatherThanQueuedForALowerNumber() async throws {
         let directory = temporaryDirectory("later-eligible-not-queued-for-lower")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let runner = BlockingPodcastPipelineRunner()
         let feedURL = try XCTUnwrap(URL(string: "https://example.test/later-eligible.xml"))
         let enclosureURL = try XCTUnwrap(URL(string: "https://example.test/later-eligible.mp3"))
@@ -149,7 +148,6 @@ extension WiltedMacModelTests {
     /// both could hold the device at once.
     func testAnArticleAsksTheSameAdmissionGateAsAPodcast() async throws {
         let directory = temporaryDirectory("article-admission")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
@@ -176,7 +174,6 @@ extension WiltedMacModelTests {
     /// article is queued -- so it did nothing until the work ahead finished.
     func testCancellingAQueuedArticleLeavesTheLineImmediately() async throws {
         let directory = temporaryDirectory("article-admission-cancel")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
@@ -214,7 +211,6 @@ extension WiltedMacModelTests {
     /// `.running` forever.
     func testAnArticleInterruptedByRelaunchEmergesResumableOrTerminal() async throws {
         let directory = temporaryDirectory("article-ticket-relaunch")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let libraryURL = directory.appendingPathComponent("library.sqlite")
         let storeCapture = StoreCapture()
         let draftURL = try XCTUnwrap(URL(string: "https://example.test/an-interrupted-article"))
@@ -302,7 +298,6 @@ extension WiltedMacModelTests {
         preferences.removePersistentDomain(forName: suite)
         defer { preferences.removePersistentDomain(forName: suite) }
         let directory = temporaryDirectory("preparation-sequence")
-        defer { try? FileManager.default.removeItem(at: directory) }
 
         let first = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory, preferences: preferences
@@ -333,7 +328,6 @@ extension WiltedMacModelTests {
     /// the post-relaunch half.
     func testAPendingRequestKeepsItsPlaceAcrossARelaunch() async throws {
         let directory = temporaryDirectory("ticket-relaunch")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let libraryURL = directory.appendingPathComponent("library.sqlite")
         let storeCapture = StoreCapture()
 

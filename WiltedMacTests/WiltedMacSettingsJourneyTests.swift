@@ -1,4 +1,6 @@
 import AppKit
+import SwiftUI
+import WiltedDomain
 import XCTest
 @testable import WiltedMac
 
@@ -6,6 +8,89 @@ import XCTest
 /// library publisher sync review, automation controls with quarantined-sync recovery, and Prepare now.
 @MainActor
 final class WiltedMacSettingsJourneyTests: XCTestCase {
+    func testEveryLifetimeTimeRowUsesTheSameAbbreviatedDurationUnits() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        await model.waitForLifetimeStatisticsForTesting()
+        for zero in [true, false] {
+            model.statisticsState = .ready(LifetimeStatisticsSummary(state: .ready,
+                legacy: LifetimeStatistics(audioProcessedSeconds: zero ? 0 : 3723, speechGeneratedSeconds: zero ? 0 : 120,
+                    confirmedAdTimeRemovedSeconds: zero ? 0 : 45, fasterPlaybackTimeSavedSeconds: zero ? 0 : 15),
+                measured: LifetimeMeasuredTotals(playedMilliseconds: zero ? 0 : 5_400_999, receivedBytes: zero ? 0 : 1_234_567_890, manuallySkippedMilliseconds: zero ? 0 : 59_999)))
+            let view = WiltedMacLifetimeStatisticsCard(model: model)
+            let size = CGSize(width: 800, height: 800)
+            let text = try WiltedMacHeadless.recognizedText(view, size: size).joined(separator: " ")
+            if zero {
+                // Vision confuses this monospaced zero with O/Ø. Restrict the
+                // normalization to the complete zero-seconds value token.
+                XCTAssertEqual(WiltedMacEpisodePresentation.durationLabel(0), "0s")
+                let zeroText = text.replacingOccurrences(of: #"\b[OØ]s\b"#, with: "0s", options: .regularExpression)
+                XCTAssertEqual(zeroText.components(separatedBy: "0s").count - 1, 6, text)
+            }
+            else { for value in ["1h 02m", "2m 00s", "45s", "15s", "1h 30m", "59s", "1.23 GB"] { XCTAssertTrue(text.contains(value), text) } }
+            XCTAssertFalse(text.contains(" min"), text); XCTAssertFalse(text.contains("seconds"), text)
+            for dark in [false, true] {
+                let bitmap = try WiltedMacHeadless.render(view.environment(\.colorScheme, dark ? .dark : .light), size: size)
+                let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
+                attachment.name = "formats-statistics-\(zero ? "zero" : "measured")-\(dark ? "dark" : "light")"; attachment.lifetime = .keepAlways; add(attachment)
+            }
+        }
+    }
+
+    func testExplanatorySettingsCopyMovesToHelpWhileStatusRemainsVisible() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        await model.waitForLifetimeStatisticsForTesting()
+        let view = WiltedMacSettingsView(model: model)
+        let settingsText = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 1_000, height: 2_000)).joined(separator: " ")
+        let appearance = settingsText
+        XCTAssertTrue(appearance.contains("Appearance"), appearance)
+        XCTAssertFalse(appearance.contains("Applies to every screen"), appearance)
+        let automation = settingsText
+        XCTAssertTrue(automation.contains("Automation"), automation)
+        for paragraph in ["Refresh adds metadata only", "Both overrides stay on", "An episode joins Larder"] {
+            XCTAssertFalse(automation.contains(paragraph), automation)
+        }
+        let statistics = WiltedMacLifetimeStatisticsCard(model: model)
+        let stats = settingsText
+        XCTAssertTrue(stats.contains("counted from"), "actual tracking date remains visible: \(stats)")
+        try retainCopyEvidence(WiltedMacHeadless.render(view, size: CGSize(width: 1_000, height: 2_000)), name: "settings-inline-light")
+        for (name, help, marker) in [("appearance", view.appearanceHelp, "Applies"), ("automation", view.automationHelp, "override"), ("statistics", statistics.statisticsHelp, "measured")] {
+            let size = CGSize(width: 400, height: 420)
+            let text = try WiltedMacHeadless.recognizedText(help, size: size).joined(separator: " ")
+            XCTAssertTrue(text.localizedCaseInsensitiveContains(marker), text)
+            try retainCopyEvidence(WiltedMacHeadless.render(help, size: size), name: "settings-\(name)-help-light")
+            try retainCopyEvidence(WiltedMacHeadless.render(help.environment(\.colorScheme, .dark), size: size), name: "settings-\(name)-help-dark")
+        }
+    }
+
+    func testDisabledLegacySyncHasOneStatusAndNoUnavailableActions() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-quarantined"])
+        await WiltedMacHeadless.eventually("fixture quarantine") { model.syncStatus.phase == .quarantined }
+        let size = CGSize(width: 800, height: 500)
+        let view = WiltedMacSettingsView(model: model)
+        var lines = try WiltedMacHeadless.recognizedText(view.legacySyncCard, size: size)
+        var text = lines.joined(separator: " ")
+        XCTAssertTrue(text.contains("Quarantined"), text)
+        XCTAssertFalse(lines.contains { $0 == "Upload" || $0 == "Refresh" || $0 == "Refresh Upload" }, text)
+        XCTAssertTrue(text.localizedCaseInsensitiveContains("Use Current iCloud Account"), text)
+        try retainCopyEvidence(WiltedMacHeadless.render(view.legacySyncCard, size: size), name: "sync-quarantined-light")
+        model.resetSyncAccount()
+        await WiltedMacHeadless.eventually("fixture disabled") { model.syncStatus.phase == .disabled }
+        lines = try WiltedMacHeadless.recognizedText(view.legacySyncCard, size: size)
+        text = lines.joined(separator: " ")
+        XCTAssertTrue(text.contains("Disabled"), text)
+        XCTAssertFalse(text.contains("Sync is not configured"), text)
+        XCTAssertFalse(lines.contains { $0 == "Upload" || $0 == "Refresh" || $0 == "Refresh Upload" }, text)
+        try retainCopyEvidence(WiltedMacHeadless.render(view.legacySyncCard, size: size), name: "sync-disabled-light")
+    }
+
+    private func retainCopyEvidence(_ bitmap: NSBitmapImageRep, name: String) throws {
+        let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+                                       uniformTypeIdentifier: "public.png")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private let held = "Account changed. Library changes are held for review"
 
     /// Was `testLibraryPublisherSyncReviewAndSyncNowJourney`.
@@ -80,11 +165,12 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         let settings = try WiltedMacHeadless.viewSource("WiltedMacSettingsView.swift")
         for identifier in [
             "wilted-automation-controls", "wilted-automation-refresh-policy",
-            "wilted-automation-feeds-admission-policy", "wilted-automation-processing-policy",
+            "wilted-automation-processing-policy",
             "wilted-automation-transcript-policy", "wilted-automation-remove-ads", "wilted-automation-status",
         ] {
             XCTAssertTrue(settings.contains(identifier), identifier)
         }
+        XCTAssertFalse(settings.contains("wilted-automation-feeds-admission-policy"), "the one refresh explanation belongs to Feeds")
         XCTAssertFalse(settings.contains("wilted-automation-download-policy"), "downloads belong to Larder, not Settings")
 
         // Idle: immediate processing, no off-peak controls, nothing to stop.

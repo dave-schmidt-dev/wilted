@@ -354,7 +354,11 @@ gate_ui_test_lock() {
     # to drain before enumerating the shared XCTestDevices set: a peer's clone
     # may be Shutdown briefly before xcodebuild boots it. The helper is sourced
     # in the child only to reuse the same contained clone parser and reaper.
+    local new_clones=""
     if [[ -d "$set_root" ]]; then
+        new_clones="$(_gate_lib_snapshot_clones "$set_root" | while IFS= read -r clone; do grep -qxF -- "$clone" "$before" || printf '%s\n' "$clone"; done)"
+    fi
+    if [[ -n "$new_clones" ]]; then
         "$lock_bin" --label "XCTest clone cleanup" -- bash -c \
             'source "$1"; _gate_lib_reap_new_clones "$2" "$3" "$4"' \
             _ "$_GATE_LIB_SELF" "$set_root" "$before" "$end_ts" || true
@@ -402,6 +406,10 @@ _gate_lib_reap_new_clones() {
             *) continue ;;
         esac
         grep -qxF -- "$udid" "$before" && continue
+        if [[ "${GATE_PROJECT_OWNED_CLONES_ONLY:-0}" == 1 ]]; then
+            [[ -n "${GATE_OWNED_SIMULATOR_NAME:-}" && "$name" == *" of $GATE_OWNED_SIMULATOR_NAME" ]] || continue
+            [[ "$name" =~ ^Clone[[:space:]][0-9]+[[:space:]]of[[:space:]] ]] || continue
+        fi
         [[ "$state" == "Shutdown" ]] || continue
         device_dir="$(dirname -- "$data_path")"
         birth="$(stat -f "%B" "$device_dir" 2>/dev/null || true)"
@@ -484,7 +492,7 @@ gate_sweep() {
         echo "gate_sweep: lock or sweep failed for $app (status $rc)" >&2
     fi
     # The clone set is distinct. Never nest two global exclusive locks.
-    if ! _gate_lib_already_swept "$_GATE_LIB_CLONE_SWEEP_KEY"; then
+    if [[ "${GATE_PROJECT_OWNED_CLONES_ONLY:-0}" != 1 ]] && ! _gate_lib_already_swept "$_GATE_LIB_CLONE_SWEEP_KEY"; then
         # shellcheck disable=SC2119 # takes no arguments; the guard below rejects any
         gate_sweep_xctest_clones >/dev/null || true
     fi
@@ -527,7 +535,28 @@ _gate_lib_sweep_app_unlocked() {
             echo "gate_sweep: failed to delete stale $name ($udid) creator_pid=$creator_pid" >&2
         fi
     done < <(_gate_lib_list_devices)
+    if [[ "${GATE_PROJECT_OWNED_CLONES_ONLY:-0}" == 1 ]]; then
+        _gate_lib_sweep_project_clones_unlocked "$app" || return 1
+    fi
     printf '%s\n' "$swept"
+}
+
+# Called only under gate_sweep's global lock. A legacy project clone is
+# deletable only when its encoded creator is gone and it is shut down.
+_gate_lib_sweep_project_clones_unlocked() {
+    local app="$1" set_root="${GATE_XCTEST_DEVICE_SET:-$HOME/Library/Developer/XCTestDevices}"
+    [[ -d "$set_root" ]] || return 0
+    local udid name data_path state tail creator
+    while IFS=$'\t' read -r udid name data_path state; do
+        [[ "$name" =~ ^Clone[[:space:]][0-9]+[[:space:]]of[[:space:]] ]] || continue
+        tail="${name#* of }"
+        [[ "$tail" == "$app-gate-"* && "$state" == Shutdown && "$data_path" == "$set_root/"* ]] || continue
+        tail="${tail#"$app-gate-"}"; creator="${tail%%-*}"
+        [[ "$creator" =~ ^[1-9][0-9]*$ ]] || continue
+        kill -0 "$creator" 2>/dev/null && continue
+        xcrun simctl --set "$set_root" delete "$udid" >/dev/null || return 1
+        printf 'gate_sweep: reaped project legacy clone %s (%s)\n' "$name" "$udid" >&2
+    done < <(_gate_lib_list_devices --set "$set_root")
 }
 
 # shellcheck disable=SC2120 # the arity guard exists to reject a mistaken argument

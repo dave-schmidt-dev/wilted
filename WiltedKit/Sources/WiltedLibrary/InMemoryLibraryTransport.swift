@@ -16,6 +16,7 @@ public actor InMemoryLibraryServer {
     private var progress: [String: ObservedPlayback] = [:]
     private var manualNow: Date?
     private var stats: LibraryStats?
+    private var publication: LibraryPublication?
     private var transcripts: [ItemID: LibraryTranscript] = [:]
     private var mediaOffers: [ItemID: LibraryMediaOffer] = [:]
     private var mediaFiles: [ItemID: URL] = [:]
@@ -36,7 +37,7 @@ public actor InMemoryLibraryServer {
         return LibraryChangeBatch(
             generationID: "generation-\(sequence)",
             changes: log.filter { $0.version > floor },
-            token: LibraryChangeToken(rawValue: String(sequence))
+            token: LibraryChangeToken(rawValue: String(sequence)), observedPublication: publication
         )
     }
 
@@ -138,6 +139,15 @@ public actor InMemoryLibraryServer {
 
     func currentStats() -> LibraryStats? { stats }
 
+    func publishPublication(_ value: LibraryPublication, from deviceID: String) throws {
+        guard deviceID == writerDeviceID, value.writerDeviceID == deviceID else {
+            throw LibraryTransportError.ownershipViolation("only the library writer may publish a receipt")
+        }
+        publication = value
+    }
+
+    func currentPublication() -> LibraryPublication? { publication }
+
     func publishTranscript(_ transcript: LibraryTranscript, from deviceID: String) throws {
         guard deviceID == writerDeviceID else {
             throw LibraryTransportError.ownershipViolation("\(deviceID) may not publish transcripts")
@@ -184,30 +194,42 @@ public actor InMemoryLibraryTransport: LibraryTransport {
     public let deviceID: String
     private let server: InMemoryLibraryServer
     private var generation: UInt64 = 0
+    private var ownerToken: String?
     private var afterFetch: (@Sendable () async -> Void)?
     private var afterPush: (@Sendable () async -> Void)?
+    private var afterPublication: (@Sendable () async -> Void)?
     public private(set) var provisionalFetchToken: LibraryChangeToken?
     public private(set) var committedFetchToken: LibraryChangeToken?
     public private(set) var committedSentToken: LibraryChangeToken?
 
-    public init(deviceID: String, server: InMemoryLibraryServer) {
+    public init(deviceID: String, server: InMemoryLibraryServer, verifiedOwnerToken: String? = nil) {
         self.deviceID = deviceID
         self.server = server
+        ownerToken = verifiedOwnerToken
     }
 
     /// Simulates an account change: results of work started earlier must not commit.
-    public func invalidateOperations() { generation += 1 }
+    public func invalidateOperations() { generation += 1; ownerToken = nil }
 
     /// Test seams that run after the server responds, before the caller sees the result.
     public func setAfterFetchHook(_ hook: (@Sendable () async -> Void)?) { afterFetch = hook }
     public func setAfterPushHook(_ hook: (@Sendable () async -> Void)?) { afterPush = hook }
+    public func setAfterPublicationHook(_ hook: (@Sendable () async -> Void)?) { afterPublication = hook }
 
-    public func operationGeneration() -> UInt64 { generation }
+    public func operationGeneration() async -> UInt64 { generation }
+    public func verifiedOwnerToken() async -> String? { ownerToken }
 
     public func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
-        let batch = await server.fetch(since: token)
-        provisionalFetchToken = batch.token
+        let started = generation
+        let owner = ownerToken
+        let fetched = await server.fetch(since: token)
+        let batch = LibraryChangeBatch(
+            generationID: fetched.generationID, changes: fetched.changes, token: fetched.token,
+            provenance: owner.map { .init(ownerToken: $0, operationGeneration: started, isFullBootstrap: token == nil) },
+            observedPublication: fetched.observedPublication)
         await afterFetch?()
+        guard generation == started, ownerToken == owner else { throw LibraryTransportError.superseded }
+        provisionalFetchToken = batch.token
         return batch
     }
 
@@ -271,6 +293,21 @@ public actor InMemoryLibraryTransport: LibraryTransport {
     }
 
     public func readStats() async throws -> LibraryStats? { await server.currentStats() }
+
+    public func publishPublication(_ publication: LibraryPublication) async throws {
+        let started = generation
+        try await server.publishPublication(publication, from: deviceID)
+        await afterPublication?()
+        guard generation == started else { throw LibraryTransportError.superseded }
+    }
+
+    public func readPublication() async throws -> LibraryPublication? {
+        let started = generation
+        let value = await server.currentPublication()
+        await afterPublication?()
+        guard generation == started else { throw LibraryTransportError.superseded }
+        return value
+    }
 
     public func publishTranscript(_ transcript: LibraryTranscript) async throws {
         try await server.publishTranscript(transcript, from: deviceID)

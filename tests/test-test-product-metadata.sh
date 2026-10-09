@@ -7,20 +7,8 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
   wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
 fi
 
-# Negative regression for the Mac UI leg's test-product metadata admission.
-#
-# The historical "resource fork, Finder information, or similar detritus not
-# allowed" CodeSign failure came from com.apple.FinderInfo on generated product
-# bundle roots. This test runs the gate's own metadata audit block (extracted
-# verbatim from scripts/test-gate.sh, so drift fails here) against synthetic
-# bundles in a temp root it owns, and proves:
-#   - a product carrying FinderInfo or quarantine is refused, and FinderInfo
-#     really does make codesign reject the bundle;
-#   - an allowed build-system attribute is admitted, signs, and is preserved;
-#   - the audit is read-only and scoped: a path outside the audited products
-#     keeps its attribute names and bytes, and the gate and cache helper never
-#     strip or rewrite extended attributes;
-#   - the audited products resolve inside the checkout-owned Xcode cache.
+# Real owned bundle metadata fixtures prove pre-sign stripping and post-strip
+# refusal, while a foreign bundle retains both its metadata and contents.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$repo_root/scripts/test-gate.sh"
@@ -50,7 +38,7 @@ audit_block="$(awk '
   capture && /forbidden Mac UI quarantine\/FinderInfo metadata remains/ { seen = 1 }
   capture && seen && /^  fi$/ { exit }
 ' "$gate")"
-[[ "$(printf '%s\n' "$audit_block" | wc -l | tr -d ' ')" == "8" ]] ||
+[[ "$(printf '%s\n' "$audit_block" | wc -l | tr -d ' ')" == "9" ]] ||
   fail "gate metadata audit block changed shape; review this test with it: $audit_block"
 for needle in 'xattr -lr "$runner"' 'xattr -lr "$host"' "com.apple.quarantine" "com.apple.FinderInfo" "return 1"; do
   [[ "$audit_block" == *"$needle"* ]] || fail "gate metadata audit lost: $needle"
@@ -62,14 +50,11 @@ $audit_block
 }"
 pass 'extracted the gate metadata audit block'
 
-# 2. The gate and the cache helper only read metadata; neither strips or rewrites it.
-if grep -En 'xattr[[:space:]]+(-[a-z]*[cdw][a-z]*|.*[[:space:]]-[cdw])' "$gate" "$build_with_cache"; then
-  fail 'gate or cache helper mutates extended attributes'
-fi
-if grep -Eq 'removexattr|setxattr' "$build_with_cache"; then
-  fail 'cache helper mutates extended attributes'
-fi
-pass 'gate and cache helper never strip or rewrite extended attributes'
+# 2. Extract the gate's actual scheme pre-action generator. Xcode executes
+# this action inside the existing cache lock before building/signing products.
+prepare_python="$(sed -n "/<<'PYMETADATA'/,/^PYMETADATA$/p" "$gate" | sed '1d;$d')"
+[[ "$prepare_python" == *'xattr -crs '* ]] || fail 'missing product strip'
+if grep -Eq 'removexattr|setxattr' "$build_with_cache"; then fail 'cache helper mutates metadata'; fi
 
 # 3. The audited products are the checkout-owned Xcode cache products.
 mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
@@ -91,8 +76,8 @@ cache, _lock = module.cache_paths(module.checkout_root(sys.argv[1]), "xcode", "n
 print(cache)
 PY
 )"
-[[ "$cache_root" == "$repo_root/.build/xcode" ]] || fail "Mac UI cache resolves outside the checkout: $cache_root"
-pass 'Mac UI products resolve inside the checkout-owned .build/xcode cache'
+[[ "$cache_root" == "$repo_root/.build/xcode/native-macos-ui-tests" ]] || fail "Mac UI cache resolves outside the checkout: $cache_root"
+pass 'Mac UI products resolve inside the checkout-owned .build/xcode/native-macos-ui-tests cache'
 
 # 4. Synthetic owned products.
 make_bundle() {
@@ -105,7 +90,7 @@ make_bundle() {
     -c 'Add :CFBundlePackageType string APPL' "$bundle/Contents/Info.plist" >/dev/null
   codesign --force --sign - "$bundle" >/dev/null 2>&1 || fail "could not ad-hoc sign fixture $name"
 }
-attribute_names() { xattr -r "$1" 2>/dev/null | awk -F': ' '{print $NF}' | sort; }
+attribute_names() { xattr -rs "$1" 2>/dev/null | awk -F': ' '{print $NF}' | sort; }
 tree_digest() { (cd "$1" && find . -type f -print0 | sort -z | xargs -0 shasum -a 256); }
 
 products="$root/cache/Build/Products/Debug"
@@ -157,10 +142,48 @@ grep -q 'forbidden Mac UI quarantine/FinderInfo metadata remains' "$root/quarant
   fail "quarantine refusal lost its diagnostic: $(cat "$root/quarantine.err")"
 pass 'owned product with quarantine is refused by the gate audit'
 
+xattr -w 'com.apple.fileprovider.fpfs#P' fixture "$host"
+if gate_metadata_audit "$runner" "$host" 2>"$root/provider.err"; then fail 'audit admitted file-provider metadata'; fi
+# Retain forbidden attributes until the extracted pre-sign path clears them.
+xattr -wx com.apple.FinderInfo "$finder_info" "$host"
+staged="$root/staged inputs"; mkdir -p "$staged"
+xattr -wx com.apple.FinderInfo "$finder_info" "$staged"
+ln -s "$foreign" "$staged/foreign-link"
+ln -s "$foreign" "$root/cache/Build/Products/foreign-link"
+scheme="$root/Fixture.xcscheme"
+printf '%s\n' '<Scheme><BuildAction/><TestAction/></Scheme>' >"$scheme"
+python3 -c "$prepare_python" "$scheme" "$staged" "$root/cache/Build/Products" "$root/metadata-ready" || fail 'pre-action generation failed'
+python3 - "$scheme" <<'PYACTION'
+import subprocess, sys, xml.etree.ElementTree as ET
+content = ET.parse(sys.argv[1]).find("BuildAction/PreActions/ExecutionAction/ActionContent")
+assert content is not None
+subprocess.run(["bash", "-c", content.attrib["scriptText"]], check=True)
+PYACTION
+[[ -f "$root/metadata-ready" ]] || fail 'pre-action success marker missing'
+gate_metadata_audit "$runner" "$host" || fail 'post-strip audit refused cleaned products'
+codesign --force --sign - "$runner" && codesign --force --sign - "$host" || fail 'cleaned products failed signing'
+codesign --verify --strict "$runner" && codesign --verify --strict "$host" || fail 'stripped products failed verification'
+if attribute_names "$staged" | grep -Eq 'com.apple.(FinderInfo|quarantine|fileprovider)'; then fail 'forbidden staged metadata survived strip'; fi
+pass 'real FinderInfo/file-provider/quarantine stripped before signed build and strict verification'
+# A failed strip exits before the marker even if Xcode ignores the action status.
+rm "$root/metadata-ready"
+mkdir "$root/failing-tools"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 3' >"$root/failing-tools/xattr"
+chmod +x "$root/failing-tools/xattr"
+if PATH="$root/failing-tools:$PATH" python3 - "$scheme" <<'PYFAIL'
+import subprocess, sys, xml.etree.ElementTree as ET
+content = ET.parse(sys.argv[1]).find("BuildAction/PreActions/ExecutionAction/ActionContent")
+sys.exit(subprocess.run(["bash", "-c", content.attrib["scriptText"]]).returncode)
+PYFAIL
+then fail 'strip failure was accepted'; fi
+[[ ! -f "$root/metadata-ready" ]] || fail 'strip failure created a success marker'
+[[ "$mac_ui_block" == *'[[ -f "$metadata_ready" ]]'* ]] || fail 'gate does not require pre-action success'
+pass 'strip failure cannot pass the pre-action marker admission'
+
 [[ "$(attribute_names "$foreign")" == "$foreign_names_before" ]] || fail 'foreign path attribute names changed'
 [[ "$(tree_digest "$foreign")" == "$foreign_digest_before" ]] || fail 'foreign path contents changed'
-pass 'path outside the audited products is untouched'
+pass 'foreign path, including symlink targets inside staged inputs/products, is untouched'
 
 cleanup
 trap - EXIT INT TERM
-printf '%s\n' 'test-product metadata regression passed (gate audit refuses FinderInfo/quarantine, admits build-system metadata, stays read-only and cache-scoped)'
+printf '%s\n' 'test-product metadata regression passed (pre-sign strip, post-strip refusal, foreign-path isolation)'

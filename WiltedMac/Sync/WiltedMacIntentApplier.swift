@@ -192,14 +192,14 @@ final class WiltedMacIntentApplier {
             }
         case .skip:
             switch state {
-            case .retired: return try applied()
+            case .retired: return try result(await host.skipEntry(entryID))
             // A queued entry is one the Mac kept; Skip belongs to New only.
             case .live(queued: false, _): return try result(await host.skipEntry(entryID))
             default: return try rejected(notApplicable)
             }
         case .markDone:
             switch state {
-            case .retired: return try applied()
+            case .retired: return try result(await host.markEntryDone(entryID))
             // The listening may have happened on the phone, which the Mac's own saved position
             // cannot show, so any live entry the phone marks done is completed here.
             case .live: return try result(await host.markEntryDone(entryID))
@@ -209,21 +209,21 @@ final class WiltedMacIntentApplier {
             switch state {
             case .live(queued: true, _): return try result(await host.removeEntryFromLarder(entryID))
             // Already off the Larder, retired or not: the phone's aim is met.
-            case .live(queued: false, _), .retired: return try applied()
+            case .live(queued: false, _), .retired: return try result(await host.removeEntryFromLarder(entryID))
             default: return try rejected(notApplicable)
             }
         case .restore:
-            switch state {
-            case .live: return try applied()
-            default: return try result(await host.restoreEntry(entryID))
-            }
+            return try result(await host.restoreEntry(entryID))
         case let .reorder(_, afterEntryID):
             guard case .live(queued: true, _) = state,
                   let move = Self.queueMove(of: entryID, after: afterEntryID, in: host.decisionQueue) else {
                 return try rejected(notApplicable)
             }
-            guard let move = move.change else { return try applied() }
-            return try result(await host.moveQueueEntry(from: move.from, to: move.to, resulting: move.resulting))
+            if let change = move.change {
+                return try result(await host.moveQueueEntry(from: change.from, to: change.to, resulting: change.resulting))
+            }
+            guard let index = host.decisionQueue.firstIndex(of: entryID) else { return try rejected(notApplicable) }
+            return try result(await host.moveQueueEntry(from: index, to: index, resulting: host.decisionQueue))
         case .requestMedia, .mediaCached:
             return try rejected(notApplicable)
         }
@@ -286,25 +286,35 @@ extension WiltedMacModel: WiltedMacDecisionHost {
     func keepEntry(_ entryID: ItemID) async -> Bool {
         guard let episode = episodes.first(where: { $0.id == entryID.rawValue }) else { return false }
         await awaitingDecisionWriters { keepEpisode(episode) }
-        return podcastQueueIDs.contains(entryID.rawValue)
+        guard podcastQueueIDs.contains(entryID.rawValue), let store else { return false }
+        return await recordOwnerDecision(.keep, for: entryID.rawValue, store: store)
     }
 
     func skipEntry(_ entryID: ItemID) async -> Bool {
         guard let episode = episodes.first(where: { $0.id == entryID.rawValue }) else { return false }
-        await awaitingDecisionWriters { skipFeedEpisode(episode) }
-        return decisionState(of: entryID) == .retired
+        if decisionState(of: entryID) != .retired {
+            await awaitingDecisionWriters { skipFeedEpisode(episode) }
+        }
+        guard decisionState(of: entryID) == .retired, let store else { return false }
+        return await recordOwnerDecision(.skip, for: entryID.rawValue, store: store)
     }
 
     func markEntryDone(_ entryID: ItemID) async -> Bool {
         guard let episode = episodes.first(where: { $0.id == entryID.rawValue }) else { return false }
-        await awaitingDecisionWriters { skipEpisode(episode, requireStarted: false) }
-        return decisionState(of: entryID) == .retired
+        if decisionState(of: entryID) != .retired {
+            await awaitingDecisionWriters { skipEpisode(episode, requireStarted: false) }
+        }
+        guard decisionState(of: entryID) == .retired, let store else { return false }
+        return await recordOwnerDecision(.skip, for: entryID.rawValue, store: store)
     }
 
     func removeEntryFromLarder(_ entryID: ItemID) async -> Bool {
-        // The Larder row's own Remove from Larder: it takes the entry off the queue and keeps it.
-        await awaitingDecisionWriters { removeEpisodeFromUpNext(entryID.rawValue) }
-        return !podcastQueueIDs.contains(entryID.rawValue)
+        // Keep the existing removal behavior; an already-off entry only needs provenance.
+        if podcastQueueIDs.contains(entryID.rawValue) {
+            await awaitingDecisionWriters { removeEpisodeFromUpNext(entryID.rawValue) }
+        }
+        guard !podcastQueueIDs.contains(entryID.rawValue), let store else { return false }
+        return await recordOwnerDecision(.skip, for: entryID.rawValue, store: store)
     }
 
     func restoreEntry(_ entryID: ItemID) async -> Bool {
@@ -320,20 +330,25 @@ extension WiltedMacModel: WiltedMacDecisionHost {
         default:
             break
         }
-        if case .live = decisionState(of: entryID) { return true }
-        return false
+        guard case .live = decisionState(of: entryID), let store else { return false }
+        return await recordOwnerDecision(.keep, for: raw, store: store)
     }
 
     func moveQueueEntry(from source: Int, to destination: Int, resulting: [ItemID]) async -> Bool {
+        guard decisionQueue.indices.contains(source), let store else { return false }
+        let movedID = decisionQueue[source]
         let wanted = resulting.map(\.rawValue)
-        // A phone reorder is an explicit custom order; a calculated sort would redraw it away.
-        larderSort = .custom
-        moveEpisodeInUpNext(from: source, to: destination)
-        for _ in 0..<Self.decisionMoveAttempts {
-            if podcastQueueIDs == wanted { return true }
-            try? await Task.sleep(for: Self.decisionMovePoll)
+        if podcastQueueIDs != wanted {
+            // A phone reorder is an explicit custom order; a calculated sort would redraw it away.
+            larderSort = .custom
+            moveEpisodeInUpNext(from: source, to: destination)
+            for _ in 0..<Self.decisionMoveAttempts {
+                if podcastQueueIDs == wanted { break }
+                try? await Task.sleep(for: Self.decisionMovePoll)
+            }
         }
-        return podcastQueueIDs == wanted
+        guard podcastQueueIDs == wanted else { return false }
+        return await recordOwnerDecision(.keep, for: movedID.rawValue, store: store)
     }
 
     /// Runs a model method that starts durable work and waits for the writers it registered, then

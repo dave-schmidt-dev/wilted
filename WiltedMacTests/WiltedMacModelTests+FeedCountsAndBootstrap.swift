@@ -10,7 +10,7 @@ extension WiltedMacModelTests {
 
     /// A feed's "in Larder" count is the set the shelf draws, not every record
     /// the snapshot holds: retired and hidden episodes are not on the shelf.
-    func testFeedCountCountsOnlyTheRowsFeedsRenders() throws {
+    func testFeedCountCountsOnlyTheRowsFeedsRenders() async throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let feedID = "feed-alpha"
         let visible = WiltedMacEpisode(
@@ -50,10 +50,8 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.larderEpisodeCount(forFeedID: "feed-beta"), 1)
         XCTAssertEqual(model.larderEpisodeCount(forFeedID: "feed-missing"), 0)
 
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try WiltedMacSource.views(root: root)
-        XCTAssertTrue(view.contains("model.larderEpisodeCount(forFeedID: subscription.id)"),
-                      "the Feeds row must render that count, not the raw snapshot one")
+        let capacity = try await WiltedMacCapacityCountFixture.make(self, autoKeep: .on)
+        try await capacity.assertRendered(kept: 1, waiting: 1)
     }
 
     func testLarderInProgressIndicatorUsesLiveOrSavedPositionAndExcludesFinishedRows() {
@@ -189,7 +187,6 @@ extension WiltedMacModelTests {
     /// Feeds, not a retired destination.
     func testRetryForADismissedPrepRunPointsAtFeeds() async throws {
         let directory = temporaryDirectory("dismissed-prep-retry")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://podcasts.example.test/dismissed-retry.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -236,7 +233,6 @@ extension WiltedMacModelTests {
 
     func testAStaleInvalidationFailureIsReportedApartFromAStoreOpenFailure() async throws {
         let directory = temporaryDirectory("stale-invalidation")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
@@ -259,7 +255,6 @@ extension WiltedMacModelTests {
 
     func testAStoreThatWillNotOpenKeepsItsPriorMessage() async throws {
         let directory = temporaryDirectory("store-open-failure")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { _ in throw StartupTestError.expectedFailure },
@@ -278,7 +273,6 @@ extension WiltedMacModelTests {
 
     func testStartupReadoutNamesEachAwaitedBootstrapStepInOrder() async throws {
         let directory = temporaryDirectory("startup-steps")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
@@ -324,7 +318,6 @@ extension WiltedMacModelTests {
 
     func testReclaimingStorageIsAnnouncedAfterReconcilingWorkAndBeforeLoadingLibrary() async throws {
         let directory = temporaryDirectory("reclaim-step-order")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
@@ -346,7 +339,6 @@ extension WiltedMacModelTests {
 
     func testAThrowingStorageSweepStillReachesLoadingLibraryAndReady() async throws {
         let directory = temporaryDirectory("reclaim-throwing")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
@@ -378,7 +370,6 @@ extension WiltedMacModelTests {
 
     func testTheLaunchSweepDeletesAnUnreferencedFileUnderPodcastAudioAndKeepsAReferencedOne() async throws {
         let directory = temporaryDirectory("launch-sweep")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let audioDirectory = directory.appendingPathComponent("media", isDirectory: true)
             .appendingPathComponent("PodcastAudio", isDirectory: true)
         let preparationDirectory = directory.appendingPathComponent("media", isDirectory: true)
@@ -420,7 +411,6 @@ extension WiltedMacModelTests {
 
     func testTheLaunchSweepExcludesTheCurrentPlaybackFile() async throws {
         let directory = temporaryDirectory("launch-sweep-exclusion")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let audioDirectory = directory.appendingPathComponent("media", isDirectory: true)
             .appendingPathComponent("PodcastAudio", isDirectory: true)
         try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)

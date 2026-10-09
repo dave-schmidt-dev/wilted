@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import WiltedMac
 
-/// Removes the XCTest host's process-scoped library root after the bundle ends.
+/// Drains the bundle while managed roots remain owned until the host is terminal.
 @MainActor
 final class WiltedMacTestBundleObserver: NSObject, @preconcurrency XCTestObservation {
     override init() {
@@ -16,9 +16,9 @@ final class WiltedMacTestBundleObserver: NSObject, @preconcurrency XCTestObserva
         guard fileManager.fileExists(atPath: stateDirectory.path) else { return }
 
         do {
-            try fileManager.removeItem(at: stateDirectory)
+            try WiltedMacTestTemporaryState.dispose(root: stateDirectory)
         } catch {
-            NSLog("Could not remove Wilted XCTest host state at %@: %@", stateDirectory.path, error.localizedDescription)
+            XCTFail("Could not dispose XCTest host root: \(error)")
         }
     }
 }

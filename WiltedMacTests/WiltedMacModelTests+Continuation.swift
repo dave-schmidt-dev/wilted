@@ -13,7 +13,6 @@ extension WiltedMacModelTests {
     /// through the feed, not `.newest`'s reversal of it.
     func testANaturallyFinishedEpisodeStartsTheNextReadyOneAndRemovesItself() async throws {
         let directory = temporaryDirectory("continue-ready")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-ready.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -78,7 +77,6 @@ extension WiltedMacModelTests {
     /// Coverage-table row: "Prepared episode's media disappears" (Phase 6).
     func testMediaMissingAfterPreparationDisablesPlaybackAndSurvivesDurableRecords() async throws {
         let directory = temporaryDirectory("media-missing")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/media-missing.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -156,7 +154,6 @@ extension WiltedMacModelTests {
     /// reclaims its audio file and revision records; the listening facts stay.
     func testNaturalCompletionRetiresTheEpisodeAndReclaimsItsAudioButKeepsListeningFacts() async throws {
         let directory = temporaryDirectory("natural-completion-reclaim")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/natural-completion.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -216,7 +213,6 @@ extension WiltedMacModelTests {
     /// and retirement facts without any revision row.
     func testARelaunchAfterNaturalCompletionKeepsTheEpisodePlayedAndRetiredWithItsAudioReclaimed() async throws {
         let directory = temporaryDirectory("natural-completion-relaunch")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/natural-relaunch.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -272,7 +268,6 @@ extension WiltedMacModelTests {
     /// construction (inject a counting file-manager seam)."
     func testLoadingTheLibraryChecksMediaExistenceOnceExactlyPerReadyRevision() async throws {
         let directory = temporaryDirectory("media-availability-seam")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/media-seam.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -325,7 +320,6 @@ extension WiltedMacModelTests {
     /// finished item) for the media-availability gate added on top of it.
     func testNaturalCompletionSkipsASuccessorWhoseMediaWentMissing() async throws {
         let directory = temporaryDirectory("continue-media-missing")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-media-missing.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -404,7 +398,6 @@ extension WiltedMacModelTests {
     /// (`.podcastMediaUnavailable`) is the one that flips.
     func testMediaUnavailableFaultImmediatelyDisablesPlaybackForTheSuccessorNotTheFinishedEpisode() async throws {
         let directory = temporaryDirectory("fault-media-unavailable")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/fault-media.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)

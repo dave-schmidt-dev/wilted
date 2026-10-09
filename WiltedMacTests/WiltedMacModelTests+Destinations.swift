@@ -35,7 +35,6 @@ extension WiltedMacModelTests {
 
     func testAStoredRetiredDestinationRestoresToTheLarder() {
         let directory = temporaryDirectory("navigation-restore")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let suite = WiltedMacTestPreferences.suiteName("navigation-restore-tests")
         let preferences = UserDefaults(suiteName: suite) ?? UserDefaults()
         preferences.removePersistentDomain(forName: suite)

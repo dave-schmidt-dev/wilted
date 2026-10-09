@@ -29,6 +29,23 @@ public struct LibraryStoreState: Sendable, Equatable {
     /// Mutations the server refused permanently, kept for inspection.
     public var rejected: [PendingLibraryChange] = []
     public var nextLocalSeq: UInt64 = 1
+    /// Account associated with a verified durable mirror; nil preserves legacy unbound content.
+    public var ownerToken: String?
+    /// Last accepted author publication, distinct from this device's cache commit time.
+    public var observedPublication: LibraryPublication?
+    public var cacheCommittedAt: Date?
+    /// Last admitted offer eligibility for cached list display only; never playback authority.
+    public var displayPreparedIDs: Set<ItemID>?
+    /// Last whole successful phone display, never the authoritative playable queue.
+    public var completedDisplay: LibrarySnapshot?
+    public var completedDisplayPreparedIDs: Set<ItemID>?
+    public var displayRefreshPending = false
+    /// Advances on body/offer admission; sibling negative removals keep this fence.
+    public var displayAdmissionRevision: UInt64 = 0
+    /// An observed account change remains held until explicit recovery.
+    public var reviewHold = false
+    /// A hold is latched locally but could not be saved; never claims restart protection.
+    public var reviewHoldPersistenceFailed = false
 
     public init() {}
 
@@ -116,6 +133,18 @@ public struct StagedLibraryBatch: Sendable {
 /// Local persistence contract for a library replica.
 public protocol LibraryStore: Sendable {
     func state() async -> LibraryStoreState
+    /// Cursor safe for the next fetch; legacy owner-aware stores request a fresh bootstrap.
+    func fetchCursor() async -> LibraryChangeToken?
+    /// Atomically saves display-only offer eligibility under the existing account fence.
+    func beginDisplayRefresh(transport: any LibraryTransport, expectedGeneration: UInt64) async throws
+    func completeDisplayRefresh(transport: any LibraryTransport, expectedGeneration: UInt64, expectedRevision: UInt64) async throws
+    func recordDisplayOffers(_ offers: [LibraryMediaOffer], transport: any LibraryTransport,
+                             expectedGeneration: UInt64, expectedRevision: UInt64) async throws
+    /// Removes an entry after an actual negative offer response, under the same fence.
+    func removeDisplayOffer(_ entryID: ItemID, transport: any LibraryTransport,
+                            expectedGeneration: UInt64, expectedDisplayRevision: UInt64) async throws
+    /// Commits after validating the captured transport operation at the store boundary.
+    func commit(_ staged: StagedLibraryBatch, transport: any LibraryTransport, expectedGeneration: UInt64) async throws
     /// Atomically replaces state with `staged.nextState`, or throws
     /// `LibraryTransportError.staleStagedBatch` if state changed since staging.
     func commit(_ staged: StagedLibraryBatch) async throws
@@ -123,6 +152,30 @@ public protocol LibraryStore: Sendable {
     /// Applies a send outcome only to the exact mutations that were sent.
     func acknowledge(_ result: LibraryPushResult, sent: [PendingLibraryChange]) async throws
     func resolveConflict(_ key: LibraryRecordKey, keepLocal: Bool) async throws
+}
+
+public extension LibraryStore {
+    func beginDisplayRefresh(transport: any LibraryTransport, expectedGeneration: UInt64) async throws {}
+    func completeDisplayRefresh(transport: any LibraryTransport, expectedGeneration: UInt64, expectedRevision: UInt64) async throws {}
+
+    func fetchCursor() async -> LibraryChangeToken? { await state().cursor }
+    func recordDisplayOffers(_ offers: [LibraryMediaOffer], transport: any LibraryTransport,
+                             expectedGeneration: UInt64, expectedRevision: UInt64) async throws {}
+    func removeDisplayOffer(_ entryID: ItemID, transport: any LibraryTransport,
+                            expectedGeneration: UInt64, expectedDisplayRevision: UInt64) async throws {}
+
+    func commit(_ staged: StagedLibraryBatch, transport: any LibraryTransport, expectedGeneration: UInt64) async throws {
+        if let proof = staged.batch.provenance {
+            guard proof.operationGeneration == expectedGeneration,
+                  !proof.ownerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  await transport.verifiedOwnerToken() == proof.ownerToken else {
+                throw LibraryTransportError.superseded
+            }
+        }
+        guard await transport.operationGeneration() == expectedGeneration else { throw LibraryTransportError.superseded }
+        guard !(await state().reviewHold) else { throw LibraryTransportError.ownershipViolation("Account review is required") }
+        try await commit(staged)
+    }
 }
 
 /// Reference store. `failNextCommit` lets tests prove the cursor holds on a failed commit.

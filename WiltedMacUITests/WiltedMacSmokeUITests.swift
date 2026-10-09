@@ -323,9 +323,15 @@ final class WiltedMacSmokeUITests: XCTestCase {
         launchedFixtureApps.append(app)
         // On macOS 27 a fixture app launched by XCUITest can stay inactive, and an inactive app
         // exposes only its menu bar to accessibility, so bring it forward before looking for a window.
-        app.activate()
+        if !app.wait(for: .runningForeground, timeout: 10) {
+            app.activate()
+            guard app.wait(for: .runningForeground, timeout: 10) else {
+                XCTFail("Fixture app did not reach runningForeground; observed state: \(app.state)")
+                fatalError("Fixture app did not become frontmost")
+            }
+        }
         guard app.windows.firstMatch.waitForExistence(timeout: 10) else {
-            XCTFail("Fixture app did not present a window before smoke assertions")
+            XCTFail("Fixture app did not present a window; observed state: \(app.state)")
             fatalError("Fixture app window is unavailable")
         }
         return app

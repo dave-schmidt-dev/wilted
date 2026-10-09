@@ -44,6 +44,9 @@ public actor SyncTick {
     public private(set) var roundCount = 0
     public private(set) var triggers: [Trigger] = []
 
+    /// Refresh calls that observed and joined a round already in flight.
+    public private(set) var joinedRefreshCount = 0
+
     /// - Parameters:
     ///   - gate: the device's shared gate; a closed gate delays the next round to its retry time.
     ///   - round: one batched round. It handles its own failures.
@@ -86,6 +89,7 @@ public actor SyncTick {
         // cannot both find the tick idle.
         let closed = await gate?.state
         if let running {
+            joinedRefreshCount += 1
             await running.value
             return .joined
         }

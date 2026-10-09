@@ -107,6 +107,11 @@ extension LibraryAppModel {
         tickState.offersReadAt = now()
     }
 
+    /// Entries any device, this one included, has played past the start.
+    static func startedEntries(from records: LibraryDeviceRecords) -> Set<ItemID> {
+        Set((records.nowPlaying + records.progress).filter { $0.record.positionSeconds > 0 }.map(\.record.entryID))
+    }
+
     // MARK: - Handoff, inside the round
 
     /// What the round does for a playing phone: another device that outranks it pauses it, otherwise the

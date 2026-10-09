@@ -155,6 +155,10 @@ extension WiltedMacLarderView {
         }
     }
 
+    func sectionHelp(_ section: WiltedMacLarderSection, detail: String) -> WiltedMacHelpContent {
+        WiltedMacHelpContent(title: section.title, text: detail)
+    }
+
     /// The selected presentation sections. Status owns the lifecycle actions;
     /// Feed and Date are neutral views over the same durable listening order.
     @ViewBuilder var groupList: some View {
@@ -178,22 +182,18 @@ extension WiltedMacLarderView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
                 ForEach(sections) { section in
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(section.title)
-                                .wiltedFont(.title)
-                                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                            Text("\(section.episodes.count)")
-                                .wiltedFont(.utility)
-                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                                .accessibilityIdentifier(larderSectionCountIdentifier(section))
-                            Spacer()
-                            if let detail = section.detail {
-                                Text(detail)
-                                    .wiltedFont(.utility)
-                                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .firstTextBaseline) {
+                                sectionHeading(section)
+                                if let group = section.statusGroup { groupActions(group) }
                             }
-                            if let group = section.statusGroup {
-                                groupActions(group)
+                            .fixedSize(horizontal: true, vertical: false)
+                            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                                sectionHeading(section)
+                                if let group = section.statusGroup {
+                                    HStack { groupActions(group) }
+                                        .fixedSize(horizontal: true, vertical: false)
+                                }
                             }
                         }
                         VStack(alignment: .leading, spacing: 0) {
@@ -247,6 +247,23 @@ extension WiltedMacLarderView {
             return "wilted-larder-group-\(group.rawValue.lowercased())"
         }
         return "wilted-larder-section-\(section.id)"
+    }
+
+    private func sectionHeading(_ section: WiltedMacLarderSection) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(section.title)
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Text("\(section.episodes.count)")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .accessibilityIdentifier(larderSectionCountIdentifier(section))
+            Spacer()
+            if let detail = section.detail {
+                WiltedMacHelpButton(content: sectionHelp(section, detail: detail),
+                    identifier: "wilted-larder-section-help-\(section.id)")
+            }
+        }
     }
 
     private func larderSectionCountIdentifier(_ section: WiltedMacLarderSection) -> String {

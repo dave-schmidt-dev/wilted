@@ -13,7 +13,7 @@ import WiltedSync
 import CloudKit
 #endif
 
-private let removalLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Removal")
+let removalLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Removal")
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
@@ -263,13 +263,16 @@ extension WiltedMacModel {
                     return
                 }
                 // The listener's own decision: automatic admission must not reverse it.
-                await self.recordOwnerDecision(.skip, for: episode.id, store: store)
+                let recorded = await self.recordOwnerDecision(.skip, for: episode.id, store: store)
                 if let playback = self.playback {
                     try? await playback.removePodcastQueueEpisode(id)
                     await self.refreshPodcastQueueState()
                 }
                 if wasPlaying { await self.stopPlaybackForRemovedEpisode() }
                 await self.releaseWaitingEpisodesAfterRetirement(of: episode)
+                if !recorded {
+                    self.podcastOperationMessage = "Marked \(episode.title) completed, but the choice could not be saved. Undo completion restores it."
+                }
             } catch {
                 self.undoableSkip = nil
                 self.podcastOperationMessage = "\(episode.title) could not be marked completed."
@@ -295,9 +298,11 @@ extension WiltedMacModel {
                     self.podcastOperationMessage = "\(episode.title) could not be restored."
                     return
                 }
-                await self.recordOwnerDecision(.keep, for: episode.id, store: store)
+                let recorded = await self.recordOwnerDecision(.keep, for: episode.id, store: store)
                 await self.reloadLibraryRows()
-                self.podcastOperationMessage = "Restored \(episode.title)."
+                self.podcastOperationMessage = recorded
+                    ? "Restored \(episode.title)."
+                    : "Restored \(episode.title), but the choice could not be saved."
                 if let restored = self.episodes.first(where: { $0.id == episode.id }) {
                     self.playEpisode(restored)
                 }
@@ -378,106 +383,6 @@ extension WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
-    /// The durable half of a removal, awaited rather than fired off so a
-    /// caller with something to do afterwards can do it in order.
-    ///
-    /// Returns whether the dismissal stuck. The optimistic hide is rolled back
-    /// here when it did not, but the message stays the caller's to write:
-    /// removal by hand and removal on finishing have different things to say.
-    private func dismissEpisode(_ episode: WiltedMacEpisode) async -> Bool {
-        guard let store, let id = try? ItemID(rawValue: episode.id) else { return false }
-        do {
-            try await store.dismissPodcastEpisode(id)
-            if let playback {
-                try? await playback.removePodcastQueueEpisode(id)
-                await refreshPodcastQueueState()
-            }
-            let values = try await loadLibrary(from: store)
-            articles = values.articles
-            applyEpisodes(values.episodes)
-            subscriptions = values.subscriptions
-            dismissedEpisodes = try await loadDismissedEpisodes(from: store)
-            return true
-        } catch {
-            hiddenEpisodeIDs.remove(episode.id)
-            return false
-        }
-    }
-#endif
-
-    /// Restores a removed episode. The row never left the store, so this
-    /// needs no feed evidence -- unlike the old dismiss-deleted-the-row
-    /// design, there is nothing to re-match against a re-fetched feed.
-    func restoreEpisode(_ dismissal: WiltedMacDismissedEpisode) {
-#if canImport(WiltedProducer)
-        guard podcastRestoreTasks[dismissal.id] == nil,
-              let store, let episodeID = try? ItemID(rawValue: dismissal.id) else { return }
-        undoableRemoval = nil
-        podcastOperationMessage = "Restoring \(dismissal.title)…"
-        podcastRestoreTasks[dismissal.id] = Task { [weak self] in
-            guard let self else { return }
-            defer { self.podcastRestoreTasks[dismissal.id] = nil }
-            await self.restoreEpisode(dismissal, episodeID: episodeID, store: store)
-        }
-#endif
-    }
-
-#if canImport(WiltedProducer)
-    /// Clears the optimistic hide once the store confirms the episode is
-    /// restored, so the row can actually reappear this session.
-    ///
-    /// Reported 2026-09-05: skipping the Waveform episode, then restoring it
-    /// in the same session, left the store saying "Restored X to Larder."
-    /// while the row stayed off screen until the app relaunched. `removeEpisode`
-    /// inserts the id into `hiddenEpisodeIDs` immediately, ahead of the store
-    /// round-trip, and the shelf's visible set filters on that id. The store-side
-    /// restore was working the whole time; nothing ever told the hide set the
-    /// row was no longer hidden. Both branches below -- the store reporting a
-    /// fresh restore, and the store reporting the episode was already
-    /// restored on an earlier attempt -- have to clear the id, because either
-    /// one means the store no longer considers the episode removed.
-    ///
-    /// The row never left the store under dismissal or retirement, so unlike
-    /// the old design, restoring needs no re-fetched feed to prove identity --
-    /// it is the same store operation `restoreSkippedFeedEpisode` uses.
-    func restoreEpisode(
-        _ dismissal: WiltedMacDismissedEpisode, episodeID: ItemID, store: LocalLibraryStore
-    ) async {
-        do {
-            let restored = try await store.restoreEpisode(episodeID)
-            guard restored else {
-                hiddenEpisodeIDs.remove(dismissal.id)
-                dismissedEpisodes = try await loadDismissedEpisodes(from: store)
-                podcastOperationMessage = "\(dismissal.title) was already restored."
-                return
-            }
-            hiddenEpisodeIDs.remove(dismissal.id)
-            await recordOwnerDecision(.keep, for: dismissal.id, store: store)
-            let values = try await loadLibrary(from: store)
-            articles = values.articles
-            applyEpisodes(values.episodes)
-            subscriptions = values.subscriptions
-            dismissedEpisodes = try await loadDismissedEpisodes(from: store)
-            podcastOperationMessage = "Restored \(dismissal.title) to Feeds."
-        } catch {
-            podcastOperationMessage = "\(dismissal.title) could not be restored. Retry Restore."
-        }
-    }
-#endif
-
-#if canImport(WiltedProducer)
-    /// Records the owner's Skip or Restore after the store write it describes
-    /// has committed. A failed record is logged, not thrown: the committed
-    /// change still needs its follow-up work, and a retry would find the store
-    /// already at the target and never reach this record again.
-    func recordOwnerDecision(_ decision: EpisodeDecision, for episodeID: String, store: LocalLibraryStore) async {
-        do {
-            try await recordManualDecisions(decision, for: [episodeID], at: Timestamp(Date()), store: store)
-        } catch {
-            removalLog.error("Manual decision record failed: \(String(describing: error), privacy: .public)")
-        }
-    }
-
     /// Tracks finite subscription writes so fixture teardown can cancel and
     /// drain them before its owned store directory is removed.
     func trackSubscriptionWrite(_ operation: @escaping @MainActor () async -> Void) {

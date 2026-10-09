@@ -19,7 +19,7 @@ final class LibraryAppModelTests: XCTestCase {
 
     private func makeModel(store: any LibraryStore = InMemoryLibraryStore()) -> LibraryAppModel {
         LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server),
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "test-owner"),
             store: store, deviceID: "phone", preferences: UserDefaults(suiteName: "library-app-model-tests")!, timeZone: TimeZone(identifier: "UTC")!)
     }
 
@@ -179,7 +179,7 @@ final class LibraryAppModelTests: XCTestCase {
         await second.refresh()
         XCTAssertEqual(second.queued.map(\.id.rawValue), ["a", "b"])
 
-        reopened.discard()
+        try await reopened.discard()
         XCTAssertNil(FileLibraryStore(url: url).initialCursor)
     }
 

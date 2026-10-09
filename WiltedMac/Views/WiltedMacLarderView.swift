@@ -18,6 +18,13 @@ struct WiltedMacLarderView: View {
     /// Where the Now Playing pane sits, decided from the window's width by
     /// the root: beside the list, or in the bar the root draws beneath it.
     let paneMode: WiltedMacPaneMode
+    let sidebarMode: WiltedMacSidebarMode
+
+    init(model: WiltedMacModel, paneMode: WiltedMacPaneMode, sidebarMode: WiltedMacSidebarMode = .rail) {
+        self.model = model
+        self.paneMode = paneMode
+        self.sidebarMode = sidebarMode
+    }
     @Environment(\.colorScheme) var colorScheme
     @State var dropTargetID: String?
 
@@ -36,12 +43,13 @@ struct WiltedMacLarderView: View {
         .searchable(text: $model.librarySearchQuery, prompt: "Search episodes")
     }
 
-    /// How playback follows the list, when the pane is in the bar below.
+    var playbackHelp: WiltedMacHelpContent {
+        WiltedMacHelpContent(title: "Playback order", text:
+            "Playback follows Ready episodes from top to bottom and skips rows that are not ready. Needs preparation has downloaded audio; Not downloaded needs downloading.")
+    }
+
     @ViewBuilder private var bottomModeHeader: some View {
-        Text("Playback follows Ready episodes from top to bottom and skips rows that are not ready. Needs preparation has downloaded audio; Not downloaded needs downloading.")
-            .wiltedFont(.body)
-            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            .fixedSize(horizontal: false, vertical: true)
+        WiltedMacHelpButton(content: playbackHelp, identifier: "wilted-larder-playback-help")
     }
 
     /// Totals, grouping and sort, filters, the grouped rows and the articles:
@@ -49,14 +57,16 @@ struct WiltedMacLarderView: View {
     @ViewBuilder private var larderList: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Text("Audio in Larder: \(model.larderAudioSummary.detailLabel)")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-larder-audio-total")
-                Text("Ready: \(model.larderUnfilteredEpisodes(in: .playable).count) episodes")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-larder-waiting-count")
+                if sidebarMode != .full {
+                    Text("Audio in Larder: \(model.larderAudioSummary.detailLabel)")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-larder-audio-total")
+                    Text("Ready: \(model.larderUnfilteredEpisodes(in: .playable).count) episodes")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-larder-waiting-count")
+                }
                 // Absent before the first refresh, so a Larder that has never refreshed reads as it did.
                 if model.lastPodcastRefreshAt != nil {
                     WiltedMacLastRefreshedLabel(model: model, identifier: "wilted-larder-last-refreshed")

@@ -30,6 +30,7 @@ public enum LibraryMediaRecord {
     public static let recordType = "WiltedAudio"
     public static let namePrefix = "audio:"
     public static let assetField = "asset"
+    public static let preparationField = "preparation"
     /// The largest asset the spike measured (250 MB); larger offers are rejected.
     public static let maximumByteCount: Int64 = 250 * 1024 * 1024
 
@@ -39,7 +40,7 @@ public enum LibraryMediaRecord {
 
     /// Builds the record for a ready offer; `assetURL` must be a file the caller no longer needs.
     public static func record(offer: LibraryMediaOffer, assetURL: URL, zoneID: CKRecordZone.ID) throws -> CKRecord {
-        guard offer.state == .ready, let revisionID = offer.revisionID else {
+        guard offer.state == .ready, offer.isPrepared, let revisionID = offer.revisionID else {
             throw LibraryTransportError.transport("only a ready offer has audio to upload")
         }
         guard offer.byteCount <= maximumByteCount else {
@@ -52,6 +53,7 @@ public enum LibraryMediaRecord {
         record["byteCount"] = NSNumber(value: offer.byteCount)
         record["mediaType"] = offer.mediaType as CKRecordValue
         if let duration = offer.durationSeconds { record["durationSeconds"] = NSNumber(value: duration) }
+        record[preparationField] = try JSONEncoder().encode(offer.preparation) as CKRecordValue
         record[assetField] = CKAsset(fileURL: assetURL)
         return record
     }
@@ -63,10 +65,11 @@ public enum LibraryMediaRecord {
               let hash = record["contentHash"] as? String, let bytes = record["byteCount"] as? NSNumber,
               let mediaType = record["mediaType"] as? String
         else { throw LibraryRecordMapperError.missingPayload(record.recordID.recordName) }
+        let preparation = (record[preparationField] as? Data).flatMap { try? JSONDecoder().decode(LibraryMediaPreparation.self, from: $0) }
         return try LibraryMediaOffer(
             entryID: ItemID(rawValue: entry), revisionID: RevisionID(rawValue: revision), contentHash: hash,
             byteCount: bytes.int64Value, mediaType: mediaType,
-            durationSeconds: (record["durationSeconds"] as? NSNumber)?.doubleValue)
+            durationSeconds: (record["durationSeconds"] as? NSNumber)?.doubleValue, preparation: preparation)
     }
 }
 
@@ -236,7 +239,7 @@ extension CloudKitLibraryTransport {
 
     public func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
         guard !quarantined else { throw CloudKitSyncError.quarantined }
-        guard offer.state == .ready, offer.revisionID != nil else {
+        guard offer.state == .ready, offer.isPrepared, offer.revisionID != nil else {
             throw LibraryTransportError.transport("no ready audio is offered for \(offer.entryID.rawValue)")
         }
         guard offer.byteCount <= LibraryMediaRecord.maximumByteCount else {
@@ -255,8 +258,10 @@ extension CloudKitLibraryTransport {
                 }
                 return try LibraryMediaRecord.offer(from: record)
             }
-            guard delivered.revisionID == offer.revisionID, delivered.contentHash == offer.contentHash,
-                  delivered.byteCount == offer.byteCount else {
+            guard delivered.isPrepared, delivered.entryID == offer.entryID,
+                  delivered.revisionID == offer.revisionID, delivered.contentHash == offer.contentHash,
+                  delivered.byteCount == offer.byteCount, delivered.mediaType == offer.mediaType,
+                  delivered.preparation == offer.preparation else {
                 throw LibraryTransportError.transport("the audio for \(offer.entryID.rawValue) changed since it was offered; refresh offers")
             }
             log.notice("Downloaded audio for \(offer.entryID.rawValue, privacy: .public)")

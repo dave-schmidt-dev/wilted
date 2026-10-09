@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import WiltedDomain
 import WiltedLibrary
+import WiltedPlayback
 import XCTest
 @testable import WiltediOS
 
@@ -58,6 +59,8 @@ private final class FakeWatchSource: WatchBridgeSource {
     let subject = PassthroughSubject<Void, Never>()
     var nowPlayingValue: NowPlaying?
     var upNextValue: [UpNextRow] = []
+    var skipBackValue = 15
+    var skipForwardValue = 30
     var rateValue: Double = 1
     var stopsAfterEpisodeValue = false
 
@@ -65,6 +68,8 @@ private final class FakeWatchSource: WatchBridgeSource {
     var currentNowPlaying: NowPlaying? { nowPlayingValue }
     var currentUpNext: [UpNextRow] { upNextValue }
     var currentRate: Double { rateValue }
+    var currentSkipBackSeconds: Int { skipBackValue }
+    var currentSkipForwardSeconds: Int { skipForwardValue }
     var stopsAfterCurrentEpisode: Bool { stopsAfterEpisodeValue }
 
     func notifyChange() { subject.send() }
@@ -104,6 +109,31 @@ private final class ReplyBox: @unchecked Sendable {
     var value: [String: Any] { lock.withLock { stored } }
     var isEmpty: Bool { value.isEmpty }
     func set(_ reply: [String: Any]) { lock.withLock { stored = reply } }
+}
+
+/// Audio/session doubles for the production source's configured-player reads.
+private final class WatchSourceEngine: ListenerAudioEngine, @unchecked Sendable {
+    var duration = 600.0
+    var currentTime = 0.0
+    var isPlaying = false
+    func load(url: URL) throws {}
+    func play() -> Bool { isPlaying = true; return true }
+    func pause() { isPlaying = false }
+}
+private struct WatchSourceSession: ListenerAudioSession {
+    func activate() throws {}
+    func deactivate() {}
+}
+private struct WatchSourceNowPlaying: ListenerNowPlaying {
+    func update(title: String, duration: Double, position: Double, rate: Double) {}
+    func clear() {}
+}
+@MainActor private final class WatchSourceRemote: LibraryRemoteCommands {
+    func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
+    func uninstall() {}
+}
+@MainActor private final class WatchSourceEvents: LibrarySessionEvents {
+    func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void) {}
 }
 
 /// The bridge over a fake session, fake source and fake target, with a per-test sleep timer.
@@ -409,5 +439,68 @@ final class WatchBridgeTests: XCTestCase {
         let row = try await send(.playRow(episodeID: "ep-1"), on: rig)
         XCTAssertEqual(row.value[WatchBridge.reasonKey] as? String, WatchRejection.unknownEpisode.rawValue)
         XCTAssertTrue(rig.target.performed.isEmpty, "a row from a snapshot that never published is foreign")
+    }
+
+    func testConfiguredSkipIntervalsPublishAndRoundTrip() async throws {
+        let rig = await makeReadyRig()
+        rig.source.skipBackValue = 10
+        rig.source.skipForwardValue = 45
+        rig.source.notifyChange()
+        await rig.bridge.settlePendingPublish()
+        let decoded = try WatchLinkCodec.decodeSnapshot(XCTUnwrap(rig.session.contexts.last))
+        XCTAssertEqual(decoded.skipBackSeconds, 10)
+        XCTAssertEqual(decoded.skipForwardSeconds, 45)
+    }
+
+    func testCombinedPositionAndSkipChangeBypassesPositionThrottle() async {
+        let rig = await makeReadyRig(nowPlaying: nowPlaying(isPlaying: true))
+        let published = rig.session.contexts.count
+        rig.source.nowPlayingValue = nowPlaying(isPlaying: true, positionSeconds: 42)
+        rig.source.skipBackValue = 10
+        rig.source.notifyChange()
+        await rig.bridge.settlePendingPublish()
+        XCTAssertEqual(rig.session.contexts.count, published + 1)
+        XCTAssertEqual(rig.bridge.publishedSnapshot?.skipBackSeconds, 10)
+        XCTAssertEqual(rig.bridge.publishedSnapshot?.nowPlaying?.positionSeconds, 42)
+        rig.source.nowPlayingValue = nowPlaying(isPlaying: true, positionSeconds: 43)
+        rig.source.skipForwardValue = 45
+        rig.source.notifyChange()
+        await rig.bridge.settlePendingPublish()
+        XCTAssertEqual(rig.session.contexts.count, published + 2)
+        XCTAssertEqual(rig.bridge.publishedSnapshot?.skipForwardSeconds, 45)
+    }
+
+    func testProductionSourceReadsConfiguredIntervalsFromTheActualPlayer() async throws {
+        let suite = "watch-source-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let mediaRoot = FileManager.default.temporaryDirectory.appendingPathComponent("watch-source-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: mediaRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: mediaRoot) }
+        let model = LibraryAppModel(transport: UnavailableLibraryTransport(reason: "fixture"),
+            deviceID: "fixture-phone", mediaCache: FileMediaCache(rootURL: mediaRoot), preferences: defaults)
+        let player = LibraryPlayer(engine: WatchSourceEngine(), session: WatchSourceSession(),
+            nowPlaying: WatchSourceNowPlaying(), remoteCommands: WatchSourceRemote(),
+            sessionEvents: WatchSourceEvents(), tickInterval: .seconds(3600))
+        let source = LibraryWatchSource(model: model, player: player)
+        let session = FakeWatchSession()
+        let bridge = WatchBridge(session: session, target: FakeWatchTarget(), source: source, sleepTimer: SleepTimer())
+        player.apply(LibraryPlaybackPreferences(defaultSpeed: 1.25, skipBackSeconds: 10, skipForwardSeconds: 45))
+        XCTAssertEqual(source.currentSkipBackSeconds, 10)
+        XCTAssertEqual(source.currentSkipForwardSeconds, 45)
+        bridge.start()
+        session.isPaired = true
+        session.isWatchAppInstalled = true
+        session.completeActivation()
+        await bridge.settlePendingPublish()
+        XCTAssertEqual(bridge.publishedSnapshot?.skipBackSeconds, 10)
+        XCTAssertEqual(bridge.publishedSnapshot?.skipForwardSeconds, 45)
+        let published = session.contexts.count
+        player.apply(LibraryPlaybackPreferences(defaultSpeed: 1.25, skipBackSeconds: 30, skipForwardSeconds: 60))
+        await bridge.settlePendingPublish()
+        XCTAssertEqual(session.contexts.count, published + 1)
+        XCTAssertEqual(bridge.publishedSnapshot?.skipBackSeconds, 30)
+        XCTAssertEqual(bridge.publishedSnapshot?.skipForwardSeconds, 60)
+        player.stop()
     }
 }

@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import Foundation
 import XCTest
 @testable import WiltedMac
@@ -9,6 +11,52 @@ import WiltedProducer
 /// Scenario IDs come from the retired Batch 1 prototype.
 @MainActor
 final class WiltedMacPlaybackCommandTests: XCTestCase {
+    func testHeldFirstOpeningRendersOnlyCommandAnswerAndSettledControls() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        let gate = WiltedMacCommandGate()
+        model.installPlaybackCommandHookForTesting { await gate.hold($0) }
+        gate.arm(); model.playLarderEpisode(episode); await gate.waitUntilHeld()
+        XCTAssertNotNil(model.playbackCommands.pending)
+        XCTAssertFalse(model.hasCurrentPlayback); XCTAssertEqual(backend.loadCount, 0)
+        func inspect(_ pending: Bool, _ suffix: String) throws {
+            for (name, view, size) in [
+                ("side", AnyView(WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))), CGSize(width: 520, height: 650)),
+                ("compact", AnyView(WiltedMacCompactPlayer(model: model)), CGSize(width: 700, height: 300)),
+                ("full-player", AnyView(WiltedMacFullWindowPlayer(model: model, presentation: .constant(.transcript), onSelect: { _ in }, onCollapse: { _ in })), CGSize(width: 1100, height: 700))
+            ] {
+                let text = try WiltedMacHeadless.recognizedText(view, size: size).joined(separator: " ")
+                if pending {
+                    XCTAssertFalse(text.contains("Opening"), text)
+                    let idleText = text.replacingOccurrences(of: "Nothing is plavinc", with: "Nothing is playing")
+                    XCTAssertTrue(idleText.contains("Nothing is playing"), text)
+                } else if !model.hasCurrentPlayback {
+                    // Vision reads the full-player's small idle label as "plavinc";
+                    // the retained bitmap spells "playing". Normalize only that complete label.
+                    let idleText = text.replacingOccurrences(of: "Nothing is plavinc", with: "Nothing is playing")
+                    XCTAssertTrue(idleText.contains("Nothing is playing"), text)
+                }
+                else if model.canRetryPlayback { XCTAssertTrue(text.contains("Retry playback"), text) }
+                else { XCTAssertTrue(text.contains(episode.title), text) }
+                for dark in [false, true] {
+                    let bitmap = try WiltedMacHeadless.render(view.environment(\.colorScheme, dark ? .dark : .light), size: size)
+                    let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
+                    attachment.name = "formats-opening-\(name)-\(suffix)-\(dark ? "dark" : "light")"; attachment.lifetime = .keepAlways; add(attachment)
+                }
+            }
+        }
+        try inspect(true, "held")
+        model.handleRemoteCommand(.pause); gate.release(); await model.waitForPlaybackOperationForTesting()
+        XCTAssertNil(model.playbackCommands.pending); XCTAssertEqual(backend.loadCount, 0)
+        try inspect(false, "cancelled")
+        model.playLarderEpisode(episode); await model.waitForPlaybackOperationForTesting()
+        XCTAssertTrue(model.hasCurrentPlayback); XCTAssertTrue(model.isPlaying)
+        try inspect(false, "settled")
+        model.pausePlayback(); await model.waitForPlaybackOperationForTesting()
+        backend.refusesPlay = true; model.startPlayback(); await model.waitForPlaybackOperationForTesting()
+        XCTAssertNotNil(model.playbackCommands.failure); XCTAssertTrue(model.canRetryPlayback)
+        try inspect(false, "refused")
+    }
+
     // PLAY-DELAY, RACE duplicate primary and space presses.
     func testPrimaryPressPublishesPendingBeforeFirstAwaitAndRepeatsStartOnce() async throws {
         let (model, backend, episode) = makePlaybackCommandModel()
@@ -22,6 +70,7 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         // Synchronous: nothing has been awaited yet.
         XCTAssertEqual(model.playbackStatusMessage, "Starting playback…")
         XCTAssertEqual(model.playbackStatusTone, .caution)
+        XCTAssertEqual(model.playbackCommands.pending?.usesPlayPauseButtonFeedback, true)
         XCTAssertFalse(model.isPlaying, "playing is never inferred from the press")
         let token = model.playbackCommands.generation
         model.togglePlayback()
@@ -40,6 +89,7 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         XCTAssertTrue(model.isPlaying)
         XCTAssertNil(model.playbackCommands.pending)
         XCTAssertEqual(model.playbackStatusMessage, "Playing")
+        XCTAssertNil(model.playbackCommands.pending?.usesPlayPauseButtonFeedback)
     }
 
     // RACE selection: the newer intent wins and the stale one changes nothing.

@@ -43,14 +43,18 @@ PY
 cat >"$bin/apple-ui-test-lock" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+lock_label=""
+lock_device="host"
 while (($#)); do
   case "$1" in
     --if-available) shift ;;
-    --label|--simulator-udid) shift 2 ;;
+    --label) lock_label="$2"; shift 2 ;;
+    --simulator-udid) lock_device="$2"; shift 2 ;;
     --) shift; break ;;
     *) exit 2 ;;
   esac
 done
+printf 'lock device=%s label=%s\n' "$lock_device" "$lock_label" >>"$FAKE_EVENTS"
 exec "$@"
 SH
 cat >"$bin/xcodegen" <<'SH'
@@ -128,6 +132,9 @@ PY
   grep -Fq "boot $udid" "$events"
   grep -Fq "shutdown $udid" "$events"
   grep -Fq "delete $udid" "$events"
+  grep -Fq "lock device=$udid label=fake" "$events"
+  # The real helper observed zero clones: it must not queue a host cleanup lock.
+  ! grep -Fq 'lock device=host label=XCTest clone cleanup' "$events"
 }
 run_case pass 0 10000000-0000-0000-0000-000000000001
 run_case fail 23 20000000-0000-0000-0000-000000000002
@@ -135,7 +142,14 @@ run_case fail 23 20000000-0000-0000-0000-000000000002
 # Run the real recorder in a copied fixture project with fake Xcode and simctl.
 recorder_repo="$tmp/recorder-repo"
 mkdir -p "$recorder_repo/scripts/lib" "$recorder_repo/WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"
-for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents; do
+cat >"$recorder_repo/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift" <<'SWIFT'
+final class WiltediOSPixelSnapshotTests {
+    func testRecorderProbe() {
+        assertSnapshot(image, named: "recorder-probe")
+    }
+}
+SWIFT
+for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltedWatch WiltedWatchTests; do
   mkdir -p "$recorder_repo/$directory"
 done
 for package in WiltedKit Producer CloudSync Playback; do
@@ -171,4 +185,6 @@ grep -Fq 'create 30000000-0000-0000-0000-000000000003' "$recorder_events"
 grep -Fq 'boot 30000000-0000-0000-0000-000000000003' "$recorder_events"
 grep -Fq 'shutdown 30000000-0000-0000-0000-000000000003' "$recorder_events"
 grep -Fq 'delete 30000000-0000-0000-0000-000000000003' "$recorder_events"
+grep -Fq 'lock device=30000000-0000-0000-0000-000000000003 label=Wilted iOS snapshot recording' "$recorder_events"
+! grep -Fq 'lock device=host label=XCTest clone cleanup' "$recorder_events"
 printf '%s\n' 'iOS 26.x selection and simulator cleanup tests passed'

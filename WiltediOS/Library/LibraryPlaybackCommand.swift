@@ -16,7 +16,7 @@ enum LibraryStartOutcome: Equatable, Sendable {
     case failed(LibraryStartFailure)
     /// A newer command (another start, a pause, a seek, a stop) replaced this one before it reached the player.
     case superseded
-    /// An automatic start whose own condition no longer held after the cache lookup.
+    /// Queue/media eligibility or an automatic start condition changed during the cache lookup.
     case declined
 
     /// True for the outcomes that leave the chosen episode playing: CarPlay opens Now Playing only for these.
@@ -174,12 +174,14 @@ extension LibraryAppModel {
     private func runStart(
         _ row: LibraryRow, kind: LibraryStartKind, token: UInt64, onlyIf: (@MainActor (LibraryPlayer) -> Bool)?
     ) async -> LibraryStartOutcome {
-        let cached = await mediaCache.cachedEntries()[row.id]
+        let cached = await verifiedCachedMedia(row.id, token: token)
         guard commandState.token == token else { return .superseded }
         commandState.pending = nil
         playbackCommand = nil
         guard let player = handoffState.player else { return failStart(row, .playerUnavailable, kind: kind) }
         if let onlyIf, !onlyIf(player) { return .declined }
+        guard queued.contains(where: { $0.id == row.id }), media[row.id] == .onPhone,
+              !accountQuarantined else { return .declined }
         guard let cached else { return failStart(row, .missingMedia, kind: kind) }
         let isManual = kind != .automatic
         let item = LibraryPlayer.Item(
@@ -187,7 +189,7 @@ extension LibraryAppModel {
         guard player.item != item else {
             // Loaded already: playing stays playing (a start made during the lookup is not undone).
             if player.isPlaying { return .alreadyPlaying }
-            guard player.play() else { return failStart(row, player.lastFailure ?? .engineRefused, kind: kind) }
+            guard player.playAdmitted() else { return failStart(row, player.lastFailure ?? .engineRefused, kind: kind) }
             // A manual resume of the row that is already loaded adopts its forward suffix only
             // when no valid one exists (empty, or captured around another episode): a suffix
             // that already holds this row is never rebased because progress reordered the list.
@@ -203,6 +205,31 @@ extension LibraryAppModel {
         }
         if isManual { handoffState.forwardSequenceIDs = forwardSequence }
         return position > 0 ? .resumed : .started
+    }
+
+    /// One final local boundary for row starts, Continue and retained system playback.
+    /// Exact owner-bound preparation remains usable offline until a semantic withdrawal is observed.
+    func verifiedCachedMedia(_ entryID: ItemID, token: UInt64) async -> CachedMedia? {
+        guard let context = await mediaContext() else { return nil }
+        let identity = context.storeIdentity
+        guard let entry = decisionContent.entries[entryID] else { return nil }
+        func current() -> Bool {
+            commandState.token == token && !accountQuarantined && playbackStoreIdentity == identity
+                && decisionContent.entries[entryID] == entry
+                && queued.contains { $0.id == entryID } && media[entryID] == .onPhone
+        }
+        let generation = await transport.operationGeneration()
+        guard current() else { return nil }
+        let cached = await mediaCache.cachedEntries()[entryID]
+        guard current(), let cached, cachedProofMatches(cached, entryID: entryID, context: context),
+              let identityBefore = cached.fileIdentity(),
+              await mediaContextIsCurrent(context, entryID: entryID) else { return nil }
+        guard await mediaCache.verifies(cached), current() else { return nil }
+        let currentGeneration = await transport.operationGeneration()
+        guard await mediaContextIsCurrent(context, entryID: entryID), current(),
+              currentGeneration == generation, cached.fileIdentity() == identityBefore,
+              cachedProofMatches(cached, entryID: entryID, context: context) else { return nil }
+        return cached
     }
 
     /// Publishes a failure after the player effect, so the effect's own command hook cannot clear

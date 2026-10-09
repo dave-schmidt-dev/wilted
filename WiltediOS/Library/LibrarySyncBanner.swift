@@ -12,6 +12,7 @@ enum LibrarySyncBanner: Equatable {
     case throttle(text: String, retrying: Bool)
     /// A fetch failed for another reason.
     case problem(String)
+    case publication
 
     /// Precedence: an account review blocks everything, then iCloud pushing back, then a plain failure.
     static func resolve(quarantined: Bool, throttleNotice: String?, retrying: Bool, error: String?) -> LibrarySyncBanner? {
@@ -24,13 +25,23 @@ enum LibrarySyncBanner: Equatable {
 
 struct LibrarySyncBannerView: View {
     let banner: LibrarySyncBanner
+    var publicationSummary: String = "Mac publication unknown"
+    var publicationDetail: String = "No account-associated Mac publication time is saved."
+    var publicationQualifier: String? = nil
     let onRecover: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            WiltedPublicationNotice(summary: publicationSummary, detail: publicationDetail, qualifier: publicationQualifier)
+            statusContent
+        }
+    }
+    @ViewBuilder private var statusContent: some View {
         switch banner {
+        case .publication: EmptyView()
         case .accountReview:
-            WiltedAccountRecoveryNotice(action: onRecover)
+            WiltedAccountRecoveryNotice(role: .phone, action: onRecover)
         case let .throttle(text, retrying):
             HStack(spacing: WiltedTheme.Spacing.small) {
                 // Live progress while the retry runs: a spinner, never the old time (no silent waits).

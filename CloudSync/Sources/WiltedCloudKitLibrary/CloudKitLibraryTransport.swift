@@ -18,24 +18,27 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     public nonisolated let isLibraryWriter: Bool
     let mapper: LibraryRecordMapper
 
-    private enum Operation { case fetch, send }
+    enum Operation { case fetch, send }
     private let driverFactory: CloudKitEngineDriverFactory
     private let outbox: CloudKitLibraryOutbox
     let log = Logger(subsystem: "com.zerodelta.wilted", category: "CloudKitLibraryTransport")
     var driver: any CloudKitEngineDriver
-    private var mainEpoch = 0
-    private var activeEpoch = -1
+    var mainEpoch = 0
+    var activeEpoch = -1
     private var consumer: Task<Void, Never>?
     /// Fetch position of the live engine; a differing `since` token rebuilds it.
-    private var enginePosition: Data?
-    private var resetCount = 0
+    var enginePosition: Data?
+    var resetCount = 0
     private var scanCount = 0
-    private var operationGenerationValue: UInt64 = 0
+    var operationGenerationValue: UInt64 = 0
     var quarantined = false
-    private var knownOwnerToken: String?
-    private var operation: Operation?
+    var knownOwnerToken: String?
+    var observedOwnerToken: String?
+    var needsFetchRebuild = false
+    var freshNilDriver: Bool
+    var operation: Operation?
     private var waiter: CheckedContinuation<Void, Error>?
-    private var fetchAcc = LibraryFetchAccumulator()
+    var fetchAcc = LibraryFetchAccumulator()
     private var sendAcc = LibrarySendAccumulator()
     var serverRecords: [String: CKRecord] = [:]
     private var busy = false
@@ -53,14 +56,14 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     let mediaWatchdogInterval: TimeInterval
     private var gate: [CheckedContinuation<Void, Never>] = []
     private let accountContinuation: AsyncStream<CloudKitAccountChangeSignal>.Continuation
-    public private(set) var provisionalFetchToken: LibraryChangeToken?
+    public internal(set) var provisionalFetchToken: LibraryChangeToken?
     public private(set) var committedFetchToken: LibraryChangeToken?
     public private(set) var committedSentToken: LibraryChangeToken?
 
     /// `driver` must have been built from `state`; `driverFactory` rebuilds it for a different token or a reset.
     public init(deviceID: String, isLibraryWriter: Bool, driver: any CloudKitEngineDriver,
                 driverFactory: @escaping CloudKitEngineDriverFactory, outbox: CloudKitLibraryOutbox,
-                state: LibraryChangeToken? = nil, knownOwnerToken: String? = nil,
+                state: LibraryChangeToken? = nil, knownOwnerToken: String? = nil, initialReviewHold: Bool = false,
                 mapper: LibraryRecordMapper = LibraryRecordMapper(),
                 mediaWatchdogInterval: TimeInterval = 300) throws {
         self.mediaWatchdogInterval = mediaWatchdogInterval
@@ -71,6 +74,8 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         self.outbox = outbox
         self.mapper = mapper
         self.knownOwnerToken = knownOwnerToken
+        self.quarantined = initialReviewHold
+        self.freshNilDriver = state == nil
         self.enginePosition = try Self.stateData(state)
         self.committedFetchToken = state
         (accountChanges, accountContinuation) = AsyncStream<CloudKitAccountChangeSignal>.makeStream()
@@ -85,31 +90,8 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     // MARK: LibraryTransport
 
     public func operationGeneration() async -> UInt64 { operationGenerationValue }
+    public func verifiedOwnerToken() async -> String? { observedOwnerToken }
     public func isQuarantined() -> Bool { quarantined }
-
-    public func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
-        let wanted = try Self.stateData(token)
-        await acquire()
-        defer { release() }
-        guard !quarantined else { throw CloudKitSyncError.quarantined }
-        do {
-            if wanted != enginePosition { try await replaceDriver(state: wanted) }
-            let acc: LibraryFetchAccumulator
-            do { acc = try await runFetch(on: driver, epoch: mainEpoch) }
-            catch where Self.isServerReset(error) {
-                log.notice("Library zone or engine state missing on the server; discarding engine state")
-                try await resetAfterServerReset()
-                acc = try await runFetch(on: driver, epoch: mainEpoch)
-            }
-            if !acc.library.isEmpty, acc.state == nil { throw CloudKitSyncError.stateCorrupt }
-            enginePosition = acc.state ?? enginePosition
-            provisionalFetchToken = enginePosition.map(Self.token)
-            return LibraryChangeBatch(
-                generationID: "\(mapper.zoneID.zoneName):\(resetCount)",
-                changes: acc.library.values.sorted { ($0.version, $0.change.key.description) < ($1.version, $1.change.key.description) },
-                token: provisionalFetchToken ?? token)
-        } catch { throw failure(error) }
-    }
 
     public func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult {
         guard isLibraryWriter else { throw LibraryTransportError.ownershipViolation("\(deviceID) may not write library state") }
@@ -117,9 +99,13 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         defer { release() }
         guard !quarantined else { throw CloudKitSyncError.quarantined }
         guard !changes.isEmpty else { return LibraryPushResult() }
+        let generation = operationGenerationValue
+        let owner = observedOwnerToken
         do {
             try await driver.ensureZone()
+            try verifyFetchContext(generation: generation, owner: owner)
             let bases = try await baseRecords(for: changes)
+            try verifyFetchContext(generation: generation, owner: owner)
             var saves: [CKRecord] = [], deletes: [CKRecord.ID] = []
             var sent: [PendingLibraryChange] = [], failures: [LibraryPushFailure] = []
             for pending in changes {
@@ -141,6 +127,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
             }
             guard !sent.isEmpty else { return LibraryPushResult(failures: failures) }
             let acc = try await runSend(saves: saves, deletes: deletes)
+            try verifyFetchContext(generation: generation, owner: owner)
             if acc.zoneMissing {
                 return LibraryPushResult(failures: failures + sent.map { LibraryPushFailure(key: $0.key, disposition: .retryable) })
             }
@@ -210,12 +197,17 @@ public actor CloudKitLibraryTransport: LibraryTransport {
 
     /// Re-enables operations once the owner has reviewed an account change.
     public func resetAfterAccountChange() async {
-        await driver.resetZoneBootstrap()
-        quarantined = false
+        operationGenerationValue &+= 1
+        finish(.failure(LibraryTransportError.superseded))
         knownOwnerToken = nil
+        observedOwnerToken = nil
+        needsFetchRebuild = true
+        freshNilDriver = false
         enginePosition = nil
         committedFetchToken = nil
         serverRecords = [:]
+        await driver.resetZoneBootstrap()
+        quarantined = false
     }
 
     // MARK: Device records
@@ -243,16 +235,21 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     /// still conflicting after that is reported as not acknowledged.
     func writeMany(_ items: [(name: String, build: (CKRecord?) throws -> CKRecord)]) async throws {
         guard !items.isEmpty else { return }
+        let generation = operationGenerationValue
+        let owner = observedOwnerToken
         await acquire()
         defer { release() }
         guard !quarantined else { throw CloudKitSyncError.quarantined }
         do {
+            try verifyFetchContext(generation: generation, owner: owner)
             var bases: [String: CKRecord] = [:]
             for item in items { bases[item.name] = serverRecords[item.name] }
             var remaining = items
             for _ in 1...2 {
                 try await driver.ensureZone()
+                try verifyFetchContext(generation: generation, owner: owner)
                 let acc = try await runSend(saves: try remaining.map { try $0.build(bases[$0.name]) }, deletes: [])
+                try verifyFetchContext(generation: generation, owner: owner)
                 var retry: [(name: String, build: (CKRecord?) throws -> CKRecord)] = []
                 for item in remaining where acc.saved[item.name] == nil {
                     if let failed = acc.failed[item.name] {
@@ -272,15 +269,20 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         } catch { throw failure(error) }
     }
 
-    func write(name: String, conflictIsSuccess: Bool, build: (CKRecord?) throws -> CKRecord) async throws {
+    func write(name: String, conflictIsSuccess: Bool, context: (UInt64, String?)? = nil,
+               build: (CKRecord?) throws -> CKRecord) async throws {
         await acquire()
         defer { release() }
         guard !quarantined else { throw CloudKitSyncError.quarantined }
+        let (generation, owner) = context ?? (operationGenerationValue, observedOwnerToken)
         do {
+            try verifyFetchContext(generation: generation, owner: owner)
             var base = serverRecords[name]
             for _ in 1...2 {
                 try await driver.ensureZone()
+                try verifyFetchContext(generation: generation, owner: owner)
                 let acc = try await runSend(saves: [try build(base)], deletes: [])
+                try verifyFetchContext(generation: generation, owner: owner)
                 if acc.saved[name] != nil { return }
                 if let failed = acc.failed[name] {
                     guard failed.disposition == .conflict else {
@@ -298,18 +300,10 @@ public actor CloudKitLibraryTransport: LibraryTransport {
 
     // MARK: Engine plumbing
 
-    func runFetch(on target: any CloudKitEngineDriver, epoch: Int) async throws -> LibraryFetchAccumulator {
-        try await target.ensureZone()
-        fetchAcc = LibraryFetchAccumulator()
-        operation = .fetch
-        activeEpoch = epoch
-        defer { operation = nil; activeEpoch = -1 }
-        let zones: Set<CKRecordZone.ID> = [mapper.zoneID]
-        try await wait { try await target.fetchChanges(zoneIDs: zones) }
-        return fetchAcc
-    }
-
     func runSend(saves: [CKRecord], deletes: [CKRecord.ID]) async throws -> LibrarySendAccumulator {
+        let generation = operationGenerationValue
+        let owner = observedOwnerToken
+        try verifyFetchContext(generation: generation, owner: owner)
         outbox.set(saves)
         defer { outbox.clear() }
         sendAcc = LibrarySendAccumulator()
@@ -318,8 +312,10 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         defer { operation = nil; activeEpoch = -1 }
         let target = driver
         await target.addPendingRecordZoneChanges(saves.map { .saveRecord($0.recordID) } + deletes.map { .deleteRecord($0) })
+        try verifyFetchContext(generation: generation, owner: owner)
         do { try await wait { try await target.sendChanges() } }
         catch where Self.isServerReset(error) { sendAcc.zoneMissing = true }
+        try verifyFetchContext(generation: generation, owner: owner)
         if sendAcc.zoneMissing {
             log.notice("Library zone missing while sending; discarding engine state")
             try await resetAfterServerReset()
@@ -327,7 +323,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         return sendAcc
     }
 
-    private func wait(_ body: @escaping @Sendable () async throws -> Void) async throws {
+    func wait(_ body: @escaping @Sendable () async throws -> Void) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             waiter = continuation
             Task {
@@ -342,18 +338,20 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         pending.resume(with: result)
     }
 
-    private func replaceDriver(state: Data?) async throws {
+    func replaceDriver(state: Data?) async throws {
         let replacement = try driverFactory(state)
         consumer?.cancel()
         await driver.cancelOperations()
         driver = replacement
         mainEpoch += 1
         enginePosition = state
+        freshNilDriver = state == nil
+        needsFetchRebuild = false
         serverRecords = [:]
         consumer = consume(replacement, epoch: mainEpoch)
     }
 
-    private func resetAfterServerReset() async throws {
+    func resetAfterServerReset() async throws {
         resetCount += 1
         try await replaceDriver(state: nil)
         await driver.resetZoneBootstrap()
@@ -398,7 +396,10 @@ public actor CloudKitLibraryTransport: LibraryTransport {
             guard operation == .fetch else { return }
             ingest(modifications, deletions)
         case .fetchCompleted:
-            if operation == .fetch { finish(.success(())) }
+            if operation == .fetch {
+                if let error = fetchAcc.error { finish(.failure(error)) }
+                else { finish(.success(())) }
+            }
         case let .sent(saved, failed, deleted, failedDeletes):
             guard operation == .send else { return }
             recordSent(saved, failed.map { ($0.record.recordID, $0.error) }, deleted, failedDeletes)
@@ -408,79 +409,26 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         }
     }
 
-    private func handleAccountChange(_ changeType: CloudKitAccountChangeType, _ identity: CloudKitAccountIdentity) async {
+    func handleAccountChange(_ changeType: CloudKitAccountChangeType, _ identity: CloudKitAccountIdentity) async {
         switch CloudKitAccountOwnership.resolve(changeType: changeType, identity: identity, recordedOwnerToken: knownOwnerToken) {
         case let .adopt(token):
             knownOwnerToken = token
+            observedOwnerToken = token
             accountContinuation.yield(.ownershipAdopted(token: token))
         case .confirmed:
+            observedOwnerToken = knownOwnerToken
             accountContinuation.yield(.ownershipConfirmed)
         case .quarantine:
             operationGenerationValue &+= 1
+            observedOwnerToken = nil
+            needsFetchRebuild = true
+            freshNilDriver = false
             quarantined = true
             await driver.resetZoneBootstrap()
             serverRecords = [:]
             enginePosition = nil
             finish(.failure(CloudKitSyncError.accountChanged))
             accountContinuation.yield(.quarantineRequired(changeType))
-        }
-    }
-
-    private func ingest(_ records: [CKRecord], _ deletions: [CloudKitRecordDeletion]) {
-        for record in records {
-            let name = record.recordID.recordName
-            do {
-                switch try mapper.decode(record) {
-                case let .skipped(type):
-                    log.notice("Skipping fetched record of unknown type \(type, privacy: .public)")
-                case let .library(change):
-                    guard let version = LibraryRecordMapper.version(of: record) else {
-                        log.error("Skipping record \(name, privacy: .public) without a modification date")
-                        continue
-                    }
-                    serverRecords[name] = record
-                    if (fetchAcc.library[change.key]?.version ?? 0) < version {
-                        fetchAcc.library[change.key] = VersionedLibraryChange(version: version, change: change)
-                    }
-                case let .playback(channel, value):
-                    serverRecords[name] = record
-                    fetchAcc.playback[name] = (channel, ObservedPlayback(record: value, serverModifiedAt: record.modificationDate ?? .distantPast))
-                    peers.note(device: value.deviceID, entry: value.entryID)
-                case let .intent(value):
-                    serverRecords[name] = record
-                    fetchAcc.intents[name] = value
-                    intentCache[name] = value
-                    peers.note(device: value.deviceID)
-                case let .offer(offer):
-                    serverRecords[name] = record
-                    peers.note(entry: offer.entryID)
-                case let .offerIndex(index):
-                    serverRecords[name] = record
-                    index.entryIDs.forEach { peers.note(entry: $0) }
-                case let .intentIndex(index):
-                    serverRecords[name] = record
-                    peers.note(device: index.deviceID)
-                case let .outcome(outcome):
-                    serverRecords[name] = record
-                    outcomeCache[name] = outcome
-                    peers.note(device: outcome.deviceID)
-                case let .outcomeIndex(index):
-                    serverRecords[name] = record
-                    peers.note(device: index.deviceID)
-                case .stats:
-                    serverRecords[name] = record
-                }
-            } catch {
-                log.error("Skipping undecodable record \(name, privacy: .public): \(String(describing: error), privacy: .public)")
-            }
-        }
-        for deletion in deletions {
-            serverRecords[deletion.recordID.recordName] = nil
-            if let change = mapper.deletion(recordID: deletion.recordID, recordType: deletion.recordType) {
-                fetchAcc.library[change.key] = VersionedLibraryChange(version: deletionVersion(change.key, floor: 0), change: change)
-            } else {
-                log.notice("Ignoring deletion of \(deletion.recordType, privacy: .public)")
-            }
         }
     }
 
@@ -512,7 +460,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
 
     /// A deletion carries no server timestamp, so it is stamped with the local clock but never
     /// below what this transport has seen for the key, keeping versions increasing per key.
-    private func deletionVersion(_ key: LibraryRecordKey, floor: UInt64) -> UInt64 {
+    func deletionVersion(_ key: LibraryRecordKey, floor: UInt64) -> UInt64 {
         let seen = serverRecords[mapper.recordID(for: key).recordName].flatMap(LibraryRecordMapper.version(of:)) ?? 0
         return max(Self.nowMicros, seen + 1, floor + 1)
     }

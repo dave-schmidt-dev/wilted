@@ -20,6 +20,8 @@ enum LibraryUITestScenario: String, Sendable {
     /// Pixel baselines: the normal stack with a fixed clock (so "Fetched" shows one fixed time) and a
     /// second feed, so grouping by feed has two sections.
     case pixel
+    /// A real held phone mirror and downloads; the fixture Mac now has an empty queue.
+    case heldAccount = "held-account"
 }
 
 /// DEBUG-only deterministic dependencies for the production `LibraryRoot`.
@@ -116,22 +118,40 @@ enum LibraryUITestFixture {
         let settings: LibrarySettingsStore
         private let server = InMemoryLibraryServer(writerDeviceID: "mac")
         private let cache: FileMediaCache
+        private let phone: InMemoryLibraryTransport
+        private let heldStore: FileLibraryStore?
+        private let mirror: FileLibraryStore
         private let scratch: URL
+        private let defaultsSuite: String
         private var seedTask: Task<Void, Never>?
 
         init(scenario: LibraryUITestScenario) {
             self.scenario = scenario
-            scratch = FileManager.default.temporaryDirectory.appendingPathComponent("wilted-library-root-fixture", isDirectory: true)
-            try? FileManager.default.removeItem(at: scratch)
+            scratch = FileManager.default.temporaryDirectory.appendingPathComponent("wilted-library-root-fixture-\(UUID())", isDirectory: true)
             try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-            let defaults = UserDefaults(suiteName: LibraryUITestFixture.suiteName) ?? UserDefaults()
+            defaultsSuite = LibraryUITestFixture.suiteName + "-" + UUID().uuidString
+            let defaults = UserDefaults(suiteName: defaultsSuite)!
             cache = FileMediaCache(rootURL: scratch.appendingPathComponent("media", isDirectory: true))
-            let phone = InMemoryLibraryTransport(deviceID: "phone", server: server)
+            phone = InMemoryLibraryTransport(
+                deviceID: "phone", server: server,
+                verifiedOwnerToken: "fixture-owner")
+            let storeURL = scratch.appendingPathComponent("library-state.json")
+            let store = FileLibraryStore(url: storeURL)
+            mirror = store
+            let savedStore = scenario == .heldAccount ? store : nil
+            heldStore = savedStore
+            let recovery = savedStore.map { saved in
+                LibraryAccountRecovery(quarantineEvents: AsyncStream { $0.finish() }) {
+                    try await saved.discard()
+                    return FileLibraryStore(url: storeURL)
+                }
+            }
             let transport: any LibraryTransport = scenario == .throttled ? LibraryUITestPressureTransport(inner: phone) : phone
             let mediaCache: any LibraryMediaCache = scenario == .delayedStart
                 ? LibraryUITestDelayedCache(inner: cache, delay: LibraryUITestFixture.startDelay) : cache
             model = LibraryAppModel(
-                transport: transport, deviceID: "phone", mediaCache: mediaCache, preferences: defaults,
+                transport: transport, store: store, deviceID: "phone", recovery: recovery,
+                mediaCache: mediaCache, preferences: defaults,
                 ownPositionsURL: scratch.appendingPathComponent("own-positions.json"),
                 now: LibraryUITestFixture.clock(for: scenario),
                 timeZone: scenario == .pixel ? LibraryUITestFixture.pixelTimeZone : .current)
@@ -146,6 +166,13 @@ enum LibraryUITestFixture {
         func seed() async {
             if seedTask == nil { seedTask = Task { await performSeed() } }
             await seedTask?.value
+        }
+
+        /// Headless fixture teardown removes only this stack's isolated files and defaults.
+        func closeFixture() async throws {
+            await seedTask?.value
+            try FileManager.default.removeItem(at: scratch)
+            UserDefaults().removePersistentDomain(forName: defaultsSuite)
         }
 
         private func performSeed() async {
@@ -177,13 +204,47 @@ enum LibraryUITestFixture {
                 _ = try await mac.push(changes: pending)
                 let audio = Data(repeating: 7, count: 512)
                 let hash = MediaHash.prefix + SHA256.hash(data: audio).map { String(format: "%02x", $0) }.joined()
+                try await cache.bindOwner(ownerToken: "fixture-owner", libraryScope: LibraryAppModel.mediaLibraryScope, held: false)
+                var admittedOffers: [LibraryMediaOffer] = []
                 for raw in LibraryUITestFixture.episodeIDs + (scenario == .pixel ? ["fixture-episode-3"] : []) {
                     let offer = try LibraryMediaOffer(
                         entryID: try ItemID(rawValue: raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: hash,
-                        byteCount: Int64(audio.count), mediaType: "audio/mp4", durationSeconds: LibraryUITestEngine.length)
+                        byteCount: Int64(audio.count), mediaType: "audio/mp4", durationSeconds: LibraryUITestEngine.length,
+                        preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))))
                     let file = scratch.appendingPathComponent(UUID().uuidString)
                     try audio.write(to: file)
-                    _ = try await cache.adopt(verifiedFile: file, for: offer)
+                    guard let admission = await cache.admission(entryID: offer.entryID, ownerToken: "fixture-owner",
+                        libraryScope: LibraryAppModel.mediaLibraryScope, transportGeneration: await phone.operationGeneration()) else {
+                        throw LibraryTransportError.ownershipViolation("Fixture cache admission was refused")
+                    }
+                    _ = try await cache.adopt(verifiedFile: file, for: offer, admission: admission)
+                    admittedOffers.append(offer)
+                }
+                let installed = await LibraryReconciler(transport: phone, store: mirror).synchronize()
+                if case let .failure(error) = installed { throw error }
+                if let heldStore {
+                    let saved = await heldStore.state()
+                    try await heldStore.recordDisplayOffers(admittedOffers, transport: phone,
+                        expectedGeneration: await phone.operationGeneration(), expectedRevision: saved.revision)
+                    try await heldStore.quarantine()
+                    // Divergence is on the fake Mac only: normal startup must keep the held old rows.
+                    let removals = try LibraryUITestFixture.episodeIDs.enumerated().map { index, raw in
+                        let change = LibraryChange.slotRemoved(entryID: try ItemID(rawValue: raw))
+                        return PendingLibraryChange(
+                            localSeq: UInt64(changes.count + index + 1), change: change,
+                            baseVersion: saved.versions[change.key] ?? 0)
+                    }
+                    let replacement = try await mac.push(changes: removals)
+                    guard replacement.failures.isEmpty else {
+                        throw LibraryTransportError.transport("Fixture empty replacement was refused")
+                    }
+                    let remote = await server.currentSnapshot
+                    let reopened = await FileLibraryStore(url: scratch.appendingPathComponent("library-state.json")).state()
+                    guard remote.queue.isEmpty, reopened.reviewHold,
+                          reopened.content.queue.count == LibraryUITestFixture.episodeIDs.count,
+                          reopened.displayPreparedIDs == Set(admittedOffers.map(\.entryID)) else {
+                        throw LibraryTransportError.transport("Fixture saved hold did not retain its old queue")
+                    }
                 }
             } catch {
                 assertionFailure("Library root fixture could not seed: \(error)")
@@ -297,13 +358,27 @@ struct LibraryUITestDelayedCache: LibraryMediaCache {
         try? await Task.sleep(for: delay)
         return await inner.cachedEntries()
     }
+    func storedAudioByteCounts() async -> [ItemID: Int64] { await inner.storedAudioByteCounts() }
     func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? {
         await inner.cachedTranscript(entryID: entryID, revisionID: revisionID)
     }
     func storeTranscript(_ transcript: LibraryTranscript) async { await inner.storeTranscript(transcript) }
-    func cachedFile(for offer: LibraryMediaOffer) async -> URL? { await inner.cachedFile(for: offer) }
-    func adopt(verifiedFile: URL, for offer: LibraryMediaOffer) async throws -> URL {
-        try await inner.adopt(verifiedFile: verifiedFile, for: offer)
+    func bindOwner(ownerToken: String?, libraryScope: String, held: Bool) async throws {
+        try await inner.bindOwner(ownerToken: ownerToken, libraryScope: libraryScope, held: held)
+    }
+    func admission(entryID: ItemID, ownerToken: String, libraryScope: String, transportGeneration: UInt64) async -> MediaCacheAdmission? {
+        await inner.admission(entryID: entryID, ownerToken: ownerToken, libraryScope: libraryScope, transportGeneration: transportGeneration)
+    }
+    func revokePreparation(entryID: ItemID) async throws { try await inner.revokePreparation(entryID: entryID) }
+    func verifies(_ cached: CachedMedia) async -> Bool { await inner.verifies(cached) }
+    func permits(_ admission: MediaCacheAdmission, for offer: LibraryMediaOffer) async -> Bool {
+        await inner.permits(admission, for: offer)
+    }
+    func cachedFile(for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async -> URL? {
+        await inner.cachedFile(for: offer, admission: admission)
+    }
+    func adopt(verifiedFile: URL, for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async throws -> URL {
+        try await inner.adopt(verifiedFile: verifiedFile, for: offer, admission: admission)
     }
     func remove(entryID: ItemID) async throws { try await inner.remove(entryID: entryID) }
 }
@@ -323,6 +398,7 @@ final class LibraryUITestPressureTransport: LibraryTransport, @unchecked Sendabl
         NSError(domain: "CKErrorDomain", code: 7, userInfo: ["CKErrorRetryAfterKey": NSNumber(value: 600)])
     }
 
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
         let isFirst = lock.withLock {

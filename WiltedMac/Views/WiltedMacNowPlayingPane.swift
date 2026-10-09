@@ -74,19 +74,21 @@ struct WiltedMacNowPlayingPane: View {
 
     private var idle: some View {
         VStack(spacing: WiltedTheme.Spacing.medium) {
-            VStack(spacing: WiltedTheme.Spacing.medium) {
-                WiltedProduceTile(symbol: .lettuce, size: 96)
-                    .accessibilityHidden(true)
-                Text("Nothing is playing")
-                    .wiltedFont(.title)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                Text("Choose an episode from Larder to start playback.")
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            if model.playbackCommands.pending == nil || model.playbackCommands.pending?.usesInitiatingButtonFeedback == true {
+                VStack(spacing: WiltedTheme.Spacing.medium) {
+                    WiltedProduceTile(symbol: .lettuce, size: 96)
+                        .accessibilityHidden(true)
+                    Text("Nothing is playing")
+                        .wiltedFont(.title)
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    Text("Choose an episode from Larder to start playback.")
+                        .wiltedFont(.body)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("wilted-player-idle")
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("wilted-player-idle")
-            // A first start answers here before anything is current.
+            // First-start progress stays in the initiating Larder button.
             WiltedMacPlaybackStartResult(model: model)
         }
     }
@@ -96,7 +98,7 @@ struct WiltedMacNowPlayingPane: View {
             header
             transportRow
             scrubber
-            if model.playbackError != nil || showsStatus {
+            if showsStatus {
                 HStack(spacing: WiltedTheme.Spacing.small) {
                     Text(model.playbackStatusMessage)
                         .wiltedFont(.utility)
@@ -114,6 +116,7 @@ struct WiltedMacNowPlayingPane: View {
 
     private var showsStatus: Bool {
         model.playbackStatusMessage != "Playing" && model.playbackStatusMessage != "Paused"
+            && model.playbackCommands.pending?.usesPlayPauseButtonFeedback != true
     }
 
     // MARK: Header
@@ -252,14 +255,21 @@ struct WiltedMacNowPlayingPane: View {
     private func transport(
         _ symbol: String, label: String, id: String, size: CGFloat = 24, action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        let busy = id == WiltedScreenCopy.playerPlayPauseIdentifier
+            && model.playbackCommands.pending?.usesPlayPauseButtonFeedback == true
+        return Button(action: action) {
             Image(systemName: symbol)
                 .resizable()
                 .scaledToFit()
                 .wiltedSquare(size)
+                .opacity(busy ? 0 : 1)
+                .overlay {
+                    if busy { ProgressView().controlSize(.small).accessibilityHidden(true) }
+                }
         }
         .buttonStyle(.borderless)
         .accessibilityLabel(label)
+        .accessibilityValue(busy ? model.playbackCommands.pending?.message ?? "" : "")
         .accessibilityIdentifier(id)
     }
 

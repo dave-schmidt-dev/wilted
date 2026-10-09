@@ -298,6 +298,7 @@ final class LibraryThrottleRetryTests: XCTestCase {
         guard case .throttle(_, true)? = model.syncBanner else { return XCTFail("the banner shows the retry too") }
         script.release()
         try await eventually("recovered") { model.throttleState == nil }
-        XCTAssertNil(model.syncBanner)
+        XCTAssertEqual(model.syncBanner, .publication, "Recovery clears retry but retains the author-age status")
+        XCTAssertEqual(model.publicationSummary, "Mac publication unknown", "A successful phone read cannot invent a Mac receipt")
     }
 }

@@ -5,7 +5,8 @@ Usage: ``python3 scripts/run-bounded.py --timeout-seconds N -- argv...``.
 The command is launched in its own session.  A detached watchdog retains the
 observed process tree and cleans it if this supervisor disappears.  The helper
 returns the command's exit code, dies by the command's signal, or returns 124
-for a deadline.  Cleanup failure returns 125.
+for a deadline. Cleanup failure returns 125. ``--no-timeout -- argv...``
+supervises a coordinator whose executable work has separate budgets.
 """
 
 from __future__ import annotations
@@ -351,6 +352,8 @@ def watchdog(startup_fd: int, control_fd: int) -> int:
 
 
 def parse(argv: list[str]) -> tuple[float, list[str]]:
+    if len(argv) >= 3 and argv[:2] == ["--no-timeout", "--"]:
+        return math.inf, argv[2:]
     if len(argv) < 4 or argv[0] != "--timeout-seconds" or argv[2] != "--":
         raise ValueError("usage: run-bounded.py --timeout-seconds N -- argv...")
     try:
@@ -454,6 +457,7 @@ def run(timeout: float, argv: list[str]) -> int:
             finally:
                 os.close(startup_write_fd)
 
+        work_started = time.monotonic()
         try:
             child = subprocess.Popen(
                 argv, start_new_session=True, pass_fds=(startup_write_fd,),
@@ -478,7 +482,7 @@ def run(timeout: float, argv: list[str]) -> int:
         outcome: int | None = None
         cleanup_ok = False
         try:
-            deadline = time.monotonic() + timeout
+            deadline = work_started + timeout
             interval = heartbeat_interval()
             last_heartbeat = time.monotonic()
             next_inspection = last_heartbeat
@@ -498,17 +502,40 @@ def run(timeout: float, argv: list[str]) -> int:
                     for pid in sorted(set(tree.known) - known):
                         emit(f"tracked pid={pid}")
                     next_inspection = time.monotonic() + INSPECTION_INTERVAL_SECONDS
+                now = time.monotonic()
                 if now - last_heartbeat >= interval:
-                    emit(f"running elapsed={now - (deadline - timeout):.0f}s pid={child.pid}")
+                    emit(f"running phase={os.environ.get('WILTED_WORK_PHASE', 'command')} elapsed={now - work_started:.0f}s pid={child.pid}")
                     last_heartbeat = now
                 if received:
                     outcome = -received[0]
+                    if math.isinf(timeout):
+                        # Coordinators own semantic cleanup (for example shutting
+                        # down only simulators they booted). Give their handlers
+                        # time to complete before the final descendant sweep.
+                        child.send_signal(received[0])
+                        cleanup_deadline = time.monotonic() + 300
+                        while child.poll() is None and time.monotonic() < cleanup_deadline:
+                            try:
+                                child.wait(timeout=interval)
+                            except subprocess.TimeoutExpired:
+                                emit("coordinator-cleanup-running")
                     break
                 if child.poll() is not None:
                     outcome = child.returncode
                     break
                 if now >= deadline:
-                    emit(f"timeout seconds={timeout:g} pid={child.pid}")
+                    emit(f"timeout seconds={timeout:g} pid={child.pid} phase={os.environ.get('WILTED_WORK_PHASE', 'command')} elapsed={now - work_started:.1f}s")
+                    try:
+                        table = tree.scan()
+                        for owned_pid in tree.live(table):
+                            identity = subprocess.run(
+                                ["/bin/ps", "-p", str(owned_pid), "-o", "comm="],
+                                capture_output=True, text=True, timeout=PS_TIMEOUT_SECONDS, check=False,
+                            )
+                            executable = os.path.basename(identity.stdout.strip())
+                            emit(f"diagnostic owned-pid={owned_pid} executable={executable!r}")
+                    except (OSError, subprocess.SubprocessError) as error:
+                        emit(f"diagnostic-unavailable error={type(error).__name__}")
                     outcome = EXIT_TIMEOUT
                     break
                 time.sleep(POLL_SECONDS)

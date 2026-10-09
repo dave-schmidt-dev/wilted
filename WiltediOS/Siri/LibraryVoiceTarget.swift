@@ -33,27 +33,35 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
     func perform(_ action: VoiceAction) async -> VoiceOutcome {
         switch action {
         case .none: return .done
+        case let .seekBegin(holdID, direction, entryID, sessionID):
+            guard player.item?.entryID == entryID else { return .failed }
+            return Self.outcome(await player.beginOwnedSeeking(direction == .forward ? .forward : .backward,
+                holdID: holdID, sessionID: sessionID))
+        case let .seekEnd(holdID, direction, entryID, sessionID):
+            guard player.item?.entryID == entryID else { return .failed }
+            return Self.outcome(await player.endOwnedSeeking(direction == .forward ? .forward : .backward,
+                holdID: holdID, sessionID: sessionID))
         case let .play(entryID):
             guard let row = model.queued.first(where: { $0.id == entryID }) else { return .failed }
             // Never toggles: a spoken "play" resumes a loaded episode, also when something else loaded it
             // while the cache was being read. A start superseded by another command for the same episode
             // (CarPlay or the phone during the lookup) still succeeds when that episode plays.
-            var outcome = LibraryStartOutcome.superseded
-            await IntentDonor.shared.withoutDonatingPlay(of: entryID) { outcome = await model.playCachedWithoutToggling(row) }
-            return Self.outcome(outcome.opensNowPlaying || (player.item?.entryID == entryID && player.isPlaying))
+            let outcome = await start(row)
+            let validSameItemSupersession = outcome == .superseded
+                && model.queued.contains(where: { $0.id == entryID }) && model.media[entryID] == .onPhone
+                && player.item?.entryID == entryID && player.isPlaying
+            return Self.outcome(outcome.opensNowPlaying || validSameItemSupersession)
         case .pause:
             player.pause()
             return .done
-        case .resume: return Self.outcome(player.isPlaying || player.play())
+        case .resume: return await resumeLoaded(restarting: false)
         case .skipForward:
             player.skipForward()
             return .done
         case .skipBack:
             player.skipBack()
             return .done
-        case .restart:
-            player.seek(to: 0)
-            return Self.outcome(player.isPlaying || player.play())
+        case .restart: return await resumeLoaded(restarting: true)
         case let .markCompleted(entryID):
             return await markCompleted(entryID)
         case let .setSpeed(rate):
@@ -75,6 +83,27 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
             player.setStopsAfterCurrentItem(false)
             return .done
         }
+    }
+
+    /// Reuses the shared selected-start cache/token checks; a restart seeks only after
+    /// validation succeeds for the item that was loaded when the request began.
+    private func resumeLoaded(restarting: Bool) async -> VoiceOutcome {
+        guard let entryID = player.item?.entryID,
+              let row = model.queued.first(where: { $0.id == entryID }), model.media[entryID] == .onPhone else { return .failed }
+        let outcome = await start(row) { $0.item?.entryID == entryID }
+        guard outcome.opensNowPlaying, player.item?.entryID == entryID else { return .failed }
+        if restarting { player.seek(to: 0) }
+        return .done
+    }
+
+    private func start(
+        _ row: LibraryRow, onlyIf: (@MainActor (LibraryPlayer) -> Bool)? = nil
+    ) async -> LibraryStartOutcome {
+        var outcome = LibraryStartOutcome.superseded
+        await IntentDonor.shared.withoutDonatingPlay(of: row.id) {
+            outcome = await model.startCached(row, kind: .select, onlyIf: onlyIf)
+        }
+        return outcome
     }
 
     /// Mark completed is a request to the Mac: sent is as done as the phone can make it (the Larder

@@ -24,10 +24,11 @@ final class LibraryOwnPositionTests: XCTestCase {
         let file = scratch.appendingPathComponent("incoming.mp4")
         try payload.write(to: file)
         let hash = MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        let offer = try LibraryMediaOffer(
+        let offer = try PreparedMediaFixture.certified(LibraryMediaOffer(
             entryID: entryID, revisionID: revisionID, contentHash: hash, byteCount: Int64(payload.count),
-            mediaType: "audio/mp4", durationSeconds: 600)
-        _ = try await cache.adopt(verifiedFile: file, for: offer)
+            mediaType: "audio/mp4", durationSeconds: 600))
+        _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer, owner: "fixture-owner")
+        try await PreparedMediaFixture.bootstrap(FileLibraryStore(url: scratch.appendingPathComponent("library-state.json")), cache: cache, owner: "fixture-owner")
     }
 
     override func tearDown() async throws { try? FileManager.default.removeItem(at: scratch) }
@@ -37,7 +38,8 @@ final class LibraryOwnPositionTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return LibraryAppModel(
-            transport: UnavailableLibraryTransport(reason: "no signal"), deviceID: deviceID, mediaCache: cache,
+            transport: UnavailableLibraryTransport(reason: "no signal"),
+            store: FileLibraryStore(url: scratch.appendingPathComponent("library-state.json")), deviceID: deviceID, mediaCache: cache,
             preferences: defaults, ownPositionsURL: positionsURL)
     }
 

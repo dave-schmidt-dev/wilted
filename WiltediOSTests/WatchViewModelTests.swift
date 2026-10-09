@@ -13,6 +13,21 @@ private final class RecordingCommandSender {
     }
 }
 
+/// A cancellation-ignoring sleeper that exposes exact timeout registration.
+@MainActor
+private final class PendingSleeper {
+    var waits: [(TimeInterval, CheckedContinuation<Void, Never>?)] = []
+    func sleep(_ seconds: TimeInterval) async {
+        await withCheckedContinuation { waits.append((seconds, $0)) }
+    }
+    func finish(_ index: Int) {
+        let continuation = waits[index].1
+        waits[index].1 = nil
+        continuation?.resume()
+    }
+    func finishAll() { for index in waits.indices { finish(index) } }
+}
+
 /// A hand-advanced clock, so age text is deterministic.
 @MainActor
 private final class TestClock {
@@ -90,6 +105,7 @@ final class WatchViewModelTests: XCTestCase {
 
         XCTAssertFalse(rig.model.send(.toggle))
         XCTAssertFalse(rig.model.controlsEnabled)
+        XCTAssertTrue(rig.model.pendingControls.isEmpty)
         XCTAssertTrue(rig.sender.commands.isEmpty)
     }
 
@@ -99,6 +115,7 @@ final class WatchViewModelTests: XCTestCase {
 
         XCTAssertFalse(rig.model.send(.toggle))
         XCTAssertFalse(rig.model.controlsEnabled)
+        XCTAssertTrue(rig.model.pendingControls.isEmpty)
         XCTAssertTrue(rig.sender.commands.isEmpty)
     }
 
@@ -229,5 +246,146 @@ final class WatchViewModelTests: XCTestCase {
         rig.model.isPhoneReachable = true
 
         XCTAssertNil(rig.model.unreachableNote)
+    }
+
+    private func readyModel(sleeper: PendingSleeper, sender: @escaping @MainActor (WatchCommand) -> Void = { _ in }) throws -> WatchViewModel {
+        let model = WatchViewModel(commandSender: sender, pendingSleep: { await sleeper.sleep($0) })
+        model.receive(context: try WatchLinkCodec.encode(snapshot()))
+        model.isPhoneReachable = true
+        return model
+    }
+
+    private func waitUntil(_ predicate: @MainActor () -> Bool) async {
+        let clock = ContinuousClock(), deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !predicate(), clock.now < deadline { await Task.yield() }
+        XCTAssertTrue(predicate())
+    }
+
+    func testPendingIsImmediateAndRepeatDropsOnlyTheMatchingControl() throws {
+        let sleeper = PendingSleeper()
+        let sender = RecordingCommandSender()
+        var model: WatchViewModel!
+        defer { model?.commandSender = nil }
+        model = try readyModel(sleeper: sleeper) { command in
+            XCTAssertTrue(model.isPending(command.action), "pending precedes synchronous delivery")
+            sender.send(command)
+        }
+        XCTAssertTrue(model.togglePlayPause())
+        XCTAssertFalse(model.togglePlayPause())
+        XCTAssertFalse(model.canSend(.toggle))
+        XCTAssertTrue(model.canSend(.skipBack))
+        XCTAssertTrue(model.skipBack())
+        XCTAssertEqual(sender.commands.map(\.action), [.toggle, .skipBack])
+        XCTAssertEqual(model.snapshot?.nowPlaying?.isPlaying, true, "pending never invents confirmed playback")
+        model.receive(context: try WatchLinkCodec.encode(snapshot()))
+    }
+
+    func testRowsRatesAndSleepChoicesHaveIndependentPendingKeys() throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        let actions: [WatchCommand.Action] = [.playRow(episodeID: "ep-2"), .playRow(episodeID: "ep-3"),
+            .setRate(1.25), .setRate(1.5), .startSleep(minutes: 5), .startSleep(minutes: 10),
+            .startSleepEndOfEpisode, .cancelSleep]
+        for action in actions {
+            XCTAssertTrue(model.canSend(action))
+            XCTAssertTrue(model.send(action))
+            XCTAssertTrue(model.isPending(action))
+            XCTAssertFalse(model.send(action))
+        }
+        XCTAssertTrue(model.hasPendingSpeed)
+        XCTAssertTrue(model.hasPendingSleep)
+        model.receive(context: try WatchLinkCodec.encode(snapshot()))
+        XCTAssertTrue(model.pendingControls.isEmpty)
+    }
+
+    func testRejectedCommandsNeverBecomePending() throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        XCTAssertFalse(model.send(.setRate(1.1)))
+        XCTAssertFalse(model.send(.setRate(.nan)))
+        XCTAssertFalse(model.send(.startSleep(minutes: 7)))
+        model.commandSender = nil
+        XCTAssertFalse(model.send(.toggle))
+        XCTAssertFalse(model.canSend(.toggle))
+        XCTAssertTrue(model.pendingControls.isEmpty)
+    }
+
+    func testOnlyAValidSnapshotClearsPending() throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        XCTAssertTrue(model.send(.toggle))
+        model.receive(context: [:])
+        XCTAssertTrue(model.isPending(.toggle))
+        model.receive(context: try WatchLinkCodec.encode(snapshot()))
+        XCTAssertTrue(model.pendingControls.isEmpty)
+    }
+
+    func testThreeSecondExpiryClearsOnlyItsMatchingControl() async throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        defer { sleeper.finishAll() }
+        XCTAssertTrue(model.send(.toggle))
+        await waitUntil { sleeper.waits.count == 1 }
+        XCTAssertEqual(sleeper.waits[0].0, 3)
+        XCTAssertTrue(model.send(.skipBack))
+        await waitUntil { sleeper.waits.count == 2 }
+        XCTAssertTrue(model.isPending(.toggle))
+        sleeper.finish(0)
+        await waitUntil { !model.isPending(.toggle) }
+        XCTAssertTrue(model.isPending(.skipBack))
+        let remaining = Array(model.pendingExpiryTasks.values)
+        model.receive(context: try WatchLinkCodec.encode(snapshot()))
+        sleeper.finishAll()
+        for expiry in remaining { await expiry.value }
+    }
+
+    func testCancelledOldExpiryCannotClearANewerGeneration() async throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        defer { sleeper.finishAll() }
+        XCTAssertTrue(model.send(.toggle))
+        await waitUntil { sleeper.waits.count == 1 }
+        let oldExpiry = try XCTUnwrap(model.pendingExpiryTasks[.toggle])
+        model.receive(context: try WatchLinkCodec.encode(snapshot()))
+        XCTAssertTrue(model.send(.toggle))
+        await waitUntil { sleeper.waits.count == 2 }
+        sleeper.finish(0)
+        await oldExpiry.value
+        XCTAssertTrue(model.isPending(.toggle))
+        sleeper.finish(1)
+        await waitUntil { !model.isPending(.toggle) }
+    }
+
+    func testSynchronousSnapshotDeliveryDoesNotRemarkPending() throws {
+        let sleeper = PendingSleeper()
+        let context = try WatchLinkCodec.encode(snapshot())
+        var model: WatchViewModel!
+        model = try readyModel(sleeper: sleeper) { _ in model.receive(context: context) }
+        defer { model.commandSender = nil }
+        XCTAssertTrue(model.send(.toggle))
+        XCTAssertTrue(model.pendingControls.isEmpty)
+        XCTAssertTrue(model.send(.toggle))
+        XCTAssertTrue(model.pendingControls.isEmpty)
+    }
+
+    func testAllSpeedTextMatchesBothPhoneFormatters() {
+        let expected = ["0.5x", "0.75x", "1x", "1.25x", "1.5x", "1.75x", "2x"]
+        XCTAssertEqual(WatchSpeeds.all.map(PlaybackSpeedText.rate), expected)
+        for rate in WatchSpeeds.all {
+            XCTAssertEqual(PlaybackSpeedText.rate(rate), LibraryPlayerText.rate(rate))
+            XCTAssertEqual(PlaybackSpeedText.rate(rate), LibrarySettingsFormat.speed(rate))
+        }
+    }
+
+    func testSleepCountdownIsActiveOnlyForAFutureDeadline() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let model = WatchViewModel(now: { date })
+        let states: [(SleepState, Date?)] = [(SleepState.untilDate(date.addingTimeInterval(600)), date.addingTimeInterval(600)),
+                                 (.untilDate(date), nil), (.untilDate(date.addingTimeInterval(-1)), nil),
+                                 (.off, nil), (.endOfEpisode, nil)]
+        for (sleep, expected) in states {
+            model.receive(context: try WatchLinkCodec.encode(WatchSnapshot(sleep: sleep)))
+            XCTAssertEqual(model.activeSleepDeadline(at: date), expected)
+        }
     }
 }

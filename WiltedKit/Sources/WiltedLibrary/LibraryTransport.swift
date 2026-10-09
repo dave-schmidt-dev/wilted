@@ -64,11 +64,16 @@ public struct LibraryChangeBatch: Sendable, Equatable {
     public let generationID: String
     public let changes: [VersionedLibraryChange]
     public let token: LibraryChangeToken?
+    public let provenance: LibraryFetchProvenance?
+    public let observedPublication: LibraryPublication?
 
-    public init(generationID: String, changes: [VersionedLibraryChange], token: LibraryChangeToken?) {
+    public init(generationID: String, changes: [VersionedLibraryChange], token: LibraryChangeToken?,
+                provenance: LibraryFetchProvenance? = nil, observedPublication: LibraryPublication? = nil) {
         self.generationID = generationID
         self.changes = changes
         self.token = token
+        self.provenance = provenance
+        self.observedPublication = observedPublication
     }
 }
 
@@ -197,6 +202,8 @@ public protocol LibraryTransport: Sendable {
     /// Generation captured by in-flight work; adapters bump it when ownership changes so
     /// stale results cannot be committed.
     func operationGeneration() async -> UInt64
+    /// Current-launch observed owner, never just the constructor's saved owner.
+    func verifiedOwnerToken() async -> String?
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult
     /// Idempotent by `LibraryIntent.id`.
@@ -227,6 +234,10 @@ public protocol LibraryTransport: Sendable {
     func publishStats(_ stats: LibraryStats) async throws
     /// The Mac's last published statistics, or nil before it has published any. Read by name.
     func readStats() async throws -> LibraryStats?
+    /// Writer only. Acknowledges the dedicated publication record before returning.
+    func publishPublication(_ publication: LibraryPublication) async throws
+    /// Observed author evidence only; not proof of the reader's displayed snapshot.
+    func readPublication() async throws -> LibraryPublication?
     /// Mac only: publishes the transcript for one prepared revision. One per entry; a newer
     /// revision replaces the older. Kept apart from the library state, so no state fetch carries it.
     func publishTranscript(_ transcript: LibraryTranscript) async throws
@@ -241,6 +252,7 @@ public protocol LibraryTransport: Sendable {
 
 public extension LibraryTransport {
     func operationGeneration() async -> UInt64 { 0 }
+    func verifiedOwnerToken() async -> String? { nil }
     func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
         for item in records { try await publish(item.record, as: item.channel) }
     }
@@ -268,6 +280,10 @@ public extension LibraryTransport {
         throw LibraryTransportError.transport("statistics are not supported by this transport")
     }
     func readStats() async throws -> LibraryStats? { nil }
+    func publishPublication(_ publication: LibraryPublication) async throws {
+        throw LibraryTransportError.transport("library publication is not supported by this transport")
+    }
+    func readPublication() async throws -> LibraryPublication? { nil }
     func publishTranscript(_ transcript: LibraryTranscript) async throws {
         throw LibraryTransportError.transport("transcripts are not supported by this transport")
     }

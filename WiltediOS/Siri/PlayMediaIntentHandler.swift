@@ -64,8 +64,19 @@ final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling {
     /// The episode a request resolves to: the one Siri already chose if still downloaded, else the best
     /// match for the search.
     static func resolvedEpisode(for intent: INPlayMediaIntent) async -> VoiceEpisode? {
-        if let chosen = await PlayMediaCore.episode(withIdentifier: intent.mediaItems?.first?.identifier) { return chosen }
-        return await PlayMediaCore.episode(for: PlayMediaRequest.commands(for: intent.mediaSearch))
+        let chosenIdentifier = intent.mediaItems?.first?.identifier
+        if let chosen = await PlayMediaCore.episode(withIdentifier: chosenIdentifier) { return chosen }
+        let commands = PlayMediaRequest.commands(for: intent.mediaSearch)
+        if chosenIdentifier != nil, commands.count == 1 {
+            switch commands[0] {
+            case .playNext(show: nil), .playLatest(show: nil):
+                // A stale explicit choice with no search cannot become an unrelated default.
+                return nil
+            default:
+                break
+            }
+        }
+        return await PlayMediaCore.episode(for: commands)
     }
 
     func resolveMediaItems(for intent: INPlayMediaIntent) async -> [INPlayMediaMediaItemResolutionResult] {
@@ -77,11 +88,7 @@ final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling {
     }
 
     func handle(intent: INPlayMediaIntent) async -> INPlayMediaIntentResponse {
-        var id = intent.mediaItems?.first?.identifier.flatMap { try? ItemID(rawValue: $0) }
-        if id == nil {
-            id = await PlayMediaCore.episode(for: PlayMediaRequest.commands(for: intent.mediaSearch))?.id
-        }
-        guard let id, await PlayMediaCore.play(id) else {
+        guard let episode = await Self.resolvedEpisode(for: intent), await PlayMediaCore.play(episode.id) else {
             return INPlayMediaIntentResponse(code: .failure, userActivity: nil)
         }
         return INPlayMediaIntentResponse(code: .success, userActivity: nil)

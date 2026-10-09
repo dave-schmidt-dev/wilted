@@ -15,6 +15,9 @@ protocol WatchBridgeSource: AnyObject {
     var currentUpNext: [UpNextRow] { get }
     /// The current playback rate.
     var currentRate: Double { get }
+    /// The intervals the actual phone player currently uses.
+    var currentSkipBackSeconds: Int { get }
+    var currentSkipForwardSeconds: Int { get }
     /// Whether playback should stop at the end of the current episode.
     var stopsAfterCurrentEpisode: Bool { get }
 }
@@ -66,6 +69,17 @@ final class WatchBridge {
     private var lastPublishedAt: Date?
     private var activationCompleted = false
     private var started = false
+    private var controlSessionID = UUID()
+    private struct HeldSeek {
+        let action: WatchCommand.Action
+        let generation = UUID()
+    }
+    private var heldSeek: HeldSeek?
+    private var seekLeaseTask: Task<Void, Never>?
+    private var seekBeginTask: Task<VoiceOutcome, Never>?
+    private let seekLeaseNow: @MainActor () -> TimeInterval
+    private let seekLeaseSleep: @MainActor (TimeInterval) async throws -> Void
+    private var seekLeaseDeadline: TimeInterval = 0
 
     /// Builds a bridge over the session, the shared voice target, the phone state and the sleep timer.
     init(
@@ -73,13 +87,17 @@ final class WatchBridge {
         target: any VoiceCommandTarget,
         source: any WatchBridgeSource,
         sleepTimer: SleepTimer = .shared,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        seekLeaseNow: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        seekLeaseSleep: @escaping @MainActor (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
     ) {
         self.session = session
         self.target = target
         self.source = source
         self.sleepTimer = sleepTimer
         self.now = now
+        self.seekLeaseNow = seekLeaseNow
+        self.seekLeaseSleep = seekLeaseSleep
     }
 
     /// The last snapshot the phone successfully published, if any. Commands validate against it.
@@ -102,6 +120,7 @@ final class WatchBridge {
 
     /// Schedules one coalesced publish for the next main-actor turn; a burst of changes publishes once.
     func setNeedsPublish() {
+        if let heldSeek, !seekFenceIsCurrent(heldSeek.action) { cancelHeldSeek() }
         guard started, publishTask == nil else { return }
         publishTask = Task { @MainActor [weak self] in
             await Task.yield()
@@ -125,10 +144,12 @@ final class WatchBridge {
     private func publishIfPossible() {
         guard isReady else { return }
         let snapshot = WatchSnapshot(
-            nowPlaying: source.currentNowPlaying,
+            nowPlaying: source.currentNowPlaying, controlSessionID: controlSessionID,
             upNext: source.currentUpNext,
             rate: source.currentRate,
             sleep: sleepState(),
+            skipBackSeconds: source.currentSkipBackSeconds,
+            skipForwardSeconds: source.currentSkipForwardSeconds,
             publishedAt: now())
         if let lastPublished, let lastPublishedAt, Self.differsOnlyByPosition(lastPublished, snapshot),
            now().timeIntervalSince(lastPublishedAt) < positionRepublishInterval {
@@ -147,6 +168,7 @@ final class WatchBridge {
 
     private func resolution(for action: WatchCommand.Action) -> Resolution {
         switch action {
+        case .seek: return .reject(.invalidCommand) // Owned seeking is handled before ordinary actions.
         case let .playRow(episodeID):
             guard let published = lastPublished, Self.contains(published, episodeID: episodeID),
                   let entryID = try? ItemID(rawValue: episodeID) else { return .reject(.unknownEpisode) }
@@ -179,6 +201,9 @@ final class WatchBridge {
     private static func differsOnlyByPosition(_ old: WatchSnapshot, _ new: WatchSnapshot) -> Bool {
         guard old.version == new.version, old.upNext == new.upNext, old.rate == new.rate,
               old.sleep == new.sleep,
+              old.controlSessionID == new.controlSessionID,
+              old.skipBackSeconds == new.skipBackSeconds,
+              old.skipForwardSeconds == new.skipForwardSeconds,
               let oldPlaying = old.nowPlaying, let newPlaying = new.nowPlaying,
               oldPlaying.positionSeconds != newPlaying.positionSeconds,
               // Only while playing: the next tick republishes. A paused seek has no later tick.
@@ -189,6 +214,8 @@ final class WatchBridge {
             && oldPlaying.showTitle == newPlaying.showTitle
             && oldPlaying.durationSeconds == newPlaying.durationSeconds
             && oldPlaying.isPlaying == newPlaying.isPlaying
+            && oldPlaying.seekSessionID == newPlaying.seekSessionID
+            && oldPlaying.canSeek == newPlaying.canSeek
     }
 
     private static func rejectionReply(_ reason: WatchRejection) -> [String: Any] {
@@ -212,21 +239,25 @@ final class WatchBridge {
 
 extension WatchBridge: WatchSessionDelegate {
     func watchSessionDidActivate() {
+        cancelHeldSeek(); controlSessionID = UUID()
         activationCompleted = true
         setNeedsPublish()
     }
 
     func watchSessionDidBecomeInactive() {
+        cancelHeldSeek(); controlSessionID = UUID()
         activationCompleted = false
         reactivate()
     }
 
     func watchSessionDidDeactivate() {
+        cancelHeldSeek(); controlSessionID = UUID()
         activationCompleted = false
         reactivate()
     }
 
     func watchSessionWatchStateDidChange() {
+        if !isReady { cancelHeldSeek(); controlSessionID = UUID() }
         setNeedsPublish()
     }
 
@@ -239,6 +270,7 @@ extension WatchBridge: WatchSessionDelegate {
             replyHandler(Self.rejectionReply(.invalidCommand))
             return
         }
+        if case .seek = command.action { receiveSeek(command.action, replyHandler: replyHandler); return }
         switch resolution(for: command.action) {
         case let .reject(reason):
             replyHandler(Self.rejectionReply(reason))
@@ -252,6 +284,100 @@ extension WatchBridge: WatchSessionDelegate {
                 replyHandler(Self.outcomeReply(outcome))
             }
         }
+    }
+
+    private func seekFenceIsCurrent(_ action: WatchCommand.Action) -> Bool {
+        guard case let .seek(_, _, _, episode, session, load) = action,
+              isReady, session == controlSessionID,
+              let current = source.currentNowPlaying, current.episodeID == episode,
+              current.seekSessionID == load, current.canSeek == true else { return false }
+        return true
+    }
+
+    private func seekVoiceAction(_ action: WatchCommand.Action, ending: Bool) -> VoiceAction? {
+        guard case let .seek(_, direction, id, episode, _, load) = action,
+              let entry = try? ItemID(rawValue: episode) else { return nil }
+        let voiceDirection: VoiceSeekDirection = direction == .forward ? .forward : .backward
+        return ending ? .seekEnd(holdID: id, direction: voiceDirection, entryID: entry, seekSessionID: load)
+            : .seekBegin(holdID: id, direction: voiceDirection, entryID: entry, seekSessionID: load)
+    }
+
+    private func matchesHeldSeek(_ action: WatchCommand.Action) -> Bool {
+        guard let held = heldSeek,
+              case let .seek(_, d, id, episode, session, load) = action,
+              case let .seek(_, oldD, oldID, oldEpisode, oldSession, oldLoad) = held.action else { return false }
+        return d == oldD && id == oldID && episode == oldEpisode && session == oldSession && load == oldLoad
+    }
+
+    private func renewSeekLease() {
+        seekLeaseTask?.cancel()
+        seekLeaseDeadline = seekLeaseNow() + 2.5
+        guard let generation = heldSeek?.generation else { return }
+        seekLeaseTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do { try await self.seekLeaseSleep(2.5) } catch { return }
+            guard !Task.isCancelled, self.heldSeek?.generation == generation,
+                  self.seekLeaseNow() >= self.seekLeaseDeadline else { return }
+            self.cancelHeldSeek()
+        }
+    }
+
+    private func cancelHeldSeek() {
+        let action = heldSeek?.action
+        heldSeek = nil; seekLeaseTask?.cancel(); seekLeaseTask = nil
+        seekBeginTask?.cancel(); seekBeginTask = nil
+        guard let action, let end = seekVoiceAction(action, ending: true) else { return }
+        let target = target
+        Task { @MainActor in _ = await target.perform(end) }
+    }
+
+    private func receiveSeek(_ action: WatchCommand.Action, replyHandler: @escaping ([String: Any]) -> Void) {
+        guard case let .seek(phase, _, _, _, _, _) = action, seekFenceIsCurrent(action) else {
+            replyHandler(Self.rejectionReply(.failed)); return
+        }
+        if phase == .renew {
+            guard matchesHeldSeek(action) else { replyHandler(Self.rejectionReply(.failed)); return }
+            renewSeekLease(); replyHandler(Self.outcomeReply(.done)); return
+        }
+        if phase == .end {
+            guard matchesHeldSeek(action), let end = seekVoiceAction(action, ending: true) else {
+                replyHandler(Self.rejectionReply(.failed)); return
+            }
+            heldSeek = nil; seekLeaseTask?.cancel(); seekLeaseTask = nil
+            Task { @MainActor [target] in replyHandler(Self.outcomeReply(await target.perform(end))) }
+            return
+        }
+        if matchesHeldSeek(action) {
+            renewSeekLease()
+            guard let begin = seekBeginTask else { replyHandler(Self.rejectionReply(.failed)); return }
+            Task { @MainActor in replyHandler(Self.outcomeReply(await begin.value)) }
+            return
+        }
+        // Transfer to the new player-owned hold without a resume gap between directions.
+        let superseded = heldSeek?.action
+        heldSeek = nil; seekLeaseTask?.cancel(); seekLeaseTask = nil
+        guard let begin = seekVoiceAction(action, ending: false) else { replyHandler(Self.rejectionReply(.failed)); return }
+        let held = HeldSeek(action: action)
+        heldSeek = held; renewSeekLease()
+        let task = Task { @MainActor [weak self] () -> VoiceOutcome in
+            guard let self, self.heldSeek?.generation == held.generation, self.seekFenceIsCurrent(action) else {
+                return .failed
+            }
+            let outcome = await self.target.perform(begin)
+            guard self.heldSeek?.generation == held.generation, self.seekFenceIsCurrent(action) else {
+                if let end = self.seekVoiceAction(action, ending: true) { _ = await self.target.perform(end) }
+                return .failed
+            }
+            if outcome == .failed {
+                self.cancelHeldSeek()
+                if let superseded, let end = self.seekVoiceAction(superseded, ending: true) {
+                    _ = await self.target.perform(end)
+                }
+            }
+            return outcome
+        }
+        seekBeginTask = task
+        Task { @MainActor in replyHandler(Self.outcomeReply(await task.value)) }
     }
 
     private func reactivate() {
@@ -290,7 +416,8 @@ final class LibraryWatchSource: WatchBridgeSource {
             showTitle: item.showTitle,
             positionSeconds: player.position,
             durationSeconds: player.duration > 0 ? player.duration : nil,
-            isPlaying: player.isPlaying)
+            isPlaying: player.isPlaying, seekSessionID: player.seekSessionID,
+            canSeek: player.status == .playing || player.status == .paused)
     }
 
     var currentUpNext: [UpNextRow] {
@@ -299,6 +426,8 @@ final class LibraryWatchSource: WatchBridgeSource {
     }
 
     var currentRate: Double { player.rate }
+    var currentSkipBackSeconds: Int { player.skipBackSeconds }
+    var currentSkipForwardSeconds: Int { player.skipForwardSeconds }
 
     var stopsAfterCurrentEpisode: Bool { player.stopsAfterCurrentItem }
 

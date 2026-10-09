@@ -1,4 +1,5 @@
 import XCTest
+import WiltedProducer
 @testable import WiltedMac
 
 private actor TemporaryStateWriteGate {
@@ -75,6 +76,51 @@ private enum TemporaryStateMarkerWriteFailure: Error {
 
 @MainActor
 extension WiltedMacModelTests {
+    func testManagedCaseCloseKeepsRetainedRealSQLiteStoreUsableUntilHostExit() async throws {
+        let directory = wiltedTemporaryDirectory("managed-retained-store")
+        let root = directory.deletingLastPathComponent()
+        let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"],
+                                   stateDirectoryOverride: directory,
+                                   preferences: .init(suiteName: UUID().uuidString)!)
+        await model.fixtureInstallTask?.value
+        let store = try XCTUnwrap(model.store)
+        let before = try await store.inspect()
+        try await WiltedMacTestTemporaryState.close(root: root, identifier: ObjectIdentifier(self))
+        XCTAssertTrue(model.fixtureInstallTask?.isCancelled ?? false)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path), "real store remains retained")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: model.libraryURL.path))
+        let after = try await store.inspect()
+        XCTAssertEqual(after, before)
+    }
+
+    func testStandaloneUnmarkedParentStillRemovesExactCaseRoot() async throws {
+        let parent = wiltedTemporaryDirectory("standalone-parent")
+        let root = parent.appendingPathComponent("standalone-root")
+        try WiltedMacTemporaryState.markTestRoot(root)
+        try Data("standalone".utf8).write(to: root.appendingPathComponent("fixture"))
+        let token = NSObject()
+        try await WiltedMacTestTemporaryState.close(root: root, identifier: ObjectIdentifier(token))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: parent.path))
+    }
+
+    func testManagedCaseAndHostRootsBindCreatedIdentityAndLiveOwner() throws {
+        let directory = wiltedTemporaryDirectory("managed-root-identity")
+        for root in [directory.deletingLastPathComponent(), WiltedMacModel.testHostStateDirectory] {
+            let receipt = root.appendingPathComponent(".wilted-managed-test-root")
+            let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+            let attributes = try FileManager.default.attributesOfItem(atPath: root.path)
+            XCTAssertEqual(fields["path"] as? String, root.path)
+            XCTAssertEqual(fields["device"] as? NSNumber, attributes[.systemNumber] as? NSNumber)
+            XCTAssertEqual(fields["inode"] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+            XCTAssertEqual(fields["host_pid"] as? Int, Int(ProcessInfo.processInfo.processIdentifier))
+            let delivered = ProcessInfo.processInfo.environment
+            XCTAssertEqual(fields["owner_pid"] as? Int, delivered["WILTED_TEST_OWNER_PID"].flatMap(Int.init))
+            XCTAssertEqual(fields["owner_started"] as? String, delivered["WILTED_TEST_OWNER_STARTED"])
+            XCTAssertEqual(fields["owner_path"] as? String, delivered["WILTED_TEST_OWNER_PATH"])
+        }
+    }
+
     func testCommonTemporaryDirectoriesExistAndShareOnlyTheirTestCaseRoot() throws {
         let first = temporaryDirectory("common-first")
         let second = wiltedTemporaryDirectory("common-second")
@@ -127,20 +173,36 @@ extension WiltedMacModelTests {
         await gate.release()
         try await close.value
         await gate.waitUntilWritten()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertEqual(FileManager.default.fileExists(atPath: root.path),
+                       try WiltedMacTestRootOwnership.isManaged(root))
         XCTAssertNil(observedModel, "awaited teardown releases the registry's model ownership")
     }
 
     func testOwnedFixtureStateDisappearsAfterExplicitClose() async throws {
+        let storeURL = wiltedTemporaryDirectory("owned-close-store").appendingPathComponent("library.sqlite")
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready"], preferences: .init(suiteName: UUID().uuidString)!
+            arguments: ["--wilted-ui-fixture-ready"],
+            storeBootstrap: { _ in try LocalLibraryStore(url: storeURL) },
+            preferences: .init(suiteName: UUID().uuidString)!
         )
-        let root = model.libraryURL.deletingLastPathComponent()
+        let mediaState = WiltedMacModel.makeOwnedFixtureState(in: wiltedTemporaryDirectory("owned-close-media"))
+        let root = mediaState.directory
+        await model.fixtureInstallTask?.value
+        await model.statisticsTask?.value
+        await model.performStoreBootstrap()
+        let store = try XCTUnwrap(model.store)
+        XCTAssertEqual(model.startupState, .ready)
+        let actualStoreURL = await store.url
+        XCTAssertEqual(actualStoreURL, storeURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
 
         await model.close()
+        mediaState.closeSynchronously()
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        _ = try await store.inspect()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeURL.path))
     }
 
     func testUnmarkedOwnedFixtureStateDisappearsAfterExplicitClose() throws {
@@ -209,13 +271,24 @@ extension WiltedMacModelTests {
     }
 
     func testOwnedFixtureStateDisappearsOnDeinitFallback() async throws {
+        let storeURL = wiltedTemporaryDirectory("owned-deinit-store").appendingPathComponent("library.sqlite")
         let gate = TemporaryStateWriteGate()
         var model: WiltedMacModel? = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready"], preferences: .init(suiteName: UUID().uuidString)!
+            arguments: ["--wilted-ui-fixture-ready"],
+            storeBootstrap: { _ in try LocalLibraryStore(url: storeURL) },
+            preferences: .init(suiteName: UUID().uuidString)!
         )
-        let root = try XCTUnwrap(model?.libraryURL.deletingLastPathComponent())
+        let mediaState = WiltedMacModel.makeOwnedFixtureState(in: wiltedTemporaryDirectory("owned-deinit-media"))
+        let root = mediaState.directory
         let lateWrite = root.appendingPathComponent("deinit-late-writer")
         await model?.fixtureInstallTask?.value
+        await model?.statisticsTask?.value
+        await model?.performStoreBootstrap()
+        let store = try XCTUnwrap(model?.store)
+        XCTAssertEqual(model?.startupState, .ready)
+        let actualStoreURL = await store.url
+        XCTAssertEqual(actualStoreURL, storeURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeURL.path))
         model?.fixtureInstallTask = Task {
             await gate.waitForRelease()
             try? FileManager.default.createDirectory(at: lateWrite, withIntermediateDirectories: true)
@@ -223,7 +296,12 @@ extension WiltedMacModelTests {
         }
         await gate.waitUntilArrived()
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+        let writer = try XCTUnwrap(model?.fixtureInstallTask)
         model = nil
+        let mediaDrain = Task {
+            await closeOwnedTemporaryStateAfterDeinit(mediaState, voidTasks: [writer], downloadTasks: [],
+                automation: nil, syncLifecycle: nil)
+        }
 
         // Cancellation is advisory: the captured writer deliberately waits.
         // The root must still exist until that writer has settled.
@@ -231,10 +309,13 @@ extension WiltedMacModelTests {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
         await gate.release()
         await gate.waitUntilWritten()
+        await mediaDrain.value
         for _ in 0..<100 where FileManager.default.fileExists(atPath: root.path) {
             await Task.yield()
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        _ = try await store.inspect()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeURL.path))
     }
 
     func testRegisteredSharedTestRootDrainsDelayedFixtureWriter() async throws {
@@ -265,14 +346,25 @@ extension WiltedMacModelTests {
     }
 
     func testConcurrentCloseWaitsForTheSameDelayedWriterDrain() async throws {
+        let storeURL = wiltedTemporaryDirectory("concurrent-close-store").appendingPathComponent("library.sqlite")
         let gate = TemporaryStateWriteGate()
         let completions = CloseCompletions()
         let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready"], preferences: .init(suiteName: UUID().uuidString)!
+            arguments: ["--wilted-ui-fixture-ready"],
+            storeBootstrap: { _ in try LocalLibraryStore(url: storeURL) },
+            preferences: .init(suiteName: UUID().uuidString)!
         )
-        let root = model.libraryURL.deletingLastPathComponent()
+        let mediaState = WiltedMacModel.makeOwnedFixtureState(in: wiltedTemporaryDirectory("owned-close-media"))
+        let root = mediaState.directory
         let lateWrite = root.appendingPathComponent("late-concurrent-writer")
         await model.fixtureInstallTask?.value
+        await model.statisticsTask?.value
+        await model.performStoreBootstrap()
+        let store = try XCTUnwrap(model.store)
+        XCTAssertEqual(model.startupState, .ready)
+        let actualStoreURL = await store.url
+        XCTAssertEqual(actualStoreURL, storeURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeURL.path))
         model.fixtureInstallTask = Task {
             await gate.waitForRelease()
             try? FileManager.default.createDirectory(at: lateWrite, withIntermediateDirectories: true)
@@ -298,50 +390,11 @@ extension WiltedMacModelTests {
         await first.value
         await second.value
         await gate.waitUntilWritten()
+        await closeOwnedTemporaryStateAfterDeinit(mediaState, voidTasks: [try XCTUnwrap(model.fixtureInstallTask)],
+            downloadTasks: [], automation: nil, syncLifecycle: nil)
         XCTAssertTrue(model.fixtureInstallTask?.isCancelled ?? false)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
-    }
-}
-
-@MainActor
-final class WiltedMacTestParentOwnershipTests: XCTestCase {
-    func testAllocatedTestRootUsesRunnerOwnedParentOrFoundationDefault() throws {
-        let directory = wiltedTemporaryDirectory("parent-ownership-allocated")
-        let allocatedParent = directory.deletingLastPathComponent().deletingLastPathComponent()
-        let configuredParent = ProcessInfo.processInfo.environment["WILTED_TEST_TMPDIR"]
-        let expected = try WiltedMacTestTemporaryState.validatedTestTemporaryParent(rawValue: configuredParent)
-        let activity = configuredParent == nil ? "default parent" : "runner-owned parent"
-
-        XCTContext.runActivity(named: activity) { _ in
-            XCTAssertEqual(allocatedParent, expected)
-        }
-    }
-
-    func testParentResolverRejectsMissingRelativeFileAndSymlinkWithoutFallback() throws {
-        let fixture = wiltedTemporaryDirectory("parent-ownership-resolver")
-        let fileManager = FileManager.default
-        let parent = fixture.appendingPathComponent("valid-parent", isDirectory: true)
-        try fileManager.createDirectory(at: parent, withIntermediateDirectories: false)
-        let canonical = parent.standardizedFileURL.resolvingSymlinksInPath().standardizedFileURL
-
-        XCTAssertEqual(
-            try WiltedMacTestTemporaryState.validatedTestTemporaryParent(rawValue: parent.path), canonical
-        )
-        XCTAssertEqual(
-            try WiltedMacTestTemporaryState.validatedTestTemporaryParent(rawValue: nil),
-            FileManager.default.temporaryDirectory
-        )
-        XCTAssertThrowsError(try WiltedMacTestTemporaryState.validatedTestTemporaryParent(
-            rawValue: fixture.appendingPathComponent("missing-parent", isDirectory: true).path
-        ))
-        XCTAssertThrowsError(try WiltedMacTestTemporaryState.validatedTestTemporaryParent(rawValue: "relative-parent"))
-
-        let regularFile = fixture.appendingPathComponent("not-a-directory")
-        try Data("fixture".utf8).write(to: regularFile)
-        XCTAssertThrowsError(try WiltedMacTestTemporaryState.validatedTestTemporaryParent(rawValue: regularFile.path))
-
-        let symlink = fixture.appendingPathComponent("parent-link", isDirectory: true)
-        try fileManager.createSymbolicLink(atPath: symlink.path, withDestinationPath: parent.path)
-        XCTAssertThrowsError(try WiltedMacTestTemporaryState.validatedTestTemporaryParent(rawValue: symlink.path))
+        _ = try await store.inspect()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeURL.path))
     }
 }

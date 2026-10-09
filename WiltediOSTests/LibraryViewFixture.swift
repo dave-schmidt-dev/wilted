@@ -13,17 +13,21 @@ final class LibraryViewFixture {
     let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("library-view-\(UUID().uuidString)")
     let suite = "library-view-fixture-\(UUID().uuidString)"
     let defaults: UserDefaults
-    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
     private var localSeq: UInt64 = 0
     let model: LibraryAppModel
+    private let phone: InMemoryLibraryTransport
+    private let mirror: FileLibraryStore
 
     init() throws {
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         defaults = UserDefaults(suiteName: suite)!
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         self.cache = cache
+        phone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
+        mirror = FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json"))
         model = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone",
+            transport: phone, store: mirror, deviceID: "phone",
             mediaCache: cache,
             mediaTiming: LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30)),
             preferences: defaults, timeZone: TimeZone(identifier: "UTC")!)
@@ -63,9 +67,9 @@ final class LibraryViewFixture {
             try await mac.publishMedia(offer: .notReady(entryID: id(raw)), fileURL: URL(fileURLWithPath: "/dev/null"))
         case .available:
             try await mac.publishMedia(
-                offer: try LibraryMediaOffer(
-                    entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: "", byteCount: 500,
-                    mediaType: "audio/mp4", durationSeconds: 600, state: .available),
+                offer: try PreparedMediaFixture.certified(LibraryMediaOffer(
+                    entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: PreparedMediaFixture.hash(audio), byteCount: 500,
+                    mediaType: "audio/mp4", durationSeconds: 600, state: .available)),
                 fileURL: URL(fileURLWithPath: "/dev/null"))
         case .ready:
             let file = scratch.appendingPathComponent(UUID().uuidString)
@@ -97,9 +101,11 @@ final class LibraryViewFixture {
 
     /// Puts the episode's audio on the phone, as a finished download leaves it.
     func cacheAudio(_ raw: String) async throws {
+        try await PreparedMediaFixture.bootstrap(mirror, transport: phone)
+        await model.loadLocalState()
         let file = scratch.appendingPathComponent(UUID().uuidString)
         try audio.write(to: file)
-        _ = try await cache.adopt(verifiedFile: file, for: readyOffer(raw))
+        _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: readyOffer(raw), owner: "fixture-owner")
     }
 
     /// Queues one episode per id with a ready offer and its audio already on the phone, then refreshes.
@@ -116,8 +122,8 @@ final class LibraryViewFixture {
 
     private func readyOffer(_ raw: String) throws -> LibraryMediaOffer {
         let hash = MediaHash.prefix + SHA256.hash(data: audio).map { String(format: "%02x", $0) }.joined()
-        return try LibraryMediaOffer(
+        return try PreparedMediaFixture.certified(LibraryMediaOffer(
             entryID: id(raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: hash, byteCount: 500,
-            mediaType: "audio/mp4", durationSeconds: 600)
+            mediaType: "audio/mp4", durationSeconds: 600))
     }
 }

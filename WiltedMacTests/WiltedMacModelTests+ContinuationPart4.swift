@@ -16,7 +16,6 @@ extension WiltedMacModelTests {
     /// the anchor is already hidden and retired by the time it looks.
     func testFinishedEpisodeAdvancesEvenWhenItIsAlreadyRetiredBeforeTheSearchRuns() async throws {
         let directory = temporaryDirectory("continue-race")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-race.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -79,7 +78,6 @@ extension WiltedMacModelTests {
     /// one that finished.
     func testNaturalCompletionSkipsAnUndownloadedEpisodeToReachTheNextReadyOne() async throws {
         let directory = temporaryDirectory("continue-skip")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-skip.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -152,7 +150,6 @@ extension WiltedMacModelTests {
     /// in natural-completion continuation.
     func testNaturalCompletionSkipsAnUnpreparedEpisodeToReachTheNextReadyOne() async throws {
         let directory = temporaryDirectory("continue-skip-unprepared")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-skip-unprepared.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -226,7 +223,6 @@ extension WiltedMacModelTests {
     /// as a stall, not as "nothing to play."
     func testNaturalCompletionWithNoReadyEpisodeLeftStopsAndSaysSo() async throws {
         let directory = temporaryDirectory("continue-none")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-none.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -280,7 +276,6 @@ extension WiltedMacModelTests {
     /// looking through the Larder at all.
     func testArticleCompletionDoesNotSearchForANextPodcastEpisode() {
         let directory = temporaryDirectory("continue-article")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: directory, preferences: WiltedMacTestPreferences.ephemeral()
         )
@@ -302,7 +297,6 @@ extension WiltedMacModelTests {
     /// otherwise not know until something else happened to reload them.
     func testMovingToAnotherPodcastEpisodeRefreshesTheLibraryRows() async throws {
         let directory = temporaryDirectory("continue-move-reload")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-move.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -388,7 +382,6 @@ extension WiltedMacModelTests {
     /// wrapping backwards to restart earlier unfinished episodes.
     func testManualLarderStartAdvancesThroughLaterEpisodesAndStopsWithoutRestartingEarlierUnfinished() async throws {
         let directory = temporaryDirectory("continue-larder-advance")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-larder.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -493,7 +486,6 @@ extension WiltedMacModelTests {
     /// fallback.
     func testLarderQueueEndStopsUnderTheDefaultFeedsSortAndGenericPlayKeepsTheLarderFallback() async throws {
         let directory = temporaryDirectory("continue-larder-default-sort")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-larder-default.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -608,7 +600,6 @@ extension WiltedMacModelTests {
 
     func testLegacyGenericQueueRestoreKeepsTheLarderWideFallback() async throws {
         let directory = temporaryDirectory("continue-origin-generic-restore")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let preferences = WiltedMacTestPreferences.ephemeral()
         let ids = try await seedPlaybackOriginLibrary(directory, numbers: [17, 18], queued: [18])
         var original: WiltedMacModel? = playbackOriginModel(directory, preferences)
@@ -643,7 +634,6 @@ extension WiltedMacModelTests {
 
     func testLarderQueueOriginSurvivesRelaunchAndStopsAtItsSuffix() async throws {
         let directory = temporaryDirectory("continue-origin-larder-restore")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let preferences = WiltedMacTestPreferences.ephemeral()
         let ids = try await seedPlaybackOriginLibrary(directory, numbers: [18, 19, 20, 21], queued: [18, 19, 20, 21])
         var original: WiltedMacModel? = playbackOriginModel(directory, preferences)

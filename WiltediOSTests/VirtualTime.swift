@@ -13,17 +13,25 @@ final class VirtualTime: @unchecked Sendable {
     var now: Date { lock.withLock { current } }
 
     /// Suspends until the clock passes `seconds`; throws `CancellationError` if cancelled first.
-    func sleep(_ seconds: TimeInterval) async throws {
+    func sleep(_ seconds: TimeInterval, registered: (@Sendable (Date) -> Void)? = nil) async throws {
         let id = lock.withLock { () -> Int in nextID += 1; return nextID }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                let wake = lock.withLock { () -> Bool in
+                let registration = lock.withLock { () -> (disposition: Int, deadline: Date?) in
+                    // Cancellation may run before this continuation is registered.
+                    // Checking while holding the waiter lock also makes cancellation
+                    // after this check find and remove exactly the inserted waiter.
+                    if Task.isCancelled { return (-1, nil) }
                     let wakeAt = current.addingTimeInterval(seconds)
-                    if seconds <= 0 { return true }
+                    if seconds <= 0 { return (1, nil) }
                     waiters.append((wakeAt, continuation, id))
-                    return false
+                    return (0, wakeAt)
                 }
-                if wake { continuation.resume() }
+                // A test may move time only after the sleeper actually exists.
+                // Notify outside the lock so observers can safely inspect the clock.
+                if let deadline = registration.deadline { registered?(deadline) }
+                if registration.disposition < 0 { continuation.resume(throwing: CancellationError()) }
+                else if registration.disposition > 0 { continuation.resume() }
             }
         } onCancel: {
             let waiter = lock.withLock { () -> CheckedContinuation<Void, Error>? in

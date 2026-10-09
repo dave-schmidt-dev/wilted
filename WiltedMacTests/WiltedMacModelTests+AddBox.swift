@@ -30,7 +30,6 @@ extension WiltedMacModelTests {
     /// and shows it there, so the listener sees what they are about to follow.
     func testPastingAFeedAddressHandsItToTheSubscriptionComposer() async throws {
         let directory = temporaryDirectory("pasted-feed")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = modelForPastedLink(
             directory: directory,
             document: "<?xml version=\"1.0\"?><rss><channel><title>Pasted show</title></channel></rss>",
@@ -59,7 +58,6 @@ extension WiltedMacModelTests {
 
     func testOversizedFeedPrefixReachesSubscriptionComposer() async throws {
         let directory = temporaryDirectory("oversized-pasted-feed")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let feed = "<rss><channel><title>Large show</title></channel></rss>"
             + String(repeating: " ", count: PastedLinkClassifier.maximumSniffBytes)
         let model = WiltedMacModel(
@@ -90,7 +88,6 @@ extension WiltedMacModelTests {
     /// fetch anything, so a subscription proves the shortcut ran in both.
     func testAnUnmistakableFeedAddressReachesTheComposerWithoutSniffing() async throws {
         let directory = temporaryDirectory("pasted-feed-extension")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,
@@ -120,7 +117,6 @@ extension WiltedMacModelTests {
     /// feed is offered, and only subscribes when the offer is accepted.
     func testAPageThatPublishesAFeedOffersItRatherThanSubscribing() async throws {
         let directory = temporaryDirectory("pasted-advertised")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = modelForPastedLink(
             directory: directory,
             document: """
@@ -150,7 +146,6 @@ extension WiltedMacModelTests {
     /// work, so a typo never reads as a network problem.
     func testTheSubscriptionComposerRefusesAnIncompleteAddressWithoutChecking() async throws {
         let directory = temporaryDirectory("composer-invalid")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = modelForPastedLink(
             directory: directory,
             document: "<rss><channel><title>Unused</title></channel></rss>",
@@ -175,7 +170,6 @@ extension WiltedMacModelTests {
     /// the address that was pasted.
     func testTheSubscriptionComposerOffersAShowPagesFeedBeforeFollowingIt() async throws {
         let directory = temporaryDirectory("composer-advertised")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = modelForPastedLink(
             directory: directory,
             document: """
@@ -210,7 +204,6 @@ extension WiltedMacModelTests {
     /// listener cannot act on.
     func testSubscribingTwiceKeepsOneFeedAndPointsAtTheOneAlreadyFollowed() async throws {
         let directory = temporaryDirectory("composer-duplicate")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = modelForPastedLink(
             directory: directory,
             document: "<rss><channel><title>Repeat show</title></channel></rss>",
@@ -240,7 +233,6 @@ extension WiltedMacModelTests {
     /// check's progress and replaces its answer with a stale one.
     func testACancelledSubscriptionCheckCannotWriteOverTheNextOne() async throws {
         let directory = temporaryDirectory("composer-cancel-race")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let pageURL = URL(string: "https://pages.example.test/plain")!
         let feedURL = URL(string: "https://podcasts.example.test/gated")!
         let gate = GatedRoutingLoader(documents: [
@@ -288,7 +280,6 @@ extension WiltedMacModelTests {
     /// cause.
     func testAnUnreachableAddressIsReportedInTheBox() async throws {
         let directory = temporaryDirectory("pasted-unreachable")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,
@@ -311,7 +302,6 @@ extension WiltedMacModelTests {
 
     func testAnIncompleteAddressIsRefusedWithoutAnyFetch() async throws {
         let directory = temporaryDirectory("pasted-invalid")
-        defer { try? FileManager.default.removeItem(at: directory) }
         let model = WiltedMacModel(
             arguments: [],
             stateDirectoryOverride: directory,

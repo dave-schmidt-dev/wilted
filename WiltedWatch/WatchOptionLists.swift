@@ -8,23 +8,33 @@ struct SpeedListView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        List(WatchSpeeds.all, id: \.self) { rate in
+        List { choices }
+            .navigationTitle("Speed")
+    }
+
+    /// Shipping choices without the native List/navigation chrome.
+    var captureContent: some View { VStack { choices } }
+
+    private var choices: some View {
+        ForEach(WatchSpeeds.all, id: \.self) { rate in
             Button {
-                model.setSpeed(rate)
-                dismiss()
+                if model.setSpeed(rate) { dismiss() }
             } label: {
                 HStack {
                     Text(NowPlayingView.speedText(rate))
                     Spacer()
-                    if rate == model.currentSpeed {
+                    if model.isPending(.setRate(rate)) {
+                        Image(systemName: "hourglass").accessibilityLabel("Pending")
+                    } else if rate == model.currentSpeed {
                         Image(systemName: "checkmark")
                             .accessibilityHidden(true)
                     }
                 }
             }
+            .disabled(!model.canSend(.setRate(rate)))
+            .accessibilityValue(model.isPending(.setRate(rate)) ? "Pending" : "")
             .accessibilityAddTraits(rate == model.currentSpeed ? .isSelected : [])
         }
-        .navigationTitle("Speed")
     }
 }
 
@@ -36,22 +46,32 @@ struct SleepListView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        List {
-            ForEach(WatchViewModel.sleepMinutes, id: \.self) { minutes in
-                Button("\(minutes) minutes") {
-                    model.startSleep(minutes: minutes)
-                    dismiss()
-                }
-            }
-            Button("End of episode") {
-                model.sleepAtEndOfEpisode()
-                dismiss()
-            }
-            Button("Cancel sleep timer", role: .destructive) {
-                model.cancelSleep()
-                dismiss()
+        List { choices }
+            .navigationTitle("Sleep Timer")
+    }
+
+    /// Shipping choices without the native List/navigation chrome.
+    var captureContent: some View { VStack { choices } }
+
+    @ViewBuilder private var choices: some View {
+        ForEach(WatchViewModel.sleepMinutes, id: \.self) { minutes in
+            choice("\(minutes) minutes", action: .startSleep(minutes: minutes))
+        }
+        choice("End of episode", action: .startSleepEndOfEpisode)
+        choice("Cancel sleep timer", action: .cancelSleep, role: .destructive)
+    }
+
+    private func choice(_ title: String, action: WatchCommand.Action, role: ButtonRole? = nil) -> some View {
+        Button(role: role) {
+            if model.send(action) { dismiss() }
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                if model.isPending(action) { Image(systemName: "hourglass").accessibilityLabel("Pending") }
             }
         }
-        .navigationTitle("Sleep Timer")
+        .disabled(!model.canSend(action))
+        .accessibilityValue(model.isPending(action) ? "Pending" : "")
     }
 }

@@ -151,7 +151,8 @@ enum WiltedMacLibraryTransports {
 
 #if WILTED_CLOUDKIT_LIVE
     private static func driverFactory(outbox: CloudKitLibraryOutbox) -> CloudKitEngineDriverFactory {
-        let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
+        let container = CKContainer(identifier: containerIdentifier)
+        let database = container.privateCloudDatabase
         let zoneID = LibraryRecordMapper().zoneID
         return { stateData in
             let serialization = try stateData.map { data -> CKSyncEngine.State.Serialization in
@@ -163,7 +164,10 @@ enum WiltedMacLibraryTransports {
             return LiveCloudKitEngineDriver(
                 database: database, stateSerialization: serialization,
                 zoneBootstrap: LiveCloudKitZoneBootstrap(database: database, zoneID: zoneID),
-                recordProvider: { outbox.record(for: $0) })
+                recordProvider: { outbox.record(for: $0) }, currentAccountResolver: {
+                    let recordID = try await container.userRecordID()
+                    return CloudKitAccountIdentity(currentOwnerToken: CloudKitAccountIdentity.token(for: recordID.recordName))
+                })
         }
     }
 #endif

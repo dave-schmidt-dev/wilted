@@ -8,7 +8,6 @@ import WiltedProducer
 extension WiltedMacModelTests {
     func testManualNextWithABCSkipsUnpreparedBAndFailsDeterministicallyWhenCMediaMissing() async throws {
         let directory = temporaryDirectory("manual-skip-abc-missing")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-abc-missing.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -85,7 +84,6 @@ extension WiltedMacModelTests {
     func testCanSelectPreviousEpisodeIsFalseWhenQueuedPredecessorsMediaIsMissing() {
         let root = temporaryDirectory("can-select-previous-media-missing")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
         let missingID = "item-" + String(repeating: "1", count: 64)
         let currentID = "item-" + String(repeating: "2", count: 64)
         let model = WiltedMacModel(
@@ -118,7 +116,6 @@ extension WiltedMacModelTests {
 
     func testManualPreviousWithABCSkipsUnpreparedBAndAdvancesToA() async throws {
         let directory = temporaryDirectory("manual-skip-abc-previous")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-abc-prev.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -208,7 +205,6 @@ extension WiltedMacModelTests {
 
     func testManualAndRemotePreviousWithABCSkipsRetiredReadyBAndAdvancesToA() async throws {
         let directory = temporaryDirectory("manual-skip-abc-retired-prev")
-        defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/manual-skip-abc-retired-prev.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)

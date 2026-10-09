@@ -114,7 +114,8 @@ public enum WiltedScreenCopy {
     /// non-retryable red line and no way out of quarantine.
     public static let useCurrentAccount = "Use Current iCloud Account"
     public static let useCurrentAccountIdentifier = "wilted-use-current-account"
-    public static let useCurrentAccountDetail = "Your library is kept. Review before continuing with the account now signed in."
+    public static let useCurrentAccountDetail = "Current iCloud account: name unavailable. Replace the saved phone library and its account association, attempt removal of its old downloads, then fetch this account. Keep held preserves the saved library and downloads without resuming sync. A fetch or removal can fail."
+    public static let macAccountReviewDetail = "Current iCloud account: name unavailable. Send this retained Mac library to the reviewed account. Keep held preserves this library without authorizing publication."
     public static let sendPlaybackProgress = "Send Playback Progress"
     public static let playerIdentifier = "wilted-player"
     public static let playerRewindIdentifier = "wilted-player-rewind"

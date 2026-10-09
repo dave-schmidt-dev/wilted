@@ -107,40 +107,6 @@ public struct WiltedSettingsRow: View {
     }
 }
 
-/// The explicit account-review gate.
-///
-/// Neither app silently adopts a changed iCloud account: local work is
-/// quarantined and stays quarantined until this is pressed. The Mac had this
-/// control from the start; the listener showed a non-retryable red line and no
-/// way out, so a quarantined iPhone was a dead end. Shared so the wording and
-/// the gating cannot diverge again.
-public struct WiltedAccountRecoveryNotice: View {
-    @Environment(\.colorScheme) private var colorScheme
-    private let identifier: String
-    private let action: () -> Void
-
-    public init(identifier: String = WiltedScreenCopy.useCurrentAccountIdentifier, action: @escaping () -> Void) {
-        self.identifier = identifier
-        self.action = action
-    }
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            Text(WiltedScreenCopy.useCurrentAccountDetail)
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-            Button(WiltedScreenCopy.useCurrentAccount, action: action)
-                .buttonStyle(.borderedProminent)
-                .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-                .accessibilityIdentifier(identifier)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, WiltedTheme.Spacing.xSmall)
-    }
-}
-
 /// The transcript disclosure, in primitives so both apps render it identically.
 ///
 /// The listener and the producer read transcripts from different types, so this

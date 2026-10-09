@@ -5,14 +5,15 @@ import SwiftUI
 extension WiltedMacModel {
     static let sidebarVisiblePreferenceKey = "wilted.navigation.sidebar.visible"
 
-    /// Hide or show the sidebar: the toolbar button and ⌃⌘S both come here.
+    /// Collapse or expand labels: the toolbar button and ⌃⌘S both come here.
+    /// The existing false preference now retains the rail instead of hiding it.
     func toggleSidebar() {
         isSidebarVisible.toggle()
     }
 
     /// The label the toolbar button and the menu command carry.
     var sidebarToggleTitle: String {
-        isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"
+        isSidebarVisible ? "Collapse Sidebar" : "Expand Sidebar"
     }
 }
 

@@ -54,13 +54,13 @@ wilted_reap_supervisor_pid() {
 
 wilted_stop_supervisor_pid() {
   wilted_signal_supervisor_pid "$1"
-  wilted_reap_supervisor_pid "$1"
+  wilted_reap_supervisor_pid "$1" "${2:-5}"
 }
 
 wilted_stop_active_supervisor() {
   local pid="${WILTED_ACTIVE_SUPERVISOR_PID:-}"
   WILTED_ACTIVE_SUPERVISOR_PID=""
-  wilted_stop_supervisor_pid "$pid"
+  wilted_stop_supervisor_pid "$pid" "${1:-5}"
 }
 
 wilted_stop_active_ui_lock() {
@@ -153,7 +153,9 @@ wilted_reexec_bounded() {
     exit 2
   }
 
+  local budget_args=(--timeout-seconds "$timeout_seconds")
+  # Gates coordinate queues; each executable has its own work budget.
+  if [[ "$(basename "$entrypoint")" == test-gate.sh && -z "${WILTED_TEST_RUNNER_TIMEOUT_SECONDS:-}" ]]; then budget_args=(--no-timeout); fi
   exec env WILTED_BOUNDED_ENTRY=1 \
-    python3 "$runner" \
-    --timeout-seconds "$timeout_seconds" -- bash "$entrypoint" "$@"
+    python3 "$runner" "${budget_args[@]}" -- bash "$entrypoint" "$@"
 }
