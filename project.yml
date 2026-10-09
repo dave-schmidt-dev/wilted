@@ -53,6 +53,8 @@ targets:
         product: WiltedCloudKit
       - package: WiltedCloudKit
         product: WiltedCloudKitLibrary
+      - package: WiltedKit
+        product: WiltedCatalog
       - package: WiltedProducer
         product: WiltedProducer
     settings:
@@ -365,6 +367,8 @@ targets:
         product: WiltedSync
       - package: WiltedKit
         product: WiltedLibrary
+      - package: WiltedKit
+        product: WiltedCatalog
       - package: WiltedProducer
         product: WiltedProducer
       - package: WiltedCloudKit
