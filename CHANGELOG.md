@@ -5,6 +5,10 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- Article feeds: follow a feed without audio, refresh it for new posts, and add the ones you want from the Feeds inbox; a News switch in the feed popover marks news feeds.
+- Audiobooks and books on the Mac: Import book in the Add sheet (or drop files) imports audio files or a folder as one audiobook with chapters, and turns EPUB or PDF text into a spoken book; progress shows with Cancel, and refused files say why. Importing the same files again finds the same book.
+- Chapters: book rows show their chapter, and the Mac player and iPhone player step between chapters.
+- Playlists on the Mac: a Playlists section in the sidebar holds manual playlists (Add to Playlist from a Larder row, reorder, remove) and automatic playlists built from rules. Playing a playlist never changes the Larder order.
 - iPhone Add (Larder toolbar): search Apple Podcasts or paste a link, and the phone asks your Mac to subscribe or add the article, showing "Sent to your Mac" until the Mac answers; an older Mac shows "Update Wilted on your Mac to add from iPhone" and nothing is sent.
 - One Add sheet on the Mac (toolbar Add or ⌘N) replaces the Feeds Subscribe popover and the Larder article field: paste a podcast or article link, or search Apple Podcasts by name, and shows you already follow are marked.
 - The Mac answers subscribe and add-article requests sent from a phone, and rejects requests it cannot read instead of silently dropping them.
@@ -16,7 +20,8 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Subscribing on the Mac no longer asks how many episodes to list; new feeds use the Episodes listed default in Settings.
-- The Mac refuses to subscribe to a feed with no audio episodes and says article feeds aren't supported yet, instead of adding an empty subscription.
+- A pasted feed with no audio episodes is offered as an article feed to follow instead of being refused; a feed with neither audio nor posts says "This feed has no audio and no posts to follow."
+- The Mac Larder is one list grouped Ready, Active work, Downloaded, then Not downloaded, with articles and books in the same list and a kind filter (All, Podcasts, Articles, Audiobooks); the iPhone Larder has the same kind filter.
 - Mac startup and work recovery show counted progress for each step instead of a single waiting message.
 - The Mac Now Playing pane's episode title is smaller, and the narrow sidebar rail shows the Ready audio time under a play icon.
 - iPhone Larder: rows grouped by feed no longer repeat the feed name, Sort and Group are titled sections ("None" is now "No Grouping"), Sort and Filter show a filled icon while active, and episode detail puts Share below Play and Download.
