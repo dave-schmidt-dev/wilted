@@ -377,6 +377,8 @@ targets:
         product: WiltedLibrary
       - package: WiltedKit
         product: WiltedCatalog
+      - package: WiltedKit
+        product: WiltedWeather
       - package: WiltedProducer
         product: WiltedProducer
       - package: WiltedCloudKit

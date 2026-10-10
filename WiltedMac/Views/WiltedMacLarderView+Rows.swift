@@ -27,7 +27,9 @@ extension WiltedMacLarderView {
                 WiltedMacLarderEpisodeNotesTitle(episode: episode)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(-1)
-                if let book = episode.audiobook {
+                if episode.isReport {
+                    reportMetadata(episode, groupName: showsGroupName ? group.displayName : nil)
+                } else if let book = episode.audiobook {
                     bookMetadata(episode, book: book, groupName: showsGroupName ? group.displayName : nil)
                 } else {
                     WiltedMacEpisodeMetadata(
@@ -161,10 +163,28 @@ extension WiltedMacLarderView {
             .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
     }
 
+    /// A morning report's line: what it is and how long, with no author or chapters to show.
+    private func reportMetadata(_ episode: WiltedMacEpisode, groupName: String?) -> some View {
+        var parts: [String] = []
+        if let groupName { parts.append(groupName) }
+        parts.append("Morning report")
+        if let seconds = episode.durationSeconds, seconds > 0 {
+            parts.append(Duration.seconds(seconds).formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
+        }
+        return Text(parts.joined(separator: " · "))
+            .wiltedFont(.utility)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            .lineLimit(1)
+            .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
+    }
+
     /// The show's artwork at row size, or the produce tile when the feed
-    /// published none or it has not arrived.
+    /// published none or it has not arrived. A report has its own tile: it has no show.
     @ViewBuilder private func rowArtwork(_ episode: WiltedMacEpisode) -> some View {
-        if let url = episode.artworkURL {
+        if episode.isReport {
+            WiltedMacReportTile(size: 40)
+                .accessibilityHidden(true)
+        } else if let url = episode.artworkURL {
             AsyncImage(url: url) { image in
                 image.resizable().scaledToFill()
             } placeholder: {
@@ -290,5 +310,24 @@ extension WiltedMacLarderView {
             }
             .accessibilityIdentifier("wilted-larder-add-button")
         }
+    }
+}
+
+/// A morning report's artwork: the produce tile's shape with a sunrise, since a report has no show.
+struct WiltedMacReportTile: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.wiltedTextScale) private var textScale
+    let size: CGFloat
+
+    var body: some View {
+        let side = WiltedTheme.scaled(size, scale: textScale)
+        RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+            .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.2))
+            .frame(width: side, height: side)
+            .overlay(
+                Image(systemName: "sun.horizon.fill")
+                    .font(.system(size: side * 0.5))
+                    .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+            )
     }
 }

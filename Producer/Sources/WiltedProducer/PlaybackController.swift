@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import Observation
 import WiltedDomain
+import WiltedLibrary
 
 /// The small audio surface needed by the controller.  Keeping AVFoundation
 /// behind this protocol makes all playback state tests deterministic.
@@ -143,7 +144,8 @@ public final class PlaybackController {
         if let itemID, recoverableFault == .playbackFailed(itemID) { return positionSeconds }
         return clamp(backend.currentTime)
     }
-    public var liveIsPlaying: Bool { backend.isPlaying }
+    /// True while a spoken bulletin holds program audio: the hold is not a pause.
+    public var liveIsPlaying: Bool { backend.isPlaying || speechHeld }
     public var playbackRate: Float { backend.rate }
 
     public internal(set) var sessionID: String?
@@ -173,8 +175,19 @@ public final class PlaybackController {
     var completionHandledGeneration: UInt64?
     /// Bumped by every explicit pause or stop. A queue advance compares it
     /// with the value at the end of file to tell whether one was issued since.
-    var explicitHoldSerial: UInt64 = 0
-    var loadedBackendGeneration: UInt64?
+    @ObservationIgnored var explicitHoldSerial: UInt64 = 0 {
+        didSet { interruptionUserPaused() }
+    }
+    @ObservationIgnored var loadedBackendGeneration: UInt64? {
+        didSet { commandGeneration &+= 1 }
+    }
+    /// Spoken-interruption state (`PlaybackController+Interruptions.swift`). A hold is not a pause:
+    /// `speechHeld` keeps the published state playing and out of the listening meter.
+    @ObservationIgnored var interruptions: PlaybackInterruptions?
+    @ObservationIgnored var speechHeld = false
+    @ObservationIgnored var commandGeneration: UInt64 = 0
+    /// The bulletin being spoken now, for the player's banner.
+    public internal(set) var speakingBulletin: Bulletin?
     var loadedIsPodcastEpisode = false
     var pendingSpeedIntervals: [PendingSpeedInterval] = []
     /// Program position at the last accounting boundary. Forward seeks reset
@@ -238,6 +251,7 @@ public final class PlaybackController {
         currentRevision = revision
         itemID = revision.itemID
         revisionID = revision.revisionID
+        interruptionItemChanged()
         loadedIsPodcastEpisode = isPodcast
         self.mediaURL = mediaURL
         durationSeconds = revision.durationSeconds

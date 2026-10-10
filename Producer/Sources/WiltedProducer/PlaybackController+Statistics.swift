@@ -53,7 +53,7 @@ extension PlaybackController {
         let livePosition = clamp(backend.currentTime)
         positionSeconds = recoverableFault == .playbackFailed(itemID)
             ? max(positionSeconds, livePosition) : livePosition
-        isPlaying = backend.isPlaying
+        isPlaying = backend.isPlaying || speechHeld
         completed = markCompletedAtEnd && positionSeconds >= durationSeconds
             && recoverableFault != .playbackFailed(itemID)
         sequence = max(1, sequence + 1)
@@ -191,7 +191,8 @@ extension PlaybackController {
         if let since = lifetimeMeter.listeningSince, now > since {
             lifetimeMeter.playedSeconds += now - since
         }
-        lifetimeMeter.listeningSince = isPlaying && lifetimeMeter.ownerKey != nil ? now : nil
+        // A spoken bulletin holds playback without pausing it, and its time is not listening.
+        lifetimeMeter.listeningSince = isPlaying && !speechHeld && lifetimeMeter.ownerKey != nil ? now : nil
     }
 
     /// Closes the outgoing attempt (its totals stay pending until flushed)
@@ -209,6 +210,7 @@ extension PlaybackController {
 
     /// Adds an explicit forward seek's distance to the loaded attempt.
     func recordManualSkip(seconds: TimeInterval) {
+        commandGeneration &+= 1
         guard lifetimeMeter.ownerKey != nil, seconds.isFinite, seconds > 0 else { return }
         lifetimeMeter.skippedSeconds += seconds
     }

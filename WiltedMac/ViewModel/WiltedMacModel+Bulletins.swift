@@ -6,6 +6,7 @@ import os
 import WiltedDomain
 import WiltedLibrary
 import WiltedProducer
+import WiltedWeather
 
 private let bulletinLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "bulletins")
 private nonisolated(unsafe) var bulletinHubKey: UInt8 = 0
@@ -16,6 +17,11 @@ private nonisolated(unsafe) var bulletinHubKey: UInt8 = 0
 /// The producer runs while interruptions are on, and until the channel it last published is back
 /// to all-off, so turning them off reaches the phones. A Mac that never turned them on does no work.
 /// Nothing starts for a fixture launch, without a store, or while the model is closing.
+///
+/// It also feeds this Mac's player: with interruptions on it turns on the controller's spoken
+/// interruptions, hands it the producer's headlines in process (not round-tripped through the
+/// transport), and runs an `AlertMonitor` at this Mac's own location, but only while playing with
+/// alerts on.
 @MainActor
 @Observable
 final class WiltedMacBulletinHub {
@@ -29,14 +35,35 @@ final class WiltedMacBulletinHub {
     @ObservationIgnored private weak var model: WiltedMacModel?
     @ObservationIgnored private var ownedLocation: WiltedLocationProvider?
     @ObservationIgnored private var producer: BulletinProducer?
+    @ObservationIgnored private let makeSpeaker: @MainActor () -> any BulletinSpeaking
+    @ObservationIgnored private let makeAlertSource: @MainActor (String?) -> any NWSAlertSource
+    @ObservationIgnored private weak var attachedController: PlaybackController?
+    @ObservationIgnored private var attachedWaitLimit = 0
+    @ObservationIgnored private var alertMonitor: AlertMonitor?
+    @ObservationIgnored private var observing = false
+    /// The headlines of the channel as last published or read back, while headlines are on.
+    @ObservationIgnored private(set) var headlines: [Bulletin] = []
+    /// Alerts the monitor delivered that are still active here.
+    @ObservationIgnored private(set) var activeAlerts: [String: Bulletin] = [:]
 
-    init(model: WiltedMacModel, location: WiltedLocationProvider? = nil) {
+    init(model: WiltedMacModel, location: WiltedLocationProvider? = nil,
+         makeSpeaker: @escaping @MainActor () -> any BulletinSpeaking = { SystemBulletinSpeaker() },
+         makeAlertSource: @escaping @MainActor (String?) -> any NWSAlertSource = WiltedMacBulletinHub.nwsClient) {
         self.model = model
         ownedLocation = location
+        self.makeSpeaker = makeSpeaker
+        self.makeAlertSource = makeAlertSource
     }
 
     deinit {
         if let producer { Task { await producer.stop() } }
+        if let alertMonitor { Task { await alertMonitor.stop() } }
+    }
+
+    private static func nwsClient(contact: String?) -> any NWSAlertSource {
+        NWSClient(
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
+            repositoryURL: "https://github.com/dave-schmidt-dev/wilted", contact: contact)
     }
 
     /// The one location provider on this Mac, created on first use. Settings reads it; it is
@@ -49,6 +76,8 @@ final class WiltedMacBulletinHub {
     }
 
     var producerIsRunning: Bool { producer != nil }
+    var alertMonitorIsRunning: Bool { alertMonitor != nil }
+    var interruptionsAreAttached: Bool { attachedController != nil }
 
     /// Starts, nudges or stops the producer to match the settings. Safe to call at any time.
     func reconcile() {
@@ -75,6 +104,7 @@ final class WiltedMacBulletinHub {
             Task { await producer.stop() }
             status = BulletinProducerStatus()
         }
+        reconcileInterruptions(canRun: canRun, settings: settings)
     }
 
     private func makeProducer() -> BulletinProducer {
@@ -88,11 +118,14 @@ final class WiltedMacBulletinHub {
             },
             fetchPublished: { [weak self] in
                 guard let self else { throw CancellationError() }
-                return try await self.publisher().fetchBulletins()
+                let channel = try await self.publisher().fetchBulletins()
+                await self.channelUpdated(channel)
+                return channel
             },
             publish: { [weak self] bulletins in
                 guard let self else { throw CancellationError() }
                 try await self.publisher().publishBulletins(bulletins)
+                await self.channelUpdated(bulletins)
             },
             onStatus: { [weak self] status in
                 Task { @MainActor in self?.apply(status) }
@@ -147,6 +180,112 @@ final class WiltedMacBulletinHub {
         return candidates
     }
 
+    // MARK: - Spoken interruptions
+
+    /// Attaches or detaches the player and the alert monitor to match settings, playback and location.
+    private func reconcileInterruptions(canRun: Bool, settings: WiltedAutomationSettings) {
+        let wantsSpeech = canRun && settings.interruptionsEnabled
+        let controller = wantsSpeech ? model?.playback : nil
+        let waitLimit = settings.waitLimitSeconds
+        if let attached = attachedController, attached !== controller || attachedWaitLimit != waitLimit {
+            attached.disableInterruptions()
+            attachedController = nil
+        }
+        if let controller, attachedController == nil {
+            controller.enableInterruptions(speaker: makeSpeaker(), waitLimit: TimeInterval(waitLimit))
+            attachedController = controller
+            attachedWaitLimit = waitLimit
+            syncPlayer()
+        }
+        let playing = model?.isPlaying == true
+        if wantsSpeech, settings.alertsEnabled, controller != nil, playing {
+            startAlerts(contact: settings.nwsContact)
+        } else {
+            stopAlerts()
+        }
+        if wantsSpeech { observeChanges() }
+    }
+
+    /// Re-reconciles when playback starts or stops, the player is replaced, or the location moves.
+    private func observeChanges() {
+        guard !observing, let model else { return }
+        observing = true
+        let location = location
+        withObservationTracking {
+            _ = model.isPlaying
+            _ = model.playback
+            _ = location.coordinates
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.observing = false
+                self?.reconcile()
+            }
+        }
+    }
+
+    private func startAlerts(contact: String?) {
+        let monitor: AlertMonitor
+        if let alertMonitor {
+            monitor = alertMonitor
+        } else {
+            monitor = AlertMonitor(
+                source: makeAlertSource(contact),
+                deliver: { [weak self] bulletin in Task { @MainActor in self?.receive(alert: bulletin) } },
+                onStatus: { [weak self] _ in Task { @MainActor in await self?.dropEndedAlerts() } })
+            alertMonitor = monitor
+        }
+        let coordinates = location.coordinates
+        Task {
+            if let coordinates {
+                await monitor.setCoordinates(lat: coordinates.latitude, lon: coordinates.longitude)
+            } else {
+                await monitor.clearCoordinates()
+            }
+            await monitor.start()
+        }
+    }
+
+    private func stopAlerts() {
+        guard let monitor = alertMonitor else { return }
+        alertMonitor = nil
+        activeAlerts = [:]
+        Task {
+            await monitor.stop()
+            await monitor.clearCoordinates()
+        }
+        syncPlayer()
+    }
+
+    /// An alert from this Mac's monitor.
+    func receive(alert: Bulletin) {
+        guard alertMonitor != nil else { return }
+        activeAlerts[alert.id] = alert
+        attachedController?.deliverBulletin(alert)
+        syncPlayer()
+    }
+
+    private func dropEndedAlerts() async {
+        guard let monitor = alertMonitor else { return }
+        let ids = await monitor.activeAlertIDs
+        guard monitor === alertMonitor else { return }
+        activeAlerts = activeAlerts.filter { ids.contains($0.key) }
+        syncPlayer()
+    }
+
+    /// The channel was published, or read back at start.
+    func channelUpdated(_ channel: LibraryBulletins?) {
+        headlines = channel.map { $0.headlinesEnabled ? $0.headlines : [] } ?? []
+        syncPlayer()
+    }
+
+    /// Hands the player the current headlines and tells it which bulletins are still current, so
+    /// a withdrawn one is dropped.
+    private func syncPlayer() {
+        guard let controller = attachedController else { return }
+        for headline in headlines { controller.deliverBulletin(headline) }
+        controller.replaceBulletins(headlines + Array(activeAlerts.values))
+    }
+
     private func apply(_ value: BulletinProducerStatus) {
         guard producer != nil else { return }
         status = value
@@ -183,6 +322,15 @@ extension WiltedMacModel {
 
     /// Called when the store opens or closes and when the settings change. Does nothing, and
     /// creates nothing, for a Mac that has never used interruptions.
+    /// The bulletin being spoken now, for the player's banner.
+    var speakingBulletin: Bulletin? { playback?.speakingBulletin }
+
+    func skipSpokenBulletin() { playback?.skipSpokenBulletin() }
+
+    func installBulletinHubForTesting(_ hub: WiltedMacBulletinHub) {
+        objc_setAssociatedObject(self, &bulletinHubKey, hub, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
     func bulletinLifecycleChanged() {
         let existing = objc_getAssociatedObject(self, &bulletinHubKey) as? WiltedMacBulletinHub
         guard existing != nil || automationSettings.interruptionsEnabled || automationSettings.reportEnabled

@@ -17,6 +17,7 @@ let package = Package(
             dependencies: [
                 .product(name: "WiltedCatalog", package: "WiltedKit"),
                 .product(name: "WiltedDomain", package: "WiltedKit"),
+                .product(name: "WiltedLibrary", package: "WiltedKit"),
                 .product(name: "WiltedSync", package: "WiltedKit"),
             ]
         ),
@@ -32,6 +33,7 @@ let package = Package(
             dependencies: [
                 "WiltedProducer",
                 .product(name: "WiltedDomain", package: "WiltedKit"),
+                .product(name: "WiltedLibrary", package: "WiltedKit"),
                 .product(name: "WiltedSync", package: "WiltedKit"),
             ]
         ),

@@ -167,12 +167,13 @@ enum WiltedMacLarderKind: String, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 
     /// Whether the filter lets an episode row through. Articles are not episodes, so they pass
-    /// only `all` and `articles` (see `includesArticles`).
+    /// only `all` and `articles` (see `includesArticles`). A morning report is carried as a
+    /// one-volume audiobook but is neither a book nor a podcast, so only `all` shows it.
     func includes(_ episode: WiltedMacEpisode) -> Bool {
         switch self {
         case .all: true
         case .podcasts: !episode.isAudiobook
-        case .audiobooks: episode.isAudiobook
+        case .audiobooks: episode.isAudiobook && !episode.isReport
         case .articles: false
         }
     }

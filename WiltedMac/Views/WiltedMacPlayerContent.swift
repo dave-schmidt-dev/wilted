@@ -81,6 +81,13 @@ struct WiltedMacPlayerContent: View {
                 }
             }
             if model.hasCurrentPlayback {
+                #if canImport(WiltedProducer)
+                if let bulletin = model.speakingBulletin {
+                    WiltedMacBulletinBanner(text: bulletin.text, isAlert: bulletin.kind == .alert) {
+                        model.skipSpokenBulletin()
+                    }
+                }
+                #endif
                 HStack(spacing: WiltedTheme.Spacing.medium) {
                 artwork
                 VStack(alignment: .leading, spacing: 2) {
@@ -404,5 +411,37 @@ struct WiltedMacPlaybackShareLink: View {
         #if canImport(WiltedProducer)
         WiltedMacShareComposer(model: model)
         #endif
+    }
+}
+
+/// What the player shows while a spoken bulletin holds playback: the text being read, and Skip.
+struct WiltedMacBulletinBanner: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let text: String
+    let isAlert: Bool
+    let onSkip: () -> Void
+
+    var body: some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            Image(systemName: isAlert ? "exclamationmark.triangle.fill" : "newspaper.fill")
+                .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                .accessibilityHidden(true)
+            Text(text)
+                .wiltedFont(.body)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: onSkip) { Label("Skip", systemImage: "forward.end.fill") }
+                .labelStyle(.iconOnly)
+                .help("Skip")
+                .accessibilityLabel("Skip bulletin")
+                .accessibilityIdentifier("wilted-player-bulletin-skip")
+        }
+        .padding(WiltedTheme.Spacing.small)
+        .background(
+            RoundedRectangle(cornerRadius: WiltedTheme.Radius.control)
+                .fill(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.15)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(isAlert ? "Weather alert" : "News headline"): \(text)")
+        .accessibilityIdentifier("wilted-player-bulletin-banner")
     }
 }
