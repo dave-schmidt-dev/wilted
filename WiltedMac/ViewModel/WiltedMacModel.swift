@@ -190,7 +190,7 @@ final class WiltedMacModel {
         }
     }
     /// Automation reads this one validated value, never individual preference keys.
-    var automationSettings = WiltedAutomationSettings.defaults
+    var automationSettings = WiltedAutomationSettings.defaults { didSet { bulletinLifecycleChanged() } }
     /// Kept observable for Feeds: a successful refresh must redraw its actual
     /// completion time instead of waiting for another unrelated model change.
     var observedLastAutomationRefreshAt: Date?
@@ -309,7 +309,7 @@ final class WiltedMacModel {
     let registeredTestRoot: URL?
     var isClosingTemporaryState = false
     var temporaryStateCloseTask: Task<Void, Never>?
-    var store: LocalLibraryStore?
+    var store: LocalLibraryStore? { didSet { bulletinLifecycleChanged() } }
     var coordinator: PreparationCoordinator?
     var playback: PlaybackController?
     var syncLifecycle: WiltedMacSyncLifecycle?

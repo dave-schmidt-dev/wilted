@@ -103,6 +103,10 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
     func removeMedia(entryID: ItemID) async throws { try await run { try await inner.removeMedia(entryID: entryID) } }
     func publishStats(_ stats: LibraryStats) async throws { try await run { try await inner.publishStats(stats) } }
     func readStats() async throws -> LibraryStats? { try await run { try await inner.readStats() } }
+    func publishBulletins(_ bulletins: LibraryBulletins) async throws {
+        try await run { try await inner.publishBulletins(bulletins) }
+    }
+    func fetchBulletins() async throws -> LibraryBulletins? { try await run { try await inner.fetchBulletins() } }
     func publishPublication(_ publication: LibraryPublication) async throws {
         try await run { try await inner.publishPublication(publication) }
     }

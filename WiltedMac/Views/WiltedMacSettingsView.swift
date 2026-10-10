@@ -9,18 +9,14 @@ import WiltedDomain
 /// live in Settings.
 struct WiltedMacSettingsView: View {
     let model: WiltedMacModel
-    /// The one provider Settings reads. The app-level owner arrives with the Reports wiring (Task 3.2);
-    /// until then Settings shares one process-wide instance so the permission prompt has a home.
+    /// The one provider Settings reads; the model owns it (see `WiltedMacBulletinHub`).
     let location: WiltedLocationProvider
     @Environment(\.colorScheme) private var colorScheme
     @State private var choosesCustomMetadataCount = false
 
-    @MainActor static let sharedLocation = WiltedLocationProvider(
-        manager: WiltedCoreLocationManager(), wifi: WiltedCoreWLANPower())
-
-    init(model: WiltedMacModel, location: WiltedLocationProvider = WiltedMacSettingsView.sharedLocation) {
+    init(model: WiltedMacModel, location: WiltedLocationProvider? = nil) {
         self.model = model
-        self.location = location
+        self.location = location ?? model.bulletinHub.location
     }
 
     var body: some View {
@@ -540,6 +536,9 @@ struct WiltedMacReportsCard: View {
                         }
                         .disabled(!settings.interruptionsEnabled)
                         .accessibilityIdentifier("wilted-reports-headline-gap")
+                        if let line = WiltedMacBulletinHub.statusLine(model.bulletinHub.status) {
+                            note(line, id: "wilted-reports-bulletin-status")
+                        }
 
                         Divider()
 

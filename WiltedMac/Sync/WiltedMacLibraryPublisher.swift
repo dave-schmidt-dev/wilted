@@ -119,6 +119,22 @@ actor WiltedMacLibraryPublisher {
         return report
     }
 
+    /// Writes the bulletin channel under the same account hold as every other send: nothing goes out
+    /// unless the approved owner and transport generation are unchanged from start to finish.
+    func publishBulletins(_ bulletins: LibraryBulletins) async throws {
+        let context = try await captureContext()
+        try await transport.publishBulletins(bulletins)
+        try await verify(context)
+    }
+
+    /// The channel as last published, or nil; read under the same hold.
+    func fetchBulletins() async throws -> LibraryBulletins? {
+        let context = try await captureContext()
+        let value = try await transport.fetchBulletins()
+        try await verify(context)
+        return value
+    }
+
     /// Loads only the approved owner's durable evidence; it never starts a cloud operation.
     func fulfilledPublication() async throws -> LibraryPublication? {
         guard let publicationStore else { return nil }
