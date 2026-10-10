@@ -284,6 +284,8 @@ extension WiltedMacModel {
         articles = values.articles
         subscriptions = values.subscriptions
         pruneNavigationState()
+        // A sync that removed the selected playlist must not leave a blank destination.
+        if playlists.isLoaded { await loadPlaylists() }
     }
 
     func loadLibrary(from store: LocalLibraryStore) async throws

@@ -194,6 +194,31 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
         XCTAssertEqual(model.podcastQueueIDs, queue)
     }
 
+    func testThePlayingBookStaysVisibleUnderThePodcastsFilter() async throws {
+        let (model, _, ids) = try await model("kind-filter-book-playing")
+        model.installEpisodeForTesting(book("book-1", title: "Dune"))
+        model.podcastQueueIDs.insert("book-1", at: 1)
+        model.isPodcastPlayback = false
+        model.currentPodcastEpisodeID = "book-1"
+
+        model.larderKind = .podcasts
+        let shown = model.larderFilteredItems.map(\.id)
+        XCTAssertTrue(shown.contains("book-1"), "the playing audiobook is not hidden by Podcasts")
+        XCTAssertEqual(Set(shown), Set(ids + ["book-1"]))
+    }
+
+    func testThePlayingPodcastStaysVisibleUnderTheAudiobooksFilter() async throws {
+        let (model, _, ids) = try await model("kind-filter-podcast-playing")
+        model.installEpisodeForTesting(book("book-1", title: "Dune"))
+        model.podcastQueueIDs.insert("book-1", at: 1)
+        model.isPodcastPlayback = false
+        model.currentPodcastEpisodeID = ids[0]
+
+        model.larderKind = .audiobooks
+        let shown = model.larderFilteredItems.map(\.id)
+        XCTAssertEqual(Set(shown), Set([ids[0], "book-1"]), "only the playing podcast joins the books")
+    }
+
     // MARK: One grouped list
 
     private func article(_ id: String, ready: Bool, minutes: Double = 5, savedAt: TimeInterval = 1_700_000_000) -> WiltedMacArticle {

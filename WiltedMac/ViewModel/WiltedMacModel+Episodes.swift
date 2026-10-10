@@ -577,7 +577,11 @@ extension WiltedMacModel {
     /// The waiting episode and book rows the search and the kind filter admit, before the group filter.
     var larderSearchResults: [WiltedMacEpisode] {
         let searched = isSearchingLarder ? larderWaitingEpisodes.filter(matchesLarderSearch) : larderWaitingEpisodes
-        return larderKind == .all ? searched : searched.filter { larderKind.includes($0) }
+        guard larderKind != .all else { return searched }
+        // The current playback item stays in its normal group whatever its kind, so a kind filter never
+        // hides it. (While a podcast is actively playing, larderPresentationEpisodes already moves it to Now Playing.)
+        let currentID = currentPodcastEpisodeID
+        return searched.filter { larderKind.includes($0) || $0.id == currentID }
     }
 
 }

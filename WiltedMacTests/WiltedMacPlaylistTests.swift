@@ -98,6 +98,21 @@ final class WiltedMacPlaylistTests: XCTestCase {
         XCTAssertNil(finished.retiredAt, "a finished playlist entry is not retired from the Larder")
     }
 
+    func testARemoteDeletionOfTheSelectedPlaylistReturnsTheSelectionToTheLarder() async throws {
+        let f = try await fixture("remote-delete", count: 2)
+        let model = f.model
+        let store = try XCTUnwrap(model.store)
+        let playlist = try await created(model, .manual, "Doomed")
+        XCTAssertEqual(model.selectedNavigation, .playlist(playlist.id))
+
+        // The playlist disappears under the model, as an inbound sync apply would remove it.
+        try await store.deletePlaylist(id: playlist.id)
+        await model.reloadLibraryRowsForTesting()
+
+        XCTAssertEqual(model.selectedNavigation, .larder)
+        XCTAssertFalse(model.playlists.playlists.contains { $0.id == playlist.id })
+    }
+
     func testTheEndOfAPlaylistStopsItWithoutTouchingTheLarder() async throws {
         let f = try await fixture("manual-end", count: 3)
         let model = f.model
