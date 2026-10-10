@@ -37,6 +37,8 @@ extension WiltedMacModel {
     struct PodcastRefreshResult {
         var newEpisodeIDs: [ItemID] = []
         var duplicateSubscription: ItemID?
+        /// Feeds this pass handled as article feeds rather than podcasts.
+        var articleFeedIDs: Set<ItemID> = []
         var successfulFeedTitles: [String] = []
         var successfulFeedCount = 0
         var failedFeedCount = 0
@@ -50,7 +52,8 @@ extension WiltedMacModel {
         let wasAlreadySubscribed: Bool
     }
 
-    /// A subscription fetch whose feed carries no audio enclosure at all: an article feed.
+    /// A subscription fetch whose feed lists neither audio nor linked posts: there is nothing to follow.
+    /// TODO: the wording predates article feeds; changing it needs the add-sheet-error pixel baseline re-recorded.
     struct PodcastFeedHasNoAudio: Error {
         static let message = "Wilted can't follow article feeds yet; add single articles instead."
     }
@@ -79,9 +82,28 @@ extension WiltedMacModel {
                 guard requestID == nil || podcastSubscriptionRequestID == requestID else {
                     throw CancellationError()
                 }
-                // The parser keeps only items with an audio enclosure, so an empty list is an article feed.
-                // Refuse before anything is written.
-                if subscribing, loaded.episodes.isEmpty { throw PodcastFeedHasNoAudio() }
+                // The parser keeps only items with an audio enclosure, so a feed with none is followed as an
+                // article feed: when subscribing, and when refreshing a feed already followed as one (a
+                // podcast whose episodes were all removed must not turn into an article feed).
+                var followedAsArticleFeed = false
+                if loaded.episodes.isEmpty, !subscribing {
+                    followedAsArticleFeed = try await store.articleFeed(
+                        for: ItemID.articleFeed(canonicalFeedURL: url)
+                    ) != nil
+                }
+                if loaded.episodes.isEmpty, subscribing || followedAsArticleFeed {
+                    let article = try await refreshArticleFeed(url: url, subscribing: subscribing, store: store)
+                    try Task.checkCancellation()
+                    if article.duplicate { result.duplicateSubscription = article.feedID }
+                    result.articleFeedIDs.insert(article.feedID)
+                    persistedSubscriptionTitle = article.title
+                    wasAlreadySubscribed = article.duplicate
+                    result.successfulFeedTitles.append(article.title)
+                    result.successfulFeedCount += 1
+                    result.feedOutcomes[url] = .done
+                    if !subscribing { markFeedRefresh(forURL: url, .done) }
+                    continue
+                }
                 try await store.save(feed: loaded.feed)
                 try Task.checkCancellation()
                 if subscribing {

@@ -30,7 +30,7 @@ public struct PodcastFeedClient: Sendable {
     /// catalogue is truncated to its newest episodes, never rejected.
     public static let maximumEpisodeCount = 500
 
-    private let loader: any PodcastFeedLoading
+    let loader: any PodcastFeedLoading
     private let now: @Sendable () -> Date
 
     public init(

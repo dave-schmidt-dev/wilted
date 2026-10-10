@@ -404,7 +404,12 @@ extension WiltedMacModel {
                 episodeLink: episode.episodeLink
             ))
         }
-        return (articleValues, LibraryEpisodeRows(values: episodeValues, readEpoch: readEpoch), subscriptionValues)
+        // Article feeds are stored beside podcast feeds but are not podcast feeds, so every reload merges
+        // them here, from the same snapshot (no second store hop).
+        let allSubscriptionValues = Self.subscriptionRows(
+            subscriptionValues, articleFeeds: snapshot.articleFeeds, stored: allSubscriptions
+        )
+        return (articleValues, LibraryEpisodeRows(values: episodeValues, readEpoch: readEpoch), allSubscriptionValues)
     }
 
     func loadDismissedEpisodes(from store: LocalLibraryStore) async throws -> [WiltedMacDismissedEpisode] {

@@ -139,6 +139,8 @@ extension LocalLibraryStore {
             }
             try Self.reachRemovalStage(.articleTombstone)
 
+            try stagePlaylistEntryRemoval(entryIDs: [identifier], in: context)
+
             stage = .save
             try Self.reachRemovalStage(.save)
             try context.save()

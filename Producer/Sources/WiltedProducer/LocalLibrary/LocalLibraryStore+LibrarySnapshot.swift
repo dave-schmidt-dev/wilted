@@ -91,6 +91,12 @@ extension LocalLibraryStore {
         public let removalKindByEpisode: [ItemID: PodcastEpisodeRemovalKind]
         /// Every recorded preparation run, uncapped -- see `allPreparationRunSummaries`.
         public let preparationRuns: [PreparationRunSummary]
+        /// Followed article feeds, by title. Not in `feeds`, which holds podcast feeds only.
+        public let articleFeeds: [ArticleFeed]
+        /// The feed each feed-saved article came from; a hand-added article has no entry.
+        public let feedIDByArticle: [ItemID: ItemID]
+        /// Every audiobook volume, removed ones included (`isRemoved`).
+        public let audiobooks: [StoredAudiobook]
     }
 
     public func podcastLibrarySnapshot() throws -> PodcastLibrarySnapshot {
@@ -181,13 +187,28 @@ extension LocalLibraryStore {
         podcastLibrarySnapshotFetchCount += 1
         let preparationRuns = try allPreparationRunSummaries(in: context)
 
+        podcastLibrarySnapshotFetchCount += 1
+        let articleFeedValues = try articleFeeds()
+
+        podcastLibrarySnapshotFetchCount += 1
+        var feedIDByArticle: [ItemID: ItemID] = [:]
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>()) {
+            guard let feedRaw = record.feedID, let articleID = try? ItemID(rawValue: record.id),
+                  let feedID = try? ItemID(rawValue: feedRaw) else { continue }
+            feedIDByArticle[articleID] = feedID
+        }
+
+        podcastLibrarySnapshotFetchCount += 1
+        let audiobookValues = try audiobooks()
+
         return PodcastLibrarySnapshot(
             articles: articleValues, episodes: episodeValues, feeds: feeds, subscriptions: subscriptionValues,
             podcastQueue: podcastQueue,
             downloads: downloads, readyRevisions: readyRevisions, playbackStates: playbackStates,
             transcripts: transcripts, preparationOutcomes: preparationOutcomes, listeningStates: listeningStates,
             retiredAtByEpisode: retiredAtByEpisode, removalKindByEpisode: removalKindByEpisode,
-            preparationRuns: preparationRuns
+            preparationRuns: preparationRuns, articleFeeds: articleFeedValues,
+            feedIDByArticle: feedIDByArticle, audiobooks: audiobookValues
         )
     }
 

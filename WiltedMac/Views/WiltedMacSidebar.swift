@@ -62,9 +62,10 @@ struct WiltedMacSidebar: View {
                 identifier: "wilted-sidebar-ready-total"
             )
             total(
-                "Needs preparation",
+                "Needs Prep",
                 summary: model.larderGroupAudioSummary(.downloaded),
-                identifier: "wilted-sidebar-downloaded-total"
+                identifier: "wilted-sidebar-downloaded-total",
+                spokenName: "Needs preparation"
             )
             total(
                 "In Larder",
@@ -110,10 +111,12 @@ struct WiltedMacSidebar: View {
     /// cannot disagree, and an unknown duration is shown as a count rather
     /// than silently summed as zero.
     private func total(
-        _ label: String, summary: WiltedMacQueueAudioSummary, identifier: String
+        _ label: String, summary: WiltedMacQueueAudioSummary, identifier: String,
+        spokenName: String? = nil
     ) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label)
+                .accessibilityLabel(spokenName ?? label)
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             Spacer()

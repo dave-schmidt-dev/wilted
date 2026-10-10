@@ -79,6 +79,30 @@ extension LocalLibraryStore {
         try context.save()
     }
 
+    /// Whether the feed is marked as news. A feed with no policy row, or a row
+    /// written before the flag existed, is not news.
+    public func isNews(feedID: ItemID) throws -> Bool {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<FeedPolicyRecord>())
+            .first(where: { $0.feedID == feedID.rawValue })?.isNews ?? false
+    }
+
+    /// Stores the news flag, creating an inheriting policy row when the feed
+    /// has none. The other policy fields are left as they are.
+    public func save(isNews: Bool, feedID: ItemID, updatedAt: Timestamp = Timestamp(Date())) throws {
+        let context = ModelContext(container)
+        if let record = try context.fetch(FetchDescriptor<FeedPolicyRecord>()).first(where: { $0.feedID == feedID.rawValue }) {
+            record.isNews = isNews; record.updatedAt = updatedAt.date
+        } else {
+            let inheriting = FeedAutomationPolicy()
+            context.insert(FeedPolicyRecord(feedID: feedID.rawValue, autoKeep: inheriting.autoKeep.rawValue,
+                                            autoDownload: inheriting.autoDownload.rawValue,
+                                            autoPrepare: inheriting.autoPrepare.rawValue, keptLimit: nil,
+                                            updatedAt: updatedAt.date, isNews: isNews))
+        }
+        try context.save()
+    }
+
     /// Reads a feed's rules in their persisted order.
     public func episodeMatchRules(for feedID: ItemID) throws -> EpisodeMatchRules {
         let context = ModelContext(container)

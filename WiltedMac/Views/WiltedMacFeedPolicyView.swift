@@ -19,6 +19,9 @@ final class WiltedMacFeedPolicyBoard {
     let model: WiltedMacModel
     private(set) var policies: [String: FeedAutomationPolicy] = [:]
     private(set) var failedFeedIDs: Set<String> = []
+    /// The feeds that list posts rather than audio, and which of them the reader treats as news.
+    private(set) var articleFeedIDs: Set<String> = []
+    private(set) var newsFeedIDs: Set<String> = []
     @ObservationIgnored private var rules: [String: EpisodeMatchRules] = [:]
     @ObservationIgnored private var editors: [String: WiltedMacFeedRulesEditor] = [:]
     @ObservationIgnored private var writeChain: Task<Void, Never>?
@@ -54,6 +57,53 @@ final class WiltedMacFeedPolicyBoard {
         }
         policies = loaded
         rules = loadedRules
+        let articleFeeds = (try? await store.articleFeeds()) ?? []
+        articleFeedIDs = Set(articleFeeds.map(\.itemID.rawValue))
+        var news: Set<String> = []
+        for feed in articleFeeds where (try? await store.isNews(feedID: feed.itemID)) == true {
+            news.insert(feed.itemID.rawValue)
+        }
+        newsFeedIDs = news
+    }
+
+    // MARK: News flag
+
+    func isArticleFeed(_ feedID: String) -> Bool { articleFeedIDs.contains(feedID) }
+
+    func isNews(_ feedID: String) -> Bool { newsFeedIDs.contains(feedID) }
+
+    /// Marks an article feed as news (or not). Returns false, changing nothing, for a feed that is
+    /// not loaded or does not list articles.
+    @discardableResult
+    func setNews(_ value: Bool, for feedID: String) -> Bool {
+        guard isLoaded(feedID), isArticleFeed(feedID) else { return false }
+        if value { newsFeedIDs.insert(feedID) } else { newsFeedIDs.remove(feedID) }
+        failedFeedIDs.remove(feedID)
+        let previous = writeChain
+        writeChain = Task { [weak self] in
+            await previous?.value
+            await self?.persist(isNews: value, feedID)
+        }
+        return true
+    }
+
+    private func persist(isNews value: Bool, _ feedID: String) async {
+        guard let store = model.store, !model.isClosingTemporaryState,
+              let id = try? ItemID(rawValue: feedID) else { return }
+        do {
+            try await store.save(isNews: value, feedID: id)
+        } catch {
+            failedFeedIDs.insert(feedID)
+            if (try? await store.isNews(feedID: id)) == true { newsFeedIDs.insert(feedID) } else { newsFeedIDs.remove(feedID) }
+        }
+    }
+
+    /// Fills the board without a store, so a preview or snapshot can render a given state.
+    func loadForPreview(feedID: String, policy: FeedAutomationPolicy = FeedAutomationPolicy(),
+                        isArticleFeed: Bool, isNews: Bool) {
+        policies[feedID] = policy
+        if isArticleFeed { articleFeedIDs.insert(feedID) }
+        if isNews { newsFeedIDs.insert(feedID) }
     }
 
     // MARK: Match rules
@@ -249,19 +299,29 @@ struct WiltedMacFeedPolicyContent: View {
                     identifier: "wilted-feed-policy-auto-keep",
                     selection: overrideBinding(\.autoKeep) { board.update(feedID, autoKeep: $0) }
                 )
-                overrideRow(
-                    "Auto download", label: "Auto download for \(subscription.title)",
-                    identifier: "wilted-feed-policy-auto-download",
-                    selection: overrideBinding(\.autoDownload) { board.update(feedID, autoDownload: $0) }
-                )
+                // An article has no file to download, so its feed offers no download choice.
+                if !board.isArticleFeed(feedID) {
+                    overrideRow(
+                        "Auto download", label: "Auto download for \(subscription.title)",
+                        identifier: "wilted-feed-policy-auto-download",
+                        selection: overrideBinding(\.autoDownload) { board.update(feedID, autoDownload: $0) }
+                    )
+                }
                 overrideRow(
                     "Auto prepare", label: "Auto prepare for \(subscription.title)",
                     identifier: "wilted-feed-policy-auto-prepare",
                     selection: overrideBinding(\.autoPrepare) { board.update(feedID, autoPrepare: $0) }
                 )
                 keptLimitRows
+                if board.isArticleFeed(feedID) { newsRow }
             }
             .disabled(!board.isLoaded(feedID))
+            if board.isArticleFeed(feedID) {
+                Text("Marks the articles from this feed as news.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if limitIsRejected {
                 Text("Enter a whole number of at least 1.")
                     .wiltedFont(.utility)
@@ -279,7 +339,7 @@ struct WiltedMacFeedPolicyContent: View {
                 open: { showsRules = true }
             )
             Divider()
-            Text("A lower limit never removes an episode already in Larder.")
+            Text("A lower limit never removes \(board.isArticleFeed(feedID) ? "an article" : "an episode") already in Larder.")
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
@@ -293,6 +353,21 @@ struct WiltedMacFeedPolicyContent: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-feed-policy-\(subscription.id)")
+    }
+
+    /// Shown only for a feed that lists articles: label in the label column, toggle in the control column.
+    private var newsRow: some View {
+        GridRow {
+            Text("News").wiltedFont(.body)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            Toggle("News", isOn: Binding(
+                get: { board.isNews(feedID) }, set: { _ = board.setNews($0, for: feedID) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .accessibilityLabel("Treat \(subscription.title) as news")
+            .accessibilityIdentifier("wilted-feed-policy-news")
+        }
     }
 
     private func overrideRow(

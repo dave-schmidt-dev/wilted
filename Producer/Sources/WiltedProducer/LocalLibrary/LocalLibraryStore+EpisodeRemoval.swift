@@ -56,6 +56,7 @@ extension LocalLibraryStore {
             context.insert(LocalLibrarySchemaV13Models.PodcastEpisodeRecord(
                 placeholderForDismissalID: identifier, feedID: nil, title: nil, dismissedAt: dismissedAt.date
             ))
+            try stagePlaylistEntryRemoval(entryIDs: [identifier], in: context)
             try context.save()
             return true
         }
@@ -77,6 +78,7 @@ extension LocalLibraryStore {
         where record.itemID == identifier { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
         where record.itemID == identifier { context.delete(record) }
+        try stagePlaylistEntryRemoval(entryIDs: [identifier], in: context)
         try context.save()
         deleteMediaIfUnreferenced(doomedMedia)
         return true
@@ -145,6 +147,7 @@ extension LocalLibraryStore {
             staged += try stageEpisodeLinkRemoval(for: episodeIDs, in: context)
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeDecisionRecord>())
             where episodeIDs.contains(record.episodeID) { remove(record) }
+            staged += try stagePlaylistEntryRemoval(entryIDs: episodeIDs, in: context)
             try Self.reachRemovalStage(.episodes)
 
             stage = .queue

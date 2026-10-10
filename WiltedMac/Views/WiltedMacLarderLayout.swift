@@ -51,8 +51,8 @@ struct WiltedMacShellLayout: Equatable {
     static let railWidth: CGFloat = 56
     /// The labelled sidebar's ideal width; the column may be dragged within
     /// `sidebarWidth`, which the thresholds do not chase.
-    static let sidebarIdealWidth: CGFloat = 200
-    static let sidebarWidth: ClosedRange<CGFloat> = 180...260
+    static let sidebarIdealWidth: CGFloat = 168
+    static let sidebarWidth: ClosedRange<CGFloat> = 150...220
     /// Room left over beyond the columns themselves.
     static let slack: CGFloat = 40
 

@@ -395,6 +395,90 @@ extension WiltedMacModel {
         subscriptionWriteTasks[id] = task
     }
 
+    // MARK: Article feeds
+
+    /// `base` plus the article feeds the reader follows. Article feeds are stored beside podcast feeds
+    /// but are not `PodcastFeed`s, so the podcast rows that produced `base` do not carry them.
+    static func subscriptionRows(
+        _ base: [WiltedMacSubscription], articleFeeds feeds: [ArticleFeed], stored: [PodcastSubscription]
+    ) -> [WiltedMacSubscription] {
+        guard !feeds.isEmpty else { return base }
+        let byFeed = Dictionary(stored.map { ($0.feedID, $0) }, uniquingKeysWith: { first, _ in first })
+        let baseIDs = Set(base.map(\.id))
+        let articleRows = feeds.compactMap { feed -> WiltedMacSubscription? in
+            guard !baseIDs.contains(feed.itemID.rawValue), let subscription = byFeed[feed.itemID] else { return nil }
+            return WiltedMacSubscription(
+                id: feed.itemID.rawValue, title: feed.title, feedURL: feed.canonicalURL, episodeCount: 0,
+                subscribedAt: subscription.subscribedAt.date, enabled: subscription.enabled
+            )
+        }
+        return (base + articleRows).sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    /// Follows (or refreshes) a feed that lists posts rather than audio. A new subscription prepares
+    /// nothing: its back catalogue is offered, not queued for the GPU. A refresh keeps what the feed's
+    /// rules and policy keep, one article at a time through the shared preparation gate.
+    func refreshArticleFeed(
+        url: URL, subscribing: Bool, store: LocalLibraryStore
+    ) async throws -> (feedID: ItemID, title: String, duplicate: Bool) {
+        let document = try await podcastFeedClient.loadArticleFeed(url)
+        if subscribing, document.items.isEmpty { throw PodcastFeedHasNoAudio() }
+        let feed = try ArticleFeed(
+            canonicalURL: url, title: document.title, author: document.author, createdAt: Timestamp(Date())
+        )
+        try await store.save(articleFeed: feed)
+        try Task.checkCancellation()
+        var duplicate = false
+        if subscribing {
+            let inserted = try await store.subscribeIfNeeded(
+                PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(Date()))
+            )
+            duplicate = !inserted
+        }
+        let refresh = ArticleFeedRefresh(store: store, defaults: automationSettings.feedAutomationDefaults)
+        var prepare: ArticleFeedRefresh.Prepare?
+        if !subscribing {
+            prepare = { [weak self] (link: URL) async throws -> ItemID in
+                guard let self else { throw CancellationError() }
+                return try await self.prepareFeedArticle(link)
+            }
+        }
+        let outcome = try await refresh.refresh(feed: feed, document: document, prepare: prepare) { [weak self] line in
+            Task { @MainActor in self?.podcastOperationMessage = line }
+        }
+        setOfferedArticles(outcome.offered, feed: feed)
+        return (feed.itemID, feed.title, duplicate)
+    }
+
+    /// Prepares one feed article behind the same admission gate as a pasted article, so text-to-speech
+    /// never holds the GPU twice, and records the work on its ticket.
+    func prepareFeedArticle(_ url: URL) async throws -> ItemID {
+        guard let coordinator else { throw ArticlePreparationError.failed("The local larder is unavailable.") }
+        let subject = try ItemID.derive(from: url).rawValue
+        let sequence = consumePreparationRequest(for: subject, kind: .articlePreparation)
+        try await preparationGate.admit(sequence: sequence)
+        defer { preparationGate.release() }
+        do {
+            let id = try await coordinator.prepareArticle(url: url) { [weak self] detail in
+                Task { @MainActor in self?.podcastOperationMessage = "Preparing article: \(detail)" }
+            }
+            if await queuePreparedPublication(itemID: id) { syncLifecycle?.startAutomaticUpload() }
+            await recordWorkTicketTransition(
+                kind: .articlePreparation, subjectID: subject, requestSequence: sequence,
+                state: .succeeded, resolvedItemID: id.rawValue
+            )
+            return id
+        } catch {
+            await recordWorkTicketTransition(
+                kind: .articlePreparation, subjectID: subject, requestSequence: sequence,
+                state: error is CancellationError ? .cancelled : .failed,
+                failureKind: error is CancellationError ? nil : PodcastDownloadFailureKind.retryable.rawValue,
+                lastFailureMessage: String(describing: error)
+            )
+            throw error
+        }
+    }
+
     func startPodcastRefresh(
         urls: [URL], subscribing: Bool,
         initialMetadataLimit: Int? = nil,
@@ -443,7 +527,9 @@ extension WiltedMacModel {
                     } else {
                         self.selectedPodcastFeedID = nil
                         let count = result.newEpisodeIDs.count
-                        self.podcastFeedDraftStatus = "\(showName) added with \(count) episode\(count == 1 ? "" : "s")."
+                        self.podcastFeedDraftStatus = !result.articleFeedIDs.isEmpty
+                            ? "\(showName) added as an article feed."
+                            : "\(showName) added with \(count) episode\(count == 1 ? "" : "s")."
                         self.podcastOperationMessage = self.podcastFeedDraftStatus
                     }
                 } else {

@@ -16,10 +16,28 @@ import WiltedProducer
 final class WiltedMacAddSession {
     typealias Search = @Sendable (String) async throws -> [PodcastCatalogShow]
     typealias Classify = @Sendable (URL) async throws -> PastedLinkKind
+    /// Whether the feed at the address lists no audio, so it can only be followed for its articles.
+    typealias FeedHasNoAudio = @Sendable (URL) async -> Bool
+    /// Reports an import's overall fraction (0...1) and a sentence about the current step.
+    typealias ImportProgress = @Sendable (Double, String) -> Void
+    /// What an import produced: the library items it made, and whether they were already there.
+    typealias ImportOutcome = (itemIDs: [ItemID], alreadyImported: Bool)
+    typealias ConvertBook = @MainActor (URL, @escaping ImportProgress) async throws -> ImportOutcome
+    typealias ImportAudio = @MainActor ([URL], @escaping ImportProgress) async throws -> ImportOutcome
+
+    /// Where a book import stands, shown in the sheet beneath the field.
+    enum ImportState: Equatable {
+        case idle
+        case working(fraction: Double, detail: String)
+        /// Nothing was imported; the text is the reason, in the importer's own words.
+        case refused(String)
+        case cancelled
+        case finished(String)
+    }
 
     /// One result with exactly one primary action.
     struct Row: Identifiable, Equatable {
-        enum Action: Equatable { case subscribe, following, addArticle }
+        enum Action: Equatable { case subscribe, followArticleFeed, following, addArticle }
         let id: String
         let title: String
         let detail: String
@@ -34,21 +52,32 @@ final class WiltedMacAddSession {
     private(set) var resolvedFeed: (url: URL, title: String?)?
     /// A feed the pasted article page advertises; offered, never taken.
     private(set) var advertisedFeed: URL?
+    /// Feeds the session saw list no audio: offered as "Follow as article feed".
+    private(set) var articleOnlyFeeds: Set<URL> = []
+    private(set) var importState = ImportState.idle
 
     @ObservationIgnored private let model: WiltedMacModel
     @ObservationIgnored private let search: Search
     @ObservationIgnored private let classify: Classify
+    @ObservationIgnored private let feedHasNoAudio: FeedHasNoAudio
+    @ObservationIgnored private let convertBook: ConvertBook
+    @ObservationIgnored private let importAudio: ImportAudio
+    @ObservationIgnored private var importTask: Task<Void, Never>?
     @ObservationIgnored private let linkDebounce: Duration
     @ObservationIgnored private let searchDebounce: Duration
     @ObservationIgnored private var task: Task<Void, Never>?
 
     init(
         model: WiltedMacModel, search: @escaping Search, classify: @escaping Classify,
-        linkDebounce: Duration, searchDebounce: Duration
+        feedHasNoAudio: @escaping FeedHasNoAudio, convertBook: @escaping ConvertBook,
+        importAudio: @escaping ImportAudio, linkDebounce: Duration, searchDebounce: Duration
     ) {
         self.model = model
         self.search = search
         self.classify = classify
+        self.feedHasNoAudio = feedHasNoAudio
+        self.convertBook = convertBook
+        self.importAudio = importAudio
         self.linkDebounce = linkDebounce
         self.searchDebounce = searchDebounce
     }
@@ -119,8 +148,10 @@ final class WiltedMacAddSession {
 
     /// Whether the feed is already a subscription, by its namespaced feed ID (W-INV-003).
     func isFollowed(_ feedURL: URL) -> Bool {
-        guard let id = try? ItemID.derivePodcastFeed(from: feedURL) else { return false }
-        return model.subscriptions.contains { $0.id == id.rawValue }
+        // A feed without audio is followed as an article feed, under its own ID.
+        let ids = [try? ItemID.derivePodcastFeed(from: feedURL), try? ItemID.articleFeed(canonicalFeedURL: feedURL)]
+            .compactMap { $0?.rawValue }
+        return model.subscriptions.contains { ids.contains($0.id) }
     }
 
     /// Opens with a clean intake status and re-evaluates a restored draft.
@@ -140,15 +171,21 @@ final class WiltedMacAddSession {
         query.cancel()
     }
 
+    /// Stops everything the sheet started, including a book import: nothing runs unseen once it is gone.
+    func teardown() {
+        cancel()
+        cancelImport()
+    }
+
     func close() {
-        task?.cancel()
-        task = nil
+        teardown()
         model.isPresentingComposer = false
     }
 
     /// Follows a show. A followed or in-flight show is never subscribed twice.
     func subscribe(_ row: Row) {
-        guard row.action == .subscribe, let url = row.feedURL, !isFollowed(url), !isSubscribing else { return }
+        guard row.action == .subscribe || row.action == .followArticleFeed,
+              let url = row.feedURL, !isFollowed(url), !isSubscribing else { return }
         model.podcastFeedDraftStatus = nil
         model.subscribeToPodcastFeed(url)
     }
@@ -182,7 +219,8 @@ final class WiltedMacAddSession {
     private func feedRow(id: String, feed: URL, title: String?, detail: String) -> Row {
         Row(
             id: id, title: title ?? Self.display(feed), detail: detail,
-            action: isFollowed(feed) ? .following : .subscribe, feedURL: feed, articleURL: nil
+            action: isFollowed(feed) ? .following : (articleOnlyFeeds.contains(feed) ? .followArticleFeed : .subscribe),
+            feedURL: feed, articleURL: nil
         )
     }
 
@@ -191,6 +229,7 @@ final class WiltedMacAddSession {
         task = nil
         resolvedFeed = nil
         advertisedFeed = nil
+        articleOnlyFeeds = []
         let effect = query.begin(model.urlDraft)
         let delay: Duration
         switch effect {
@@ -231,6 +270,9 @@ final class WiltedMacAddSession {
             switch found {
             case .podcastFeed:
                 resolvedFeed = (url, nil)
+                let noAudio = await feedHasNoAudio(url)
+                guard generation == query.generation else { return .init(generation: generation, outcome: .cancelled) }
+                if noAudio { articleOnlyFeeds.insert(url) }
                 kind = .podcastFeed
             case .article:
                 kind = .article
@@ -252,6 +294,91 @@ final class WiltedMacAddSession {
     }
 }
 
+// MARK: - Book import
+
+extension WiltedMacAddSession {
+    static let libraryUnavailable = AudiobookImportError.unsupportedInput("The local larder is unavailable.")
+    private static let bookExtensions: Set<String> = ["epub", "pdf"]
+
+    var isImporting: Bool { importTask != nil }
+
+    /// Imports what the person chose or dropped: audio files or one folder as an audiobook, one EPUB or PDF
+    /// as a book converted to speech. Refusals land in `importState` with the importer's own reason.
+    func importBook(from urls: [URL]) {
+        guard !isImporting else { return }
+        let books = urls.filter { Self.bookExtensions.contains($0.pathExtension.lowercased()) }
+        if urls.isEmpty {
+            importState = .refused("Choose audio files, a folder of audio files, an EPUB or a PDF.")
+            return
+        }
+        if !books.isEmpty, urls.count > 1 {
+            importState = .refused("Import one EPUB or PDF at a time, on its own.")
+            return
+        }
+        importState = .working(fraction: 0, detail: "Starting")
+        let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
+        let report: ImportProgress = { [weak self] fraction, detail in
+            Task { @MainActor in self?.noteProgress(fraction, detail) }
+        }
+        importTask = Task { [weak self] in
+            defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
+            guard let self else { return }
+            let outcome: Result<ImportOutcome, Error>
+            do {
+                if let book = books.first {
+                    outcome = .success(try await self.convertBook(book, report))
+                } else {
+                    outcome = .success(try await self.importAudio(urls, report))
+                }
+            } catch {
+                outcome = .failure(error)
+            }
+            await self.finishImport(outcome)
+        }
+    }
+
+    /// Stops a running import; the importers remove any partial output themselves.
+    func cancelImport() {
+        guard importTask != nil else { return }
+        importTask?.cancel()
+        importState = .cancelled
+    }
+
+    /// Lets a test wait for the in-flight import.
+    func settleImport() async { await importTask?.value }
+
+    /// Puts the sheet in a given import state without running an import (snapshots).
+    func showImportForPreview(_ state: ImportState) { importState = state }
+
+    private func noteProgress(_ fraction: Double, _ detail: String) {
+        guard case .working = importState else { return }
+        importState = .working(fraction: min(max(fraction, 0), 1), detail: detail)
+    }
+
+    private func finishImport(_ outcome: Result<ImportOutcome, Error>) async {
+        let wasCancelled = importState == .cancelled || Task.isCancelled
+        importTask = nil
+        switch outcome {
+        case let .success(result):
+            let count = result.itemIDs.count
+            importState = .finished(
+                result.alreadyImported ? "That book is already in your library."
+                    : count > 1 ? "Imported in \(count) parts. Find it in your library."
+                    : "Imported. Find it in your library."
+            )
+            await model.reloadLibraryRows()
+        case let .failure(error):
+            switch error {
+            case is CancellationError, AudiobookImportError.cancelled, BookConversionError.cancelled,
+                 BookExtractionError.cancelled:
+                importState = .cancelled
+            default:
+                importState = wasCancelled ? .cancelled : .refused(error.localizedDescription)
+            }
+        }
+    }
+}
+
 extension WiltedMacModel {
     /// Whether the Add sheet is open. The one flag every entry point sets.
     var isPresentingAddSheet: Bool {
@@ -266,16 +393,37 @@ extension WiltedMacModel {
     func makeAddSession(
         search: WiltedMacAddSession.Search? = nil,
         classify: WiltedMacAddSession.Classify? = nil,
+        feedHasNoAudio: WiltedMacAddSession.FeedHasNoAudio? = nil,
+        convertBook: WiltedMacAddSession.ConvertBook? = nil,
+        importAudio: WiltedMacAddSession.ImportAudio? = nil,
         linkDebounce: Duration = .milliseconds(400),
         searchDebounce: Duration = PodcastCatalogLookupClient.searchDebounce
     ) -> WiltedMacAddSession {
         let catalogue = PodcastCatalogLookupClient()
         let classifier = pastedLinkClassifier
         let offline = fixtureMode
+        let feedClient = podcastFeedClient
         return WiltedMacAddSession(
             model: self,
             search: search ?? { term in offline ? [] : try await catalogue.search(term: term) },
             classify: classify ?? { url in offline ? .article : try await classifier.classify(url) },
+            feedHasNoAudio: feedHasNoAudio ?? { url in
+                offline ? false : (try? await feedClient.load(url))?.episodes.isEmpty == true
+            },
+            convertBook: convertBook ?? { [unowned self] url, progress in
+                guard let store else { throw WiltedMacAddSession.libraryUnavailable }
+                let result = try await BookConversion(store: store).convert(from: url) { step in
+                    progress(step.fraction, step.detail)
+                }
+                return (result.itemIDs, result.alreadyImported)
+            },
+            importAudio: importAudio ?? { [unowned self] urls, progress in
+                guard let store else { throw WiltedMacAddSession.libraryUnavailable }
+                let result = try await AudiobookImporter(store: store).importBook(from: urls) { step in
+                    progress(step.fraction, step.detail)
+                }
+                return (result.itemIDs, result.alreadyImported)
+            },
             linkDebounce: linkDebounce, searchDebounce: searchDebounce
         )
     }

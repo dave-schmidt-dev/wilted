@@ -66,15 +66,60 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
                 ))
             ))
         }
-        let active = Set(episodes.filter { $0.removal == .none }.map(\.id))
-        let known = Set(episodes.map(\.id))
+        let articles = try articleEntries(in: snapshot)
+        let books = try audiobookEntries(in: snapshot)
+        let published = episodes + articles + books
+        let active = Set(published.filter { $0.removal == .none }.map(\.id))
+        let known = Set(published.map(\.id))
         let listening = snapshot.listeningStates.values.filter { known.contains($0.episodeID) }
             .sorted { $0.episodeID.rawValue < $1.episodeID.rawValue }
             .map { ListeningRecord(itemID: $0.episodeID, completedAt: $0.completedAt?.date, updatedAt: $0.updatedAt.date, deviceID: deviceID) }
         return LibraryStateSnapshot(
-            feeds: feeds, episodes: episodes, queue: queue.filter(active.contains), listening: listening,
-            currentPlayback: try position(of: playback, in: snapshot, known: known, deviceID: deviceID)
+            feeds: feeds + articleFeedSources(in: snapshot), episodes: published, queue: queue.filter(active.contains),
+            listening: listening, currentPlayback: try position(of: playback, in: snapshot, known: known, deviceID: deviceID)
         )
+    }
+
+    private static func articleFeedSources(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [LibrarySource] {
+        snapshot.articleFeeds.sorted { $0.itemID.rawValue < $1.itemID.rawValue }.map {
+            LibrarySource(id: $0.itemID, kind: .articleFeed, title: $0.title, locator: $0.canonicalURL.absoluteString)
+        }
+    }
+
+    /// Articles, each under the feed it was saved from, or under itself when added by hand or
+    /// when its feed is no longer followed. The audio is offered through the media path.
+    private static func articleEntries(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) throws -> [LibraryEntry] {
+        let feeds = Set(snapshot.articleFeeds.map(\.itemID))
+        return try snapshot.articles.map { article in
+            let feedID = snapshot.feedIDByArticle[article.itemID].flatMap { feeds.contains($0) ? $0 : nil }
+            let revision = snapshot.readyRevisions[article.itemID]?.revision
+            return try LibraryEntry(
+                id: article.itemID, kind: .article, sourceID: feedID ?? article.itemID, title: article.title,
+                summary: String(article.source.prefix(summaryLimit)),
+                publishedAt: (article.publishedTime ?? article.createdAt).date, durationSeconds: revision?.durationSeconds,
+                removal: article.isDeleted ? .retired : .none
+            )
+        }
+    }
+
+    /// Audiobook volumes. `LibraryEntry.publishedAt` is the ready revision's creation time, which
+    /// is fixed once the volume is saved, so an unchanged volume never re-sends.
+    private static func audiobookEntries(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) throws -> [LibraryEntry] {
+        try snapshot.audiobooks.map { book in
+            let payload = AudiobookPayload.build(
+                title: book.title, author: book.author, durationSeconds: book.durationSeconds,
+                chapters: book.chapters.map { AudiobookChapter(title: $0.title, startSeconds: $0.startSeconds) },
+                sourceFormat: AudiobookPayload.SourceFormat(rawValue: book.sourceFormat) ?? .audio,
+                volumeIndex: book.volumeIndex, volumeCount: book.volumeCount
+            )
+            return try LibraryEntry(
+                id: book.itemID, kind: .audiobook, sourceID: book.itemID, title: book.title,
+                summary: String((book.author ?? "").prefix(summaryLimit)),
+                publishedAt: snapshot.readyRevisions[book.itemID]?.revision.createdAt.date ?? Date(timeIntervalSince1970: 0),
+                durationSeconds: book.durationSeconds, removal: book.isRemoved ? .retired : .none,
+                payload: try payload.encoded()
+            )
+        }
     }
 
     /// The payload with its keys in a fixed order. `JSONEncoder`'s default key order varies between
@@ -104,6 +149,50 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
             positionSeconds: max(0, sample.positionSeconds), rate: sample.rate > 0 ? sample.rate : 1,
             isPlaying: sample.isPlaying, epoch: 0
         )
+    }
+}
+
+// MARK: - Ready audio
+
+/// Podcast episodes' prepared audio (the existing media path) plus the ready revision of every
+/// queued, live article and audiobook volume. Those are made by Wilted itself, so a ready
+/// revision with its file on disk is all the proof they need; only reads.
+struct WiltedMacLibraryReadyAudioSource: WiltedMacReadyAudioSource {
+    let store: LocalLibraryStore
+    private var podcasts: WiltedMacLocalReadyAudioSource { WiltedMacLocalReadyAudioSource(store: store) }
+
+    func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? {
+        if let audio = try await podcasts.readyAudio(for: entryID) { return audio }
+        return try await ownAudio()[entryID]
+    }
+
+    func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
+        try await podcasts.preparedQueuedAudio().merging(ownAudio()) { podcast, _ in podcast }
+    }
+
+    func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
+        try await podcasts.transcript(for: entryID, revisionID: revisionID)
+    }
+
+    func transcripts(for revisions: [ItemID: RevisionID]) async throws -> [ItemID: LibraryTranscript] {
+        try await podcasts.transcripts(for: revisions)
+    }
+
+    private func ownAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
+        let snapshot = try await store.podcastLibrarySnapshot()
+        let live = Set(snapshot.articles.filter { !$0.isDeleted }.map(\.itemID))
+            .union(snapshot.audiobooks.filter { !$0.isRemoved }.map(\.itemID))
+        var ready: [ItemID: WiltedMacReadyAudio] = [:]
+        for id in snapshot.podcastQueue.episodeIDs where live.contains(id) {
+            guard let stored = snapshot.readyRevisions[id], stored.mediaURL.isFileURL else { continue }
+            let revision = stored.revision
+            ready[id] = WiltedMacReadyAudio(
+                revisionID: revision.revisionID, contentHash: revision.contentHash, byteCount: revision.byteCount,
+                mediaType: revision.mediaType, durationSeconds: revision.durationSeconds, fileURL: stored.mediaURL,
+                preparation: LibraryMediaPreparation(preparedAt: revision.createdAt)
+            )
+        }
+        return ready
     }
 }
 
@@ -438,7 +527,7 @@ extension WiltedMacModel {
         // The phone's positions become the Mac's stored positions (see WiltedMacPositionImporter).
         let importer = WiltedMacPositionImporter(host: WiltedMacModelPositionImportHost(model: self), deviceID: deviceID)
         let inbound = WiltedMacInboundRuntime(
-            source: WiltedMacLocalReadyAudioSource(store: store), transport: resolvedTransport,
+            source: WiltedMacLibraryReadyAudioSource(store: store), transport: resolvedTransport,
             directory: syncDirectory, deviceID: deviceID, gate: gate,
             // The one whole-zone scan: it teaches the transport the peer and entry names to poll.
             discover: {
@@ -505,7 +594,7 @@ extension WiltedMacModel {
         let handoff = WiltedMacHandoffController(
             coordinator: HandoffCoordinator(transport: resolvedTransport, deviceID: deviceID),
             player: WiltedMacModelHandoffPlayer(
-                model: self, audio: WiltedMacLocalReadyAudioSource(store: store), adopted: { importer.adopted }),
+                model: self, audio: WiltedMacLibraryReadyAudioSource(store: store), adopted: { importer.adopted }),
             deviceID: deviceID,
             latestRecords: {
                 guard let poller = await MainActor.run(body: { inbound.poller }) else { return nil }
@@ -557,11 +646,14 @@ extension WiltedMacModel {
     func librarySyncObservedInputs() {
         _ = podcastQueueIDs
         _ = episodes
+        _ = articles
         _ = dismissedEpisodes
     }
 
     func librarySyncPlaybackSample() -> WiltedMacPlaybackSample? {
-        guard isPodcastPlayback, let raw = currentPodcastEpisodeID, let id = try? ItemID(rawValue: raw) else { return nil }
+        // An article or audiobook is what the player holds when it is not a podcast.
+        let raw = isPodcastPlayback ? currentPodcastEpisodeID : playback?.itemID?.rawValue
+        guard let raw, let id = try? ItemID(rawValue: raw) else { return nil }
         return WiltedMacPlaybackSample(
             episodeID: id, positionSeconds: playbackPositionSeconds, rate: playbackRate, isPlaying: isPlaying
         )

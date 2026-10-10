@@ -238,6 +238,7 @@ extension LocalLibraryStore {
                 for playback in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>()).filter({ $0.itemID == itemID.rawValue }) { context.delete(playback) }
                 if let article = records.first(where: { $0.id == itemID.rawValue }) { context.delete(article) }
             }
+            try stagePlaylistEntryRemoval(entryIDs: Set(deleted.map(\.rawValue)), in: context)
             if !deleted.isEmpty { try context.save() }
         } else {
             deleted = []
@@ -262,6 +263,7 @@ extension LocalLibraryStore {
                 for transcript in transcripts where transcript.itemID == itemID { context.delete(transcript) }
                 for playback in playbacks where playback.itemID == itemID { context.delete(playback) }
                 for article in articles where article.id == itemID { context.delete(article) }
+                try stagePlaylistEntryRemoval(entryIDs: [itemID], in: context)
             case .revision:
                 let parts = deletion.recordName.split(separator: ":", maxSplits: 2).map(String.init)
                 if parts.count == 3 { for revision in revisions where revision.itemID == parts[1] && revision.id == parts[2] { context.delete(revision) } }

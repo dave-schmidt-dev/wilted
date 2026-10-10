@@ -78,20 +78,110 @@ final class WiltedMacAddSheetTests: XCTestCase {
         gate.release()
     }
 
-    func testSubscribeRoutesToIntakeAndShowsTheArticleFeedRefusal() async throws {
-        let model = try await bootedModel("add-sheet-refusal", feedXML: Self.articleFeed)
+    func testSubscribeToAFeedWithoutAudioFollowsItAsAnArticleFeedAndTheRowReadsFollowing() async throws {
+        let model = try await bootedModel("add-sheet-article-feed", feedXML: Self.articleFeed)
         let feed = try XCTUnwrap(URL(string: "https://feeds.example.test/articles.xml"))
         let session = model.makeAddSession(classify: { _ in .podcastFeed }, linkDebounce: .zero, searchDebounce: .zero)
         session.text = feed.absoluteString
         await session.settle()
-        XCTAssertEqual(session.rows.map(\.action), [.subscribe])
+        XCTAssertEqual(session.rows.map(\.action), [.followArticleFeed])
 
         session.subscribe(session.rows[0])
         await model.waitForPodcastOperations()
 
-        XCTAssertEqual(session.intakeMessage, "Wilted can't follow article feeds yet; add single articles instead.")
-        XCTAssertTrue(model.subscriptions.isEmpty)
-        XCTAssertEqual(session.rows.map(\.action), [.subscribe])
+        XCTAssertEqual(model.subscriptions.map(\.feedURL), [feed])
+        XCTAssertEqual(model.subscriptions.map(\.title), ["Articles only"])
+        XCTAssertEqual(session.rows.map(\.action), [.following])
+    }
+
+    func testFeedWithoutAudioOffersFollowAsArticleFeedAndAFeedWithAudioStaysSubscribe() async throws {
+        let articles = try await bootedModel("add-sheet-offer-article", feedXML: Self.articleFeed)
+        let feed = try XCTUnwrap(URL(string: "https://feeds.example.test/articles.xml"))
+        let articleSession = articles.makeAddSession(
+            classify: { _ in .podcastFeed }, linkDebounce: .zero, searchDebounce: .zero)
+        articleSession.text = feed.absoluteString
+        await articleSession.settle()
+        XCTAssertEqual(articleSession.rows.map(\.action), [.followArticleFeed])
+        XCTAssertEqual(articleSession.rows.first?.feedURL, feed)
+
+        let podcasts = try await bootedModel("add-sheet-offer-podcast")
+        let podcastSession = podcasts.makeAddSession(
+            classify: { _ in .podcastFeed }, linkDebounce: .zero, searchDebounce: .zero)
+        podcastSession.text = feed.absoluteString
+        await podcastSession.settle()
+        XCTAssertEqual(podcastSession.rows.map(\.action), [.subscribe])
+    }
+
+    func testDroppedEpubStartsAConversionAndShowsItsProgress() async throws {
+        let model = try await bootedModel("add-sheet-epub")
+        let book = wiltedTemporaryDirectory("add-sheet-epub-file").appendingPathComponent("Moby Dick.epub")
+        let started = expectation(description: "conversion started")
+        let release = AsyncGate()
+        let converted = LockedURLs()
+        let session = model.makeAddSession(
+            convertBook: { url, progress in
+                converted.append(url)
+                progress(0.4, "Converting chapter 2 of 5")
+                started.fulfill()
+                await release.wait()
+                return ([try ItemID.derive(from: XCTUnwrap(URL(string: "https://x.test/a")))], false)
+            },
+            importAudio: { _, _ in XCTFail("an EPUB is converted, not imported as audio"); throw CancellationError() },
+            linkDebounce: .zero, searchDebounce: .zero)
+
+        session.importBook(from: [book])
+        await fulfillment(of: [started], timeout: 5)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(converted.values, [book])
+        XCTAssertEqual(
+            session.importState, WiltedMacAddSession.ImportState.working(fraction: 0.4, detail: "Converting chapter 2 of 5"))
+        XCTAssertTrue(session.isImporting)
+        await release.open()
+        await session.settleImport()
+        XCTAssertEqual(session.importState, WiltedMacAddSession.ImportState.finished("Imported. Find it in your library."))
+        XCTAssertFalse(session.isImporting)
+    }
+
+    func testCancelStopsARunningImport() async throws {
+        let model = try await bootedModel("add-sheet-import-cancel")
+        let book = wiltedTemporaryDirectory("add-sheet-cancel-file").appendingPathComponent("Long.pdf")
+        let started = expectation(description: "conversion started")
+        let session = model.makeAddSession(
+            convertBook: { _, _ in
+                started.fulfill()
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+                throw BookConversionError.cancelled
+            },
+            linkDebounce: .zero, searchDebounce: .zero)
+        session.importBook(from: [book])
+        await fulfillment(of: [started], timeout: 5)
+
+        session.cancelImport()
+        XCTAssertEqual(session.importState, WiltedMacAddSession.ImportState.cancelled)
+        await session.settleImport()
+        XCTAssertEqual(session.importState, WiltedMacAddSession.ImportState.cancelled)
+        XCTAssertFalse(session.isImporting)
+    }
+
+    func testRefusalShowsTheImportersReasonInTheSheet() async throws {
+        let model = try await bootedModel("add-sheet-import-refusal")
+        let directory = wiltedTemporaryDirectory("add-sheet-refusal-files")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let notes = directory.appendingPathComponent("notes.txt")
+        try Data("not audio".utf8).write(to: notes)
+        let session = model.makeAddSession(linkDebounce: .zero, searchDebounce: .zero)
+
+        session.importBook(from: [notes])
+        await session.settleImport()
+        XCTAssertEqual(session.importState, WiltedMacAddSession.ImportState.refused("notes.txt cannot be read: it is not an audio file"))
+
+        session.importBook(from: [])
+        XCTAssertEqual(
+            session.importState, WiltedMacAddSession.ImportState.refused("Choose audio files, a folder of audio files, an EPUB or a PDF."))
+        session.importBook(from: [directory.appendingPathComponent("a.epub"), directory.appendingPathComponent("b.pdf")])
+        XCTAssertEqual(session.importState, WiltedMacAddSession.ImportState.refused("Import one EPUB or PDF at a time, on its own."))
     }
 
     func testSubscribeThenRowReadsFollowing() async throws {
@@ -178,4 +268,26 @@ final class WiltedMacAddSheetTests: XCTestCase {
             contentsOf: root.appendingPathComponent("WiltedMac/Views/WiltedMacRootView.swift"), encoding: .utf8)
         XCTAssertFalse(rootView.contains(".keyboardShortcut(\"n\""))
     }
+}
+
+/// A one-shot latch so a test can hold a fake import open.
+private actor AsyncGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
+private final class LockedURLs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urls: [URL] = []
+    func append(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
+    var values: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
 }

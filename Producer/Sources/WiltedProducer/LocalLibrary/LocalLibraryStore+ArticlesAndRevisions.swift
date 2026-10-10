@@ -25,6 +25,37 @@ extension LocalLibraryStore {
                            publishedTime: record.publishedTime.map(Timestamp.init), createdAt: Timestamp(record.createdAt), isDeleted: record.isRemoved)
     }
 
+    /// Marks an article as saved from `feedID`'s feed. An article that already
+    /// has a feed keeps it, so a second feed listing the same page never takes
+    /// it over. Returns false when the article does not exist.
+    @discardableResult
+    public func assign(articleID: ItemID, toFeed feedID: ItemID) throws -> Bool {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
+            .first(where: { $0.id == articleID.rawValue }) else { return false }
+        if record.feedID == nil {
+            record.feedID = feedID.rawValue
+            try context.save()
+        }
+        return true
+    }
+
+    /// The feed an article was saved from; nil for one added by hand.
+    public func feedID(forArticle articleID: ItemID) throws -> ItemID? {
+        let context = ModelContext(container)
+        let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
+            .first(where: { $0.id == articleID.rawValue })
+        return try record?.feedID.map { try ItemID(rawValue: $0) }
+    }
+
+    /// The live (not removed) articles saved from `feedID`'s feed.
+    public func articleIDs(forFeed feedID: ItemID) throws -> [ItemID] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
+            .filter { $0.feedID == feedID.rawValue && !$0.isRemoved }
+            .map { try ItemID(rawValue: $0.id) }
+    }
+
     public func articles() throws -> [Article] {
         let context = ModelContext(container)
         return try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())

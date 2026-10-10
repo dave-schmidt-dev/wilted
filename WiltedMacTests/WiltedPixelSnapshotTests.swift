@@ -50,7 +50,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: "sidebar-full", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "sidebar-rail", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "toolbar", appearance: appearance)
-            ] + ["add-sheet-link", "add-sheet-results", "add-sheet-followed", "add-sheet-error"].map {
+            ] + ["add-sheet-link", "add-sheet-results", "add-sheet-followed", "add-sheet-error", "feed-policy-article", "feeds-article-row"].map {
                 WiltedSnapshotContract.shellName(kind: $0, appearance: appearance)
             }
         }
@@ -368,7 +368,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
-    /// The Add sheet's four reading states, rendered as the sheet's own content.
+    /// The Add sheet's reading and book-import states, rendered as the sheet's own content.
     func testMacAddSheetPixelBaselines() async throws {
         let feed = try XCTUnwrap(URL(string: "https://feeds.example.test/followed.xml"))
         let shows = [
@@ -384,12 +384,17 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         let page = try XCTUnwrap(URL(string: "https://blog.example.test/posts/one"))
         let advertised = try XCTUnwrap(URL(string: "https://blog.example.test/feed.xml"))
         let cases: [(kind: String, text: String, followed: Bool, intake: String?,
-                     search: WiltedMacAddSession.Search, classify: WiltedMacAddSession.Classify)] = [
-            ("add-sheet-link", page.absoluteString, false, nil, { _ in [] }, { _ in .articleAdvertisingFeed(advertised) }),
-            ("add-sheet-results", "slow", false, nil, { _ in shows }, { _ in .article }),
-            ("add-sheet-followed", "hour", true, nil, { _ in shows }, { _ in .article }),
+                     search: WiltedMacAddSession.Search, classify: WiltedMacAddSession.Classify,
+                     importState: WiltedMacAddSession.ImportState?)] = [
+            ("add-sheet-link", page.absoluteString, false, nil, { _ in [] }, { _ in .articleAdvertisingFeed(advertised) }, nil),
+            ("add-sheet-results", "slow", false, nil, { _ in shows }, { _ in .article }, nil),
+            ("add-sheet-followed", "hour", true, nil, { _ in shows }, { _ in .article }, nil),
             ("add-sheet-error", feed.absoluteString, false, WiltedMacModel.PodcastFeedHasNoAudio.message,
-             { _ in [] }, { _ in .podcastFeed }),
+             { _ in [] }, { _ in .podcastFeed }, nil),
+            ("add-sheet-import-progress", "", false, nil, { _ in [] }, { _ in .article },
+             .working(fraction: 0.4, detail: "Converting chapter 2 of 5: The Whale")),
+            ("add-sheet-import-refusal", "", false, nil, { _ in [] }, { _ in .article },
+             .refused("Moby Dick.epub is copy-protected and cannot be imported.")),
         ]
         for testCase in cases {
             for appearance in WiltedAppearance.allCases {
@@ -408,6 +413,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 session.text = testCase.text
                 await session.settle()
                 model.podcastFeedDraftStatus = testCase.intake
+                if let state = testCase.importState { session.showImportForPreview(state) }
                 let content = WiltedMacAddSheetContent(session: session)
                     .environment(\.wiltedTextScale, model.textScale)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -421,6 +427,81 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                     image, named: WiltedSnapshotContract.shellName(kind: testCase.kind, appearance: appearance),
                     testName: "testMacAddSheetPixelBaselines")
             }
+        }
+    }
+
+    /// The feed settings popover of an article feed: no download choice, and the "News" row.
+    func testArticleFeedPolicyPopoverPixelBaselines() throws {
+        let feedURL = try XCTUnwrap(URL(string: "https://blog.example.test/feed.xml"))
+        let feedID = try ItemID.articleFeed(canonicalFeedURL: feedURL).rawValue
+        let subscription = WiltedMacSubscription(
+            id: feedID, title: "The Example Blog", feedURL: feedURL, episodeCount: 0,
+            subscribedAt: Date(timeIntervalSince1970: 1_700_000_000), enabled: true)
+        for appearance in WiltedAppearance.allCases {
+            let model = WiltedMacModel(
+                arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("feed-policy-article"),
+                preferences: WiltedMacTestPreferences.ephemeral())
+            model.subscriptions = [subscription]
+            let board = WiltedMacFeedPolicyBoard(model: model)
+            board.loadForPreview(feedID: feedID, isArticleFeed: true, isNews: true)
+            let content = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
+                .padding(WiltedTheme.Spacing.large)
+                .environment(\.wiltedTextScale, model.textScale)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(WiltedTheme.color(.card, scheme: appearance == .dark ? .dark : .light))
+            let image = render(
+                content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
+                size: CGSize(width: 520, height: 460))
+            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the article feed popover drew")
+            assertSnapshot(
+                image, named: WiltedSnapshotContract.shellName(kind: "feed-policy-article", appearance: appearance),
+                testName: "testArticleFeedPolicyPopoverPixelBaselines")
+        }
+        let shown = try WiltedMacHeadless.recognizedText(
+            WiltedMacFeedPolicyContent(board: {
+                let model = WiltedMacModel(
+                    arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("feed-policy-article-text"),
+                    preferences: WiltedMacTestPreferences.ephemeral())
+                model.subscriptions = [subscription]
+                let board = WiltedMacFeedPolicyBoard(model: model)
+                board.loadForPreview(feedID: feedID, isArticleFeed: true, isNews: true)
+                return board
+            }(), subscription: subscription),
+            size: CGSize(width: WiltedMacFeedRulesView.width, height: 800)
+        ).joined(separator: " ")
+        XCTAssertTrue(shown.contains("News"), shown)
+        XCTAssertFalse(shown.contains("Auto download"), "an article has nothing to download: \(shown)")
+    }
+
+    /// An offered post of an article feed in the Feeds inbox, with Keep and Skip.
+    func testArticleFeedInboxRowPixelBaselines() throws {
+        let article = WiltedMacOfferedArticle(
+            id: "article-row-fixture", feedID: "feed", feedTitle: "The Example Blog",
+            title: "Why small tools last longer than big ones",
+            link: try XCTUnwrap(URL(string: "https://blog.example.test/post")),
+            publishedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            item: ArticleFeedItem(
+                guid: "g", title: "Why small tools last longer than big ones",
+                link: try XCTUnwrap(URL(string: "https://blog.example.test/post")),
+                publishedAt: Date(timeIntervalSince1970: 1_700_000_000)))
+        for appearance in WiltedAppearance.allCases {
+            let model = WiltedMacModel(
+                arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("feeds-article-row"),
+                preferences: WiltedMacTestPreferences.ephemeral())
+            let content = WiltedMacFeedsArticleRow(model: model, article: article)
+                .padding(WiltedTheme.Spacing.large)
+                .environment(\.wiltedTextScale, model.textScale)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(WiltedTheme.color(.card, scheme: appearance == .dark ? .dark : .light))
+            let image = render(
+                content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
+                size: CGSize(width: 520, height: 90))
+            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the article row drew")
+            assertSnapshot(
+                image, named: WiltedSnapshotContract.shellName(kind: "feeds-article-row", appearance: appearance),
+                testName: "testArticleFeedInboxRowPixelBaselines")
         }
     }
 
@@ -534,7 +615,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 enum WiltedSnapshotContract {
     static let stateCount = WiltedPreviewState.allCases.count
     static let variantCount = WiltedVisualVariant.matrix.count
-    static let shellCount = 24
+    static let shellCount = 28
     static let expectedPixelBaselineCount = stateCount * variantCount + shellCount
 
     static var recordMode: Bool {

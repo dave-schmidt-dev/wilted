@@ -26,7 +26,7 @@ final class WiltedMacRedesignTests: XCTestCase {
             XCTAssertEqual(text.contains("Ready:"), summaryExpected, "\(name): \(text)")
             XCTAssertTrue(text.contains("Ready"), "section/standing total remains: \(text)")
             if name == "full" {
-                XCTAssertTrue(text.localizedCaseInsensitiveContains("Needs preparation"), text)
+                XCTAssertTrue(text.localizedCaseInsensitiveContains("Needs Prep"), text)
                 XCTAssertTrue(text.localizedCaseInsensitiveContains("In Larder"), text)
             }
             XCTAssertFalse(text.contains("Playback follows Ready episodes"), text)
@@ -74,7 +74,7 @@ final class WiltedMacRedesignTests: XCTestCase {
     func testNarrowingGivesUpTheSidebarBeforeThePane() {
         let full = WiltedMacShellLayout.fullSidebarMinimumWidth()
         let side = WiltedMacShellLayout.sidePaneMinimumWidth()
-        XCTAssertEqual(full, 200 + 480 + 420 + 1 + 40, "sidebar + list + pane + divider + slack")
+        XCTAssertEqual(full, 168 + 480 + 420 + 1 + 40, "sidebar + list + pane + divider + slack")
         XCTAssertEqual(side, 56 + 480 + 420 + 1 + 40, "rail + list + pane + divider + slack")
         XCTAssertLessThan(side, full, "the rail comes before the bottom bar")
         XCTAssertEqual(WiltedMacShellLayout.resolve(windowWidth: full),

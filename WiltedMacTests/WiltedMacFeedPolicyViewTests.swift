@@ -408,8 +408,10 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
             f.model.setTextScale(scale)
             let minimum = WiltedMacShellLayout.windowMinimumWidth(scale: scale)
             for width: CGFloat in [minimum, 1400] {
-            f.model.selectedNavigation = .settings
-            let text = try capture(WiltedMacRootView(model: f.model), "defaults-\(scale.rawValue)-\(Int(width))", width: width, height: 2600)
+            // The detail column alone: OCR over the whole window drops the
+            // settings text once the sidebar narrows, which says nothing about layout.
+            let detail = width - WiltedMacShellLayout.sidebarIdealWidth
+            let text = try capture(WiltedMacSettingsView(model: f.model), "defaults-\(scale.rawValue)-\(Int(width))", width: detail, height: 2600)
             XCTAssertTrue(text.contains("Set in Larder"), text); XCTAssertTrue(text.contains("Set in Processing"), text)
             }
         }

@@ -4,7 +4,7 @@ import WiltedCloudKit
 import WiltedCloudKitLibrary
 import WiltedDomain
 import WiltedLibrary
-import WiltedProducer
+@testable import WiltedProducer
 import XCTest
 @testable import WiltedMac
 
@@ -157,6 +157,127 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTAssertEqual(position.rate, 1.5)
         XCTAssertEqual(position.deviceID, "mac-test")
         XCTAssertFalse(position.isPlaying)
+    }
+
+    // MARK: Articles, article feeds and audiobooks
+
+    private func readyRevision(_ id: ItemID, seconds: Double, at time: TimeInterval) throws -> AudioRevision {
+        let hash = "sha256:" + String(repeating: "a", count: 64)
+        return try AudioRevision(
+            itemID: id, revisionID: try RevisionID.derive(podcastDownloadedAudioItemID: id, contentHash: hash),
+            durationSeconds: seconds, byteCount: 1_000, contentHash: hash, mediaType: "audio/mp4",
+            createdAt: Timestamp(Date(timeIntervalSince1970: time)), schemaVersion: 1
+        )
+    }
+
+    func testArticlesAndAnAudiobookInTheQueueAppearAsEntriesAndQueueSlots() async throws {
+        let (_, store) = try await bootstrapped("library-sync-kinds")
+        let ids = try await seedEpisodes(store)
+        let feed = try ArticleFeed(
+            canonicalURL: URL(string: "https://blog.example.test/feed.xml")!, title: "Blog", createdAt: created)
+        try await store.save(articleFeed: feed)
+        func article(_ path: String) throws -> Article {
+            let url = URL(string: "https://blog.example.test/\(path)")!
+            return try Article(itemID: ItemID.derive(from: url), canonicalURL: url, title: "Post \(path)",
+                               source: "blog.example.test", createdAt: created)
+        }
+        let fromFeed = try article("one"), byHand = try article("two"), removed = try article("three")
+        for value in [fromFeed, byHand] { try await store.save(article: value) }
+        try await store.save(article: try Article(
+            itemID: removed.itemID, canonicalURL: removed.canonicalURL, title: removed.title, source: removed.source,
+            createdAt: created, isDeleted: true))
+        let assigned = try await store.assign(articleID: fromFeed.itemID, toFeed: feed.itemID)
+        XCTAssertTrue(assigned)
+        let mediaURL = wiltedTemporaryDirectory("library-sync-kinds-media").appendingPathComponent("a.m4a")
+        let articleRevision = try readyRevision(fromFeed.itemID, seconds: 90, at: 1_700_000_500)
+        try await store.saveReadyRevision(articleRevision, mediaURL: mediaURL)
+        let bookID = try ItemID.audiobook(contentDigest: String(repeating: "b", count: 64), layout: "x", volume: 0)
+        let bookRevision = try readyRevision(bookID, seconds: 600, at: 1_700_000_900)
+        try await store.saveAudiobookVolumes([AudiobookVolumeSave(
+            itemID: bookID, revision: bookRevision, mediaURL: mediaURL, title: "Dune", author: "Herbert",
+            chapters: [AudiobookChapterMark(title: "One", startSeconds: 0), AudiobookChapterMark(title: "Two", startSeconds: 300)],
+            sourceFormat: "audio", volumeIndex: 0, volumeCount: 1, createdAt: Date(timeIntervalSince1970: 1_700_000_900))])
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [fromFeed.itemID, ids[0], bookID, byHand.itemID, removed.itemID]))
+        try await store.saveListening(PodcastListeningState(
+            episodeID: bookID, completedAt: nil, lastRevisionID: bookRevision.revisionID,
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 70))))
+
+        let playing = WiltedMacPlaybackSample(episodeID: bookID, positionSeconds: 42, rate: 1, isPlaying: true)
+        let state = try await source(store, playback: playing).currentState()
+
+        XCTAssertEqual(state.feeds.map(\.kind), [.podcastFeed, .articleFeed])
+        XCTAssertEqual(state.feeds.last?.id, feed.itemID)
+        XCTAssertEqual(state.feeds.last?.locator, feed.canonicalURL.absoluteString)
+        let entries = Dictionary(uniqueKeysWithValues: state.episodes.map { ($0.id, $0) })
+        XCTAssertEqual(entries[fromFeed.itemID]?.kind, .article)
+        XCTAssertEqual(entries[fromFeed.itemID]?.sourceID, feed.itemID)
+        XCTAssertEqual(entries[fromFeed.itemID]?.durationSeconds, 90)
+        XCTAssertEqual(entries[byHand.itemID]?.sourceID, byHand.itemID, "a hand-added article is its own source")
+        XCTAssertEqual(entries[removed.itemID]?.removal, .retired)
+        let book = try XCTUnwrap(entries[bookID])
+        XCTAssertEqual(book.kind, .audiobook)
+        XCTAssertEqual(book.removal, LibraryRemoval.none)
+        let payload = try JSONDecoder().decode(AudiobookPayload.self, from: book.payload)
+        XCTAssertEqual(payload.title, "Dune"); XCTAssertEqual(payload.author, "Herbert")
+        XCTAssertEqual(payload.chapters, [AudiobookChapter(title: "One", startSeconds: 0), AudiobookChapter(title: "Two", startSeconds: 300)])
+        XCTAssertEqual(payload.durationSeconds, 600)
+        XCTAssertEqual(state.queue, [fromFeed.itemID, ids[0], bookID, byHand.itemID], "queue slots keep order; removed leave")
+        XCTAssertEqual(state.listening.map(\.itemID), [bookID])
+        XCTAssertEqual(state.currentPlayback?.entryID, bookID)
+        XCTAssertEqual(state.currentPlayback?.revision, bookRevision.revisionID)
+
+        let ready = try await WiltedMacLibraryReadyAudioSource(store: store).preparedQueuedAudio()
+        XCTAssertEqual(ready[fromFeed.itemID]?.revisionID, articleRevision.revisionID)
+        XCTAssertEqual(ready[bookID]?.revisionID, bookRevision.revisionID)
+        XCTAssertNil(ready[byHand.itemID], "no ready revision, nothing to offer")
+        XCTAssertNil(ready[removed.itemID])
+    }
+
+    func testAPodcastOnlyLibraryPublishesTheSameSnapshotAsBefore() async throws {
+        let (_, store) = try await bootstrapped("library-sync-podcast-only")
+        let ids = try await seedEpisodes(store)
+        try await store.replacePodcastQueue(try PodcastQueueState(episodeIDs: [ids[1], ids[0]]))
+        _ = try await store.retireEpisode(ids[2])
+        try await store.saveListening(PodcastListeningState(
+            episodeID: ids[0], completedAt: Timestamp(Date(timeIntervalSince1970: 50)), lastRevisionID: nil,
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 60))))
+
+        let state = try await source(store).currentState()
+
+        // The pre-change projection, built directly from the same store reads.
+        let snapshot = try await store.podcastLibrarySnapshot()
+        let feeds = snapshot.feeds.values.sorted { $0.itemID.rawValue < $1.itemID.rawValue }.map {
+            LibrarySource(id: $0.itemID, kind: .podcastFeed, title: $0.title,
+                          locator: $0.canonicalURL.absoluteString, artworkRef: $0.artworkURL?.absoluteString)
+        }
+        let episodes = try snapshot.episodes.map { episode in
+            try LibraryEntry(
+                id: episode.itemID, kind: .podcastEpisode, sourceID: episode.feedID, title: episode.title,
+                summary: String((episode.notes ?? "").prefix(WiltedMacLocalLibraryStateSource.summaryLimit)),
+                publishedAt: (episode.publishedTime ?? episode.createdAt).date, durationSeconds: episode.durationSeconds,
+                artworkRef: (episode.artworkURL ?? snapshot.feeds[episode.feedID]?.artworkURL)?.absoluteString,
+                removal: snapshot.retiredAtByEpisode[episode.itemID] == nil ? .none : .retired,
+                removedAt: snapshot.retiredAtByEpisode[episode.itemID]?.date,
+                payload: try WiltedMacLocalLibraryStateSource.payloadBytes(PodcastEpisodePayload(
+                    enclosureURL: episode.enclosureURL, feedURL: episode.feedURL, rssGUID: episode.rssGUID,
+                    episodeLink: episode.episodeLink)))
+        }
+        let listening = [ListeningRecord(
+            itemID: ids[0], completedAt: Date(timeIntervalSince1970: 50),
+            updatedAt: Date(timeIntervalSince1970: 60), deviceID: "mac-test")]
+        let expected = LibraryStateSnapshot(feeds: feeds, episodes: episodes, queue: [ids[1], ids[0]], listening: listening)
+
+        XCTAssertEqual(state, expected)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        func bytes(_ value: LibraryStateSnapshot) throws -> [Data] {
+            [try encoder.encode(value.feeds), try encoder.encode(value.episodes),
+             try encoder.encode(value.queue), try encoder.encode(value.listening)]
+        }
+        XCTAssertEqual(try bytes(state), try bytes(expected))
+        XCTAssertEqual(state.episodes.count, 3)
+        XCTAssertTrue(state.episodes.allSatisfy { $0.kind == .podcastEpisode })
     }
 
     // MARK: Intents

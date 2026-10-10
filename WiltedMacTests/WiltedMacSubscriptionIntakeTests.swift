@@ -104,10 +104,11 @@ final class WiltedMacSubscriptionIntakeTests: XCTestCase {
         XCTAssertTrue(model.subscriptions.isEmpty)
     }
 
-    func testFeedWithoutAudioEnclosuresPersistsNothingAndNamesTheArticleFeedRefusal() async throws {
+    func testFeedWithoutAudioEnclosuresIsStoredAsAnArticleFeed() async throws {
         let directory = wiltedTemporaryDirectory("subscription-intake-article-feed")
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/articles.xml"))
-        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let articleFeedID = try ItemID.articleFeed(canonicalFeedURL: feedURL)
+        let podcastFeedID = try ItemID.derivePodcastFeed(from: feedURL)
         let xml = "<rss version=\"2.0\"><channel><title>Articles only</title>"
             + "<item><guid>a1</guid><title>Post one</title><link>https://feeds.example.test/post-1</link></item>"
             + "<item><guid>a2</guid><title>Post two</title><link>https://feeds.example.test/post-2</link></item>"
@@ -125,17 +126,43 @@ final class WiltedMacSubscriptionIntakeTests: XCTestCase {
         await model.waitForPodcastOperations()
 
         let store = try XCTUnwrap(model.store)
-        let persistedFeed = try await store.podcastFeed(for: feedID)
-        let persistedSubscription = try await store.subscription(for: feedID)
-        let message = "Wilted can't follow article feeds yet; add single articles instead."
-        XCTAssertNil(persistedFeed)
-        XCTAssertNil(persistedSubscription)
-        XCTAssertTrue(model.subscriptions.isEmpty)
+        let stored = try await store.articleFeed(for: articleFeedID)
+        XCTAssertEqual(stored?.title, "Articles only")
+        let articleSubscription = try await store.subscription(for: articleFeedID)
+        XCTAssertNotNil(articleSubscription)
+        let podcastFeed = try await store.podcastFeed(for: podcastFeedID)
+        let podcastSubscription = try await store.subscription(for: podcastFeedID)
+        XCTAssertNil(podcastFeed, "an article feed is not a podcast")
+        XCTAssertNil(podcastSubscription)
+        XCTAssertEqual(model.subscriptions.map(\.id), [articleFeedID.rawValue])
         XCTAssertTrue(model.episodes.isEmpty)
-        XCTAssertEqual(model.podcastFeedDraftStatus, message)
-        XCTAssertEqual(model.podcastOperationMessage, message)
+        XCTAssertTrue(model.articles.isEmpty, "subscribing prepares nothing")
+        XCTAssertEqual(model.podcastFeedDraftStatus, "Articles only added as an article feed.")
         XCTAssertFalse(model.isCheckingPodcastSubscription)
         XCTAssertNil(model.podcastSubscriptionRequestID)
+    }
+
+    func testFeedWithNeitherAudioNorLinkedPostsIsStillRefused() async throws {
+        let directory = wiltedTemporaryDirectory("subscription-intake-empty-feed")
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/empty.xml"))
+        let xml = "<rss version=\"2.0\"><channel><title>Nothing here</title></channel></rss>"
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            podcastFeedClient: PodcastFeedClient(loader: FixedBodyLoader(body: Data(xml.utf8))),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        addTeardownBlock { await model.close() }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        model.startPodcastSubscriptionIntake(feedURL)
+        await model.waitForPodcastOperations()
+
+        let store = try XCTUnwrap(model.store)
+        let articleFeeds = try await store.articleFeeds()
+        XCTAssertTrue(articleFeeds.isEmpty)
+        XCTAssertTrue(model.subscriptions.isEmpty)
+        XCTAssertEqual(model.podcastFeedDraftStatus, WiltedMacModel.PodcastFeedHasNoAudio.message)
     }
 
     func testEpisodeAdmissionFailureKeepsTheDurableSubscriptionAndNamesThePartialResult() async throws {

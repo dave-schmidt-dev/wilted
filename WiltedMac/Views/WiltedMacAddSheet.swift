@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import WiltedDomain
 
 // MARK: - Add sheet
@@ -15,7 +17,7 @@ struct WiltedMacAddSheet: View {
     var body: some View {
         WiltedMacAddSheetContent(session: session)
             .onAppear { session.start() }
-            .onDisappear { session.cancel() }
+            .onDisappear { session.teardown() }
     }
 }
 
@@ -31,9 +33,16 @@ struct WiltedMacAddSheetContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            Text("Add")
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+            HStack {
+                Text("Add")
+                    .wiltedFont(.title)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                Spacer()
+                Button("Import book\u{2026}") { chooseBook() }
+                    .disabled(session.isImporting)
+                    .help("Import audio files, a folder, an EPUB or a PDF")
+                    .accessibilityIdentifier("wilted-add-import")
+            }
             HStack(spacing: WiltedTheme.Spacing.medium) {
                 WiltedMacLinkField(
                     text: text, placeholder: "Search podcasts or paste a link",
@@ -47,7 +56,8 @@ struct WiltedMacAddSheetContent: View {
                         .accessibilityIdentifier("wilted-add-cancel")
                 }
             }
-            if let status = session.statusMessage {
+            importStatus
+            if session.importState == .idle, let status = session.statusMessage {
                 note(status, identifier: "wilted-add-status")
             }
             if !session.rows.isEmpty {
@@ -72,8 +82,55 @@ struct WiltedMacAddSheetContent: View {
         .padding(WiltedTheme.Spacing.large)
         .frame(width: 520)
         .background(WiltedTheme.color(.card, scheme: colorScheme))
+        .dropDestination(for: URL.self) { urls, _ in
+            guard !session.isImporting else { return false }
+            session.importBook(from: urls.filter(\.isFileURL))
+            return true
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-add-sheet")
+    }
+
+    /// Progress with Cancel while a book imports; the reason when it was refused.
+    @ViewBuilder private var importStatus: some View {
+        switch session.importState {
+        case .idle:
+            EmptyView()
+        case let .working(fraction, detail):
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: fraction)
+                        .accessibilityLabel("Importing book")
+                        .accessibilityValue("\(Int(fraction * 100)) percent")
+                        .accessibilityIdentifier("wilted-add-import-progress")
+                    note(detail, identifier: "wilted-add-import-detail")
+                }
+                Button("Cancel") { session.cancelImport() }
+                    .accessibilityIdentifier("wilted-add-import-cancel")
+            }
+        case let .refused(reason):
+            Label("Could not import: \(reason)", systemImage: "exclamationmark.triangle")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedStatusTone.failure.color(colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-add-import-refusal")
+        case .cancelled:
+            note("Import cancelled.", identifier: "wilted-add-import-cancelled")
+        case let .finished(message):
+            note(message, identifier: "wilted-add-import-done")
+        }
+    }
+
+    private func chooseBook() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose audio files, a folder of audio files, an EPUB or a PDF."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.audio, .pdf, .epub, .folder]
+        guard panel.runModal() == .OK else { return }
+        session.importBook(from: panel.urls)
     }
 
     private func note(_ text: String, identifier: String) -> some View {
@@ -103,6 +160,11 @@ struct WiltedMacAddSheetContent: View {
                     .disabled(session.isSubscribing)
                     .accessibilityLabel("Subscribe to \(row.title)")
                     .accessibilityIdentifier("wilted-add-subscribe-\(row.id)")
+            case .followArticleFeed:
+                Button("Follow as article feed") { session.subscribe(row) }
+                    .disabled(session.isSubscribing)
+                    .accessibilityLabel("Follow \(row.title) as an article feed")
+                    .accessibilityIdentifier("wilted-add-follow-article-feed-\(row.id)")
             case .following:
                 Label("Following", systemImage: "checkmark.circle")
                     .wiltedFont(.utility)

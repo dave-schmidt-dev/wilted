@@ -153,23 +153,25 @@ struct WiltedMacFeedsView: View {
         let visibleIDs = Set(visible.map(\.id))
         let selected = visible.filter { selectedFeedEpisodeIDs.contains($0.id) }
         let waitingIDs = policyBoard.waitingEpisodeIDs.intersection(visibleIDs)
+        let articles = model.feedsOfferedArticles
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
                 Text("New episodes")
                     .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Spacer()
-                Text("\(visible.count)")
+                Text("\(visible.count + articles.count)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-count")
             }
-            if visible.isEmpty {
+            if visible.isEmpty && articles.isEmpty {
                 Text("Nothing new. Every episode from your feeds is already in Larder.")
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-empty")
-            } else {
+            }
+            if !visible.isEmpty {
                 if !waitingIDs.isEmpty {
                     // Said once for the whole list; each waiting row carries its own tag.
                     Text("Wilted never removes an existing, playing or part-heard episode to make room.")
@@ -218,6 +220,16 @@ struct WiltedMacFeedsView: View {
                 // into it -- the per-row `wilted-feeds-row-` identifiers then
                 // never reach the tree. Dropping `.contain` alone was not
                 // enough; the identifier creates the container on its own.
+            }
+            // Posts of followed article feeds that no rule or policy decided: the same Keep and Skip.
+            if !articles.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(articles.enumerated()), id: \.element.id) { index, article in
+                        if index > 0 { Divider() }
+                        WiltedMacFeedsArticleRow(model: model, article: article)
+                    }
+                }
+                .wiltedCard(colorScheme)
             }
         }
         .onChange(of: visibleIDs) { _, currentVisibleIDs in
