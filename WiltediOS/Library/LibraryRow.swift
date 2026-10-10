@@ -134,6 +134,8 @@ enum LibraryRowBuilder {
     /// The line a row and the player put under the title: the feed's name, or a book's author (a
     /// volume has no feed, so its row names who wrote it).
     static func showTitle(_ entry: LibraryEntry, sources: [ItemID: LibrarySource]) -> String {
+        // A report has no source; its title already carries the date.
+        if entry.kind == .report { return "Morning report" }
         guard entry.kind == .audiobook else { return sources[entry.sourceID]?.title ?? "Unknown show" }
         let author = audiobook(entry)?.author?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return author.isEmpty ? "Unknown author" : author
@@ -197,6 +199,9 @@ struct LibraryRowMetadataView: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            if row.kind == .report {
+                Image(systemName: "newspaper").accessibilityHidden(true).padding(.trailing, 4)
+            }
             if namesShow {
                 let show = row.showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                 Text(show.isEmpty ? "Show unknown" : show)

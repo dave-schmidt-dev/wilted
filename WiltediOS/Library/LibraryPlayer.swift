@@ -60,9 +60,19 @@ final class LibraryPlayer: ObservableObject {
     private static let maxAccrual: TimeInterval = 5
 
     @Published private(set) var item: Item?
-    @Published private(set) var status: Status = .idle
+    @Published private(set) var status: Status = .idle {
+        // Anything that leaves `.playing` (pause, stop, a new item, a failure) also ends a spoken-bulletin hold.
+        didSet { if status != .playing, speechHold != nil { speechHold = nil; onSpeechHoldEnded?() } }
+    }
+    /// Set while a spoken bulletin holds program audio: the engine is stopped, status stays `.playing`, the
+    /// timer keeps running and the position is the checkpoint. Owned by `LibraryPlayerInterruptions`.
+    @Published var speechHold: LibrarySpeechHold?
+    /// Told when something other than the speech ended the hold (a pause, a stop, a new item).
+    var onSpeechHoldEnded: (@MainActor () -> Void)?
+    /// Asks the interruptions to skip the bulletin being spoken (next-track, or a command that replaces it).
+    var onSpeechSkip: (@MainActor () -> Void)?
     /// Seconds into the file. Refreshed on every transport change and on a timer while playing.
-    @Published private(set) var position: TimeInterval = 0
+    @Published var position: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var rate: Double = 1
     /// Skip lengths from Settings; the static constants are the untouched defaults.
@@ -77,7 +87,7 @@ final class LibraryPlayer: ObservableObject {
     var onFinished: ((ItemID, _ autoPlayNext: Bool) -> Void)?
     /// Counts every transport action (start, play, pause, seek, stop); `owns(_:)` compares it
     /// with its value when the item finished, so a command given after the end cancels what follows it.
-    private var transportCount = 0
+    private(set) var transportCount = 0
     var admissionEpoch: UInt64 = 0
     var admissionTask: Task<Void, Never>?
     var authorizePlayback: (@MainActor (Item) async -> Bool)?
@@ -113,8 +123,8 @@ final class LibraryPlayer: ObservableObject {
     /// False for an engine with no speed control, so the UI can hide the picker.
     var supportsRate: Bool { engine is LibraryRateAdjustable }
 
-    private let engine: any ListenerAudioEngine
-    private let session: any ListenerAudioSession
+    let engine: any ListenerAudioEngine
+    let session: any ListenerAudioSession
     private let nowPlaying: any ListenerNowPlaying
     private let remoteCommands: any LibraryRemoteCommands
     private let tickInterval: Duration
@@ -128,7 +138,7 @@ final class LibraryPlayer: ObservableObject {
     let remoteSeekSleep: @Sendable (Duration) async throws -> Void
     let remoteSeekNow: @Sendable () -> TimeInterval
     /// When listening was last counted; nil unless playing.
-    private var lastAccrual: ContinuousClock.Instant?
+    var lastAccrual: ContinuousClock.Instant?
     /// Told how many real seconds were just played and at what speed, for the phone's own totals.
     var onListened: (@MainActor (_ wall: TimeInterval, _ rate: Double) -> Void)?
     /// Told before every transport command (start, play, pause, seek, stop), so a start still
@@ -212,7 +222,7 @@ final class LibraryPlayer: ObservableObject {
         engine.currentTime = min(max(0, start), duration)
         position = engine.currentTime
         status = .paused
-        remoteCommands.install { [weak self] command in self?.handle(command) ?? false }
+        remoteCommands.install { [weak self] command in self?.handleRemote(command) ?? false }
         guard autoplay else {
             publishNowPlaying()
             return true
@@ -229,6 +239,7 @@ final class LibraryPlayer: ObservableObject {
     /// Synchronous effect consumed only after the model or system boundary admitted this target.
     @discardableResult
     func playAdmitted() -> Bool {
+        skipSpeechForCommand()
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
@@ -270,6 +281,7 @@ final class LibraryPlayer: ObservableObject {
     }
 
     func seekAdmitted(to seconds: TimeInterval) {
+        skipSpeechForCommand()
         _ = cancelRemoteSeeking(resume: true)
         onCommand?()
         transportCount &+= 1; cancelAdmission()
@@ -354,7 +366,8 @@ final class LibraryPlayer: ObservableObject {
 
     /// Syncs the readout with the engine; the timer calls this while playing.
     func refreshPosition() {
-        guard item != nil, !isRemoteSeeking else { return }
+        // A spoken bulletin holds the position as the checkpoint and its time is not listening time.
+        guard item != nil, !isRemoteSeeking, speechHold == nil else { return }
         accrueListening()
         position = min(max(0, engine.currentTime), duration)
         // The engine stopped on its own without a completion (something else took the output).
@@ -368,7 +381,7 @@ final class LibraryPlayer: ObservableObject {
 
     /// Reports the time played since the last report. A gap longer than `maxAccrual` (a suspended
     /// app) is capped rather than counted as listening.
-    private func accrueListening() {
+    func accrueListening() {
         guard status == .playing, let last = lastAccrual else { return }
         let now = ContinuousClock.now
         lastAccrual = now
@@ -418,7 +431,7 @@ final class LibraryPlayer: ObservableObject {
     }
 
     @discardableResult
-    private func fail(_ failure: LibraryStartFailure) -> Bool {
+    func fail(_ failure: LibraryStartFailure) -> Bool {
         _ = cancelRemoteSeeking()
         stopTicking()
         engine.pause()
@@ -433,6 +446,7 @@ final class LibraryPlayer: ObservableObject {
     /// Pauses the engine so shuttling cannot produce a natural end or accrue listening time.
     func prepareRemoteSeeking() -> Bool {
         guard item != nil, status == .playing || status == .paused, duration.isFinite, duration > 0 else { return false }
+        skipSpeechForCommand()
         onCommand?(); transportCount &+= 1; cancelAdmission()
         accrueListening(); engine.pause(); stopTicking(); lastAccrual = nil
         return true
@@ -475,11 +489,11 @@ final class LibraryPlayer: ObservableObject {
     func publishNowPlaying() {
         guard let item else { return }
         nowPlaying.update(ListenerNowPlayingInfo(
-            title: item.title, artist: item.showTitle, duration: duration, position: position,
+            title: speechHold?.title ?? item.title, artist: speechHold == nil ? item.showTitle : item.title, duration: duration, position: position,
             rate: isPlaying && !isRemoteSeeking ? rate : 0, defaultRate: rate, artworkData: artworkData))
     }
 
-    private func startTicking() {
+    func startTicking() {
         stopTicking()
         let interval = tickInterval
         tickTask = Task { [weak self] in
@@ -491,7 +505,7 @@ final class LibraryPlayer: ObservableObject {
         }
     }
 
-    private func stopTicking() {
+    func stopTicking() {
         tickTask?.cancel()
         tickTask = nil
     }

@@ -33,7 +33,7 @@ struct LibraryMiniPlayer: View {
             HStack(spacing: WiltedTheme.Spacing.medium) {
                 Button(action: onExpand) {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                        Text(command?.title ?? player.item?.title ?? "Nothing playing")
+                        Text(command?.title ?? player.speechHold?.title ?? player.item?.title ?? "Nothing playing")
                             .wiltedFont(.body)
                             .lineLimit(1)
                         Text(summary)
@@ -49,6 +49,18 @@ struct LibraryMiniPlayer: View {
                 .accessibilityValue(summary)
                 .accessibilityIdentifier("wilted-player-expand")
 
+                if let hold = player.speechHold {
+                    HStack(spacing: WiltedTheme.Spacing.small) {
+                        Image(systemName: "speaker.wave.2.fill").accessibilityHidden(true)
+                        Text(hold.title).wiltedFont(.body)
+                        Button { player.skipSpeech() } label: { Image(systemName: "forward.end.fill") }
+                            .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                            .accessibilityLabel("Skip bulletin")
+                            .accessibilityIdentifier("wilted-player-skip-bulletin")
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("wilted-player-bulletin")
+                }
                 if command?.isFailure == true, let onRetry {
                     Button(action: onRetry) { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel(LibraryPlayerText.retry)

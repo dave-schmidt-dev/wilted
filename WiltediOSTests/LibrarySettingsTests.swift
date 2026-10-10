@@ -334,3 +334,24 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertTrue(none.isEmpty)
     }
 }
+
+// MARK: - Speak interruptions on this iPhone
+
+extension LibrarySettingsTests {
+    func testSpeakInterruptionsIsOnByDefaultAndTheToggleOffPreventsSpeaking() async {
+        let preferences = LibraryInterruptionPreferences(defaults: defaults)
+        XCTAssertTrue(preferences.speaks)
+        preferences.speaks = false
+        XCTAssertFalse(LibraryInterruptionPreferences(defaults: defaults).speaks)
+        let channel = try! LibraryBulletins(
+            alertsEnabled: true, headlinesEnabled: true, headlines: [interruptionBulletin()])
+        let rig = makeInterruptionRig(channel: channel, defaults: defaults)
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+        rig.controller.alertArrived(interruptionBulletin("alert-1", kind: .alert))
+        XCTAssertTrue(rig.speaker.spoken.isEmpty)
+        XCTAssertFalse(rig.player.isHoldingForSpeech)
+        XCTAssertEqual(rig.monitorsMade(), 0, "no alert lookup either")
+        XCTAssertTrue(rig.engine.isPlaying)
+    }
+}

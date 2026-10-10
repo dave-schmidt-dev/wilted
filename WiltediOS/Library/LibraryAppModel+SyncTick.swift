@@ -54,6 +54,7 @@ extension LibraryAppModel {
     /// only when one is due.
     func sceneBecameActive() async {
         tickState.sceneActive = true
+        handoffState.interruptions?.appBecameActive()
         guard started else { return }
         tickState.forceFull = true
         await updateSyncTick()
@@ -89,6 +90,7 @@ extension LibraryAppModel {
         case .timer, .event:
             await refresh(nextPlan())
         }
+        await handoffState.interruptions?.syncTick()
     }
 
     private func nextPlan() -> LibraryRefreshPlan {

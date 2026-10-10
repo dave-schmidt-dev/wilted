@@ -13,6 +13,7 @@ struct LibrarySettingsView: View {
     let onDone: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(LibraryInterruptionPreferences.speakKey) private var speaksInterruptions = true
     @State private var cache = LibraryCacheSummary()
     @State private var isConfirmingRemoval = false
     @State private var removalNotice: String?
@@ -73,6 +74,9 @@ struct LibrarySettingsView: View {
             Toggle("Auto-play next episode", isOn: $settings.autoPlayNext)
                 .wiltedFont(.utility)
                 .accessibilityIdentifier("wilted-library-settings-auto-play-next")
+            Toggle("Speak interruptions on this iPhone", isOn: $speaksInterruptions)
+                .wiltedFont(.utility)
+                .accessibilityIdentifier("wilted-library-settings-speak-interruptions")
             iconRow("gauge.with.dots.needle.67percent", "Default speed") {
                 Text(LibrarySettingsFormat.speed(settings.defaultSpeed)).wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

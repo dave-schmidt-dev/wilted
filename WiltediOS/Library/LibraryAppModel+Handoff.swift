@@ -23,6 +23,8 @@ struct LibraryHandoffTiming: Sendable {
 @MainActor
 final class LibraryHandoffState {
     var player: LibraryPlayer?
+    /// Spoken interruptions for the attached player; live outside tests, injected by them.
+    var interruptions: LibraryInterruptionController?
     var subscriptions = Set<AnyCancellable>()
     /// The last queued player-change task; each new one waits for it, so coordinator calls stay in order.
     var chain: Task<Void, Never>?
@@ -100,6 +102,8 @@ extension LibraryAppModel {
         }
         handoffState.subscriptions.removeAll()
         handoffState.player = player
+        handoffState.interruptions = NSClassFromString("XCTestCase") == nil
+            ? LibraryInterruptionController.live(player: player, model: self) : nil
         // `@Published` emits on the thread that mutates it, which is always the main actor here.
         player.$status.removeDuplicates().sink { [weak self] status in
             // The status is already visible on the player when its own subscribers run on the next turn.

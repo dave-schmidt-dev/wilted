@@ -134,6 +134,8 @@ targets:
       - package: WiltedKit
         product: WiltedLibrary
       - package: WiltedKit
+        product: WiltedWeather
+      - package: WiltedKit
         product: WiltedCatalog
       - package: WiltedCloudKit
         product: WiltedCloudKit
@@ -408,6 +410,8 @@ targets:
         product: WiltedSync
       - package: WiltedKit
         product: WiltedLibrary
+      - package: WiltedKit
+        product: WiltedWeather
       - package: WiltedKit
         product: WiltedCatalog
       - package: WiltedCloudKit
