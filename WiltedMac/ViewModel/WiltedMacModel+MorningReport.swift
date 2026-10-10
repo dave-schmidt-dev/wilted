@@ -35,9 +35,29 @@ enum MorningReportSchedule {
 enum WiltedMorningReportState: Equatable, Sendable {
     case idle
     case building(fraction: Double, detail: String)
-    case published(title: String)
+    case published(title: String, at: Date)
     /// No report was published; `reason` is shown in Settings and the previous report stays.
     case notPublished(reason: String)
+
+    var isBuilding: Bool {
+        if case .building = self { return true }
+        return false
+    }
+
+    /// The one Settings line under the daily report; nil before any run this launch.
+    func caption(timeStyle: (Date) -> String = { $0.formatted(date: .abbreviated, time: .shortened) }) -> String? {
+        switch self {
+        case .idle: nil
+        case let .building(fraction, detail): "Building… \(Int((fraction * 100).rounded()))% \(detail)"
+        case let .published(_, at): "Last report: \(timeStyle(at))"
+        case let .notPublished(reason): "Not published: \(reason)"
+        }
+    }
+
+    /// Build now needs the daily report on and no run in progress.
+    static func buildNowDisabled(state: WiltedMorningReportState, reportEnabled: Bool) -> Bool {
+        state.isBuilding || !reportEnabled
+    }
 }
 
 /// Runs the schedule while the app is open and holds the state. Owned by the model through an
@@ -112,7 +132,7 @@ final class WiltedMorningReportController {
         switch outcome {
         case let .published(_, title, seconds, headlines, _):
             logger.info("report published: \(Int(seconds)) s, \(headlines) headlines")
-            state = .published(title: title)
+            state = .published(title: title, at: now)
             await model.reloadLibraryRows()
         case let .skipped(reason):
             logger.notice("report not published: \(reason, privacy: .public)")
