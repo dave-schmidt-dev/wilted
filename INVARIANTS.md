@@ -202,3 +202,21 @@ area: ["Producer/Sources/WiltedProducer/Playlists/**", "Producer/Sources/WiltedP
 gate_test: test-gate.sh
 threshold: 3
 rationale: A playlist is a separate ordering over library items. Creating, editing, reordering or deleting a playlist, and playing from one, never reorders, advances or removes anything in the Larder queue: playlist playback loads items with `load`, a completed `load` never advances the queue even when the item is also the queue's current episode, and the end of a playlist stops playback. Deleting a playlist keeps its items. Enforced by `testReorderingManualPlaylistLeavesLarderQueueOrderUnchanged` (`LocalLibraryStorePlaylistTests`), `testCompletionOfANonPodcastLoadNeverAdvancesTheQueue` (`PlaybackControllerTests+NonPodcastCompletion`), and `testPlayingAManualPlaylistAdvancesInPlaylistOrderAndLeavesTheLarderQueueUnchanged`, `testTheEndOfAPlaylistStopsItWithoutTouchingTheLarder` and `testNewPlaylistsGetUniqueNamesAndDeletingOneKeepsItsItems` (`WiltedMacPlaylistTests`).
+
+### W-INV-029 — A spoken interruption always returns playback to its position
+area: ["Producer/Sources/WiltedProducer/PlaybackController+Interruptions.swift", "Producer/Sources/WiltedProducer/PlaybackController.swift", "Producer/Tests/WiltedProducerTests/PlaybackControllerTests+Interruptions.swift", "WiltediOS/Library/LibraryPlayerInterruptions.swift", "WiltediOS/Library/LibraryPlayer.swift", "WiltediOSTests/LibraryPlayerTests+Interruptions.swift"]
+gate_test: test-gate.sh
+threshold: 3
+rationale: A spoken bulletin holds playback; it does not pause it. The held position is the checkpoint, listening time does not grow while speech plays, and when speech ends, is skipped, cannot start or times out, playback resumes at that position; a listener pause, route loss, item change or turning interruptions off ends the hold and leaves playback at the checkpoint. Enforced by `testPlaybackResumesAtTheStoredPositionAfterASpokenBulletin`, `testThePublishedStateStaysPlayingAndListeningStatisticsDoNotGrowDuringSpeech`, `testAListenerPauseDuringSpeechStopsItAndLeavesPlaybackPausedAtTheHeldPosition`, `testSpeechThatCannotStartDropsTheBulletinAndKeepsPlaying` and `testSpeechThatNeverEndsIsTimedOutAndPlaybackResumes` (`PlaybackControllerTests+Interruptions`), and `testPlaybackResumesAtTheStoredPositionAfterSkip`, `testStatusStaysPlayingAndListeningDoesNotGrowDuringSpeechWithTheRealTimer` and `testRouteLossDuringSpeechLeavesPlaybackPausedAtTheCheckpoint` (`LibraryPlayerInterruptionTests`).
+
+### W-INV-030 — Location comes from the device, never from an IP address
+area: ["WiltedMac/Location/**", "WiltediOS/Library/LibraryLocationProvider*.swift", "WiltedKit/Sources/WiltedWeather/NWSClient.swift", "WiltedMacTests/WiltedLocationProviderTests.swift", "WiltediOSTests/LibraryLocationProviderTests.swift", "WiltedKit/Tests/WiltedWeatherTests/NWSClientTests.swift"]
+gate_test: test-gate.sh
+threshold: 3
+rationale: Each device finds its own approximate location with Core Location (the Mac falls back to typed coordinates; the iPhone asks When In Use only after alerts are turned on and never in the background); there is no IP geolocation path, and with no fix and nothing typed there is no location. Coordinates are rounded to two decimals, held in memory, and sent only to `api.weather.gov`. Enforced by `testDeniedWithoutTypedReportsDenied`, `testFixWhileWiFiOffWithoutTypedIsNoFix`, `testAcceptedFixIsRoundedToTwoDecimals` and `testNotDeterminedNeverPromptsOnLaunchAndIsNone` (`WiltedLocationProviderTests`), `testAuthorizationIsNotRequestedBeforeAlertsAreTurnedOn` and `testInfoPlistHasWhenInUseKeyAndNoLocationBackgroundMode` (`LibraryLocationProviderTests`), and `pointRequestCarriesCoordinatesRoundedToTwoDecimals` and `nonNWSHostAndInsecureSchemeAreRejectedWithoutARequest` (`NWSClientTests`).
+
+### W-INV-031 — No personal contact is sent by default
+area: ["WiltedKit/Sources/WiltedWeather/NWSClient.swift", "WiltedKit/Tests/WiltedWeatherTests/NWSClientTests.swift"]
+gate_test: test-gate.sh
+threshold: 3
+rationale: The weather User-Agent is `Wilted/<version> (<repository URL>)`; a contact is appended only when the owner types one in Settings, after control characters are stripped. Enforced by `userAgentHasNoContactWhenSettingIsEmpty` (`NWSClientTests`).

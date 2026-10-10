@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- Reports (off by default): spoken news headlines and National Weather Service alerts interrupt playback at the next pause in speech, then resume where you were, on the Mac and the iPhone; each device uses its own approximate location, never your IP address. The Mac can build a morning report with the forecast and headlines, and Settings shows its status with Build now.
 - Article feeds: follow a feed without audio, refresh it for new posts, and add the ones you want from the Feeds inbox; a News switch in the feed popover marks news feeds.
 - Audiobooks and books on the Mac: Import book in the Add sheet (or drop files) imports audio files or a folder as one audiobook with chapters, and turns EPUB or PDF text into a spoken book; progress shows with Cancel, and refused files say why. Importing the same files again finds the same book.
 - Chapters: book rows show their chapter, and the Mac player and iPhone player step between chapters.
