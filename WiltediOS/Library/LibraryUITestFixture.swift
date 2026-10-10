@@ -23,13 +23,16 @@ enum LibraryUITestScenario: String, Sendable {
     /// The pixel scenario plus an article and an audiobook volume with chapters, for the kind filter,
     /// the book row and Now Playing chapters. Kept apart so the plain pixel baselines do not move.
     case pixelBooks = "pixel-books"
+    /// The pixel scenario plus a Morning report row. Once the player plays, a stub speaker that never
+    /// finishes is handed a headline, so Now Playing holds in the bulletin state without any audio.
+    case pixelInterruptions = "pixel-interruptions"
     /// A real held phone mirror and downloads; the fixture Mac now has an empty queue.
     case heldAccount = "held-account"
 }
 
 extension LibraryUITestScenario {
-    /// Either pixel scenario: fixed clock, time zone and About version.
-    var isPixel: Bool { self == .pixel || self == .pixelBooks }
+    /// Any pixel scenario: fixed clock, time zone and About version.
+    var isPixel: Bool { self == .pixel || self == .pixelBooks || self == .pixelInterruptions }
 }
 
 /// DEBUG-only deterministic dependencies for the production `LibraryRoot`.
@@ -53,6 +56,8 @@ enum LibraryUITestFixture {
     /// The `pixelBooks` scenario's audiobook volume and article.
     static let bookID = "fixture-book-1"
     static let articleID = "fixture-article-1"
+    /// The `pixelInterruptions` scenario's Morning report.
+    static let reportID = "fixture-report-1"
     /// The pixel scenario's clock: 2026-10-03 12:00 UTC.
     nonisolated static let pixelClock = Date(timeIntervalSince1970: 1_791_028_800)
 
@@ -135,6 +140,9 @@ enum LibraryUITestFixture {
         private let scratch: URL
         private let defaultsSuite: String
         private var seedTask: Task<Void, Never>?
+        private let defaults: UserDefaults
+        /// The `pixelInterruptions` controller, kept alive for the life of the process.
+        private var interruptions: LibraryInterruptionController?
 
         init(scenario: LibraryUITestScenario) {
             self.scenario = scenario
@@ -142,6 +150,7 @@ enum LibraryUITestFixture {
             try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
             defaultsSuite = LibraryUITestFixture.suiteName + "-" + UUID().uuidString
             let defaults = UserDefaults(suiteName: defaultsSuite)!
+            self.defaults = defaults
             cache = FileMediaCache(rootURL: scratch.appendingPathComponent("media", isDirectory: true))
             phone = InMemoryLibraryTransport(
                 deviceID: "phone", server: server,
@@ -202,6 +211,38 @@ enum LibraryUITestFixture {
             ]
         }
 
+        /// `pixelInterruptions` only: hands the player's interruption controller a headline once playback
+        /// runs, spoken through a stub speaker that never finishes (no audio; the watchdog is a day away).
+        func speakFixtureBulletin() async {
+            guard scenario == .pixelInterruptions, interruptions == nil else { return }
+            do {
+                let clock = LibraryUITestFixture.pixelClock
+                let headline = try Bulletin(
+                    id: "fixture-headline", kind: .headline, text: "A fixture headline, never spoken aloud.",
+                    severity: .extreme, issuedAt: clock, expiresAt: clock.addingTimeInterval(86_400))
+                let channel = try LibraryBulletins(
+                    alertsEnabled: false, headlinesEnabled: true, headlines: [headline], updatedAt: clock)
+                let cache = cache
+                let controller = LibraryInterruptionController(
+                    player: player,
+                    dependencies: .init(
+                        speaker: LibraryUITestSpeaker(), preferences: LibraryInterruptionPreferences(defaults: defaults),
+                        fetchBulletins: { channel }, makeMonitor: { _ in LibraryUITestAlertMonitor() }, location: nil,
+                        revision: { await cache.cachedEntries()[$0]?.revisionID }, now: { clock },
+                        isForeground: { true }, maximumSpeech: .seconds(86_400)))
+                interruptions = controller
+                // The revision lookup is asynchronous; ask again until the bulletin is being spoken.
+                for _ in 0..<50 {
+                    await controller.syncTick()
+                    if case .speaking = controller.state { return }
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+                assertionFailure("Fixture bulletin was never spoken")
+            } catch {
+                assertionFailure("Fixture bulletin could not be built: \(error)")
+            }
+        }
+
         /// Queues the seeded episodes on the in-memory Mac and puts their audio on the phone. Runs once.
         func seed() async {
             if seedTask == nil { seedTask = Task { await performSeed() } }
@@ -239,6 +280,13 @@ enum LibraryUITestFixture {
                     changes.append(.slot(try QueueSlot(entryID: third, sortKey: 2)))
                 }
                 if scenario == .pixelBooks { changes += try Self.bookAndArticleChanges() }
+                if scenario == .pixelInterruptions {
+                    let report = try ItemID(rawValue: LibraryUITestFixture.reportID)
+                    changes.append(.entry(try LibraryEntry(
+                        id: report, kind: .report, sourceID: report, title: "Morning report, Oct 3", summary: "",
+                        publishedAt: Date(timeIntervalSince1970: 1_791_025_200), durationSeconds: LibraryUITestEngine.length)))
+                    changes.append(.slot(try QueueSlot(entryID: report, sortKey: 5)))
+                }
                 let pending = changes.enumerated().map {
                     PendingLibraryChange(localSeq: UInt64($0.offset + 1), change: $0.element, baseVersion: 0)
                 }
@@ -248,7 +296,8 @@ enum LibraryUITestFixture {
                 try await cache.bindOwner(ownerToken: "fixture-owner", libraryScope: LibraryAppModel.mediaLibraryScope, held: false)
                 var admittedOffers: [LibraryMediaOffer] = []
                 for raw in LibraryUITestFixture.episodeIDs + (scenario.isPixel ? ["fixture-episode-3"] : [])
-                    + (scenario == .pixelBooks ? [LibraryUITestFixture.bookID, LibraryUITestFixture.articleID] : []) {
+                    + (scenario == .pixelBooks ? [LibraryUITestFixture.bookID, LibraryUITestFixture.articleID] : [])
+                    + (scenario == .pixelInterruptions ? [LibraryUITestFixture.reportID] : []) {
                     let offer = try LibraryMediaOffer(
                         entryID: try ItemID(rawValue: raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: hash,
                         byteCount: Int64(audio.count), mediaType: "audio/mp4", durationSeconds: LibraryUITestEngine.length,
@@ -305,6 +354,9 @@ struct LibraryUITestFixtureHost: View {
         if isSeeded {
             LibraryRoot(model: stack.model, player: stack.player, settings: stack.settings)
                 .overlay(alignment: .bottomLeading) { LibraryUITestFixtureMarker(scenario: stack.scenario) }
+                .onReceive(stack.player.$status.filter { $0 == .playing }) { _ in
+                    Task { await stack.speakFixtureBulletin() }
+                }
                 .preferredColorScheme(LibraryUITestFixture.colorScheme())
         } else {
             ProgressView()
@@ -389,6 +441,21 @@ final class LibraryUITestNowPlaying: ListenerNowPlaying, @unchecked Sendable {
 
 @MainActor final class LibraryUITestSessionEvents: LibrarySessionEvents {
     func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void) {}
+}
+
+/// A speaker that never speaks and never finishes, so a bulletin stays "being spoken" for a pixel capture.
+@MainActor final class LibraryUITestSpeaker: LibrarySpeaking {
+    func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool { true }
+    func stop() {}
+}
+
+/// An alert monitor that watches nothing; the fixture's channel has alerts off.
+final class LibraryUITestAlertMonitor: LibraryAlertMonitoring, @unchecked Sendable {
+    func start() async {}
+    func stop() async {}
+    func setCoordinates(lat: Double, lon: Double) async {}
+    func clearCoordinates() async {}
+    var activeAlertIDs: Set<String> { get async { [] } }
 }
 
 /// The scratch cache, with every `cachedEntries()` (the lookup a start makes) held for `delay` first.

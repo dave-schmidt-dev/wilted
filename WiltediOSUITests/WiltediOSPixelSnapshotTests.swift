@@ -100,14 +100,34 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         assertSnapshot(launchLibraryRoot(.nowPlayingChapters, dark: true), named: "library-now-playing-chapters-dark")
     }
 
+    // B6.4 Task 4.2b: a Morning report row, and Now Playing while a bulletin is being spoken (stub speaker, silent).
+
+    func testLibraryReportRowLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.reportRow, dark: false), named: "library-report-row-light")
+    }
+
+    func testLibraryReportRowDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.reportRow, dark: true), named: "library-report-row-dark")
+    }
+
+    func testLibraryNowPlayingBulletinLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.nowPlayingBulletin, dark: false), named: "library-now-playing-bulletin-light")
+    }
+
+    func testLibraryNowPlayingBulletinDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.nowPlayingBulletin, dark: true), named: "library-now-playing-bulletin-dark")
+    }
+
     private enum LibraryScreen {
         case larder, larderGrouped, episodeDetail, settings
         case filterArticles, bookRow, nowPlayingChapters
+        case reportRow, nowPlayingBulletin
 
         /// The fixture scenario: the three B6.3 screens need the article and the audiobook volume.
         var scenario: String {
             switch self {
             case .filterArticles, .bookRow, .nowPlayingChapters: "pixel-books"
+            case .reportRow, .nowPlayingBulletin: "pixel-interruptions"
             default: "pixel"
             }
         }
@@ -187,6 +207,15 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             next.tap()
             XCTAssertTrue(app.staticTexts["Roots and Rain"].waitForExistence(timeout: 5), "Next chapter moves to chapter 2")
             XCTAssertTrue(app.staticTexts["Chapter 2 of 4"].exists)
+        case .reportRow:
+            XCTAssertTrue(any["wilted-library-row-fixture-report-1"].waitForExistence(timeout: 10))
+            XCTAssertTrue(any["wilted-library-meta-fixture-report-1"].waitForExistence(timeout: 5))
+        case .nowPlayingBulletin:
+            let play = app.buttons["wilted-library-play-fixture-episode-1"]
+            XCTAssertTrue(play.waitForExistence(timeout: 10))
+            play.tap()
+            // The banner and Skip bulletin live in the mini player, so the capture stays on the Larder.
+            XCTAssertTrue(app.buttons["wilted-player-skip-bulletin"].waitForExistence(timeout: 15), "The bulletin banner shows Skip bulletin")
         case .settings:
             app.buttons["wilted-library-settings-button"].tap()
             XCTAssertTrue(any["wilted-library-settings"].waitForExistence(timeout: 5))

@@ -49,10 +49,9 @@ struct LibraryMiniPlayer: View {
                 .accessibilityValue(summary)
                 .accessibilityIdentifier("wilted-player-expand")
 
-                if let hold = player.speechHold {
+                if player.speechHold != nil {
                     HStack(spacing: WiltedTheme.Spacing.small) {
                         Image(systemName: "speaker.wave.2.fill").accessibilityHidden(true)
-                        Text(hold.title).wiltedFont(.body)
                         Button { player.skipSpeech() } label: { Image(systemName: "forward.end.fill") }
                             .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
                             .accessibilityLabel("Skip bulletin")
