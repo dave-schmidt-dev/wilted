@@ -221,6 +221,9 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         # Required by SiriKit authorization (INPreferences.requestSiriAuthorization), asked once on the phone.
         NSSiriUsageDescription: Wilted shares your episode titles with Siri so you can ask it to play your downloaded episodes by voice, including from CarPlay.
+        # Weather alerts: asked only when the user turns alerts on for this iPhone; approximate, foreground only.
+        NSLocationWhenInUseUsageDescription: Wilted uses your approximate location, only while the app is in use, to check for severe weather alerts near you. It is rounded and sent to the National Weather Service only for that check.
+        NSLocationDefaultAccuracyReduced: true
         # The intent the app answers itself (PlayMediaIntentHandler); in-app handling needs it declared here.
         INIntentsSupported:
           - INPlayMediaIntent

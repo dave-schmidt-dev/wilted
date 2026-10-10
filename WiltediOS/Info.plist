@@ -30,6 +30,10 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSLocationDefaultAccuracyReduced</key>
+	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Wilted uses your approximate location, only while the app is in use, to check for severe weather alerts near you. It is rounded and sent to the National Weather Service only for that check.</string>
 	<key>NSSiriUsageDescription</key>
 	<string>Wilted shares your episode titles with Siri so you can ask it to play your downloaded episodes by voice, including from CarPlay.</string>
 	<key>UIApplicationSceneManifest</key>
