@@ -52,7 +52,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: "toolbar", appearance: appearance)
             ] + ["add-sheet-link", "add-sheet-results", "add-sheet-followed", "add-sheet-error", "feed-policy-article", "feeds-article-row",
                 "larder-kind-filter", "larder-book-row", "player-chapters",
-                "sidebar-playlists", "playlist-manual", "playlist-rules"].map {
+                "sidebar-playlists", "playlist-manual", "playlist-rules", "settings-reports"].map {
                 WiltedSnapshotContract.shellName(kind: $0, appearance: appearance)
             }
         }
@@ -605,6 +605,42 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
+    // MARK: Reports settings
+
+    /// The Reports section with interruptions on, the daily report on and typed coordinates in use.
+    func testReportsSettingsPixelBaselines() throws {
+        for appearance in WiltedAppearance.allCases {
+            let model = WiltedMacModel(
+                arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("reports-pixel"),
+                preferences: WiltedMacTestPreferences.ephemeral())
+            model.updateAutomationSettings { current in
+                current.updatingReports {
+                    $0.interruptionsEnabled = true
+                    $0.reportEnabled = true
+                    $0.typedLatitude = 38.9
+                    $0.typedLongitude = -77.04
+                    $0.nwsContact = "listener@example.test"
+                }
+            }
+            let location = WiltedLocationProvider(
+                manager: PixelFakeLocationManager(), wifi: PixelFakeWiFi(),
+                typedCoordinates: model.automationSettings.typedCoordinates)
+            let content = WiltedMacReportsCard(model: model, location: location, startsExpanded: true)
+                .padding(WiltedTheme.Spacing.large)
+                .environment(\.wiltedTextScale, model.textScale)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(WiltedTheme.color(.page, scheme: appearance == .dark ? .dark : .light))
+            let image = render(
+                content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
+                size: CGSize(width: 760, height: 560))
+            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the Reports section drew")
+            assertSnapshot(
+                image, named: WiltedSnapshotContract.shellName(kind: "settings-reports", appearance: appearance),
+                testName: "testReportsSettingsPixelBaselines")
+        }
+    }
+
     func testSnapshotBaselinePreservesExistingBytesWhenMatchingInRecordMode() throws {
         let baseline = try baselineTestURL(for: "matching-baseline")
         let existingBitmap = makeSolidBitmap(width: 4, height: 2, red: 17, green: 34, blue: 51, alpha: 255)
@@ -715,7 +751,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 enum WiltedSnapshotContract {
     static let stateCount = WiltedPreviewState.allCases.count
     static let variantCount = WiltedVisualVariant.matrix.count
-    static let shellCount = 40
+    static let shellCount = 42
     static let expectedPixelBaselineCount = stateCount * variantCount + shellCount
 
     static var recordMode: Bool {
@@ -733,4 +769,19 @@ enum WiltedSnapshotContract {
     static func shellName(kind: String, appearance: WiltedAppearance) -> String {
         "mac-shell-\(kind)-\(appearance.rawValue)"
     }
+}
+
+@MainActor
+private final class PixelFakeLocationManager: WiltedLocationManaging {
+    var authorization = WiltedLocationAuthorization.authorized
+    var onAuthorizationChange: (() -> Void)?
+    var onFix: ((Double, Double) -> Void)?
+    var onFailure: (() -> Void)?
+    func requestPermission() {}
+    func requestOneFix() {}
+}
+
+@MainActor
+private final class PixelFakeWiFi: WiltedWiFiPowerReading {
+    var isPoweredOn = false
 }

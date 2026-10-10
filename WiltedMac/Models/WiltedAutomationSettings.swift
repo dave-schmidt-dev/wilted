@@ -316,6 +316,29 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     /// nil for no limit.
     let keptLimitPerFeed: Int?
 
+    // MARK: Reports (B6.4). Absent keys decode to these defaults, so a file saved
+    // before Reports existed keeps every other preference and interruptions stay off.
+    // Change them through `updatingReports`, which clamps and validates.
+
+    /// Whether the Mac may pause playback at a pause point to read a bulletin. Off until chosen.
+    private(set) var interruptionsEnabled = false
+    private(set) var alertsEnabled = true
+    private(set) var headlinesEnabled = true
+    /// How long a waiting bulletin may wait for a pause point before it is dropped.
+    private(set) var waitLimitSeconds = 60
+    private(set) var headlineMinimumGapMinutes = 30
+    private(set) var reportEnabled = false
+    private(set) var reportTime = WiltedAutomationLocalTime(hour: 7, minute: 0)!
+    /// Raw typed position; read through `typedCoordinates`, which rounds and validates.
+    private(set) var typedLatitude: Double?
+    private(set) var typedLongitude: Double?
+    /// Contact sent to the National Weather Service in the User-Agent; empty until entered.
+    private(set) var nwsContact = ""
+
+    static let waitLimitRange = 10...300
+    static let headlineGapRange = 5...240
+    static let nwsContactLimit = 200
+
     init(refreshPolicy: WiltedAutomationRefreshPolicy, downloadPolicy: WiltedAutomationDownloadPolicy,
          processingPolicy: WiltedAutomationProcessingPolicy, transcriptPolicy: WiltedAutomationTranscriptPolicy,
          removeAds: Bool, autoAddPreparedToLarder: Bool = true,
@@ -346,6 +369,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         case autoKeepNewEpisodes
         case keptLimitPerFeed
         case legacyReadableTranscriptPass = "readableTranscriptPass"
+        case interruptionsEnabled, alertsEnabled, headlinesEnabled, waitLimitSeconds, headlineMinimumGapMinutes
+        case reportEnabled, reportTime, typedLatitude, typedLongitude, nwsContact
     }
 
     init(from decoder: Decoder) throws {
@@ -386,6 +411,23 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         autoKeepNewEpisodes = try container.decodeIfPresent(Bool.self, forKey: .autoKeepNewEpisodes) ?? false
         keptLimitPerFeed = (try container.decodeIfPresent(Int.self, forKey: .keptLimitPerFeed))
             .flatMap { $0 > 0 ? $0 : nil }
+        interruptionsEnabled = try container.decodeIfPresent(Bool.self, forKey: .interruptionsEnabled) ?? false
+        alertsEnabled = try container.decodeIfPresent(Bool.self, forKey: .alertsEnabled) ?? true
+        headlinesEnabled = try container.decodeIfPresent(Bool.self, forKey: .headlinesEnabled) ?? true
+        waitLimitSeconds = Self.clamped(
+            try container.decodeIfPresent(Int.self, forKey: .waitLimitSeconds), Self.waitLimitRange, default: 60)
+        headlineMinimumGapMinutes = Self.clamped(
+            try container.decodeIfPresent(Int.self, forKey: .headlineMinimumGapMinutes), Self.headlineGapRange, default: 30)
+        reportEnabled = try container.decodeIfPresent(Bool.self, forKey: .reportEnabled) ?? false
+        // A malformed time falls back to 07:00 rather than refusing the whole file.
+        reportTime = (try? container.decodeIfPresent(WiltedAutomationLocalTime.self, forKey: .reportTime))
+            ?? WiltedAutomationLocalTime(hour: 7, minute: 0)!
+        let latitude = try container.decodeIfPresent(Double.self, forKey: .typedLatitude)
+        let longitude = try container.decodeIfPresent(Double.self, forKey: .typedLongitude)
+        let typed = latitude.flatMap { lat in longitude.flatMap { WiltedCoordinates(latitude: lat, longitude: $0) } }
+        typedLatitude = typed?.latitude
+        typedLongitude = typed?.longitude
+        nwsContact = Self.cleanedContact(try container.decodeIfPresent(String.self, forKey: .nwsContact) ?? "")
         // Settings saved before the single-pass pipeline included this no-op
         // preference. Deliberately accept and discard it on migration.
         _ = try? container.decode(Bool.self, forKey: .legacyReadableTranscriptPass)
@@ -409,6 +451,85 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         try container.encode(initialEpisodeMetadataCount, forKey: .initialEpisodeMetadataCount)
         try container.encode(autoKeepNewEpisodes, forKey: .autoKeepNewEpisodes)
         try container.encodeIfPresent(keptLimitPerFeed, forKey: .keptLimitPerFeed)
+        try container.encode(interruptionsEnabled, forKey: .interruptionsEnabled)
+        try container.encode(alertsEnabled, forKey: .alertsEnabled)
+        try container.encode(headlinesEnabled, forKey: .headlinesEnabled)
+        try container.encode(waitLimitSeconds, forKey: .waitLimitSeconds)
+        try container.encode(headlineMinimumGapMinutes, forKey: .headlineMinimumGapMinutes)
+        try container.encode(reportEnabled, forKey: .reportEnabled)
+        try container.encode(reportTime, forKey: .reportTime)
+        try container.encodeIfPresent(typedLatitude, forKey: .typedLatitude)
+        try container.encodeIfPresent(typedLongitude, forKey: .typedLongitude)
+        try container.encode(nwsContact, forKey: .nwsContact)
+    }
+
+    /// The typed position, rounded to 2 decimals; nil unless both halves are present and in range.
+    var typedCoordinates: WiltedCoordinates? {
+        guard let typedLatitude, let typedLongitude else { return nil }
+        return WiltedCoordinates(latitude: typedLatitude, longitude: typedLongitude)
+    }
+
+    /// These settings with the Reports fields changed by `change`; everything else is kept.
+    /// Out-of-range numbers are clamped, an invalid typed pair is cleared and the contact is trimmed.
+    func updatingReports(_ change: (_ reports: inout ReportsFields) -> Void) -> Self {
+        var fields = ReportsFields(self)
+        change(&fields)
+        var copy = self
+        copy.interruptionsEnabled = fields.interruptionsEnabled
+        copy.alertsEnabled = fields.alertsEnabled
+        copy.headlinesEnabled = fields.headlinesEnabled
+        copy.waitLimitSeconds = Self.clamped(fields.waitLimitSeconds, Self.waitLimitRange, default: 60)
+        copy.headlineMinimumGapMinutes = Self.clamped(fields.headlineMinimumGapMinutes, Self.headlineGapRange, default: 30)
+        copy.reportEnabled = fields.reportEnabled
+        copy.reportTime = fields.reportTime
+        let typed = fields.typedLatitude.flatMap { lat in
+            fields.typedLongitude.flatMap { WiltedCoordinates(latitude: lat, longitude: $0) }
+        }
+        copy.typedLatitude = typed?.latitude
+        copy.typedLongitude = typed?.longitude
+        copy.nwsContact = Self.cleanedContact(fields.nwsContact)
+        return copy
+    }
+
+    /// The editable Reports values, for `updatingReports`.
+    struct ReportsFields {
+        var interruptionsEnabled: Bool
+        var alertsEnabled: Bool
+        var headlinesEnabled: Bool
+        var waitLimitSeconds: Int
+        var headlineMinimumGapMinutes: Int
+        var reportEnabled: Bool
+        var reportTime: WiltedAutomationLocalTime
+        var typedLatitude: Double?
+        var typedLongitude: Double?
+        var nwsContact: String
+
+        init(_ settings: WiltedAutomationSettings) {
+            interruptionsEnabled = settings.interruptionsEnabled
+            alertsEnabled = settings.alertsEnabled
+            headlinesEnabled = settings.headlinesEnabled
+            waitLimitSeconds = settings.waitLimitSeconds
+            headlineMinimumGapMinutes = settings.headlineMinimumGapMinutes
+            reportEnabled = settings.reportEnabled
+            reportTime = settings.reportTime
+            typedLatitude = settings.typedLatitude
+            typedLongitude = settings.typedLongitude
+            nwsContact = settings.nwsContact
+        }
+    }
+
+    /// These settings with the Reports fields of `other`; used where a rebuild goes through `init`.
+    func carryingReports(of other: Self) -> Self {
+        updatingReports { $0 = ReportsFields(other) }
+    }
+
+    private static func clamped(_ value: Int?, _ range: ClosedRange<Int>, default fallback: Int) -> Int {
+        guard let value else { return fallback }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private static func cleanedContact(_ value: String) -> String {
+        String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(nwsContactLimit))
     }
 
     /// These settings with the global Auto keep replaced; everything else is kept.
@@ -419,7 +540,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
             downloadEverythingOnLarder: downloadEverythingOnLarder, prepareEverythingDownloaded: prepareEverythingDownloaded,
             initialEpisodeMetadataCount: initialEpisodeMetadataCount, autoKeepNewEpisodes: value,
             keptLimitPerFeed: keptLimitPerFeed
-        )
+        ).carryingReports(of: self)
     }
 
     /// These settings with the global kept limit replaced (nil is No limit); everything else is kept.
@@ -430,7 +551,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
             downloadEverythingOnLarder: downloadEverythingOnLarder, prepareEverythingDownloaded: prepareEverythingDownloaded,
             initialEpisodeMetadataCount: initialEpisodeMetadataCount, autoKeepNewEpisodes: autoKeepNewEpisodes,
             keptLimitPerFeed: limit
-        )
+        ).carryingReports(of: self)
     }
 
     static func validInitialEpisodeMetadataCount(_ value: Int) -> Int? { (1...100).contains(value) ? value : nil }

@@ -322,4 +322,73 @@ extension WiltedMacModelTests {
         )
     }
 
+    // MARK: Reports settings (B6.4 Task 3.1)
+
+    /// A file written before Reports existed decodes with interruptions off and every other key kept.
+    func testSettingsFileWithoutReportsKeysDecodesWithInterruptionsOff() throws {
+        let legacy = Data(
+            #"""
+            {"version":1,"refreshPolicy":{"kind":"onLaunch"},"downloadPolicy":"manual",
+             "processingPolicy":{"kind":"manual"},"transcriptPolicy":"bestAvailable","removeAds":false,
+             "autoAddPreparedToMenu":false}
+            """#.utf8)
+        let settings = try JSONDecoder().decode(WiltedAutomationSettings.self, from: legacy)
+        XCTAssertFalse(settings.interruptionsEnabled)
+        XCTAssertTrue(settings.alertsEnabled)
+        XCTAssertTrue(settings.headlinesEnabled)
+        XCTAssertEqual(settings.waitLimitSeconds, 60)
+        XCTAssertEqual(settings.headlineMinimumGapMinutes, 30)
+        XCTAssertFalse(settings.reportEnabled)
+        XCTAssertEqual(settings.reportTime, WiltedAutomationLocalTime(hour: 7, minute: 0))
+        XCTAssertNil(settings.typedCoordinates)
+        XCTAssertEqual(settings.nwsContact, "")
+        XCTAssertEqual(settings.refreshPolicy, .onLaunch, "the legacy preferences are kept")
+        XCTAssertFalse(settings.removeAds)
+        XCTAssertFalse(settings.autoAddPreparedToLarder)
+        XCTAssertFalse(WiltedAutomationSettings.defaults.interruptionsEnabled)
+    }
+
+    /// Reports values survive encode, decode and a model rebuild; bad values are clamped or cleared.
+    func testReportsSettingsRoundTripClampAndSurviveARebuild() throws {
+        let suite = WiltedMacTestPreferences.suiteName("reports-settings-tests")
+        guard let preferences = UserDefaults(suiteName: suite) else {
+            return XCTFail("Unable to open a preferences suite for the test")
+        }
+        preferences.removePersistentDomain(forName: suite)
+        defer { preferences.removePersistentDomain(forName: suite) }
+
+        let first = WiltedMacModel(arguments: [], preferences: preferences)
+        first.updateAutomationSettings { current in
+            current.updatingReports {
+                $0.interruptionsEnabled = true
+                $0.headlinesEnabled = false
+                $0.waitLimitSeconds = 9_999
+                $0.headlineMinimumGapMinutes = 1
+                $0.reportEnabled = true
+                $0.reportTime = WiltedAutomationLocalTime(hour: 6, minute: 45)!
+                $0.typedLatitude = 38.8977
+                $0.typedLongitude = -77.0365
+                $0.nwsContact = "  me@example.test  "
+            }
+        }
+        let rebuilt = WiltedMacModel(arguments: [], preferences: preferences).automationSettings
+        XCTAssertTrue(rebuilt.interruptionsEnabled)
+        XCTAssertFalse(rebuilt.headlinesEnabled)
+        XCTAssertEqual(rebuilt.waitLimitSeconds, 300)
+        XCTAssertEqual(rebuilt.headlineMinimumGapMinutes, 5)
+        XCTAssertTrue(rebuilt.reportEnabled)
+        XCTAssertEqual(rebuilt.reportTime, WiltedAutomationLocalTime(hour: 6, minute: 45))
+        XCTAssertEqual(rebuilt.typedCoordinates, WiltedCoordinates(latitude: 38.90, longitude: -77.04))
+        XCTAssertEqual(rebuilt.nwsContact, "me@example.test")
+
+        // Another preference change keeps the Reports values.
+        first.updateAutomationSettings { $0.settingAutoKeepNewEpisodes(true) }
+        XCTAssertTrue(first.automationSettings.interruptionsEnabled)
+
+        // An out-of-range typed pair is cleared rather than stored.
+        let cleared = rebuilt.updatingReports { $0.typedLatitude = 123; $0.typedLongitude = 10 }
+        XCTAssertNil(cleared.typedCoordinates)
+        XCTAssertNil(cleared.typedLatitude)
+        XCTAssertNil(cleared.typedLongitude)
+    }
 }

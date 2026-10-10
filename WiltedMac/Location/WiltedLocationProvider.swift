@@ -72,6 +72,9 @@ final class WiltedLocationProvider {
     /// Located (in memory) or typed coordinates to use; nil when status is none, denied or noFix.
     private(set) var coordinates: WiltedCoordinates?
 
+    /// The current permission, so Settings can offer the right button; changes arrive through `status`.
+    var authorization: WiltedLocationAuthorization { manager.authorization }
+
     var typedCoordinates: WiltedCoordinates? {
         didSet { if oldValue != typedCoordinates { reevaluate() } }
     }
