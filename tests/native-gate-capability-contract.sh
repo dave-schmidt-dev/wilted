@@ -105,6 +105,17 @@ assert_capability_source_contract() {
   assert_entitlement "$ios_release" 'aps-environment' production
   assert_entitlement "$mac_release" 'com.apple.developer.icloud-container-environment' Production
   assert_entitlement "$ios_release" 'com.apple.developer.icloud-container-environment' Production
+  for file in "$mac_development" "$mac_release"; do
+    plutil -p "$file" | grep -Fq '"com.apple.security.personal-information.location" => true' || {
+      printf 'assertion failed: %s missing the location entitlement\n' "$file" >&2
+      exit 1
+    }
+  done
+  plutil -p "$repo_root/WiltedMac/Info.plist" | grep -Fq 'NSLocationUsageDescription' || {
+    printf '%s\n' 'assertion failed: Mac Info.plist lacks NSLocationUsageDescription' >&2
+    exit 1
+  }
+  assert_contains 'NSLocationUsageDescription:' "$project"
   for file in "$mac_development" "$mac_release" "$ios_development" "$ios_release"; do
     plutil -p "$file" | grep -Fq 'CloudKit' || {
       printf 'assertion failed: %s missing CloudKit service\n' "$file" >&2

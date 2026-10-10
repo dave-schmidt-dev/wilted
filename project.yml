@@ -114,6 +114,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSLocationUsageDescription: Wilted uses your approximate location (rounded to about 1 km) only to look up weather alerts for your area. Typed coordinates work instead if you decline.
 
   WiltediOS:
     type: application
