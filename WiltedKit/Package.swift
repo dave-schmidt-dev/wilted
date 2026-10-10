@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "WiltedLibrary", targets: ["WiltedLibrary"]),
         .library(name: "WiltedSyncTesting", targets: ["WiltedSyncTesting"]),
         .library(name: "WiltedCatalog", targets: ["WiltedCatalog"]),
+        .library(name: "WiltedWeather", targets: ["WiltedWeather"]),
     ],
     targets: [
         .target(name: "WiltedDomain"),
@@ -21,6 +22,12 @@ let package = Package(
         .target(name: "WiltedLibrary", dependencies: ["WiltedDomain"]),
         .target(name: "WiltedSyncTesting", dependencies: ["WiltedSync"]),
         .target(name: "WiltedCatalog"),
+        .target(name: "WiltedWeather", dependencies: ["WiltedLibrary"]),
+        .testTarget(
+            name: "WiltedWeatherTests",
+            dependencies: ["WiltedWeather", "WiltedLibrary"],
+            resources: [.copy("Fixtures")]
+        ),
         .testTarget(name: "WiltedCatalogTests", dependencies: ["WiltedCatalog"]),
         .testTarget(
             name: "WiltedDomainTests",

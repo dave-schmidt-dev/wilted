@@ -1,0 +1,15 @@
+{
+  "@context": ["https://geojson.org/geojson-ld/geojson-context.jsonld"],
+  "id": "https://api.weather.gov/points/39.74,-97.09",
+  "type": "Feature",
+  "properties": {
+    "gridId": "TOP",
+    "gridX": 32,
+    "gridY": 81,
+    "forecast": "https://api.weather.gov/gridpoints/TOP/32,81/forecast",
+    "forecastHourly": "https://api.weather.gov/gridpoints/TOP/32,81/forecast/hourly",
+    "forecastZone": "https://api.weather.gov/zones/forecast/KSZ009",
+    "county": "https://api.weather.gov/zones/county/KSC201",
+    "fireWeatherZone": "https://api.weather.gov/zones/fire/KSZ009"
+  }
+}

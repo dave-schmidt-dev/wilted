@@ -1,0 +1,51 @@
+{
+  "type": "FeatureCollection",
+  "title": "current watches, warnings, and advisories for KSZ009, KSC201",
+  "features": [
+    {
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.b2",
+      "type": "Feature",
+      "properties": {
+        "id": "urn:oid:2.49.0.1.840.0.b2",
+        "areaDesc": "Washington; Marshall",
+        "sent": "2026-10-10T15:00:00-05:00",
+        "effective": "2026-10-10T15:00:00-05:00",
+        "expires": "2026-10-10T16:00:00-05:00",
+        "ends": "2026-10-10T16:00:00-05:00",
+        "status": "Actual",
+        "messageType": "Update",
+        "severity": "Severe",
+        "certainty": "Likely",
+        "urgency": "Immediate",
+        "event": "Severe Thunderstorm Warning",
+        "headline": "Severe Thunderstorm Warning issued October 10 at 3:00PM CDT until October 10 at 4:00PM CDT by NWS Topeka KS",
+        "references": [
+          {
+            "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.b1",
+            "identifier": "urn:oid:2.49.0.1.840.0.b1",
+            "sender": "w-nws.webmaster@noaa.gov",
+            "sent": "2026-10-10T14:30:00-05:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c1",
+      "type": "Feature",
+      "properties": {
+        "id": "urn:oid:2.49.0.1.840.0.c1",
+        "areaDesc": "Washington",
+        "sent": "2026-10-10T14:00:00-05:00",
+        "expires": "2026-10-10T20:00:00-05:00",
+        "status": "Actual",
+        "messageType": "Alert",
+        "severity": "Minor",
+        "certainty": "Likely",
+        "urgency": "Expected",
+        "event": "Wind Advisory",
+        "headline": null,
+        "references": []
+      }
+    }
+  ]
+}
