@@ -25,7 +25,7 @@ extension WiltedMacModel {
     }
 
     func matchesLarderSearch(_ episode: WiltedMacEpisode) -> Bool {
-        Self.matches(.episode(episode), query: trimmedSearchQuery,
+        Self.matches(WiltedMacLibraryItem(episode: episode), query: trimmedSearchQuery,
                      transcriptMatches: transcriptSearchMatches)
     }
 
@@ -80,7 +80,7 @@ extension WiltedMacModel {
     var feedsEpisodes: [WiltedMacEpisode] {
         let waiting = Set(podcastQueueIDs)
         return Self.sortedLarderEpisodes(
-            larderVisibleEpisodes.filter { !waiting.contains($0.id) },
+            larderVisibleEpisodes.filter { !waiting.contains($0.id) && !$0.isAudiobook },
             by: feedsSort
         )
     }

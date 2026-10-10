@@ -162,4 +162,94 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
         XCTAssertEqual(model.larderSort, .custom)
         XCTAssertEqual(model.larderSortDirection, .ascending)
     }
+
+    private func book(_ id: String, title: String) -> WiltedMacEpisode {
+        var book = WiltedMacEpisode(
+            id: id, title: title, feedTitle: "Audiobook", summary: "Herbert", artworkURL: nil,
+            releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 3_600, playbackSeconds: 0,
+            downloadState: .completed, preparationState: .prepared(summary: "Audiobook"))
+        book.audiobook = WiltedMacAudiobookDetails(
+            author: "Herbert", chapters: [WiltedMacChapter(title: "One", startSeconds: 0)],
+            sourceFormat: "audio", volumeIndex: 0, volumeCount: 1)
+        book.isReadyMediaAvailable = true
+        return book
+    }
+
+    func testTheAudiobooksFilterShowsOnlyBooksAndLeavesPlayOrderUnchanged() async throws {
+        let (model, _, ids) = try await model("kind-filter")
+        model.installEpisodeForTesting(book("book-1", title: "Dune"))
+        model.podcastQueueIDs.insert("book-1", at: 1)
+        let queue = model.podcastQueueIDs
+        XCTAssertEqual(model.larderKind, .all)
+        XCTAssertTrue(Set(model.larderFilteredItems.map(\.id)).isSuperset(of: ids + ["book-1"]), "All shows every kind")
+
+        model.larderKind = .audiobooks
+        XCTAssertEqual(model.larderFilteredItems.map(\.id), ["book-1"])
+        XCTAssertEqual(model.larderSections().flatMap(\.items).map(\.id), ["book-1"])
+        XCTAssertEqual(model.podcastQueueIDs, queue, "a presentation filter never reorders what plays")
+
+        model.larderKind = .podcasts
+        XCTAssertFalse(model.larderFilteredItems.map(\.id).contains("book-1"))
+        XCTAssertEqual(Set(model.larderFilteredItems.map(\.id)), Set(ids))
+        XCTAssertEqual(model.podcastQueueIDs, queue)
+    }
+
+    // MARK: One grouped list
+
+    private func article(_ id: String, ready: Bool, minutes: Double = 5, savedAt: TimeInterval = 1_700_000_000) -> WiltedMacArticle {
+        WiltedMacArticle(
+            id: id, title: "Article \(id)", source: "blog.example.test",
+            url: URL(string: "https://blog.example.test/\(id)")!, isReady: ready,
+            durationSeconds: ready ? minutes * 60 : nil, createdAt: Date(timeIntervalSince1970: savedAt))
+    }
+
+    private func episodeRow(_ id: String, seconds: Double, published: TimeInterval = 1_700_000_000) -> WiltedMacEpisode {
+        WiltedMacEpisode(
+            id: id, title: "Episode \(id)", feedTitle: "Show", summary: "", artworkURL: nil,
+            releasedAt: Date(timeIntervalSince1970: published), durationSeconds: seconds, playbackSeconds: 0,
+            downloadState: .completed, preparationState: .prepared(summary: "Ready"))
+    }
+
+    private func section(_ group: WiltedMacLarderGroup, _ items: [WiltedMacLibraryItem]) -> WiltedMacLarderSection {
+        WiltedMacLarderSection(
+            id: "status-\(group.rawValue)", title: group.displayName, detail: nil, statusGroup: group, items: items)
+    }
+
+    func testStatusGroupsKeepTheFixedOrderReadyActiveDownloadedNotDownloaded() {
+        var downloading = episodeRow("downloading", seconds: 60)
+        downloading.downloadState = .downloading(received: 1, expected: 2)
+        let synthesizing = article("synth", ready: false)
+        // The model hands over Ready, Downloaded, Not downloaded, then articles still synthesizing.
+        let source = [
+            section(.playable, [.episode(episodeRow("ready", seconds: 60)), .article(article("prepared", ready: true))]),
+            section(.downloaded, [.episode(episodeRow("near", seconds: 60))]),
+            section(.available, [.episode(episodeRow("far", seconds: 60)), .episode(downloading)]),
+            WiltedMacLarderSection(id: "status-synthesizing", title: "Active work", detail: nil, statusGroup: nil,
+                                   items: [.article(synthesizing)]),
+        ]
+        let result = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .status)
+        XCTAssertEqual(result.map(\.title), ["Ready", "Active work", "Downloaded", "Not downloaded"])
+        XCTAssertEqual(result[0].items.map(\.id), ["ready", "prepared"], "a prepared article is Ready")
+        XCTAssertEqual(Set(result[1].items.map(\.id)), ["synth", "downloading"], "in-flight work is Active work")
+        XCTAssertEqual(result[2].items.map(\.id), ["near"])
+        XCTAssertEqual(result[3].items.map(\.id), ["far"])
+    }
+
+    func testAnArticleAndAnEpisodeInReadySortTogetherUnderAll() {
+        let longEpisode = episodeRow("ep", seconds: 1_800)
+        let shortArticle = article("short", ready: true, minutes: 5)
+        let midArticle = article("mid", ready: true, minutes: 20)
+        let ready = section(.playable, [.episode(longEpisode), .article(midArticle), .article(shortArticle)])
+
+        let byLength = WiltedMacEpisodePresentationSections.displaySections(
+            [ready], grouping: .status, sort: .length, direction: .ascending)
+        XCTAssertEqual(byLength.first?.items.map(\.id), ["short", "mid", "ep"], "one comparator across row kinds")
+        let longest = WiltedMacEpisodePresentationSections.displaySections(
+            [ready], grouping: .status, sort: .length, direction: .descending)
+        XCTAssertEqual(longest.first?.items.map(\.id), ["ep", "mid", "short"])
+
+        let listening = WiltedMacEpisodePresentationSections.displaySections(
+            [ready], grouping: .status, sort: .custom)
+        XCTAssertEqual(listening.first?.items.map(\.id).first, "ep", "queued rows lead in listening order")
+    }
 }

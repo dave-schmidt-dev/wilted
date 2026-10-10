@@ -69,7 +69,7 @@ validate_pixel_snapshot_baselines() {
     "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
     fail 'Mac persistent compact-player journey selector is missing'
 
-  expected_count=184
+  expected_count=190
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
@@ -107,7 +107,7 @@ validate_pixel_snapshot_baselines() {
       expected_selectors+="state-$state_id-$variant\n"
     done <<<"$expected_variants"
   done <<<"$expected_state_ids"
-  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-feed-policy-article-light\nmac-shell-feed-policy-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\n'
+  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-feed-policy-article-light\nmac-shell-feed-policy-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\n'
   expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
   actual_selectors="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; |
     sed -E 's/^.*\.(state-[^.]+|mac-shell-[^.]+)\.png$/\1/' | sort)"
@@ -148,7 +148,13 @@ validate_pixel_snapshot_baselines() {
     testArticleFeedPolicyPopoverPixelBaselines.mac-shell-feed-policy-article-light.png \
     testArticleFeedPolicyPopoverPixelBaselines.mac-shell-feed-policy-article-dark.png \
     testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-light.png \
-    testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-dark.png; do
+    testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-dark.png \
+    testLarderKindFilterPixelBaselines.mac-shell-larder-kind-filter-light.png \
+    testLarderKindFilterPixelBaselines.mac-shell-larder-kind-filter-dark.png \
+    testLarderBookRowPixelBaselines.mac-shell-larder-book-row-light.png \
+    testLarderBookRowPixelBaselines.mac-shell-larder-book-row-dark.png \
+    testPlayerChaptersPixelBaselines.mac-shell-player-chapters-light.png \
+    testPlayerChaptersPixelBaselines.mac-shell-player-chapters-dark.png; do
     [[ -s "$snapshot_dir/$shell_name" ]] || fail "missing Mac shell baseline: $shell_name"
   done
   # Component baselines render at card scale. The two window shells render at
@@ -175,6 +181,9 @@ validate_pixel_snapshot_baselines() {
       testMacAddSheetPixelBaselines.mac-shell-add-sheet-*.png) expected_size='520 x 420' ;;
       testArticleFeedPolicyPopoverPixelBaselines.mac-shell-feed-policy-article-*.png) expected_size='520 x 460' ;;
       testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-*.png) expected_size='520 x 90' ;;
+      testLarderKindFilterPixelBaselines.mac-shell-larder-kind-filter-*.png) expected_size='760 x 560' ;;
+      testLarderBookRowPixelBaselines.mac-shell-larder-book-row-*.png) expected_size='760 x 110' ;;
+      testPlayerChaptersPixelBaselines.mac-shell-player-chapters-*.png) expected_size='900 x 480' ;;
     esac
     grep -Fq "PNG image data, $expected_size" <<<"$(file "$png_path")" || {
       bad_pngs=$((bad_pngs + 1))
@@ -182,7 +191,7 @@ validate_pixel_snapshot_baselines() {
     }
   done < <(find "$snapshot_dir" -type f -name '*.png' -print)
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=32 window_shells=4\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=38 window_shells=4\n' "$expected_count"
 }
 
 validate_ios_pixel_snapshot_baselines() {

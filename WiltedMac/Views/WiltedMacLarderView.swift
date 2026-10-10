@@ -52,8 +52,33 @@ struct WiltedMacLarderView: View {
         WiltedMacHelpButton(content: playbackHelp, identifier: "wilted-larder-playback-help")
     }
 
-    /// Totals, grouping and sort, filters, the grouped rows and the articles:
-    /// the Larder itself, shared by both compositions.
+    /// The kind filter: everything, or only podcasts, articles or audiobooks. It narrows the one
+    /// grouped list and never reorders what plays.
+    private var kindMenu: some View {
+        Menu {
+            ForEach(WiltedMacLarderKind.allCases) { option in
+                Button {
+                    model.larderKind = option
+                } label: {
+                    if model.larderKind == option {
+                        Label(option.rawValue, systemImage: "checkmark")
+                    } else {
+                        Text(option.rawValue)
+                    }
+                }
+            }
+        } label: {
+            Label("Show: \(model.larderKind.rawValue)", systemImage: "line.3.horizontal.decrease")
+                .wiltedFont(.utility)
+        }
+        .menuStyle(.button)
+        .controlSize(.regular)
+        .accessibilityLabel("Show in Larder: \(model.larderKind.rawValue)")
+        .accessibilityIdentifier("wilted-larder-kind")
+    }
+
+    /// Totals, grouping and sort, filters and the grouped rows of episodes, audiobooks and
+    /// articles: the Larder itself, shared by both compositions.
     @ViewBuilder private var larderList: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
@@ -118,6 +143,7 @@ struct WiltedMacLarderView: View {
                 .controlSize(.regular)
                 .accessibilityLabel("Sort Larder: \(model.larderSort.displayName)")
                 .accessibilityIdentifier("wilted-larder-sort")
+                kindMenu
                 if model.larderSort != .custom {
                     Button {
                         let direction = model.larderSortDirection.reversed
@@ -133,11 +159,11 @@ struct WiltedMacLarderView: View {
                     .accessibilityLabel("Larder sort direction: \(model.larderSortDirection.displayName)")
                     .accessibilityIdentifier("wilted-larder-sort-direction")
                 }
+                addArticleButton
             }
         }
 
         filterBar
         groupList.wiltedMarksRowsTop()
-        articlesSection
     }
 }

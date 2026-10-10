@@ -156,12 +156,62 @@ enum WiltedMacLarderGrouping: String, CaseIterable, Identifiable, Sendable {
     var id: Self { self }
 }
 
+/// Which kind of thing the Larder list shows. A presentation filter only: it never changes the
+/// durable play order, which stays one list across podcasts and audiobooks (W-INV-016).
+enum WiltedMacLarderKind: String, CaseIterable, Identifiable, Sendable {
+    case all = "All"
+    case podcasts = "Podcasts"
+    case articles = "Articles"
+    case audiobooks = "Audiobooks"
+
+    var id: Self { self }
+
+    /// Whether the filter lets an episode row through. Articles are not episodes, so they pass
+    /// only `all` and `articles` (see `includesArticles`).
+    func includes(_ episode: WiltedMacEpisode) -> Bool {
+        switch self {
+        case .all: true
+        case .podcasts: !episode.isAudiobook
+        case .audiobooks: episode.isAudiobook
+        case .articles: false
+        }
+    }
+
+    var includesArticles: Bool { self == .all || self == .articles }
+}
+
+/// One titled run of Larder rows. Rows are episodes, audiobooks and articles; `episodes` is the
+/// subset that sits in the play queue (podcast episodes and audiobooks).
 struct WiltedMacLarderSection: Identifiable, Equatable {
     let id: String
     let title: String
     let detail: String?
     let statusGroup: WiltedMacLarderGroup?
-    let episodes: [WiltedMacEpisode]
+    let items: [WiltedMacLibraryItem]
+
+    var episodes: [WiltedMacEpisode] {
+        items.compactMap { item in
+            switch item {
+            case .episode(let value), .audiobook(let value): value
+            case .article: nil
+            }
+        }
+    }
+
+    init(id: String, title: String, detail: String?, statusGroup: WiltedMacLarderGroup?,
+         items: [WiltedMacLibraryItem]) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.statusGroup = statusGroup
+        self.items = items
+    }
+
+    init(id: String, title: String, detail: String?, statusGroup: WiltedMacLarderGroup?,
+         episodes: [WiltedMacEpisode]) {
+        self.init(id: id, title: title, detail: detail, statusGroup: statusGroup,
+                  items: episodes.map(WiltedMacLibraryItem.init(episode:)))
+    }
 }
 
 /// A known-duration total for one queue or status group. Unknown durations

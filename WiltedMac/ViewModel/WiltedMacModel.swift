@@ -109,7 +109,13 @@ final class WiltedMacModel {
     static let feedsSortPreferenceKey = "wilted.queue.larder.sort"
     static let larderSortPreferenceKey = "wilted.queue.menu.sort"
     static let larderSortDirectionPreferenceKey = "wilted.queue.menu.sort.direction"
+    /// Which kinds the Larder list shows. Presentation only, remembered like sort and grouping; a
+    /// stored value this build does not know restores All.
+    var larderKind: WiltedMacLarderKind = .all {
+        didSet { preferences.set(larderKind.rawValue, forKey: Self.larderKindPreferenceKey) }
+    }
     static let larderGroupingPreferenceKey = "wilted.queue.menu.grouping"
+    static let larderKindPreferenceKey = "wilted.queue.menu.kind"
     static let marksRemovedAdsPreferenceKey = "wilted.playback.marksRemovedAds"
     static let podcastPlaybackOriginPreferenceKeyPrefix = "wilted.playback.origin."
     /// The highest preparation request sequence issued so far. Persisted on
@@ -671,6 +677,10 @@ final class WiltedMacModel {
         if let stored = self.preferences.string(forKey: Self.larderGroupingPreferenceKey),
            let grouping = WiltedMacLarderGrouping(rawValue: stored) {
             larderGrouping = grouping
+        }
+        if let stored = self.preferences.string(forKey: Self.larderKindPreferenceKey),
+           let kind = WiltedMacLarderKind(rawValue: stored) {
+            larderKind = kind
         }
         preparationRequestSequence = self.preferences.integer(
             forKey: Self.preparationRequestSequencePreferenceKey

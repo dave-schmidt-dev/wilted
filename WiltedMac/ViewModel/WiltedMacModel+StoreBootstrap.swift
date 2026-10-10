@@ -419,6 +419,13 @@ extension WiltedMacModel {
         playback?.episodeEligibilityPredicate = { [weak self] itemID in
             guard let self else { return false }
             guard let episode = self.episodes.first(where: { $0.id == itemID.rawValue }) else { return false }
+            // An imported book has no preparation outcome in the store, which is what the controller's
+            // own fallback checks, so the loaded row answers for it: not removed, and its joined file on
+            // disk. Without this branch a book that survived a reload could not start from the queue.
+            if episode.isAudiobook {
+                return !self.hiddenEpisodeIDs.contains(episode.id) && episode.retiredAt == nil
+                    && episode.removalKind == nil && episode.isReadyMediaAvailable
+            }
             return self.canPlayEpisode(episode)
         }
         playback?.podcastStateHandler = { [weak self] itemID, fault in

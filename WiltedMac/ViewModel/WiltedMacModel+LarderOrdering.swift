@@ -167,6 +167,98 @@ extension WiltedMacModel {
 #endif
     }
 
+    // MARK: - Articles and books in the Larder list
+
+    /// The group an article sits in: Ready once it has audio. One still synthesizing has no lifecycle
+    /// group; the presentation lifts it into Active work.
+    nonisolated static func larderGroup(for article: WiltedMacArticle) -> WiltedMacLarderGroup? {
+        article.isReady ? .playable : nil
+    }
+
+    /// The feed-grouping heading of a row: the show, the article's source, or Audiobooks.
+    nonisolated static func larderFeedTitle(for item: WiltedMacLibraryItem) -> String {
+        switch item {
+        case .episode(let value): value.feedTitle
+        case .article(let value): value.source
+        case .audiobook: "Audiobooks"
+        }
+    }
+
+    /// The articles the kind filter and the search admit, before the group chip.
+    var larderKindArticles: [WiltedMacArticle] {
+        larderKind.includesArticles ? larderSearchArticleResults : []
+    }
+
+    /// The articles one group shows. Only Ready holds articles; the others hold none.
+    func larderArticles(in group: WiltedMacLarderGroup) -> [WiltedMacArticle] {
+        larderKindArticles.filter { Self.larderGroup(for: $0) == group }
+    }
+
+    /// The rows one group renders: its episodes and books, then its articles. The display step orders
+    /// them (an article has no queue position).
+    func larderItems(in group: WiltedMacLarderGroup) -> [WiltedMacLibraryItem] {
+        larderEpisodes(in: group).map(WiltedMacLibraryItem.init(episode:))
+            + larderArticles(in: group).map(WiltedMacLibraryItem.article)
+    }
+
+    /// Every row the list shows under the kind filter, search and group chip.
+    var larderFilteredItems: [WiltedMacLibraryItem] {
+        let episodes = larderFilteredEpisodes.map(WiltedMacLibraryItem.init(episode:))
+        let articles = larderKindArticles.filter { article in
+            larderFilter.map { Self.larderGroup(for: article) == $0 } ?? true
+        }
+        return episodes + articles.map(WiltedMacLibraryItem.article)
+    }
+
+    /// The count a group chip shows, or the All chip when `group` is nil, counted from the same rows the
+    /// list draws so a chip can never label a list it does not match.
+    func larderItemCount(in group: WiltedMacLarderGroup?) -> Int {
+        guard let group else { return larderSearchResults.count + larderKindArticles.count }
+        return larderEpisodes(in: group).count + larderArticles(in: group).count
+    }
+
+    // MARK: - Audiobook chapters
+
+    /// The audiobook details of what the player holds, when it holds a book volume with chapter marks.
+    private var currentChapterDetails: WiltedMacAudiobookDetails? {
+        guard isPodcastPlayback, let details = currentEpisode?.audiobook, !details.chapters.isEmpty else { return nil }
+        return details
+    }
+
+    /// The title of the chapter under the playhead, or nil when no book is playing.
+    var currentChapterTitle: String? {
+        guard let details = currentChapterDetails,
+              let index = details.chapterIndex(at: playbackPositionSeconds) else { return nil }
+        return details.chapters[index].title
+    }
+
+    /// `Chapter 3 of 12`, for the player's chapter line.
+    var currentChapterPositionLabel: String? {
+        guard let details = currentChapterDetails,
+              let index = details.chapterIndex(at: playbackPositionSeconds) else { return nil }
+        return "Chapter \(index + 1) of \(details.chapters.count)"
+    }
+
+    var canSelectPreviousChapter: Bool {
+        currentChapterDetails?.previousChapterStart(from: playbackPositionSeconds) != nil
+    }
+
+    var canSelectNextChapter: Bool {
+        currentChapterDetails?.nextChapterStart(from: playbackPositionSeconds) != nil
+    }
+
+    /// Restarts the current chapter, or goes to the one before it from its first seconds. A seek
+    /// inside the volume's single file.
+    func selectPreviousChapter() {
+        guard let start = currentChapterDetails?.previousChapterStart(from: playbackPositionSeconds) else { return }
+        scrub(to: start)
+    }
+
+    func selectNextChapter() {
+        guard let start = currentChapterDetails?.nextChapterStart(from: playbackPositionSeconds) else { return }
+        scrub(to: start)
+    }
+
     func setPlaybackRate(_ value: Double) {
         playbackRate = Self.clampPlaybackRate(value)
         preferences.set(playbackRate, forKey: Self.playbackRatePreferenceKey)

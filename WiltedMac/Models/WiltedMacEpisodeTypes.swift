@@ -201,6 +201,45 @@ struct WiltedMacDismissedEpisode: Identifiable, Hashable, Sendable {
     }
 }
 
+/// One chapter of an audiobook volume, positioned within that volume's single file.
+struct WiltedMacChapter: Hashable, Sendable {
+    let title: String
+    let startSeconds: TimeInterval
+}
+
+/// What makes a Larder row an audiobook rather than a podcast episode: the author, the chapter
+/// marks inside the one joined file, and which volume of the book this is.
+struct WiltedMacAudiobookDetails: Hashable, Sendable {
+    var author: String?
+    var chapters: [WiltedMacChapter]
+    var sourceFormat: String
+    var volumeIndex: Int
+    var volumeCount: Int
+
+    /// The chapter playing at `position`: the last one that has started. Nil without chapter marks.
+    func chapterIndex(at position: TimeInterval) -> Int? {
+        guard !chapters.isEmpty else { return nil }
+        return chapters.lastIndex { $0.startSeconds <= position + 0.001 } ?? 0
+    }
+
+    /// The second to seek to for the previous chapter. Past the first seconds of a chapter it
+    /// restarts that chapter, as every player does; inside them it goes to the chapter before.
+    func previousChapterStart(from position: TimeInterval) -> TimeInterval? {
+        guard let index = chapterIndex(at: position) else { return nil }
+        let start = chapters[index].startSeconds
+        if position - start > Self.restartGrace { return start }
+        if index > 0 { return chapters[index - 1].startSeconds }
+        return position > start ? start : nil
+    }
+
+    func nextChapterStart(from position: TimeInterval) -> TimeInterval? {
+        guard let index = chapterIndex(at: position), index + 1 < chapters.count else { return nil }
+        return chapters[index + 1].startSeconds
+    }
+
+    static let restartGrace: TimeInterval = 3
+}
+
 struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
@@ -260,6 +299,11 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     var feedURL: URL? = nil
     /// The episode's own web page from the feed's `<link>`, when it published one. Never the feed.
     var episodeLink: URL? = nil
+    /// Set for an imported audiobook volume, which the Larder queue and the player carry as an
+    /// episode-shaped row with no feed. Nil for every podcast episode.
+    var audiobook: WiltedMacAudiobookDetails? = nil
+
+    var isAudiobook: Bool { audiobook != nil }
 
     /// Compatibility constructor for existing fixtures and previews. Their
     /// long-standing `releasedAt` and `durationSeconds` arguments were the
@@ -320,7 +364,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         isReadyMediaAvailable: Bool = true,
         feedID: String? = nil,
         feedURL: URL? = nil,
-        episodeLink: URL? = nil
+        episodeLink: URL? = nil,
+        audiobook: WiltedMacAudiobookDetails? = nil
     ) {
         self.id = id
         self.title = title
@@ -343,6 +388,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         self.feedID = feedID
         self.feedURL = feedURL
         self.episodeLink = episodeLink
+        self.audiobook = audiobook
     }
 
     var lifecyclePresentation: WiltedMacEpisodeLifecyclePresentation {
@@ -372,7 +418,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt && lhs.removalKind == rhs.removalKind &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState &&
             lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable && lhs.feedID == rhs.feedID &&
-            lhs.feedURL == rhs.feedURL && lhs.episodeLink == rhs.episodeLink
+            lhs.feedURL == rhs.feedURL && lhs.episodeLink == rhs.episodeLink && lhs.audiobook == rhs.audiobook
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -381,18 +427,39 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
 enum WiltedMacLibraryItem: Identifiable, Hashable, Sendable {
     case article(WiltedMacArticle)
     case episode(WiltedMacEpisode)
+    /// An imported book volume, carried as an episode-shaped row so the queue and the player
+    /// treat it like any other playable item.
+    case audiobook(WiltedMacEpisode)
+
+    /// The case that fits the row: a book volume is an audiobook, every other episode a podcast.
+    init(episode: WiltedMacEpisode) {
+        self = episode.isAudiobook ? .audiobook(episode) : .episode(episode)
+    }
 
     var id: String {
-        switch self { case .article(let value): value.id; case .episode(let value): value.id }
+        switch self {
+        case .article(let value): value.id
+        case .episode(let value), .audiobook(let value): value.id
+        }
     }
     var title: String {
-        switch self { case .article(let value): value.title; case .episode(let value): value.title }
+        switch self {
+        case .article(let value): value.title
+        case .episode(let value), .audiobook(let value): value.title
+        }
     }
     var source: String {
-        switch self { case .article(let value): value.source; case .episode(let value): value.feedTitle }
+        switch self {
+        case .article(let value): value.source
+        case .episode(let value): value.feedTitle
+        case .audiobook(let value): value.audiobook?.author ?? value.feedTitle
+        }
     }
     var date: Date {
-        switch self { case .article(let value): value.createdAt; case .episode(let value): value.releasedAt }
+        switch self {
+        case .article(let value): value.createdAt
+        case .episode(let value), .audiobook(let value): value.releasedAt
+        }
     }
     /// What a search reads besides the title and the source.
     ///
@@ -406,12 +473,13 @@ enum WiltedMacLibraryItem: Identifiable, Hashable, Sendable {
         switch self {
         case .article: ""
         case .episode(let value): value.notes ?? value.summary
+        case .audiobook(let value): value.audiobook?.chapters.map(\.title).joined(separator: " ") ?? ""
         }
     }
     var progress: (position: TimeInterval, duration: TimeInterval?, isPlayed: Bool) {
         switch self {
         case .article(let value): (value.playbackSeconds, value.durationSeconds, value.isPlayed)
-        case .episode(let value): (value.playbackSeconds, value.durationSeconds, value.isPlayed)
+        case .episode(let value), .audiobook(let value): (value.playbackSeconds, value.durationSeconds, value.isPlayed)
         }
     }
 }

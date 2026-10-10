@@ -98,6 +98,15 @@ final class WiltedMacNavigationStateTests: XCTestCase {
         XCTAssertEqual(model.navigationState.scrollAnchors, ["larder": "larder-section-ready"])
     }
 
+    func testAKindFilterIsRestoredAndAnUnknownOneRestoresAll() {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        model(preferences).larderKind = .audiobooks
+        XCTAssertEqual(model(preferences).larderKind, .audiobooks, "the kind filter persists like sort and grouping")
+
+        preferences.set("Magazines", forKey: WiltedMacModel.larderKindPreferenceKey)
+        XCTAssertEqual(model(preferences).larderKind, .all, "an unknown saved filter restores All")
+    }
+
     /// State written while the Larder was called the Menu: `menuFilter`, a `menu` scroll key and `menu-` anchors.
     func testStateStoredUnderTheMenuNamesRestoresToTheLarder() throws {
         let legacy = #"{"menuFilter":"Ready","scrollAnchors":{"menu":"menu-section-ready","feeds":"row-1"}}"#

@@ -27,12 +27,16 @@ extension WiltedMacLarderView {
                 WiltedMacLarderEpisodeNotesTitle(episode: episode)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(-1)
-                WiltedMacEpisodeMetadata(
-                    episode: episode,
-                    lifecycleLabel: showsGroupName ? group.displayName : nil,
-                    identifier: "wilted-larder-metadata-\(episode.id)",
-                    isLarder: true
-                )
+                if let book = episode.audiobook {
+                    bookMetadata(episode, book: book, groupName: showsGroupName ? group.displayName : nil)
+                } else {
+                    WiltedMacEpisodeMetadata(
+                        episode: episode,
+                        lifecycleLabel: showsGroupName ? group.displayName : nil,
+                        identifier: "wilted-larder-metadata-\(episode.id)",
+                        isLarder: true
+                    )
+                }
                 // Partway through: how much is heard and how much is left,
                 // worded as the CarPlay rows word it.
                 if let progress = model.episodeProgress(episode) {
@@ -136,6 +140,24 @@ extension WiltedMacLarderView {
         .accessibilityLabel("\(episode.title), number \(position) in Larder")
         .accessibilityValue("\(position) of \(count)")
         .accessibilityIdentifier("wilted-larder-row-\(episode.id)")
+    }
+
+    /// A book's line: author, length and chapter count, so a book reads as a book beside episodes.
+    private func bookMetadata(_ episode: WiltedMacEpisode, book: WiltedMacAudiobookDetails, groupName: String?) -> some View {
+        var parts: [String] = []
+        if let groupName { parts.append(groupName) }
+        if let author = book.author, !author.isEmpty { parts.append(author) }
+        if let seconds = episode.durationSeconds, seconds > 0 {
+            parts.append(Duration.seconds(seconds).formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
+        }
+        if !book.chapters.isEmpty {
+            parts.append(book.chapters.count == 1 ? "1 chapter" : "\(book.chapters.count) chapters")
+        }
+        return Text(parts.joined(separator: " · "))
+            .wiltedFont(.utility)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            .lineLimit(1)
+            .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
     }
 
     /// The show's artwork at row size, or the produce tile when the feed

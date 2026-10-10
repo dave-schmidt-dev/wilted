@@ -489,42 +489,57 @@ extension WiltedMacModel {
 
     /// Sections for the selected presentation. Feed and Date collect rows by
     /// their source and release day; Status retains the existing lifecycle
-    /// groups and is the only mode that owns group actions.
+    /// groups and is the only mode that owns group actions. Articles, podcast
+    /// episodes and audiobooks share these sections as rows; an article lands
+    /// in the group its state matches (a prepared one is Ready, one still
+    /// synthesizing is lifted into Active work by the display step).
     func larderSections(
         calendar: Calendar = .autoupdatingCurrent,
         now: Date = Date()
     ) -> [WiltedMacLarderSection] {
+        let items = larderFilteredItems
         switch larderGrouping {
         case .feed:
             var feeds: [String] = []
-            var episodesByFeed: [String: [WiltedMacEpisode]] = [:]
-            for episode in larderFilteredEpisodes {
-                if episodesByFeed[episode.feedTitle] == nil { feeds.append(episode.feedTitle) }
-                episodesByFeed[episode.feedTitle, default: []].append(episode)
+            var itemsByFeed: [String: [WiltedMacLibraryItem]] = [:]
+            for item in items {
+                let feed = Self.larderFeedTitle(for: item)
+                if itemsByFeed[feed] == nil { feeds.append(feed) }
+                itemsByFeed[feed, default: []].append(item)
             }
             return feeds.map { feed in
                 WiltedMacLarderSection(
                     id: "feed-\(feed)", title: feed, detail: nil,
-                    statusGroup: nil, episodes: episodesByFeed[feed] ?? []
+                    statusGroup: nil, items: itemsByFeed[feed] ?? []
                 )
             }
         case .status:
             let groups = larderFilter.map { [$0] } ?? WiltedMacLarderGroup.allCases
-            return groups.compactMap { group in
-                let episodes = larderEpisodes(in: group)
-                guard !episodes.isEmpty else { return nil }
+            var sections = groups.compactMap { group -> WiltedMacLarderSection? in
+                let rows = larderItems(in: group)
+                guard !rows.isEmpty else { return nil }
                 return WiltedMacLarderSection(
                     id: "status-\(group.rawValue)", title: group.displayName,
-                    detail: group.detail, statusGroup: group, episodes: episodes
+                    detail: group.detail, statusGroup: group, items: rows
                 )
             }
+            // Articles still synthesizing belong to no lifecycle group; the display step lifts
+            // them into Active work, so this section only carries them there.
+            let synthesizing = larderFilter == nil ? larderKindArticles.filter { !$0.isReady } : []
+            if !synthesizing.isEmpty {
+                sections.append(WiltedMacLarderSection(
+                    id: "status-synthesizing", title: "Active work", detail: nil,
+                    statusGroup: nil, items: synthesizing.map(WiltedMacLibraryItem.article)
+                ))
+            }
+            return sections
         case .date:
             var dates: [Date] = []
-            var episodesByDate: [Date: [WiltedMacEpisode]] = [:]
-            for episode in larderFilteredEpisodes {
-                let date = calendar.startOfDay(for: episode.releasedAt)
-                if episodesByDate[date] == nil { dates.append(date) }
-                episodesByDate[date, default: []].append(episode)
+            var itemsByDate: [Date: [WiltedMacLibraryItem]] = [:]
+            for item in items {
+                let date = calendar.startOfDay(for: item.date)
+                if itemsByDate[date] == nil { dates.append(date) }
+                itemsByDate[date, default: []].append(item)
             }
             return dates.map { date in
                 let title: String
@@ -538,7 +553,7 @@ extension WiltedMacModel {
                 }
                 return WiltedMacLarderSection(
                     id: "date-\(date.timeIntervalSinceReferenceDate)", title: title,
-                    detail: nil, statusGroup: nil, episodes: episodesByDate[date] ?? []
+                    detail: nil, statusGroup: nil, items: itemsByDate[date] ?? []
                 )
             }
         }
@@ -559,10 +574,10 @@ extension WiltedMacModel {
         librarySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The waiting rows a search admits, before the group filter.
+    /// The waiting episode and book rows the search and the kind filter admit, before the group filter.
     var larderSearchResults: [WiltedMacEpisode] {
-        guard isSearchingLarder else { return larderWaitingEpisodes }
-        return larderWaitingEpisodes.filter(matchesLarderSearch)
+        let searched = isSearchingLarder ? larderWaitingEpisodes.filter(matchesLarderSearch) : larderWaitingEpisodes
+        return larderKind == .all ? searched : searched.filter { larderKind.includes($0) }
     }
 
 }

@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import XCTest
 import WiltedDomain
-import WiltedProducer
+@testable import WiltedProducer
 @testable import WiltedMac
 
 extension WiltedMacModelTests {
@@ -448,6 +448,52 @@ extension WiltedMacModelTests {
                       "the queue's current episode file is excluded from the sweep")
         XCTAssertTrue(FileManager.default.fileExists(atPath: currentURL.path),
                       "the current playback file survives the launch sweep")
+    }
+
+    /// An imported book has no preparation outcome, so the store's own playability fallback would refuse it.
+    /// It must be listed after a reload and start from the queue like any other row.
+    func testAnImportedBookIsListedAfterAReloadAndStartsPlayingFromTheQueue() async throws {
+        let directory = temporaryDirectory("imported-book-reload")
+        let mediaURL = directory.appendingPathComponent("book.m4a")
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let bookID = try ItemID.audiobook(contentDigest: String(repeating: "c", count: 64), layout: "x", volume: 0)
+        let assembled = try AudioAssembler().assemble(
+            pcm: (0..<(44_100 * 10)).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+            itemID: bookID, destinationURL: mediaURL)
+        let revision = try AudioRevision(
+            itemID: bookID,
+            revisionID: try RevisionID.derive(podcastDownloadedAudioItemID: bookID, contentHash: assembled.revision.contentHash),
+            durationSeconds: assembled.revision.durationSeconds, byteCount: assembled.revision.byteCount,
+            contentHash: assembled.revision.contentHash, mediaType: assembled.revision.mediaType,
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_900)), schemaVersion: 1)
+        try await store.saveAudiobookVolumes([AudiobookVolumeSave(
+            itemID: bookID, revision: revision, mediaURL: mediaURL, title: "Dune", author: "Herbert",
+            chapters: [AudiobookChapterMark(title: "One", startSeconds: 0),
+                       AudiobookChapterMark(title: "Two", startSeconds: 5)],
+            sourceFormat: "audio", volumeIndex: 0, volumeCount: 1,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_900))])
+        try await store.replacePodcastQueue(PodcastQueueState(episodeIDs: [bookID]))
+
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { _ in store }, preferences: WiltedMacTestPreferences.ephemeral())
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        await model.reloadLibraryRowsForTesting()
+        await model.refreshPodcastQueueState()
+
+        let book = try XCTUnwrap(model.episodes.first { $0.id == bookID.rawValue }, "the book is listed after a reload")
+        XCTAssertEqual(book.title, "Dune")
+        XCTAssertEqual(book.audiobook?.author, "Herbert")
+        XCTAssertEqual(book.audiobook?.chapters.count, 2)
+        XCTAssertTrue(model.canPlayEpisode(book), "books pass the playback eligibility check")
+        XCTAssertEqual(model.larderEpisodes(in: .playable).map(\.id), [bookID.rawValue])
+
+        model.playLarderEpisode(book)
+        await WiltedMacHeadless.eventually("the book is playing") {
+            model.currentPodcastEpisodeID == bookID.rawValue && model.isPlaying
+        }
+        XCTAssertEqual(model.podcastQueueIDs, [bookID.rawValue])
     }
 
     private static func sha256Hex(_ data: Data) -> String {

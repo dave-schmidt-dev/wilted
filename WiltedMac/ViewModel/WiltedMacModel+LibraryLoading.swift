@@ -404,12 +404,48 @@ extension WiltedMacModel {
                 episodeLink: episode.episodeLink
             ))
         }
+        episodeValues.append(contentsOf: Self.audiobookRows(from: snapshot, mediaAvailability: mediaAvailabilityChecker))
         // Article feeds are stored beside podcast feeds but are not podcast feeds, so every reload merges
         // them here, from the same snapshot (no second store hop).
         let allSubscriptionValues = Self.subscriptionRows(
             subscriptionValues, articleFeeds: snapshot.articleFeeds, stored: allSubscriptions
         )
         return (articleValues, LibraryEpisodeRows(values: episodeValues, readEpoch: readEpoch), allSubscriptionValues)
+    }
+
+    /// Imported audiobook volumes as episode-shaped rows, so the durable queue, the player and the
+    /// Larder carry them with no second path. A book has no feed, nothing to download and nothing to
+    /// prepare: its single joined file is the ready revision, so it reads as downloaded and prepared
+    /// and is playable exactly while that file is on disk. A removed volume has no row.
+    nonisolated static func audiobookRows(
+        from snapshot: LocalLibraryStore.PodcastLibrarySnapshot,
+        mediaAvailability: any WiltedMacMediaAvailabilityChecking
+    ) -> [WiltedMacEpisode] {
+        snapshot.audiobooks.compactMap { book -> WiltedMacEpisode? in
+            guard !book.isRemoved, snapshot.removalKindByEpisode[book.itemID] != .dismissed else { return nil }
+            let revision = snapshot.readyRevisions[book.itemID]
+            let playbackState = revision.flatMap {
+                snapshot.playbackStates["\(book.itemID.rawValue)|\($0.revision.revisionID.rawValue)"]
+            }
+            let released = revision?.revision.createdAt.date ?? .distantPast
+            return WiltedMacEpisode(
+                id: book.itemID.rawValue, title: book.title, feedTitle: "Audiobook",
+                summary: book.author ?? "Audiobook", artworkURL: nil,
+                releasedAt: released, publishedAt: released,
+                sourceDurationSeconds: book.durationSeconds, playableDurationSeconds: book.durationSeconds,
+                durationSeconds: book.durationSeconds, playbackSeconds: playbackState?.positionSeconds ?? 0,
+                isPlayed: snapshot.listeningStates[book.itemID]?.completedAt != nil,
+                retiredAt: snapshot.retiredAtByEpisode[book.itemID]?.date,
+                removalKind: snapshot.removalKindByEpisode[book.itemID],
+                downloadState: .completed, preparationState: .prepared(summary: "Audiobook"),
+                isReadyMediaAvailable: revision.map { mediaAvailability.fileExists(atPath: $0.mediaURL.path) } ?? false,
+                audiobook: WiltedMacAudiobookDetails(
+                    author: book.author,
+                    chapters: book.chapters.map { WiltedMacChapter(title: $0.title, startSeconds: $0.startSeconds) },
+                    sourceFormat: book.sourceFormat, volumeIndex: book.volumeIndex, volumeCount: book.volumeCount
+                )
+            )
+        }
     }
 
     func loadDismissedEpisodes(from store: LocalLibraryStore) async throws -> [WiltedMacDismissedEpisode] {

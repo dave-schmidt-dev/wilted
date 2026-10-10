@@ -31,6 +31,37 @@ struct WiltedMacPlayerContent: View {
         self.onSelect = onSelect
     }
 
+    /// The chapter line and its previous and next steps.
+    private func chapterControls(title: String) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            Spacer(minLength: 0)
+            transport("chevron.left", label: "Previous chapter", id: "wilted-player-previous-chapter") {
+                model.selectPreviousChapter()
+            }
+            .disabled(!model.canSelectPreviousChapter)
+            VStack(spacing: 2) {
+                Text(title)
+                    .lineLimit(1)
+                    .wiltedFont(.body)
+                    .accessibilityIdentifier("wilted-player-chapter-title")
+                if let position = model.currentChapterPositionLabel {
+                    Text(position)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-player-chapter-position")
+                }
+            }
+            .frame(minWidth: 220)
+            transport("chevron.right", label: "Next chapter", id: "wilted-player-next-chapter") {
+                model.selectNextChapter()
+            }
+            .disabled(!model.canSelectNextChapter)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-player-chapters")
+    }
+
     var body: some View {
         VStack(spacing: WiltedTheme.Spacing.small) {
             if layout == .fullWindow {
@@ -140,6 +171,12 @@ struct WiltedMacPlayerContent: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-player-keyboard-transports")
+
+            // A book plays as one file with chapter marks: the chapter under the playhead, and steps
+            // that seek within the file. Absent for episodes and for books without marks.
+            if let chapterTitle = model.currentChapterTitle {
+                chapterControls(title: chapterTitle)
+            }
 
             // One row where the window has the room; below that the scrubber keeps its own line and
             // the section buttons and volume wrap beneath it, so nothing runs past the window at
