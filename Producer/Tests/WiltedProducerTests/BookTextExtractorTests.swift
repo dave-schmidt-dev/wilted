@@ -289,6 +289,63 @@ struct BookTextExtractorTests {
         #expect(fixture.scratchEntries.isEmpty)
     }
 
+    @Test func anEntityDeclaringXMLFileIsRefusedBeforeParsing() throws {
+        let fixture = try fixture()
+        defer { cleanup(fixture) }
+        var entries = BookTestArchive.epubEntries(chapters: Self.chapters)
+        entries[1] = BookTestArchive.text("META-INF/container.xml", """
+        <?xml version="1.0"?><!DOCTYPE container [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;&a;&a;">]>\
+        <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\
+        <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="&b;"/></rootfiles></container>
+        """)
+        let url = try fixture.archive(entries)
+        do {
+            _ = try fixture.extractor.extract(from: url)
+            Issue.record("the entity-declaring book was accepted")
+        } catch let BookExtractionError.refused(reason) {
+            #expect(reason.contains("entities"))
+        }
+        #expect(fixture.scratchEntries.isEmpty)
+    }
+
+    @Test func aDoctypeWithOnlyAnInternalSubsetBracketIsRefusedButABareDoctypeIsNot() throws {
+        #expect(UntrustedXML.declaresEntitiesOrSubset(Data("<!DOCTYPE x [ ]><x/>".utf8)))
+        #expect(!UntrustedXML.declaresEntitiesOrSubset(Data("<!DOCTYPE html PUBLIC \"-//W3C//DTD\" \"x.dtd\"><html/>".utf8)))
+        #expect(!UntrustedXML.declaresEntitiesOrSubset(Data("<rss/>".utf8)))
+    }
+
+    @Test func anOversizedXMLFileIsRefusedWithAReason() throws {
+        var limits = BookExtractionLimits()
+        limits.maxXMLBytes = 100
+        let fixture = try fixture(limits: limits)
+        defer { cleanup(fixture) }
+        let url = try fixture.archive(BookTestArchive.epubEntries(chapters: Self.chapters))
+        do {
+            _ = try fixture.extractor.extract(from: url)
+            Issue.record("the book with oversized XML was accepted")
+        } catch let BookExtractionError.refused(reason) {
+            #expect(reason.contains("larger than"))
+        }
+        #expect(fixture.scratchEntries.isEmpty)
+    }
+
+    @Test func anOversizedArchiveIsRefusedFromTheTotalsLineAlone() throws {
+        var limits = BookExtractionLimits()
+        limits.maxEntries = 3
+        let fixture = try fixture(limits: limits)
+        defer { cleanup(fixture) }
+        let url = try fixture.archive(BookTestArchive.epubEntries(chapters: Self.chapters))
+        do {
+            _ = try fixture.extractor.extract(from: url)
+            Issue.record("the oversized archive was accepted")
+        } catch let BookExtractionError.refused(reason) {
+            #expect(reason.contains("more than 3 entries"))
+        }
+        #expect(BookTextExtractor.totalEntryCount("12 files, 340 bytes uncompressed, 200 bytes compressed:  41.2%\n") == 12)
+        #expect(BookTextExtractor.totalEntryCount("1 file, 2 bytes uncompressed, 2 bytes compressed:  0.0%") == 1)
+        #expect(BookTextExtractor.totalEntryCount("nonsense") == nil)
+    }
+
     @Test func theScratchFolderIsGoneAfterAParseFailure() throws {
         let fixture = try fixture()
         defer { cleanup(fixture) }

@@ -53,9 +53,8 @@ extension WiltedMacModel {
     }
 
     /// A subscription fetch whose feed lists neither audio nor linked posts: there is nothing to follow.
-    /// TODO: the wording predates article feeds; changing it needs the add-sheet-error pixel baseline re-recorded.
     struct PodcastFeedHasNoAudio: Error {
-        static let message = "Wilted can't follow article feeds yet; add single articles instead."
+        static let message = "This feed has no audio and no posts to follow."
     }
 
     func refreshPodcastURLs(

@@ -47,6 +47,8 @@ public struct BookExtractionLimits: Sendable, Equatable {
     public var maxEntries = 5_000
     public var maxExpandedBytes: Int64 = 500_000_000
     public var maxTextBytes = 20_000_000
+    /// Largest container, package, navigation or encryption XML file.
+    public var maxXMLBytes = 8_000_000
     public var unpackTimeout: TimeInterval = 60
 
     public init() {}
@@ -182,7 +184,7 @@ public struct BookTextExtractor: Sendable {
             "/usr/bin/ditto", ["-x", "-k", url.path, root.path], work: work, timeout: limits.unpackTimeout,
             isCancelled: isCancelled)
         guard result.status == 0 else { throw BookExtractionError.unreadable("The archive cannot be unpacked: \(result.message)") }
-        let tree = try EPUBTree(root: root)
+        let tree = try EPUBTree(root: root, maxXMLBytes: limits.maxXMLBytes)
         try tree.verifyUnpacked(limits: limits)
         progress(0.25, "Reading the book")
 
@@ -255,6 +257,14 @@ public struct BookTextExtractor: Sendable {
 
     /// Checks the archive listing against every limit. Nothing is unpacked yet.
     private func preflight(_ archive: URL, work: URL, isCancelled: @Sendable () -> Bool) throws {
+        // `-t` prints one totals line, so an oversized archive is refused without its listing.
+        let totals = try Self.run(
+            "/usr/bin/zipinfo", ["-t", archive.path], work: work, timeout: limits.unpackTimeout,
+            isCancelled: isCancelled, keepStdout: true)
+        guard totals.status == 0 else { throw BookExtractionError.unreadable("The archive listing failed: \(totals.message)") }
+        if let count = Self.totalEntryCount(totals.stdout), count > limits.maxEntries {
+            throw BookExtractionError.refused("The archive has more than \(limits.maxEntries) entries.")
+        }
         let result = try Self.run(
             "/usr/bin/zipinfo", ["-l", archive.path], work: work, timeout: limits.unpackTimeout,
             isCancelled: isCancelled, keepStdout: true)
@@ -281,6 +291,15 @@ public struct BookTextExtractor: Sendable {
             }
         }
         guard entries > 0 else { throw BookExtractionError.unreadable("The archive is empty.") }
+    }
+
+    /// Reads the file count from the `zipinfo -t` line ("N files, ...").
+    static func totalEntryCount(_ output: String) -> Int? {
+        for line in output.split(separator: "\n") {
+            let words = line.split(separator: " ")
+            if words.count >= 2, words[1].hasPrefix("file"), let count = Int(words[0]) { return count }
+        }
+        return nil
     }
 
     // MARK: Subprocess

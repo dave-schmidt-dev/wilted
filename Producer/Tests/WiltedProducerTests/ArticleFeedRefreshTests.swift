@@ -140,6 +140,29 @@ struct ArticleFeedRefreshTests {
         #expect(try await fixture.store.articleIDs(forFeed: fixture.feed.itemID).count == 1)
     }
 
+    @Test func aFeedThatRepeatsAPostOffersItOnce() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try await fixture.store.save(articleFeed: fixture.feed)
+        let first = try ArticleFeedParser.parse(Data(Self.xml.utf8), feedURL: Self.feedURL).items[0]
+        let doc = ArticleFeedDocument(title: "The Blog", author: nil, items: [first, first])
+        let result = try await ArticleFeedRefresh(store: fixture.store).refresh(feed: fixture.feed, document: doc, prepare: nil)
+        #expect(result.offered.count == 1)
+        #expect(result.alreadyConsumedCount == 1)
+    }
+
+    @Test func parserRefusesEntityDeclarationsAnywhereInThePayload() throws {
+        let padding = String(repeating: " ", count: 20_000)
+        let late = "<?xml version=\"1.0\"?>\(padding)<!DOCTYPE rss [<!ENTITY a \"aaaa\">]><rss version=\"2.0\"><channel><title>&a;</title></channel></rss>"
+        #expect(throws: ArticleFeedParseError.externalEntity) {
+            try ArticleFeedParser.parse(Data(late.utf8), feedURL: Self.feedURL)
+        }
+        let subsetOnly = "\(padding)<!DOCTYPE rss [ ]><rss version=\"2.0\"><channel><title>T</title></channel></rss>"
+        #expect(throws: ArticleFeedParseError.externalEntity) {
+            try ArticleFeedParser.parse(Data(subsetOnly.utf8), feedURL: Self.feedURL)
+        }
+    }
+
     @Test func pageThatIsAlreadyAnArticleIsNeverOffered() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

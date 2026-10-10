@@ -6,9 +6,12 @@ import Foundation
 struct EPUBTree {
     let root: URL
     private let resolvedRoot: String
+    /// Largest XML file `xml(_:)` will read.
+    private let maxXMLBytes: Int
 
-    init(root: URL) throws {
+    init(root: URL, maxXMLBytes: Int = BookExtractionLimits().maxXMLBytes) throws {
         self.root = root
+        self.maxXMLBytes = maxXMLBytes
         self.resolvedRoot = root.resolvingSymlinksInPath().path
     }
 
@@ -83,7 +86,12 @@ struct EPUBTree {
     }
 
     func xml(_ relative: String) throws -> XMLNode {
-        try XMLNode.parse(Data(contentsOf: url(relative)), name: relative)
+        let target = try url(relative)
+        let size = (try FileManager.default.attributesOfItem(atPath: target.path)[.size] as? NSNumber)?.intValue ?? 0
+        guard size <= maxXMLBytes else {
+            throw BookExtractionError.refused("\(relative) is larger than \(maxXMLBytes / 1_000_000) MB.")
+        }
+        return try XMLNode.parse(Data(contentsOf: target), name: relative)
     }
 
     /// Refuses the book only when `encryption.xml` lists a spine document. Font obfuscation
@@ -122,12 +130,18 @@ final class XMLNode {
 
     /// External entities and DTD loading are off; the node count is bounded.
     static func parse(_ data: Data, name: String) throws -> XMLNode {
+        guard !UntrustedXML.declaresEntitiesOrSubset(data) else {
+            throw BookExtractionError.refused("\(name) declares XML entities, which Wilted does not read.")
+        }
         let builder = Builder()
         let parser = XMLParser(data: data)
         parser.shouldResolveExternalEntities = false
         parser.shouldProcessNamespaces = false
         parser.delegate = builder
         guard parser.parse(), let root = builder.root else {
+            if builder.sawEntityDeclaration {
+                throw BookExtractionError.refused("\(name) declares XML entities, which Wilted does not read.")
+            }
             throw BookExtractionError.unreadable("\(name) is not valid XML.")
         }
         return root
@@ -135,6 +149,7 @@ final class XMLNode {
 
     private final class Builder: NSObject, XMLParserDelegate {
         var root: XMLNode?
+        var sawEntityDeclaration = false
         private var stack: [XMLNode] = []
         private var count = 0
 
@@ -150,6 +165,16 @@ final class XMLNode {
                 attributes.map { (Self.local($0.key), $0.value) }, uniquingKeysWith: { first, _ in first }))
             if let parent = stack.last { parent.children.append(node) } else { root = node }
             stack.append(node)
+        }
+
+        func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName name: String, value: String?) {
+            sawEntityDeclaration = true
+            parser.abortParsing()
+        }
+
+        func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName name: String, publicID: String?, systemID: String?) {
+            sawEntityDeclaration = true
+            parser.abortParsing()
         }
 
         func parser(_ parser: XMLParser, didEndElement element: String, namespaceURI: String?, qualifiedName: String?) {

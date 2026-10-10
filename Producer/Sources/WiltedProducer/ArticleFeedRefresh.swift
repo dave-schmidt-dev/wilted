@@ -61,8 +61,7 @@ public enum ArticleFeedParser {
     public static let maximumItemCount = 200
 
     public static func parse(_ data: Data, feedURL: URL) throws -> ArticleFeedDocument {
-        guard let text = String(data: data.prefix(8_192), encoding: .utf8) ?? String(data: data.prefix(8_192), encoding: .isoLatin1),
-              !text.contains("<!ENTITY") else { throw ArticleFeedParseError.externalEntity }
+        guard !UntrustedXML.declaresEntitiesOrSubset(data) else { throw ArticleFeedParseError.externalEntity }
         let reader = Reader(feedURL: feedURL)
         let parser = XMLParser(data: data)
         parser.delegate = reader
@@ -110,6 +109,16 @@ public enum ArticleFeedParser {
             capturing = ["title", "link", "guid", "id", "pubdate", "published", "updated", "date", "author", "creator", "name"]
                 .contains(element)
             text = ""
+        }
+
+        func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName name: String, value: String?) {
+            failure = .externalEntity
+            parser.abortParsing()
+        }
+
+        func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName name: String, publicID: String?, systemID: String?) {
+            failure = .externalEntity
+            parser.abortParsing()
         }
 
         func parser(_ parser: XMLParser, foundCharacters string: String) { if capturing { text += string } }
@@ -285,8 +294,11 @@ public struct ArticleFeedRefresh: Sendable {
         let rules = try await store.episodeMatchRules(for: feed.itemID)
         var result = ArticleFeedRefreshResult()
         var pending: [(item: ArticleFeedItem, id: ItemID, source: EpisodeDecisionSource, rule: UUID?)] = []
+        var seen = Set<ItemID>()
         for item in document.items {
             let id = try item.id(feedURL: feed.canonicalURL)
+            // A feed that repeats a post is offered it once.
+            if !seen.insert(id).inserted { result.alreadyConsumedCount += 1; continue }
             if try await isConsumed(item, id: id) { result.alreadyConsumedCount += 1; continue }
             let match = try rules.evaluate(EpisodeMatchEpisode(id: id.rawValue, title: item.title, notes: ""))
             switch match {
