@@ -40,7 +40,7 @@ final class WiltedMacBulletinHub {
     }
 
     /// The one location provider on this Mac, created on first use. Settings reads it; it is
-    /// started in `reconcile` once interruptions are on.
+    /// started in `reconcile` once interruptions or the daily report are on.
     var location: WiltedLocationProvider {
         if let ownedLocation { return ownedLocation }
         let provider = WiltedLocationProvider(manager: WiltedCoreLocationManager(), wifi: WiltedCoreWLANPower())
@@ -55,7 +55,8 @@ final class WiltedMacBulletinHub {
         guard let model else { return }
         let settings = model.automationSettings
         let canRun = model.store != nil && !model.fixtureMode && !model.isClosingTemporaryState
-        if canRun, settings.interruptionsEnabled {
+        // The morning report needs a location too, even with interruptions off.
+        if canRun, settings.interruptionsEnabled || settings.reportEnabled {
             let provider = location
             provider.typedCoordinates = settings.typedCoordinates
             provider.start()
@@ -184,7 +185,7 @@ extension WiltedMacModel {
     /// creates nothing, for a Mac that has never used interruptions.
     func bulletinLifecycleChanged() {
         let existing = objc_getAssociatedObject(self, &bulletinHubKey) as? WiltedMacBulletinHub
-        guard existing != nil || automationSettings.interruptionsEnabled
+        guard existing != nil || automationSettings.interruptionsEnabled || automationSettings.reportEnabled
             || preferences.bool(forKey: WiltedMacBulletinHub.activePreferenceKey) else { return }
         (existing ?? bulletinHub).reconcile()
     }

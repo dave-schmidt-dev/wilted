@@ -433,16 +433,17 @@ extension WiltedMacModel {
                 snapshot.playbackStates["\(book.itemID.rawValue)|\($0.revision.revisionID.rawValue)"]
             }
             let released = revision?.revision.createdAt.date ?? .distantPast
+            let label = book.sourceFormat == LocalLibraryStore.reportSourceFormat ? "Morning report" : "Audiobook"
             return WiltedMacEpisode(
-                id: book.itemID.rawValue, title: book.title, feedTitle: "Audiobook",
-                summary: book.author ?? "Audiobook", artworkURL: nil,
+                id: book.itemID.rawValue, title: book.title, feedTitle: label,
+                summary: book.author ?? label, artworkURL: nil,
                 releasedAt: released, publishedAt: released,
                 sourceDurationSeconds: book.durationSeconds, playableDurationSeconds: book.durationSeconds,
                 durationSeconds: book.durationSeconds, playbackSeconds: playbackState?.positionSeconds ?? 0,
                 isPlayed: snapshot.listeningStates[book.itemID]?.completedAt != nil,
                 retiredAt: snapshot.retiredAtByEpisode[book.itemID]?.date,
                 removalKind: snapshot.removalKindByEpisode[book.itemID],
-                downloadState: .completed, preparationState: .prepared(summary: "Audiobook"),
+                downloadState: .completed, preparationState: .prepared(summary: label),
                 isReadyMediaAvailable: revision.map { mediaAvailability.fileExists(atPath: $0.mediaURL.path) } ?? false,
                 audiobook: WiltedMacAudiobookDetails(
                     author: book.author,

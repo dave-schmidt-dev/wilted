@@ -305,6 +305,10 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
 
     var isAudiobook: Bool { audiobook != nil }
 
+    /// A morning report: carried as a one-volume audiobook row, so the queue, player and
+    /// eligibility treat it like one; only labels and the published kind differ.
+    var isReport: Bool { audiobook?.sourceFormat == "report" }
+
     /// Compatibility constructor for existing fixtures and previews. Their
     /// long-standing `releasedAt` and `durationSeconds` arguments were the
     /// only facts they carried, so preserve them as known fixture metadata.

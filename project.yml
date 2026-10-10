@@ -55,6 +55,8 @@ targets:
         product: WiltedCloudKitLibrary
       - package: WiltedKit
         product: WiltedCatalog
+      - package: WiltedKit
+        product: WiltedWeather
       - package: WiltedProducer
         product: WiltedProducer
     settings:

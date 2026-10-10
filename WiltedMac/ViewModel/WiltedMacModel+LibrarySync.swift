@@ -102,7 +102,7 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
         }
     }
 
-    /// Audiobook volumes. `LibraryEntry.publishedAt` is the ready revision's creation time, which
+    /// Audiobook volumes and morning reports (stored as one-volume audiobook rows, published as `report`). `LibraryEntry.publishedAt` is the ready revision's creation time, which
     /// is fixed once the volume is saved, so an unchanged volume never re-sends.
     private static func audiobookEntries(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) throws -> [LibraryEntry] {
         try snapshot.audiobooks.map { book in
@@ -113,7 +113,8 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
                 volumeIndex: book.volumeIndex, volumeCount: book.volumeCount
             )
             return try LibraryEntry(
-                id: book.itemID, kind: .audiobook, sourceID: book.itemID, title: book.title,
+                id: book.itemID,
+                kind: book.sourceFormat == LocalLibraryStore.reportSourceFormat ? .report : .audiobook, sourceID: book.itemID, title: book.title,
                 summary: String((book.author ?? "").prefix(summaryLimit)),
                 publishedAt: snapshot.readyRevisions[book.itemID]?.revision.createdAt.date ?? Date(timeIntervalSince1970: 0),
                 durationSeconds: book.durationSeconds, removal: book.isRemoved ? .retired : .none,
