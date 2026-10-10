@@ -80,6 +80,33 @@ struct AlertMonitorTests {
         #expect(source.callCount == 1)
     }
 
+    @Test func stopWhileARequestIsInFlightDeliversNothing() async throws {
+        final class Gated: NWSAlertSource, @unchecked Sendable {
+            private let lock = NSLock()
+            private var started = 0
+            private var gate: CheckedContinuation<Void, Never>?
+            var requests: Int { lock.withLock { started } }
+            func activeAlerts(lat: Double, lon: Double) async throws -> NWSAlertsResponse {
+                await withCheckedContinuation { continuation in lock.withLock { started += 1; gate = continuation } }
+                return response([warning("a1")])
+            }
+            func release() { lock.withLock { let held = gate; gate = nil; return held }?.resume() }
+        }
+        let sink = Collector()
+        let source = Gated()
+        let monitor = AlertMonitor(source: source, deliver: { sink.add($0) }, sleep: { _ in try await Task.sleep(for: .seconds(3600)) },
+                                   now: { nowDate })
+        await monitor.setCoordinates(lat: 39.74, lon: -97.09)
+        await monitor.start()
+        try await waitUntil { source.requests == 1 }
+        await monitor.stop()
+        source.release()
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(sink.bulletins.isEmpty)
+        #expect(await monitor.activeAlertIDs.isEmpty)
+        #expect(await monitor.status.lastPollAt == nil)
+    }
+
     @Test func pollEmitsAlertBulletinsOnceAndDedupes() async throws {
         let sink = Collector()
         let source = StubSource([response([warning("a1")])])

@@ -31,6 +31,13 @@ extension LocalLibraryStore {
         return try ItemID.audiobook(contentDigest: digest, layout: "report-1", volume: 0)
     }
 
+    /// Whether a report with this ID is already saved. Callers check before writing media.
+    public func hasMorningReport(_ itemID: ItemID) throws -> Bool {
+        let context = ModelContext(container)
+        let books = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.AudiobookRecord>())
+        return books.contains { $0.id == itemID.rawValue }
+    }
+
     /// Commits a report in one save: its ready revision and record, a place at the front of the
     /// queue, and the retirement of every earlier report that was not played to the end (its
     /// record is marked removed and it leaves the queue). A report that is already saved is left

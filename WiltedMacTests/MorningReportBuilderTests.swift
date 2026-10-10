@@ -129,6 +129,33 @@ final class MorningReportBuilderTests: XCTestCase {
         XCTAssertEqual(model.podcastQueueIDs, [itemID.rawValue])
     }
 
+    func testAHugeWhitespaceFreeForecastIsCappedBeforeSynthesis() async throws {
+        let (store, _) = try makeStore()
+        let calls = Calls()
+        let huge = String(repeating: "x", count: 1_000_000)
+        let builder = MorningReportBuilder(
+            store: store, synthesize: stub(calls) { _ in 2 },
+            coordinates: { (35.0, -80.0) }, forecast: { _, _ in [MorningReportForecastPeriod(name: "Today", text: huge)] },
+            headlines: { _ in MorningReportHeadlines(hasNewsFeeds: true, titles: [huge]) }, calendar: Calendar(identifier: .gregorian))
+        _ = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
+        XCTAssertFalse(calls.all.isEmpty)
+        for text in calls.all { XCTAssertLessThanOrEqual(text.count, MorningReportBuilder.maximumScriptCharacters) }
+        XCTAssertGreaterThanOrEqual(MorningReportBuilder.estimatedSeconds(huge), 300, "a no-space token estimates long")
+    }
+
+    func testBuildingTwiceForTheSameReportLeavesNoOrphanMedia() async throws {
+        let (store, _) = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = await builder(store, Calls(), news: headlines(2)).build(now: now)
+        guard case .published = first else { return XCTFail("expected a report, got \(first)") }
+        let second = await builder(store, Calls(), news: headlines(2)).build(now: now)
+        guard case .skipped = second else { return XCTFail("expected the repeat to be skipped, got \(second)") }
+        let files = try FileManager.default.contentsOfDirectory(atPath: store.mediaDirectory.path).filter { $0.hasSuffix(".m4a") }
+        let snapshot = try await store.podcastLibrarySnapshot()
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(snapshot.readyRevisions.count, 1, "records equal audio")
+    }
+
     func testNoLocationYieldsAHeadlinesOnlyReportThatNamesTheMissingWeather() async throws {
         let (store, _) = try makeStore()
         let calls = Calls()

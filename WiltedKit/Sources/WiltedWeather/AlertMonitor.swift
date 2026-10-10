@@ -83,10 +83,12 @@ public actor AlertMonitor {
     @discardableResult
     public func pollOnce() async -> TimeInterval {
         guard let location = coordinates else { return NWSClient.minimumPollInterval }
+        let token = generation
         do {
             let response = try await source.activeAlerts(lat: location.lat, lon: location.lon)
-            // The monitor may have been stopped or moved while the request was in flight.
-            guard coordinates?.lat == location.lat, coordinates?.lon == location.lon else {
+            // Stopping, restarting or moving the monitor bumps the generation; a poll that began
+            // under an earlier one must not update state or deliver.
+            guard token == generation, coordinates?.lat == location.lat, coordinates?.lon == location.lon else {
                 return NWSClient.minimumPollInterval
             }
             let at = now()
@@ -99,6 +101,7 @@ public actor AlertMonitor {
             }
             return response.pollInterval
         } catch {
+            guard token == generation else { return NWSClient.minimumPollInterval }
             status.lastPollAt = now()
             status.lastError = (error as? NWSError).map { String(describing: $0) } ?? String(describing: type(of: error))
             status.consecutiveFailures += 1

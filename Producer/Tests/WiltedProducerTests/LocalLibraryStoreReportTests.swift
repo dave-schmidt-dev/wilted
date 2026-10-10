@@ -75,4 +75,13 @@ struct LocalLibraryStoreReportTests {
         let ready = try await fixture.store.podcastLibrarySnapshot().readyRevisions[save.itemID]
         #expect(ready?.mediaURL == save.mediaURL)
     }
+
+    @Test func hasMorningReportIsFalseUntilTheReportIsSaved() async throws {
+        let fixture = try fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let save = try makeSave(fixture, script: "four", day: "October 10", createdAt: Date())
+        #expect(try await fixture.store.hasMorningReport(save.itemID) == false)
+        _ = try await fixture.store.saveMorningReport(save)
+        #expect(try await fixture.store.hasMorningReport(save.itemID))
+    }
 }

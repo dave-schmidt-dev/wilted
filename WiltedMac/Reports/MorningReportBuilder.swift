@@ -48,6 +48,15 @@ struct MorningReportBuilder: Sendable {
     static let headlineWindow: TimeInterval = 3600
     /// Spoken pace used only to estimate length before synthesizing (about 156 words a minute).
     static let wordsPerSecond = 2.6
+    /// Conservative speech rate in characters, so text with few or no spaces still estimates long.
+    static let charactersPerSecond = 20.0
+    /// Bounds on untrusted text before it reaches the script: a headline title, a forecast period's
+    /// name and text, the number of forecast periods, and the assembled script.
+    static let maximumTitleCharacters = 1000
+    static let maximumPeriodNameCharacters = 100
+    static let maximumPeriodTextCharacters = 1500
+    static let maximumPeriods = 14
+    static let maximumScriptCharacters = 6000
 
     let store: LocalLibraryStore
     let synthesize: BookConversion.Synthesizer
@@ -79,6 +88,13 @@ struct MorningReportBuilder: Sendable {
         date: Date, calendar: Calendar, forecast: [MorningReportForecastPeriod]?, headlines: [String],
         hasNewsFeeds: Bool, weatherMissing: String = "the forecast is not available"
     ) -> String {
+        let forecast = forecast.map { periods in
+            periods.prefix(maximumPeriods).map {
+                MorningReportForecastPeriod(
+                    name: String($0.name.prefix(maximumPeriodNameCharacters)), text: String($0.text.prefix(maximumPeriodTextCharacters)))
+            }
+        }
+        let headlines = headlines.map { String($0.prefix(maximumTitleCharacters)) }
         var parts = ["Good morning. Here is your report for \(dayText(date, calendar: calendar))."]
         if let forecast, !forecast.isEmpty {
             parts.append("The weather. " + forecast.map { "\($0.name): \($0.text)" }.joined(separator: " "))
@@ -92,12 +108,12 @@ struct MorningReportBuilder: Sendable {
         } else {
             parts.append("The headlines. " + headlines.map { $0.hasSuffix(".") ? $0 : $0 + "." }.joined(separator: " "))
         }
-        return parts.joined(separator: " ")
+        return String(parts.joined(separator: " ").prefix(maximumScriptCharacters))
     }
 
     /// Estimated speaking time of `text` in seconds.
     static func estimatedSeconds(_ text: String) -> Double {
-        Double(text.split(whereSeparator: \.isWhitespace).count) / wordsPerSecond
+        max(Double(text.split(whereSeparator: \.isWhitespace).count) / wordsPerSecond, Double(text.count) / charactersPerSecond)
     }
 
     static func title(for date: Date, calendar: Calendar) -> String { "Morning report, \(dayText(date, calendar: calendar, weekday: false))" }
@@ -189,6 +205,10 @@ struct MorningReportBuilder: Sendable {
         report(0.8, "Saving the audio")
         let day = Self.dayText(now, calendar: calendar)
         let itemID = try LocalLibraryStore.reportItemID(script: text, day: day)
+        // A report already saved for this ID stays; writing media for it would leave an unreferenced file.
+        if try await store.hasMorningReport(itemID) {
+            return .skipped(reason: "Today's report was already built; it stays.")
+        }
         let media = store.mediaDirectory
         try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
         let destination = media.appendingPathComponent("report-\(itemID.rawValue)-\(UUID().uuidString).m4a")
