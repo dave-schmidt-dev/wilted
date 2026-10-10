@@ -653,7 +653,7 @@ assert_contains 'self_test_watchos_failure_evidence' "$gate"
 assert_contains 'self_test_watchos_zero_test_evidence' "$gate"
 
 # The shipping phone lane keeps the original eight captures, adds the eight Add sheet captures, and verifies pixels, not hidden labels.
-assert_validation_contains 'iOS pixel snapshot method membership must remain exactly sixteen'
+assert_validation_contains 'iOS pixel snapshot method membership must remain exactly twenty-two'
 assert_validation_contains 'iOS pixel test does not verify painted date and Storage geometry'
 assert_contains 'VNRecognizeTextRequest()' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'value.frame.minY, label.frame.maxY' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"

@@ -42,6 +42,8 @@ final class LibraryPlayer: ObservableObject {
         let fileURL: URL
         /// Where the artwork came from; the player reads only its local copy.
         var artworkURL: URL? = nil
+        /// An audiobook volume's chapters in start order; empty for everything else.
+        var chapters: [AudiobookChapter] = []
     }
 
     enum Status: Equatable {

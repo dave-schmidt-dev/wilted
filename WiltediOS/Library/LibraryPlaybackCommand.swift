@@ -185,7 +185,8 @@ extension LibraryAppModel {
         guard let cached else { return failStart(row, .missingMedia, kind: kind) }
         let isManual = kind != .automatic
         let item = LibraryPlayer.Item(
-            entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url, artworkURL: row.artworkURL)
+            entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url, artworkURL: row.artworkURL,
+            chapters: row.chapters)
         guard player.item != item else {
             // Loaded already: playing stays playing (a start made during the lookup is not undone).
             if player.isPlaying { return .alreadyPlaying }

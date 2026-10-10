@@ -74,8 +74,43 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         assertSnapshot(launchLibraryRoot(.addUpdateMac, dark: true), named: "library-add-update-mac-dark")
     }
 
+    // B6.3 Task 4.2: the kind filter (Articles chosen), a book row under the Audiobooks filter, and Now Playing chapters.
+
+    func testLibraryFilterArticlesLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.filterArticles, dark: false), named: "library-filter-articles-light")
+    }
+
+    func testLibraryFilterArticlesDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.filterArticles, dark: true), named: "library-filter-articles-dark")
+    }
+
+    func testLibraryBookRowLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.bookRow, dark: false), named: "library-book-row-light")
+    }
+
+    func testLibraryBookRowDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.bookRow, dark: true), named: "library-book-row-dark")
+    }
+
+    func testLibraryNowPlayingChaptersLightPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.nowPlayingChapters, dark: false), named: "library-now-playing-chapters-light")
+    }
+
+    func testLibraryNowPlayingChaptersDarkPixelBaseline() {
+        assertSnapshot(launchLibraryRoot(.nowPlayingChapters, dark: true), named: "library-now-playing-chapters-dark")
+    }
+
     private enum LibraryScreen {
         case larder, larderGrouped, episodeDetail, settings
+        case filterArticles, bookRow, nowPlayingChapters
+
+        /// The fixture scenario: the three B6.3 screens need the article and the audiobook volume.
+        var scenario: String {
+            switch self {
+            case .filterArticles, .bookRow, .nowPlayingChapters: "pixel-books"
+            default: "pixel"
+            }
+        }
         // The Add sheet's four states (Task 4.1): results, sent and waiting, refused, and an old Mac.
         case addSearch, addSent, addRejected, addUpdateMac
 
@@ -95,7 +130,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "-ApplePersistenceIgnoreState", "YES",
-            "--wilted-library-root-fixture", "--wilted-library-root-scenario=pixel",
+            "--wilted-library-root-fixture", "--wilted-library-root-scenario=\(screen.scenario)",
             "--wilted-library-root-appearance=\(dark ? "dark" : "light")"
         ]
         if let mac = screen.addMac { app.launchArguments.append("--wilted-library-add-mac=\(mac)") }
@@ -123,6 +158,35 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             XCTAssertTrue(any["wilted-library-detail"].waitForExistence(timeout: 5))
         case .addSearch, .addSent, .addRejected, .addUpdateMac:
             driveAddSheet(screen, app: app)
+        case .filterArticles:
+            XCTAssertTrue(any["wilted-library-row-fixture-book-1"].waitForExistence(timeout: 10))
+            app.buttons["wilted-library-filter"].tap()
+            XCTAssertTrue(app.buttons["Audiobooks"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["Articles"].exists && app.buttons["Podcasts"].exists)
+            // The open menu's translucent material is not stable enough to pin, so the capture is the result.
+            app.buttons["Articles"].tap()
+            XCTAssertTrue(any["wilted-library-row-fixture-article-1"].waitForExistence(timeout: 5))
+            XCTAssertFalse(any["wilted-library-row-fixture-book-1"].exists, "The Articles filter lists only articles")
+            XCTAssertFalse(any["wilted-library-row-fixture-episode-1"].exists, "The Articles filter lists only articles")
+        case .bookRow:
+            XCTAssertTrue(any["wilted-library-row-fixture-book-1"].waitForExistence(timeout: 10))
+            app.buttons["wilted-library-filter"].tap()
+            app.buttons["Audiobooks"].tap()
+            XCTAssertTrue(any["wilted-library-meta-fixture-book-1"].waitForExistence(timeout: 5))
+            XCTAssertFalse(any["wilted-library-row-fixture-episode-1"].exists, "The Audiobooks filter lists only books")
+            XCTAssertFalse(any["wilted-library-row-fixture-article-1"].exists, "The Audiobooks filter lists only books")
+        case .nowPlayingChapters:
+            let play = app.buttons["wilted-library-play-fixture-book-1"]
+            XCTAssertTrue(play.waitForExistence(timeout: 10))
+            play.tap()
+            let expand = app.buttons["wilted-player-expand"]
+            XCTAssertTrue(expand.waitForExistence(timeout: 10))
+            expand.tap()
+            let next = app.buttons["wilted-player-next-chapter"]
+            XCTAssertTrue(next.waitForExistence(timeout: 10))
+            next.tap()
+            XCTAssertTrue(app.staticTexts["Roots and Rain"].waitForExistence(timeout: 5), "Next chapter moves to chapter 2")
+            XCTAssertTrue(app.staticTexts["Chapter 2 of 4"].exists)
         case .settings:
             app.buttons["wilted-library-settings-button"].tap()
             XCTAssertTrue(any["wilted-library-settings"].waitForExistence(timeout: 5))
@@ -173,7 +237,7 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
 
     /// Reads the actual rendered pixels: accessibility labels alone can conceal clipped text.
     private func assertShippingFacts(_ screen: LibraryScreen, app: XCUIApplication, image: UIImage) {
-        guard screen == .larder || screen == .settings else { return }
+        guard screen == .larder || screen == .settings || screen == .bookRow else { return }
         do {
             func assertPaintedLine(_ expected: String, frame: CGRect) throws {
                 let bounds = CGRect(origin: .zero, size: image.size)
@@ -199,7 +263,13 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
                 XCTAssertLessThanOrEqual((centers.max() ?? 0) - (centers.min() ?? 0), 6,
                     "Recognized tokens belong to one painted line, including a separately recognized year")
             }
-            if screen == .larder {
+            if screen == .bookRow {
+                // The book row names its author and its length, painted whole.
+                let metadata = app.descendants(matching: .any)["wilted-library-meta-fixture-book-1"].firstMatch
+                XCTAssertTrue(metadata.exists)
+                try assertPaintedLine("Ada Fixture", frame: metadata.frame)
+                try assertPaintedLine("10:00", frame: metadata.frame)
+            } else if screen == .larder {
                 // Frame-bound pixels prove each date, including the longer second show's row.
                 for episode in 1...3 {
                     let metadata = app.descendants(matching: .any)["wilted-library-meta-fixture-episode-\(episode)"].firstMatch

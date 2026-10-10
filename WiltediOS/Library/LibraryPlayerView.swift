@@ -126,6 +126,7 @@ struct LibraryPlayerView: View {
             }
             scrubber
             transport
+            LibraryChapterBar(player: player)
             HStack(spacing: WiltedTheme.Spacing.large) {
                 if player.supportsRate { rateMenu }
                 if let model, let entryID = player.item?.entryID {
@@ -206,6 +207,87 @@ struct LibraryPlayerView: View {
                 .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
         }
         .accessibilityIdentifier("wilted-player-rate")
+    }
+}
+
+/// Where an audiobook volume's chapters put the listener: the chapter now playing, and where Previous
+/// and Next chapter seek to. Pure, so the rules are tested away from the player.
+struct LibraryChapterNavigator: Equatable, Sendable {
+    /// Within this many seconds of a chapter's start, Previous goes to the chapter before it; later, it
+    /// restarts the current one.
+    static let restartThreshold: TimeInterval = 3
+
+    let chapters: [AudiobookChapter]
+
+    /// The chapter playing at `position`; nil when the volume has none. Before the first start it is the first.
+    func index(at position: TimeInterval) -> Int? {
+        guard !chapters.isEmpty else { return nil }
+        return chapters.lastIndex { $0.startSeconds <= position } ?? 0
+    }
+
+    func title(at position: TimeInterval) -> String? {
+        index(at: position).map { chapters[$0].title }
+    }
+
+    /// "Chapter 3 of 12".
+    func label(at position: TimeInterval) -> String? {
+        index(at: position).map { "Chapter \($0 + 1) of \(chapters.count)" }
+    }
+
+    /// Where Next chapter seeks; nil on the last chapter.
+    func nextStart(from position: TimeInterval) -> TimeInterval? {
+        guard let index = index(at: position), index + 1 < chapters.count else { return nil }
+        return chapters[index + 1].startSeconds
+    }
+
+    /// Where Previous chapter seeks: the current chapter's start once past `restartThreshold`, else the
+    /// one before it (the start of the file from the first chapter).
+    func previousStart(from position: TimeInterval) -> TimeInterval {
+        guard let index = index(at: position) else { return 0 }
+        let start = chapters[index].startSeconds
+        if position - start > Self.restartThreshold { return start }
+        return index > 0 ? chapters[index - 1].startSeconds : 0
+    }
+}
+
+/// The chapter title with Previous and Next chapter, shown only for a volume that has chapters. They
+/// seek inside the loaded file through the player, so position, Now Playing and the Mac checkpoint follow.
+struct LibraryChapterBar: View {
+    @ObservedObject var player: LibraryPlayer
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let navigator = LibraryChapterNavigator(chapters: player.item?.chapters ?? [])
+        if let title = navigator.title(at: player.position), let label = navigator.label(at: player.position) {
+            VStack(spacing: WiltedTheme.Spacing.xSmall) {
+                Text(title)
+                    .wiltedFont(.body)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("wilted-player-chapter-title")
+                Text(label)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-player-chapter-position")
+                HStack(spacing: WiltedTheme.Spacing.section) {
+                    Button { player.seek(to: navigator.previousStart(from: player.position)) } label: {
+                        Image(systemName: "backward.end")
+                    }
+                    .accessibilityLabel("Previous chapter")
+                    .accessibilityIdentifier("wilted-player-previous-chapter")
+                    Button {
+                        if let next = navigator.nextStart(from: player.position) { player.seek(to: next) }
+                    } label: {
+                        Image(systemName: "forward.end")
+                    }
+                    .disabled(navigator.nextStart(from: player.position) == nil)
+                    .accessibilityLabel("Next chapter")
+                    .accessibilityIdentifier("wilted-player-next-chapter")
+                }
+                .buttonStyle(LibraryPlayerButtonStyle())
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("wilted-player-chapters")
+        }
     }
 }
 

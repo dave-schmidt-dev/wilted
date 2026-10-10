@@ -415,8 +415,13 @@ extension LibraryAppModel {
             let entry = decisionContent.entries[entryID]
             let item = LibraryPlayer.Item(
                 entryID: entryID, title: entry?.title ?? "Episode",
-                showTitle: entry.flatMap { decisionContent.sources[$0.sourceID]?.title } ?? "", fileURL: cached.url,
-                artworkURL: LibraryRowBuilder.artworkURL(entry?.artworkRef))
+                showTitle: entry.map {
+                    $0.kind == .audiobook
+                        ? LibraryRowBuilder.showTitle($0, sources: decisionContent.sources)
+                        : decisionContent.sources[$0.sourceID]?.title ?? ""
+                } ?? "",
+                fileURL: cached.url, artworkURL: LibraryRowBuilder.artworkURL(entry?.artworkRef),
+                chapters: entry.map(LibraryRowBuilder.chapters) ?? [])
             let forwardSequence = manualForwardSuffix(from: entryID)
             guard commandState.token == token else { return }
             continuation = nil

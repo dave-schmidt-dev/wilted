@@ -27,6 +27,10 @@ final class LibraryAppModel: ObservableObject {
     private var completedDisplayRows: [LibraryRow]?
     private var displayContext: (generation: UInt64, admissionRevision: UInt64)?
     @Published var filter: LibraryFilter = .all
+    /// Which kind the Larder shows; kept across launches. A stored value this build does not know reads as All.
+    @Published var kindFilter: LibraryKindFilter = .all {
+        didSet { if kindFilter != oldValue { preferences.set(kindFilter.rawValue, forKey: LibraryKindFilter.storageKey) } }
+    }
     @Published var searchText = ""
     /// The most authoritative record per entry from any device other than this one.
     @Published private(set) var checkpoints: [ItemID: ObservedPlayback] = [:]
@@ -185,6 +189,7 @@ final class LibraryAppModel: ObservableObject {
         self.now = now
         self.clockFormat = LibraryClockFormat(timeZone: timeZone)
         self.reconciler = LibraryReconciler(transport: transport, store: store)
+        kindFilter = LibraryKindFilter.stored(preferences.string(forKey: LibraryKindFilter.storageKey))
         relay.model = self
     }
 
@@ -474,7 +479,7 @@ final class LibraryAppModel: ObservableObject {
     var visibleRows: [LibraryRow] {
         let ids = preparedIDs
         return LibraryListing.rows(
-            completedDisplayRows ?? queued, offered: completedDisplayRows.map { Set($0.map(\.id)) } ?? ids.offered.union(cachedDisplayIDs), onPhone: ids.onPhone, filter: filter, query: searchText,
+            completedDisplayRows ?? queued, offered: completedDisplayRows.map { Set($0.map(\.id)) } ?? ids.offered.union(cachedDisplayIDs), onPhone: ids.onPhone, filter: filter, kind: kindFilter, query: searchText,
             progress: progress, finished: finished)
     }
 

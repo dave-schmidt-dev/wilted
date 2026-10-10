@@ -330,6 +330,120 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertEqual(LibraryToolbar.filterCue(.onPhone).symbol, "line.3.horizontal.decrease.circle.fill")
     }
 
+    // MARK: kinds, books and chapters (B6.3 Task 4.2)
+
+    /// Two podcasts, an article, an audiobook volume (author, two hours, three chapters given out of order)
+    /// and an entry of a kind this build does not know, queued in that order and all offered.
+    private func seedMixedKinds() async throws {
+        try await seed(["a", "b"])
+        let feed = id("articles")
+        let volume = AudiobookPayload.build(
+            title: "Title book", author: "Ada Lovelace", durationSeconds: 7_200,
+            chapters: [
+                AudiobookChapter(title: "Two", startSeconds: 1_000),
+                AudiobookChapter(title: "One", startSeconds: 0),
+                AudiobookChapter(title: "Three", startSeconds: 4_000),
+            ], sourceFormat: .epub)
+        try await macPush([
+            .source(LibrarySource(id: feed, kind: .articleFeed, title: "The Articles")),
+            .entry(try LibraryEntry(
+                id: id("art"), kind: .article, sourceID: feed, title: "Title art", summary: "",
+                publishedAt: Date(timeIntervalSince1970: 1_600_000_005), durationSeconds: 300)),
+            .slot(try QueueSlot(entryID: id("art"), sortKey: 2)),
+            .entry(try LibraryEntry(
+                id: id("book"), kind: .audiobook, sourceID: id("book"), title: "Title book", summary: "Ada Lovelace",
+                publishedAt: Date(timeIntervalSince1970: 1_600_000_006), durationSeconds: 7_200,
+                payload: try volume.encoded())),
+            .slot(try QueueSlot(entryID: id("book"), sortKey: 3)),
+            .entry(try LibraryEntry(
+                id: id("odd"), kind: "mystery.thing", sourceID: feed, title: "Title odd", summary: "",
+                publishedAt: Date(timeIntervalSince1970: 1_600_000_007), durationSeconds: 60)),
+            .slot(try QueueSlot(entryID: id("odd"), sortKey: 4)),
+        ])
+        for raw in ["a", "b", "art", "book", "odd"] { try await offer(raw) }
+    }
+
+    func testArticlesFilterShowsOnlyArticlesAndPlayOrderIsUnchanged() async throws {
+        try await seedMixedKinds()
+        let model = makeModel()
+        await model.refresh()
+        for raw in ["a", "b", "art", "book", "odd"] { model.media[id(raw)] = .onPhone }
+        let everything = ["a", "b", "art", "book", "odd"]
+        XCTAssertEqual(ids(model.visibleRows), everything)
+
+        model.kindFilter = .articles
+        XCTAssertEqual(ids(model.visibleRows), ["art"], "the Articles filter lists only articles")
+        XCTAssertEqual(ids(model.playOrderRows), everything, "the filter never changes the play order")
+        XCTAssertEqual(model.manualForwardSuffix(from: id("a")).map(\.rawValue), everything,
+                       "a start still advances through the whole play order")
+        XCTAssertEqual(model.preparedCount, 5, "the filter does not change what is prepared")
+
+        model.kindFilter = .podcasts
+        XCTAssertEqual(ids(model.visibleRows), ["a", "b"])
+        model.kindFilter = .audiobooks
+        XCTAssertEqual(ids(model.visibleRows), ["book"])
+        model.kindFilter = .all
+        XCTAssertEqual(ids(model.visibleRows), everything, "an unknown kind is listed under All and no other choice")
+        let cue = LibraryToolbar.filterCue(.all, kind: .articles)
+        XCTAssertTrue(cue.isActive)
+        XCTAssertEqual(cue.label, "Filter: Articles")
+        XCTAssertEqual(LibraryToolbar.filterCue(.onPhone, kind: .audiobooks).label, "Filter: On phone · Audiobooks")
+        XCTAssertFalse(LibraryToolbar.filterCue(.all, kind: .all).isActive)
+    }
+
+    func testUnknownSavedKindFilterRestoresAll() {
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set("sketchy", forKey: LibraryKindFilter.storageKey)
+        XCTAssertEqual(makeModel(preferences: defaults).kindFilter, .all)
+        defaults.set(7, forKey: LibraryKindFilter.storageKey)
+        XCTAssertEqual(makeModel(preferences: defaults).kindFilter, .all)
+        defaults.removeObject(forKey: LibraryKindFilter.storageKey)
+        XCTAssertEqual(makeModel(preferences: defaults).kindFilter, .all)
+        XCTAssertEqual(LibraryKindFilter.stored("Articles"), .all, "stored values are exact, so a near miss is All")
+
+        for kind in LibraryKindFilter.allCases {
+            makeModel(preferences: defaults).kindFilter = kind
+            XCTAssertEqual(makeModel(preferences: defaults).kindFilter, kind, "\(kind) is kept across launches")
+        }
+    }
+
+    func testBookRowShowsAuthorAndLengthAndCarriesOrderedChapters() async throws {
+        try await seedMixedKinds()
+        let model = makeModel()
+        await model.refresh()
+        let book = try XCTUnwrap(model.queued.first { $0.id == id("book") })
+        XCTAssertEqual(book.kind, .audiobook)
+        XCTAssertEqual(book.showTitle, "Ada Lovelace", "a volume has no feed, so its row names the author")
+        XCTAssertEqual(book.durationText, "2:00:00")
+        XCTAssertEqual(book.detailText(), "Ada Lovelace - 2:00:00 - \(LibraryDateFormat.day(book.publishedAt))")
+        XCTAssertEqual(book.chapters.map(\.title), ["One", "Two", "Three"], "chapters are in start order")
+        let podcast = try XCTUnwrap(model.queued.first { $0.id == id("a") })
+        XCTAssertEqual(podcast.showTitle, "The Show")
+        XCTAssertTrue(podcast.chapters.isEmpty)
+    }
+
+    func testChapterNavigatorFindsTheChapterAndSeeksWithinTheFile() {
+        let navigator = LibraryChapterNavigator(chapters: [
+            AudiobookChapter(title: "One", startSeconds: 0),
+            AudiobookChapter(title: "Two", startSeconds: 100),
+            AudiobookChapter(title: "Three", startSeconds: 250),
+        ])
+        XCTAssertEqual(navigator.title(at: 0), "One")
+        XCTAssertEqual(navigator.title(at: 99.9), "One")
+        XCTAssertEqual(navigator.title(at: 100), "Two")
+        XCTAssertEqual(navigator.label(at: 300), "Chapter 3 of 3")
+        XCTAssertEqual(navigator.nextStart(from: 50), 100)
+        XCTAssertEqual(navigator.nextStart(from: 100), 250)
+        XCTAssertNil(navigator.nextStart(from: 260), "no Next chapter from the last one")
+        XCTAssertEqual(navigator.previousStart(from: 180), 100, "past the threshold, Previous restarts the chapter")
+        XCTAssertEqual(navigator.previousStart(from: 102), 0, "just into a chapter, Previous goes to the one before")
+        XCTAssertEqual(navigator.previousStart(from: 1), 0, "the first chapter restarts at the top")
+        let late = LibraryChapterNavigator(chapters: [AudiobookChapter(title: "Only", startSeconds: 30)])
+        XCTAssertEqual(late.title(at: 5), "Only", "before the first start the first chapter is current")
+        XCTAssertNil(LibraryChapterNavigator(chapters: []).title(at: 10))
+        XCTAssertEqual(LibraryChapterNavigator(chapters: []).previousStart(from: 10), 0)
+    }
+
     // MARK: phone row progress
 
     func testPhoneRowShowsTimeLeftProgressAndPlayedLikeTheCarRows() {

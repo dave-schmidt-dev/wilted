@@ -33,6 +33,10 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     /// The episode's own web page, as the Mac published it from the feed's `<link>`; nil when the
     /// feed had none. Never the feed address.
     var episodeLink: URL?
+    /// What the entry is; the kind filter reads it. An unknown kind is kept and listed under All.
+    var kind: LibraryKind = .podcastEpisode
+    /// An audiobook volume's chapters in start order; empty for every other kind.
+    var chapters: [AudiobookChapter] = []
 }
 
 extension LibraryRow {
@@ -107,9 +111,9 @@ enum LibraryRowBuilder {
         LibraryRow(
             id: entry.id,
             title: entry.title,
-            showTitle: content.sources[entry.sourceID]?.title ?? "Unknown show",
-            durationText: entry.durationSeconds.map(LibraryClockFormat.duration),
-            durationSeconds: entry.durationSeconds,
+            showTitle: showTitle(entry, sources: content.sources),
+            durationText: duration(entry).map(LibraryClockFormat.duration),
+            durationSeconds: duration(entry),
             removal: entry.removal,
             publishedAt: entry.publishedAt,
             removalText: removalText(entry.removal),
@@ -121,8 +125,34 @@ enum LibraryRowBuilder {
             showArtworkURL: artworkURL(content.sources[entry.sourceID]?.artworkRef),
             resumeSeconds: resumeSeconds(checkpoints[entry.id], duration: entry.durationSeconds),
             episodeLink: (try? entry.podcastEpisodePayload().episodeLink)
-                .flatMap { PodcastEpisode.isValidEpisodeLink($0) ? $0 : nil }
+                .flatMap { PodcastEpisode.isValidEpisodeLink($0) ? $0 : nil },
+            kind: entry.kind,
+            chapters: chapters(entry)
         )
+    }
+
+    /// The line a row and the player put under the title: the feed's name, or a book's author (a
+    /// volume has no feed, so its row names who wrote it).
+    static func showTitle(_ entry: LibraryEntry, sources: [ItemID: LibrarySource]) -> String {
+        guard entry.kind == .audiobook else { return sources[entry.sourceID]?.title ?? "Unknown show" }
+        let author = audiobook(entry)?.author?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return author.isEmpty ? "Unknown author" : author
+    }
+
+    /// The entry's length; a volume whose entry carries none falls back to its payload's.
+    private static func duration(_ entry: LibraryEntry) -> Double? {
+        entry.durationSeconds ?? audiobook(entry).map(\.durationSeconds).flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    /// A volume's chapters in start order, empty for a payload that cannot be read.
+    static func chapters(_ entry: LibraryEntry) -> [AudiobookChapter] {
+        (audiobook(entry)?.chapters ?? []).filter { $0.startSeconds.isFinite && $0.startSeconds >= 0 }
+            .sorted { $0.startSeconds < $1.startSeconds }
+    }
+
+    private static func audiobook(_ entry: LibraryEntry) -> AudiobookPayload? {
+        guard entry.kind == .audiobook else { return nil }
+        return try? JSONDecoder().decode(AudiobookPayload.self, from: entry.payload)
     }
 
     /// Only web addresses load; anything else the Mac might publish shows the placeholder.

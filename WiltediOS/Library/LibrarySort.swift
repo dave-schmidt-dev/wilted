@@ -17,6 +17,39 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Which kind of item the Larder shows. Persisted beside the On phone / Available filter; the Mac
+/// has the same four choices. A kind this build does not know appears under All only, never under
+/// a specific choice, and a stored value it does not know reads as All.
+enum LibraryKindFilter: String, CaseIterable, Identifiable, Sendable {
+    case all, podcasts, articles, audiobooks
+
+    nonisolated static let storageKey = "wilted.library.listKind"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .podcasts: "Podcasts"
+        case .articles: "Articles"
+        case .audiobooks: "Audiobooks"
+        }
+    }
+
+    static func stored(_ rawValue: String?) -> LibraryKindFilter {
+        rawValue.flatMap(LibraryKindFilter.init(rawValue:)) ?? .all
+    }
+
+    func includes(_ kind: LibraryKind) -> Bool {
+        switch self {
+        case .all: true
+        case .podcasts: kind == .podcastEpisode
+        case .articles: kind == .article
+        case .audiobooks: kind == .audiobook
+        }
+    }
+}
+
 /// How the Larder list is laid out on screen. A display choice only: it never changes what plays next.
 enum LibrarySortOption: String, CaseIterable, Identifiable, Sendable {
     case playOrder, newest, oldest, shortest, title
@@ -78,11 +111,13 @@ enum LibraryToolbar {
             isActive: isActive)
     }
 
-    static func filterCue(_ filter: LibraryFilter) -> LibraryToolbarCue {
-        LibraryToolbarCue(
-            label: "Filter: \(filter.title)",
-            symbol: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill",
-            isActive: filter != .all)
+    static func filterCue(_ filter: LibraryFilter, kind: LibraryKindFilter = .all) -> LibraryToolbarCue {
+        let isActive = filter != .all || kind != .all
+        let parts = [filter == .all ? nil : filter.title, kind == .all ? nil : kind.title].compactMap { $0 }
+        return LibraryToolbarCue(
+            label: isActive ? "Filter: \(parts.joined(separator: " · "))" : "Filter: All",
+            symbol: isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle",
+            isActive: isActive)
     }
 
     private static func label(sort: LibrarySortOption, group: LibraryGroupOption) -> String {
@@ -173,7 +208,7 @@ enum LibraryListing {
     /// played to the end but not marked).
     static func rows(
         _ rows: [LibraryRow], offered: Set<ItemID>, onPhone: Set<ItemID>,
-        filter: LibraryFilter, query: String,
+        filter: LibraryFilter, kind: LibraryKindFilter = .all, query: String,
         progress: [ItemID: EpisodeProgress] = [:], finished: [ItemID: Date] = [:]
     ) -> [LibraryRow] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -183,7 +218,7 @@ enum LibraryListing {
             case .onPhone: onPhone.contains(row.id)
             case .available: !onPhone.contains(row.id)
             }
-        }.filter { matches($0, query: needle) }
+        }.filter { kind.includes($0.kind) }.filter { matches($0, query: needle) }
         return InProgressOrdering.playOrder(
             kept, progress: progress, id: \.id, publishedAt: \.publishedAt,
             completedAt: { completionDate($0, finished: finished) })

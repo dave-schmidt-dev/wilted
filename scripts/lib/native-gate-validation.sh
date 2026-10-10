@@ -207,8 +207,8 @@ validate_ios_pixel_snapshot_baselines() {
     fail 'iOS pixel test does not exercise the production LibraryRoot fixture'
   grep -Fq 'assertShippingFacts(screen, app: app, image: screenshot)' "$source" ||
     fail 'iOS pixel test does not verify painted date and Storage geometry'
-  [[ "$(grep -Ec '^[[:space:]]*func[[:space:]]+test.*PixelBaseline\(' "$source")" -eq 16 ]] ||
-    fail 'iOS pixel snapshot method membership must remain exactly sixteen'
+  [[ "$(grep -Ec '^[[:space:]]*func[[:space:]]+test.*PixelBaseline\(' "$source")" -eq 22 ]] ||
+    fail 'iOS pixel snapshot method membership must remain exactly twenty-two'
   for method in \
     testLibraryLarderDarkPixelBaseline \
     testLibraryLarderLightPixelBaseline \
@@ -224,18 +224,24 @@ validate_ios_pixel_snapshot_baselines() {
     testLibraryAddRejectedLightPixelBaseline \
     testLibraryAddUpdateMacDarkPixelBaseline \
     testLibraryAddUpdateMacLightPixelBaseline \
+    testLibraryFilterArticlesDarkPixelBaseline \
+    testLibraryFilterArticlesLightPixelBaseline \
+    testLibraryBookRowDarkPixelBaseline \
+    testLibraryBookRowLightPixelBaseline \
+    testLibraryNowPlayingChaptersDarkPixelBaseline \
+    testLibraryNowPlayingChaptersLightPixelBaseline \
     testLibrarySettingsDarkPixelBaseline \
     testLibrarySettingsLightPixelBaseline; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$source" ||
       fail "iOS pixel snapshot test method is missing: $method"
   done
 
-  expected=$'library-add-rejected-dark.png\nlibrary-add-rejected-light.png\nlibrary-add-search-dark.png\nlibrary-add-search-light.png\nlibrary-add-sent-dark.png\nlibrary-add-sent-light.png\nlibrary-add-update-mac-dark.png\nlibrary-add-update-mac-light.png\nlibrary-episode-detail-dark.png\nlibrary-episode-detail-light.png\nlibrary-larder-dark.png\nlibrary-larder-grouped-dark.png\nlibrary-larder-grouped-light.png\nlibrary-larder-light.png\nlibrary-settings-dark.png\nlibrary-settings-light.png'
+  expected=$'library-add-rejected-dark.png\nlibrary-add-rejected-light.png\nlibrary-add-search-dark.png\nlibrary-add-search-light.png\nlibrary-add-sent-dark.png\nlibrary-add-sent-light.png\nlibrary-add-update-mac-dark.png\nlibrary-add-update-mac-light.png\nlibrary-book-row-dark.png\nlibrary-book-row-light.png\nlibrary-episode-detail-dark.png\nlibrary-episode-detail-light.png\nlibrary-filter-articles-dark.png\nlibrary-filter-articles-light.png\nlibrary-larder-dark.png\nlibrary-larder-grouped-dark.png\nlibrary-larder-grouped-light.png\nlibrary-larder-light.png\nlibrary-now-playing-chapters-dark.png\nlibrary-now-playing-chapters-light.png\nlibrary-settings-dark.png\nlibrary-settings-light.png'
   actual="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; | LC_ALL=C sort)"
   [[ "$actual" == "$expected" ]] || fail 'iOS pixel baseline selectors are missing or unexpected'
   bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; | grep -vc 'PNG image data, 390 x 844' || true)"
   [[ "$bad_pngs" -eq 0 ]] || fail "iOS pixel baselines are invalid or wrong-sized: $bad_pngs"
-  printf 'native.ios-snapshots.baselines count=16 library-root-light-dark\n'
+  printf 'native.ios-snapshots.baselines count=22 library-root-light-dark\n'
 }
 
 parse_result_bundle_test_count() {

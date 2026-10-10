@@ -268,7 +268,9 @@ struct LibraryListView: View {
     }
 
     private func header(count: Int) -> String {
-        model.filter == .all ? "Larder · \(count)" : "\(model.filter.title) · \(count)"
+        let parts = [model.filter == .all ? nil : model.filter.title, model.kindFilter == .all ? nil : model.kindFilter.title]
+            .compactMap { $0 }
+        return parts.isEmpty ? "Larder · \(count)" : "\(parts.joined(separator: " · ")) · \(count)"
     }
 
     private var organizeMenu: some View {
@@ -295,11 +297,20 @@ struct LibraryListView: View {
 
     private var filterMenu: some View {
         Menu {
-            Picker("Show", selection: $model.filter) {
-                ForEach(LibraryFilter.allCases) { Text($0.title).tag($0) }
+            Section("Show") {
+                Picker("Show", selection: $model.filter) {
+                    ForEach(LibraryFilter.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+            }
+            Section("Kind") {
+                Picker("Kind", selection: $model.kindFilter) {
+                    ForEach(LibraryKindFilter.allCases) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
             }
         } label: {
-            let cue = LibraryToolbar.filterCue(model.filter)
+            let cue = LibraryToolbar.filterCue(model.filter, kind: model.kindFilter)
             Label(cue.label, systemImage: cue.symbol)
         }
         .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)

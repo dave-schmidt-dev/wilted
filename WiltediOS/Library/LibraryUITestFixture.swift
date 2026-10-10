@@ -20,8 +20,16 @@ enum LibraryUITestScenario: String, Sendable {
     /// Pixel baselines: the normal stack with a fixed clock (so "Fetched" shows one fixed time) and a
     /// second feed, so grouping by feed has two sections.
     case pixel
+    /// The pixel scenario plus an article and an audiobook volume with chapters, for the kind filter,
+    /// the book row and Now Playing chapters. Kept apart so the plain pixel baselines do not move.
+    case pixelBooks = "pixel-books"
     /// A real held phone mirror and downloads; the fixture Mac now has an empty queue.
     case heldAccount = "held-account"
+}
+
+extension LibraryUITestScenario {
+    /// Either pixel scenario: fixed clock, time zone and About version.
+    var isPixel: Bool { self == .pixel || self == .pixelBooks }
 }
 
 /// DEBUG-only deterministic dependencies for the production `LibraryRoot`.
@@ -42,6 +50,9 @@ enum LibraryUITestFixture {
     static let startDelay: Duration = .seconds(3)
     static let suiteName = "wilted-library-root-fixture"
     static let episodeIDs = ["fixture-episode-1", "fixture-episode-2"]
+    /// The `pixelBooks` scenario's audiobook volume and article.
+    static let bookID = "fixture-book-1"
+    static let articleID = "fixture-article-1"
     /// The pixel scenario's clock: 2026-10-03 12:00 UTC.
     nonisolated static let pixelClock = Date(timeIntervalSince1970: 1_791_028_800)
 
@@ -62,7 +73,7 @@ enum LibraryUITestFixture {
     nonisolated static let pixelVersion = "0.0.0 (fixture)"
 
     /// The pinned About version for this launch, or nil outside the pixel scenario.
-    static var pinnedVersion: String? { scenario() == .pixel ? pixelVersion : nil }
+    static var pinnedVersion: String? { scenario()?.isPixel == true ? pixelVersion : nil }
 
     /// Pins the Larder, detail and Settings date formatters (`LibraryDateFormat`) for the pixel scenario;
     /// the model's own zone covers the clock formatter.
@@ -72,7 +83,7 @@ enum LibraryUITestFixture {
 
     /// The model's clock: fixed for the pixel scenario, the real one otherwise.
     nonisolated static func clock(for scenario: LibraryUITestScenario) -> @Sendable () -> Date {
-        if scenario == .pixel { return { pixelClock } }
+        if scenario.isPixel { return { pixelClock } }
         return { Date() }
     }
 
@@ -99,7 +110,7 @@ enum LibraryUITestFixture {
     /// query from Siri or Shortcuts cannot build `LibraryRuntime.shared`.
     static func launch(_ scenario: LibraryUITestScenario) {
         guard stack == nil else { return }
-        if scenario == .pixel { pinProcessTimeZone() }
+        if scenario.isPixel { pinProcessTimeZone() }
         UserDefaults.standard.removeObject(forKey: LibraryEnvironment.deviceIDKey)
         UserDefaults().removePersistentDomain(forName: suiteName)
         let built = Stack(scenario: scenario)
@@ -154,12 +165,41 @@ enum LibraryUITestFixture {
                 mediaCache: mediaCache, preferences: defaults,
                 ownPositionsURL: scratch.appendingPathComponent("own-positions.json"),
                 now: LibraryUITestFixture.clock(for: scenario),
-                timeZone: scenario == .pixel ? LibraryUITestFixture.pixelTimeZone : .current)
+                timeZone: scenario.isPixel ? LibraryUITestFixture.pixelTimeZone : .current)
             player = LibraryPlayer(
                 engine: LibraryUITestEngine(refusesPlay: scenario == .startError), session: LibraryUITestSession(),
                 nowPlaying: LibraryUITestNowPlaying(), remoteCommands: LibraryUITestRemote(),
                 sessionEvents: LibraryUITestSessionEvents())
             settings = LibrarySettingsStore(defaults: defaults)
+        }
+
+        /// An article under its own feed and a four-chapter audiobook volume, queued after the episodes.
+        private static func bookAndArticleChanges() throws -> [LibraryChange] {
+            let feed = try ItemID(rawValue: "fixture-articles")
+            let article = try ItemID(rawValue: LibraryUITestFixture.articleID)
+            let book = try ItemID(rawValue: LibraryUITestFixture.bookID)
+            let volume = AudiobookPayload.build(
+                title: "The Fixture Garden", author: "Ada Fixture", durationSeconds: LibraryUITestEngine.length,
+                chapters: [
+                    AudiobookChapter(title: "Opening the Gate", startSeconds: 0),
+                    AudiobookChapter(title: "Roots and Rain", startSeconds: 150),
+                    AudiobookChapter(title: "The Long Harvest", startSeconds: 300),
+                    AudiobookChapter(title: "Closing Notes", startSeconds: 450),
+                ],
+                sourceFormat: .epub)
+            return [
+                .source(LibrarySource(id: feed, kind: .articleFeed, title: "Fixture Articles")),
+                .entry(try LibraryEntry(
+                    id: book, kind: .audiobook, sourceID: book, title: "The Fixture Garden", summary: "Ada Fixture",
+                    publishedAt: Date(timeIntervalSince1970: 1_700_000_003), durationSeconds: LibraryUITestEngine.length,
+                    payload: try volume.encoded())),
+                .slot(try QueueSlot(entryID: book, sortKey: 3)),
+                .entry(try LibraryEntry(
+                    id: article, kind: .article, sourceID: feed, title: "Fixture Article",
+                    summary: "A saved article read aloud.", publishedAt: Date(timeIntervalSince1970: 1_700_000_004),
+                    durationSeconds: LibraryUITestEngine.length)),
+                .slot(try QueueSlot(entryID: article, sortKey: 4)),
+            ]
         }
 
         /// Queues the seeded episodes on the in-memory Mac and puts their audio on the phone. Runs once.
@@ -188,7 +228,7 @@ enum LibraryUITestFixture {
                         durationSeconds: LibraryUITestEngine.length)))
                     changes.append(.slot(try QueueSlot(entryID: id, sortKey: Double(index))))
                 }
-                if scenario == .pixel {
+                if scenario.isPixel {
                     let secondShow = try ItemID(rawValue: "fixture-show-2")
                     let third = try ItemID(rawValue: "fixture-episode-3")
                     changes.append(.source(LibrarySource(id: secondShow, kind: .podcastFeed, title: "Second Fixture Show")))
@@ -198,6 +238,7 @@ enum LibraryUITestFixture {
                         publishedAt: Date(timeIntervalSince1970: 1_700_000_002), durationSeconds: LibraryUITestEngine.length)))
                     changes.append(.slot(try QueueSlot(entryID: third, sortKey: 2)))
                 }
+                if scenario == .pixelBooks { changes += try Self.bookAndArticleChanges() }
                 let pending = changes.enumerated().map {
                     PendingLibraryChange(localSeq: UInt64($0.offset + 1), change: $0.element, baseVersion: 0)
                 }
@@ -206,7 +247,8 @@ enum LibraryUITestFixture {
                 let hash = MediaHash.prefix + SHA256.hash(data: audio).map { String(format: "%02x", $0) }.joined()
                 try await cache.bindOwner(ownerToken: "fixture-owner", libraryScope: LibraryAppModel.mediaLibraryScope, held: false)
                 var admittedOffers: [LibraryMediaOffer] = []
-                for raw in LibraryUITestFixture.episodeIDs + (scenario == .pixel ? ["fixture-episode-3"] : []) {
+                for raw in LibraryUITestFixture.episodeIDs + (scenario.isPixel ? ["fixture-episode-3"] : [])
+                    + (scenario == .pixelBooks ? [LibraryUITestFixture.bookID, LibraryUITestFixture.articleID] : []) {
                     let offer = try LibraryMediaOffer(
                         entryID: try ItemID(rawValue: raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: hash,
                         byteCount: Int64(audio.count), mediaType: "audio/mp4", durationSeconds: LibraryUITestEngine.length,
