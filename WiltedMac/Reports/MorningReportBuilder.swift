@@ -64,6 +64,9 @@ struct MorningReportBuilder: Sendable {
     let forecast: Forecast
     let headlines: HeadlineSource
     let calendar: Calendar
+    /// Test seam: runs after the already-saved pre-check and before media is written, so a test can
+    /// make two builds both pass the pre-check.
+    let afterPrecheck: @Sendable () async -> Void
 
     init(
         store: LocalLibraryStore,
@@ -71,7 +74,8 @@ struct MorningReportBuilder: Sendable {
         coordinates: @escaping Coordinates,
         forecast: @escaping Forecast,
         headlines: HeadlineSource? = nil,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        afterPrecheck: @escaping @Sendable () async -> Void = {}
     ) {
         self.store = store
         self.synthesize = synthesize
@@ -79,6 +83,7 @@ struct MorningReportBuilder: Sendable {
         self.forecast = forecast
         self.headlines = headlines ?? { since in try await Self.storeHeadlines(store, since: since) }
         self.calendar = calendar
+        self.afterPrecheck = afterPrecheck
     }
 
     // MARK: Script
@@ -209,6 +214,7 @@ struct MorningReportBuilder: Sendable {
         if try await store.hasMorningReport(itemID) {
             return .skipped(reason: "Today's report was already built; it stays.")
         }
+        await afterPrecheck()
         let media = store.mediaDirectory
         try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
         let destination = media.appendingPathComponent("report-\(itemID.rawValue)-\(UUID().uuidString).m4a")
@@ -231,8 +237,12 @@ struct MorningReportBuilder: Sendable {
             mediaType: AudioAssembler.mediaType, createdAt: Timestamp(createdAt), schemaVersion: 1)
         let title = Self.title(for: now, calendar: calendar)
         report(0.92, "Adding to the library")
-        let retired = try await store.saveMorningReport(MorningReportSave(
+        let outcome = try await store.saveMorningReport(MorningReportSave(
             itemID: itemID, revision: revision, mediaURL: destination, title: title, createdAt: createdAt))
+        // A concurrent build saved this ID first: the deferred cleanup deletes the file just written.
+        guard case .saved(let retired) = outcome else {
+            return .skipped(reason: "Today's report was already built; it stays.")
+        }
         saved = true
         report(1, "Report ready")
         return .published(itemID: itemID, title: title, durationSeconds: duration, headlineCount: headlineCount, retired: retired)

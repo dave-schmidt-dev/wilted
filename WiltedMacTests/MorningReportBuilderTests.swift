@@ -156,6 +156,44 @@ final class MorningReportBuilderTests: XCTestCase {
         XCTAssertEqual(snapshot.readyRevisions.count, 1, "records equal audio")
     }
 
+    func testTwoBuildsThatBothPassThePrecheckLeaveOneFileAndOnePublishedOutcome() async throws {
+        let (store, _) = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let barrier = Barrier(parties: 2)
+        let periods = self.periods
+        func racing() -> MorningReportBuilder {
+            MorningReportBuilder(
+                store: store, synthesize: stub(Calls(), seconds: { _ in 2 }),
+                coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods }, headlines: { _ in MorningReportHeadlines(hasNewsFeeds: true, titles: ["Headline1 a b c"]) },
+                calendar: Calendar(identifier: .gregorian), afterPrecheck: { await barrier.arrive() })
+        }
+        let a = racing(), b = racing()
+        async let first = a.build(now: now)
+        async let second = b.build(now: now)
+        let outcomes = await [first, second]
+        let published = outcomes.filter { if case .published = $0 { return true } else { return false } }
+        XCTAssertEqual(published.count, 1, "exactly one build reports published: \(outcomes)")
+        let files = try FileManager.default.contentsOfDirectory(atPath: store.mediaDirectory.path).filter { $0.hasSuffix(".m4a") }
+        XCTAssertEqual(files.count, 1)
+        let snapshot = try await store.podcastLibrarySnapshot()
+        XCTAssertEqual(snapshot.readyRevisions.count, 1)
+    }
+
+    /// Releases every caller once `parties` have arrived.
+    private actor Barrier {
+        private let parties: Int
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        init(parties: Int) { self.parties = parties }
+        func arrive() async {
+            if waiting.count + 1 >= parties {
+                waiting.forEach { $0.resume() }
+                waiting = []
+            } else {
+                await withCheckedContinuation { waiting.append($0) }
+            }
+        }
+    }
+
     func testNoLocationYieldsAHeadlinesOnlyReportThatNamesTheMissingWeather() async throws {
         let (store, _) = try makeStore()
         let calls = Calls()

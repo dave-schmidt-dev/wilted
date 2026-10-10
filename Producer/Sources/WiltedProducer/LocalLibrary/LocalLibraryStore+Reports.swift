@@ -21,6 +21,14 @@ public struct MorningReportSave: Sendable {
     }
 }
 
+/// What `LocalLibraryStore.saveMorningReport` did, decided inside the store's own write.
+public enum MorningReportSaveOutcome: Equatable, Sendable {
+    /// The report was committed; `retired` are the earlier reports it replaced.
+    case saved(retired: [ItemID])
+    /// A report with this ID was already saved; nothing changed and the caller's media is unreferenced.
+    case alreadyExists
+}
+
 extension LocalLibraryStore {
     /// The `sourceFormat` that marks an audiobook-table row as a morning report.
     public static let reportSourceFormat = "report"
@@ -41,12 +49,13 @@ extension LocalLibraryStore {
     /// Commits a report in one save: its ready revision and record, a place at the front of the
     /// queue, and the retirement of every earlier report that was not played to the end (its
     /// record is marked removed and it leaves the queue). A report that is already saved is left
-    /// alone and retires nothing. Returns the retired item IDs.
+    /// alone and retires nothing; the existence check and the commit run in this one actor-isolated
+    /// call, so of two concurrent saves for the same ID exactly one returns `.saved`.
     @discardableResult
-    public func saveMorningReport(_ report: MorningReportSave) throws -> [ItemID] {
+    public func saveMorningReport(_ report: MorningReportSave) throws -> MorningReportSaveOutcome {
         let context = ModelContext(container)
         let books = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.AudiobookRecord>())
-        guard !books.contains(where: { $0.id == report.itemID.rawValue }) else { return [] }
+        guard !books.contains(where: { $0.id == report.itemID.rawValue }) else { return .alreadyExists }
         let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
         if let existing = revisions.first(where: { $0.id == report.revision.revisionID.rawValue }) {
             guard existing.itemID == report.revision.itemID.rawValue, existing.contentHash == report.revision.contentHash,
@@ -77,7 +86,7 @@ extension LocalLibraryStore {
             try PodcastQueueEntry(episodeID: report.itemID, position: 0, addedAt: Timestamp(report.createdAt))
         ))
         try context.save()
-        return retired.compactMap { try? ItemID(rawValue: $0) }.sorted { $0.rawValue < $1.rawValue }
+        return .saved(retired: retired.compactMap { try? ItemID(rawValue: $0) }.sorted { $0.rawValue < $1.rawValue })
     }
 }
 

@@ -48,11 +48,11 @@ struct LocalLibraryStoreReportTests {
         try await store.addPodcastQueueEpisode(other)
 
         let first = try makeSave(fixture, script: "one", day: "October 9", createdAt: Date(timeIntervalSince1970: 1_000))
-        #expect(try await store.saveMorningReport(first).isEmpty)
+        #expect(try await store.saveMorningReport(first) == .saved(retired: []))
         #expect(try await store.podcastQueueState().episodeIDs == [first.itemID, other])
 
         let second = try makeSave(fixture, script: "two", day: "October 10", createdAt: Date(timeIntervalSince1970: 2_000))
-        #expect(try await store.saveMorningReport(second) == [first.itemID])
+        #expect(try await store.saveMorningReport(second) == .saved(retired: [first.itemID]))
 
         #expect(try await store.podcastQueueState().episodeIDs == [second.itemID, other])
         let books = try await store.audiobooks()
@@ -60,7 +60,7 @@ struct LocalLibraryStoreReportTests {
         #expect(books.first { $0.itemID == second.itemID }?.isRemoved == false)
         #expect(books.allSatisfy { $0.sourceFormat == LocalLibraryStore.reportSourceFormat })
         // Saving the same report again changes nothing.
-        #expect(try await store.saveMorningReport(second).isEmpty)
+        #expect(try await store.saveMorningReport(second) == .alreadyExists)
         #expect(try await store.podcastQueueState().episodeIDs == [second.itemID, other])
     }
 

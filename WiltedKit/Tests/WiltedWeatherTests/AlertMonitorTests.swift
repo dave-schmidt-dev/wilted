@@ -25,6 +25,13 @@ private final class Collector: @unchecked Sendable {
     var bulletins: [Bulletin] { lock.withLock { items } }
 }
 
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func bump() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}
+
 private let nowDate = Date(timeIntervalSince1970: 1_000_000)
 
 private func warning(_ id: String, severity: String = "Severe", expiresIn: TimeInterval = 1800) -> NWSAlert {
@@ -107,12 +114,36 @@ struct AlertMonitorTests {
         #expect(await monitor.status.lastPollAt == nil)
     }
 
+    @Test func pollOnceOnANeverStartedOrStoppedMonitorDeliversNothing() async throws {
+        let source = StubSource([response([warning("a1")])])
+        let sink = Collector()
+        let statuses = Counter()
+        let monitor = AlertMonitor(source: source, deliver: { sink.add($0) }, onStatus: { _ in statuses.bump() },
+                                   sleep: { _ in try await Task.sleep(for: .seconds(3600)) }, now: { nowDate })
+        await monitor.setCoordinates(lat: 39.74, lon: -97.09)
+        await monitor.pollOnce()
+        #expect(source.callCount == 0)
+        await monitor.start()
+        try await waitForFirstPoll(monitor)
+        await monitor.stop()
+        let before = await monitor.status
+        let delivered = sink.bulletins.count
+        let statusReports = statuses.value
+        let requests = source.callCount
+        await monitor.pollOnce()
+        #expect(source.callCount == requests)
+        #expect(sink.bulletins.count == delivered)
+        #expect(statuses.value == statusReports)
+        #expect(await monitor.status == before)
+    }
+
     @Test func pollEmitsAlertBulletinsOnceAndDedupes() async throws {
         let sink = Collector()
         let source = StubSource([response([warning("a1")])])
         let monitor = monitor(source, sink)
         await monitor.setCoordinates(lat: 39.74, lon: -97.09)
-        await monitor.pollOnce()
+        await monitor.start()
+        try await waitForFirstPoll(monitor)
         await monitor.pollOnce()
         let bulletin = try #require(sink.bulletins.first)
         #expect(sink.bulletins.count == 1)
@@ -132,7 +163,8 @@ struct AlertMonitorTests {
         let source = StubSource([response([warning("old", expiresIn: -5), update])])
         let monitor = monitor(source, sink)
         await monitor.setCoordinates(lat: 39.74, lon: -97.09)
-        await monitor.pollOnce()
+        await monitor.start()
+        try await waitForFirstPoll(monitor)
         #expect(sink.bulletins.map(\.id) == ["a2"])
         #expect(sink.bulletins.first?.supersedes == "a1")
         #expect(sink.bulletins.first?.text == "Tornado Warning for Washington.")
@@ -145,7 +177,9 @@ struct AlertMonitorTests {
         }
         let monitor = AlertMonitor(source: Failing(), deliver: { _ in }, now: { nowDate })
         await monitor.setCoordinates(lat: 39.74, lon: -97.09)
-        #expect(await monitor.pollOnce() == 60)
+        await monitor.start()
+        try await waitForFirstPoll(monitor)
+        #expect(await monitor.status.consecutiveFailures == 1)
         #expect(await monitor.pollOnce() == 120)
         #expect(await monitor.status.consecutiveFailures == 2)
     }
@@ -155,6 +189,14 @@ private actor Ticker {
     private var waiting: [CheckedContinuation<Void, Never>] = []
     func wait() async { await withCheckedContinuation { waiting.append($0) } }
     func release() { waiting.forEach { $0.resume() }; waiting = [] }
+}
+
+private func waitForFirstPoll(_ monitor: AlertMonitor) async throws {
+    for _ in 0..<300 {
+        if await monitor.status.lastPollAt != nil { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    Issue.record("the monitor never completed a poll")
 }
 
 private func waitUntil(_ condition: @Sendable () -> Bool) async throws {
