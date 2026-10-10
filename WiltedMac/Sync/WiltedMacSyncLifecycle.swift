@@ -118,6 +118,11 @@ final class WiltedMacSyncLifecycle {
     private var quarantined = false
     private var automaticUploadRequested = false
 
+    /// Runs after a refresh has committed a remote generation to the store and before the status
+    /// reads completed, so a model can reload what the apply may have changed (rows, playlist
+    /// entries). Not called for a failed or cancelled refresh.
+    var onInboundApplied: (@MainActor () async -> Void)?
+
     private(set) var status: WiltedMacSyncStatus
     private(set) var observability = WiltedMacObservability.unavailable
 
@@ -204,6 +209,7 @@ final class WiltedMacSyncLifecycle {
             if cancelRequested { return cancelledResult() }
             switch result {
             case let .success(batch):
+                await onInboundApplied?()
                 setStatus(.init(phase: .completed, detail: "Sync completed.", generationID: batch.generationID))
                 await refreshObservability()
                 return .success(())

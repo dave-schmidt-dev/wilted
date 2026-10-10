@@ -1,8 +1,36 @@
 import Foundation
 import WiltedDomain
 import WiltedProducer
+import WiltedSync
 import XCTest
 @testable import WiltedMac
+
+/// Serves the queued fetch batches in order, then empty ones. Records how many fetches happened.
+private actor SequencedFetchTransport: SyncTransport {
+    nonisolated let statuses: AsyncStream<SyncStatus>
+    private var batches: [SyncFetchBatch]
+    private(set) var fetchCount = 0
+
+    init(batches: [SyncFetchBatch]) {
+        self.batches = batches
+        statuses = AsyncStream<SyncStatus>.makeStream().stream
+    }
+
+    func fetchChanges() async throws -> SyncFetchBatch {
+        fetchCount += 1
+        return batches.isEmpty ? try SyncFetchBatch(generationID: "idle-\(fetchCount)", records: []) : batches.removeFirst()
+    }
+
+    func save(changes: [SyncPendingChange], role: SyncDeviceRole) async throws -> SyncSendResult {
+        try SyncSendResult(engineState: Data([8]), acknowledgedRecordIDs: changes.map(\.recordID), serverEnvelopes: [])
+    }
+}
+
+@MainActor
+private final class LoadHold {
+    var entered = 0
+    var release: CheckedContinuation<Void, Never>?
+}
 
 /// Playlists play in their own order on the Mac and never change the Larder: the durable queue, the
 /// finished entry's place on the shelf and the queue's current episode all stay as they were.
@@ -194,5 +222,69 @@ final class WiltedMacPlaylistTests: XCTestCase {
         await model.deletePlaylist(first.id)
         XCTAssertNil(model.playlist(first.id))
         XCTAssertTrue(model.episodes.contains { $0.id == f.ids[0].rawValue })
+    }
+
+    func testALoadThatFinishesAfterANewerOneNeverRevertsANewPlaylistOrItsSelection() async throws {
+        let f = try await fixture("stale-load", count: 1)
+        let model = f.model
+        let hold = LoadHold()
+        WiltedMacModel.afterPlaylistsRead = {
+            hold.entered += 1
+            // Only the first load (the one started before the playlist exists) is held.
+            if hold.entered == 1 { await withCheckedContinuation { hold.release = $0 } }
+        }
+        defer { WiltedMacModel.afterPlaylistsRead = nil }
+
+        let stale = Task { await model.loadPlaylists() }
+        for _ in 0..<400 where hold.release == nil { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertNotNil(hold.release, "the older load is suspended after its read")
+
+        let fresh = try await created(model, .manual, "Fresh")
+        XCTAssertEqual(model.selectedNavigation, .playlist(fresh.id))
+        hold.release?.resume()
+        await stale.value
+
+        XCTAssertEqual(model.playlists.playlists.map(\.id), [fresh.id], "the stale read did not erase the new playlist")
+        XCTAssertEqual(model.selectedNavigation, .playlist(fresh.id), "nor push the selection back to the Larder")
+    }
+
+    func testAnInboundSyncDeletionDropsTheItemFromRowsAndPlaylistEntriesThroughTheLifecycle() async throws {
+        let root = wiltedTemporaryDirectory("playlist-inbound-delete")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = try XCTUnwrap(URL(string: "https://example.test/mac/inbound-delete"))
+        let article = try Article(itemID: ItemID.derive(from: url), canonicalURL: url, title: "Inbound", source: "example.test",
+                                  createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)))
+        let record = try WiltedRecordCodec().encode(
+            article: article, currentRevisionID: RevisionID(rawValue: "rev-inbound-delete"))
+        let transport = SequencedFetchTransport(batches: [
+            try SyncFetchBatch(generationID: "g1", records: [record], engineState: Data([1])),
+            try SyncFetchBatch(generationID: "g2", records: [], engineState: Data([2]), deletedRecordIDs: [record.id]),
+        ])
+        let model = WiltedMacModel(
+            arguments: [], syncTransportFactory: { WiltedMacSyncTransportHandle(transport: transport) },
+            stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral())
+        defer { try? FileManager.default.removeItem(at: root) }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        await model.loadPlaylists()
+
+        func refresh(toFetchCount count: Int) async throws {
+            model.refreshSync()
+            for _ in 0..<600 {
+                if await transport.fetchCount == count, model.syncStatus.phase == .completed { return }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            XCTFail("sync did not complete fetch \(count): \(model.syncStatus)")
+        }
+
+        try await refresh(toFetchCount: 1)
+        XCTAssertTrue(model.articles.contains { $0.id == article.itemID.rawValue }, "the inbound item reached the rows")
+        let playlist = try await created(model, .manual, "Reading")
+        await model.addToPlaylist(playlist.id, entryID: article.itemID.rawValue)
+        XCTAssertEqual(model.playlists.entryIDs[playlist.id], [article.itemID.rawValue])
+
+        try await refresh(toFetchCount: 2)
+        XCTAssertEqual(model.playlists.entryIDs[playlist.id], [], "the deleted item left the playlist")
+        XCTAssertFalse(model.articles.contains { $0.id == article.itemID.rawValue }, "and the Larder rows")
     }
 }

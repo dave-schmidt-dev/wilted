@@ -10,6 +10,8 @@ struct WiltedMacPlaylistsState: Equatable {
     var playlists: [Playlist] = []
     /// Whether the store has been read. A stored playlist selection is only judged after this.
     var isLoaded = false
+    /// The newest `loadPlaylists()` started. A load that finds it has moved on discards its read.
+    var loadGeneration: UInt64 = 0
     /// A manual playlist's entry IDs in order.
     var entryIDs: [String: [String]] = [:]
     /// An automatic playlist's rules in order.
@@ -50,8 +52,16 @@ extension WiltedMacModel {
 
     func playlist(_ id: String) -> Playlist? { playlists.playlists.first { $0.id == id } }
 
+    /// Test seam: suspends a load after its store read and before it writes, so a test can finish an
+    /// older load last. Nil in production.
+    static var afterPlaylistsRead: (@MainActor () async -> Void)?
+
     /// Reads every playlist, its entries and its rules, then judges a stored playlist selection.
+    /// Loads can overlap (a reload, then a create), so only the newest one started may write; an
+    /// older read is stale by the time it returns.
     func loadPlaylists() async {
+        playlists.loadGeneration &+= 1
+        let generation = playlists.loadGeneration
         guard let store else {
             playlists.isLoaded = true
             reconcilePlaylistSelection()
@@ -67,12 +77,15 @@ extension WiltedMacModel {
                 case .automatic: rules[playlist.id] = try await store.playlistRules(playlistID: playlist.id)
                 }
             }
+            await Self.afterPlaylistsRead?()
+            guard generation == playlists.loadGeneration else { return }
             playlists.playlists = all
             playlists.entryIDs = entries
             playlists.rules = rules
             playlists.isLoaded = true
             reconcilePlaylistSelection()
         } catch {
+            guard generation == playlists.loadGeneration else { return }
             playlists.message = "Playlists could not be read."
         }
     }

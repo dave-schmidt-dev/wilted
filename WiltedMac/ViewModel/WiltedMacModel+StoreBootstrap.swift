@@ -529,6 +529,8 @@ extension WiltedMacModel {
                 assetResolver: assetResolver
             )
         }
+        // An inbound apply can delete items, which also drops them from playlist entries.
+        syncLifecycle?.onInboundApplied = { [weak self] in await self?.reloadLibraryRows() }
     }
 
     private func restorePodcastPlayback() async {
