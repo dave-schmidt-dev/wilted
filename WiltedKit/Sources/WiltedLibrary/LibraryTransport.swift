@@ -234,6 +234,11 @@ public protocol LibraryTransport: Sendable {
     func publishStats(_ stats: LibraryStats) async throws
     /// The Mac's last published statistics, or nil before it has published any. Read by name.
     func readStats() async throws -> LibraryStats?
+    /// Mac only: publishes the bulletin channel (interruption switches and headlines). One
+    /// record, replaced by each publish.
+    func publishBulletins(_ bulletins: LibraryBulletins) async throws
+    /// The Mac's last published bulletin channel, or nil before it has published one. Read by name.
+    func fetchBulletins() async throws -> LibraryBulletins?
     /// Writer only. Acknowledges the dedicated publication record before returning.
     func publishPublication(_ publication: LibraryPublication) async throws
     /// Observed author evidence only; not proof of the reader's displayed snapshot.
@@ -280,6 +285,10 @@ public extension LibraryTransport {
         throw LibraryTransportError.transport("statistics are not supported by this transport")
     }
     func readStats() async throws -> LibraryStats? { nil }
+    func publishBulletins(_ bulletins: LibraryBulletins) async throws {
+        throw LibraryTransportError.transport("bulletins are not supported by this transport")
+    }
+    func fetchBulletins() async throws -> LibraryBulletins? { nil }
     func publishPublication(_ publication: LibraryPublication) async throws {
         throw LibraryTransportError.transport("library publication is not supported by this transport")
     }

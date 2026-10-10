@@ -167,6 +167,23 @@ final class LibraryRecordMapperTests: XCTestCase {
         XCTAssertEqual(LibraryRecordMapper.version(of: record), 1_700_000_000_250_000)
         XCTAssertNil(LibraryRecordMapper.version(of: try saved(.entry(makeEntry()))))
     }
+
+    func testBulletinsRoundTripUnderOneNamedRecord() throws {
+        let issued = Date(timeIntervalSince1970: 5_000)
+        let headline = try Bulletin(id: "h1", kind: .headline, text: "A headline", severity: .minor,
+                                    issuedAt: issued, expiresAt: issued.addingTimeInterval(3_600), supersedes: "h0")
+        let value = try LibraryBulletins(alertsEnabled: true, headlinesEnabled: false, headlines: [headline], updatedAt: issued)
+        let record = try mapper.record(bulletins: value)
+        XCTAssertEqual(record.recordType, "LibraryBulletinsRecord")
+        XCTAssertEqual(record.recordID.recordName, "bulletins:library")
+        XCTAssertEqual(record.recordID.zoneID, mapper.zoneID)
+        XCTAssertEqual(try mapper.decode(record), .bulletins(value))
+        let forged = CKRecord(recordType: record.recordType, recordID: CKRecord.ID(recordName: "bulletins:other", zoneID: mapper.zoneID))
+        forged[LibraryRecordMapper.payloadField] = record[LibraryRecordMapper.payloadField]
+        XCTAssertThrowsError(try mapper.decode(forged)) {
+            XCTAssertEqual($0 as? LibraryRecordMapperError, .identityMismatch("bulletins:other"))
+        }
+    }
 }
 
 // MARK: - Transport over a scripted engine

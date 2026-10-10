@@ -16,6 +16,7 @@ public actor InMemoryLibraryServer {
     private var progress: [String: ObservedPlayback] = [:]
     private var manualNow: Date?
     private var stats: LibraryStats?
+    private var bulletins: LibraryBulletins?
     private var publication: LibraryPublication?
     private var transcripts: [ItemID: LibraryTranscript] = [:]
     private var mediaOffers: [ItemID: LibraryMediaOffer] = [:]
@@ -138,6 +139,15 @@ public actor InMemoryLibraryServer {
     }
 
     func currentStats() -> LibraryStats? { stats }
+
+    func publishBulletins(_ value: LibraryBulletins, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not publish bulletins")
+        }
+        bulletins = value
+    }
+
+    func currentBulletins() -> LibraryBulletins? { bulletins }
 
     func publishPublication(_ value: LibraryPublication, from deviceID: String) throws {
         guard deviceID == writerDeviceID, value.writerDeviceID == deviceID else {
@@ -293,6 +303,12 @@ public actor InMemoryLibraryTransport: LibraryTransport {
     }
 
     public func readStats() async throws -> LibraryStats? { await server.currentStats() }
+
+    public func publishBulletins(_ bulletins: LibraryBulletins) async throws {
+        try await server.publishBulletins(bulletins, from: deviceID)
+    }
+
+    public func fetchBulletins() async throws -> LibraryBulletins? { await server.currentBulletins() }
 
     public func publishPublication(_ publication: LibraryPublication) async throws {
         let started = generation

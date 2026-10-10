@@ -84,6 +84,14 @@ public struct ThrottledLibraryTransport: LibraryTransport {
         try await gate.run { try await inner.readStats() }
     }
 
+    public func publishBulletins(_ bulletins: LibraryBulletins) async throws {
+        try await gate.run { try await inner.publishBulletins(bulletins) }
+    }
+
+    public func fetchBulletins() async throws -> LibraryBulletins? {
+        try await gate.run { try await inner.fetchBulletins() }
+    }
+
     public func publishPublication(_ publication: LibraryPublication) async throws {
         try await gate.run { try await inner.publishPublication(publication) }
     }
