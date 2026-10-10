@@ -98,7 +98,8 @@ extension WiltedMacModel {
         guard generation == podcastQueueRefreshGeneration else { return }
         podcastQueueIDs = state.episodeIDs.map(\.rawValue)
         applyLarderSortIfNeeded()
-        if isPodcastPlayback {
+        // A playlist entry plays outside the queue: the queue's current item is not what is loaded.
+        if isPodcastPlayback, !playlistSessionIsCurrent {
             let loadedEpisodeID = playback?.itemID?.rawValue
             let activeEpisodeID = loadedEpisodeID.flatMap { id in
                 episodes.contains(where: { $0.id == id }) ? id : nil
@@ -179,6 +180,8 @@ extension WiltedMacModel {
     /// sort, which can place an earlier unfinished episode after the last
     /// queued one and would restart it.
     func handlePodcastPlaybackFinished() {
+        // A playlist owns the end of its own entries; nothing retires and no queue is written.
+        if playlistEntryFinished() { return }
         refreshPlaybackReadout()
         guard isPodcastPlayback, let finishedID = currentPodcastEpisodeID,
               playback?.completed == true, !canSelectNextEpisode else { return }

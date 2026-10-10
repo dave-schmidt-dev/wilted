@@ -336,6 +336,8 @@ extension WiltedMacModel {
 
     func navigatePodcastQueue(previous: Bool) {
 #if canImport(WiltedProducer)
+        // A playlist steps through its own order, never the Larder queue.
+        if playlistSessionIsCurrent { stepPlaylist(previous: previous); return }
         guard isPodcastPlayback else { return }
         guard let playback else {
             if previous {

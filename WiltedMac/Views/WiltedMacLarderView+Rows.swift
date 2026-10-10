@@ -140,6 +140,7 @@ extension WiltedMacLarderView {
         .accessibilityLabel("\(episode.title), number \(position) in Larder")
         .accessibilityValue("\(position) of \(count)")
         .accessibilityIdentifier("wilted-larder-row-\(episode.id)")
+        .contextMenu { WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id) }
     }
 
     /// A book's line: author, length and chapter count, so a book reads as a book beside episodes.

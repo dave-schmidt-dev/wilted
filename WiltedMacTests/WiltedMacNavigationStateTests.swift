@@ -80,6 +80,55 @@ final class WiltedMacNavigationStateTests: XCTestCase {
         }
     }
 
+    private func created(_ model: WiltedMacModel, _ kind: PlaylistKind, _ name: String? = nil) async throws -> Playlist {
+        let made = await model.createPlaylist(kind: kind, name: name)
+        return try XCTUnwrap(made)
+    }
+
+    private func storeModel(_ preferences: UserDefaults) -> WiltedMacModel {
+        WiltedMacModel(
+            arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("playlist-navigation"),
+            storeBootstrap: { url in try LocalLibraryStore(url: url) }, preferences: preferences)
+    }
+
+    /// A playlist selection that no longer exists restores the Larder.
+    func testADeletedPlaylistSelectionRestoresLarder() async throws {
+        let model = storeModel(WiltedMacTestPreferences.ephemeral())
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        let playlist = try await created(model, .manual, "Gone soon")
+        XCTAssertEqual(model.selectedNavigation, .playlist(playlist.id))
+
+        await model.deletePlaylist(playlist.id)
+        XCTAssertEqual(model.selectedNavigation, .larder)
+        await model.close()
+    }
+
+    /// The selection is stored, and a relaunch keeps a playlist that exists and drops one that does not.
+    func testAPlaylistSelectionSurvivesRelaunchOnlyWhileThePlaylistExists() async throws {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        let first = storeModel(preferences)
+        first.startStoreBootstrap()
+        await first.waitForStoreBootstrap()
+        let playlist = try await created(first, .automatic, "Kept")
+        XCTAssertEqual(preferences.string(forKey: WiltedMacModel.selectedNavigationPreferenceKey),
+                       "playlist:\(playlist.id)")
+
+        // Same store directory is not reused by the helper, so the relaunch below has no playlists:
+        // the stored selection restores first, then falls back once the playlists are read.
+        let second = storeModel(preferences)
+        XCTAssertEqual(second.selectedNavigation, .playlist(playlist.id), "restored before the store opens")
+        second.startStoreBootstrap()
+        await second.waitForStoreBootstrap()
+        await second.loadPlaylists()
+        XCTAssertEqual(second.selectedNavigation, .larder, "an unknown playlist falls back to the Larder")
+        XCTAssertEqual(WiltedMacNavigation(rawValue: "playlist:"), nil)
+        XCTAssertEqual(WiltedMacNavigation(rawValue: "playlist:abc"), .playlist("abc"))
+        XCTAssertEqual(WiltedMacNavigation.playlist("a").reconciled(knownPlaylistIDs: ["a"]), .playlist("a"))
+        await first.close()
+        await second.close()
+    }
+
     func testStaleAndUnknownPiecesFallBackToDefaults() throws {
         let preferences = WiltedMacTestPreferences.ephemeral()
         var stored = WiltedMacNavigationState()

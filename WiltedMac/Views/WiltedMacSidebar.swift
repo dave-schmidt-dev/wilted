@@ -10,7 +10,7 @@ struct WiltedMacSidebar: View {
     @Bindable var model: WiltedMacModel
     let mode: WiltedMacSidebarMode
     let onSelect: (WiltedMacNavigation) -> Void
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
         // No `selection:` binding on purpose. The rows are buttons that set
@@ -27,6 +27,7 @@ struct WiltedMacSidebar: View {
                 ForEach(WiltedMacNavigation.allCases) { destination in
                     row(destination)
                 }
+                playlistsSection
             }
             // The sidebar carries a page-token background rather than the
             // default AppKit material. It matches the rest of the palette, and
@@ -36,10 +37,12 @@ struct WiltedMacSidebar: View {
             .scrollContentBackground(.hidden)
             .background(WiltedTheme.color(.page, scheme: colorScheme))
             .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+            .task { await model.loadPlaylists() }
             if mode == .full { totals } else { railReadyTotal }
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityIdentifier("wilted-mac-sidebar")
+        .modifier(WiltedMacPlaylistPrompts(model: model))
     }
 
     func row(_ destination: WiltedMacNavigation) -> some View {
@@ -134,6 +137,8 @@ struct WiltedMacSidebar: View {
 /// Shipping row contents resolve appearance within the view graph, including focused captures.
 struct WiltedMacSidebarRow: View {
     let destination: WiltedMacNavigation
+    /// The row's name when it is not the destination's own (a playlist carries its own).
+    var title: String?
     let mode: WiltedMacSidebarMode
     let isSelected: Bool
     let textScale: WiltedTheme.TextScale
@@ -157,7 +162,8 @@ struct WiltedMacSidebarRow: View {
                     .frame(width: WiltedTheme.scaled(20, scale: textScale))
                     .accessibilityHidden(true)
                 if mode == .full {
-                    Text(destination.title)
+                    Text(title ?? destination.title)
+                        .lineLimit(1)
                         .foregroundStyle(
                             WiltedMacSidebarStyle.titleColor(isSelected: isSelected, scheme: colorScheme)
                         )
@@ -173,8 +179,8 @@ struct WiltedMacSidebarRow: View {
                 ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
                 : Color.clear
         )
-        .help(destination.title)
-        .accessibilityLabel(destination.title)
+        .help(title ?? destination.title)
+        .accessibilityLabel(title ?? destination.title)
         .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }

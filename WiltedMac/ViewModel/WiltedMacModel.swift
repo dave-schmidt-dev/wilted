@@ -208,6 +208,7 @@ final class WiltedMacModel {
     /// is used once a session and was charging the library a card of room for
     /// it every time the reader looked at the list.
     var isPresentingComposer = false
+    var playlists = WiltedMacPlaylistsState()
     var selectedNavigation: WiltedMacNavigation = .larder {
         didSet {
             preferences.set(selectedNavigation.rawValue, forKey: Self.selectedNavigationPreferenceKey)

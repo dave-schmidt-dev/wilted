@@ -13,18 +13,48 @@ import WiltedSync
 import CloudKit
 #endif
 
-enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable {
+enum WiltedMacNavigation: RawRepresentable, CaseIterable, Hashable, Identifiable, Sendable {
     case larder
     case feeds
     case settings
+    /// A user playlist, by its store ID. Never a sidebar destination of its own: the sidebar lists
+    /// playlists in their own section, so `allCases` stays the three permanent destinations.
+    case playlist(String)
 
     var id: Self { self }
+
+    static let playlistPrefix = "playlist:"
+
+    /// The persisted name: the destination's name, or `playlist:` and the playlist's ID.
+    var rawValue: String {
+        switch self {
+        case .larder: "larder"
+        case .feeds: "feeds"
+        case .settings: "settings"
+        case let .playlist(id): Self.playlistPrefix + id
+        }
+    }
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "larder": self = .larder
+        case "feeds": self = .feeds
+        case "settings": self = .settings
+        default:
+            guard rawValue.hasPrefix(Self.playlistPrefix), rawValue.count > Self.playlistPrefix.count else { return nil }
+            self = .playlist(String(rawValue.dropFirst(Self.playlistPrefix.count)))
+        }
+    }
+
+    /// The three permanent destinations, in sidebar order.
+    static var allCases: [WiltedMacNavigation] { [.larder, .feeds, .settings] }
 
     var title: String {
         switch self {
         case .feeds: WiltedScreenCopy.feeds
         case .larder: WiltedScreenCopy.library
         case .settings: WiltedScreenCopy.settings
+        case .playlist: "Playlist"
         }
     }
 
@@ -33,6 +63,7 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
         case .feeds: WiltedSymbol.broccoli.rawValue
         case .larder: WiltedSymbol.larder.rawValue
         case .settings: "gearshape"
+        case .playlist: "music.note.list"
         }
     }
 
@@ -43,7 +74,8 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
     /// Larder is now the one place episodes wait, so a stored `library` or
     /// `processor` resolves there. An unreadable or absent value takes the
     /// same answer: the Larder is where the reader's episodes are. `menu` is the
-    /// raw value the Larder was stored under before it was renamed.
+    /// raw value the Larder was stored under before it was renamed. A stored
+    /// playlist is kept here, because the playlists are not loaded yet; see `reconciled`.
     static let legacyLarderRawValue = "menu"
 
     static func restored(from rawValue: String?) -> WiltedMacNavigation {
@@ -53,8 +85,16 @@ enum WiltedMacNavigation: String, CaseIterable, Hashable, Identifiable, Sendable
         return restored
     }
 
+    /// The selection once the playlists are known: a playlist that no longer exists (deleted here,
+    /// or on a build that kept it) resolves to the Larder. Run after the playlists load, never
+    /// before, or every relaunch would leave the playlist it was on.
+    func reconciled(knownPlaylistIDs: Set<String>) -> WiltedMacNavigation {
+        guard case let .playlist(id) = self, !knownPlaylistIDs.contains(id) else { return self }
+        return .larder
+    }
+
     /// Compatibility names for the retired destinations. Neither is a case:
-    /// `allCases` is exactly Feeds, Larder and Settings, and source that still
+    /// `allCases` is exactly Larder, Feeds and Settings, and source that still
     /// says `library` or `processor` means the Larder now. Remove these when the
     /// host test target that still names them is updated.
     static var library: WiltedMacNavigation { .larder }

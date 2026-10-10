@@ -559,9 +559,10 @@ public final class PlaybackController {
             guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
             let state = try? await store.podcastQueueState()
             guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
-            guard let state, state.currentEpisodeID == completedItemID else {
-                // An article, or an episode played outside the queue. Nothing
-                // advances, so this is the only notice that the audio stopped.
+            guard completedIsPodcastEpisode, let state, state.currentEpisodeID == completedItemID else {
+                // An article, or an episode played outside the queue (loaded with `load`, even when
+                // it is also the queue's current item). Nothing advances, so this is the only
+                // notice that the audio stopped.
                 playbackDidFinishHandler?()
                 return
             }

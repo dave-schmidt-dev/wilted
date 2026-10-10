@@ -51,7 +51,8 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: "sidebar-rail", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "toolbar", appearance: appearance)
             ] + ["add-sheet-link", "add-sheet-results", "add-sheet-followed", "add-sheet-error", "feed-policy-article", "feeds-article-row",
-                "larder-kind-filter", "larder-book-row", "player-chapters"].map {
+                "larder-kind-filter", "larder-book-row", "player-chapters",
+                "sidebar-playlists", "playlist-manual", "playlist-rules"].map {
                 WiltedSnapshotContract.shellName(kind: $0, appearance: appearance)
             }
         }
@@ -714,7 +715,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 enum WiltedSnapshotContract {
     static let stateCount = WiltedPreviewState.allCases.count
     static let variantCount = WiltedVisualVariant.matrix.count
-    static let shellCount = 34
+    static let shellCount = 40
     static let expectedPixelBaselineCount = stateCount * variantCount + shellCount
 
     static var recordMode: Bool {

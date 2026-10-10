@@ -95,6 +95,8 @@ struct WiltedMacRootView: View {
                                 WiltedMacLarderView(model: model, paneMode: shell.pane, sidebarMode: shell.sidebar)
                             case .settings:
                                 WiltedMacSettingsView(model: model)
+                            case .playlist(let id):
+                                WiltedMacPlaylistView(model: model, playlistID: id)
                             }
                         }
                         if shell.pane == .side {

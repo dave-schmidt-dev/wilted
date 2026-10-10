@@ -263,7 +263,8 @@ extension WiltedMacModel {
     }
 
     var canSelectPreviousEpisode: Bool {
-        previousEligiblePodcastQueueEpisode() != nil
+        if playlistSessionIsCurrent { return canStepPlaylistPrevious }
+        return previousEligiblePodcastQueueEpisode() != nil
     }
 
     /// The next queued episode after the current one that satisfies `canPlayEpisode`.
@@ -283,7 +284,8 @@ extension WiltedMacModel {
     }
 
     var canSelectNextEpisode: Bool {
-        nextEligiblePodcastQueueEpisode() != nil
+        if playlistSessionIsCurrent { return canStepPlaylistNext }
+        return nextEligiblePodcastQueueEpisode() != nil
     }
 
     var canCancelPreparation: Bool { preparation?.cancellable == true }
