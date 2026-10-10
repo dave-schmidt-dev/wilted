@@ -214,8 +214,8 @@ assert_build_cache_routing_contract() {
 
 assert_build_cache_routing_contract
 
-# shellcheck source=native-gate-capability-contract.sh
-source "$repo_root/tests/native-gate-capability-contract.sh"
+# shellcheck source=../scripts/lib/native-gate-capability-contract.sh
+source "$repo_root/scripts/lib/native-gate-capability-contract.sh"
 
 assert_capability_source_contract
 
