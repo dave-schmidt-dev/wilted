@@ -227,7 +227,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
     func testEpisodeDecisionJourneyFromFeedsToLarder() {
         let app = launch(arguments: [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
-            "--wilted-ui-fixture-download-failure"
+            "--wilted-ui-fixture-download-failure",
+            "--wilted-ui-fixture-window-width", "1200"
         ])
 
         let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]

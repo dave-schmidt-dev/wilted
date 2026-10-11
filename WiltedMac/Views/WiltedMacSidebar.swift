@@ -35,6 +35,7 @@ struct WiltedMacSidebar: View {
             // the material was additionally invisible to offscreen rendering,
             // which is why the navigation column recorded as a blank rectangle
             // in every Mac pixel baseline.
+            .accessibilityIdentifier("wilted-mac-sidebar")
             .scrollContentBackground(.hidden)
             .background(WiltedTheme.color(.page, scheme: colorScheme))
             .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
@@ -43,8 +44,6 @@ struct WiltedMacSidebar: View {
             publicationFooter
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-mac-sidebar")
         .modifier(WiltedMacPlaylistPrompts(model: model))
     }
 

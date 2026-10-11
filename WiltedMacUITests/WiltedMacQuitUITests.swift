@@ -20,6 +20,7 @@ final class WiltedMacQuitUITests: XCTestCase {
         app.launchArguments = [
             "-ApplePersistenceIgnoreState", "YES",
             "--wilted-ui-fixture-playing",
+            "--wilted-ui-fixture-window-width", "1200",
             "--wilted-ui-fixture-state-directory", state.path,
             "--wilted-termination-journal", journal.path,
         ]
