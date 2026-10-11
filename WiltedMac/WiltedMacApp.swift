@@ -88,7 +88,18 @@ struct WiltedMacApp: App {
         return { await PodcastPreparationPipeline.resolveSemanticFingerprintOffMainPath() }
     }
 
+    @MainActor private static var didTraceFixtureSceneEvaluation = false
+
+    @MainActor
+    private static func recordFixtureSceneEvaluation() {
+        guard let trace = WiltedMacAppDelegate.windowLifecycleTrace,
+              !didTraceFixtureSceneEvaluation else { return }
+        didTraceFixtureSceneEvaluation = true
+        trace.record("scene-body-evaluated")
+    }
+
     var body: some Scene {
+        let _ = Self.recordFixtureSceneEvaluation()
         WindowGroup {
             WiltedMacRootView(model: model)
                 .task {
