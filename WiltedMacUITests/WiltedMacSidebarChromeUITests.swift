@@ -25,6 +25,7 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
         let toggle = app.buttons["wilted-sidebar-toggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         let sidebar = app.descendants(matching: .any)["wilted-mac-sidebar"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 5), "the sidebar exposes its containing accessibility group")
         let heading = app.descendants(matching: .any)["wilted-larder-audio-total"]
         let controls = [XCUIIdentifierCloseWindow, XCUIIdentifierMinimizeWindow, "_XCUI:FullScreenWindow"]
             .map { window.buttons[$0] }

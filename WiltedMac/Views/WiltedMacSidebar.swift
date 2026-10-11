@@ -43,6 +43,7 @@ struct WiltedMacSidebar: View {
             publicationFooter
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-mac-sidebar")
         .modifier(WiltedMacPlaylistPrompts(model: model))
     }
