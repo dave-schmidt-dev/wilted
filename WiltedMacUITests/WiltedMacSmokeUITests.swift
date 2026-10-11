@@ -53,6 +53,33 @@ final class WiltedMacSmokeUITests: XCTestCase {
         app.typeKey("f", modifierFlags: .command)
         app.typeText("garden")
         XCTAssertEqual(search.value as? String, "garden", "Find focuses the visible toolbar search field")
+        if search.value as? String != "garden" {
+            // Inspect only the app own known Find command; preserve the failed shortcut assertion.
+            let edit = app.menuBarItems["Edit"]
+            var findCount = 0
+            var findEnabled = false
+            var menuProbeMatched = false
+            if edit.exists && edit.isEnabled {
+                edit.click()
+                let find = app.menuItems.matching(NSPredicate(format: "label == %@", "Find…"))
+                findCount = find.count
+                if findCount == 1 {
+                    let command = find.firstMatch
+                    findEnabled = command.isEnabled
+                    if findEnabled {
+                        command.click()
+                        app.typeText("wilted-focus-probe")
+                        menuProbeMatched = search.value as? String == "wilted-focus-probe"
+                    }
+                }
+                if !findEnabled { app.typeKey(.escape, modifierFlags: []) }
+            }
+            let diagnostic = XCTAttachment(string:
+                "Find count=\(findCount) enabled=\(findEnabled) menuProbeMatched=\(menuProbeMatched)")
+            diagnostic.name = "Fixture Find command routing"
+            diagnostic.lifetime = .keepAlways
+            add(diagnostic)
+        }
         app.typeKey("a", modifierFlags: .command)
         app.typeKey(.delete, modifierFlags: [])
 
@@ -87,7 +114,17 @@ final class WiltedMacSmokeUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
         for _ in 0..<6 where !actions.isHittable {
-            app.scrollViews["wilted-mac-root"].scroll(byDeltaX: 0, deltaY: -300)
+            let window = app.windows.firstMatch
+            let candidates = app.scrollViews.allElementsBoundByIndex.filter {
+                $0.isHittable && $0.frame.width > window.frame.width / 2 && $0.frame.height > 100
+            }
+            guard let viewport = candidates.max(by: {
+                $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
+            }) else {
+                XCTFail("A nonzero hittable detail viewport is required to reveal the article menu")
+                break
+            }
+            viewport.scroll(byDeltaX: 0, deltaY: -300)
         }
         XCTAssertTrue(actions.isHittable, "the article menu is reachable in the fixture viewport")
         actions.click()
@@ -356,7 +393,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
         app.terminate()
         let playing = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
                                          "--wilted-ui-fixture-window-width", "1400"])
-        XCTAssertTrue(playing.descendants(matching: .any)["wilted-now-playing-pane"].waitForExistence(timeout: 10))
+        let itemTitle = playing.staticTexts["wilted-player-item-title"]
+        XCTAssertTrue(itemTitle.waitForExistence(timeout: 10), "the actual playing item is visible in the side pane")
+        XCTAssertGreaterThan(itemTitle.frame.minX, playing.windows.firstMatch.frame.midX,
+                             "the real item title occupies the side pane beside the Larder")
         let completion = playing.buttons["wilted-player-mark-completed"]
         XCTAssertTrue(completion.waitForExistence(timeout: 5))
         XCTAssertTrue(completion.isHittable, "completion stays visible beside transport")
@@ -377,14 +417,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(position.waitForExistence(timeout: 5))
         playing.buttons["wilted-player-forward"].click()
         let advanced = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", "30 seconds of 2 minutes"), object: position
+            predicate: NSPredicate { _, _ in Double(String(describing: position.value ?? "")) == 30 }, object: position
         )
         XCTAssertEqual(XCTWaiter().wait(for: [advanced], timeout: 5), .completed,
                        "the forward transport establishes 30 seconds before restart")
         XCTAssertFalse(speed.exists)
         playing.typeKey("r", modifierFlags: .command)
         let restarted = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", "0 seconds of 2 minutes"), object: position
+            predicate: NSPredicate { _, _ in Double(String(describing: position.value ?? "")) == 0 }, object: position
         )
         XCTAssertEqual(XCTWaiter().wait(for: [restarted], timeout: 5), .completed,
                        "Command-R resets the actual playhead with the popover closed")
