@@ -162,6 +162,23 @@ final class WiltedMacRedesignTests: XCTestCase {
             arguments: ["app", "--wilted-ui-fixture-larder-demo", WiltedMacFixtureWindowWidth.argument]))
     }
 
+    func testFixtureSizingPreservesUsableHeightThroughZeroInitialSceneLayout() {
+        for width in [CGFloat(900), 1200, 1400] {
+            for height in [CGFloat(-16), 0, 12, 398, 450] {
+                let size = WiltedMacFixtureWindowWidth.contentSize(
+                    current: CGSize(width: 1400, height: height), requestedWidth: width, minimumHeight: 0)
+                XCTAssertEqual(size, CGSize(width: width, height: 640),
+                               "initial scene height \(height) must not create an invisible fixture window")
+            }
+            XCTAssertEqual(WiltedMacFixtureWindowWidth.contentSize(
+                current: CGSize(width: 900, height: 844), requestedWidth: width, minimumHeight: 0),
+                CGSize(width: width, height: 844), "a taller existing viewport is retained")
+            XCTAssertEqual(WiltedMacFixtureWindowWidth.contentSize(
+                current: .zero, requestedWidth: width, minimumHeight: 720),
+                CGSize(width: width, height: 720), "the native content minimum still applies")
+        }
+    }
+
     // MARK: Watermark
 
     func testPhoneWatermarkKeepsItsSize() {

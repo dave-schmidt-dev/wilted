@@ -8,6 +8,14 @@ import SwiftUI
 enum WiltedMacFixtureWindowWidth {
     static let argument = "--wilted-ui-fixture-window-width"
 
+    /// Explicit fixture viewport height; the initial scene can report zero content height.
+    static let minimumFixtureContentHeight: CGFloat = 640
+
+    /// Keeps a fixture usable through the first layout pass while preserving a taller window.
+    static func contentSize(current: CGSize, requestedWidth: CGFloat, minimumHeight: CGFloat) -> CGSize {
+        CGSize(width: requestedWidth, height: max(minimumFixtureContentHeight, max(current.height, minimumHeight)))
+    }
+
     /// The requested content width, or nil when the launch is not a fixture
     /// launch or names no usable number.
     static func width(arguments: [String]) -> CGFloat? {
@@ -45,8 +53,10 @@ struct WiltedMacFixtureWindowSizer: NSViewRepresentable {
             // After the first layout pass, which would otherwise restore the
             // window's own size over this one.
             DispatchQueue.main.async {
-                var size = window.contentLayoutRect.size
-                size.width = self.width
+                let size = WiltedMacFixtureWindowWidth.contentSize(
+                    current: window.contentLayoutRect.size, requestedWidth: self.width,
+                    minimumHeight: window.contentMinSize.height
+                )
                 window.setContentSize(size)
                 // And onto the screen: a restored window can hang off the
                 // bottom, which hides the part of it a capture is meant to show.
