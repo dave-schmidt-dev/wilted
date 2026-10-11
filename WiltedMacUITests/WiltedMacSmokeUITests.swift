@@ -56,26 +56,46 @@ final class WiltedMacSmokeUITests: XCTestCase {
         if search.value as? String != "garden" {
             // Inspect only the app own known Find command; preserve the failed shortcut assertion.
             let edit = app.menuBarItems["Edit"]
+            let editExists = edit.waitForExistence(timeout: 5)
+            let editEnabled = editExists && edit.isEnabled
+            let editHittable = editExists && edit.isHittable
+            var findPrefixReady = false
+            var findLabels: [String] = []
             var findCount = 0
             var findEnabled = false
             var menuProbeMatched = false
-            if edit.exists && edit.isEnabled {
+            if editEnabled && editHittable {
                 edit.click()
-                let find = app.menuItems.matching(NSPredicate(format: "label == %@", "Find…"))
-                findCount = find.count
-                if findCount == 1 {
-                    let command = find.firstMatch
-                    findEnabled = command.isEnabled
-                    if findEnabled {
-                        command.click()
-                        app.typeText("wilted-focus-probe")
-                        menuProbeMatched = search.value as? String == "wilted-focus-probe"
+                let candidates = app.menuItems.matching(NSPredicate(
+                    format: "label BEGINSWITH[c] %@ OR identifier BEGINSWITH[c] %@", "Find", "Find"))
+                findPrefixReady = candidates.firstMatch.waitForExistence(timeout: 5)
+                if findPrefixReady {
+                    let items = candidates.allElementsBoundByIndex
+                    let staticNames: Set<String> = ["Find", "Find…", "Find...", "Find Next", "Find Previous", "Find Selection"]
+                    findLabels = items.map { $0.label.isEmpty ? $0.identifier : $0.label }
+                        .filter { staticNames.contains($0) }
+                    let actions = items.filter {
+                        let name = ($0.label.isEmpty ? $0.identifier : $0.label)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .replacingOccurrences(of: "…", with: "...")
+                        return name == "Find..."
+                    }
+                    findCount = actions.count
+                    if actions.count == 1, let command = actions.first {
+                        findEnabled = command.isEnabled
+                        if findEnabled {
+                            command.click()
+                            app.typeText("wilted-focus-probe")
+                            menuProbeMatched = search.value as? String == "wilted-focus-probe"
+                        }
                     }
                 }
                 if !findEnabled { app.typeKey(.escape, modifierFlags: []) }
             }
             let diagnostic = XCTAttachment(string:
-                "Find count=\(findCount) enabled=\(findEnabled) menuProbeMatched=\(menuProbeMatched)")
+                "Edit exists=\(editExists) enabled=\(editEnabled) hittable=\(editHittable) "
+                    + "Find prefixReady=\(findPrefixReady) labels=\(findLabels) "
+                    + "actionCount=\(findCount) enabled=\(findEnabled) menuProbeMatched=\(menuProbeMatched)")
             diagnostic.name = "Fixture Find command routing"
             diagnostic.lifetime = .keepAlways
             add(diagnostic)

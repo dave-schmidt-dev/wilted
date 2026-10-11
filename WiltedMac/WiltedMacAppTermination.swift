@@ -257,6 +257,13 @@ final class WiltedMacTerminationJournal: @unchecked Sendable {
             "windowCount": windows.count,
             "appHidden": application.isHidden,
         ]
+        let edit = application.mainMenu?.item(withTitle: "Edit")
+        let find = edit?.submenu?.item(withTitle: "Find…")
+            ?? edit?.submenu?.item(withTitle: "Find...")
+        entry["editMenuPresent"] = edit != nil
+        entry["editMenuEnabled"] = edit?.isEnabled ?? false
+        entry["findMenuPresent"] = find != nil
+        entry["findMenuEnabled"] = find?.isEnabled ?? false
         for (index, window) in windows.enumerated() {
             let prefix = "window\(index)_"
             entry[prefix + "frameWidth"] = Double(window.frame.width)
