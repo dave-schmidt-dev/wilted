@@ -435,6 +435,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
         ]
         app.launch()
         launchedFixtureApps.append(app)
+        do {
+            try WiltedMacUITestApplicationLaunch.reopenFixture(app)
+        } catch {
+            XCTFail("Fixture LaunchServices identity/reopen failed: \(error)")
+            fatalError("Fixture reopen was refused")
+        }
         app.activate()
         // Match the Chrome journey activation pattern; foreground and window
         // readiness remain separate checks while this launch hypothesis is qualified.

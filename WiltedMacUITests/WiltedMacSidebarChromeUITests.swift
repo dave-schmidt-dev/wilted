@@ -18,6 +18,7 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
             "--wilted-ui-fixture-state-directory", root.path,
         ]
         app.launch()
+        try WiltedMacUITestApplicationLaunch.reopenFixture(app)
         app.activate()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
         let window = app.windows.firstMatch

@@ -25,6 +25,7 @@ final class WiltedMacQuitUITests: XCTestCase {
             "--wilted-termination-journal", journal.path,
         ]
         app.launch()
+        try WiltedMacUITestApplicationLaunch.reopenFixture(app)
         app.activate()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "the fixture became foreground")
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "the fixture window appeared")
