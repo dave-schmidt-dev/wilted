@@ -43,9 +43,12 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
         from snapshot: LocalLibraryStore.PodcastLibrarySnapshot, queue: [ItemID],
         playback: WiltedMacPlaybackSample?, deviceID: String
     ) throws -> LibraryStateSnapshot {
+        let displayNames = Dictionary(snapshot.subscriptions.compactMap { subscription in
+            subscription.displayName.map { (subscription.feedID, $0) }
+        }, uniquingKeysWith: { first, _ in first })
         let feeds = snapshot.feeds.values.sorted { $0.itemID.rawValue < $1.itemID.rawValue }.map { feed in
             LibrarySource(
-                id: feed.itemID, kind: .podcastFeed, title: feed.title,
+                id: feed.itemID, kind: .podcastFeed, title: displayNames[feed.itemID] ?? feed.title,
                 locator: feed.canonicalURL.absoluteString, artworkRef: feed.artworkURL?.absoluteString
             )
         }
@@ -75,14 +78,16 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
             .sorted { $0.episodeID.rawValue < $1.episodeID.rawValue }
             .map { ListeningRecord(itemID: $0.episodeID, completedAt: $0.completedAt?.date, updatedAt: $0.updatedAt.date, deviceID: deviceID) }
         return LibraryStateSnapshot(
-            feeds: feeds + articleFeedSources(in: snapshot), episodes: published, queue: queue.filter(active.contains),
+            feeds: feeds + articleFeedSources(in: snapshot, displayNames: displayNames), episodes: published, queue: queue.filter(active.contains),
             listening: listening, currentPlayback: try position(of: playback, in: snapshot, known: known, deviceID: deviceID)
         )
     }
 
-    private static func articleFeedSources(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [LibrarySource] {
+    private static func articleFeedSources(
+        in snapshot: LocalLibraryStore.PodcastLibrarySnapshot, displayNames: [ItemID: String]
+    ) -> [LibrarySource] {
         snapshot.articleFeeds.sorted { $0.itemID.rawValue < $1.itemID.rawValue }.map {
-            LibrarySource(id: $0.itemID, kind: .articleFeed, title: $0.title, locator: $0.canonicalURL.absoluteString)
+            LibrarySource(id: $0.itemID, kind: .articleFeed, title: displayNames[$0.itemID] ?? $0.title, locator: $0.canonicalURL.absoluteString)
         }
     }
 

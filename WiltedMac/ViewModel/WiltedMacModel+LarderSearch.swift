@@ -81,7 +81,9 @@ extension WiltedMacModel {
     var feedsEpisodes: [WiltedMacEpisode] {
         let waiting = Set(podcastQueueIDs)
         return Self.sortedLarderEpisodes(
-            larderVisibleEpisodes.filter { !waiting.contains($0.id) && !$0.isAudiobook },
+            larderVisibleEpisodes.filter {
+                !waiting.contains($0.id) && !$0.isAudiobook && !pendingFeedDecisionIDs.contains($0.id)
+            },
             by: feedsSort
         )
     }

@@ -14,11 +14,19 @@ final class WiltedMacTerminationTests: XCTestCase {
     func testDelayedSaveRepliesOnceAfterDrainAndRepeatQuitJoinsIt() async throws {
         let owner = ScriptedTerminationOwner()
         owner.holdsLocal = true
-        let (coordinator, replies) = makeCoordinator(owner)
+        var isVisible = true
+        var dismissals = 0
+        let (coordinator, replies) = makeCoordinator(owner, dismiss: {
+            isVisible = false
+            dismissals += 1
+        })
 
         XCTAssertEqual(coordinator.shouldTerminate(), .terminateLater)
+        XCTAssertFalse(isVisible, "the app is dismissed synchronously before the drain is awaited")
+        XCTAssertEqual(dismissals, 1)
         await owner.waitUntilLocalStarted()
         XCTAssertEqual(coordinator.shouldTerminate(), .terminateLater, "a repeat quit joins the running drain")
+        XCTAssertEqual(dismissals, 1, "a repeated quit does not dismiss or start another drain")
         XCTAssertEqual(owner.localRuns, 1)
         XCTAssertTrue(replies.values.isEmpty, "no reply while the save is still running")
 
@@ -29,17 +37,29 @@ final class WiltedMacTerminationTests: XCTestCase {
         XCTAssertEqual(coordinator.state, .approved)
         XCTAssertEqual(coordinator.shouldTerminate(), .terminateNow)
         XCTAssertEqual(replies.values, [true], "still exactly one reply")
+        XCTAssertFalse(isVisible, "a successful quit stays dismissed")
     }
 
     func testFailedSaveCancelsQuitVisiblyAndRetryExitsAfterSaving() async throws {
         let owner = ScriptedTerminationOwner()
         owner.localFailures = 1
+        var isVisible = true
+        var dismissals = 0
+        var restorations = 0
         var presented: [WiltedMacTerminationFailure] = []
-        let (coordinator, replies) = makeCoordinator(owner) { presented.append($0) }
+        let (coordinator, replies) = makeCoordinator(
+            owner,
+            dismiss: { isVisible = false; dismissals += 1 },
+            restore: { isVisible = true; restorations += 1 }
+        ) { presented.append($0) }
 
         XCTAssertEqual(coordinator.shouldTerminate(), .terminateLater)
+        XCTAssertFalse(isVisible, "the app is dismissed while saving")
         try await waitFor { !replies.values.isEmpty }
         XCTAssertEqual(replies.values, [false], "a failed save keeps the app open")
+        XCTAssertTrue(isVisible, "a failed save restores the app before the retry prompt")
+        XCTAssertEqual(dismissals, 1)
+        XCTAssertEqual(restorations, 1)
         guard case .failed(.saveFailed) = coordinator.state else {
             return XCTFail("expected a visible save failure, got \(coordinator.state)")
         }
@@ -48,19 +68,28 @@ final class WiltedMacTerminationTests: XCTestCase {
         XCTAssertFalse(owner.events.contains("network"), "nothing is closed for a quit that did not happen")
 
         XCTAssertEqual(coordinator.shouldTerminate(), .terminateLater, "retry quits again")
+        XCTAssertFalse(isVisible, "retry dismisses the app while saving again")
         try await waitFor { replies.values.count == 2 }
         XCTAssertEqual(replies.values, [false, true])
         XCTAssertEqual(owner.savedRuns, 1, "the retry exits only after saving")
+        XCTAssertEqual(dismissals, 2)
+        XCTAssertEqual(restorations, 1)
     }
 
     func testTimedOutSaveCancelsQuitAndItsLateCompletionCannotReply() async throws {
         let owner = ScriptedTerminationOwner()
         owner.holdsLocal = true
-        let (coordinator, replies) = makeCoordinator(owner, budget: .milliseconds(80))
+        var isVisible = true
+        let (coordinator, replies) = makeCoordinator(
+            owner, budget: .milliseconds(80),
+            dismiss: { isVisible = false }, restore: { isVisible = true }
+        )
 
         XCTAssertEqual(coordinator.shouldTerminate(), .terminateLater)
+        XCTAssertFalse(isVisible)
         try await waitFor { !replies.values.isEmpty }
         XCTAssertEqual(replies.values, [false])
+        XCTAssertTrue(isVisible, "a timed-out drain restores the app")
         XCTAssertEqual(coordinator.state, .failed(.timedOut))
         try await waitFor { owner.localWasCancelled }
 
@@ -485,12 +514,17 @@ final class WiltedMacTerminationTests: XCTestCase {
     private func makeCoordinator(
         _ owner: ScriptedTerminationOwner,
         budget: Duration = .seconds(5),
+        dismiss: @escaping @MainActor () -> Void = {},
+        restore: @escaping @MainActor () -> Void = {},
         present: @escaping @MainActor (WiltedMacTerminationFailure) -> Void = { _ in }
     ) -> (WiltedMacTerminationCoordinator, TerminationReplies) {
         let replies = TerminationReplies()
         let coordinator = WiltedMacTerminationCoordinator(
             owner: owner, budget: budget,
-            reply: { replies.values.append($0) }, presentFailure: present
+            reply: { replies.values.append($0) },
+            dismissForPendingTermination: dismiss,
+            restoreAfterCancelledTermination: restore,
+            presentFailure: present
         )
         return (coordinator, replies)
     }

@@ -24,7 +24,9 @@ extension WiltedMacModel {
     /// Offered posts of feeds still followed, newest first.
     var feedsOfferedArticles: [WiltedMacOfferedArticle] {
         let followed = Set(subscriptions.filter(\.enabled).map(\.id))
-        return offeredArticles.filter { followed.contains($0.feedID) }
+        return offeredArticles.filter {
+            followed.contains($0.feedID) && !pendingFeedDecisionIDs.contains($0.id)
+        }
             .sorted { ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast) }
     }
 

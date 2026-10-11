@@ -103,6 +103,57 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
 
     // MARK: State source
 
+    func testSavedFeedRenamePublishesToSharedPhoneSourceWithoutChangingIdentity() async throws {
+        let (model, store) = try await bootstrapped("library-sync-feed-display-name")
+        _ = try await seedEpisodes(store)
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+        let original = try await source(store).currentState()
+        let publisher = try await store.podcastFeed(for: feedID)
+        try await store.setSubscriptionDisplayName(feedID: feedID, displayName: "  Owner show  ")
+        let renamed = try await source(store).currentState()
+        let published = try XCTUnwrap(renamed.feeds.first { $0.id == feedID })
+        XCTAssertEqual(published.title, "Owner show")
+        XCTAssertEqual(published.id, original.feeds.first?.id)
+        XCTAssertEqual(published.locator, original.feeds.first?.locator)
+        XCTAssertEqual(published.kind, .podcastFeed)
+        XCTAssertEqual(renamed.episodes.map(\.sourceID), original.episodes.map(\.sourceID))
+        let phoneSource = try JSONDecoder().decode(LibrarySource.self, from: JSONEncoder().encode(published))
+        XCTAssertEqual(phoneSource, published, "the phone's shared source wire type retains title and identity")
+        let afterPublisher = try await store.podcastFeed(for: feedID)
+        XCTAssertEqual(afterPublisher?.title, publisher?.title, "publisher title stays factual")
+        try await store.setSubscriptionDisplayName(feedID: feedID, displayName: " \n ")
+        let cleared = try await source(store).currentState()
+        XCTAssertEqual(cleared.feeds.first?.title, publisher?.title)
+        XCTAssertEqual(cleared.feeds.first?.id, feedID)
+        await model.close()
+    }
+
+    func testSavedArticleFeedRenamePublishesAliasAndPublisherFallbackWithStableSourceID() async throws {
+        let (model, store) = try await bootstrapped("library-sync-article-display-name")
+        let feed = try ArticleFeed(
+            canonicalURL: URL(string: "https://blog.example.test/rename.xml")!,
+            title: "Publisher blog", createdAt: created)
+        try await store.save(articleFeed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: created))
+        try await store.setSubscriptionDisplayName(feedID: feed.itemID, displayName: "Owner blog")
+        let renamed = try await source(store).currentState()
+        let published = try XCTUnwrap(renamed.feeds.first { $0.id == feed.itemID })
+        XCTAssertEqual(published.title, "Owner blog")
+        XCTAssertEqual(published.kind, .articleFeed)
+        XCTAssertEqual(published.locator, feed.canonicalURL.absoluteString)
+        let phoneSource = try JSONDecoder().decode(LibrarySource.self, from: JSONEncoder().encode(published))
+        XCTAssertEqual(phoneSource, published)
+        let snapshot = try await store.podcastLibrarySnapshot()
+        XCTAssertEqual(snapshot.articleFeeds.first { $0.itemID == feed.itemID }?.title, "Publisher blog")
+        try await store.setSubscriptionDisplayName(feedID: feed.itemID, displayName: " \n ")
+        let cleared = try await source(store).currentState()
+        XCTAssertEqual(cleared.feeds.first?.id, feed.itemID)
+        XCTAssertEqual(cleared.feeds.first?.title, "Publisher blog")
+        XCTAssertEqual(cleared.feeds.first?.locator, published.locator)
+        await model.close()
+    }
+
     func testStateSourceMapsFeedsEpisodesQueueRemovalAndListening() async throws {
         let (_, store) = try await bootstrapped("library-sync-state")
         let ids = try await seedEpisodes(store)

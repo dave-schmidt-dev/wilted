@@ -42,8 +42,8 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
     }
 
     private func index(of prefix: String, in lines: [(text: String, top: CGFloat)]) -> Int? {
-        lines.firstIndex { $0.text.lowercased().hasPrefix(prefix.lowercased())
-            || $0.text.lowercased().hasPrefix("> \(prefix.lowercased())") }
+        // Vision can prepend a glyph from the button's icon to its visible label.
+        lines.firstIndex { $0.text.localizedCaseInsensitiveContains(prefix) }
     }
 
     func testFeedsDrawsOneHeadingAndOneMessageWithOneUndoPerOperation() async throws {
@@ -74,6 +74,9 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         XCTAssertLessThan(heading, refreshed, "the heading, then the operation status")
         XCTAssertLessThan(refreshed, subscriptions, "active operations before subscriptions")
         XCTAssertLessThan(subscriptions, offList, "Off the list last")
+        XCTAssertLessThan(shown[heading].top, shown[refreshed].top)
+        XCTAssertLessThan(shown[refreshed].top, shown[subscriptions].top)
+        XCTAssertLessThan(shown[subscriptions].top, shown[offList].top, "History entry renders below subscriptions")
         XCTAssertEqual(shown.map(\.text).filter { $0.localizedCaseInsensitiveContains("Off the list") }.count, 1)
     }
 

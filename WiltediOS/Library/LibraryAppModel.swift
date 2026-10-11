@@ -149,7 +149,7 @@ final class LibraryAppModel: ObservableObject {
     var hasPendingRefresh: Bool { refreshTask != nil }
     private var refreshRequested = false
     private(set) var started = false
-    private var localStateLoaded = false
+    @Published private(set) var localStateLoaded = false
 
     init(
         transport: any LibraryTransport,
@@ -222,7 +222,6 @@ final class LibraryAppModel: ObservableObject {
         _ = await bindMediaOwner()
         displayContext = (await transport.operationGeneration(), saved.displayAdmissionRevision)
         let content = saved.content
-        localStateLoaded = true
         entryDurations = content.entries.compactMapValues(\.durationSeconds)
         decisionContent = content
         // The phone's own last positions, so an offline launch resumes where it left off.
@@ -236,6 +235,7 @@ final class LibraryAppModel: ObservableObject {
         }
         rebuildRows()
         await refreshMediaFromCache()
+        localStateLoaded = true
     }
 
     /// Fetches now. Calls made while a fetch is running share it and queue exactly one rerun,

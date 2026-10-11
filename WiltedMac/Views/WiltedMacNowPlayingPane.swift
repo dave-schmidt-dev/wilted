@@ -47,6 +47,7 @@ struct WiltedMacNowPlayingPane: View {
     @Bindable var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
     @Binding var state: WiltedMacPaneState
+    @State private var showsPlaybackActions = false
 
     var body: some View {
         Group {
@@ -176,7 +177,7 @@ struct WiltedMacNowPlayingPane: View {
     // MARK: Transport
 
     private var transportRow: some View {
-        HStack(spacing: WiltedTheme.Spacing.small) {
+        HStack(spacing: WiltedTheme.Spacing.xSmall) {
             transport("backward.end.fill", label: "Previous episode", id: "wilted-player-previous") {
                 model.previousPlayback()
             }
@@ -208,12 +209,31 @@ struct WiltedMacNowPlayingPane: View {
             }
             .disabled(!model.canSelectNextEpisode)
             .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
-            speedControl
-            overflowMenu
+            completionControl
+            overflowButton
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-player-keyboard-transports")
         .controlSize(.regular)
+        // The popover is unmounted when closed; keep Cmd-R available beside
+        // the transport for the entire loaded playback session.
+        .background {
+            Button("Restart") { model.restartPlayback() }
+                .keyboardShortcut("r", modifiers: .command)
+                .hidden()
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var completionControl: some View {
+        Button(model.playbackCompletionIsSettled ? "Completed" : "Mark completed") {
+            model.markCurrentPlaybackCompleted()
+        }
+        .buttonStyle(.borderless)
+        .wiltedFont(.utility)
+        .fixedSize()
+        .disabled(model.playbackCompletionIsSettled)
+        .accessibilityIdentifier("wilted-player-mark-completed")
     }
 
     private var speedControl: some View {
@@ -224,39 +244,52 @@ struct WiltedMacNowPlayingPane: View {
                 Text("\($0, specifier: "%g")×").tag($0)
             }
         }
-        .labelsHidden()
         .fixedSize()
         .accessibilityLabel("Speed")
         .help("Playback speed")
         .accessibilityIdentifier("wilted-player-speed")
     }
 
-    private var overflowMenu: some View {
-        Menu {
-            Button("Restart") { model.restartPlayback() }
-                .keyboardShortcut("r", modifiers: .command)
-                .accessibilityIdentifier("wilted-player-restart")
-            Button(model.playbackCompletionIsSettled ? "Completed" : "Mark completed") {
-                model.markCurrentPlaybackCompleted()
-            }
-            .disabled(model.playbackCompletionIsSettled)
-            .accessibilityIdentifier("wilted-player-mark-completed")
-            if model.audioRouteFault {
-                Button("Recover audio") { model.recoverAudioRoute() }
-                    .accessibilityIdentifier("wilted-player-route-recovery")
-            }
-            share
-        } label: {
-            Image(systemName: "ellipsis.circle")
+    private var overflowButton: some View {
+        Button { showsPlaybackActions.toggle() } label: {
+            Image(systemName: "ellipsis")
+                .wiltedSquare(24)
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.borderless)
         .fixedSize()
         .help("More playback actions")
         .accessibilityLabel("More playback actions")
         .accessibilityIdentifier("wilted-player-menu")
+        .popover(isPresented: $showsPlaybackActions, arrowEdge: .bottom) {
+            playbackActions
+        }
     }
 
-    private var share: some View { WiltedMacPlaybackShareLink(model: model) }
+    /// The native popover content, also hosted directly by headless render tests.
+    var playbackActions: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            speedControl
+            Divider()
+            Button("Restart") {
+                showsPlaybackActions = false
+                model.restartPlayback()
+            }
+            .accessibilityIdentifier("wilted-player-restart")
+            if model.audioRouteFault {
+                Button("Recover audio") {
+                    showsPlaybackActions = false
+                    model.recoverAudioRoute()
+                }
+                .accessibilityIdentifier("wilted-player-route-recovery")
+            }
+            share
+        }
+        .padding(WiltedTheme.Spacing.large)
+        .frame(minWidth: 200, alignment: .leading)
+        .controlSize(.regular)
+    }
+
+    var share: some View { WiltedMacPlaybackShareLink(model: model) }
 
     private func transport(
         _ symbol: String, label: String, id: String, size: CGFloat = 24, action: @escaping () -> Void

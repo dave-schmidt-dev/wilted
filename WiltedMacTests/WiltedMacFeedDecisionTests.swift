@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 @testable import WiltedMac
 
@@ -16,8 +17,12 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         fixture.model.feedDecisionBeforeCommitForTesting = { await gate.hold() }
 
         fixture.model.keepEpisode(first)
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [second.id], "Keep answers before its writer starts")
+        XCTAssertEqual(fixture.model.episodes.map(\.id).sorted(), [first.id, second.id].sorted())
+        XCTAssertEqual(fixture.model.podcastQueueIDs, [], "presentation does not claim durable queue admission")
         fixture.model.keepEpisode(first)
         await gate.waitUntilHeld()
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [second.id])
 
         XCTAssertEqual(fixture.model.pendingFeedDecisionIDs, Set([first.id]))
         XCTAssertFalse(fixture.model.pendingFeedDecisionIDs.contains(second.id))
@@ -46,7 +51,10 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         fixture.model.feedDecisionAfterDurableCommitForTesting = { await durable.hold() }
 
         fixture.model.decideFeedEpisodes(.keep, episodes: [secondVisible, firstVisible, secondVisible])
+        XCTAssertTrue(fixture.model.feedsEpisodes.isEmpty, "bulk Keep projects every captured row immediately")
+        XCTAssertEqual(fixture.model.podcastQueueIDs, [existing.id])
         await durable.waitUntilHeld()
+        XCTAssertTrue(fixture.model.feedsEpisodes.isEmpty)
 
         let persisted = try await fixture.store.podcastQueueState()
         XCTAssertEqual(persisted.episodeIDs.map(\.rawValue), [existing.id, secondVisible.id, firstVisible.id])
@@ -138,9 +146,13 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
             feedURL: fixture.feedURL, rssGUID: "missing", enclosureURL: missingURL
         )
         let missing = episode(id: missingID.rawValue)
+        fixture.model.episodes.append(missing)
 
         fixture.model.decideFeedEpisodes(.skip, episodes: [present, missing])
+        XCTAssertTrue(fixture.model.feedsEpisodes.isEmpty, "both captured rows leave before a partial commit")
         await drainDecisionWriters(fixture.model)
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [missing.id], "only the unresolved row returns")
+        XCTAssertTrue(fixture.model.pendingFeedDecisionIDs.isEmpty)
 
         let presentRemoval = try await fixture.store.removalKind(for: fixture.itemIDs[0])
         XCTAssertEqual(presentRemoval, .retired)
@@ -167,7 +179,10 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         fixture.model.feedDecisionBeforeCommitForTesting = { throw FeedDecisionTestError.injected }
 
         fixture.model.keepEpisode(episode)
+        XCTAssertTrue(fixture.model.feedsEpisodes.isEmpty)
         await drainDecisionWriters(fixture.model)
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [episode.id], "failed Keep returns its row for retry")
+        XCTAssertTrue(fixture.model.pendingFeedDecisionIDs.isEmpty)
         let failedQueue = try await fixture.store.podcastQueueState()
         XCTAssertEqual(failedQueue.episodeIDs, [])
         XCTAssertEqual(fixture.model.podcastQueueIDs, [])
@@ -343,6 +358,95 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         let fresh = try await fixture.model.loadLibrary(from: fixture.store)
         XCTAssertTrue(fixture.model.applyEpisodes(fresh.episodes))
         XCTAssertEqual(fixture.model.episodes.first { $0.id == unrelated.id }?.id, unrelated.id)
+    }
+
+    func testDurableSkipSurvivesFeedRefreshLatePreparationAndColdReopenUntilExplicitRestore() async throws {
+        let fixture = try await makeFixture(count: 2, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let itemID = fixture.itemIDs[0]
+        let episode = fixture.episodes[0]
+        let storedEpisode = try await fixture.store.podcastEpisode(for: itemID)
+        let refreshedEpisode = try XCTUnwrap(storedEpisode)
+        fixture.model.updateAutomationSettings { settings in
+            WiltedAutomationSettings(
+                refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
+                processingPolicy: .manual, transcriptPolicy: settings.transcriptPolicy,
+                removeAds: settings.removeAds, autoAddPreparedToLarder: true,
+                downloadEverythingOnLarder: false, prepareEverythingDownloaded: false
+            )
+        }
+
+        fixture.model.skipFeedEpisode(episode)
+        await drainDecisionWriters(fixture.model)
+        let afterSkip = try await fixture.store.podcastLibrarySnapshot()
+        let retirement = try XCTUnwrap(afterSkip.retiredAtByEpisode[itemID])
+        try await assertRetiredDecision(fixture.model, store: fixture.store, itemID: itemID, at: retirement)
+
+        _ = try await fixture.store.savePodcastEpisodes([refreshedEpisode], admission: .incremental)
+        await fixture.model.reloadLibraryRowsForTesting()
+        try await assertRetiredDecision(fixture.model, store: fixture.store, itemID: itemID, at: retirement)
+
+        // The durable output of a preparation finishing after Skip must not restore its episode.
+        let mediaURL = fixture.directory.appendingPathComponent("late-prepared.m4a")
+        try Data("late prepared audio".utf8).write(to: mediaURL)
+        let contentHash = try MediaHash.sha256(fileAt: mediaURL)
+        let revisionID = try RevisionID(rawValue: "rev-" + String(contentHash.dropFirst(MediaHash.prefix.count)))
+        let revision = try AudioRevision(
+            itemID: itemID, revisionID: revisionID, durationSeconds: 12, byteCount: 19,
+            contentHash: contentHash, mediaType: "audio/mpeg", createdAt: fixture.createdAt, schemaVersion: 3)
+        try await fixture.store.finalizePodcastDownload(
+            revision: revision, mediaURL: mediaURL,
+            download: try PodcastDownload(episodeID: itemID, status: .completed, bytesReceived: 19,
+                expectedByteCount: 19, localURL: mediaURL, contentHash: contentHash, updatedAt: fixture.createdAt))
+        try await fixture.store.saveReadyRevision(
+            revision, mediaURL: mediaURL,
+            transcript: Transcript(itemID: itemID, revisionID: revisionID, availability: .absent, updatedAt: fixture.createdAt),
+            outcome: PodcastPreparationOutcome(episodeID: itemID, revisionID: revisionID,
+                policyDigest: "fixture-policy", pipelineFingerprint: "fixture-pipeline", semanticVersion: "fixture-1",
+                producedAt: fixture.createdAt, eligibility: .current))
+        await fixture.model.reloadLibraryRowsForTesting()
+        await fixture.model.larderAdditionTask?.value
+        XCTAssertEqual(fixture.model.episodes.first { $0.id == episode.id }?.downloadState, .completed)
+        XCTAssertTrue(fixture.model.episodes.first { $0.id == episode.id }?.preparationState.isPrepared == true)
+        await fixture.model.performAutoAddPreparedEpisodesToLarder([episode.id])
+        try await assertRetiredDecision(fixture.model, store: fixture.store, itemID: itemID, at: retirement)
+
+        await fixture.model.close()
+        let reopened = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: fixture.directory,
+            preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await reopened.close() }
+        reopened.startStoreBootstrap()
+        await reopened.waitForStoreBootstrap()
+        let coldStore = try XCTUnwrap(reopened.store)
+        try await assertRetiredDecision(reopened, store: coldStore, itemID: itemID, at: retirement)
+
+        let retired = try XCTUnwrap(reopened.skippedFeedEpisodes.first { $0.id == episode.id })
+        reopened.restoreSkippedFeedEpisode(retired)
+        await drainDecisionWriters(reopened)
+        let restoredSnapshot = try await coldStore.podcastLibrarySnapshot()
+        let restoredDecision = try await coldStore.episodeDecision(for: itemID)
+        XCTAssertNil(restoredSnapshot.retiredAtByEpisode[itemID])
+        XCTAssertNil(restoredSnapshot.removalKindByEpisode[itemID])
+        XCTAssertEqual(restoredDecision?.decision, .keep)
+        XCTAssertEqual(restoredDecision?.source, .manual)
+        XCTAssertTrue(reopened.feedsEpisodes.contains { $0.id == episode.id }, "explicit Restore returns the row")
+    }
+
+    private func assertRetiredDecision(
+        _ model: WiltedMacModel, store: LocalLibraryStore, itemID: ItemID, at retirement: Timestamp
+    ) async throws {
+        let snapshot = try await store.podcastLibrarySnapshot()
+        let decision = try await store.episodeDecision(for: itemID)
+        let queue = try await store.podcastQueueState()
+        XCTAssertEqual(snapshot.retiredAtByEpisode[itemID], retirement)
+        XCTAssertEqual(snapshot.removalKindByEpisode[itemID], .retired)
+        XCTAssertEqual(decision?.decision, .skip)
+        XCTAssertEqual(decision?.source, .manual)
+        XCTAssertEqual(model.episodes.first { $0.id == itemID.rawValue }?.retiredAt, retirement.date)
+        XCTAssertFalse(model.feedsEpisodes.contains { $0.id == itemID.rawValue })
+        XCTAssertFalse(model.podcastQueueIDs.contains(itemID.rawValue))
+        XCTAssertFalse(queue.episodeIDs.contains(itemID))
     }
 
     func testLargeBatchReportsBoundedActorOperationDiagnostics() async throws {

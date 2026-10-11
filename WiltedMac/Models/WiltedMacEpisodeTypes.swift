@@ -279,7 +279,7 @@ struct WiltedMacAudiobookDetails: Hashable, Sendable {
 struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
-    let feedTitle: String
+    var feedTitle: String
     /// One line for the row: the notes' opening paragraph when the feed
     /// publishes notes, otherwise the author or the show.
     let summary: String

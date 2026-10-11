@@ -130,6 +130,10 @@ final class WiltedMacWalkthroughCapture: XCTestCase {
         ).firstMatch
         XCTAssertTrue(restore.waitForExistence(timeout: 10))
         try write(app, "4.3-feeds-off-the-list", into: root)
+        let historyDone = element(app, "wilted-feed-sheet-done")
+        XCTAssertTrue(historyDone.waitForExistence(timeout: 10))
+        historyDone.click()
+        XCTAssertTrue(historyDone.waitForNonExistence(timeout: 10), "Done closes history before feed management")
 
         let feedRow = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-row-'")

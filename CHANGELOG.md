@@ -166,3 +166,16 @@ All notable changes to this project are documented in this file.
 - Fixed a transcript never reaching an episode downloaded before transcripts shipped: the Mac now publishes the transcript of every prepared queued entry that has one without waiting for a request, keeps it after the phone acknowledges the audio (it leaves with the entry, not with the acknowledgement), and the phone asks again at most once a minute instead of once per session.
 - Audited Phase 0 and native-gate temporary entries by identity before and after each owned run, so a new leak cannot hide behind shrinking totals.
 - Required positive ownership and inactivity before the crash backstop removes stale Wilted scratch, and registered migration validation cleanup before copying.
+
+## [0.4.0] - 2026-10-11
+
+### Added
+- Feed titles open native details with source, status, publisher, automation, and per-feed history; the adjacent pencil opens rename. Off-the-list history is searchable, filterable, paged 25 rows at a time, and retains Restore.
+- Mac and iOS startup show the native Wilted W motif through actual local readiness, with real progress, reduced-motion settled art, and actionable initialization errors.
+
+### Changed
+- Keep and Skip immediately hide decided rows while asynchronous saves run; failed, partial, or cancelled writes restore only unresolved rows with error and retry state. Feed renames update immediately, recover the draft on error, and publish saved names to iPhone through normal library publishing.
+- Now Playing keeps Mark completed beside the transport and puts Speed and secondary actions in a plain-ellipsis native popover. Normal quit hides the window before the bounded safe drain and restores the app if the drain fails or times out.
+
+### Fixed
+- Feed-capacity loading follows actual board/store readiness and reports observable failures with Retry instead of remaining in a fabricated loading state.

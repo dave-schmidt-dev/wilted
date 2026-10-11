@@ -4,25 +4,75 @@ import WiltedDomain
 
 // MARK: - Feeds
 
+enum WiltedMacFeedHistoryAccessibilityID {
+    static func restoreSkipped(_ episodeID: String) -> String { "wilted-feeds-restore-skipped-\(episodeID)" }
+    static func restoreRemoved(_ episodeID: String) -> String { "wilted-feeds-restore-removed-\(episodeID)" }
+}
+
+struct WiltedMacFeedRenameInteraction {
+    private(set) var drafts: [String: WiltedMacFeedRenameDraft] = [:]
+
+    mutating func begin(_ subscription: WiltedMacSubscription) {
+        var draft = WiltedMacFeedRenameDraft()
+        draft.begin(subscription)
+        drafts[subscription.id] = draft
+    }
+
+    mutating func update(_ feedID: String, text: String) {
+        guard var draft = drafts[feedID] else { return }
+        draft.text = text
+        drafts[feedID] = draft
+    }
+
+    mutating func cancel(_ feedID: String) {
+        guard var draft = drafts[feedID] else { return }
+        draft.cancel()
+        drafts.removeValue(forKey: feedID)
+    }
+
+    /// Removes the editor synchronously; the caller starts async persistence after this returns.
+    mutating func submit(_ feedID: String) -> String? {
+        guard var draft = drafts[feedID], draft.beginSaving() else { return nil }
+        drafts.removeValue(forKey: feedID)
+        return draft.text
+    }
+
+    mutating func restoreFailure(_ subscription: WiltedMacSubscription, text: String, error: String) {
+        var draft = WiltedMacFeedRenameDraft()
+        draft.begin(subscription)
+        draft.text = text
+        draft.finish(error: error)
+        drafts[subscription.id] = draft
+    }
+}
+
 /// Feed upkeep on one page: what arrived, and what the app does with each
 /// followed feed -- refresh it, hide it, or drop it. Following a new show is
 /// the Add sheet's job, opened from the toolbar.
 struct WiltedMacFeedsView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
-    /// Kept on the model, so leaving Feeds and coming back (or relaunching) finds both as they were.
-    private var isOffListExpanded: Bool {
-        get { model.navigationState.isOffListExpanded }
-        nonmutating set { model.navigationState.isOffListExpanded = newValue }
-    }
     private var selectedFeedEpisodeIDs: Set<String> {
         get { model.navigationState.selectedFeedEpisodeIDs }
         nonmutating set { model.navigationState.selectedFeedEpisodeIDs = newValue }
     }
     @State private var feedRemoval = WiltedMacRemovalFlow()
-    @State private var feedRename = WiltedMacFeedRenameDraft()
-    @FocusState private var feedNameFocused: Bool
+    @State private var feedRenameInteraction = WiltedMacFeedRenameInteraction()
+    @FocusState private var focusedFeedID: String?
+    @State private var presentedSheet: Sheet?
     @State private var policyBoard: WiltedMacFeedPolicyBoard
+
+    private enum Sheet: Identifiable {
+        case details(String)
+        case history
+
+        var id: String {
+            switch self {
+            case let .details(feedID): "details-\(feedID)"
+            case .history: "history"
+            }
+        }
+    }
 
     init(model: WiltedMacModel, policyBoard: WiltedMacFeedPolicyBoard? = nil) {
         _model = Bindable(model)
@@ -44,20 +94,37 @@ struct WiltedMacFeedsView: View {
             feedManagement.id("feeds-subscriptions")
             restorableEpisodes.id("feeds-off-list")
         }
+        .sheet(item: $presentedSheet) { sheet in
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button("Done") { presentedSheet = nil }
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("wilted-feed-sheet-done")
+                }
+                .padding(.horizontal, WiltedTheme.Spacing.large)
+                .padding(.top, WiltedTheme.Spacing.small)
+
+                switch sheet {
+                case let .details(feedID):
+                    if let subscription = model.subscriptions.first(where: { $0.id == feedID }) {
+                        WiltedMacFeedDetailsView(model: model, board: policyBoard, subscription: subscription)
+                    }
+                case .history:
+                    WiltedMacFeedHistoryView(model: model)
+                }
+            }
+        }
     }
 
-    /// Reversing the one decision Feeds owns lives here. Skipped (retired) and
-    /// removed (dismissed) rows both survive in the store under the same
-    /// removal column, so both restore directly from the row with no network
-    /// involved -- there is no feed to check either way.
+    /// The count keeps the established Off the list entry point while the
+    /// history page handles search, filtering, paging, and Restore.
     @ViewBuilder private var restorableEpisodes: some View {
         if !model.skippedFeedEpisodes.isEmpty || !model.dismissedEpisodes.isEmpty {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                Button {
-                    isOffListExpanded.toggle()
-                } label: {
+                Button { presentedSheet = .history } label: {
                     HStack {
-                        Label("Off the list", systemImage: isOffListExpanded ? "chevron.down" : "chevron.right")
+                        Label("Off the list", systemImage: "clock.arrow.circlepath")
                             .wiltedFont(.title)
                         Spacer()
                         Text("\(model.skippedFeedEpisodes.count + model.dismissedEpisodes.count)")
@@ -67,82 +134,10 @@ struct WiltedMacFeedsView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                .accessibilityLabel("Off the list, \(model.skippedFeedEpisodes.count + model.dismissedEpisodes.count) episodes")
+                .accessibilityLabel("Off the list, \(model.skippedFeedEpisodes.count + model.dismissedEpisodes.count) episodes. Open history")
                 .accessibilityIdentifier("wilted-feeds-off-list-toggle")
-                if isOffListExpanded {
-                    VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(model.skippedFeedEpisodes.enumerated()), id: \.element.id) { index, episode in
-                        if index > 0 { Divider() }
-                        restorableRow(
-                            presentation: episode.presentation,
-                            detail: "Skipped",
-                            identifier: "wilted-feeds-restore-skipped-\(episode.id)",
-                            isPending: model.pendingFeedDecisionIDs.contains(episode.id),
-                            failed: model.failedFeedDecisionIDs.contains(episode.id)
-                        ) {
-                            model.restoreSkippedFeedEpisode(episode)
-                        }
-                    }
-                    ForEach(Array(model.dismissedEpisodes.enumerated()), id: \.element.id) { index, dismissal in
-                        if index > 0 || !model.skippedFeedEpisodes.isEmpty { Divider() }
-                        restorableRow(
-                            presentation: dismissal.presentation,
-                            detail: "Removed",
-                            identifier: "wilted-feeds-restore-removed-\(dismissal.id)", isPending: false, failed: false
-                        ) {
-                            model.restoreEpisode(dismissal)
-                        }
-                    }
-                    }
-                    .wiltedCard(colorScheme)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("wilted-feeds-restorable")
-                }
             }
         }
-    }
-
-    private func restorableRow(
-        presentation: WiltedMacEpisodePresentation,
-        detail: String,
-        identifier: String,
-        isPending: Bool,
-        failed: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: WiltedTheme.Spacing.medium) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(presentation.title)
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .lineLimit(1)
-                WiltedMacEpisodeMetadata(
-                    presentation: presentation,
-                    lifecycleLabel: detail,
-                    identifier: identifier.replacingOccurrences(of: "restore", with: "metadata")
-                )
-                if isPending {
-                    HStack(spacing: WiltedTheme.Spacing.xSmall) {
-                        ProgressView().controlSize(.small)
-                        Text("Restoring…")
-                    }
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier(identifier.replacingOccurrences(of: "restore", with: "pending"))
-                } else if failed {
-                    Text("Could not restore. Try again.")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier(identifier.replacingOccurrences(of: "restore", with: "failed"))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Restore", action: action)
-                .disabled(isPending)
-                .accessibilityLabel("Restore \(presentation.title)")
-                .accessibilityIdentifier(identifier)
-        }
-        .padding(.vertical, WiltedTheme.Spacing.small)
     }
 
     /// The inbox: every episode that arrived and is not waiting yet.
@@ -295,6 +290,19 @@ struct WiltedMacFeedsView: View {
                     }
                 }
             }
+            if let message = policyBoard.loadFailureMessage {
+                HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-feed-capacity-error")
+                    Spacer(minLength: WiltedTheme.Spacing.small)
+                    Button("Retry") { Task { await policyBoard.retryReload() } }
+                        .disabled(!policyBoard.canRetry)
+                        .accessibilityIdentifier("wilted-feed-capacity-retry")
+                }
+            }
             WiltedMacRemovalStatusLine(flow: feedRemoval, model: model)
         }
         .wiltedRemovalConfirmation(feedRemoval, model: model)
@@ -318,37 +326,45 @@ struct WiltedMacFeedsView: View {
     private func feedRow(_ subscription: WiltedMacSubscription) -> some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                if feedRename.feedID == subscription.id {
-                    TextField("Feed name", text: $feedRename.text)
+                if let draft = feedRenameInteraction.drafts[subscription.id] {
+                    TextField("Feed name", text: Binding(
+                        get: { feedRenameInteraction.drafts[subscription.id]?.text ?? draft.text },
+                        set: { feedRenameInteraction.update(subscription.id, text: $0) }
+                    ))
                         .wiltedFont(.body)
                         .textFieldStyle(.roundedBorder)
-                        .focused($feedNameFocused)
-                        .disabled(feedRename.isSaving)
-                        .onAppear { feedNameFocused = true }
-                        .onSubmit { Task { await saveFeedName(subscription) } }
-                        .onExitCommand { feedRename.cancel() }
+                        .focused($focusedFeedID, equals: subscription.id)
+                        .onAppear { focusedFeedID = subscription.id }
+                        .onSubmit { submitFeedName(subscription) }
+                        .onExitCommand { cancelFeedName(subscription.id) }
                         .accessibilityLabel("Name for \(subscription.publisherTitle ?? subscription.title)")
                         .accessibilityIdentifier("wilted-podcast-feed-name-editor-\(subscription.id)")
-                    if let error = feedRename.error {
+                    if let error = draft.error {
                         Text(error).wiltedFont(.utility).foregroundStyle(.red)
                     }
                 } else {
-                    Button { feedRename.begin(subscription) } label: {
-                        Text(subscription.title)
-                            .wiltedFont(.body)
-                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                        Button { presentedSheet = .details(subscription.id) } label: {
+                            Text(subscription.title)
+                                .wiltedFont(.body)
+                                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show feed details")
+                        .accessibilityLabel("Details for \(subscription.title)")
+                        .accessibilityIdentifier("wilted-podcast-feed-name-\(subscription.id)")
+                        Button { beginFeedName(subscription) } label: {
+                            Image(systemName: "pencil")
+                                .accessibilityHidden(true)
+                                .frame(minWidth: 24, minHeight: 24)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Rename feed")
+                        .disabled(model.isFeedWritePending(subscription.id))
+                        .accessibilityLabel("Rename \(subscription.title)")
+                        .accessibilityIdentifier("wilted-podcast-feed-rename-\(subscription.id)")
                     }
-                    .buttonStyle(.plain)
-                    .help("Rename feed")
-                    .disabled(feedRename.isSaving || model.isFeedWritePending(subscription.id))
-                    .accessibilityLabel("Rename \(subscription.title)")
-                    .accessibilityIdentifier("wilted-podcast-feed-name-\(subscription.id)")
                 }
-                Text(subscription.feedURL.host ?? subscription.feedURL.absoluteString)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
                 WiltedMacFeedCapacityLabel(board: policyBoard, subscription: subscription)
                 if let status = model.feedRowStatus(subscription.id) {
                     Text(status)
@@ -389,13 +405,30 @@ struct WiltedMacFeedsView: View {
         .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
     }
 
-    @MainActor private func saveFeedName(_ subscription: WiltedMacSubscription) async {
-        guard feedRename.beginSaving() else { return }
-        do {
-            try await model.renameSubscription(subscription, to: feedRename.text)
-            feedRename.finish()
-        } catch {
-            feedRename.finish(error: "\(subscription.title) could not be renamed. Try again.")
+    @MainActor private func beginFeedName(_ subscription: WiltedMacSubscription) {
+        feedRenameInteraction.begin(subscription)
+        focusedFeedID = subscription.id
+    }
+
+    @MainActor private func cancelFeedName(_ feedID: String) {
+        guard feedRenameInteraction.drafts[feedID] != nil else { return }
+        feedRenameInteraction.cancel(feedID)
+        if focusedFeedID == feedID { focusedFeedID = nil }
+    }
+
+    @MainActor private func submitFeedName(_ subscription: WiltedMacSubscription) {
+        guard let submittedName = feedRenameInteraction.submit(subscription.id) else { return }
+        focusedFeedID = nil
+        Task {
+            do {
+                try await model.renameSubscription(subscription, to: submittedName)
+            } catch {
+                feedRenameInteraction.restoreFailure(
+                    subscription, text: submittedName,
+                    error: "\(subscription.title) could not be renamed. Try again."
+                )
+                focusedFeedID = subscription.id
+            }
         }
     }
 

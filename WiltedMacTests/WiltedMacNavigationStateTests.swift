@@ -211,11 +211,15 @@ final class WiltedMacNavigationStateTests: XCTestCase {
     }
 
     /// The pages keep their state on the model, not in view-local state that a destination switch drops.
-    func testFeedsKeepsSelectionAndDisclosureOnTheModelAndEveryDestinationReportsItsAnchor() throws {
+    func testFeedsKeepsSelectionOnTheModelAndHistoryInASheetAndEveryDestinationReportsItsAnchor() throws {
         let feeds = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
         XCTAssertFalse(feeds.contains("@State private var isOffListExpanded"))
         XCTAssertFalse(feeds.contains("@State private var selectedFeedEpisodeIDs"))
-        XCTAssertTrue(feeds.contains("model.navigationState.isOffListExpanded"))
+        XCTAssertTrue(feeds.contains(".sheet(item: $presentedSheet)"))
+        XCTAssertTrue(feeds.contains("presentedSheet = .history"))
+        XCTAssertTrue(feeds.contains("case .history:"))
+        XCTAssertTrue(feeds.contains("WiltedMacFeedHistoryView(model: model)"))
+        XCTAssertTrue(feeds.contains("Button(\"Done\") { presentedSheet = nil }"))
         XCTAssertTrue(feeds.contains("model.navigationState.selectedFeedEpisodeIDs"))
         for (file, destination) in [
             ("WiltedMacFeedsView.swift", ".feeds"), ("WiltedMacLarderView.swift", ".larder"),

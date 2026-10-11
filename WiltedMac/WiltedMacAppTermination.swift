@@ -58,6 +58,8 @@ final class WiltedMacTerminationCoordinator {
     private let budget: Duration
     private let reply: @MainActor (Bool) -> Void
     private let presentFailure: @MainActor (WiltedMacTerminationFailure) -> Void
+    private let dismissForPendingTermination: @MainActor () -> Void
+    private let restoreAfterCancelledTermination: @MainActor () -> Void
     private let journal: WiltedMacTerminationJournal?
     private var attempt: UInt64 = 0
 
@@ -66,12 +68,16 @@ final class WiltedMacTerminationCoordinator {
         budget: Duration = WiltedMacTerminationCoordinator.localBudget,
         journal: WiltedMacTerminationJournal? = nil,
         reply: @escaping @MainActor (Bool) -> Void = { NSApplication.shared.reply(toApplicationShouldTerminate: $0) },
+        dismissForPendingTermination: @escaping @MainActor () -> Void = {},
+        restoreAfterCancelledTermination: @escaping @MainActor () -> Void = {},
         presentFailure: @escaping @MainActor (WiltedMacTerminationFailure) -> Void = WiltedMacTerminationAlert.present
     ) {
         self.owner = owner
         self.budget = budget
         self.journal = journal
         self.reply = reply
+        self.dismissForPendingTermination = dismissForPendingTermination
+        self.restoreAfterCancelledTermination = restoreAfterCancelledTermination
         self.presentFailure = presentFailure
     }
 
@@ -92,6 +98,7 @@ final class WiltedMacTerminationCoordinator {
         state = .draining
         attempt &+= 1
         let current = attempt
+        dismissForPendingTermination()
         Task { await self.drain(attempt: current) }
         return .terminateLater
     }
@@ -106,6 +113,7 @@ final class WiltedMacTerminationCoordinator {
             owner?.resumeAfterCancelledTermination()
             state = .failed(failure)
             send(false)
+            restoreAfterCancelledTermination()
             journal?.record("failed", detail: failure.message)
             presentFailure(failure)
             return
@@ -333,7 +341,11 @@ extension WiltedMacAppDelegate {
         guard let journal = WiltedMacTerminationJournal.forLaunch(
             arguments: arguments, isFixture: WiltedMacModel.isFixtureLaunch(arguments: arguments)
         ) else {
-            termination = WiltedMacTerminationCoordinator(owner: model)
+            termination = WiltedMacTerminationCoordinator(
+                owner: model,
+                dismissForPendingTermination: { NSApplication.shared.hide(nil) },
+                restoreAfterCancelledTermination: { NSApplication.shared.unhide(nil) }
+            )
             return
         }
         let owner = WiltedMacFixtureDrain(
@@ -341,7 +353,12 @@ extension WiltedMacAppDelegate {
             failsFirst: arguments.contains(WiltedMacTerminationJournal.failFirstDrainArgument)
         )
         fixtureOwner = owner
-        termination = WiltedMacTerminationCoordinator(owner: owner, journal: journal, presentFailure: { _ in })
+        termination = WiltedMacTerminationCoordinator(
+            owner: owner, journal: journal,
+            dismissForPendingTermination: { NSApplication.shared.hide(nil) },
+            restoreAfterCancelledTermination: { NSApplication.shared.unhide(nil) },
+            presentFailure: { _ in }
+        )
         onLaunch = { [weak model] in
             Task { @MainActor in
                 // Ready once the fixture is actually playing, plus a moment,

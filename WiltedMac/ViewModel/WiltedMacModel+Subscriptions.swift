@@ -176,38 +176,6 @@ extension WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
-    /// Saves the owner's optional name independently of publisher refresh and enable state.
-    func renameSubscription(_ subscription: WiltedMacSubscription, to displayName: String) async throws {
-        guard let store, !isClosingTemporaryState, pendingFeedWrites[subscription.id] == nil else {
-            throw WiltedMacRemovalUnavailable()
-        }
-        pendingFeedWrites[subscription.id] = .updating(enabled: subscription.enabled)
-        defer {
-            pendingFeedWrites[subscription.id] = nil
-            if let queued = queuedFeedEnabled.removeValue(forKey: subscription.id),
-               let latest = subscriptions.first(where: { $0.id == subscription.id }) {
-                setSubscription(latest, enabled: queued)
-            }
-        }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            trackSubscriptionWrite {
-                do {
-                    guard !self.isClosingTemporaryState, !Task.isCancelled else {
-                        throw WiltedMacRemovalUnavailable()
-                    }
-                    try await store.setSubscriptionDisplayName(
-                        feedID: ItemID(rawValue: subscription.id), displayName: displayName)
-                    let values = try await self.loadLibrary(from: store)
-                    if self.applyEpisodes(values.episodes) {
-                        self.articles = values.articles
-                        self.subscriptions = values.subscriptions
-                    } else { await self.reloadLibraryRows() }
-                    continuation.resume()
-                } catch { continuation.resume(throwing: error) }
-            }
-        }
-    }
-
     /// Unsubscribes and clears every record the feed owned, committing before
     /// anything on screen changes.
     ///

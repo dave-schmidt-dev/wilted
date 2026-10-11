@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import SwiftUI
 import XCTest
 import WiltedDomain
 @_spi(Testing) import WiltedProducer
@@ -6,6 +8,40 @@ import WiltedDomain
 
 @MainActor
 final class WiltedMacStartupProgressTests: XCTestCase {
+    func testNativeLoaderUsesRealReadinessAndPreservesActionableFailure() async throws {
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("motif-startup"),
+                                   storeBootstrap: { try LocalLibraryStore(url: $0) },
+                                   preferences: WiltedMacTestPreferences.ephemeral())
+        XCTAssertNotNil(model.startupState.loadingStep)
+        let loading = try WiltedMacHeadless.render(
+            WiltedMacRootView(model: model),
+            size: CGSize(width: 760, height: 420))
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready, "the loader has no artificial minimum duration")
+        let ready = try WiltedMacHeadless.render(WiltedMacRootView(model: model), size: CGSize(width: 760, height: 420))
+        XCTAssertNotEqual(loading.representation(using: .png, properties: [:]), ready.representation(using: .png, properties: [:]))
+        model.startupState = .failed(WiltedMacStartupFailure(message: "Fixture library needs recovery", detail: nil,
+                                                           retainedV5StoreURL: nil, canRetry: true))
+        let recovery = try WiltedMacHeadless.render(WiltedMacRootView(model: model), size: CGSize(width: 760, height: 420))
+        XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: recovery), 8)
+        XCTAssertNotEqual(loading.representation(using: .png, properties: [:]), recovery.representation(using: .png, properties: [:]))
+        for (name, image) in [("startup-loading", loading), ("startup-ready", ready), ("startup-recovery", recovery)] {
+            let attachment = XCTAttachment(data: try XCTUnwrap(image.representation(using: .png, properties: [:])),
+                                           uniformTypeIdentifier: "public.png")
+            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        let sourceURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/Views/WiltedMacRootView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("case .loading:\n                startupLoading"))
+        XCTAssertTrue(source.contains("case .ready:\n                readyRoot"))
+        XCTAssertTrue(source.contains("WiltedLoadingMotif(progress: startupMotifProgress)"))
+        XCTAssertTrue(source.contains("Double(done) / Double(total)"))
+        XCTAssertTrue(source.contains("startupRecovery(failure)"))
+        XCTAssertTrue(source.contains("model.retryStoreBootstrap()"))
+    }
+
     func testSeededRecoveryEmitsCountedProgressForEveryRepairKind() async throws {
         let directory = wiltedTemporaryDirectory("startup-progress")
         let model = WiltedMacModel(

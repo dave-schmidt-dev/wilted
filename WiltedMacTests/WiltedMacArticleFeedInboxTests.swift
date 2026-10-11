@@ -48,8 +48,13 @@ final class WiltedMacArticleFeedInboxTests: XCTestCase {
 
         let skipped = try XCTUnwrap(model.feedsOfferedArticles.first { $0.title == "Post one" })
         model.skipOfferedArticle(skipped)
-        let deadline = Date().addingTimeInterval(5)
-        while model.feedsOfferedArticles.count > 1, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(model.feedsOfferedArticles.map(\.title), ["Post two"], "article Skip answers before its writer starts")
+        XCTAssertEqual(model.offeredArticles.count, 2, "the canonical offers remain until commit")
+        XCTAssertEqual(model.pendingFeedDecisionIDs, [skipped.id])
+        let writers = model.subscriptionWriteTasks.count
+        model.skipOfferedArticle(skipped)
+        XCTAssertEqual(model.subscriptionWriteTasks.count, writers, "repeated Skip does not admit another writer")
+        await waitForFeedDecisionWriters(model)
         XCTAssertEqual(model.feedsOfferedArticles.map(\.title), ["Post two"])
         XCTAssertTrue(model.pendingFeedDecisionIDs.isEmpty)
 
@@ -65,11 +70,17 @@ final class WiltedMacArticleFeedInboxTests: XCTestCase {
         let offered = try XCTUnwrap(model.feedsOfferedArticles.first)
 
         model.keepOfferedArticle(offered)
-        let deadline = Date().addingTimeInterval(5)
-        while !model.failedFeedDecisionIDs.contains(offered.id), Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        XCTAssertEqual(model.feedsOfferedArticles.count, 1, "article Keep answers before preparation begins")
+        XCTAssertFalse(model.feedsOfferedArticles.contains { $0.id == offered.id })
+        XCTAssertEqual(model.offeredArticles.count, 2)
+        XCTAssertEqual(model.pendingFeedDecisionIDs, [offered.id])
+        let writers = model.subscriptionWriteTasks.count
+        model.keepOfferedArticle(offered)
+        XCTAssertEqual(model.subscriptionWriteTasks.count, writers)
+        await waitForFeedDecisionWriters(model)
         XCTAssertTrue(model.failedFeedDecisionIDs.contains(offered.id))
+        XCTAssertTrue(model.pendingFeedDecisionIDs.isEmpty)
+        XCTAssertTrue(model.feedsOfferedArticles.contains { $0.id == offered.id }, "the failed article returns for retry")
         XCTAssertEqual(model.feedsOfferedArticles.count, 2)
         let store = try XCTUnwrap(model.store)
         let decision = try await store.episodeDecision(for: ItemID(rawValue: offered.id))

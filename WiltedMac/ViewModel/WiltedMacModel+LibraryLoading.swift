@@ -176,6 +176,7 @@ extension WiltedMacModel {
         libraryReadEpoch &+= 1
         let readEpoch = libraryReadEpoch
         let snapshot = try await store.podcastLibrarySnapshot()
+        await librarySnapshotReadBarrierForTesting?()
 
         var articleValues: [WiltedMacArticle] = []
         for article in snapshot.articles where !article.isDeleted {
@@ -206,10 +207,10 @@ extension WiltedMacModel {
         let subscriptionValues = allSubscriptions.compactMap { subscription -> WiltedMacSubscription? in
             guard let feed = feeds[subscription.feedID] else { return nil }
             return WiltedMacSubscription(
-                id: subscription.feedID.rawValue, title: subscription.displayName ?? feed.title, feedURL: feed.canonicalURL,
+                id: subscription.feedID.rawValue, title: feedRenameDisplayName(subscription.feedID.rawValue, stored: subscription.displayName) ?? feed.title, feedURL: feed.canonicalURL,
                 episodeCount: episodeCounts[subscription.feedID] ?? 0,
                 subscribedAt: subscription.subscribedAt.date, enabled: subscription.enabled,
-                publisherTitle: feed.title, displayName: subscription.displayName
+                publisherTitle: feed.title, displayName: feedRenameDisplayName(subscription.feedID.rawValue, stored: subscription.displayName)
             )
         }.sorted { LibrarySortKey.title($0.title).localizedStandardCompare(LibrarySortKey.title($1.title)) == .orderedAscending }
         let downloads = snapshot.downloads
@@ -265,7 +266,8 @@ extension WiltedMacModel {
             case .cancelled: downloadState = .cancelled
             case nil: downloadState = .notDownloaded
             }
-            let feedTitle = displayNames[episode.feedID] ?? feeds[episode.feedID]?.title ?? "Podcast"
+            let feedTitle = feedRenameDisplayName(episode.feedID.rawValue, stored: displayNames[episode.feedID])
+                ?? feeds[episode.feedID]?.title ?? "Podcast"
             // One `stat`, never a read: media availability has no durable
             // record, so a missing file downgrades only this cached flag,
             // never the outcome or listening rows that prove the work happened.
@@ -302,7 +304,8 @@ extension WiltedMacModel {
         let allSubscriptionValues = Self.subscriptionRows(
             subscriptionValues, articleFeeds: snapshot.articleFeeds, stored: allSubscriptions
         )
-        return (articleValues, LibraryEpisodeRows(values: episodeValues, readEpoch: readEpoch), allSubscriptionValues)
+        return (articleValues, LibraryEpisodeRows(values: episodeValues, readEpoch: readEpoch),
+                allSubscriptionValues.map(applyingPendingFeedRename))
     }
 
     /// Imported audiobook volumes as episode-shaped rows, so the durable queue, the player and the

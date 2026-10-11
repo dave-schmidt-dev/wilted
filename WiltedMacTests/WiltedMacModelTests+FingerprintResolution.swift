@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import SwiftUI
 import XCTest
 import WiltedDomain
 import WiltedProducer
@@ -325,22 +326,52 @@ extension WiltedMacModelTests {
         XCTAssertEqual(fixture.model.podcastOperationMessage, "Restored 1 episode.")
     }
 
-    /// 2.4: Feeds renders a restore control for skipped and removed rows, with
-    /// stable identifiers.
+    /// Feeds opens History, whose skipped and removed rows each render Restore.
     func testFeedsRendersRestoreControlsForSkippedAndRemovedEpisodes() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let view = try WiltedMacSource.views(root: root)
-        XCTAssertTrue(view.contains("wilted-feeds-restore-skipped-\\(episode.id)"))
-        XCTAssertTrue(view.contains("wilted-feeds-restore-removed-\\(dismissal.id)"))
-        XCTAssertTrue(view.contains("model.restoreSkippedFeedEpisode(episode)"))
-        XCTAssertTrue(view.contains("model.restoreEpisode(dismissal)"))
-        XCTAssertTrue(view.contains("model.skippedFeedEpisodes"))
-        XCTAssertTrue(view.contains("model.dismissedEpisodes"))
-        XCTAssertTrue(view.contains("wilted-feeds-restorable"))
-        XCTAssertFalse(WiltedMacNavigationState.empty.isOffListExpanded, "Off the list starts collapsed")
-        XCTAssertTrue(view.contains("model.navigationState.isOffListExpanded"), "the disclosure is retained on the model")
-        XCTAssertTrue(view.contains("wilted-feeds-off-list-toggle"))
-        XCTAssertTrue(view.contains("if isOffListExpanded"))
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: temporaryDirectory("history-render"),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        addTeardownBlock { await model.close() }
+        var skipped = WiltedMacEpisode(
+            id: "history-skipped", title: "Skipped history episode", feedTitle: "History show",
+            summary: "", artworkURL: nil, releasedAt: Date(), durationSeconds: 60,
+            playbackSeconds: 0, downloadState: .completed, preparationState: .prepared(summary: "Ready")
+        )
+        skipped.retiredAt = Date()
+        skipped.removalKind = .retired
+        model.installEpisodeForTesting(skipped)
+        model.dismissedEpisodes = [WiltedMacDismissedEpisode(
+            id: "history-removed", feedID: nil, title: "Removed history episode", feedTitle: "History show",
+            dismissedAt: Date(), hasPreparationHistory: true
+        )]
+        model.navigationState.selectedFeedEpisodeIDs = [skipped.id]
+        model.scrollAnchor(for: .feeds).wrappedValue = "feeds-subscriptions"
+        let navigation = model.navigationState
+        let drawn = try WiltedMacHeadless.recognizedText(
+            WiltedMacFeedHistoryView(model: model), size: CGSize(width: 900, height: 1_000)
+        )
+        let text = drawn.joined(separator: " ")
+        XCTAssertTrue(text.contains("History"), text)
+        XCTAssertTrue(text.contains(skipped.title), text)
+        XCTAssertTrue(text.contains("Removed history episode"), text)
+        XCTAssertEqual(drawn.filter { $0 == "Restore" }.count, 2, text)
+        XCTAssertEqual(model.navigationState, navigation, "Rendering History preserves Feeds selection and scroll position")
+        XCTAssertEqual(WiltedMacFeedHistoryAccessibilityID.restoreSkipped(skipped.id), "wilted-feeds-restore-skipped-history-skipped")
+        XCTAssertEqual(WiltedMacFeedHistoryAccessibilityID.restoreRemoved("history-removed"), "wilted-feeds-restore-removed-history-removed")
+        let history = try WiltedMacHeadless.viewSource("WiltedMacFeedHistoryView.swift")
+        XCTAssertTrue(history.contains("WiltedMacFeedHistoryAccessibilityID.restoreSkipped(record.id)"))
+        XCTAssertTrue(history.contains("WiltedMacFeedHistoryAccessibilityID.restoreRemoved(record.id)"))
+        XCTAssertTrue(history.contains(".accessibilityIdentifier(restoreIdentifier)"))
+        XCTAssertTrue(history.contains("Button(\"Restore\") { restore(record) }"))
+        XCTAssertTrue(history.contains("model.restoreSkippedFeedEpisode(episode)"))
+        XCTAssertTrue(history.contains("model.restoreEpisode(dismissal)"))
+        let feeds = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
+        XCTAssertTrue(feeds.contains("wilted-feeds-off-list-toggle"))
+        XCTAssertTrue(feeds.contains("presentedSheet = .history"))
+        XCTAssertTrue(feeds.contains(".sheet(item: $presentedSheet)"))
+        XCTAssertTrue(feeds.contains("WiltedMacFeedHistoryView(model: model)"))
+        XCTAssertTrue(feeds.contains("Button(\"Done\") { presentedSheet = nil }"))
     }
 
     /// Task 4.5: retirement and dismissal are one idea expressed two ways, so

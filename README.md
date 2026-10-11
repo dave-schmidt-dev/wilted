@@ -38,12 +38,16 @@ On 2026-08-18 an attended Development run published and reconciled the producer-
 
 ## B7a user behavior
 
-- Rename a feed inline in Feeds: Return saves, Escape cancels, and a blank name restores the publisher title. Refresh updates publisher metadata without replacing your saved name; Unsubscribe still asks for confirmation.
-- Larder rows use title, feed and length, then date, with one fixed action slot. Search starts empty, sync status has one footer, and global Download/Prepare controls count their actionable rows without repeating group controls.
+- In Feeds, Keep and Skip immediately remove the decided row while the existing asynchronous save completes. A failed, partial, or cancelled write restores only unresolved rows with the error and retry state.
+- Selecting a feed title opens native details for its source, status, publisher title, automation, and feed history; the nearby pencil opens rename. Return saves, Escape cancels, and a blank name restores the publisher title.
+- A rename updates labels immediately while its save runs. If saving fails, the draft returns with the actual error. Saved display names survive refresh and relaunch, and publish to iPhone through normal library publishing.
+- Off-the-list history is searchable and filterable in 25-row pages, preserves every record, and supports Restore. Feed capacity follows actual board/store readiness and exposes load errors with Retry.
+- Larder rows use title, feed and length, then date, with one fixed action slot. Search starts empty, sync status has one footer, and global Download/Prepare controls count actionable rows without repeating group controls.
 - A podcast ending naturally continues with the first displayed eligible Ready episode, including an earlier unfinished row. Playlist and audiobook completion keep their own rules; a newer selection or Pause takes precedence.
-- Downloads interrupted by quitting resume on relaunch, with at most three automatic attempts. Your explicit Cancel stays cancelled; a new explicit request starts its own attempt count. Playback checkpoints save in order without delaying audio controls.
+- Downloads interrupted by quitting resume on relaunch, with at most three automatic attempts. Normal quit hides the window immediately while the existing bounded safe drain runs; failure or timeout restores the app and retry state. Explicit Cancel stays cancelled.
 - Alphabetical sorting on Mac and iPhone ignores a leading “The”, regardless of case, while keeping displayed titles intact. Share remains a normal action: with no usable page address, it shares `title - show` as text.
-- Now Playing uses compact 48-point artwork, one transport row, speed, and secondary actions in an overflow menu.
+- Now Playing keeps Mark completed visible beside the transport. A plain ellipsis button opens a native popover containing Speed and secondary actions.
+- Mac and iOS startup use the native Wilted W motif until actual local readiness. Progress reflects actual work, reduced motion shows settled art, and initialization failures remain actionable.
 
 ## Priorities (in order)
 

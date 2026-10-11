@@ -257,6 +257,8 @@ final class WiltedMacModel {
     var phonePositions: [ItemID: WiltedMacPhonePosition] = [:]
     /// Podcast feeds Wilted follows, newest subscription first.
     var subscriptions: [WiltedMacSubscription] = []
+    /// Per-feed optimistic names survive reloads until their tracked writer settles.
+    var pendingFeedRenames: [String: WiltedMacFeedRenameState] = [:]
     /// Read-order metadata only. A committed Feed decision advances this
     /// boundary so a snapshot that began beforehand cannot publish over it.
     var libraryReadEpoch: UInt64 = 0
@@ -277,10 +279,11 @@ final class WiltedMacModel {
     var feedDecisionBeforeCommitForTesting: (@Sendable () async throws -> Void)?
     var feedDecisionAfterDurableCommitForTesting: (@Sendable () async -> Void)?
     var podcastQueueReadBarrierForTesting: (@Sendable () async -> Void)?
+    var librarySnapshotReadBarrierForTesting: (@Sendable () async -> Void)?
     /// Runs before each Larder-sort queue write; a test holds it open to delay the
     /// write, or throws to fail it.
     var larderSortWriteHookForTesting: (@Sendable () async throws -> Void)?
-    /// Runs before each feed enable write; a test holds it open or throws to fail the write.
+    /// Runs before feed enable or rename writes; a test holds it open or throws to fail the write.
     var subscriptionWriteHookForTesting: (@Sendable () async throws -> Void)?
     /// Nil in production. Regression tests can fail only the episode-admission
     /// step after the real feed and subscription writes have committed.

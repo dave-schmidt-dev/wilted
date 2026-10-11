@@ -5,6 +5,46 @@ import XCTest
 
 @MainActor
 extension WiltedMacFeedPolicyViewTests {
+    func testPreloadedCapacitySnapshotRemainsVisibleDuringBlockedReload() async throws {
+        let model = await WiltedMacHeadless.model(
+            self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "feed-policy-reload"
+        )
+        addTeardownBlock { await model.close() }
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
+        let committedPolicy = board.policy(for: subscription.id)
+        XCTAssertTrue(board.isLoaded(subscription.id))
+
+        let gate = FeedPolicyReloadGate()
+        board.reloadReadHookForTesting = { await gate.pause() }
+        let reload = Task { await board.reload() }
+        await gate.waitUntilEntered()
+        XCTAssertTrue(board.isLoading)
+        XCTAssertTrue(board.isLoaded(subscription.id))
+        XCTAssertEqual(board.policy(for: subscription.id), committedPolicy)
+
+        let capacity: [String]
+        do {
+            capacity = try WiltedMacHeadless.recognizedText(
+                WiltedMacFeedCapacityLabel(board: board, subscription: subscription),
+                size: CGSize(width: 360, height: 80)
+            )
+        } catch {
+            await gate.release()
+            await reload.value
+            throw error
+        }
+        let renderedCapacity = capacity.joined(separator: " ")
+        XCTAssertFalse(renderedCapacity.contains("Capacity loading"), renderedCapacity)
+        XCTAssertTrue(renderedCapacity.contains("kept"), renderedCapacity)
+
+        await gate.release()
+        await reload.value
+        XCTAssertTrue(board.isLoaded(subscription.id))
+        XCTAssertEqual(board.policy(for: subscription.id), committedPolicy)
+    }
+
     /// OCR uses the exact canvas: the shared 24pt margin clips a fixed-width popover's Done control.
     func capture<V: View>(_ view: V, _ name: String, width: CGFloat, height: CGFloat) throws -> String {
         let size = CGSize(width: width, height: height)
@@ -44,4 +84,32 @@ extension WiltedMacFeedPolicyViewTests {
         return text
     }
 
+
+
+}
+
+private actor FeedPolicyReloadGate {
+    private var hasEntered = false
+    private var isReleased = false
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func pause() async {
+        hasEntered = true
+        arrivalWaiters.forEach { $0.resume() }
+        arrivalWaiters = []
+        guard !isReleased else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        if hasEntered { return }
+        await withCheckedContinuation { arrivalWaiters.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters = []
+    }
 }

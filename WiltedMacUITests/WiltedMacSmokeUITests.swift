@@ -125,6 +125,35 @@ final class WiltedMacSmokeUITests: XCTestCase {
             "the card must state the refresh and download policy"
         )
 
+        let feedName = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-name-'")
+        ).firstMatch
+        XCTAssertTrue(feedName.waitForExistence(timeout: 5))
+        feedName.click()
+        let sourceFacts = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feed-details-source-facts-'")
+        ).firstMatch
+        XCTAssertTrue(sourceFacts.waitForExistence(timeout: 5), "the feed name opens source facts")
+        XCTAssertTrue(app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feed-details-source-' AND NOT identifier BEGINSWITH 'wilted-feed-details-source-facts-'")
+        ).firstMatch.exists, "details includes the stored source URL")
+        let detailsDone = app.buttons["wilted-feed-sheet-done"]
+        XCTAssertTrue(detailsDone.waitForExistence(timeout: 5))
+        detailsDone.click()
+        XCTAssertTrue(sourceFacts.waitForNonExistence(timeout: 5))
+        let rename = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-rename-'")
+        ).firstMatch
+        XCTAssertTrue(rename.waitForExistence(timeout: 5))
+        rename.click()
+        let nameEditor = app.textFields.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-name-editor-'")
+        ).firstMatch
+        XCTAssertTrue(nameEditor.waitForExistence(timeout: 5), "the pencil opens rename")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(nameEditor.waitForNonExistence(timeout: 5), "Escape cancels rename")
+        XCTAssertTrue(feedName.exists)
+
         let toggle = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-enabled-'")
         ).firstMatch
@@ -244,7 +273,28 @@ final class WiltedMacSmokeUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(restore.waitForExistence(timeout: 5),
                       "a skipped row must offer Restore on Feeds")
+        let historySearch = app.textFields["wilted-feed-history-search"]
+        XCTAssertTrue(historySearch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-feed-history-feed-filter"].exists)
+        let statusFilter = app.descendants(matching: .any)["wilted-feed-history-status-filter"]
+        XCTAssertTrue(statusFilter.exists)
+        historySearch.click()
+        historySearch.typeText("no-matching-history-episode")
+        XCTAssertTrue(restore.waitForNonExistence(timeout: 5), "history search filters Restore rows")
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-feed-history-empty"].exists)
+        historySearch.typeKey("a", modifierFlags: .command)
+        historySearch.typeKey(.delete, modifierFlags: [])
+        XCTAssertTrue(restore.waitForExistence(timeout: 5))
+        statusFilter.click()
+        let skippedFilter = app.menuItems["Skipped"]
+        XCTAssertTrue(skippedFilter.waitForExistence(timeout: 5))
+        skippedFilter.click()
+        XCTAssertTrue(restore.waitForExistence(timeout: 5), "Skipped retains the skipped episode")
         restore.click()
+        let historyDone = app.buttons["wilted-feed-sheet-done"]
+        XCTAssertTrue(historyDone.waitForExistence(timeout: 5))
+        historyDone.click()
+        XCTAssertTrue(historySearch.waitForNonExistence(timeout: 5), "Done closes history before returning to Feeds")
         XCTAssertTrue(feedRow.waitForExistence(timeout: 5), "Restore returns the row to Feeds")
 
         // Keep is the other half of the one decision Feeds owns.
@@ -289,6 +339,44 @@ final class WiltedMacSmokeUITests: XCTestCase {
         search.typeKey("a", modifierFlags: .command)
         search.typeKey(.delete, modifierFlags: [])
         XCTAssertTrue(larderRow.waitForExistence(timeout: 5))
+
+        // The same journey ends with a wide playing fixture to exercise the side pane.
+        app.terminate()
+        let playing = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
+                                         "--wilted-ui-fixture-window-width", "1400"])
+        XCTAssertTrue(playing.descendants(matching: .any)["wilted-now-playing-pane"].waitForExistence(timeout: 10))
+        let completion = playing.buttons["wilted-player-mark-completed"]
+        XCTAssertTrue(completion.waitForExistence(timeout: 5))
+        XCTAssertTrue(completion.isHittable, "completion stays visible beside transport")
+        XCTAssertTrue(playing.buttons["wilted-player-play-pause"].isHittable)
+        let speed = playing.descendants(matching: .any)["wilted-player-speed"]
+        XCTAssertFalse(speed.exists, "speed stays inside the closed popover")
+        playing.buttons["wilted-player-menu"].click()
+        XCTAssertTrue(speed.waitForExistence(timeout: 5), "ellipsis opens the native speed popover")
+        XCTAssertTrue(speed.isHittable)
+        XCTAssertTrue(playing.buttons["wilted-player-restart"].exists)
+        playing.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(speed.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(completion.isHittable)
+
+        // The fixture clock stays put: a forward press establishes a measurable
+        // playhead, and Cmd-R must reset it while the popover stays closed.
+        let position = playing.sliders["wilted-player-scrubber"]
+        XCTAssertTrue(position.waitForExistence(timeout: 5))
+        playing.buttons["wilted-player-forward"].click()
+        let advanced = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "30 seconds of 2 minutes"), object: position
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [advanced], timeout: 5), .completed,
+                       "the forward transport establishes 30 seconds before restart")
+        XCTAssertFalse(speed.exists)
+        playing.typeKey("r", modifierFlags: .command)
+        let restarted = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", "0 seconds of 2 minutes"), object: position
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [restarted], timeout: 5), .completed,
+                       "Command-R resets the actual playhead with the popover closed")
+        XCTAssertFalse(speed.exists, "restart does not open the actions popover")
     }
 
     /// The words an element shows. macOS puts a Text's words in its value, not

@@ -110,7 +110,7 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         }
     }
 
-    func testSelectedBPaneKeepsCompactHeaderAndSecondaryActionsInOneOverflow() throws {
+    func testSelectedBPaneKeepsCompletionVisibleAndSecondaryActionsInNativePopover() throws {
         let source = try WiltedMacHeadless.viewSource("WiltedMacNowPlayingPane.swift")
         func section(_ start: String, until end: String) throws -> String {
             let begin = try XCTUnwrap(source.range(of: start))
@@ -118,27 +118,70 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
             return String(source[begin.lowerBound..<finish.lowerBound])
         }
         let header = try section("private var header:", until: "private var title:")
-        XCTAssertTrue(header.contains("HStack("), "B uses a horizontal artwork/title header")
+        XCTAssertTrue(header.contains("HStack("), "horizontal artwork/title header")
         XCTAssertTrue(header.contains("WiltedTheme.scaled(48, scale: model.textScale)"))
         XCTAssertFalse(header.contains("size: 110"))
-        let transport = try section("private var transportRow:", until: "private var speedControl:")
-        XCTAssertTrue(transport.contains("speedControl"))
-        XCTAssertTrue(transport.contains("overflowMenu"))
-        XCTAssertFalse(transport.contains("ViewThatFits"), "secondary actions must not form a second persistent row")
-        let overflow = try section("private var overflowMenu:", until: "private var share:")
-        XCTAssertTrue(overflow.contains("Menu {"))
-        for action in ["model.restartPlayback()", "model.markCurrentPlaybackCompleted()", "share"] {
-            XCTAssertTrue(overflow.contains(action), action)
+        let transport = try section("private var transportRow:", until: "private var completionControl:")
+        XCTAssertTrue(transport.contains("completionControl"))
+        XCTAssertTrue(transport.contains("overflowButton"))
+        XCTAssertFalse(transport.contains("speedControl"), "speed is only inside the popover")
+        XCTAssertFalse(transport.contains("ViewThatFits"), "transport stays one compact row")
+        XCTAssertTrue(transport.contains(".keyboardShortcut(\"r\", modifiers: .command)"))
+        XCTAssertTrue(transport.contains("model.restartPlayback()"), "Cmd-R works while the popover is closed")
+        let completion = try section("private var completionControl:", until: "private var speedControl:")
+        XCTAssertTrue(completion.contains("model.markCurrentPlaybackCompleted()"))
+        XCTAssertTrue(completion.contains(".disabled(model.playbackCompletionIsSettled)"))
+        XCTAssertTrue(completion.contains("wilted-player-mark-completed"))
+        let overflow = try section("private var overflowButton:", until: "var playbackActions:")
+        XCTAssertTrue(overflow.contains("Button { showsPlaybackActions.toggle() }"))
+        XCTAssertTrue(overflow.contains("Image(systemName: \"ellipsis\")"))
+        XCTAssertTrue(overflow.contains(".popover(isPresented: $showsPlaybackActions"))
+        XCTAssertTrue(overflow.contains("wilted-player-menu"))
+        XCTAssertFalse(source.contains("Menu {"), "plain ellipsis must have no native menu chevron")
+        let actions = try section("var playbackActions:", until: "var share:")
+        for action in ["speedControl", "model.restartPlayback()", "share", "model.recoverAudioRoute()"] {
+            XCTAssertTrue(actions.contains(action), action)
         }
-        for identifier in ["wilted-player-restart", "wilted-player-mark-completed", "wilted-player-menu", "wilted-player-route-recovery"] {
-            XCTAssertTrue(overflow.contains(identifier), identifier)
+        XCTAssertFalse(actions.contains("markCurrentPlaybackCompleted"))
+        XCTAssertTrue(actions.contains("wilted-player-restart"))
+        XCTAssertTrue(actions.contains("wilted-player-route-recovery"))
+        XCTAssertTrue(actions.contains("if model.audioRouteFault {"))
+        for identifier in ["wilted-player-menu", "wilted-player-speed", "wilted-player-mark-completed",
+                           "wilted-player-restart", "wilted-player-route-recovery"] {
+            XCTAssertEqual(WiltedMacHeadless.occurrences(of: "\"\(identifier)\"", in: source), 1, identifier)
         }
-        XCTAssertTrue(overflow.contains(".keyboardShortcut(\"r\", modifiers: .command)"))
-        XCTAssertTrue(overflow.contains("if model.audioRouteFault {"))
         XCTAssertTrue(source.contains("WiltedMacSpeedSaveLine(model: model)"))
         XCTAssertTrue(source.contains(".onKeyPress(.space)"))
         XCTAssertTrue(source.contains(".keyboardShortcut(.leftArrow, modifiers: [.command, .shift])"))
         XCTAssertTrue(source.contains(".keyboardShortcut(.rightArrow, modifiers: [.command, .shift])"))
+    }
+
+    func testPaneActionsChangeRateRestartAndCompleteTheLoadedEpisode() async throws {
+        let model = await WiltedMacHeadless.model(self, arguments)
+        let episode = try XCTUnwrap(model.feedsEpisodes.first)
+        model.decideFeedEpisodes(.keep, episodes: [episode])
+        await WiltedMacHeadless.drainDecisions(model)
+        model.playLarderEpisode(episode)
+        await WiltedMacHeadless.eventually("episode playing") {
+            model.currentPodcastEpisodeID == episode.id && model.isPlaying
+        }
+        model.setPlaybackRate(1.5)
+        await WiltedMacHeadless.eventually("rate applied") { model.playbackRate == 1.5 }
+        await model.seekPlaybackForTesting(to: 90)
+        XCTAssertGreaterThan(model.playbackPositionSeconds, 80)
+        let session = model.playback?.sessionID
+        model.restartPlayback()
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertNotEqual(model.playback?.sessionID, session)
+        XCTAssertLessThan(model.playbackPositionSeconds, 5)
+        XCTAssertEqual(model.playbackRate, 1.5, "restart preserves the popover speed")
+        XCTAssertFalse(model.playbackCompletionIsSettled)
+        model.markCurrentPlaybackCompleted()
+        await WiltedMacHeadless.eventually("episode retired after completion") {
+            model.hiddenEpisodeIDs.contains(episode.id) || model.episodes.first { $0.id == episode.id }?.retiredAt != nil
+        }
+        XCTAssertFalse(model.larderEpisodes(in: .playable).contains { $0.id == episode.id })
+        XCTAssertNil(model.playbackError)
     }
 
     /// The identifiers and labels the journey looked up, one live definition each.

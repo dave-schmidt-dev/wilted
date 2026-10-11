@@ -29,7 +29,7 @@ struct LibraryRoot: View {
         _player = StateObject(wrappedValue: runtime.player)
     }
 
-    var body: some View {
+    private var readyLibrary: some View {
         NavigationStack {
             LibraryListView(
                 model: model, playingID: player.status == .playing ? player.item?.entryID : nil,
@@ -49,6 +49,22 @@ struct LibraryRoot: View {
                             .accessibilityIdentifier("wilted-library-add-button")
                     }
                 }
+        }
+    }
+
+    var body: some View {
+        Group {
+            if !model.localStateLoaded {
+                VStack(spacing: WiltedTheme.Spacing.medium) {
+                    WiltedLoadingMotif()
+                    Text("Opening your larder…").wiltedFont(.body)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(WiltedLoadingMotifGeometry.surface(colorScheme))
+                .accessibilityIdentifier("wilted-library-startup-loading")
+            } else {
+                readyLibrary
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {

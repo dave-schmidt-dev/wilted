@@ -70,7 +70,9 @@ final class WiltedMacFeedDecisionRaceTests: XCTestCase {
         fixture.model.feedDecisionBeforeCommitForTesting = { await gate.hold() }
 
         fixture.model.decideFeedEpisodes(.skip, episodes: selected)
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [retained.id], "bulk Skip hides only its captured rows")
         await gate.waitUntilHeld()
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [retained.id])
         XCTAssertNil(fixture.model.preparationRequestSequences[selected[0].id])
         XCTAssertNil(fixture.model.preparationRequestSequences[selected[1].id])
         XCTAssertEqual(fixture.model.preparationRequestSequences[retained.id], 3)
@@ -81,6 +83,36 @@ final class WiltedMacFeedDecisionRaceTests: XCTestCase {
             let removal = try await fixture.store.removalKind(for: fixture.itemIDs[index])
             XCTAssertEqual(removal, .retired)
         }
+    }
+
+    func testSkipHidesBeforeCommitAndAStaleReloadCannotReshowThePendingRow() async throws {
+        let gate = BootstrapGate()
+        let fixture = try await makeRaceFixture(count: 2)
+        addTeardownBlock { await fixture.model.close() }
+        addTeardownBlock { await gate.release() }
+        let skipped = fixture.episodes[0]
+        let retained = fixture.episodes[1]
+        let stale = try await fixture.model.loadLibrary(from: fixture.store)
+        fixture.model.feedDecisionBeforeCommitForTesting = { await gate.hold() }
+
+        fixture.model.skipFeedEpisode(skipped)
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [retained.id], "Skip answers in the same turn")
+        XCTAssertNil(fixture.model.episodes.first { $0.id == skipped.id }?.retiredAt)
+        fixture.model.skipFeedEpisode(skipped)
+        XCTAssertEqual(fixture.model.subscriptionWriteTasks.count, 1)
+        await gate.waitUntilHeld()
+        let removalBeforeCommit = try await fixture.store.removalKind(for: fixture.itemIDs[0])
+        XCTAssertNil(removalBeforeCommit)
+        XCTAssertTrue(fixture.model.applyEpisodes(stale.episodes), "the old read is still admissible before commit")
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [retained.id], "pending projection survives the reload")
+        XCTAssertEqual(fixture.model.podcastQueueIDs, [])
+
+        await gate.release()
+        await waitForFeedDecisionWriters(fixture.model)
+        XCTAssertTrue(fixture.model.pendingFeedDecisionIDs.isEmpty)
+        XCTAssertEqual(fixture.model.feedsEpisodes.map(\.id), [retained.id])
+        let removalAfterCommit = try await fixture.store.removalKind(for: fixture.itemIDs[0])
+        XCTAssertEqual(removalAfterCommit, .retired)
     }
 
     private func makeRaceFixture(count: Int) async throws -> RaceFixture {
