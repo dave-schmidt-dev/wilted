@@ -46,12 +46,12 @@ struct WiltedMacLarderView: View {
                 TextField("", text: $model.librarySearchQuery)
                     .textFieldStyle(.roundedBorder)
                     .focused($isSearchFocused)
+                    .focusedSceneValue(\.wiltedLarderSearchFocus, { isSearchFocused = true })
                     .frame(width: 160)
                     .accessibilityLabel("Search episodes")
                     .accessibilityIdentifier("wilted-larder-search")
             }
         }
-        .focusedSceneValue(\.wiltedLarderSearchFocus, { isSearchFocused = true })
     }
 
     var playbackHelp: WiltedMacHelpContent {
