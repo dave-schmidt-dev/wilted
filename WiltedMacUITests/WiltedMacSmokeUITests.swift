@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @MainActor
@@ -412,6 +413,25 @@ final class WiltedMacSmokeUITests: XCTestCase {
         add(image)
     }
 
+    /// Records only processes that claim the fixture app bundle identifier.
+    private func attachFixtureLaunchIdentity(stage: String) {
+        let bundleID = "com.zerodelta.wilted.mac"
+        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .sorted { $0.processIdentifier < $1.processIdentifier }
+        let identities = applications.map { application in
+            "PID=\(application.processIdentifier) "
+                + "bundleURL=\(application.bundleURL?.absoluteString ?? "unavailable") "
+                + "executableURL=\(application.executableURL?.absoluteString ?? "unavailable") "
+                + "isActive=\(application.isActive) isHidden=\(application.isHidden) "
+                + "isTerminated=\(application.isTerminated)"
+        }
+        let attachment = XCTAttachment(string: identities.isEmpty
+            ? "No running application matches \(bundleID)." : identities.joined(separator: "\n"))
+        attachment.name = "Fixture launch identity - \(stage)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func launch(arguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments + [
@@ -420,6 +440,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         app.launch()
         launchedFixtureApps.append(app)
         app.activate()
+        attachFixtureLaunchIdentity(stage: "after launch and activation")
         // Match the Chrome journey activation pattern; foreground and window
         // readiness remain separate checks while this launch hypothesis is qualified.
         if !app.wait(for: .runningForeground, timeout: 10) {
@@ -431,6 +452,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
             }
         }
         guard app.windows.firstMatch.waitForExistence(timeout: 10) else {
+            attachFixtureLaunchIdentity(stage: "window readiness failure")
             attachFixtureWindowIfAvailable(app)
             XCTFail("Fixture app did not present a window; observed state: \(app.state)")
             fatalError("Fixture app window is unavailable")
