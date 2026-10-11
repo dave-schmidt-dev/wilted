@@ -89,19 +89,6 @@ struct WiltedMacApp: App {
     }
 
     var body: some Scene {
-        if #available(macOS 15.0, *) {
-            if WiltedMacModel.isFixtureLaunch(arguments: ProcessInfo.processInfo.arguments)
-                && !WiltedMacModel.hostsTests {
-                mainWindowScene.defaultLaunchBehavior(.presented)
-            } else {
-                mainWindowScene
-            }
-        } else {
-            mainWindowScene
-        }
-    }
-
-    private var mainWindowScene: some Scene {
         WindowGroup {
             WiltedMacRootView(model: model)
                 .task {
