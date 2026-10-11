@@ -167,7 +167,9 @@ final class LibraryAutoContinueTests: XCTestCase {
         await start(rig, "a")
         rig.player.setRate(1.5)
         rig.engine.finishNaturally()
-        try await eventually("the next episode") { rig.player.item?.entryID == self.id("b") && rig.player.isPlaying }
+        try await eventually("the next episode at the listener's speed") {
+            rig.player.item?.entryID == self.id("b") && rig.player.isPlaying && rig.player.rate == 1.5
+        }
         XCTAssertEqual(rig.player.rate, 1.5, "the speed the listener chose carries over")
     }
 

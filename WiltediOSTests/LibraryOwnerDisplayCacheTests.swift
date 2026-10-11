@@ -10,6 +10,13 @@ final class LibraryOwnerDisplayCacheTests: XCTestCase {
     private var seededTransport: OwnerCacheTransport?
     private var url: URL { scratch.appendingPathComponent("library-state.json") }
     private func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
+    private func eventually(_ what: String, _ condition: @escaping @MainActor () async -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !(await condition()) {
+            if ContinuousClock.now >= deadline { return XCTFail("timed out waiting for \(what)") }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
     override func setUp() async throws {
         scratch = FileManager.default.temporaryDirectory.appendingPathComponent("owner-display-\(UUID())")
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
@@ -124,13 +131,10 @@ final class LibraryOwnerDisplayCacheTests: XCTestCase {
             contentHash: "", byteCount: 0, mediaType: "", state: .notReady)
         await transport.replaceOffers([negative])
         online.startMediaRequest(entryID: id("old"))
-        for _ in 0..<200 where online.mediaState(for: id("old")) != .notPrepared { await Task.yield() }
+        try await eventually("the negative offer") { online.mediaState(for: self.id("old")) == .notPrepared }
         XCTAssertEqual(online.mediaState(for: id("old")), .notPrepared)
         XCTAssertTrue(online.visibleRows.isEmpty)
-        for _ in 0..<200 {
-            if await store.state().displayPreparedIDs?.isEmpty == true { break }
-            await Task.yield()
-        }
+        try await eventually("the durable display removal") { await store.state().displayPreparedIDs?.isEmpty == true }
         let state = await FileLibraryStore(url: url).state()
         XCTAssertEqual(state.displayPreparedIDs, [])
         let cold = model(OwnerCacheTransport(batch: try batch(), failFetch: true))
