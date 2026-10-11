@@ -1,4 +1,3 @@
-import AppKit
 import XCTest
 
 @MainActor
@@ -414,21 +413,16 @@ final class WiltedMacSmokeUITests: XCTestCase {
         add(image)
     }
 
-    /// Records only processes that claim the fixture app bundle identifier.
-    private func attachFixtureLaunchIdentity(stage: String) {
-        let bundleID = "com.zerodelta.wilted.mac"
-        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-            .sorted { $0.processIdentifier < $1.processIdentifier }
-        let identities = applications.map { application in
-            "PID=\(application.processIdentifier) "
-                + "bundleURL=\(application.bundleURL?.absoluteString ?? "unavailable") "
-                + "executableURL=\(application.executableURL?.absoluteString ?? "unavailable") "
-                + "isActive=\(application.isActive) isHidden=\(application.isHidden) "
-                + "isTerminated=\(application.isTerminated)"
-        }
-        let attachment = XCTAttachment(string: identities.isEmpty
-            ? "No running application matches \(bundleID)." : identities.joined(separator: "\n"))
-        attachment.name = "Fixture launch identity - \(stage)"
+    /// Attaches only the fixed lifecycle trace from this fixture's owned state root.
+    private func attachFixtureWindowLifecycleTrace(stage: String) {
+        guard let fixtureStateDirectory else { return }
+        let trace = fixtureStateDirectory.appendingPathComponent(
+            "ns-window-lifecycle.jsonl", isDirectory: false
+        )
+        let contents = (try? String(contentsOf: trace, encoding: .utf8))
+            ?? "No native window lifecycle records were written."
+        let attachment = XCTAttachment(string: contents)
+        attachment.name = "Fixture native window lifecycle - \(stage)"
         attachment.lifetime = .keepAlways
         add(attachment)
     }
@@ -437,27 +431,29 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments + [
             "--wilted-ui-fixture-state-directory", fixtureRoot().path,
+            "--wilted-ui-fixture-window-trace",
         ]
         app.launch()
         launchedFixtureApps.append(app)
         app.activate()
-        attachFixtureLaunchIdentity(stage: "after launch and activation")
         // Match the Chrome journey activation pattern; foreground and window
         // readiness remain separate checks while this launch hypothesis is qualified.
         if !app.wait(for: .runningForeground, timeout: 10) {
             app.activate()
             guard app.wait(for: .runningForeground, timeout: 10) else {
+                attachFixtureWindowLifecycleTrace(stage: "foreground readiness failure")
                 attachFixtureWindowIfAvailable(app)
                 XCTFail("Fixture app did not reach runningForeground; observed state: \(app.state)")
                 fatalError("Fixture app did not become frontmost")
             }
         }
         guard app.windows.firstMatch.waitForExistence(timeout: 10) else {
-            attachFixtureLaunchIdentity(stage: "window readiness failure")
+            attachFixtureWindowLifecycleTrace(stage: "window readiness failure")
             attachFixtureWindowIfAvailable(app)
             XCTFail("Fixture app did not present a window; observed state: \(app.state)")
             fatalError("Fixture app window is unavailable")
         }
+        attachFixtureWindowLifecycleTrace(stage: "window ready")
         return app
     }
 

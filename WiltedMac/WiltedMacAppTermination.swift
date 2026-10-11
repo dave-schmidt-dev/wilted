@@ -207,6 +207,9 @@ enum WiltedMacTerminationAlert {
 final class WiltedMacTerminationJournal: @unchecked Sendable {
     static let argument = "--wilted-termination-journal"
     static let failFirstDrainArgument = "--wilted-termination-fail-first-drain"
+    static let fixtureWindowTraceArgument = "--wilted-ui-fixture-window-trace"
+    static let fixtureStateDirectoryArgument = "--wilted-ui-fixture-state-directory"
+    static let fixtureWindowTraceFilename = "ns-window-lifecycle.jsonl"
 
     let url: URL
     private let lock = NSLock()
@@ -220,10 +223,52 @@ final class WiltedMacTerminationJournal: @unchecked Sendable {
         return WiltedMacTerminationJournal(url: URL(fileURLWithPath: arguments[index + 1]))
     }
 
+    /// The opt-in lifecycle trace is rooted only in an existing fixture state directory.
+    static func windowLifecycleTraceForLaunch(
+        arguments: [String], isFixture: Bool
+    ) -> WiltedMacTerminationJournal? {
+        guard isFixture,
+              arguments.contains(fixtureWindowTraceArgument),
+              let index = arguments.firstIndex(of: fixtureStateDirectoryArgument),
+              arguments.indices.contains(index + 1) else { return nil }
+        let directory = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return WiltedMacTerminationJournal(
+            url: directory.appendingPathComponent(fixtureWindowTraceFilename)
+        )
+    }
+
     func record(_ event: String, detail: String? = nil, values: [String: String] = [:]) {
         var entry = values
         entry["event"] = event
         if let detail { entry["detail"] = detail }
+        append(entry.mapValues { $0 as Any })
+    }
+
+    /// Records only native window geometry and visibility for an opted-in fixture.
+    @MainActor
+    func recordWindowLifecycle(_ event: String, application: NSApplication) {
+        let windows = application.windows
+        var entry: [String: Any] = [
+            "event": event,
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "windowCount": windows.count,
+            "appHidden": application.isHidden,
+        ]
+        for (index, window) in windows.enumerated() {
+            let prefix = "window\(index)_"
+            entry[prefix + "frameWidth"] = Double(window.frame.width)
+            entry[prefix + "frameHeight"] = Double(window.frame.height)
+            entry[prefix + "visible"] = window.isVisible
+            entry[prefix + "key"] = window.isKeyWindow
+            entry[prefix + "onActiveSpace"] = window.isOnActiveSpace
+        }
+        append(entry)
+    }
+
+    private func append(_ entry: [String: Any]) {
         guard var line = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]) else { return }
         line.append(0x0A)
         lock.lock()
@@ -245,8 +290,10 @@ final class WiltedMacAppDelegate: NSObject, NSApplicationDelegate {
     /// Installed by `WiltedMacApp.init`. Nil in a hosted test run, where
     /// quitting must never wait on the owner's library.
     static var termination: WiltedMacTerminationCoordinator?
+    static var windowLifecycleTrace: WiltedMacTerminationJournal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.windowLifecycleTrace?.recordWindowLifecycle("did-finish-launch", application: NSApplication.shared)
         Self.onLaunch?()
     }
 

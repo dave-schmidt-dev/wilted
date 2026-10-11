@@ -16,6 +16,10 @@ struct WiltedMacApp: App {
         let arguments = ProcessInfo.processInfo.arguments
         let model = Self.makeLaunchModel(arguments: arguments)
         _model = State(initialValue: model)
+        WiltedMacAppDelegate.windowLifecycleTrace = WiltedMacTerminationJournal.windowLifecycleTraceForLaunch(
+            arguments: arguments,
+            isFixture: WiltedMacModel.isFixtureLaunch(arguments: arguments) && !WiltedMacModel.hostsTests
+        )
         WiltedMacAppDelegate.installTermination(
             for: model, arguments: arguments, hostsTests: WiltedMacModel.hostsTests
         )
@@ -154,7 +158,12 @@ struct WiltedMacApp: App {
     private static func placeFixtureWindowOnPrimaryScreen(attemptsRemaining: Int = 100) {
         guard let window = NSApplication.shared.windows.first,
               let screen = NSScreen.screens.first else {
-            guard attemptsRemaining > 0 else { return }
+            guard attemptsRemaining > 0 else {
+                WiltedMacAppDelegate.windowLifecycleTrace?.recordWindowLifecycle(
+                    "fixture-placement-exhausted", application: NSApplication.shared
+                )
+                return
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) {
                 Self.placeFixtureWindowOnPrimaryScreen(attemptsRemaining: attemptsRemaining - 1)
             }
@@ -170,5 +179,8 @@ struct WiltedMacApp: App {
             y: visible.midY - frame.height / 2
         )
         window.setFrame(frame, display: true)
+        WiltedMacAppDelegate.windowLifecycleTrace?.recordWindowLifecycle(
+            "fixture-placement-succeeded", application: NSApplication.shared
+        )
     }
 }
