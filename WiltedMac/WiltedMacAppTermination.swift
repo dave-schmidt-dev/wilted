@@ -293,8 +293,26 @@ final class WiltedMacAppDelegate: NSObject, NSApplicationDelegate {
     static var windowLifecycleTrace: WiltedMacTerminationJournal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Self.windowLifecycleTrace?.recordWindowLifecycle("did-finish-launch", application: NSApplication.shared)
+        Self.recordWindowLifecycle("did-finish-launch")
+        Self.scheduleWindowLifecycleSnapshot("did-finish-launch-plus-1s", after: 1)
+        Self.scheduleWindowLifecycleSnapshot("did-finish-launch-plus-5s", after: 5)
         Self.onLaunch?()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Self.recordWindowLifecycle("did-become-active")
+    }
+
+    private static func recordWindowLifecycle(_ event: String) {
+        guard let windowLifecycleTrace else { return }
+        windowLifecycleTrace.recordWindowLifecycle(event, application: NSApplication.shared)
+    }
+
+    private static func scheduleWindowLifecycleSnapshot(_ event: String, after delay: TimeInterval) {
+        guard windowLifecycleTrace != nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            Self.recordWindowLifecycle(event)
+        }
     }
 
     /// Fixture hook: lets a fixture record that it is ready to be quit.
