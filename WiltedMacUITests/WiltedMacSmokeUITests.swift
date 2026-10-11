@@ -24,9 +24,11 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertEqual(navSettings.label, "Settings")
         XCTAssertFalse(app.descendants(matching: .any)["wilted-navigation-nowPlaying"].exists)
 
-        let compact = app.descendants(matching: .any)["wilted-compact-player"]
+        // macOS exposes the real minimized idle content rather than its SwiftUI wrapper.
+        let compact = app.descendants(matching: .any)["wilted-player-idle"]
         XCTAssertTrue(compact.waitForExistence(timeout: 5))
-        let idle = app.descendants(matching: .any)["wilted-player-idle"]
+        XCTAssertEqual(compact.value as? String, "Minimized")
+        let idle = compact
         XCTAssertTrue(idle.waitForExistence(timeout: 5))
         XCTAssertEqual(idle.label, "Nothing is playing")
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-play-pause"].exists)
@@ -38,8 +40,12 @@ final class WiltedMacSmokeUITests: XCTestCase {
         // The empty Articles hint points to the toolbar entry that opens the Add sheet.
         let addArticle = app.descendants(matching: .any)["wilted-larder-add-hint"]
         let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
-        XCTAssertTrue(larderEmpty.waitForExistence(timeout: 5))
-        XCTAssertTrue(addArticle.exists)
+        let seededArticle = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-article-row-'")
+        ).firstMatch
+        XCTAssertTrue(seededArticle.waitForExistence(timeout: 5), "the ready fixture seeds an article")
+        XCTAssertFalse(larderEmpty.exists, "a seeded article makes the initial Larder nonempty")
+        XCTAssertFalse(addArticle.exists, "the Add hint appears after the seeded article is removed")
         let search = app.textFields["wilted-larder-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         XCTAssertEqual(search.label, "Search episodes")
@@ -80,6 +86,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
             .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-article-actions-'"))
             .firstMatch
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        for _ in 0..<6 where !actions.isHittable {
+            app.scrollViews["wilted-mac-root"].scroll(byDeltaX: 0, deltaY: -300)
+        }
+        XCTAssertTrue(actions.isHittable, "the article menu is reachable in the fixture viewport")
         actions.click()
 
         // Drive the removal rather than merely proving the control is drawn.
@@ -319,7 +329,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-larder-download-'")
         ).firstMatch.exists, "an Available row offers its one next step")
-        XCTAssertEqual(app.buttons.matching(
+        XCTAssertEqual(larderRow.descendants(matching: .button).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-larder-play-'")
         ).count, 0, "an Available row cannot claim to be playable")
         XCTAssertEqual(app.buttons.matching(
@@ -330,7 +340,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         ).firstMatch.exists)
 
         // Search narrows the Larder and never the queue.
-        let search = app.searchFields.firstMatch
+        let search = app.textFields["wilted-larder-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.click()
         search.typeText("Quiet")

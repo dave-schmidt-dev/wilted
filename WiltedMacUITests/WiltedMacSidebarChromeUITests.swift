@@ -25,8 +25,10 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
         XCTAssertTrue(window.waitForExistence(timeout: 10))
         let toggle = app.buttons["wilted-sidebar-toggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
-        let sidebar = app.descendants(matching: .any)["wilted-mac-sidebar"]
-        XCTAssertTrue(sidebar.waitForExistence(timeout: 5), "the sidebar exposes its containing accessibility group")
+        let navigation = app.buttons["wilted-navigation-larder"]
+        XCTAssertTrue(navigation.waitForExistence(timeout: 5), "native sidebar navigation is available")
+        let detailViewport = app.scrollViews["wilted-mac-root"]
+        XCTAssertTrue(detailViewport.waitForExistence(timeout: 5), "the native detail viewport is available")
         let heading = app.descendants(matching: .any)["wilted-larder-audio-total"]
         let controls = [XCUIIdentifierCloseWindow, XCUIIdentifierMinimizeWindow, "_XCUI:FullScreenWindow"]
             .map { window.buttons[$0] }
@@ -35,8 +37,8 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
         for _ in 0..<2 {
             toggle.click()
             let collapsed = XCTNSPredicateExpectation(
-                predicate: NSPredicate { _, _ in sidebar.exists && abs(sidebar.frame.width - 56) < 2 },
-                object: sidebar)
+                predicate: NSPredicate { _, _ in navigation.exists && detailViewport.exists && abs(detailViewport.frame.minX - window.frame.minX - 56) < 2 },
+                object: navigation)
             XCTAssertEqual(XCTWaiter.wait(for: [collapsed], timeout: 5), .completed,
                            "Collapse preserves the shipping 56-point navigation rail")
             XCTAssertTrue(heading.waitForExistence(timeout: 5), "first Larder content is available in the rail layout")
@@ -48,8 +50,8 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
             }
             toggle.click()
             let expanded = XCTNSPredicateExpectation(
-                predicate: NSPredicate { _, _ in sidebar.exists && sidebar.frame.width > 100 },
-                object: sidebar)
+                predicate: NSPredicate { _, _ in navigation.exists && detailViewport.exists && detailViewport.frame.minX - window.frame.minX > 100 },
+                object: navigation)
             XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed)
         }
     }
