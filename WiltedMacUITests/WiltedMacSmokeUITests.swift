@@ -238,6 +238,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-row-'")
         ).firstMatch
         XCTAssertTrue(feedRow.waitForExistence(timeout: 8))
+        let episodeID = String(feedRow.identifier.dropFirst("wilted-feeds-row-".count))
+        XCTAssertFalse(episodeID.isEmpty, "the matched Feeds row exposes its episode ID")
 
         // Show notes inform the Feeds decision without adding another journey.
         let showNotes = app.buttons.matching(
@@ -260,10 +262,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
                        "Escape closes the notes popover")
 
         // A skip leaves the list; Feeds owns the reversal.
-        let skip = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-skip-'")
-        ).firstMatch
+        let skip = app.buttons["wilted-feeds-skip-\(episodeID)"]
         XCTAssertTrue(skip.waitForExistence(timeout: 5))
+        XCTAssertTrue(skip.isEnabled, "the episode Skip action is enabled")
         skip.click()
         let offList = app.descendants(matching: .any)["wilted-feeds-off-list-toggle"]
         XCTAssertTrue(offList.waitForExistence(timeout: 5))
