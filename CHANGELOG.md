@@ -31,6 +31,7 @@ All notable changes to this project are documented in this file.
 - Re-downloading an episode deletes the copy it replaces, and the Mac startup has a "Reclaiming storage" step that deletes audio no record names and clears records whose audio is missing.
 
 ### Fixed
+- SwiftPM package test builds recover from Finder metadata signing failures by clearing File Provider metadata and retrying once within the shared work budget.
 - Mac Play/Pause pending feedback now stays inside the initiating button without shifting the player layout.
 - Collapsing the Mac sidebar now retains its icon rail and current selection; the same setting and control restore labels when width permits.
 - Mac prepared-media export no longer exposes raw or unprepared, off-Larder, retired, or mismatched-download audio.

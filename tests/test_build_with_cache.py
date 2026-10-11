@@ -4,17 +4,17 @@
 from __future__ import annotations
 
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from test_bounded_runner import BoundedRunnerTests
-
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "build-with-cache.py"
@@ -64,6 +64,10 @@ class BuildWithCacheTests(unittest.TestCase):
             "with open(os.environ['BUILD_CACHE_TEST_EVENTS'], 'a', encoding='utf-8') as f:\n"
             "    f.write(name + '\\t' + '\\t'.join(sys.argv[1:]) + '\\n')\n"
             "args = sys.argv[1:]\n"
+            "if os.environ.get('BUILD_CACHE_TEST_PID_FILE'):\n"
+            "    from pathlib import Path\n"
+            "    Path(os.environ['BUILD_CACHE_TEST_PID_FILE']).write_text("
+            "str(os.getpid()), encoding='utf-8')\n"
             "if '--wait-release' in args:\n"
             "    from pathlib import Path\n"
             "    release = Path(args[args.index('--wait-release') + 1])\n"
@@ -72,6 +76,9 @@ class BuildWithCacheTests(unittest.TestCase):
             "    time.sleep(float(args[args.index('--sleep-seconds') + 1]))\n"
             "if '--terminate-self' in args:\n"
             "    os.kill(os.getpid(), signal.SIGTERM)\n"
+            "if '--emit-bytes' in args:\n"
+            "    sys.stdout.write('x' * 2000000)\n"
+            "    sys.stdout.flush()\n"
             "if '--exit-code' in args:\n"
             "    raise SystemExit(int(args[args.index('--exit-code') + 1]))\n",
             encoding="utf-8",
@@ -249,17 +256,117 @@ class BuildWithCacheTests(unittest.TestCase):
         )
 
         self.assertEqual(exit_result.returncode, 23)
-        self.assertEqual(signal_result.returncode, -signal.SIGTERM)
+        self.assertEqual(signal_result.returncode, 128 + signal.SIGTERM)
+
+
+    def test_unmanaged_signal_uses_conventional_status(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_with_cache_signal_test", HELPER,
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original_handlers = {
+            signum: signal.getsignal(signum)
+            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+        }
+        try:
+            with open(os.devnull, "rb") as lock, mock.patch.object(
+                module, "clear_xattrs", return_value=0,
+            ):
+                for signum in (signal.SIGTERM, signal.SIGKILL):
+                    with self.subTest(signum=signum), mock.patch.object(
+                        module, "relay_attempt", return_value=(-signum, False),
+                    ):
+                        status = module.run_swiftpm_with_retry(
+                            ROOT / "scripts/run-bounded.py", ["swift", "build"],
+                            self.temp_path, 10, lock.fileno(),
+                        )
+                        self.assertEqual(status, 128 + signum)
+        finally:
+            for signum, handler in original_handlers.items():
+                signal.signal(signum, handler)
+
+    def test_closed_output_pipe_still_drains_and_reaps_build(self) -> None:
+        pid_file = self.temp_path / "child.pid"
+        key = f"test-broken-pipe-{os.getpid()}"
+        self.track_fixture_cache("swiftpm", key)
+        env = self.env.copy()
+        env["BUILD_CACHE_TEST_PID_FILE"] = str(pid_file)
+        process = subprocess.Popen(
+            [PYTHON, str(HELPER), "run", "swiftpm", key,
+             "--", "swift", "run", "--emit-bytes"],
+            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        assert process.stdout is not None and process.stderr is not None
+        process.stdout.close()
+        try:
+            status = process.wait(timeout=10)
+            stderr = process.stderr.read().decode("utf-8", errors="replace")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            process.stderr.close()
+        self.assertEqual(status, 0, stderr)
+        self.assertNotIn("Traceback", stderr)
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child_pid, 0)
+
+    def test_xattr_cleanup_does_not_follow_cache_symlinks(self) -> None:
+        xattr = Path("/usr/bin/xattr")
+        if not xattr.exists():
+            self.skipTest("macOS xattr utility is unavailable")
+        import importlib.util
+
+        cache = self.temp_path / "cache"
+        cache.mkdir()
+        external = self.temp_path / "outside-tagged-file"
+        external.write_text("outside cache", encoding="utf-8")
+        finder_info = "5445585454455854000000000000000000000000000000000000000000000000"
+        subprocess.run(
+            [str(xattr), "-wx", "com.apple.FinderInfo", finder_info, str(external)],
+            check=True, capture_output=True,
+        )
+        (cache / "linked-tagged-file").symlink_to(external)
+
+        spec = importlib.util.spec_from_file_location(
+            "build_with_cache_xattr_test", HELPER,
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with open(os.devnull, "rb") as lock:
+            status = module.clear_xattrs(
+                cache, "symlink-safety-test", ROOT / "scripts/run-bounded.py",
+                time.monotonic() + 10, lock.fileno(), [], [],
+            )
+        self.assertEqual(status, 0)
+        preserved = subprocess.run(
+            [str(xattr), "-p", "com.apple.FinderInfo", str(external)],
+            check=False, capture_output=True,
+        )
+        self.assertEqual(
+            preserved.returncode, 0, "cleanup stripped xattrs through a cache symlink",
+        )
 
     def test_test_timeout_environment_bounds_the_cached_child(self) -> None:
         self.env["WILTED_TEST_TIMEOUT_SECONDS"] = "0.2"
+        started = time.monotonic()
         result = self.run_helper(
             "run", "swiftpm", f"test-timeout-{os.getpid()}", "--", "swift", "test",
             "--sleep-seconds", "20",
             timeout=5,
         )
+        elapsed = time.monotonic() - started
         self.assertEqual(result.returncode, 124, result.stderr)
-        self.assertIn("run-bounded: timeout", result.stderr)
+        self.assertLess(elapsed, 5)
+        if "run-bounded: timeout" not in result.stderr:
+            self.assertIn("native.xattr.budget-exhausted phase=pre-build", result.stderr)
+            self.assertEqual(self.read_events(), [], "the build must not start after pre-clear consumes its budget")
 
     def test_reexec_deadline_does_not_seed_cache_command_deadline(self) -> None:
         """Exercise reexec -> cache helper -> runner -> Swift with recorded argv."""
@@ -285,10 +392,12 @@ class BuildWithCacheTests(unittest.TestCase):
         (self.bin_dir / "python3").chmod(0o755)
         (scripts / "run-bounded.py").write_text(
             "#!/usr/bin/env python3\n"
-            "import os, sys\n"
+            "import os, sys, time\n"
             "from pathlib import Path\n"
             "with Path(os.environ['DEADLINE_RECORD']).open('a', encoding='utf-8') as record:\n"
-            "    record.write('\\t'.join((sys.argv[1], sys.argv[2], os.environ.get('WILTED_TEST_TIMEOUT_SECONDS', 'absent'))) + '\\n')\n"
+            "    record.write('\\t'.join((sys.argv[1], sys.argv[2], "
+            "os.environ.get('WILTED_TEST_TIMEOUT_SECONDS', 'absent'), "
+            "str(time.monotonic()))) + '\\n')\n"
             "os.execv(sys.executable, [sys.executable, str(Path(__file__).with_name('run-bounded-real.py')), *sys.argv[1:]])\n",
             encoding="utf-8",
         )
@@ -321,6 +430,21 @@ class BuildWithCacheTests(unittest.TestCase):
         )
         fake_swift.chmod(0o755)
 
+        def assert_shared_work_deadline(rows: list[list[str]], start: int,
+                                        budget: str, expected_count: int) -> None:
+            work_rows = rows[start:]
+            self.assertEqual(len(work_rows), expected_count, rows)
+            budgets = [float(row[1]) for row in work_rows]
+            self.assertTrue(all(0 < value <= float(budget) for value in budgets), budgets)
+            deadlines = [float(row[3]) + float(row[1]) for row in work_rows]
+            self.assertLessEqual(max(deadlines) - min(deadlines), 0.5, deadlines)
+            self.assertGreaterEqual(budgets[0], float(budget) - 1.0, budgets)
+            measured_cleanup = float(work_rows[1][3]) - float(work_rows[0][3])
+            self.assertAlmostEqual(
+                budgets[1], budgets[0] - measured_cleanup, delta=0.5,
+                msg=f"build timeout must deduct measured cleanup time: {work_rows}",
+            )
+
         def invoke(extra: dict[str, str], expected: tuple[str, str], status: int = 0) -> None:
             deadline_record = self.temp_path / f"deadline-{expected[0]}-{expected[1]}.txt"
             swift_record = self.temp_path / f"swift-{expected[0]}-{expected[1]}.txt"
@@ -347,10 +471,9 @@ class BuildWithCacheTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, status, result.stderr)
             rows = [line.split("\t") for line in deadline_record.read_text().splitlines()]
-            self.assertEqual([(row[0], float(row[1])) for row in rows], [
-                ("--timeout-seconds", float(expected[0])),
-                ("--timeout-seconds", float(expected[1])),
-            ])
+            self.assertEqual((rows[0][0], float(rows[0][1])),
+                             ("--timeout-seconds", float(expected[0])))
+            assert_shared_work_deadline(rows, 1, expected[1], 2)
             self.assertEqual(reexec_record.read_text().splitlines(), [
                 f"{scripts / 'run-bounded.py'}\t--timeout-seconds\t{expected[0]}"
             ])
@@ -384,11 +507,11 @@ class BuildWithCacheTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             rows = [line.split("\t") for line in deadline_record.read_text().splitlines()]
-            self.assertEqual([(row[0], float(row[1])) for row in rows], [
+            self.assertEqual([(row[0], float(row[1])) for row in rows[:2]], [
                 ("--timeout-seconds", 1800.0),
                 ("--timeout-seconds", 1800.0),
-                ("--timeout-seconds", float(command_timeout)),
             ])
+            assert_shared_work_deadline(rows, 2, command_timeout, 2)
             self.assertEqual(swift_record.read_text(), extra.get("WILTED_TEST_TIMEOUT_SECONDS", "absent"))
             self.assertFalse(any(phase_tmp.iterdir()), "phase fixture left a temp directory")
 

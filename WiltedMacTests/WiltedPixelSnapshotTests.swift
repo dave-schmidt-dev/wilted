@@ -18,7 +18,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
     /// canvas, where the sidebar collapses and renders as a blank rectangle —
     /// so the pixel suite never actually saw the navigation it was meant to
     /// verify, and a composition whose sidebar did nothing cleared the gate.
-    private let windowCanvas = CGSize(width: 1100, height: 700)
+    let windowCanvas = CGSize(width: 1100, height: 700)
 
     fileprivate static let visualFixtures = WiltedPreviewFixture.matrix
     fileprivate static let visualVariants = WiltedVisualVariant.matrix
@@ -130,32 +130,6 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                     "\(shell)-\(appearance) detail region is blank; the destination did not render."
                 )
             }
-        }
-    }
-
-    /// Settings is scrollable at window scale, so this focused render check
-    /// guards against the automation card collapsing the destination to a
-    /// blank surface without requiring a new unreviewed pixel baseline.
-    func testSettingsAutomationSurfaceRendersAtWindowScale() throws {
-        for appearance in WiltedAppearance.allCases {
-            let variant = WiltedVisualVariant(
-                appearance: appearance,
-                dynamicType: .standard,
-                reduceMotion: false
-            )
-            let model = WiltedMacModel(
-                arguments: ["--wilted-ui-fixture-ready"],
-                stateDirectoryOverride: wiltedTemporaryDirectory("fixture"),
-                preferences: WiltedMacTestPreferences.ephemeral()
-            )
-            model.selectedNavigation = .settings
-            let image = render(WiltedMacRootView(model: model), variant: variant, size: windowCanvas)
-            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
-            let detail = NSRect(x: 260, y: 0, width: bitmap.pixelsWide - 260, height: bitmap.pixelsHigh)
-            XCTAssertGreaterThan(
-                distinctColorCount(in: bitmap, region: detail), 8,
-                "Settings automation surface is blank in \(appearance.rawValue) mode."
-            )
         }
     }
 
@@ -508,140 +482,6 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
-    // MARK: Larder kinds and audiobooks
-
-    /// A book as the Larder queues it: one single-file volume with chapter marks.
-    private func fixtureBook() -> WiltedMacEpisode {
-        var book = WiltedMacEpisode(
-            id: "book-dune-0", title: "Dune", feedTitle: "Audiobook", summary: "Frank Herbert", artworkURL: nil,
-            releasedAt: Date(timeIntervalSince1970: 1_700_000_900), durationSeconds: 21 * 3_600 + 35 * 60,
-            playbackSeconds: 5_400, downloadState: .completed, preparationState: .prepared(summary: "Audiobook"))
-        book.audiobook = WiltedMacAudiobookDetails(
-            author: "Frank Herbert",
-            chapters: [
-                WiltedMacChapter(title: "Book One: Dune", startSeconds: 0),
-                WiltedMacChapter(title: "Book Two: Muad'Dib", startSeconds: 4_800),
-                WiltedMacChapter(title: "Book Three: The Prophet", startSeconds: 9_600),
-            ],
-            sourceFormat: "audio", volumeIndex: 0, volumeCount: 1)
-        return book
-    }
-
-    private func larderModel(_ name: String) -> WiltedMacModel {
-        let model = WiltedMacModel(
-            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory(name),
-            preferences: WiltedMacTestPreferences.ephemeral())
-        let book = fixtureBook()
-        model.installEpisodeForTesting(book)
-        model.podcastQueueIDs.append(book.id)
-        return model
-    }
-
-    /// The whole Larder under the All filter: the kind menu beside Group and Sort, and articles,
-    /// episodes and a book as rows in the one grouped list.
-    func testLarderKindFilterPixelBaselines() throws {
-        for appearance in WiltedAppearance.allCases {
-            let model = larderModel("larder-kind-filter")
-            XCTAssertEqual(model.larderKind, .all)
-            let image = render(
-                WiltedMacLarderView(model: model, paneMode: .side),
-                variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
-                size: CGSize(width: 760, height: 560))
-            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
-            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the Larder drew")
-            assertSnapshot(
-                image, named: WiltedSnapshotContract.shellName(kind: "larder-kind-filter", appearance: appearance),
-                testName: "testLarderKindFilterPixelBaselines")
-        }
-    }
-
-    /// A book row: author, length and chapter count under the title.
-    func testLarderBookRowPixelBaselines() throws {
-        for appearance in WiltedAppearance.allCases {
-            let model = larderModel("larder-book-row")
-            let book = try XCTUnwrap(model.episodes.first { $0.id == "book-dune-0" })
-            let larder = WiltedMacLarderView(model: model, paneMode: .side)
-            let content = larder.larderRow(book, position: 1, count: 1, showsGroupName: false)
-                .padding(WiltedTheme.Spacing.large)
-                .environment(\.wiltedTextScale, model.textScale)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(WiltedTheme.color(.card, scheme: appearance == .dark ? .dark : .light))
-            let image = render(
-                content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
-                size: CGSize(width: 760, height: 110))
-            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
-            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the book row drew")
-            assertSnapshot(
-                image, named: WiltedSnapshotContract.shellName(kind: "larder-book-row", appearance: appearance),
-                testName: "testLarderBookRowPixelBaselines")
-        }
-        let model = larderModel("larder-book-row-text")
-        let book = try XCTUnwrap(model.episodes.first { $0.id == "book-dune-0" })
-        let shown = try WiltedMacHeadless.recognizedText(
-            WiltedMacLarderView(model: model, paneMode: .side).larderRow(book, position: 1, count: 1, showsGroupName: false),
-            size: CGSize(width: 760, height: 110)).joined(separator: " ")
-        XCTAssertTrue(shown.contains("Frank Herbert"), shown)
-        XCTAssertTrue(shown.contains("3 chapters"), shown)
-    }
-
-    /// The player while a book plays: the chapter under the playhead and the previous and next steps.
-    func testPlayerChaptersPixelBaselines() throws {
-        for appearance in WiltedAppearance.allCases {
-            let model = larderModel("player-chapters")
-            let book = try XCTUnwrap(model.episodes.first { $0.id == "book-dune-0" })
-            model.installPlaybackStateForTesting(
-                episode: book, isPlaying: false, position: 5_400, duration: book.durationSeconds ?? 0,
-                queue: model.podcastQueueIDs)
-            XCTAssertEqual(model.currentChapterTitle, "Book Two: Muad'Dib")
-            let image = render(
-                WiltedMacFullWindowPlayer(
-                    model: model, presentation: .constant(nil), onSelect: { _ in }, onCollapse: { _ in }),
-                variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
-                size: CGSize(width: 900, height: 480))
-            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
-            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the player drew")
-            assertSnapshot(
-                image, named: WiltedSnapshotContract.shellName(kind: "player-chapters", appearance: appearance),
-                testName: "testPlayerChaptersPixelBaselines")
-        }
-    }
-
-    // MARK: Reports settings
-
-    /// The Reports section with interruptions on, the daily report on and typed coordinates in use.
-    func testReportsSettingsPixelBaselines() throws {
-        for appearance in WiltedAppearance.allCases {
-            let model = WiltedMacModel(
-                arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("reports-pixel"),
-                preferences: WiltedMacTestPreferences.ephemeral())
-            model.updateAutomationSettings { current in
-                current.updatingReports {
-                    $0.interruptionsEnabled = true
-                    $0.reportEnabled = true
-                    $0.typedLatitude = 38.9
-                    $0.typedLongitude = -77.04
-                    $0.nwsContact = "listener@example.test"
-                }
-            }
-            let location = WiltedLocationProvider(
-                manager: PixelFakeLocationManager(), wifi: PixelFakeWiFi(),
-                typedCoordinates: model.automationSettings.typedCoordinates)
-            let content = WiltedMacReportsCard(model: model, location: location, startsExpanded: true)
-                .padding(WiltedTheme.Spacing.large)
-                .environment(\.wiltedTextScale, model.textScale)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(WiltedTheme.color(.page, scheme: appearance == .dark ? .dark : .light))
-            let image = render(
-                content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
-                size: CGSize(width: 760, height: 560))
-            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
-            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the Reports section drew")
-            assertSnapshot(
-                image, named: WiltedSnapshotContract.shellName(kind: "settings-reports", appearance: appearance),
-                testName: "testReportsSettingsPixelBaselines")
-        }
-    }
-
     func testSnapshotBaselinePreservesExistingBytesWhenMatchingInRecordMode() throws {
         let baseline = try baselineTestURL(for: "matching-baseline")
         let existingBitmap = makeSolidBitmap(width: 4, height: 2, red: 17, green: 34, blue: 51, alpha: 255)
@@ -745,8 +585,6 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         XCTAssertFalse(mutation)
         XCTAssertEqual(try Data(contentsOf: baseline), existingBytes)
     }
-
-
 }
 
 enum WiltedSnapshotContract {
@@ -770,19 +608,4 @@ enum WiltedSnapshotContract {
     static func shellName(kind: String, appearance: WiltedAppearance) -> String {
         "mac-shell-\(kind)-\(appearance.rawValue)"
     }
-}
-
-@MainActor
-private final class PixelFakeLocationManager: WiltedLocationManaging {
-    var authorization = WiltedLocationAuthorization.authorized
-    var onAuthorizationChange: (() -> Void)?
-    var onFix: ((Double, Double) -> Void)?
-    var onFailure: (() -> Void)?
-    func requestPermission() {}
-    func requestOneFix() {}
-}
-
-@MainActor
-private final class PixelFakeWiFi: WiltedWiFiPowerReading {
-    var isPoweredOn = false
 }

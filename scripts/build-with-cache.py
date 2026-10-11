@@ -11,6 +11,16 @@ directory into the child build command -- `--scratch-path` directly after the
 `xcodebuild` -- then execs the child, so the child's exit status and signal
 death become the helper's own and stdout stays the child's.
 
+`run swiftpm` instead supervises the child so it can survive File Provider
+tagging under ~/Documents: it clears extended attributes on the cache before
+the build and, when a failed build reports codesign's "resource fork, Finder
+information, or similar detritus", clears again and retries exactly once
+within the remaining budget (`native.xattr.retry`). Child stdout and stderr
+are relayed live to the helper's own streams, INT/TERM/HUP are forwarded, and
+the child's exit status or signal death still becomes the helper's own. The
+streams are pipes, so interactive TTY progress and color are not preserved;
+the supervisor's periodic status remains visible.
+
 Every build command is supervised by ``run-bounded.py``.  Its default 300s
 work budget can be changed with ``WILTED_TEST_TIMEOUT_SECONDS``. Lock waits
 are unbounded with heartbeats unless explicitly bounded for a diagnostic by
@@ -41,7 +51,10 @@ import fcntl
 import math
 import os
 import re
+import selectors
 import shutil
+import signal
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -67,6 +80,7 @@ DEFAULT_LOCK_TIMEOUT_SECONDS = 300.0
 EXIT_USAGE = 2
 EXIT_NOT_EXECUTABLE = 126
 EXIT_NOT_FOUND = 127
+DETRITUS_MARKER = b"resource fork, Finder information, or similar detritus"
 
 
 def emit(message: str) -> None:
@@ -243,6 +257,194 @@ def clean_app_product(cache: Path) -> None:
         emit(f"clean-app-product path={target}")
 
 
+def clear_xattrs(cache: Path, reason: str, runner: Path, deadline: float,
+                 lock_descriptor: int, pending: list[int],
+                 current: list[subprocess.Popen[bytes]]) -> int:
+    """Strip extended attributes (File Provider FinderInfo) from the cache tree.
+
+    A failure is reported and tolerated: some attributes refuse removal and the
+    build itself remains the authority on whether signing succeeds. Cleanup is
+    supervised within the same work deadline as the build and retries.
+    """
+    started = time.monotonic()
+    emit(f"native.xattr.clear start reason={reason} path={cache}")
+    sys.stderr.flush()
+    budget = deadline - started
+    if budget <= 0:
+        emit(f"native.xattr.clear skipped reason={reason} budget=exhausted")
+        return 124
+
+    previous_phase = os.environ.get("WILTED_WORK_PHASE")
+    previous_heartbeat = os.environ.get("WILTED_BOUNDED_HEARTBEAT_SECONDS")
+    os.environ["WILTED_WORK_PHASE"] = "native-xattr-cleanup"
+    os.environ["WILTED_BOUNDED_HEARTBEAT_SECONDS"] = str(HEARTBEAT_SECONDS)
+    try:
+        returncode, _ = relay_attempt(
+            [sys.executable, str(runner), "--timeout-seconds", f"{budget:g}", "--",
+             "/usr/bin/xattr", "-crs", str(cache)],
+            lock_descriptor, pending, current,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        returncode = 127
+        status = f"warning={error!r}"
+    else:
+        status = f"status={returncode}"
+        if returncode not in (0, 124):
+            status += " warning=cleanup failed; build remains authoritative"
+    finally:
+        if previous_phase is None:
+            os.environ.pop("WILTED_WORK_PHASE", None)
+        else:
+            os.environ["WILTED_WORK_PHASE"] = previous_phase
+        if previous_heartbeat is None:
+            os.environ.pop("WILTED_BOUNDED_HEARTBEAT_SECONDS", None)
+        else:
+            os.environ["WILTED_BOUNDED_HEARTBEAT_SECONDS"] = previous_heartbeat
+    emit(
+        f"native.xattr.clear done reason={reason} "
+        f"elapsed={time.monotonic() - started:.1f}s {status}"
+    )
+    return returncode
+
+
+def relay_attempt(argv: list[str], lock_descriptor: int, pending: list[int],
+                  current: list[subprocess.Popen[bytes]]) -> tuple[int, bool]:
+    """Run one supervised attempt, relaying its output live.
+
+    Returns (returncode, saw detritus marker). The lock descriptor is passed so
+    the runner holds the cache lock even if this parent dies first.
+    """
+    child = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             pass_fds=(lock_descriptor,))
+    current[:] = [child]
+    if pending:
+        child.send_signal(pending[-1])
+    sinks = {child.stdout.fileno(): sys.stdout.buffer, child.stderr.fileno(): sys.stderr.buffer}
+    tails = dict.fromkeys(sinks, b"")
+    keep = len(DETRITUS_MARKER) - 1
+    seen = False
+    broken_sinks: set[int] = set()
+    try:
+        with selectors.DefaultSelector() as selector:
+            for descriptor in sinks:
+                selector.register(descriptor, selectors.EVENT_READ)
+            while selector.get_map():
+                for key, _ in selector.select():
+                    descriptor = key.fd
+                    chunk = os.read(descriptor, 65536)
+                    if not chunk:
+                        selector.unregister(descriptor)
+                        continue
+                    sink = sinks[descriptor]
+                    if descriptor not in broken_sinks:
+                        try:
+                            sink.write(chunk)
+                            sink.flush()
+                        except BrokenPipeError:
+                            # Keep draining the runner so it cannot block or outlive us.
+                            broken_sinks.add(descriptor)
+                            try:
+                                null_fd = os.open(os.devnull, os.O_WRONLY)
+                                try:
+                                    os.dup2(null_fd, sink.fileno())
+                                finally:
+                                    os.close(null_fd)
+                            except (AttributeError, OSError):
+                                pass
+                    window = tails[descriptor] + chunk
+                    seen = seen or DETRITUS_MARKER in window
+                    tails[descriptor] = window[-keep:]
+        returncode = child.wait()
+        return returncode, seen
+    except BaseException:
+        if child.poll() is None:
+            try:
+                child.kill()
+            except ProcessLookupError:
+                pass
+        child.wait()
+        raise
+    finally:
+        child.stdout.close()
+        child.stderr.close()
+        current.clear()
+
+
+def run_swiftpm_with_retry(runner: Path, plan: list[str], cache: Path,
+                           command_timeout: float, lock_descriptor: int) -> int:
+    """Build under the runner, retrying once after File Provider detritus."""
+    deadline = time.monotonic() + command_timeout
+    pending: list[int] = []
+    current: list[subprocess.Popen[bytes]] = []
+
+    def forward(signum: int, _frame: object) -> None:
+        pending.append(signum)
+        for child in current:
+            try:
+                child.send_signal(signum)
+            except ProcessLookupError:
+                pass
+
+    for managed in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        # An ignored disposition (Bash background INT) stays ignored, as under exec.
+        if signal.getsignal(managed) is not signal.SIG_IGN:
+            signal.signal(managed, forward)
+    cleanup_status = clear_xattrs(
+        cache, "pre-build", runner, deadline, lock_descriptor, pending, current
+    )
+    budget = deadline - time.monotonic()
+    if pending:
+        returncode = -pending[0]
+    elif cleanup_status in (124, 125):
+        returncode = cleanup_status
+    elif budget <= 0:
+        emit("native.xattr.budget-exhausted phase=pre-build")
+        returncode = 124
+    else:
+        attempt = 1
+        while True:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                emit("native.xattr.budget-exhausted phase=detritus")
+                returncode = 124
+                break
+            argv = [sys.executable, str(runner), "--timeout-seconds", f"{budget:g}", "--", *plan]
+            sys.stderr.flush()
+            returncode, detritus = relay_attempt(argv, lock_descriptor, pending, current)
+            budget = deadline - time.monotonic()
+            if pending:
+                returncode = -pending[0]
+                break
+            if attempt > 1 or returncode == 0 or not detritus:
+                break
+            if budget <= 0:
+                returncode = 124
+                break
+            cleanup_status = clear_xattrs(
+                cache, "detritus", runner, deadline, lock_descriptor, pending, current
+            )
+            budget = deadline - time.monotonic()
+            if pending:
+                returncode = -pending[0]
+                break
+            if cleanup_status in (124, 125):
+                returncode = cleanup_status
+                break
+            if budget <= 0:
+                returncode = 124
+                break
+            emit(f"native.xattr.retry attempt=2 previous-status={returncode} budget={budget:.0f}s")
+            attempt += 1
+    if returncode < 0:
+        signum = -returncode
+        if pending:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+            return -signum
+        return 128 + signum
+    return returncode
+
+
 def main(argv: list[str]) -> int:
     try:
         action, kind, key, clean_product, child = parse_arguments(argv)
@@ -265,14 +467,16 @@ def main(argv: list[str]) -> int:
         command_timeout = environment_timeout(
             "WILTED_TEST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS
         )
-        acquire_lock(lock, kind, key, timeout_seconds=lock_timeout)
+        lock_descriptor = acquire_lock(lock, kind, key, timeout_seconds=lock_timeout)
         os.environ.setdefault("WILTED_WORK_PHASE", "test" if action == "run-tests" else "build")
         emit(f"work-start kind={kind} key={key} phase={os.environ.get('WILTED_WORK_PHASE', 'build')} budget={command_timeout:g}s")
         if clean_product:
             clean_app_product(cache)
         sys.stderr.flush()
+        runner = Path(__file__).with_name("run-bounded.py")
+        if action == "run" and kind == "swiftpm":
+            return run_swiftpm_with_retry(runner, plan, cache, command_timeout, lock_descriptor)
         try:
-            runner = Path(__file__).with_name("run-bounded.py")
             os.execvpe(
                 sys.executable,
                 [sys.executable, str(runner), "--timeout-seconds", str(command_timeout), "--", *plan],
