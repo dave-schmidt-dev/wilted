@@ -84,6 +84,9 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
     /// delivered twice). Each episode completes and advances exactly once.
     func testDuplicateEndOfFileCompletesAndAdvancesOncePerEpisode() async throws {
         let rig = try await makeRig("forward-duplicate-eof", middle: .ready)
+        var decisions: [String] = []
+        WiltedMacModel.advanceDecisionLogObserverForTesting = { decisions.append($0) }
+        defer { WiltedMacModel.advanceDecisionLogObserverForTesting = nil }
         try await startQueue(rig, at: 19)
 
         try await finish(rig, times: 2)
@@ -97,7 +100,9 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
         XCTAssertEqual(rig.recorder.observed.filter { $0 == rig.id(20) }.count, 1, "one advance into 20")
         XCTAssertEqual(rig.recorder.observed.first, rig.id(20))
         XCTAssertEqual(rig.recorder.completed, [rig.id(19), rig.id(20), rig.id(21)], "no duplicate completion")
-        XCTAssertEqual(rig.recorder.finishes, 1, "one stop notice at the end of the queue")
+        XCTAssertEqual(rig.recorder.finishes, 3, "one natural-end handoff per episode, despite duplicate EOF")
+        XCTAssertEqual(decisions.filter { $0 == "advance.decision chosen=none reason=no_eligible_ready_row" }.count,
+                       1, "one terminal decision at the end of the Ready rows")
         XCTAssertFalse(rig.backend.isPlaying)
         for number in [19, 20, 21] {
             let kind = try await rig.store.removalKind(for: try XCTUnwrap(rig.ids[number]))
@@ -118,6 +123,9 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
     func testAQueueEntryRemovedDuringTheLookupIsSkippedForTheNextOne() async throws {
         let rig = try await makeRig("forward-lookup-change", middle: .ready)
         try await startQueue(rig, at: 19)
+        var decisions: [String] = []
+        WiltedMacModel.advanceDecisionLogObserverForTesting = { decisions.append($0) }
+        defer { WiltedMacModel.advanceDecisionLogObserverForTesting = nil }
         let playback = try XCTUnwrap(rig.model.playback)
         let eligible = try XCTUnwrap(playback.episodeEligibilityPredicate)
         let store = rig.store
@@ -137,7 +145,10 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
         try await assertNeverAdvancedInto(20, rig, completed: [19])
         XCTAssertEqual(rig.model.currentPodcastEpisodeID, rig.id(21), "the run continues with 21")
         XCTAssertTrue(rig.backend.isPlaying)
-        XCTAssertEqual(rig.recorder.finishes, 0, "skipping 20 is not a stop")
+        XCTAssertEqual(rig.recorder.finishes, 1, "one admitted natural-end handoff")
+        XCTAssertTrue(decisions.contains("advance.decision chosen=\(rig.id(21)) reason=first_ready_row"))
+        XCTAssertFalse(decisions.contains("advance.decision chosen=none reason=no_eligible_ready_row"),
+                       "skipping 20 is not a terminal Ready decision")
         await rig.model.close()
     }
 
@@ -165,6 +176,9 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
     func testAPauseAfterTheEndCancelsTheQueueAdvance() async throws {
         let rig = try await makeRig("forward-pause", middle: .ready)
         try await startQueue(rig, at: 19)
+        var decisions: [String] = []
+        WiltedMacModel.advanceDecisionLogObserverForTesting = { decisions.append($0) }
+        defer { WiltedMacModel.advanceDecisionLogObserverForTesting = nil }
 
         var pauseIssued = false
         try await finish(rig) {
@@ -176,7 +190,10 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
         try await assertNeverAdvancedInto(20, rig, completed: [19])
         XCTAssertFalse(rig.backend.isPlaying, "a Pause after the end must leave nothing playing")
         XCTAssertEqual(rig.model.currentPodcastEpisodeID, rig.id(19), "the finished episode stays current")
-        XCTAssertEqual(rig.recorder.finishes, 0, "a held advance is not announced as the end of the queue")
+        XCTAssertEqual(rig.recorder.finishes, 1, "one admitted natural-end handoff")
+        XCTAssertTrue(decisions.contains("advance.decision chosen=none reason=paused"))
+        XCTAssertFalse(decisions.contains("advance.decision chosen=none reason=no_eligible_ready_row"),
+                       "a held advance is not a terminal Ready decision")
         await rig.model.close()
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import WiltedLibrary
 import Observation
 import AppKit
 import os
@@ -155,124 +156,6 @@ extension WiltedMacModel {
         }
     }
 
-    /// Handles a podcast episode running out with nothing queued behind it.
-    ///
-    /// `PlaybackController` already advances on its own when the Up Next
-    /// queue has another entry — that case surfaces through
-    /// `applyPodcastPlaybackObservation` instead and never reaches here. Up
-    /// Next is a manually curated list though: pressing Play on a single
-    /// episode queues only that one, so the ordinary case of a listen
-    /// finishing with nothing queued after it is the common one, not the
-    /// exception. This is that case: look at the Larder in the order it is
-    /// shown and start the next episode that is both downloaded and
-    /// successfully prepared, rather than trading one stall for another with
-    /// no one watching.
-    ///
-    /// The episode that just finished is then retired -- taken off the
-    /// Larder shelf without deleting it, unlike the Skip button's dismissal --
-    /// because leaving it there means the owner clears by hand what playing
-    /// it to the end already said.
-    ///
-    /// A Larder-origin session -- one started through `playLarderEpisode`, or
-    /// restored from the durable queue at launch -- is exempt from that
-    /// search. Its order is the queue's own, so when the queue's suffix runs
-    /// out the session stops there; the Larder-wide scan orders by the Feeds
-    /// sort, which can place an earlier unfinished episode after the last
-    /// queued one and would restart it.
-    func handlePodcastPlaybackFinished() {
-        // A playlist owns the end of its own entries; nothing retires and no queue is written.
-        if playlistEntryFinished() { return }
-        refreshPlaybackReadout()
-        guard isPodcastPlayback, let finishedID = currentPodcastEpisodeID,
-              playback?.completed == true, !canSelectNextEpisode else { return }
-        // Read before the task: the mode belongs to the session that just
-        // finished, and work the task starts must not reinterpret it.
-        let continuesLarderQueue = isLarderQueuePlayback
-        // The advance is owed from now; a selection, seek or Pause issued
-        // during the awaits below supersedes it.
-        let advance = beginAutomaticAdvance()
-        Task { [weak self] in
-            guard let self else { return }
-            // The completed record was already written by the controller
-            // before this handler fired; reload so the finished row's Played
-            // badge (and any other row that changed underneath it) is
-            // current before searching past it.
-            await self.reloadLibraryRows()
-            let finished = self.episodes.first { $0.id == finishedID }
-            // The successor is chosen before the finished episode goes,
-            // because the search walks the ordered rows past the finished one
-            // and there is nothing to walk past once it has been taken out.
-            let next: WiltedMacEpisode? = continuesLarderQueue
-                ? nil
-                : self.nextReadyEpisode(after: finishedID)
-            var note: String?
-            if let finished, let id = try? ItemID(rawValue: finished.id) {
-                // Finishing is not an accident, so no Undo is offered; and an
-                // Undo left over from an earlier Skip must not attach itself
-                // to this sentence about a different episode.
-                self.undoableRemoval = nil
-                // Queue membership is this caller's own concern; see the doc
-                // comment on `retireFinishedEpisode` for why `completeAndRetire`
-                // does not do this itself.
-                if let playback = self.playback {
-                    try? await playback.removePodcastQueueEpisode(id)
-                    await self.refreshPodcastQueueState()
-                }
-                note = await self.completeAndRetire(id)
-                    ?? "\(finished.title) could not be marked finished."
-            }
-            let claim = self.claimAutomaticAdvance(advance)
-            guard claim == .owns else {
-                // A newer command owns the player, so leave it alone; an
-                // explicit Pause still unloads the finished episode, the
-                // same as running out of episodes.
-                if claim == .paused { await self.stopPlaybackForRemovedEpisode() }
-                await self.reloadLibraryRows()
-                self.podcastOperationMessage = note
-                return
-            }
-            guard let next else {
-                // Retirement leaves the row in `episodes`, so nothing else
-                // clears the player the way a dismissal's deletion used to;
-                // without this the finished, retired episode would keep
-                // showing as current indefinitely.
-                await self.stopPlaybackForRemovedEpisode()
-                await self.reloadLibraryRows()
-                if continuesLarderQueue { self.isLarderQueuePlayback = false }
-                let stopNote = continuesLarderQueue
-                    ? "The Larder queue reached its end."
-                    : "No other downloaded, prepared episode is ready to play next."
-                self.podcastOperationMessage = [note, stopNote]
-                    .compactMap { $0 }.joined(separator: " ")
-                return
-            }
-            self.podcastOperationMessage = note
-            self.playEpisode(next)
-        }
-    }
-
-    /// The next episode after `finishedID`, in the same order the Larder
-    /// shows them, whose audio is downloaded and whose preparation finished
-    /// successfully.
-    ///
-    /// The anchor lookup runs against the unfiltered list because by the time
-    /// this runs, `finishedID` itself may already be hidden or retired --
-    /// the controller's own completion handler retires the finished episode
-    /// before handing control back here. Only candidates after the anchor
-    /// are filtered: already-played rows are skipped so a shorter episode
-    /// already listened to does not loop back in, and optimistically-hidden
-    /// or retired rows are skipped because neither should be handed back to
-    /// the player.
-    private func nextReadyEpisode(after finishedID: String) -> WiltedMacEpisode? {
-        let ordered = Self.sortedLarderEpisodes(episodes, by: feedsSort)
-        guard let index = ordered.firstIndex(where: { $0.id == finishedID }) else { return nil }
-        return ordered[ordered.index(after: index)...]
-            .first {
-                !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil && !$0.isPlayed
-                    && canPlayEpisode($0)
-            }
-    }
-
     /// Re-reads the rows the Library draws from the store.
     ///
     /// Failure is silent on purpose: the rows on screen are the ones the last
@@ -314,17 +197,21 @@ extension WiltedMacModel {
         }
         let feeds = snapshot.feeds
         let allSubscriptions = snapshot.subscriptions
+        let displayNames = Dictionary(allSubscriptions.compactMap { subscription in
+            subscription.displayName.map { (subscription.feedID, $0) }
+        }, uniquingKeysWith: { first, _ in first })
         let subscribed = Set(allSubscriptions.filter(\.enabled).map(\.feedID))
         var episodeCounts: [ItemID: Int] = [:]
         for episode in snapshot.episodes { episodeCounts[episode.feedID, default: 0] += 1 }
         let subscriptionValues = allSubscriptions.compactMap { subscription -> WiltedMacSubscription? in
             guard let feed = feeds[subscription.feedID] else { return nil }
             return WiltedMacSubscription(
-                id: subscription.feedID.rawValue, title: feed.title, feedURL: feed.canonicalURL,
+                id: subscription.feedID.rawValue, title: subscription.displayName ?? feed.title, feedURL: feed.canonicalURL,
                 episodeCount: episodeCounts[subscription.feedID] ?? 0,
-                subscribedAt: subscription.subscribedAt.date, enabled: subscription.enabled
+                subscribedAt: subscription.subscribedAt.date, enabled: subscription.enabled,
+                publisherTitle: feed.title, displayName: subscription.displayName
             )
-        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }.sorted { LibrarySortKey.title($0.title).localizedStandardCompare(LibrarySortKey.title($1.title)) == .orderedAscending }
         let downloads = snapshot.downloads
         var episodeValues: [WiltedMacEpisode] = []
         // Larder projects every subscribed episode, so its preparation
@@ -378,7 +265,7 @@ extension WiltedMacModel {
             case .cancelled: downloadState = .cancelled
             case nil: downloadState = .notDownloaded
             }
-            let feedTitle = feeds[episode.feedID]?.title ?? "Podcast"
+            let feedTitle = displayNames[episode.feedID] ?? feeds[episode.feedID]?.title ?? "Podcast"
             // One `stat`, never a read: media availability has no durable
             // record, so a missing file downgrades only this cached flag,
             // never the outcome or listening rows that prove the work happened.
@@ -457,6 +344,9 @@ extension WiltedMacModel {
     func loadDismissedEpisodes(from store: LocalLibraryStore) async throws -> [WiltedMacDismissedEpisode] {
         let snapshot = try await store.podcastLibrarySnapshot()
         let feeds = snapshot.feeds
+        let displayNames = Dictionary(snapshot.subscriptions.compactMap { subscription in
+            subscription.displayName.map { (subscription.feedID, $0) }
+        }, uniquingKeysWith: { first, _ in first })
         let episodeByID = Dictionary(uniqueKeysWithValues: snapshot.episodes.map { ($0.itemID, $0) })
         let preparedItemIDs = Set(snapshot.preparationRuns.map(\.itemID))
         return try await store.dismissedPodcastEpisodes().map { dismissal in
@@ -469,8 +359,8 @@ extension WiltedMacModel {
                 id: dismissal.episodeID.rawValue,
                 feedID: dismissal.feedID?.rawValue,
                 title: dismissal.title ?? "Removed podcast episode",
-                feedTitle: dismissal.feedID.flatMap { feeds[$0]?.title }
-                    ?? factualEpisode.flatMap { feeds[$0.feedID]?.title },
+                feedTitle: dismissal.feedID.flatMap { displayNames[$0] ?? feeds[$0]?.title }
+                    ?? factualEpisode.flatMap { displayNames[$0.feedID] ?? feeds[$0.feedID]?.title },
                 publishedAt: factualEpisode?.publishedTime?.date,
                 sourceDurationSeconds: factualEpisode?.durationSeconds,
                 dismissedAt: dismissal.dismissedAt.date,

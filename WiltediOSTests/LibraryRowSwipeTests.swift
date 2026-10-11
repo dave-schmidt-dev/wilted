@@ -123,4 +123,48 @@ final class LibraryRowSwipeTests: XCTestCase {
         XCTAssertEqual(played, ["b"], "the row's own button plays")
         XCTAssertNil(hosted.element("wilted-library-detail-title"), "and does not also open the episode")
     }
+
+    // MARK: Standalone held skip controls
+
+    func testStandaloneHeldSkipButtonsNameTheirDirectionAndCurrentSkipLength() throws {
+        let player = fixture.makePlayer()
+        player.apply(LibraryPlaybackPreferences(defaultSpeed: 1, skipBackSeconds: 10, skipForwardSeconds: 45))
+        let hosted = hostHeldSkips(player)
+        let back = try XCTUnwrap(hosted.element("standalone-back"))
+        let forward = try XCTUnwrap(hosted.element("standalone-forward"))
+        XCTAssertTrue(back.isButton)
+        XCTAssertTrue(forward.isButton)
+        XCTAssertEqual(back.label, "Back 10 seconds")
+        XCTAssertEqual(forward.label, "Forward 45 seconds")
+        player.apply(LibraryPlaybackPreferences(defaultSpeed: 1, skipBackSeconds: 15, skipForwardSeconds: 30))
+        hosted.settle()
+        XCTAssertEqual(hosted.element("standalone-back")?.label, "Back 15 seconds")
+        XCTAssertEqual(hosted.element("standalone-forward")?.label, "Forward 30 seconds")
+    }
+
+    func testStandaloneHeldSkipVoiceOverActivationPerformsOneShortSkip() throws {
+        let player = fixture.makePlayer()
+        let item = LibraryPlayer.Item(
+            entryID: fixture.id("a"), title: "Title a", showTitle: "The Show",
+            fileURL: fixture.scratch.appendingPathComponent("a.m4a"))
+        XCTAssertTrue(player.start(item, autoplay: false))
+        player.seek(to: 100)
+        let hosted = hostHeldSkips(player)
+        XCTAssertTrue(try XCTUnwrap(hosted.element("standalone-forward")).activate())
+        hosted.settle()
+        XCTAssertEqual(player.position, 100 + Double(player.skipForwardSeconds))
+        XCTAssertTrue(try XCTUnwrap(hosted.element("standalone-back")).activate())
+        hosted.settle()
+        XCTAssertEqual(player.position, 100 + Double(player.skipForwardSeconds - player.skipBackSeconds))
+        XCTAssertFalse(player.isRemoteSeeking, "VoiceOver's default action remains a short skip, not a held seek")
+    }
+
+    private func hostHeldSkips(_ player: LibraryPlayer) -> HostedView<some View> {
+        HostedView(HStack {
+            LibraryHeldSkipButton(player: player, direction: .backward, symbol: "gobackward.15")
+                .accessibilityIdentifier("standalone-back")
+            LibraryHeldSkipButton(player: player, direction: .forward, symbol: "goforward.30")
+                .accessibilityIdentifier("standalone-forward")
+        })
+    }
 }

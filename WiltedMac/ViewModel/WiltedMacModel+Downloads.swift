@@ -18,6 +18,7 @@ extension WiltedMacModel {
     /// genuine cancellation, so `withRetries`/`drain` skip just this episode
     /// instead of reading it as the whole automation pass stopping.
     private struct PodcastClaimAlreadyHeld: Error, WiltedAutomationNonRetryable {}
+    private struct PodcastInterruptedAttemptsExhausted: Error, WiltedAutomationNonRetryable {}
 
     /// Starts one episode's download.
     ///
@@ -27,9 +28,10 @@ extension WiltedMacModel {
     /// one automation took a moment ago, is invisible to it, and the download
     /// coordinator writes its queued record unconditionally. Without the claim
     /// the same episode transfers twice.
-    func downloadEpisode(_ episode: WiltedMacEpisode, alreadyClaimed: Bool = false, ignoringExisting: Bool = false) {
+    func downloadEpisode(_ episode: WiltedMacEpisode, alreadyClaimed: Bool = false,
+                         ignoringExisting: Bool = false, automaticRecovery: Bool = false) {
 #if canImport(WiltedProducer)
-        guard podcastDownloadTasks[episode.id] == nil,
+        guard !isClosingTemporaryState, podcastDownloadTasks[episode.id] == nil,
               let coordinator = podcastDownloadCoordinator,
               let itemID = try? ItemID(rawValue: episode.id) else { return }
         // The download is the request: its place in the preparation line is
@@ -55,7 +57,10 @@ extension WiltedMacModel {
             guard let self else { throw CancellationError() }
             // One place to clear the task-table entry, run on every exit
             // (return or throw) rather than duplicated in each branch below.
-            defer { self.podcastDownloadTasks[episode.id] = nil }
+            defer {
+                self.podcastDownloadTasks[episode.id] = nil
+                self.clearDownloadTerminationInterruption(episode.id)
+            }
             if let reservedPreparation {
                 await self.settleReservedPreparation(reservedPreparation, for: episode)
             }
@@ -66,27 +71,54 @@ extension WiltedMacModel {
             if self.fixtureMode {
                 await self.fixturePodcastInstallTask?.value
             }
-            if !alreadyClaimed {
-                let won = await self.claimDownload(itemID)
-                guard won else {
-                    self.podcastOperationMessage = "\(episode.title) is already downloading."
-                    self.updateEpisode(episode.id) { $0.downloadState = .notDownloaded }
-                    // Someone else holds this episode; that is not a transfer
-                    // failure, so `waitForPodcastOperations`'s `try?` swallow
-                    // is the right place for this to disappear. It also must
-                    // not read as `CancellationError`, which `drain` treats as
-                    // the whole automation pass stopping rather than one claim
-                    // being skipped.
-                    throw PodcastClaimAlreadyHeld()
+            guard let store = self.store else { throw CancellationError() }
+            let prior = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+            let ownedTicket: WorkTicket
+            if !alreadyClaimed, !automaticRecovery,
+               let prior, prior.failureKind == WorkTicketFailure.interrupted.rawValue {
+                guard let admitted = try await store.beginManualInterruptedPodcastDownload(
+                    subjectID: episode.id, requestSequence: prior.requestSequence,
+                    attemptCount: prior.attemptCount, at: Timestamp(Date())
+                ) else { throw PodcastClaimAlreadyHeld() }
+                ownedTicket = admitted
+            } else {
+                let isInterruptedReplay = prior?.failureKind == WorkTicketFailure.interrupted.rawValue
+                    && (prior?.state == .pending || prior?.state == .failed)
+                // Validate exhaustion before taking a fresh queued-row claim.
+                if isInterruptedReplay, (prior?.attemptCount ?? 0) >= 3 {
+                    throw PodcastInterruptedAttemptsExhausted()
+                }
+                if isInterruptedReplay, let prior {
+                    guard let admitted = try await store.beginInterruptedPodcastDownloadAttempt(
+                        subjectID: episode.id, requestSequence: prior.requestSequence,
+                        attemptCount: prior.attemptCount, claimingDownload: !alreadyClaimed,
+                        at: Timestamp(Date())
+                    ) else { throw PodcastClaimAlreadyHeld() }
+                    ownedTicket = admitted
+                } else {
+                    if !alreadyClaimed {
+                        let won = await self.claimDownload(itemID)
+                        guard won else {
+                            self.podcastOperationMessage = "\(episode.title) is already downloading."
+                            self.updateEpisode(episode.id) { $0.downloadState = .notDownloaded }
+                            throw PodcastClaimAlreadyHeld()
+                        }
+                    }
+                    await self.recordWorkTicketTransition(
+                        kind: .podcastDownload, subjectID: episode.id, state: .running
+                    )
+                    guard let ticket = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+                    else { throw CancellationError() }
+                    ownedTicket = ticket
                 }
             }
-            await self.recordWorkTicketTransition(
-                kind: .podcastDownload, subjectID: episode.id, state: .running
-            )
             do {
-                guard let store = self.store else { throw CancellationError() }
-                let result = try await coordinator.download(episodeID: itemID,
-                                                             ignoringExisting: ignoringExisting) { progress in
+                let result = try await coordinator.download(
+                    episodeID: itemID, ignoringExisting: ignoringExisting,
+                    interruptedForTermination: { [weak self] in
+                        await self?.downloadWasInterruptedForTermination(episode.id) == true
+                    }
+                ) { progress in
                     Task { @MainActor [weak self] in
                         guard self?.updateActiveEpisodeDownload(
                             episode.id,
@@ -168,17 +200,37 @@ extension WiltedMacModel {
                     self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 } catch {}
                 await self.recordWorkTicketTransition(
-                    kind: .podcastDownload, subjectID: episode.id, state: .succeeded
+                    kind: .podcastDownload, subjectID: episode.id,
+                    requestSequence: ownedTicket.requestSequence, state: .succeeded
                 )
                 return result
-            } catch PodcastDownloadCoordinatorError.cancelled {
-                self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
-                self.podcastOperationMessage = "Download cancelled."
-                await self.recordWorkTicketTransition(
-                    kind: .podcastDownload, subjectID: episode.id, state: .cancelled
-                )
-                throw PodcastDownloadCoordinatorError.cancelled
             } catch {
+                let cancellation = error is CancellationError
+                    || (error as? PodcastDownloadCoordinatorError) == .cancelled
+                    || (error as? PodcastDownloadCoordinatorError) == .interrupted
+                if cancellation, self.downloadWasInterruptedForTermination(episode.id) {
+                    // Unlike ordinary best-effort ticket updates, a quit cannot
+                    // succeed unless its interrupted disposition was saved.
+                    let ticket = try await store.interruptPodcastDownloadForTermination(
+                        subjectID: episode.id, requestSequence: ownedTicket.requestSequence,
+                        attemptCount: ownedTicket.attemptCount, at: Timestamp(Date())
+                    )
+                    self.updateEpisode(episode.id) {
+                        $0.downloadState = ticket?.state == .succeeded ? .completed : .failed
+                    }
+                    self.podcastOperationMessage = ticket?.state == .succeeded
+                        ? "\(episode.title) is available offline." : "Download interrupted by quit."
+                    throw PodcastDownloadCoordinatorError.interrupted
+                }
+                if cancellation {
+                    self.updateEpisode(episode.id) { $0.downloadState = .cancelled }
+                    self.podcastOperationMessage = "Download cancelled."
+                    await self.recordWorkTicketTransition(
+                        kind: .podcastDownload, subjectID: episode.id,
+                        requestSequence: ownedTicket.requestSequence, state: .cancelled
+                    )
+                    throw PodcastDownloadCoordinatorError.cancelled
+                }
                 self.updateEpisode(episode.id) { $0.downloadState = .failed }
                 self.podcastOperationMessage = "Download failed. Retry when you are online."
                 // This is the across-attempt seam: `withRetries` (unchanged,
@@ -192,8 +244,10 @@ extension WiltedMacModel {
                 // deliberate click made it.
                 let failureKind = (error as? PodcastDownloadCoordinatorError)?.failureKind ?? .retryable
                 await self.recordWorkTicketTransition(
-                    kind: .podcastDownload, subjectID: episode.id, state: .failed,
-                    failureKind: failureKind.rawValue, lastFailureMessage: String(describing: error)
+                    kind: .podcastDownload, subjectID: episode.id,
+                    requestSequence: ownedTicket.requestSequence, state: .failed,
+                    failureKind: ownedTicket.failureKind == WorkTicketFailure.interrupted.rawValue && failureKind == .retryable
+                        ? WorkTicketFailure.interrupted.rawValue : failureKind.rawValue, lastFailureMessage: String(describing: error)
                 )
                 throw error
             }

@@ -234,9 +234,9 @@ extension LocalLibraryStore {
     @discardableResult
     public func subscribeIfNeeded(_ subscription: PodcastSubscription) throws -> Bool {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibraryCurrentSubscriptionRecord>())
         guard !records.contains(where: { $0.feedID == subscription.feedID.rawValue }) else { return false }
-        context.insert(LocalLibrarySchemaV6Models.PodcastSubscriptionRecord(subscription))
+        context.insert(LocalLibraryCurrentSubscriptionRecord(subscription))
         try context.save()
         return true
     }
@@ -254,7 +254,7 @@ extension LocalLibraryStore {
         )
         let candidates = episodes.filter { !dismissed.contains($0.itemID.rawValue) }
         guard !candidates.isEmpty else { return [] }
-        let subscriptions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+        let subscriptions = try context.fetch(FetchDescriptor<LocalLibraryCurrentSubscriptionRecord>())
         let horizons = Dictionary(
             subscriptions.map { ($0.feedID, Self.admissionHorizon(subscribedAt: $0.subscribedAt, admission: admission)) },
             uniquingKeysWith: { first, _ in first }

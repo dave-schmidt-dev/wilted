@@ -39,6 +39,15 @@ public enum WiltedPublicationAge {
         let age = formatter.localizedString(for: publishedAt, relativeTo: now)
         return "\(verified ? "Mac last published" : "Saved Mac last published") \(age)"
     }
+    public static func macSidebarSummary(
+        _ publishedAt: Date?, verified: Bool, held: Bool, now: Date = Date()
+    ) -> String {
+        guard verified, !held, let publishedAt, publishedAt <= now else { return "iPhone sync status unknown" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return "Sent to iPhone \(formatter.localizedString(for: publishedAt, relativeTo: now))"
+    }
+
     public static func detail(_ publishedAt: Date?) -> String {
         guard let publishedAt else { return "No account-associated Mac publication time is saved." }
         return "Mac publication: \(publishedAt.formatted(date: .abbreviated, time: .standard)). Author evidence does not prove this phone has the same library."

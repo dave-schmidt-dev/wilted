@@ -66,7 +66,6 @@ struct LibraryMiniPlayer: View {
                         .accessibilityIdentifier("wilted-player-mini-retry")
                 } else if player.item != nil {
                     LibraryHeldSkipButton(player: player, direction: .backward, symbol: "gobackward.\(player.skipBackSeconds)")
-                        .accessibilityLabel("Back \(player.skipBackSeconds) seconds")
                         .accessibilityIdentifier("wilted-player-mini-back")
                     Button { player.togglePlayPause() } label: {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
@@ -187,7 +186,6 @@ struct LibraryPlayerView: View {
     private var transport: some View {
         HStack(spacing: WiltedTheme.Spacing.section) {
             LibraryHeldSkipButton(player: player, direction: .backward, symbol: "gobackward.\(player.skipBackSeconds)")
-                .accessibilityLabel("Back \(player.skipBackSeconds) seconds")
                 .accessibilityIdentifier("wilted-player-back")
             Button { player.togglePlayPause() } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill").imageScale(.large)
@@ -195,7 +193,6 @@ struct LibraryPlayerView: View {
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             .accessibilityIdentifier("wilted-player-toggle")
             LibraryHeldSkipButton(player: player, direction: .forward, symbol: "goforward.\(player.skipForwardSeconds)")
-                .accessibilityLabel("Forward \(player.skipForwardSeconds) seconds")
                 .accessibilityIdentifier("wilted-player-forward")
         }
         .font(.title)
@@ -420,6 +417,9 @@ struct LibraryHeldSkipButton: View {
     var body: some View {
         // The drag owns physical touches; the native default accessibility action remains a skip.
         Button {} label: { Image(systemName: symbol) }
+            .accessibilityLabel(direction == .forward
+                ? "Forward \(player.skipForwardSeconds) seconds"
+                : "Back \(player.skipBackSeconds) seconds")
             .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
             .contentShape(Rectangle())
             .accessibilityAddTraits(.isButton)

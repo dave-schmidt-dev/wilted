@@ -125,7 +125,7 @@ extension LocalLibraryStore {
             var staged = 0
             func remove(_ record: some PersistentModel) { context.delete(record); staged += 1 }
 
-            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+            for record in try context.fetch(FetchDescriptor<LocalLibraryCurrentSubscriptionRecord>())
             where record.feedID == feed { remove(record) }
             try Self.reachRemovalStage(.subscription)
 

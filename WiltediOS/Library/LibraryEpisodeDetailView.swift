@@ -13,18 +13,16 @@ enum LibraryNotes {
 }
 
 /// What Share offers for an episode: its own page when the feed published one, otherwise the
-/// title and show, with the plain statement that there is no page. Never the feed address.
+/// title and show, with a text-only sharing explanation. Never the feed address.
 enum LibraryEpisodeShare: Equatable {
     case page(URL, message: String)
     case text(String, note: String)
-
-    static let noEpisodePage = "No episode page"
 
     init(_ row: LibraryRow) {
         if let link = row.episodeLink {
             self = .page(link, message: row.title + " · " + row.showTitle)
         } else {
-            self = .text(row.title + " — " + row.showTitle, note: Self.noEpisodePage)
+            self = .text(row.title + " - " + row.showTitle, note: "Only title and show text is shared.")
         }
     }
 }
@@ -189,24 +187,20 @@ struct LibraryEpisodeDetailView: View {
         switch LibraryEpisodeShare(row) {
         case let .page(url, message):
             ShareLink(item: url, subject: Text(row.title), message: Text(message)) {
-                Label("Share episode page", systemImage: "square.and.arrow.up")
+                Label("Share", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .accessibilityIdentifier("wilted-library-detail-share")
         case let .text(text, note):
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                ShareLink(item: text, subject: Text(row.title), message: Text(note)) {
-                    Label("Share title and show", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityIdentifier("wilted-library-detail-share")
-                Text(note)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(secondary)
-                    .accessibilityIdentifier("wilted-library-detail-no-page")
+            ShareLink(item: text, subject: Text(row.title), message: Text(text)) {
+                Label("Share", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
+                    .contentShape(Rectangle())
             }
+            .help(note)
+            .accessibilityHint(note)
+            .accessibilityIdentifier("wilted-library-detail-share")
         }
     }
 

@@ -2,18 +2,12 @@ import CryptoKit
 import Foundation
 import XCTest
 import WiltedDomain
-import WiltedProducer
+@testable import WiltedProducer
 @testable import WiltedMac
 
 extension WiltedMacModelTests {
-    /// In production, `PlaybackController`'s own `podcastCompletionHandler`
-    /// retires the finished episode before `handlePodcastPlaybackFinished`
-    /// ever runs its successor search -- the two fire from separate places in
-    /// `handleBackendCompletion`, and the retirement's single store hop wins
-    /// the race against the handler's own multi-hop reload. This test forces
-    /// that ordering directly (retiring the episode between "reached end" and
-    /// "finished") so the successor search has to find its anchor even though
-    /// the anchor is already hidden and retired by the time it looks.
+    /// Retirement can finish before the Ready search; a retired anchor is not
+    /// required to find the next displayed eligible row.
     func testFinishedEpisodeAdvancesEvenWhenItIsAlreadyRetiredBeforeTheSearchRuns() async throws {
         let directory = temporaryDirectory("continue-race")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -49,6 +43,9 @@ extension WiltedMacModelTests {
                     directory: directory, store: store, created: created
                 )
                 await storeCapture.capture(store)
+                // These rows are on the displayed Larder; preparation alone does not admit them.
+                try await store.replacePodcastQueue(PodcastQueueState(
+                    episodeIDs: [firstID, secondID], currentEpisodeID: firstID))
                 return store
             }, preferences: WiltedMacTestPreferences.ephemeral()
         )
@@ -118,6 +115,9 @@ extension WiltedMacModelTests {
                     enclosureURL: thirdEnclosure, publishedAt: created.date.addingTimeInterval(120),
                     directory: directory, store: store, created: created
                 )
+                // These rows are on the displayed Larder; preparation alone does not admit them.
+                try await store.replacePodcastQueue(PodcastQueueState(
+                    episodeIDs: [firstID, secondID, thirdID], currentEpisodeID: firstID))
                 return store
             }, preferences: WiltedMacTestPreferences.ephemeral()
         )
@@ -190,6 +190,9 @@ extension WiltedMacModelTests {
                     enclosureURL: thirdEnclosure, publishedAt: created.date.addingTimeInterval(120),
                     directory: directory, store: store, created: created
                 )
+                // These rows are on the displayed Larder; preparation alone does not admit them.
+                try await store.replacePodcastQueue(PodcastQueueState(
+                    episodeIDs: [firstID, secondID, thirdID], currentEpisodeID: firstID))
                 return store
             }, preferences: WiltedMacTestPreferences.ephemeral()
         )
@@ -378,8 +381,8 @@ extension WiltedMacModelTests {
 
     /// Manually starting a middle episode in the Larder preserves queue order and
     /// checkpoints the outgoing current episode's position, then natural completions
-    /// advance through the remainder of the queue and stop cleanly at the end without
-    /// wrapping backwards to restart earlier unfinished episodes.
+    /// choose the first Ready row, including the earlier unfinished episode, and
+    /// stop only once no eligible Ready row remains.
     func testManualLarderStartAdvancesThroughLaterEpisodesAndStopsWithoutRestartingEarlierUnfinished() async throws {
         let directory = temporaryDirectory("continue-larder-advance")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -466,7 +469,13 @@ extension WiltedMacModelTests {
 
         try finishLoadedPodcastSuccessfully(model)
         try await settle(model)
-        XCTAssertEqual(model.currentPodcastEpisodeID, id20.rawValue, "natural completion of 19 advances forward to 20")
+        XCTAssertEqual(model.currentPodcastEpisodeID, id18.rawValue,
+                       "natural completion chooses the earlier unfinished top Ready row over the queued successor")
+        XCTAssertTrue(model.isPlaying, "the chosen earlier row starts playing")
+
+        try finishLoadedPodcastSuccessfully(model)
+        try await settle(model)
+        XCTAssertEqual(model.currentPodcastEpisodeID, id20.rawValue, "after 18 finishes the top Ready row is 20")
 
         try finishLoadedPodcastSuccessfully(model)
         try await settle(model)
@@ -475,15 +484,11 @@ extension WiltedMacModelTests {
         try finishLoadedPodcastSuccessfully(model)
         try await settle(model)
         XCTAssertFalse(model.isPlaying, "playback stops after the last episode in queue")
-        XCTAssertNotEqual(model.currentPodcastEpisodeID, id18.rawValue, "earlier unfinished episode 18 is never restarted")
+        XCTAssertNotEqual(model.currentPodcastEpisodeID, id18.rawValue, "all Ready episodes have finished")
     }
 
-    /// A Larder-origin session is bounded by its own durable queue. With the
-    /// Feeds sort left at its default -- newest-first, the opposite of this
-    /// queue's order -- finishing the queue's last episode must stop there
-    /// rather than wrap back to the earlier unfinished episodes the default
-    /// sort places after it, while a generic Play keeps that Larder-wide
-    /// fallback.
+    /// Feeds sorting does not change the Ready group's displayed queue order.
+    /// Natural ends choose its first eligible row for either playback origin.
     func testLarderQueueEndStopsUnderTheDefaultFeedsSortAndGenericPlayKeepsTheLarderFallback() async throws {
         let directory = temporaryDirectory("continue-larder-default-sort")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -530,10 +535,7 @@ extension WiltedMacModelTests {
         await model.waitForStoreBootstrap()
         try await settle(model)
 
-        // The Feeds sort stays at its default, and that default orders the
-        // shelf opposite to the queue: the earlier unfinished episodes sort
-        // after the queue's last one, which is exactly the wrap a
-        // queue-origin session must not take.
+        // Feeds sorting differs from the Larder display order; advance follows Ready.
         XCTAssertEqual(model.feedsSort, .newest, "the Feeds sort is left at its default")
         let shelfOrder = WiltedMacModel.sortedLarderEpisodes(model.episodes, by: model.feedsSort).map(\.id)
         XCTAssertEqual(shelfOrder, [ids[4].rawValue, ids[3].rawValue, ids[2].rawValue, ids[1].rawValue, ids[0].rawValue])
@@ -555,7 +557,10 @@ extension WiltedMacModelTests {
 
         try finishLoadedPodcastSuccessfully(model)
         try await settle(model)
-        XCTAssertEqual(model.currentPodcastEpisodeID, ids[3].rawValue, "natural completion of 19 advances forward to 20")
+        XCTAssertEqual(model.currentPodcastEpisodeID, ids[1].rawValue, "19 chooses the earlier top Ready row 18")
+        try finishLoadedPodcastSuccessfully(model)
+        try await settle(model)
+        XCTAssertEqual(model.currentPodcastEpisodeID, ids[3].rawValue, "18 chooses the next top Ready row 20")
         try finishLoadedPodcastSuccessfully(model)
         try await settle(model)
         XCTAssertEqual(model.currentPodcastEpisodeID, ids[4].rawValue, "natural completion of 20 advances forward to 21")
@@ -564,28 +569,79 @@ extension WiltedMacModelTests {
 
         XCTAssertFalse(model.isPlaying, "a queue-origin session stops at the queue's end")
         XCTAssertNil(model.currentPodcastEpisodeID,
-                     "the earlier unfinished episodes the default sort places after 21 are never restarted")
+                     "all eligible Ready rows have finished")
         let finished21 = try XCTUnwrap(model.episodes.first { $0.id == ids[4].rawValue })
         XCTAssertTrue(finished21.isPlayed, "the queue's last episode is still durably completed")
         XCTAssertNotNil(finished21.retiredAt, "and still retired off the shelf")
         let unfinished18 = try XCTUnwrap(model.episodes.first { $0.id == ids[1].rawValue })
-        XCTAssertFalse(unfinished18.isPlayed, "the earlier episode stays unfinished")
-        XCTAssertEqual(unfinished18.playbackSeconds, 4, accuracy: 0.5,
-                       "its saved position survives the whole queue session")
+        XCTAssertTrue(unfinished18.isPlayed, "the earlier row was resumed and then completed")
         XCTAssertEqual(model.podcastOperationMessage,
-                       "Finished Episode larder-default-21. The Larder queue reached its end.")
+                       "Finished Episode larder-default-21. No other downloaded, prepared episode is ready to play next.")
 
-        // A generic Play keeps the Larder-wide fallback. 17 was never in the
-        // queue and the default sort places it after 18, so finishing a
-        // generic play of 18 has to reach it -- the same wrap the queue-origin
-        // session above correctly refused to take.
-        model.playEpisode(unfinished18)
+        // The off-queue prepared episode is not a Ready-group row. A generic
+        // podcast play completes it without restarting any finished queue row.
+        let offQueue17 = try XCTUnwrap(model.episodes.first { $0.id == ids[0].rawValue })
+        model.playEpisode(offQueue17)
         await model.waitForPlaybackOperationForTesting()
         try await settle(model)
         try finishLoadedPodcastSuccessfully(model)
         try await settle(model)
-        XCTAssertEqual(model.currentEpisode?.id, ids[0].rawValue,
-                       "a generic play still continues across the Larder when its own queue run ends")
+        XCTAssertNil(model.currentEpisode, "generic playback also stops when Ready has no eligible row")
+        XCTAssertFalse(model.isPlaying)
+    }
+
+    func testNaturalEndPolicyKeepsAudiobookQueueAdvancementAndDefersPodcastsToReady() async throws {
+        let directory = temporaryDirectory("natural-end-policy")
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_900))
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/natural-policy.xml"))
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let enclosure = try XCTUnwrap(URL(string: "https://media.example.test/natural-policy.mp3"))
+        let podcastID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "natural-policy", enclosureURL: enclosure)
+        try await store.save(feed: PodcastFeed(
+            itemID: feedID, canonicalURL: feedURL, title: "Policy", createdAt: created))
+        try await Self.addReadyEpisode(
+            podcastID, guid: "natural-policy", feedID: feedID, feedURL: feedURL,
+            enclosureURL: enclosure, publishedAt: created.date,
+            directory: directory, store: store, created: created)
+        let bookID = try ItemID.audiobook(contentDigest: String(repeating: "c", count: 64), layout: "x", volume: 0)
+        let mediaURL = directory.appendingPathComponent("policy-book.m4a")
+        let assembled = try AudioAssembler().assemble(
+            pcm: (0..<(44_100 * 10)).map { Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100)) },
+            itemID: bookID, destinationURL: mediaURL)
+        let revision = try AudioRevision(
+            itemID: bookID,
+            revisionID: RevisionID.derive(podcastDownloadedAudioItemID: bookID, contentHash: assembled.revision.contentHash),
+            durationSeconds: assembled.revision.durationSeconds, byteCount: assembled.revision.byteCount,
+            contentHash: assembled.revision.contentHash, mediaType: assembled.revision.mediaType,
+            createdAt: created, schemaVersion: 1)
+        try await store.saveAudiobookVolumes([AudiobookVolumeSave(
+            itemID: bookID, revision: revision, mediaURL: mediaURL, title: "Policy Book", author: "Author",
+            chapters: [AudiobookChapterMark(title: "One", startSeconds: 0)],
+            sourceFormat: "audio", volumeIndex: 0, volumeCount: 1, createdAt: created.date)])
+        try await store.replacePodcastQueue(PodcastQueueState(episodeIDs: [podcastID, bookID]))
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { _ in store }, preferences: WiltedMacTestPreferences.ephemeral())
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        try await settle(model)
+        let controller = try XCTUnwrap(model.playback)
+        let policy = try XCTUnwrap(controller.automaticPodcastQueueAdvancePredicate)
+        XCTAssertFalse(policy(podcastID), "podcast natural ends use the Mac Ready policy")
+        XCTAssertTrue(policy(bookID), "a real imported book retains controller queue advancement")
+        let unknownID = try ItemID.derivePodcastEpisode(
+            feedURL: feedURL, rssGUID: "unknown-policy-episode", enclosureURL: enclosure)
+        XCTAssertFalse(policy(unknownID), "an unknown row cannot authorize controller continuation")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
+        let defaultController = PlaybackController(store: store, backend: controller.backend)
+        XCTAssertNil(defaultController.automaticPodcastQueueAdvancePredicate,
+                     "other consumers retain automatic queue advancement by default")
+        model.installPlaybackBackendForTesting(controller.backend)
+        let replacement = try XCTUnwrap(model.playback?.automaticPodcastQueueAdvancePredicate)
+        XCTAssertFalse(replacement(podcastID))
+        XCTAssertTrue(replacement(bookID), "backend replacement preserves the per-item policy")
     }
 
     /// Emulates successful EOF through the loaded backend's controller callback.
@@ -601,7 +657,7 @@ extension WiltedMacModelTests {
     func testLegacyGenericQueueRestoreKeepsTheLarderWideFallback() async throws {
         let directory = temporaryDirectory("continue-origin-generic-restore")
         let preferences = WiltedMacTestPreferences.ephemeral()
-        let ids = try await seedPlaybackOriginLibrary(directory, numbers: [17, 18], queued: [18])
+        let ids = try await seedPlaybackOriginLibrary(directory, numbers: [17, 18], queued: [17, 18])
         var original: WiltedMacModel? = playbackOriginModel(directory, preferences)
         original?.startStoreBootstrap()
         await original?.waitForStoreBootstrap()
@@ -628,7 +684,7 @@ extension WiltedMacModelTests {
         relaunched.simulatePodcastPlaybackFinishedForTesting()
         try await settle(relaunched)
         XCTAssertEqual(relaunched.currentPodcastEpisodeID, ids[0].rawValue,
-                       "a missing legacy marker restores generic continuation")
+                       "a missing legacy marker still chooses the earlier displayed Ready row")
         await relaunched.close()
     }
 
@@ -665,10 +721,11 @@ extension WiltedMacModelTests {
         await relaunched.simulatePodcastPlaybackReachedEndForTesting()
         relaunched.simulatePodcastPlaybackFinishedForTesting()
         try await settle(relaunched)
-        XCTAssertNil(relaunched.currentPodcastEpisodeID, "the Larder-origin session stops after 21")
-        XCTAssertFalse(relaunched.isPlaying)
+        XCTAssertEqual(relaunched.currentPodcastEpisodeID, ids[0].rawValue,
+                       "a restored Larder origin chooses earlier unfinished Ready 18 after 21")
+        XCTAssertTrue(relaunched.isPlaying)
         XCTAssertFalse(try XCTUnwrap(relaunched.episodes.first { $0.id == ids[0].rawValue }).isPlayed,
-                       "earlier unfinished 18 is not restarted")
+                       "resuming earlier Ready 18 does not mark it finished")
         await relaunched.close()
     }
 

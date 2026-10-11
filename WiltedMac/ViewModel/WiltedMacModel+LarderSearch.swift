@@ -1,4 +1,5 @@
 import Foundation
+import WiltedLibrary
 import Observation
 import AppKit
 import os
@@ -123,7 +124,7 @@ extension WiltedMacModel {
             default: break
             }
         case .alphabetical:
-            let comparison = (lhs?.title ?? "").localizedStandardCompare(rhs?.title ?? "")
+            let comparison = LibrarySortKey.title(lhs?.title ?? "").localizedStandardCompare(LibrarySortKey.title(rhs?.title ?? ""))
             if comparison != .orderedSame { return comparison == (ascending ? .orderedAscending : .orderedDescending) }
         default: break
         }

@@ -72,8 +72,10 @@ struct PodcastPipeEOFTests {
         try """
         import os, sys, time
         root = os.path.dirname(__file__)
-        with open(os.path.join(root, "worker-pid"), "w") as output:
+        pid_path = os.path.join(root, "worker-pid")
+        with open(pid_path + ".pending", "w") as output:
             output.write(str(os.getpid()))
+        os.replace(pid_path + ".pending", pid_path)
         while not os.path.exists(os.path.join(root, "worker-release")):
             time.sleep(0.01)
         sys.stdout.write('{"ok":true}')
@@ -145,8 +147,10 @@ struct PodcastPipeEOFTests {
         try """
         import os, signal, time
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        with open(os.path.join(os.path.dirname(__file__), "worker-pid"), "w") as output:
+        pid_path = os.path.join(os.path.dirname(__file__), "worker-pid")
+        with open(pid_path + ".pending", "w") as output:
             output.write(str(os.getpid()))
+        os.replace(pid_path + ".pending", pid_path)
         while True:
             time.sleep(0.05)
         """.write(to: worker, atomically: true, encoding: .utf8)

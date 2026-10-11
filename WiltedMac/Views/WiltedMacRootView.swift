@@ -81,10 +81,6 @@ struct WiltedMacRootView: View {
     private var detail: some View {
         ZStack {
             VStack(spacing: 0) {
-                if model.selectedNavigation != .settings || !model.showsLibraryPublisherSync {
-                    WiltedPublicationNotice(summary: model.libraryPublicationSummary, detail: model.libraryPublicationDetail,
-                        qualifier: model.libraryPublicationQualifier).padding(WiltedTheme.Spacing.small)
-                }
                 GeometryReader { geometry in
                     HStack(spacing: 0) {
                         Group {

@@ -1,3 +1,4 @@
+import WiltedLibrary
 import AppKit
 import SwiftUI
 import WiltedDomain
@@ -6,32 +7,31 @@ extension WiltedMacLarderView {
     /// The group filter chips, each carrying the count of the rows it jumps
     /// to. "All waiting" is the unfiltered selection when no search is active;
     /// under a search it is the matching set, so the count and the rows agree.
-    var filterBar: some View {
+    func filterBar(colorScheme: ColorScheme) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             WiltedMacFlowLayout {
-                filterChip(nil, label: "All waiting", count: model.larderItemCount(in: nil))
+                filterChip(nil, label: "All waiting", count: model.larderItemCount(in: nil), colorScheme: colorScheme)
                 ForEach(WiltedMacLarderGroup.allCases) { group in
-                    filterChip(group, label: group.displayName, count: model.larderEpisodes(in: group).count + model.larderArticles(in: group).count)
+                    filterChip(group, label: group.displayName, count: model.larderEpisodes(in: group).count + model.larderArticles(in: group).count, colorScheme: colorScheme)
                 }
+            }
+            WiltedMacFlowLayout {
                 bulkAction(
                     "Download all new (\(model.larderDownloadableEpisodes.count))",
                     identifier: "wilted-larder-download-all",
                     actionable: model.larderDownloadableEpisodes,
                     inFlight: model.larderDownloadsInFlight,
-                    inFlightVerb: "Downloading"
-                ) {
-                    model.downloadAllAvailableLarderEpisodes()
-                }
+                    inFlightVerb: "Downloading", colorScheme: colorScheme
+                ) { model.downloadAllAvailableLarderEpisodes() }
                 bulkAction(
                     "Prepare all now (\(model.larderPreparableEpisodes.count))",
                     identifier: "wilted-larder-prepare-all",
                     actionable: model.larderPreparableEpisodes,
                     inFlight: model.larderPreparationsInFlight,
-                    inFlightVerb: "Preparing"
-                ) {
-                    model.prepareAllDownloadedLarderEpisodes()
-                }
+                    inFlightVerb: "Preparing", colorScheme: colorScheme
+                ) { model.prepareAllDownloadedLarderEpisodes() }
             }
+            .buttonStyle(.bordered)
             // A bulk action that covered rows the reader cannot see would be
             // the same defect as Skip deleting media: the control says what it
             // will do, and while a search is on it says it will not run.
@@ -52,15 +52,15 @@ extension WiltedMacLarderView {
     @ViewBuilder private func bulkAction(
         _ title: String, identifier: String,
         actionable: [WiltedMacEpisode], inFlight: [WiltedMacEpisode],
-        inFlightVerb: String, action: @escaping () -> Void
+        inFlightVerb: String, colorScheme: ColorScheme, action: @escaping () -> Void
     ) -> some View {
         if !inFlight.isEmpty {
             HStack(spacing: WiltedTheme.Spacing.xSmall) {
-                ProgressView()
-                    .controlSize(.small)
+                ProgressView().controlSize(.small)
                 Text("\(inFlightVerb) \(inFlight.count)…")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize()
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("\(identifier)-progress")
@@ -76,12 +76,18 @@ extension WiltedMacLarderView {
         }
     }
 
-    private func filterChip(_ group: WiltedMacLarderGroup?, label: String, count: Int) -> some View {
+    private func filterChip(_ group: WiltedMacLarderGroup?, label: String, count: Int, colorScheme: ColorScheme) -> some View {
         let selected = model.larderFilter == group
         return Button {
             model.larderFilter = group
         } label: {
-            Text("\(label) \(count)")
+            HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                Text(label)
+                Text("\(count)")
+                    .accessibilityIdentifier(group.map { group in
+                        "wilted-larder-\(group.rawValue.lowercased())-count"
+                    } ?? "wilted-larder-all-count")
+            }
                 .wiltedFont(.utility)
                 .lineLimit(1)
                 .fixedSize()
@@ -114,26 +120,8 @@ extension WiltedMacLarderView {
             .disabled(model.larderEpisodes(in: .playable).allSatisfy { model.isEpisodeFinished($0) }
                       || model.isSearchingLarder)
             .accessibilityIdentifier("wilted-larder-play-first")
-        case .downloaded:
-            bulkAction(
-                "Prepare all now \(model.larderPreparableEpisodes.count)",
-                identifier: "wilted-larder-group-prepare-all",
-                actionable: model.larderPreparableEpisodes,
-                inFlight: model.larderPreparationsInFlight,
-                inFlightVerb: "Preparing"
-            ) {
-                model.prepareAllDownloadedLarderEpisodes()
-            }
-        case .available:
-            bulkAction(
-                "Download all \(model.larderDownloadableEpisodes.count)",
-                identifier: "wilted-larder-group-download-all",
-                actionable: model.larderDownloadableEpisodes,
-                inFlight: model.larderDownloadsInFlight,
-                inFlightVerb: "Downloading"
-            ) {
-                model.downloadAllAvailableLarderEpisodes()
-            }
+        case .downloaded, .available:
+            EmptyView()
         }
         Button(model.larderGroupClearLabel(group)) {
             model.clearLarderGroup(group)
@@ -184,20 +172,7 @@ extension WiltedMacLarderView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
                 ForEach(sections) { section in
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                        ViewThatFits(in: .horizontal) {
-                            HStack(alignment: .firstTextBaseline) {
-                                sectionHeading(section)
-                                if let group = section.statusGroup { groupActions(group) }
-                            }
-                            .fixedSize(horizontal: true, vertical: false)
-                            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                                sectionHeading(section)
-                                if let group = section.statusGroup {
-                                    HStack { groupActions(group) }
-                                        .fixedSize(horizontal: true, vertical: false)
-                                }
-                            }
-                        }
+                        groupHeader(section, colorScheme: colorScheme)
                         VStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
                                 if index > 0 { Divider() }
@@ -265,15 +240,38 @@ extension WiltedMacLarderView {
         return "wilted-larder-section-\(section.id)"
     }
 
-    private func sectionHeading(_ section: WiltedMacLarderSection) -> some View {
+    /// The shipping group header, also rendered directly to prove complete labels at real widths.
+    func groupHeader(_ section: WiltedMacLarderSection, colorScheme: ColorScheme) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline) {
+                sectionHeading(section, colorScheme: colorScheme)
+                if let group = section.statusGroup {
+                    groupActions(group).buttonStyle(.bordered).controlSize(.small)
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                sectionHeading(section, colorScheme: colorScheme)
+                if let group = section.statusGroup {
+                    WiltedMacFlowLayout { groupActions(group) }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func sectionHeading(_ section: WiltedMacLarderSection, colorScheme: ColorScheme) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(section.title)
                 .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Text("\(section.items.count)")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .accessibilityIdentifier(larderSectionCountIdentifier(section))
+            // Status counts belong to the filter chips; active totals are the progress facts above.
+            if section.statusGroup == nil && section.id != "active-work" {
+                Text("\(section.items.count)")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier(larderSectionCountIdentifier(section))
+            }
             Spacer()
             if let detail = section.detail {
                 WiltedMacHelpButton(content: sectionHelp(section, detail: detail),
@@ -441,7 +439,7 @@ enum WiltedMacEpisodePresentationSections {
             default: break
             }
         case .alphabetical:
-            let comparison = lhs.title.localizedStandardCompare(rhs.title)
+            let comparison = LibrarySortKey.title(lhs.title).localizedStandardCompare(LibrarySortKey.title(rhs.title))
             if comparison != .orderedSame { return comparison == (ascending ? .orderedAscending : .orderedDescending) }
         default: break
         }

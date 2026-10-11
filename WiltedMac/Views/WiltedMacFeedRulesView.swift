@@ -198,6 +198,7 @@ private struct WiltedMacFeedRuleRow: View {
         }
         .buttonStyle(.borderless)
         .disabled(!enabled)
+        .help(label)
         .accessibilityLabel("\(label) for \(feedTitle)")
         .accessibilityIdentifier("wilted-feed-rule-\(identifier)-\(number)")
     }

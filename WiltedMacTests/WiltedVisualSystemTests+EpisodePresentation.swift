@@ -14,11 +14,11 @@ extension WiltedVisualSystemTests {
         XCTAssertNotEqual(values[1], values[4])
     }
 
-    func testEpisodeRowsOwnOneDedicatedLifecycleLineAndKeepControlsActionOnly() throws {
+    func testEpisodeRowsKeepThreeFactualLinesAndLifecycleInTheirAction() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try WiltedMacSource.views(root: root)
         let rowStart = try XCTUnwrap(source.range(of: "func larderRow")?.lowerBound)
-        let start = try XCTUnwrap(source.range(of: "@ViewBuilder private func nextStepControl")?.lowerBound)
+        let start = try XCTUnwrap(source.range(of: "func nextStepControl")?.lowerBound)
         let end = try XCTUnwrap(source.range(of: "var addArticleButton", range: start..<source.endIndex)?.lowerBound)
         let row = source[rowStart..<start]
         let control = source[start..<end]
@@ -26,22 +26,16 @@ extension WiltedVisualSystemTests {
             "WiltedMac/Views/WiltedMacEpisodeMetadata.swift"), encoding: .utf8
         )
 
-        // One metadata view owns the factual source fields and the single
-        // optional lifecycle line; the row still derives that line from the
-        // model's one group accessor.
         XCTAssertTrue(row.contains("WiltedMacModel.larderGroup(for: episode)"))
-        XCTAssertTrue(row.contains("WiltedMacEpisodeMetadata("))
-        XCTAssertTrue(row.contains("episode: episode"))
-        XCTAssertTrue(row.contains("identifier: \"wilted-larder-metadata-\\(episode.id)\""))
-        XCTAssertTrue(row.contains("showsGroupName"))
-        XCTAssertTrue(source.contains("showsGroupName: section.statusGroup == nil"))
-        XCTAssertEqual(row.components(separatedBy: "lifecycleLabel:").count - 1, 1)
-        XCTAssertTrue(row.contains("lifecycleLabel: showsGroupName ? group.displayName : nil"))
-        XCTAssertFalse(row.contains("releasedAt.formatted(date: .numeric, time: .omitted)"))
-        XCTAssertTrue(metadata.contains("publishedAt?.formatted(date: .numeric, time: .omitted)"))
-        XCTAssertFalse(metadata.contains("releasedAt.formatted(date: .numeric, time: .omitted)"))
+        XCTAssertTrue(row.contains("WiltedMacThreeLineNotesTitle(episode: episode)"))
+        XCTAssertTrue(row.contains("episode.presentation.showLabel"))
+        XCTAssertTrue(row.contains("episode.presentation.publicationLabel"))
+        XCTAssertTrue(row.contains("wilted-larder-metadata-\\(episode.id)"))
+        XCTAssertTrue(row.contains("wilted-larder-date-\\(episode.id)"))
+        XCTAssertFalse(row.contains("lifecycleLabel:"))
+        XCTAssertFalse(row.contains("wilted-larder-listened-"))
+        XCTAssertFalse(row.contains("wilted-larder-phone-position-"))
         XCTAssertTrue(metadata.contains("Publication date unknown"))
-        XCTAssertTrue(row.contains("wilted-larder-progress-\\(episode.id)"))
         XCTAssertTrue(row.contains("wilted-larder-row-\\(episode.id)"))
 
         XCTAssertTrue(control.contains("case .failed, .cancelled:"))
@@ -62,8 +56,8 @@ extension WiltedVisualSystemTests {
         let larderRows = source[start..<end]
 
         for symbol in [
-            "checkmark.circle.fill", "play.fill", "checkmark", "minus.circle", "stop.fill",
-            "arrow.clockwise", "xmark.circle", "arrow.down.circle",
+            "checkmark.circle.fill", "play.fill", "checkmark", "minus.circle",
+            "arrow.clockwise", "arrow.down.circle",
         ] {
             XCTAssertTrue(larderRows.contains("\"\(symbol)\""), "missing \(symbol)")
         }
@@ -78,7 +72,7 @@ extension WiltedVisualSystemTests {
         ] {
             XCTAssertFalse(larderRows.contains(retiredTextControl), "retired text control: \(retiredTextControl)")
         }
-        XCTAssertTrue(larderRows.contains("Self.readyActionSlotWidth"))
+        XCTAssertTrue(source.contains("WiltedMacLarderView.readyActionSlotWidth"))
         XCTAssertTrue(larderRows.contains("Self.trailingActionSlotsWidth"))
         XCTAssertTrue(larderRows.contains("HStack(spacing: 2)"))
         XCTAssertTrue(larderRows.contains("model.hasStartedEpisode(episode) && !episode.isPlayed"))
@@ -249,9 +243,11 @@ extension WiltedVisualSystemTests {
             XCTAssertFalse(text.localizedCaseInsensitiveContains("waiting for you"), "\(file.lastPathComponent) says \"Waiting for you\"; the term is \"Ready\"")
         }
         let larder = try String(contentsOf: macRoot.appendingPathComponent("Views/WiltedMacLarderView.swift"), encoding: .utf8)
-        // The count is the Ready group, the sidebar Ready row's own source: the whole
-        // Larder also holds Downloaded and Not downloaded rows, which are not ready.
-        XCTAssertTrue(larder.contains("Text(\"Ready: \\(model.larderUnfilteredEpisodes(in: .playable).count) episodes\")"))
+        // The lifecycle filter owns the Ready count, including articles; no duplicate page aggregate.
+        XCTAssertFalse(larder.contains("Text(\"Ready:"))
+        let sections = try String(contentsOf: macRoot.appendingPathComponent("Views/WiltedMacLarderView+Sections.swift"), encoding: .utf8)
+        XCTAssertTrue(sections.contains("count: model.larderEpisodes(in: group).count + model.larderArticles(in: group).count"))
+        XCTAssertTrue(sections.contains("filterChip(group, label: group.displayName"))
     }
 
     /// Prep controls live in the Larder row that owns the run, and the player's
@@ -267,11 +263,12 @@ extension WiltedVisualSystemTests {
             return source[startIndex..<endIndex]
         }
 
-        let row = try section("func larderRow", before: "@ViewBuilder private func nextStepControl")
+        let row = try section("func larderRow", before: "func nextStepControl")
         XCTAssertTrue(row.contains("nextStepControl(episode, group: group)"))
-        XCTAssertTrue(row.contains("wilted-larder-progress-\\(episode.id)"))
+        XCTAssertFalse(row.contains("wilted-larder-progress-"))
 
-        let control = try section("@ViewBuilder private func nextStepControl", before: "var addArticleButton")
+        let control = try section("func nextStepControl", before: "var addArticleButton")
+        XCTAssertTrue(control.contains("ProgressView(value:"))
         XCTAssertTrue(control.contains("wilted-larder-stop-\\(episode.id)"))
         XCTAssertTrue(control.contains("wilted-larder-retry-\\(episode.id)"))
         XCTAssertTrue(control.contains("wilted-larder-prepare-\\(episode.id)"))
@@ -360,7 +357,7 @@ extension WiltedVisualSystemTests {
         XCTAssertTrue(source.contains(".opacity(dropTargetID == episode.id ? 1 : 0)"))
         let larderRowStart = try XCTUnwrap(source.range(of: "func larderRow")?.lowerBound)
         let larderRowEnd = try XCTUnwrap(source.range(
-            of: "@ViewBuilder private func nextStepControl", range: larderRowStart..<source.endIndex
+            of: "func nextStepControl", range: larderRowStart..<source.endIndex
         )?.lowerBound)
         XCTAssertFalse(source[larderRowStart..<larderRowEnd].contains(
             "WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12)"

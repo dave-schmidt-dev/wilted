@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The navigation column: destinations, and the waiting totals beneath them.
@@ -39,10 +40,40 @@ struct WiltedMacSidebar: View {
             .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
             .task { await model.loadPlaylists() }
             if mode == .full { totals } else { railReadyTotal }
+            publicationFooter
         }
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityIdentifier("wilted-mac-sidebar")
         .modifier(WiltedMacPlaylistPrompts(model: model))
+    }
+
+    private var publicationFooter: some View {
+        let summary = WiltedPublicationAge.macSidebarSummary(
+            model.librarySyncActivity.publication?.publishedAt, verified: model.libraryPublicationVerified,
+            held: model.libraryAccountStatus?.needsReview == true)
+        let detail = [model.libraryPublicationDetail, model.libraryPublicationQualifier].compactMap { $0 }.joined(separator: " ")
+        let failed = model.librarySyncActivity.sendFailed || model.librarySyncActivity.checkFailed
+        return Group {
+            if mode == .full {
+                Text(summary)
+                    // Prose fits the actual sidebar in the native proportional caption; shrinking
+                    // the theme's monospaced caption made “sync” unreadable in shipping captures.
+                    .font(.system(size: WiltedTheme.scaled(NSFont.preferredFont(forTextStyle: .caption1).pointSize, scale: model.textScale)))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Image(systemName: failed ? "exclamationmark.triangle" : "iphone")
+                    .wiltedFont(.body)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .foregroundStyle(WiltedTheme.color(failed ? .degraded : .secondaryText, scheme: colorScheme))
+        .padding(.horizontal, WiltedTheme.Spacing.small)
+        .padding(.bottom, WiltedTheme.Spacing.small)
+        .help("\(summary). \(detail)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(summary). \(detail)")
+        .accessibilityIdentifier("wilted-sidebar-publication-status")
     }
 
     func row(_ destination: WiltedMacNavigation) -> some View {

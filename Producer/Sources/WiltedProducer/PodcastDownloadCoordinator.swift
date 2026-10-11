@@ -21,6 +21,7 @@ public enum PodcastDownloadCoordinatorError: Error, Equatable, LocalizedError, S
     case invalidAudio
     case destinationExists
     case cancelled
+    case interrupted
     case transport(String)
 
     public var errorDescription: String? {
@@ -38,6 +39,7 @@ public enum PodcastDownloadCoordinatorError: Error, Equatable, LocalizedError, S
         case .invalidAudio: "The downloaded podcast does not contain playable audio."
         case .destinationExists: "A different file already occupies the podcast revision destination."
         case .cancelled: "The podcast download was cancelled."
+        case .interrupted: "The podcast download was interrupted by quit."
         case .transport: "Wilted could not download the podcast enclosure."
         }
     }
@@ -51,7 +53,7 @@ public enum PodcastDownloadCoordinatorError: Error, Equatable, LocalizedError, S
     public var failureKind: PodcastDownloadFailureKind? {
         switch self {
         case .transport, .invalidResponse: .retryable
-        case .cancelled, .episodeNotFound: nil
+        case .cancelled, .interrupted, .episodeNotFound: nil
         case .invalidURL, .insecureRedirect, .unsupportedMediaType, .mediaTypeMismatch,
              .declaredSizeTooLarge, .streamedSizeTooLarge, .declaredSizeMismatch, .invalidExpectedHash,
              .hashMismatch, .invalidAudio, .destinationExists:
@@ -195,6 +197,20 @@ public actor PodcastDownloadCoordinator {
         episodeID: ItemID,
         expectedContentHash: String? = nil,
         ignoringExisting: Bool = false,
+        onStatus: @escaping @Sendable (PodcastDownloadProgress) -> Void = { _ in }
+    ) async throws -> PodcastDownloadResult {
+        try await download(episodeID: episodeID, expectedContentHash: expectedContentHash,
+                           ignoringExisting: ignoringExisting,
+                           interruptedForTermination: { false }, onStatus: onStatus)
+    }
+
+    /// The Mac quit drain supplies provenance; other callers retain their
+    /// original cancellation policy and single trailing progress closure.
+    public func download(
+        episodeID: ItemID,
+        expectedContentHash: String? = nil,
+        ignoringExisting: Bool = false,
+        interruptedForTermination: @escaping @Sendable () async -> Bool,
         onStatus: @escaping @Sendable (PodcastDownloadProgress) -> Void = { _ in }
     ) async throws -> PodcastDownloadResult {
         guard let episode = try await store.podcastEpisode(for: episodeID) else {
@@ -406,15 +422,21 @@ public actor PodcastDownloadCoordinator {
             await persistReceivedBytes(byteMeter.pendingAmount, meter: &byteMeter)
             let cancelled = error is CancellationError || Task.isCancelled ||
                 (error as? PodcastDownloadCoordinatorError) == .cancelled
-            let status: PodcastDownloadStatus = cancelled ? .cancelled : .failed
+            let interrupted = cancelled ? await interruptedForTermination() : false
+            let status: PodcastDownloadStatus = interrupted ? .failed : (cancelled ? .cancelled : .failed)
             let typedError = (error as? PodcastDownloadCoordinatorError)
                 ?? .transport(String(describing: error))
-            let failureKind = cancelled ? nil : typedError.failureKind
-            try? await store.save(download: PodcastDownload(
+            let failureKind: PodcastDownloadFailureKind? = interrupted ? .retryable : (cancelled ? nil : typedError.failureKind)
+            let terminal = try PodcastDownload(
                 episodeID: episodeID, status: status, bytesReceived: received,
                 expectedByteCount: expected.map { max($0, received) }, updatedAt: Timestamp(now()),
                 failureKind: failureKind
-            ))
+            )
+            // A quit must not approve an interrupted transfer whose durable
+            // disposition could not be written. Other outcomes keep their policy.
+            if interrupted { try await store.save(download: terminal) }
+            else { try? await store.save(download: terminal) }
+            if interrupted { throw PodcastDownloadCoordinatorError.interrupted }
             if cancelled { throw PodcastDownloadCoordinatorError.cancelled }
             throw typedError
         }

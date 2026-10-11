@@ -35,11 +35,21 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-keyboard-transports"].exists)
 
         let larderEmpty = app.descendants(matching: .any)["wilted-larder-empty"]
-        // The empty Larder keeps an Add button that opens the Add sheet (W-INV-010).
-        let addArticle = app.descendants(matching: .any)["wilted-larder-add-button"]
+        // The empty Articles hint points to the toolbar entry that opens the Add sheet.
+        let addArticle = app.descendants(matching: .any)["wilted-larder-add-hint"]
         let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
         XCTAssertTrue(larderEmpty.waitForExistence(timeout: 5))
         XCTAssertTrue(addArticle.exists)
+        let search = app.textFields["wilted-larder-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertEqual(search.label, "Search episodes")
+        XCTAssertEqual(search.placeholderValue ?? "", "")
+        app.typeKey("f", modifierFlags: .command)
+        app.typeText("garden")
+        XCTAssertEqual(search.value as? String, "garden", "Find focuses the visible toolbar search field")
+        app.typeKey("a", modifierFlags: .command)
+        app.typeKey(.delete, modifierFlags: [])
+
         XCTAssertFalse(syncControls.exists)
 
         // Feeds is its own destination, so the feed card must not follow the
@@ -52,9 +62,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
 
         // Opening the sheet is part of the journey: a button that draws but opens
         // nothing would leave the field unreachable and this test still passing.
-        let trigger = app.descendants(matching: .any)["wilted-larder-add-button"]
+        let trigger = app.descendants(matching: .any)["wilted-add-button"]
         XCTAssertTrue(trigger.waitForExistence(timeout: 8))
-        XCTAssertEqual(trigger.label, "Add", "The Larder's button opens the Add sheet")
+        XCTAssertEqual(trigger.label, "Add", "The toolbar opens the Add sheet")
         trigger.click()
 
         let add = app.descendants(matching: .any)["wilted-add-field"]

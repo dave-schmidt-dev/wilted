@@ -16,9 +16,11 @@ public struct PodcastSubscription: Codable, Equatable, Sendable {
     public let feedID: ItemID
     public let subscribedAt: Timestamp
     public let enabled: Bool
+    public let displayName: String?
 
-    public init(feedID: ItemID, subscribedAt: Timestamp, enabled: Bool = true) {
+    public init(feedID: ItemID, subscribedAt: Timestamp, enabled: Bool = true, displayName: String? = nil) {
         self.feedID = feedID; self.subscribedAt = subscribedAt; self.enabled = enabled
+        self.displayName = displayName
     }
 }
 

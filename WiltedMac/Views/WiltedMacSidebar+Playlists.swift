@@ -13,7 +13,7 @@ extension WiltedMacSidebar {
             }
             if mode == .rail { WiltedMacNewPlaylistMenu(model: model, style: .icon) }
         } header: {
-            if mode == .full { playlistsHeader }
+            if mode == .full { playlistsHeader(scheme: colorScheme) }
         }
     }
 
@@ -25,12 +25,12 @@ extension WiltedMacSidebar {
         ) { onSelect(.playlist(playlist.id)) }
     }
 
-    /// The section heading with its New Playlist menu.
-    var playlistsHeader: some View {
+    /// The section heading with its New Playlist menu; the installed caller supplies its appearance.
+    func playlistsHeader(scheme: ColorScheme) -> some View {
         HStack {
             Text("Playlists")
                 .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: scheme))
                 .accessibilityAddTraits(.isHeader)
             Spacer()
             WiltedMacNewPlaylistMenu(model: model, style: .icon)

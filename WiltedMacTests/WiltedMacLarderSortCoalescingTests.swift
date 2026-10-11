@@ -219,6 +219,82 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
         XCTAssertEqual(Set(shown), Set([ids[0], "book-1"]), "only the playing podcast joins the books")
     }
 
+    func testAlphabeticalOrderingIgnoresLeadingTheAcrossLibraryRows() async throws {
+        let (model, store, ids) = try await model("leading-the-sort")
+        let queue = model.podcastQueueIDs
+        let durableBefore = try await durableQueue(store)
+        XCTAssertEqual(queue, [ids[1], ids[0], ids[2]], "the fixture deliberately queues b before a")
+        XCTAssertEqual(durableBefore, queue, "establish the actual durable order before comparisons")
+        let titles = ["Theory", "Beta", "The AI Daily Brief", "AI Daily Brief", "Episode 10", "Episode 2"]
+        let rows = titles.enumerated().map { index, title in
+            book("sort-\(index)", title: title)
+        }
+        for row in rows { model.installEpisodeForTesting(row) }
+        let ascending = ["sort-2", "sort-3", "sort-1", "sort-5", "sort-4", "sort-0"]
+        XCTAssertEqual(WiltedMacModel.sortedLarderEpisodes(rows, by: .title).map(\.id), ascending)
+        model.larderSortDirection = .ascending
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(rows.map(\.id), by: .alphabetical), ascending)
+        model.larderSortDirection = .descending
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(rows.map(\.id), by: .alphabetical),
+                       ["sort-0", "sort-4", "sort-5", "sort-1", "sort-2", "sort-3"],
+                       "equal keys retain the existing ascending ID tie-break in either direction")
+        model.currentPodcastEpisodeID = "sort-1"
+        XCTAssertEqual(model.sortedLarderEpisodeIDs(rows.map(\.id), by: .alphabetical)[1], "sort-1",
+                       "the current item keeps its queue index")
+        XCTAssertEqual(rows.map(\.title), titles, "display titles remain intact")
+        XCTAssertEqual(model.podcastQueueIDs, queue)
+        let durable = try await durableQueue(store)
+        XCTAssertEqual(durable, durableBefore, "comparing presentation orders never applies a queue write")
+
+        let showRows = [book("show-theory", title: "Theory"), book("show-ai", title: "The AI Daily Brief")].map { row in
+            WiltedMacEpisode(id: row.id, title: "Same episode", feedTitle: row.title, summary: "", artworkURL: nil,
+                             releasedAt: created.date, durationSeconds: 60, playbackSeconds: 0,
+                             downloadState: .completed, preparationState: .prepared(summary: "Ready"))
+        }
+        XCTAssertEqual(WiltedMacModel.sortedLarderEpisodes(showRows, by: .show).map(\.id), ["show-ai", "show-theory"])
+        await model.close()
+    }
+
+    func testMixedArticleAndEpisodeAlphabeticalSortPreservesDirectionAndIDTies() {
+        let episode = book("z-episode", title: "The AI Daily Brief")
+        let article = WiltedMacArticle(id: "a-article", title: "AI Daily Brief", source: "Show",
+                                      url: URL(string: "https://example.test/article")!, isReady: true,
+                                      durationSeconds: 60, createdAt: created.date)
+        let theory = book("theory", title: "Theory")
+        let ready = section(.playable, [.episode(theory), .episode(episode), .article(article)])
+        for direction in [WiltedMacLarderSortDirection.ascending, .descending] {
+            let shown = WiltedMacEpisodePresentationSections.displaySections(
+                [ready], grouping: .status, sort: .alphabetical, direction: direction)
+            XCTAssertEqual(shown.flatMap(\.items).map(\.id),
+                           direction == .ascending ? ["a-article", "z-episode", "theory"] : ["theory", "a-article", "z-episode"])
+        }
+        XCTAssertEqual(ready.items.map(\.title), ["Theory", "The AI Daily Brief", "AI Daily Brief"])
+    }
+
+    func testLoadedPodcastAndCombinedArticleSubscriptionsSortByOwnerDisplayTitle() async throws {
+        let (model, store, _) = try await model("leading-the-feed-sort")
+        for (index, title, alias) in [(0, "Zulu publisher", Optional("The AI Daily Brief")),
+                                     (1, "Theory", nil), (2, "Beta", nil)] {
+            let url = URL(string: "https://feeds.example.test/title-\(index).xml")!
+            let id = try ItemID.derivePodcastFeed(from: url)
+            try await store.save(feed: PodcastFeed(itemID: id, canonicalURL: url, title: title, createdAt: created))
+            try await store.save(subscription: PodcastSubscription(feedID: id, subscribedAt: created, displayName: alias))
+        }
+        let loaded = try await model.loadLibrary(from: store).subscriptions
+        XCTAssertEqual(loaded.map(\.title), ["The AI Daily Brief", "Beta", "Theory"])
+        XCTAssertEqual(loaded.first?.publisherTitle, "Zulu publisher")
+        let articleFeed = try ArticleFeed(canonicalURL: URL(string: "https://example.test/posts.xml")!,
+                                         title: "Zulu posts", createdAt: created)
+        let stored = PodcastSubscription(feedID: articleFeed.itemID, subscribedAt: created, displayName: "the Aardvark")
+        let combined = WiltedMacModel.subscriptionRows(loaded, articleFeeds: [articleFeed], stored: [stored])
+        XCTAssertEqual(combined.map(\.title), ["the Aardvark", "The AI Daily Brief", "Beta", "Theory"])
+        XCTAssertEqual(combined.first?.publisherTitle, "Zulu posts")
+        let fallback = WiltedMacModel.subscriptionRows(loaded, articleFeeds: [articleFeed],
+            stored: [PodcastSubscription(feedID: articleFeed.itemID, subscribedAt: created)])
+        XCTAssertEqual(fallback.last?.title, "Zulu posts", "a feed without an owner alias uses its publisher title")
+        await model.close()
+    }
+
     // MARK: One grouped list
 
     private func article(_ id: String, ready: Bool, minutes: Double = 5, savedAt: TimeInterval = 1_700_000_000) -> WiltedMacArticle {

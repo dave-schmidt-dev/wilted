@@ -69,7 +69,7 @@ validate_pixel_snapshot_baselines() {
     "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
     fail 'Mac persistent compact-player journey selector is missing'
 
-  expected_count=202
+  expected_count=210
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
@@ -107,7 +107,7 @@ validate_pixel_snapshot_baselines() {
       expected_selectors+="state-$state_id-$variant\n"
     done <<<"$expected_variants"
   done <<<"$expected_state_ids"
-  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-feed-policy-article-light\nmac-shell-feed-policy-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\nmac-shell-sidebar-playlists-light\nmac-shell-sidebar-playlists-dark\nmac-shell-playlist-manual-light\nmac-shell-playlist-manual-dark\nmac-shell-playlist-rules-light\nmac-shell-playlist-rules-dark\nmac-shell-settings-reports-light\nmac-shell-settings-reports-dark\nmac-shell-player-bulletin-banner-light\nmac-shell-player-bulletin-banner-dark\nmac-shell-larder-report-row-light\nmac-shell-larder-report-row-dark\n'
+  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-feed-policy-article-light\nmac-shell-feed-policy-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-feeds-row-light\nmac-shell-feeds-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-real-size-minimum-light\nmac-shell-larder-real-size-minimum-dark\nmac-shell-larder-real-size-full-light\nmac-shell-larder-real-size-full-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\nmac-shell-sidebar-playlists-light\nmac-shell-sidebar-playlists-dark\nmac-shell-playlist-manual-light\nmac-shell-playlist-manual-dark\nmac-shell-playlist-rules-light\nmac-shell-playlist-rules-dark\nmac-shell-settings-reports-light\nmac-shell-settings-reports-dark\nmac-shell-player-bulletin-banner-light\nmac-shell-player-bulletin-banner-dark\nmac-shell-larder-report-row-light\nmac-shell-larder-report-row-dark\nmac-shell-now-playing-pane-light\nmac-shell-now-playing-pane-dark'
   expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
   actual_selectors="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; |
     sed -E 's/^.*\.(state-[^.]+|mac-shell-[^.]+)\.png$/\1/' | sort)"
@@ -166,7 +166,15 @@ validate_pixel_snapshot_baselines() {
     testBulletinBannerPixelBaselines.mac-shell-player-bulletin-banner-light.png \
     testBulletinBannerPixelBaselines.mac-shell-player-bulletin-banner-dark.png \
     testLarderReportRowPixelBaselines.mac-shell-larder-report-row-light.png \
-    testLarderReportRowPixelBaselines.mac-shell-larder-report-row-dark.png; do
+    testLarderReportRowPixelBaselines.mac-shell-larder-report-row-dark.png \
+    testFeedsRowPixelBaselines.mac-shell-feeds-row-light.png \
+    testFeedsRowPixelBaselines.mac-shell-feeds-row-dark.png \
+    testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-minimum-light.png \
+    testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-minimum-dark.png \
+    testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-full-light.png \
+    testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-full-dark.png \
+    testNowPlayingPanePixelBaselines.mac-shell-now-playing-pane-light.png \
+    testNowPlayingPanePixelBaselines.mac-shell-now-playing-pane-dark.png; do
     [[ -s "$snapshot_dir/$shell_name" ]] || fail "missing Mac shell baseline: $shell_name"
   done
   # Component baselines render at card scale. The two window shells render at
@@ -193,9 +201,13 @@ validate_pixel_snapshot_baselines() {
       testMacAddSheetPixelBaselines.mac-shell-add-sheet-*.png) expected_size='520 x 420' ;;
       testArticleFeedPolicyPopoverPixelBaselines.mac-shell-feed-policy-article-*.png) expected_size='520 x 460' ;;
       testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-*.png) expected_size='520 x 90' ;;
+      testFeedsRowPixelBaselines.mac-shell-feeds-row-*.png) expected_size='760 x 440' ;;
       testLarderKindFilterPixelBaselines.mac-shell-larder-kind-filter-*.png) expected_size='760 x 560' ;;
+      testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-minimum-*.png) expected_size='520 x 560' ;;
+      testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-full-*.png) expected_size='1000 x 560' ;;
       testLarderBookRowPixelBaselines.mac-shell-larder-book-row-*.png) expected_size='760 x 110' ;;
       testPlayerChaptersPixelBaselines.mac-shell-player-chapters-*.png) expected_size='900 x 480' ;;
+      testNowPlayingPanePixelBaselines.mac-shell-now-playing-pane-*.png) expected_size='640 x 740' ;;
       testSidebarPlaylistsSectionPixelBaselines.mac-shell-sidebar-playlists-*.png) expected_size='202 x 180' ;;
       testManualPlaylistPixelBaselines.mac-shell-playlist-manual-*.png) expected_size='760 x 420' ;;
       testPlaylistRuleEditorPixelBaselines.mac-shell-playlist-rules-*.png) expected_size='520 x 290' ;;
@@ -209,7 +221,7 @@ validate_pixel_snapshot_baselines() {
     }
   done < <(find "$snapshot_dir" -type f -name '*.png' -print)
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=50 window_shells=4\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=58 window_shells=4\n' "$expected_count"
 }
 
 validate_ios_pixel_snapshot_baselines() {
@@ -284,8 +296,8 @@ result_bundle_summary_passed() {
 
 validate_mac_ui_selector() {
   local selector="$1"
-  if [[ ! "$selector" =~ ^WiltedMacUITests/WiltedMacSmokeUITests/test[A-Za-z0-9_]+$ ]]; then
-    fail 'WILTED_MAC_UI_SELECTOR must name one WiltedMacSmokeUITests test method'
+  if [[ ! "$selector" =~ ^WiltedMacUITests/(WiltedMacSmokeUITests|WiltedMacSidebarChromeUITests)/test[A-Za-z0-9_]+$ ]]; then
+    fail 'WILTED_MAC_UI_SELECTOR must name one registered Smoke or SidebarChrome test method'
     return 1
   fi
 }
@@ -295,10 +307,14 @@ validate_mac_ui_selector() {
 # W-INV-012) while a run that executes fewer tests than the suite declares
 # still fails.
 mac_ui_declared_test_count() {
-  local count
-  count="$(grep -cE '^[[:space:]]*func[[:space:]]+test' \
-    "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift" || true)"
-  [[ "$count" =~ ^[1-9][0-9]*$ ]] || fail 'WiltedMacSmokeUITests declares no test methods'
+  local count source source_count
+  count=0
+  for source in WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests; do
+    [[ -f "$repo_root/WiltedMacUITests/$source.swift" ]] || fail "missing Mac UI journey source: $source"
+    source_count="$(grep -cE '^[[:space:]]*func[[:space:]]+test' "$repo_root/WiltedMacUITests/$source.swift" || true)"
+    [[ "$source_count" =~ ^[1-9][0-9]*$ ]] || fail "$source declares no test methods"
+    count=$((count + source_count))
+  done
   printf '%s\n' "$count"
 }
 
@@ -319,6 +335,16 @@ expected_test_count_floor() {
 
 assert_mac_ui_selector_floor_contract() {
   local focused='WiltedMacUITests/WiltedMacSmokeUITests/testFocusedSelector'
+  grep -q 'testCommandQuitDrainsRepliesOnceAndExits' \
+    "$repo_root/WiltedMacUITests/WiltedMacQuitUITests.swift" ||
+    fail 'command quit drain journey must stay registered'
+
+  local chrome='WiltedMacUITests/WiltedMacSidebarChromeUITests/testCollapsedSidebarKeepsContentBelowWindowControls'
+  [[ "$(WILTED_MAC_UI_SELECTOR="$chrome" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
+    fail 'focused SidebarChrome selector must require exactly one test'
+  grep -q 'testCollapsedSidebarKeepsContentBelowWindowControls' \
+    "$repo_root/WiltedMacUITests/WiltedMacSidebarChromeUITests.swift" ||
+    fail 'collapsed sidebar native window chrome journey must stay registered'
   [[ "$(WILTED_MAC_UI_SELECTOR="$focused" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
     fail 'validated focused Mac UI selector must require exactly one test'
   [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == \

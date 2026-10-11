@@ -840,7 +840,7 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.loadCount, 1)
 
         backend.finish(successfully: true)
-        await waitUntil { controller.itemID == third.revision.itemID }
+        await waitUntil { observations.last == third.revision.itemID }
 
         XCTAssertEqual(controller.itemID, third.revision.itemID, "completion must skip unprepared B and advance to C")
         XCTAssertEqual(backend.loadCount, 2, "unprepared B must never be loaded into the backend")
@@ -916,7 +916,7 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.loadCount, 1)
 
         backend.finish(successfully: true)
-        await waitUntil { controller.itemID == third.revision.itemID }
+        await waitUntil { observations.last == third.revision.itemID }
 
         XCTAssertEqual(controller.itemID, third.revision.itemID, "completion must skip retired ready B and advance to C")
         XCTAssertEqual(backend.loadCount, 2, "retired ready B must never be loaded into the backend")
@@ -1326,10 +1326,13 @@ final class PlaybackControllerTests: XCTestCase {
     }
 
     func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
-        for _ in 0..<100 {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while clock.now < deadline {
             if condition() { return }
             try? await Task.sleep(for: .milliseconds(10))
         }
+        if !condition() { XCTFail("condition was not met within 5 seconds") }
     }
 
     func XCTAssertThrowsErrorAsync(

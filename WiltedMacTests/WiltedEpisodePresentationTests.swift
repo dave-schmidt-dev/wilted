@@ -212,7 +212,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertTrue(sections.contains("automatic download setting"))
         XCTAssertTrue(sections.contains("emptyDownloadedCopy"))
         XCTAssertTrue(sections.contains("downloadEverythingOnLarder"))
-        XCTAssertTrue(libraryLoading.contains("feedTitle: dismissal.feedID.flatMap { feeds[$0]?.title }"))
+        XCTAssertTrue(libraryLoading.contains("feedTitle: dismissal.feedID.flatMap { displayNames[$0] ?? feeds[$0]?.title }"))
         let feedsManagement = try XCTUnwrap(feeds.range(of: "feedManagement")?.lowerBound)
         let offList = try XCTUnwrap(feeds.range(of: "restorableEpisodes", range: feedsManagement..<feeds.endIndex)?.lowerBound)
         XCTAssertLessThan(feedsManagement, offList)

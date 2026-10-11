@@ -36,6 +36,15 @@ The CloudKit Console now shows private zone `WiltedZone` after an attended Devel
 
 On 2026-08-18 an attended Development run published and reconciled the producer-to-listener round trip on the paired iPhone, including listener download, cached playback, playback-state acknowledgement, and relaunch reconciliation. That evidence is historical Development/device evidence only; the current source still requires fresh physical-device and Production CloudKit qualification before any App Store Connect or TestFlight claim.
 
+## B7a user behavior
+
+- Rename a feed inline in Feeds: Return saves, Escape cancels, and a blank name restores the publisher title. Refresh updates publisher metadata without replacing your saved name; Unsubscribe still asks for confirmation.
+- Larder rows use title, feed and length, then date, with one fixed action slot. Search starts empty, sync status has one footer, and global Download/Prepare controls count their actionable rows without repeating group controls.
+- A podcast ending naturally continues with the first displayed eligible Ready episode, including an earlier unfinished row. Playlist and audiobook completion keep their own rules; a newer selection or Pause takes precedence.
+- Downloads interrupted by quitting resume on relaunch, with at most three automatic attempts. Your explicit Cancel stays cancelled; a new explicit request starts its own attempt count. Playback checkpoints save in order without delaying audio controls.
+- Alphabetical sorting on Mac and iPhone ignores a leading “The”, regardless of case, while keeping displayed titles intact. Share remains a normal action: with no usable page address, it shares `title - show` as text.
+- Now Playing uses compact 48-point artwork, one transport row, speed, and secondary actions in an overflow menu.
+
 ## Priorities (in order)
 
 1. Native usability.

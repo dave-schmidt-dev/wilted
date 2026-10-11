@@ -172,6 +172,42 @@ struct WiltedMacSubscription: Identifiable, Hashable, Sendable {
     let episodeCount: Int
     let subscribedAt: Date
     var enabled: Bool
+    var publisherTitle: String? = nil
+    var displayName: String? = nil
+}
+
+/// The inline editor's keyboard and save transitions, shared by the shipping row and tests.
+struct WiltedMacFeedRenameDraft {
+    private(set) var feedID: String?
+    var text = ""
+    private(set) var isSaving = false
+    private(set) var error: String?
+
+    mutating func begin(_ subscription: WiltedMacSubscription) {
+        guard !isSaving else { return }
+        feedID = subscription.id
+        text = subscription.title
+        error = nil
+    }
+
+    mutating func cancel() {
+        guard !isSaving else { return }
+        self = Self()
+    }
+
+    mutating func beginSaving() -> Bool {
+        guard feedID != nil, !isSaving else { return false }
+        isSaving = true
+        error = nil
+        return true
+    }
+
+    mutating func finish(error: String? = nil) {
+        if let error {
+            isSaving = false
+            self.error = error
+        } else { self = Self() }
+    }
 }
 
 /// One durable removal shown on Podcast feeds until fresh feed evidence restores it.

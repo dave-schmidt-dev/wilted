@@ -349,10 +349,37 @@ extension WiltedMacModel {
 
     /// Cancels in-flight podcast downloads and waits for each to finish. A
     /// cancelled download writes its received bytes on its terminal path.
-    func cancelAndAwaitDownloadsForTermination() async {
-        let downloads = Array(podcastDownloadTasks.values)
-        for task in downloads { task.cancel() }
-        for task in downloads { _ = try? await task.value }
+    func cancelAndAwaitDownloadsForTermination() async throws {
+        let downloads = podcastDownloadTasks
+        // A user Cancel that already happened keeps its explicit disposition.
+        for (id, task) in downloads where !task.isCancelled {
+            interruptedTerminationDownloads.insert(id)
+        }
+        await automation?.cancel()
+        for task in downloads.values { task.cancel() }
+        var firstFailure: Error?
+        for task in downloads.values {
+            do { _ = try await task.value }
+            catch is PodcastDownloadCoordinatorError { /* Classified transfer outcome is durable. */ }
+            catch is CancellationError {}
+            catch { if firstFailure == nil { firstFailure = error } }
+        }
+        if let firstFailure { throw firstFailure }
+    }
+
+    /// Retained independently of admission reopening after a timed-out quit;
+    /// the matching download clears its reason only after terminal writes.
+    func downloadWasInterruptedForTermination(_ id: String) -> Bool {
+        interruptedTerminationDownloads.contains(id)
+    }
+
+    func clearDownloadTerminationInterruption(_ id: String) {
+        interruptedTerminationDownloads.remove(id)
+    }
+
+    private var interruptedTerminationDownloads: Set<String> {
+        get { objc_getAssociatedObject(self, &terminationDownloadInterruptionKey) as? Set<String> ?? [] }
+        set { objc_setAssociatedObject(self, &terminationDownloadInterruptionKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
     }
 
     /// The quit was cancelled: admit work again, unless a fixture teardown
@@ -386,3 +413,5 @@ private final class WiltedMacTerminationAdmission {
 }
 
 private nonisolated(unsafe) var terminationAdmissionKey: UInt8 = 0
+
+private nonisolated(unsafe) var terminationDownloadInterruptionKey: UInt8 = 0

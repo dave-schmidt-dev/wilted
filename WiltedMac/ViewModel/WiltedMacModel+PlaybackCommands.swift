@@ -86,6 +86,8 @@ struct WiltedMacPlaybackCommandState {
     var pending: WiltedMacPlaybackPending?
     var failure: WiltedMacPlaybackFailure?
     var tail: Task<Void, Never>?
+    /// Publication writers use the existing close/deinit ledger, independently of audio effects.
+    var checkpointTailToken: UUID?
     var recoveryScope: WiltedMacPlaybackRecoveryScope?
     /// The owed automatic advance (an episode ending, Mark finished); nil
     /// once claimed, superseded or cancelled by Pause.
@@ -100,6 +102,9 @@ struct WiltedMacPlaybackCommandState {
     var settledSpeedSaves = 0
     /// Test seam: runs after a command is admitted and before its effect.
     var beforeEffectForTesting: (@MainActor (WiltedMacPlaybackCommand) async -> Void)?
+    /// Test seam: suspends publication independently of the audio backend.
+    var beforeCheckpointForTesting: (@MainActor () async -> Void)?
+    var checkpointCapturedForTesting: (@MainActor (PlaybackState) async -> Void)?
     /// Test seam: replaces the durable speed write.
     var speedSaveForTesting: (@MainActor (Double) async throws -> Void)?
 }
@@ -277,7 +282,7 @@ extension WiltedMacModel {
             guard playback.revisionID != nil else { return }
             try await playback.pause()
             self.refreshPlaybackReadout()
-            await self.queueCurrentPlaybackCheckpoint()
+            self.enqueueCurrentPlaybackCheckpoint()
         }
     }
 
@@ -293,13 +298,17 @@ extension WiltedMacModel {
 
     /// Whether `advance` still owns what plays next. Claiming consumes it, so
     /// it can start at most one episode.
+    func automaticAdvanceClaim(_ advance: WiltedMacAutomaticAdvance) -> WiltedMacAdvanceClaim {
+        if playbackCommands.pausedAdvance == advance.serial { return .paused }
+        guard playbackCommands.generation == advance.generation,
+              playbackCommands.automaticAdvance == advance.serial else { return .superseded }
+        return .owns
+    }
+
     func claimAutomaticAdvance(_ advance: WiltedMacAutomaticAdvance) -> WiltedMacAdvanceClaim {
-        guard playbackCommands.generation == advance.generation else { return .superseded }
-        if playbackCommands.automaticAdvance == advance.serial {
-            playbackCommands.automaticAdvance = nil
-            return .owns
-        }
-        return playbackCommands.pausedAdvance == advance.serial ? .paused : .superseded
+        let claim = automaticAdvanceClaim(advance)
+        if claim == .owns { playbackCommands.automaticAdvance = nil }
+        return claim
     }
 
     /// The idle and refusal retry: a fresh explicit start.
@@ -320,7 +329,7 @@ extension WiltedMacModel {
         _ = try playback.start()
         isPlaying = playback.isPlaying
         refreshPlaybackReadout()
-        await queueCurrentPlaybackCheckpoint()
+        enqueueCurrentPlaybackCheckpoint()
     }
 
     /// A seek or scrub. Superseding a pending start cancels that start, so
@@ -336,7 +345,7 @@ extension WiltedMacModel {
             self.isPlaying = playback.isPlaying
             self.refreshPlaybackReadout()
             if publishesJump { self.publishNowPlaying(force: true) }
-            await self.queueCurrentPlaybackCheckpoint()
+            self.enqueueCurrentPlaybackCheckpoint()
         }
     }
 
@@ -349,7 +358,7 @@ extension WiltedMacModel {
             try await playback.restart()
             self.isPlaying = playback.isPlaying
             self.refreshPlaybackReadout()
-            await self.queueCurrentPlaybackCheckpoint()
+            self.enqueueCurrentPlaybackCheckpoint()
         }
     }
 

@@ -9,6 +9,10 @@ extension WiltedMacLarderView {
         count: Int,
         showsGroupName: Bool
     ) -> some View {
+        WiltedMacLarderRowContent(larder: self, episode: episode, position: position, count: count, showsGroupName: showsGroupName)
+    }
+
+    func rowContent(_ episode: WiltedMacEpisode, position: Int, count: Int, showsGroupName: Bool, scheme colorScheme: ColorScheme) -> some View {
         let group = WiltedMacModel.larderGroup(for: episode)
         return VStack(spacing: 0) {
             Rectangle()
@@ -24,55 +28,21 @@ extension WiltedMacLarderView {
                 .accessibilityHidden(true)
             rowArtwork(episode)
             VStack(alignment: .leading, spacing: 2) {
-                WiltedMacLarderEpisodeNotesTitle(episode: episode)
+                WiltedMacThreeLineNotesTitle(episode: episode)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(-1)
-                if episode.isReport {
-                    reportMetadata(episode, groupName: showsGroupName ? group.displayName : nil)
-                } else if let book = episode.audiobook {
-                    bookMetadata(episode, book: book, groupName: showsGroupName ? group.displayName : nil)
-                } else {
-                    WiltedMacEpisodeMetadata(
-                        episode: episode,
-                        lifecycleLabel: showsGroupName ? group.displayName : nil,
-                        identifier: "wilted-larder-metadata-\(episode.id)",
-                        isLarder: true
-                    )
+                HStack(spacing: 0) {
+                    Text(episode.presentation.showLabel).lineLimit(1)
+                    Text(" - \(WiltedMacEpisodePresentation.durationLabel(episode.durationSeconds))")
+                        .fixedSize(horizontal: true, vertical: false)
                 }
-                // Partway through: how much is heard and how much is left,
-                // worded as the CarPlay rows word it.
-                if let progress = model.episodeProgress(episode) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ProgressView(value: progress.fraction)
-                            .tint(WiltedTheme.color(.progress, scheme: colorScheme))
-                            .frame(maxWidth: 160)
-                            .accessibilityHidden(true)
-                        Text(progress.timeLeftLabel)
-                            .wiltedFont(.utility)
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            .lineLimit(1)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("wilted-larder-listened-\(episode.id)")
-                }
-                // Only while the phone holds the newest position; hidden otherwise.
-                if let phoneLine = model.phonePositionLabel(forEpisodeID: episode.id) {
-                    Text(phoneLine)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .lineLimit(1)
-                        .accessibilityIdentifier("wilted-larder-phone-position-\(episode.id)")
-                }
-                // Preparing stays in Downloaded, and this is the figure that
-                // says so; the row does not move groups while it runs.
-                if episode.preparationState.isRunning,
-                   let fraction = model.preparationFraction(forEpisode: episode.id) {
-                    ProgressView(value: fraction)
-                        .tint(WiltedTheme.color(.progress, scheme: colorScheme))
-                        .frame(width: 120)
-                        .accessibilityValue("\(Int(fraction * 100)) percent prepared")
-                        .accessibilityIdentifier("wilted-larder-progress-\(episode.id)")
-                }
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
+                Text(episode.presentation.publicationLabel)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .lineLimit(1)
+                    .accessibilityIdentifier("wilted-larder-date-\(episode.id)")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // `circle.grid.2x3.fill` is not in the system symbol set -- the
@@ -93,13 +63,8 @@ extension WiltedMacLarderView {
                 .accessibilityAction(named: Text("Move later")) {
                     model.moveLarderEpisode(episode.id, by: 1)
                 }
-            if group == .playable {
-                nextStepControl(episode, group: group)
-                    .controlSize(.small)
-                    .frame(width: Self.readyActionSlotWidth, height: 28)
-            } else {
-                nextStepControl(episode, group: group)
-            }
+            nextStepControl(episode, group: group)
+                .controlSize(.small)
             // Completion is available only after listening has started and
             // before its durable completion record exists. Unstarted and
             // already completed rows keep this slot empty.
@@ -145,39 +110,6 @@ extension WiltedMacLarderView {
         .contextMenu { WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id) }
     }
 
-    /// A book's line: author, length and chapter count, so a book reads as a book beside episodes.
-    private func bookMetadata(_ episode: WiltedMacEpisode, book: WiltedMacAudiobookDetails, groupName: String?) -> some View {
-        var parts: [String] = []
-        if let groupName { parts.append(groupName) }
-        if let author = book.author, !author.isEmpty { parts.append(author) }
-        if let seconds = episode.durationSeconds, seconds > 0 {
-            parts.append(Duration.seconds(seconds).formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
-        }
-        if !book.chapters.isEmpty {
-            parts.append(book.chapters.count == 1 ? "1 chapter" : "\(book.chapters.count) chapters")
-        }
-        return Text(parts.joined(separator: " · "))
-            .wiltedFont(.utility)
-            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            .lineLimit(1)
-            .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
-    }
-
-    /// A morning report's line: what it is and how long, with no author or chapters to show.
-    private func reportMetadata(_ episode: WiltedMacEpisode, groupName: String?) -> some View {
-        var parts: [String] = []
-        if let groupName { parts.append(groupName) }
-        parts.append("Morning report")
-        if let seconds = episode.durationSeconds, seconds > 0 {
-            parts.append(Duration.seconds(seconds).formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
-        }
-        return Text(parts.joined(separator: " · "))
-            .wiltedFont(.utility)
-            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            .lineLimit(1)
-            .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
-    }
-
     /// The show's artwork at row size, or the produce tile when the feed
     /// published none or it has not arrived. A report has its own tile: it has no show.
     @ViewBuilder private func rowArtwork(_ episode: WiltedMacEpisode) -> some View {
@@ -199,116 +131,95 @@ extension WiltedMacLarderView {
         }
     }
 
-    /// The single step the row is waiting for. Its group already says which
-    /// one it is, so a row never shows the other two greyed out.
-    @ViewBuilder private func nextStepControl(_ episode: WiltedMacEpisode, group: WiltedMacLarderGroup) -> some View {
+    /// This installed view resolves appearance and keeps every lifecycle action in one slot.
+    func nextStepControl(_ episode: WiltedMacEpisode, group: WiltedMacLarderGroup) -> some View {
+        WiltedMacLarderNextStepControl(larder: self, episode: episode, group: group)
+    }
+
+    @ViewBuilder func nextStepContents(_ episode: WiltedMacEpisode, group: WiltedMacLarderGroup, scheme colorScheme: ColorScheme) -> some View {
         switch group {
         case .playable:
             if model.isEpisodeFinished(episode) {
-                // The one definition of finished, asked by the row: a finished
-                // episode is not waiting to be played again.
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .help("Played")
                     .accessibilityLabel("Played")
                     .accessibilityIdentifier("wilted-larder-played-\(episode.id)")
             } else {
-                // The press is answered on the row it came from while it opens.
                 let opening = model.playbackCommands.pending?.command.kind == .select
                     && model.playbackCommands.pending?.command.itemID == episode.id
                 Button { model.playLarderEpisode(episode) } label: {
-                    if opening {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("Play now", systemImage: "play.fill")
-                    }
+                    if opening { ProgressView().controlSize(.small) }
+                    else { Label("Play now", systemImage: "play.fill") }
                 }
-                    .labelStyle(.iconOnly)
-                    .disabled(opening)
-                    .help("Play now")
-                    .accessibilityLabel(opening ? "Opening \(episode.title)" : "Play \(episode.title) now")
-                    .accessibilityIdentifier("wilted-larder-play-\(episode.id)")
+                .labelStyle(.iconOnly)
+                .disabled(opening)
+                .help(opening ? "Opening episode" : "Play now")
+                .accessibilityLabel(opening ? "Opening \(episode.title)" : "Play \(episode.title) now")
+                .accessibilityIdentifier("wilted-larder-play-\(episode.id)")
             }
         case .downloaded:
             if model.isDeferredForOffPeak(episode.id) {
-                // A deferred job is stored as `.preparing(stage: "Queued")`, so
-                // without this branch the row reads "Preparing…" beside a Stop
-                // button for work that has not started and will not start for
-                // hours. The window is a default, not a rule.
-                HStack(spacing: WiltedTheme.Spacing.small) {
-                    Text("Waiting for off-peak")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    Button("Prepare now") { model.prepareDeferredEpisodeNow(episode) }
-                        .accessibilityLabel("Prepare \(episode.title) now")
-                        .accessibilityIdentifier("wilted-larder-prepare-now-\(episode.id)")
+                Button { model.prepareDeferredEpisodeNow(episode) } label: { Text("Queued") }
+                    .help("Waiting for off-peak; prepare now")
+                    .accessibilityLabel("Prepare \(episode.title) now")
+                    .accessibilityIdentifier("wilted-larder-prepare-now-\(episode.id)")
+            } else if case .preparing(let stage) = episode.preparationState {
+                Button { model.cancelEpisodePreparation(episode) } label: {
+                    if stage == WiltedMacModel.preparationQueuedStage { Text("Queued") }
+                    else if let fraction = model.preparationFraction(forEpisode: episode.id) {
+                        ProgressView(value: fraction).frame(width: 28)
+                    } else { ProgressView().controlSize(.small) }
                 }
-            } else if episode.preparationState.isRunning {
-                HStack(spacing: WiltedTheme.Spacing.small) {
-                    Text("Preparing…")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    Button { model.cancelEpisodePreparation(episode) } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                    }
-                        .labelStyle(.iconOnly)
-                        .help("Stop")
-                        .accessibilityLabel("Stop preparing \(episode.title)")
-                        .accessibilityIdentifier("wilted-larder-stop-\(episode.id)")
-                }
+                .help("Stop preparing")
+                .accessibilityLabel("Stop preparing \(episode.title)")
+                .accessibilityIdentifier("wilted-larder-stop-\(episode.id)")
             } else if case .failed = episode.preparationState {
-                Button { model.prepareEpisode(episode) } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                }
-                    .labelStyle(.iconOnly)
-                    .help("Retry")
+                Button { model.prepareEpisode(episode) } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                    .labelStyle(.iconOnly).help("Retry preparation")
                     .accessibilityLabel("Retry preparing \(episode.title)")
                     .accessibilityIdentifier("wilted-larder-retry-\(episode.id)")
             } else {
                 Button("Prepare") { model.prepareEpisode(episode) }
+                    .help("Prepare episode")
                     .accessibilityIdentifier("wilted-larder-prepare-\(episode.id)")
             }
         case .available:
             switch episode.downloadState {
-            case .queued, .downloading:
-                Button { model.cancelEpisodeDownload(episode) } label: {
-                    Label("Cancel download", systemImage: "xmark.circle")
-                }
-                    .labelStyle(.iconOnly)
-                    .help("Cancel download")
+            case .queued:
+                Button { model.cancelEpisodeDownload(episode) } label: { Text("Queued") }
+                    .help("Cancel queued download")
                     .accessibilityLabel("Cancel download \(episode.title)")
                     .accessibilityIdentifier("wilted-larder-cancel-\(episode.id)")
-            case .failed, .cancelled:
-                Button { model.retryEpisodeDownload(episode) } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
+            case .downloading(let received, let expected):
+                Button { model.cancelEpisodeDownload(episode) } label: {
+                    if let expected, expected > 0 {
+                        ProgressView(value: min(1, max(0, Double(received) / Double(expected))))
+                            .frame(width: 28)
+                    } else { ProgressView().controlSize(.small) }
                 }
-                    .labelStyle(.iconOnly)
-                    .help("Retry")
+                .help("Cancel download")
+                .accessibilityLabel("Cancel download \(episode.title)")
+                .accessibilityIdentifier("wilted-larder-cancel-\(episode.id)")
+            case .failed, .cancelled:
+                Button { model.retryEpisodeDownload(episode) } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                    .labelStyle(.iconOnly).help("Retry download")
                     .accessibilityLabel("Retry \(episode.title)")
                     .accessibilityIdentifier("wilted-larder-retry-\(episode.id)")
             case .notDownloaded, .completed:
-                Button { model.downloadEpisode(episode) } label: {
-                    Label("Download", systemImage: "arrow.down.circle")
-                }
-                    .labelStyle(.iconOnly)
-                    .help("Download")
+                Button { model.downloadEpisode(episode) } label: { Label("Download", systemImage: "arrow.down.circle") }
+                    .labelStyle(.iconOnly).help("Download")
                     .accessibilityLabel("Download \(episode.title)")
                     .accessibilityIdentifier("wilted-larder-download-\(episode.id)")
             }
         }
     }
 
-    /// Add, kept in the Larder where there is nothing to read: no articles yet,
-    /// or none matching the search (W-INV-010). Otherwise the toolbar's Add is
-    /// the way in. It opens the same Add sheet.
     @ViewBuilder var addArticleButton: some View {
         if model.larderSearchArticleResults.isEmpty {
-            Button {
-                model.presentAddSheet()
-            } label: {
-                Label("Add", systemImage: "plus")
-            }
-            .accessibilityIdentifier("wilted-larder-add-button")
+            Text("Add articles with + or ⌘N")
+                .wiltedFont(.utility)
+                .accessibilityIdentifier("wilted-larder-add-hint")
         }
     }
 }
@@ -329,5 +240,53 @@ struct WiltedMacReportTile: View {
                     .font(.system(size: side * 0.5))
                     .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
             )
+    }
+}
+
+/// Resolves the row's environment inside the installed hierarchy, including focused native renders.
+private struct WiltedMacLarderRowContent: View {
+    let larder: WiltedMacLarderView
+    let episode: WiltedMacEpisode
+    let position: Int
+    let count: Int
+    let showsGroupName: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    var body: some View {
+        larder.rowContent(episode, position: position, count: count, showsGroupName: showsGroupName, scheme: colorScheme)
+    }
+}
+
+private struct WiltedMacLarderNextStepControl: View {
+    let larder: WiltedMacLarderView
+    let episode: WiltedMacEpisode
+    let group: WiltedMacLarderGroup
+    @Environment(\.colorScheme) private var colorScheme
+    var body: some View {
+        larder.nextStepContents(episode, group: group, scheme: colorScheme)
+            .controlSize(.small)
+            .buttonStyle(WiltedMacLarderActionStyle())
+            .frame(width: WiltedMacLarderView.readyActionSlotWidth, height: 32)
+    }
+}
+
+private struct WiltedMacThreeLineNotesTitle: View {
+    let episode: WiltedMacEpisode
+    @State private var isPresented = false
+    var body: some View {
+        WiltedMacEpisodeNotesTitle(episode: episode, prefix: "wilted-larder", isPresented: $isPresented, titleLineLimit: 1) {
+            WiltedMacEpisodeNotes(episode: episode, prefix: "wilted-larder") { EmptyView() }
+        }
+    }
+}
+
+/// Makes the visible label and click target identical across row lifecycle states.
+struct WiltedMacLarderActionStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(width: WiltedMacLarderView.readyActionSlotWidth, height: 32)
+            .background(WiltedTheme.color(.card, scheme: colorScheme).opacity(configuration.isPressed ? 0.6 : 1))
+            .clipShape(RoundedRectangle(cornerRadius: WiltedTheme.Radius.control))
+            .contentShape(Rectangle())
     }
 }

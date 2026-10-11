@@ -24,8 +24,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v15 = 15
     case v16 = 16
     case v17 = 17
+    case v18 = 18
 
-    public static let current: LocalLibrarySchemaVersion = .v17
+    public static let current: LocalLibrarySchemaVersion = .v18
 }
 
 /// The local ownership state used by generation-based remote reconciliation.

@@ -29,9 +29,9 @@ final class LocalLibraryV17MigrationTests: XCTestCase {
         let copied = try copiedFixture("library-v16.store")
         let backup: URL
         do {
-            let store = try LocalLibraryStore(url: copied)
-            let retained = await store.migrationBackupURL
-            backup = try XCTUnwrap(retained)
+            let preflight = try LocalLibraryStore.migrationPreflight(at: copied)
+            backup = preflight.retainedURL
+            _ = try openFrozenV17(at: copied)
         }
         XCTAssertEqual(try LocalLibraryStoreCompatibilityTests.sha256(of: backup), Self.v16FixtureSHA256)
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(17))
@@ -44,7 +44,7 @@ final class LocalLibraryV17MigrationTests: XCTestCase {
 
     func testMigratedFeedWithoutSourceKindReadsAsPodcast() throws {
         let copied = try copiedFixture("library-v16.store")
-        _ = try LocalLibraryStore(url: copied)
+        _ = try openFrozenV17(at: copied)
         let schema = Schema(versionedSchema: LocalLibrarySchemaV17.self)
         let container = try ModelContainer(for: schema, configurations: [
             ModelConfiguration(schema: schema, url: copied, cloudKitDatabase: .none),
@@ -65,10 +65,8 @@ final class LocalLibraryV17MigrationTests: XCTestCase {
 
     func testFreshStoreReportsVersionSeventeen() async throws {
         let url = try freshStoreURL()
-        let store = try LocalLibraryStore(url: url)
-        let inspection = try await store.inspect()
-        XCTAssertEqual(inspection.schemaVersion, .v17)
-        XCTAssertEqual(LocalLibrarySchemaVersion.current.rawValue, 17)
+        _ = try openFrozenV17(at: url)
+        XCTAssertEqual(LocalLibrarySchemaV17.versionIdentifier.major, 17)
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(17))
     }
 
@@ -77,7 +75,7 @@ final class LocalLibraryV17MigrationTests: XCTestCase {
     /// itself, before any write, is pinned by testNewerStoreIsRefusedWithoutAnyWrite).
     func testPreviousBuildDoesNotRecognizeAV17Store() throws {
         let url = try freshStoreURL()
-        do { _ = try LocalLibraryStore(url: url) }
+        do { _ = try openFrozenV17(at: url) }
         let metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
             type: .sqlite, at: url, options: [NSReadOnlyPersistentStoreOption: true]
         )
@@ -130,6 +128,12 @@ final class LocalLibraryV17MigrationTests: XCTestCase {
         let destination = URL(fileURLWithPath: output, isDirectory: true).appendingPathComponent("library-v16.store")
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.copyItem(at: work, to: destination)
+    }
+
+    private func openFrozenV17(at url: URL) throws -> ModelContainer {
+        let schema = Schema(versionedSchema: LocalLibrarySchemaV17.self)
+        return try ModelContainer(for: schema, migrationPlan: LocalLibraryV17MigrationPlan.self,
+                                  configurations: [ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)])
     }
 
     private func fixtureURL(_ name: String) -> URL {

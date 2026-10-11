@@ -122,7 +122,11 @@ extension WiltedMacModelTests {
         )
         model.installPlaybackStateForTesting(episode: fallback, isPlaying: false, position: 12, duration: 100)
         XCTAssertNil(model.currentPlaybackShareURL)
-        XCTAssertEqual(model.currentPlaybackShareText, "An episode — A show")
+        XCTAssertEqual(model.currentPlaybackShareText, "An episode - A show")
+        XCTAssertEqual(model.currentPlaybackShareMessage, "An episode · A show")
+        XCTAssertFalse(model.currentPlaybackShareMessage.contains("Only title and show text is shared."),
+                       "control guidance must not be sent as the shared message")
+        XCTAssertFalse((model.currentPlaybackShareText ?? "").contains(feedURL.absoluteString))
     }
 
     /// The Larder row says Played only when the durable listening record says

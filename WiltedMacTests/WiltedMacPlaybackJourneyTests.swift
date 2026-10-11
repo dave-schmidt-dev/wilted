@@ -110,6 +110,37 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         }
     }
 
+    func testSelectedBPaneKeepsCompactHeaderAndSecondaryActionsInOneOverflow() throws {
+        let source = try WiltedMacHeadless.viewSource("WiltedMacNowPlayingPane.swift")
+        func section(_ start: String, until end: String) throws -> String {
+            let begin = try XCTUnwrap(source.range(of: start))
+            let finish = try XCTUnwrap(source.range(of: end, range: begin.upperBound..<source.endIndex))
+            return String(source[begin.lowerBound..<finish.lowerBound])
+        }
+        let header = try section("private var header:", until: "private var title:")
+        XCTAssertTrue(header.contains("HStack("), "B uses a horizontal artwork/title header")
+        XCTAssertTrue(header.contains("WiltedTheme.scaled(48, scale: model.textScale)"))
+        XCTAssertFalse(header.contains("size: 110"))
+        let transport = try section("private var transportRow:", until: "private var speedControl:")
+        XCTAssertTrue(transport.contains("speedControl"))
+        XCTAssertTrue(transport.contains("overflowMenu"))
+        XCTAssertFalse(transport.contains("ViewThatFits"), "secondary actions must not form a second persistent row")
+        let overflow = try section("private var overflowMenu:", until: "private var share:")
+        XCTAssertTrue(overflow.contains("Menu {"))
+        for action in ["model.restartPlayback()", "model.markCurrentPlaybackCompleted()", "share"] {
+            XCTAssertTrue(overflow.contains(action), action)
+        }
+        for identifier in ["wilted-player-restart", "wilted-player-mark-completed", "wilted-player-menu", "wilted-player-route-recovery"] {
+            XCTAssertTrue(overflow.contains(identifier), identifier)
+        }
+        XCTAssertTrue(overflow.contains(".keyboardShortcut(\"r\", modifiers: .command)"))
+        XCTAssertTrue(overflow.contains("if model.audioRouteFault {"))
+        XCTAssertTrue(source.contains("WiltedMacSpeedSaveLine(model: model)"))
+        XCTAssertTrue(source.contains(".onKeyPress(.space)"))
+        XCTAssertTrue(source.contains(".keyboardShortcut(.leftArrow, modifiers: [.command, .shift])"))
+        XCTAssertTrue(source.contains(".keyboardShortcut(.rightArrow, modifiers: [.command, .shift])"))
+    }
+
     /// The identifiers and labels the journey looked up, one live definition each.
     func testPlayerSourceKeepsEveryTransportIdentifierAndLabelOnce() throws {
         let content = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")

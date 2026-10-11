@@ -12,6 +12,16 @@ extension WiltedMacModelTests {
     /// displayed order, matching what "next" means to a listener: forward
     /// through the feed, not `.newest`'s reversal of it.
     func testANaturallyFinishedEpisodeStartsTheNextReadyOneAndRemovesItself() async throws {
+        try await assertNaturalCompletionStartsReadyEpisode(order: .oldest)
+    }
+
+    func testNaturalCompletionStartsThePreparedRowAboveTheFinishedEpisode() async throws {
+        try await assertNaturalCompletionStartsReadyEpisode(order: .oldest, finishLatest: true)
+    }
+
+    private func assertNaturalCompletionStartsReadyEpisode(
+        order: WiltedMacLibraryOrder, finishLatest: Bool = false
+    ) async throws {
         let directory = temporaryDirectory("continue-ready")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/continue-ready.xml"))
@@ -44,33 +54,47 @@ extension WiltedMacModelTests {
                     enclosureURL: secondEnclosure, publishedAt: created.date.addingTimeInterval(60),
                     directory: directory, store: store, created: created
                 )
+                try await store.replacePodcastQueue(PodcastQueueState(
+                    episodeIDs: [firstID, secondID], currentEpisodeID: firstID
+                ))
                 return store
             }, preferences: WiltedMacTestPreferences.ephemeral()
         )
-        model.libraryOrder = .oldest
+        model.libraryOrder = order
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
 
-        let first = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue })
+        var decisionLogs: [String] = []
+        WiltedMacModel.advanceDecisionLogObserverForTesting = { decisionLogs.append($0) }
+        defer { WiltedMacModel.advanceDecisionLogObserverForTesting = nil }
+        let finishedID = finishLatest ? secondID : firstID
+        let successorID = finishLatest ? firstID : secondID
+        if finishLatest {
+            XCTAssertEqual(model.larderDisplayEpisodeIDs, [firstID.rawValue, secondID.rawValue],
+                           "the prepared successor is displayed above the episode that will finish")
+        }
+        let first = try XCTUnwrap(model.episodes.first { $0.id == finishedID.rawValue })
         model.playEpisode(first)
         await model.waitForPlaybackOperationForTesting()
         try await settle(model)
-        XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
+        XCTAssertEqual(model.currentEpisode?.id, finishedID.rawValue)
 
         await model.simulatePodcastPlaybackReachedEndForTesting()
         try await settle(model)
         model.simulatePodcastPlaybackFinishedForTesting()
         try await settle(model)
 
-        XCTAssertEqual(model.currentEpisode?.id, secondID.rawValue,
-                       "the next ready episode should start once the current one runs out with nothing queued")
-        let finished = try XCTUnwrap(model.episodes.first { $0.id == firstID.rawValue },
+        XCTAssertEqual(model.currentEpisode?.id, successorID.rawValue,
+                       "the top Ready row starts even when displayed above the finished episode")
+        XCTAssertTrue(model.isPlaying, "natural completion starts the prepared successor playing")
+        XCTAssertTrue(decisionLogs.contains("advance.decision chosen=\(successorID.rawValue) reason=first_ready_row"))
+        let finished = try XCTUnwrap(model.episodes.first { $0.id == finishedID.rawValue },
                                      "retirement is not dismissal -- the row survives")
         XCTAssertNotNil(finished.retiredAt,
                          "the episode that was listened to all the way through is retired")
-        XCTAssertFalse(model.larderVisibleEpisodes.contains { $0.id == firstID.rawValue },
+        XCTAssertFalse(model.larderVisibleEpisodes.contains { $0.id == finishedID.rawValue },
                         "and off the Larder shelf")
-        XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == firstID.rawValue })
+        XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == finishedID.rawValue })
         XCTAssertEqual(model.podcastOperationMessage, "Finished \(first.title).")
     }
 
@@ -153,6 +177,17 @@ extension WiltedMacModelTests {
     /// W-INV-025: natural completion retires the episode, and retiring
     /// reclaims its audio file and revision records; the listening facts stay.
     func testNaturalCompletionRetiresTheEpisodeAndReclaimsItsAudioButKeepsListeningFacts() async throws {
+        try await assertNaturalCompletionWithoutReadySuccessor()
+    }
+
+    func testNaturalCompletionWithNoEligibleReadyRowStopsAndLogsNone() async throws {
+        try await assertNaturalCompletionWithoutReadySuccessor()
+    }
+
+    private func assertNaturalCompletionWithoutReadySuccessor() async throws {
+        var decisionLogs: [String] = []
+        WiltedMacModel.advanceDecisionLogObserverForTesting = { decisionLogs.append($0) }
+        defer { WiltedMacModel.advanceDecisionLogObserverForTesting = nil }
         let directory = temporaryDirectory("natural-completion-reclaim")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/natural-completion.xml"))
@@ -197,6 +232,9 @@ extension WiltedMacModelTests {
         let finished = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue })
         XCTAssertTrue(finished.isPlayed, "the listening fact survives the reclaim")
         XCTAssertNotNil(finished.retiredAt, "natural completion retires the episode")
+        XCTAssertFalse(model.isPlaying, "no eligible prepared row leaves playback stopped")
+        XCTAssertNil(model.currentPodcastEpisodeID)
+        XCTAssertTrue(decisionLogs.contains("advance.decision chosen=none reason=no_eligible_ready_row"))
 
         let verifyStore = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
         let listening = try await verifyStore.listeningState(for: episodeID)
@@ -360,6 +398,9 @@ extension WiltedMacModelTests {
                     enclosureURL: thirdEnclosure, publishedAt: created.date.addingTimeInterval(120),
                     directory: directory, store: store, created: created
                 )
+                // These rows are on the displayed Larder; preparation alone does not admit them.
+                try await store.replacePodcastQueue(PodcastQueueState(
+                    episodeIDs: [firstID, secondID, thirdID], currentEpisodeID: firstID))
                 return store
             }, preferences: WiltedMacTestPreferences.ephemeral()
         )

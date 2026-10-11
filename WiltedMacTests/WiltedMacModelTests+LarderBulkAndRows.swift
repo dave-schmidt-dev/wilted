@@ -133,11 +133,13 @@ extension WiltedMacModelTests {
         }
         for identifier in [
             "wilted-larder-play-first",
-            "wilted-larder-group-prepare-all",
-            "wilted-larder-group-download-all",
+            "wilted-larder-prepare-all",
+            "wilted-larder-download-all",
         ] {
-            XCTAssertTrue(view.contains(identifier), "\(identifier) must sit on its group's heading")
+            XCTAssertTrue(view.contains(identifier), "\(identifier) must remain on the single owning control")
         }
+        XCTAssertFalse(view.contains("wilted-larder-group-prepare-all"), "no duplicate group preparation control")
+        XCTAssertFalse(view.contains("wilted-larder-group-download-all"), "no duplicate group download control")
         let modelSource = try WiltedMacSource.model(root: root)
         XCTAssertTrue(modelSource.contains("for episode in larderDownloadableEpisodes"))
         XCTAssertTrue(modelSource.contains("for episode in larderPreparableEpisodes"))

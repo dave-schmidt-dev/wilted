@@ -92,6 +92,127 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         XCTAssertNil(model.playbackCommands.pending?.usesPlayPauseButtonFeedback)
     }
 
+    func testPlaySettlesPendingWhilePublicationCheckpointIsHeld() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        await loadPausedThroughOwner(model, episode)
+        await model.waitForPlaybackCheckpointForTesting()
+        let gate = WiltedMacCommandGate()
+        model.playbackCommands.beforeCheckpointForTesting = {
+            await gate.hold(.init(token: 0, kind: .start, itemID: nil, revisionID: nil))
+        }
+        gate.arm()
+        model.startPlayback()
+        await gate.waitUntilHeld()
+        XCTAssertTrue(backend.isPlaying)
+        XCTAssertNil(model.playbackCommands.pending, "the backend answered Play before publication finished")
+        gate.release()
+        await model.waitForPlaybackOperationForTesting()
+        await model.close()
+    }
+
+    func testPauseReachesBackendWhileEarlierPlayCheckpointIsHeld() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        await loadPausedThroughOwner(model, episode)
+        await model.waitForPlaybackCheckpointForTesting()
+        let gate = WiltedMacCommandGate()
+        model.playbackCommands.beforeCheckpointForTesting = {
+            await gate.hold(.init(token: 0, kind: .start, itemID: nil, revisionID: nil))
+        }
+        gate.arm()
+        model.startPlayback()
+        await gate.waitUntilHeld()
+        let paused = expectation(description: "Pause reaches backend before Play checkpoint releases")
+        backend.onPause = { paused.fulfill() }
+        model.pausePlayback()
+        await fulfillment(of: [paused], timeout: 2)
+        backend.onPause = nil
+        gate.release()
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertFalse(backend.isPlaying)
+        XCTAssertNil(model.playbackCommands.pending)
+        await model.close()
+    }
+
+    func testPauseSettlesPendingWhileItsPublicationCheckpointIsHeld() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        model.playEpisode(episode)
+        await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackCheckpointForTesting()
+        let gate = WiltedMacCommandGate()
+        model.playbackCommands.beforeCheckpointForTesting = {
+            await gate.hold(.init(token: 0, kind: .pause, itemID: nil, revisionID: nil))
+        }
+        gate.arm()
+        model.pausePlayback()
+        await gate.waitUntilHeld()
+        XCTAssertFalse(backend.isPlaying)
+        XCTAssertNil(model.playbackCommands.pending)
+        gate.release()
+        await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackCheckpointForTesting()
+        await model.close()
+    }
+
+    func testTransportCheckpointsKeepCapturedPositionsAndAdmissionOrder() async throws {
+        let (model, backend, _) = makePlaybackCommandModel()
+        await model.fixtureInstallTask?.value
+        let article = try XCTUnwrap(model.articles.first(where: \.isReady))
+        model.openNowPlaying(for: article, autoplay: false)
+        await model.waitForPlaybackOperationForTesting()
+        model.scrub(to: 10)
+        await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackCheckpointForTesting()
+        let gate = WiltedMacCommandGate()
+        var states: [PlaybackState] = []
+        let publicationsBefore = model.articlePlaybackCheckpointCount
+        model.playbackCommands.checkpointCapturedForTesting = { state in
+            states.append(state)
+            await gate.hold(.init(token: 0, kind: .start, itemID: article.id, revisionID: nil))
+        }
+        gate.arm()
+        model.startPlayback()
+        await gate.waitUntilHeld()
+        XCTAssertNil(model.playbackCommands.pending)
+        backend.currentTime = 25
+        model.pausePlayback()
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertNil(model.playbackCommands.pending)
+        XCTAssertEqual(states.map(\.positionSeconds), [10], "later publication waits behind the captured first state")
+        gate.release()
+        await model.waitForPlaybackCheckpointForTesting()
+        XCTAssertEqual(states.map(\.positionSeconds), [10, 25])
+        XCTAssertLessThan(try XCTUnwrap(states.first).sequence, try XCTUnwrap(states.last).sequence)
+        XCTAssertEqual(model.articlePlaybackCheckpointCount, publicationsBefore + 2)
+        XCTAssertNil(model.playbackCommands.checkpointTailToken)
+        await model.close()
+    }
+
+    func testCloseCancelsAndJoinsHeldCheckpointWriter() async throws {
+        let (model, _, episode) = makePlaybackCommandModel()
+        await loadPausedThroughOwner(model, episode)
+        await model.waitForPlaybackCheckpointForTesting()
+        let gate = WiltedMacCommandGate()
+        model.playbackCommands.beforeCheckpointForTesting = {
+            await gate.hold(.init(token: 0, kind: .start, itemID: nil, revisionID: nil))
+        }
+        gate.arm()
+        model.startPlayback()
+        await gate.waitUntilHeld()
+        let token = try XCTUnwrap(model.playbackCommands.checkpointTailToken)
+        let writer = try XCTUnwrap(model.subscriptionWriteTasks[token])
+        var didClose = false
+        let close = Task { await model.close(); didClose = true }
+        for _ in 0..<100 where !model.isClosingTemporaryState { await Task.yield() }
+        XCTAssertTrue(model.isClosingTemporaryState)
+        XCTAssertTrue(writer.isCancelled)
+        XCTAssertFalse(didClose, "close joins even a writer whose test gate ignores cancellation")
+        gate.release()
+        await close.value
+        XCTAssertTrue(didClose)
+        XCTAssertNil(model.playbackCommands.checkpointTailToken)
+        XCTAssertNil(model.subscriptionWriteTasks[token])
+    }
+
     // RACE selection: the newer intent wins and the stale one changes nothing.
     func testNewerSelectionSupersedesPendingEpisodeStart() async throws {
         let (model, backend, episode) = makePlaybackCommandModel()
@@ -416,6 +537,7 @@ final class WiltedMacScriptedBackend: PlaybackBackend {
     var onLoad: (() -> Void)?
     /// Runs inside `play()`, i.e. at the moment a start reaches the backend.
     var onPlay: (() -> Void)?
+    var onPause: (() -> Void)?
 
     func load(url: URL) throws {
         if failNextLoads > 0 {
@@ -436,7 +558,7 @@ final class WiltedMacScriptedBackend: PlaybackBackend {
         return isPlaying
     }
 
-    func pause() { pauseCount += 1; isPlaying = false }
+    func pause() { pauseCount += 1; isPlaying = false; onPause?() }
     func stop() { isPlaying = false }
 
     func finish(successfully: Bool) {

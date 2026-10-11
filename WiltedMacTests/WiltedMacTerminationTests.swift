@@ -143,7 +143,254 @@ final class WiltedMacTerminationTests: XCTestCase {
         XCTAssertTrue(model.podcastDownloadTasks.isEmpty, "the drain joined the download before returning")
         let store = try XCTUnwrap(model.store)
         let summary = try await store.lifetimeStatisticsSummary()
-        XCTAssertEqual(summary.measured.receivedBytes, 4_096, "the cancelled transfer's bytes were kept")
+        XCTAssertEqual(summary.measured.receivedBytes, 4_096, "the interrupted transfer's bytes were kept")
+        let download = try await store.download(for: ItemID(rawValue: episode.id))
+        let ticket = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+        XCTAssertEqual(download?.status, .failed)
+        XCTAssertEqual(download?.failureKind, .retryable)
+        XCTAssertEqual(ticket?.state, .pending)
+        XCTAssertEqual(ticket?.failureKind, WorkTicketFailure.interrupted.rawValue)
+    }
+
+    func testFailedDownloadDrainJoinsRemainingCancelledTasksBeforeThrowing() async throws {
+        let (model, _) = try await makeDownloadModel(transport: HeldPodcastDownloadTransport(chunk: 0))
+        let owner = ScriptedTerminationOwner()
+        owner.holdsLocal = true
+        let failed = Task<PodcastDownloadResult, Error> { throw CocoaError(.fileWriteUnknown) }
+        var heldFinished = false
+        let held = Task<PodcastDownloadResult, Error> {
+            defer { heldFinished = true }
+            try await owner.drainLocalWorkForTermination()
+            throw PodcastDownloadCoordinatorError.cancelled
+        }
+        await owner.waitUntilLocalStarted()
+        // Choose the actual dictionary iteration order, so the failing join
+        // precedes the held join and cannot accidentally hide this regression.
+        model.podcastDownloadTasks = ["first": failed, "second": held]
+        let keys = Array(model.podcastDownloadTasks.keys)
+        model.podcastDownloadTasks[keys[0]] = failed
+        model.podcastDownloadTasks[keys[1]] = held
+        var returned = false
+        var failure: Error?
+        let drain = Task {
+            do { try await model.cancelAndAwaitDownloadsForTermination() }
+            catch { failure = error }
+            returned = true
+        }
+        try await waitFor { owner.localWasCancelled }
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertFalse(returned, "durability failure must still join every cancelled writer")
+        XCTAssertFalse(heldFinished)
+        owner.releaseLocal()
+        await drain.value
+        XCTAssertTrue(heldFinished)
+        XCTAssertNotNil(failure, "the local write failure must cancel quit")
+        model.podcastDownloadTasks = [:]
+        await model.close()
+    }
+
+    func testQuitInterruptedDownloadRelaunchRestartsFromZeroAndCompletes() async throws {
+        let transport = RelaunchPodcastDownloadTransport()
+        let directory = wiltedTemporaryDirectory("termination-relaunch-download")
+        let (model, episode) = try await makeDownloadModel(transport: transport, directory: directory)
+        let store = try XCTUnwrap(model.store)
+        let id = try ItemID(rawValue: episode.id)
+        try await store.addPodcastQueueEpisode(id)
+        model.downloadEpisode(episode, alreadyClaimed: true)
+        try await waitFor { model.episodes.contains { row in
+            if row.id == episode.id, case .downloading(4_096, _) = row.downloadState { return true }; return false
+        } }
+        try await model.drainLocalWorkForTermination()
+        let interrupted = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+        XCTAssertEqual(interrupted?.state, .pending)
+        XCTAssertEqual(interrupted?.failureKind, WorkTicketFailure.interrupted.rawValue)
+        let staging = model.mediaDirectory.appendingPathComponent(".podcast-staging")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: staging.path), [])
+        await model.close()
+
+        let (relaunched, _) = try await makeDownloadModel(transport: transport, directory: directory, seed: false)
+        try await waitFor { transport.requestCount == 2 }
+        let reopened = try XCTUnwrap(relaunched.store)
+        let restarting = try await reopened.download(for: id)
+        XCTAssertEqual(restarting?.status, .downloading)
+        XCTAssertEqual(restarting?.bytesReceived, 0, "replay starts from zero after staging cleanup")
+        transport.completeCurrentRequest()
+        await relaunched.waitForAutomation()
+        await relaunched.waitForPodcastOperations()
+        let completedRecord = try await reopened.download(for: id)
+        let completed = try XCTUnwrap(completedRecord)
+        XCTAssertEqual(completed.status, .completed)
+        XCTAssertEqual(completed.bytesReceived, 8_192)
+        if let url = completed.localURL {
+            XCTAssertEqual(try Data(contentsOf: url), Data(repeating: 0x6B, count: 8_192))
+        } else { XCTFail("the replay did not commit its audio file") }
+        let ticket = try await reopened.workTicket(kind: .podcastDownload, subjectID: episode.id)
+        XCTAssertEqual(ticket?.state, .succeeded)
+        let summary = try await reopened.lifetimeStatisticsSummary()
+        XCTAssertEqual(summary.measured.receivedBytes, 12_288, "counts actual bytes from both attempts")
+        await relaunched.close()
+    }
+
+    func testQuitInterruptedDownloadNeverStartsFourthTransferOnRelaunch() async throws {
+        let transport = RelaunchPodcastDownloadTransport()
+        let directory = wiltedTemporaryDirectory("termination-three-download-attempts")
+        for attempt in 1...3 {
+            let (model, episode) = try await makeDownloadModel(
+                transport: transport, directory: directory, seed: attempt == 1
+            )
+            let store = try XCTUnwrap(model.store)
+            let id = try ItemID(rawValue: episode.id)
+            if attempt == 1 {
+                try await store.addPodcastQueueEpisode(id)
+                model.downloadEpisode(episode, alreadyClaimed: true)
+            }
+            try await waitFor { transport.requestCount == attempt && model.episodes.contains { row in
+                if row.id == episode.id, case .downloading = row.downloadState { return true }; return false
+            } }
+            try await model.drainLocalWorkForTermination()
+            let ticket = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+            XCTAssertEqual(ticket?.attemptCount, attempt)
+            XCTAssertEqual(ticket?.state, attempt < 3 ? .pending : .failed)
+            XCTAssertEqual(ticket?.failureKind, WorkTicketFailure.interrupted.rawValue)
+            let staging = model.mediaDirectory.appendingPathComponent(".podcast-staging")
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: staging.path), [])
+            await model.close()
+        }
+        let (final, episode) = try await makeDownloadModel(transport: transport, directory: directory, seed: false)
+        await final.waitForAutomation()
+        XCTAssertEqual(transport.requestCount, 3)
+        let store = try XCTUnwrap(final.store)
+        let download = try await store.download(for: ItemID(rawValue: episode.id))
+        XCTAssertEqual(download?.failureKind, .terminal)
+        let summary = try await store.lifetimeStatisticsSummary()
+        XCTAssertEqual(summary.measured.receivedBytes, 4_096)
+        await final.close()
+    }
+
+    func testUserCancelledDownloadDoesNotRestartOnRelaunch() async throws {
+        let transport = RelaunchPodcastDownloadTransport()
+        let directory = wiltedTemporaryDirectory("termination-user-cancel-download")
+        let (model, episode) = try await makeDownloadModel(transport: transport, directory: directory)
+        let store = try XCTUnwrap(model.store)
+        let id = try ItemID(rawValue: episode.id)
+        try await store.addPodcastQueueEpisode(id)
+        model.downloadEpisode(episode, alreadyClaimed: true)
+        try await waitFor { model.episodes.contains { row in
+            if row.id == episode.id, case .downloading(4_096, _) = row.downloadState { return true }; return false
+        } }
+        model.cancelEpisodeDownload(episode)
+        // A following quit must preserve the explicit cancellation reason.
+        try await model.drainLocalWorkForTermination()
+        let download = try await store.download(for: id)
+        let ticket = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+        XCTAssertEqual(download?.status, .cancelled)
+        XCTAssertEqual(ticket?.state, .cancelled)
+        await model.close()
+        let (relaunched, _) = try await makeDownloadModel(transport: transport, directory: directory, seed: false)
+        await relaunched.waitForAutomation()
+        XCTAssertEqual(transport.requestCount, 1)
+        let summary = try await XCTUnwrap(relaunched.store).lifetimeStatisticsSummary()
+        XCTAssertEqual(summary.measured.receivedBytes, 4_096)
+        await relaunched.close()
+    }
+
+    func testManualRedownloadAfterSettledInterruptedRequestAdmitsNewRequest() async throws {
+        for state in [WorkTicketState.succeeded, .cancelled] {
+            let transport = RelaunchPodcastDownloadTransport()
+            let (model, episode) = try await makeDownloadModel(transport: transport)
+            let store = try XCTUnwrap(model.store)
+            let id = try ItemID(rawValue: episode.id)
+            let now = Timestamp(Date())
+            var previous = try await store.issueWorkTicket(
+                kind: .podcastDownload, subjectID: episode.id, requestedAt: now
+            )
+            previous.state = state
+            previous.attemptCount = 3
+            previous.failureKind = WorkTicketFailure.interrupted.rawValue
+            try await store.upsertWorkTicket(previous)
+            let oldFile = model.mediaDirectory.appendingPathComponent("manual-previous.mp3")
+            try FileManager.default.createDirectory(at: model.mediaDirectory, withIntermediateDirectories: true)
+            try Data(repeating: 0x5A, count: 4_096).write(to: oldFile)
+            try await store.save(download: try PodcastDownload(
+                episodeID: id, status: state == .succeeded ? .completed : .cancelled,
+                bytesReceived: 4_096, localURL: state == .succeeded ? oldFile : nil,
+                contentHash: state == .succeeded ? "sha256:" + String(repeating: "a", count: 64) : nil,
+                updatedAt: now
+            ))
+            model.redownloadEpisode(episode)
+            try await waitFor { transport.requestCount == 1 && model.episodes.contains { row in
+                if row.id == episode.id, case .downloading = row.downloadState { return true }; return false
+            } }
+            let current = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+            XCTAssertGreaterThan(try XCTUnwrap(current).requestSequence, previous.requestSequence)
+            XCTAssertEqual(current?.state, .running)
+            XCTAssertNil(current?.failureKind, "a deliberate new request clears old interruption provenance")
+            XCTAssertEqual(current?.attemptCount, 1, "this is the new request's first actual transfer")
+            try await model.drainLocalWorkForTermination()
+            let interrupted = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+            XCTAssertEqual(interrupted?.requestSequence, current?.requestSequence)
+            XCTAssertEqual(interrupted?.state, .pending)
+            XCTAssertEqual(interrupted?.attemptCount, 1, "old request attempts cannot exhaust this request")
+            await model.close()
+        }
+    }
+
+    func testLostManualDownloadClaimDoesNotSpendInterruptedAttempt() async throws {
+        let transport = RelaunchPodcastDownloadTransport()
+        let (model, episode) = try await makeDownloadModel(transport: transport)
+        let store = try XCTUnwrap(model.store)
+        let id = try ItemID(rawValue: episode.id)
+        let now = Timestamp(Date())
+        var previous = try await store.issueWorkTicket(
+            kind: .podcastDownload, subjectID: episode.id, requestedAt: now
+        )
+        previous.attemptCount = 1
+        previous.failureKind = WorkTicketFailure.interrupted.rawValue
+        try await store.upsertWorkTicket(previous)
+        try await store.save(download: try PodcastDownload(
+            episodeID: id, status: .downloading, bytesReceived: 128, updatedAt: now
+        ))
+        model.downloadEpisode(episode)
+        await model.waitForPodcastOperations()
+        XCTAssertEqual(transport.requestCount, 0)
+        let ticket = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+        XCTAssertEqual(ticket?.requestSequence, previous.requestSequence)
+        XCTAssertEqual(ticket?.attemptCount, 1)
+        XCTAssertEqual(ticket?.state, .pending)
+        XCTAssertEqual(ticket?.failureKind, WorkTicketFailure.interrupted.rawValue)
+        let download = try await store.download(for: id)
+        XCTAssertEqual(download?.status, .downloading)
+        XCTAssertEqual(download?.bytesReceived, 128)
+        await model.close()
+    }
+
+    func testAutomaticForcedRecoveryCannotResetExhaustedInterruptedRequest() async throws {
+        let transport = RelaunchPodcastDownloadTransport()
+        let (model, episode) = try await makeDownloadModel(transport: transport)
+        let store = try XCTUnwrap(model.store)
+        let id = try ItemID(rawValue: episode.id)
+        let now = Timestamp(Date())
+        var previous = try await store.issueWorkTicket(
+            kind: .podcastDownload, subjectID: episode.id, requestedAt: now
+        )
+        previous.state = .failed
+        previous.attemptCount = 3
+        previous.failureKind = WorkTicketFailure.interrupted.rawValue
+        try await store.upsertWorkTicket(previous)
+        let exhausted = try PodcastDownload(
+            episodeID: id, status: .failed, bytesReceived: 128, updatedAt: now, failureKind: .terminal
+        )
+        try await store.save(download: exhausted)
+        model.downloadEpisode(episode, ignoringExisting: true, automaticRecovery: true)
+        await model.waitForPodcastOperations()
+        XCTAssertEqual(transport.requestCount, 0)
+        let ticket = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
+        XCTAssertEqual(ticket?.requestSequence, previous.requestSequence)
+        XCTAssertEqual(ticket?.attemptCount, 3)
+        XCTAssertEqual(ticket?.state, .failed)
+        let download = try await store.download(for: id)
+        XCTAssertEqual(download, exhausted, "rejected recovery must not take a queued-row claim")
+        await model.close()
     }
 
     // MARK: An isolated fixture process, quit for real
@@ -194,9 +441,11 @@ final class WiltedMacTerminationTests: XCTestCase {
     // MARK: Helpers
 
     private func makeDownloadModel(
-        transport: HeldPodcastDownloadTransport
+        transport: any PodcastDownloadTransporting,
+        directory: URL? = nil,
+        seed: Bool = true
     ) async throws -> (WiltedMacModel, WiltedMacEpisode) {
-        let directory = wiltedTemporaryDirectory("termination-download")
+        let directory = directory ?? wiltedTemporaryDirectory("termination-download")
         let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/termination.xml"))
         let enclosure = try XCTUnwrap(URL(string: "https://media.example.test/termination.mp3"))
@@ -206,6 +455,7 @@ final class WiltedMacTerminationTests: XCTestCase {
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in
                 let store = try LocalLibraryStore(url: url)
+                guard seed else { return store }
                 try await store.save(feed: try PodcastFeed(
                     itemID: feedID, canonicalURL: feedURL, title: "Quit feed", createdAt: created
                 ))
@@ -219,7 +469,12 @@ final class WiltedMacTerminationTests: XCTestCase {
             },
             podcastDownloadTransportFactory: { transport },
             podcastMediaValidatorFactory: { StubPodcastMediaValidator(duration: 12) },
+            pipelineFingerprint: "termination-download-test",
             preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.automationSettings = WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .noLocalSTT, removeAds: false
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
@@ -322,6 +577,34 @@ final class HeldPodcastDownloadTransport: PodcastDownloadTransporting, @unchecke
                                                expectedByteCount: Int64(chunk * 4))))
             continuation.yield(.data(Data(repeating: 0x5A, count: chunk)))
         }
+    }
+}
+
+/// One partial transfer, then a separately gated complete transfer on relaunch.
+final class RelaunchPodcastDownloadTransport: PodcastDownloadTransporting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests = 0
+    private var pending: AsyncThrowingStream<PodcastDownloadEvent, Error>.Continuation?
+
+    var requestCount: Int { lock.withLock { requests } }
+
+    func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let index = lock.withLock { requests += 1; return requests }
+            continuation.yield(.response(.init(url: url, statusCode: 200, mediaType: "audio/mpeg",
+                                               expectedByteCount: 8_192)))
+            if index == 1 {
+                continuation.yield(.data(Data(repeating: 0x5A, count: 4_096)))
+            } else {
+                lock.withLock { pending = continuation }
+            }
+        }
+    }
+
+    func completeCurrentRequest() {
+        let continuation = lock.withLock { let value = pending; pending = nil; return value }
+        continuation?.yield(.data(Data(repeating: 0x6B, count: 8_192)))
+        continuation?.finish()
     }
 }
 

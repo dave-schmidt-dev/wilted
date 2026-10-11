@@ -274,8 +274,8 @@ struct WiltedMacArticleRow: View {
     @State private var removal = WiltedMacRemovalFlow()
 
     var body: some View {
-        HStack(spacing: WiltedTheme.Spacing.medium) {
-            WiltedProduceTile(symbol: .lettuce, size: 56)
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            WiltedProduceTile(symbol: .lettuce, size: 40)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(article.title)
@@ -283,60 +283,80 @@ struct WiltedMacArticleRow: View {
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                // Source and length on one line. Three stacked lines and a
-                // card each meant four articles filled the window; a library
-                // is a list to scan, not a page to read.
-                Text(metaLine)
+                    .help(article.title)
+                    .accessibilityLabel(article.title)
+                HStack(spacing: 0) {
+                    Text(article.source).lineLimit(1)
+                    Text(" - \(WiltedMacEpisodePresentation.durationLabel(article.durationSeconds))")
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                Text(article.createdAt == .distantPast ? "Date unknown" : article.createdAt.formatted(date: .numeric, time: .omitted))
                     .wiltedFont(.utility)
-                    .foregroundStyle(
-                        article.isReady
-                            ? WiltedTheme.color(.secondaryText, scheme: colorScheme)
-                            : WiltedStatusTone.active.color(colorScheme)
-                    )
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
-                    .truncationMode(.tail)
-                WiltedMacRemovalStatusLine(flow: removal, model: model, identifierSuffix: "-\(article.id)")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if article.isReady {
-                Button(WiltedScreenCopy.openPlayer) {
-                    model.openNowPlaying(for: article)
-                }
-                .accessibilityIdentifier("wilted-open-now-playing")
-            }
+            WiltedMacLarderArticleAction(model: model, article: article)
 
             Menu {
+                if removal.phase == .failed {
+                    Button("Retry removal") { removal.retry(model: model) }
+                        .accessibilityIdentifier("wilted-removal-retry-\(article.id)")
+                }
                 Button("Delete…", role: .destructive) { removal.request(.article(article)) }
                     .disabled(removal.isSaving)
             } label: {
-                Image(systemName: "ellipsis")
+                Image(systemName: removal.phase == .failed ? "exclamationmark.triangle" : "ellipsis")
                     .accessibilityLabel("More actions for \(article.title)")
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .frame(width: WiltedMacLarderView.trailingActionSlotsWidth, alignment: .trailing)
+            .help(removal.statusText ?? "More actions for \(article.title)")
             .accessibilityIdentifier("wilted-article-actions-\(article.id)")
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .contentShape(Rectangle())
         .wiltedRemovalConfirmation(removal, model: model)
         .accessibilityElement(children: .contain)
+        .accessibilityValue(removal.statusText ?? "")
         .accessibilityIdentifier("wilted-article-row-\(article.id)")
     }
+}
 
-    /// `text.npr.org · 28:56`, plus **Preparing** while the row has no button.
-    ///
-    /// A ready row already carries **Open Now Playing**, so spelling out
-    /// *Ready to play* beside it repeats the same fact. A preparing row has no
-    /// control at all, so its word stays.
-    private var metaLine: String {
-        var parts = [article.source]
-        if let seconds = article.durationSeconds, seconds > 0 {
-            parts.append(WiltedDuration.clock(seconds))
+/// The article's real Larder control shares the episode action slot without changing the Feeds row.
+struct WiltedMacLarderArticleAction: View {
+    let model: WiltedMacModel
+    let article: WiltedMacArticle
+
+    /// Ready means the audio can start; the visible Play action must request autoplay on load.
+    func play() {
+        model.openNowPlaying(for: article, autoplay: true)
+    }
+
+    var body: some View {
+        Group {
+            if article.isReady {
+                Button(action: play) {
+                    Label("Play", systemImage: "play.fill")
+                }
+                .labelStyle(.iconOnly)
+                .help("Play")
+                .accessibilityLabel("Play \(article.title)")
+                .accessibilityIdentifier("wilted-open-now-playing")
+            } else {
+                ProgressView().controlSize(.small)
+                    .help("Preparing article")
+                    .accessibilityLabel("Preparing \(article.title)")
+            }
         }
-        if !article.isReady { parts.append("Preparing") }
-        return parts.joined(separator: " · ")
+        .controlSize(.small)
+        .buttonStyle(WiltedMacLarderActionStyle())
+        .frame(width: WiltedMacLarderView.readyActionSlotWidth, height: 32)
     }
 }
 

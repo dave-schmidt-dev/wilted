@@ -85,10 +85,22 @@ extension LocalLibraryStore {
 
     public func save(subscription: PodcastSubscription) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibraryCurrentSubscriptionRecord>())
         if let existing = records.first(where: { $0.feedID == subscription.feedID.rawValue }) {
             existing.subscribedAt = subscription.subscribedAt.date; existing.enabled = subscription.enabled
-        } else { context.insert(LocalLibrarySchemaV6Models.PodcastSubscriptionRecord(subscription)) }
+        } else { context.insert(LocalLibraryCurrentSubscriptionRecord(subscription)) }
+        try context.save()
+    }
+
+    /// Renames only a followed feed. Nil or whitespace restores its current publisher title.
+    public func setSubscriptionDisplayName(feedID: ItemID, displayName: String?) throws {
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibraryCurrentSubscriptionRecord>())
+            .first(where: { $0.feedID == feedID.rawValue }) else {
+            throw LocalLibraryStoreError.invalidPodcastState("subscription does not exist")
+        }
+        let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        record.displayName = trimmed.flatMap { $0.isEmpty ? nil : $0 }
         try context.save()
     }
 
@@ -96,15 +108,15 @@ extension LocalLibraryStore {
 
     public func subscription(for feedID: ItemID) throws -> PodcastSubscription? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>()).first(where: { $0.feedID == feedID.rawValue }) else { return nil }
-        return PodcastSubscription(feedID: feedID, subscribedAt: Timestamp(record.subscribedAt), enabled: record.enabled)
+        guard let record = try context.fetch(FetchDescriptor<LocalLibraryCurrentSubscriptionRecord>()).first(where: { $0.feedID == feedID.rawValue }) else { return nil }
+        return PodcastSubscription(feedID: feedID, subscribedAt: Timestamp(record.subscribedAt), enabled: record.enabled, displayName: record.displayName)
     }
 
     public func subscriptions() throws -> [PodcastSubscription] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastSubscriptionRecord>()).compactMap { record in
+        return try context.fetch(FetchDescriptor<LocalLibraryCurrentSubscriptionRecord>()).compactMap { record in
             guard let feedID = try? ItemID(rawValue: record.feedID) else { return nil }
-            return PodcastSubscription(feedID: feedID, subscribedAt: Timestamp(record.subscribedAt), enabled: record.enabled)
+            return PodcastSubscription(feedID: feedID, subscribedAt: Timestamp(record.subscribedAt), enabled: record.enabled, displayName: record.displayName)
         }
     }
 

@@ -67,7 +67,8 @@ final class WiltedMacOwnerFeedbackJourneyTests: XCTestCase {
             XCTAssertTrue(sources.contains(identifier), identifier)
         }
         let larderRows = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
-        XCTAssertTrue(larderRows.contains("identifier: \"wilted-larder-metadata-\\(episode.id)\""))
+        XCTAssertTrue(larderRows.contains(".accessibilityIdentifier(\"wilted-larder-metadata-\\(episode.id)\")"))
+        XCTAssertTrue(larderRows.contains(".accessibilityIdentifier(\"wilted-larder-date-\\(episode.id)\")"))
         XCTAssertTrue(larderRows.contains("wilted-larder-play-\\(episode.id)"))
     }
 

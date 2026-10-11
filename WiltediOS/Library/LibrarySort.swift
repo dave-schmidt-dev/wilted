@@ -189,7 +189,7 @@ enum LibraryListing {
                 case (nil, nil): nil
                 }
             case .title:
-                switch left.title.localizedStandardCompare(right.title) {
+                switch LibrarySortKey.title(left.title).localizedStandardCompare(LibrarySortKey.title(right.title)) {
                 case .orderedAscending: true
                 case .orderedDescending: false
                 case .orderedSame: nil

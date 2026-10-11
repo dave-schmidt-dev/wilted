@@ -11,7 +11,7 @@ import WiltedDomain
 /// same group accessor the rows do, so no count can label a list it does not
 /// match.
 struct WiltedMacLarderView: View {
-    static let readyActionSlotWidth: CGFloat = 28
+    static let readyActionSlotWidth: CGFloat = 64
     static let trailingActionSlotsWidth: CGFloat = 58
 
     @Bindable var model: WiltedMacModel
@@ -27,6 +27,7 @@ struct WiltedMacLarderView: View {
     }
     @Environment(\.colorScheme) var colorScheme
     @State var dropTargetID: String?
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         WiltedMacDestination(
@@ -40,7 +41,17 @@ struct WiltedMacLarderView: View {
             if paneMode == .bottom { bottomModeHeader }
             larderList
         }
-        .searchable(text: $model.librarySearchQuery, prompt: "Search episodes")
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                TextField("", text: $model.librarySearchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isSearchFocused)
+                    .frame(width: 160)
+                    .accessibilityLabel("Search episodes")
+                    .accessibilityIdentifier("wilted-larder-search")
+            }
+        }
+        .focusedSceneValue(\.wiltedLarderSearchFocus, { isSearchFocused = true })
     }
 
     var playbackHelp: WiltedMacHelpContent {
@@ -87,10 +98,6 @@ struct WiltedMacLarderView: View {
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-larder-audio-total")
-                    Text("Ready: \(model.larderUnfilteredEpisodes(in: .playable).count) episodes")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-larder-waiting-count")
                 }
                 // Absent before the first refresh, so a Larder that has never refreshed reads as it did.
                 if model.lastPodcastRefreshAt != nil {
@@ -163,7 +170,19 @@ struct WiltedMacLarderView: View {
             }
         }
 
-        filterBar
+        filterBar(colorScheme: colorScheme)
         groupList.wiltedMarksRowsTop()
+    }
+}
+
+/// The active Larder window supplies its own search focus action to the native Find command.
+private struct WiltedMacLarderSearchFocusKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
+extension FocusedValues {
+    var wiltedLarderSearchFocus: (() -> Void)? {
+        get { self[WiltedMacLarderSearchFocusKey.self] }
+        set { self[WiltedMacLarderSearchFocusKey.self] = newValue }
     }
 }

@@ -231,6 +231,12 @@ assert_macos_ui_leg_is_executed() {
   assert_contains 'wilted_gate_parallel_launch "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"' "$repo_root/scripts/lib/native-gate-legs.sh"
   assert_contains '  macos-ui-tests' "$gate"
   assert_validation_contains 'macos-ui-tests) mac_ui_declared_test_count ;;'
+  assert_validation_contains 'WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests'
+  assert_validation_contains 'testCommandQuitDrainsRepliesOnceAndExits'
+  assert_contains 'func testCommandQuitDrainsRepliesOnceAndExits' "$repo_root/WiltedMacUITests/WiltedMacQuitUITests.swift"
+  assert_validation_contains 'testCollapsedSidebarKeepsContentBelowWindowControls'
+  assert_contains 'func testCollapsedSidebarKeepsContentBelowWindowControls' "$repo_root/WiltedMacUITests/WiltedMacSidebarChromeUITests.swift"
+
   # A floor is a minimum, so a named journey can vanish while an unrelated new
   # test holds the count up. The gate asserts this one by identifier too.
   assert_validation_contains 'testLarderOverridesAnOffPeakDeferralWithPrepareNow'
@@ -249,13 +255,30 @@ assert_snapshot_contract() {
   assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_validation_contains 'expected_count=202'
-  assert_validation_contains 'shells=50'
+  assert_validation_contains 'expected_count=210'
+  assert_validation_contains 'shells=58'
   assert_validation_contains 'WiltedPixelSnapshotTests+Rendering.swift'
   assert_validation_contains "expected_size='202 x 260'"
   assert_validation_contains "expected_size='56 x 260'"
   assert_validation_contains "expected_size='520 x 420'"
   assert_validation_contains "expected_size='224 x 56'"
+  assert_validation_contains "expected_size='760 x 440'"
+  assert_validation_contains 'testFeedsRowPixelBaselines.mac-shell-feeds-row-light.png'
+  assert_validation_contains 'testFeedsRowPixelBaselines.mac-shell-feeds-row-dark.png'
+  for kind in minimum full; do
+    for appearance in light dark; do
+      assert_validation_contains "testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-$kind-$appearance.png"
+    done
+  done
+  assert_validation_contains "expected_size='520 x 560'"
+  assert_validation_contains "expected_size='1000 x 560'"
+  assert_validation_contains "expected_size='640 x 740'"
+  assert_contains 'func testNowPlayingPanePixelBaselines' "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+NowPlaying.swift"
+  for appearance in light dark; do
+    assert_validation_contains "testNowPlayingPanePixelBaselines.mac-shell-now-playing-pane-$appearance.png"
+  done
+  assert_contains 'func testRealSizeLarderHeaderPixelBaselines' "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+LarderRows.swift"
+
   assert_validation_contains 'expected_state_ids='
   assert_validation_contains 'expected_variants='
   assert_validation_contains 'expected_selectors'

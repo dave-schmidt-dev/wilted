@@ -20,6 +20,12 @@ All notable changes to this project are documented in this file.
 - Your own Keep, Skip and Restore, on the Mac or the iPhone, are recorded as yours, and automation never reverses them.
 
 ### Changed
+- Feed names can be edited inline: Return saves, Escape cancels, and an empty name restores the publisher title. Refresh preserves a saved name; Unsubscribe retains its confirmation.
+- Larder counts belong to the lifecycle filters and global Download/Prepare actions; groups retain Play first and Remove without repeating download/preparation controls.
+- Natural podcast completion chooses the first displayed eligible Ready row, including earlier unfinished episodes. Playlist and audiobook completion keep their own rules.
+- Alphabetical sorting on Mac and iPhone ignores a leading “The” case-insensitively without changing displayed titles.
+- Share keeps its normal control when a page address is unavailable and sends `title - show` as text instead.
+- Now Playing uses compact 48-point artwork, one transport row, speed, and secondary actions in an overflow menu.
 - Subscribing on the Mac no longer asks how many episodes to list; new feeds use the Episodes listed default in Settings.
 - A pasted feed with no audio episodes is offered as an article feed to follow instead of being refused; a feed with neither audio nor posts says "This feed has no audio and no posts to follow."
 - The Mac Larder is one list grouped Ready, Active work, Downloaded, then Not downloaded, with articles and books in the same list and a kind filter (All, Podcasts, Articles, Audiobooks); the iPhone Larder has the same kind filter.
@@ -31,12 +37,14 @@ All notable changes to this project are documented in this file.
 - Re-downloading an episode deletes the copy it replaces, and the Mac startup has a "Reclaiming storage" step that deletes audio no record names and clears records whose audio is missing.
 
 ### Fixed
+- Quit-interrupted downloads resume on relaunch with a three-attempt automatic bound, while an explicit Cancel stays cancelled and a new explicit request resets its own attempt count.
+- Playback checkpoints remain ordered without delaying audio controls; a newer selection or Pause supersedes natural continuation, and a removed Ready candidate is skipped.
 - SwiftPM package test builds recover from Finder metadata signing failures by clearing File Provider metadata and retrying once within the shared work budget.
 - Mac Play/Pause pending feedback now stays inside the initiating button without shifting the player layout.
 - Collapsing the Mac sidebar now retains its icon rail and current selection; the same setting and control restore labels when width permits.
 - Mac prepared-media export no longer exposes raw or unprepared, off-Larder, retired, or mismatched-download audio.
 - iPhone storage totals and explicit removal now account for retained physical audio even when that audio is not admitted for playback.
-- Long Larder titles now wrap naturally to a second line when needed.
+- Larder and Active work rows use three lines: a one-line title with full-title help, feed and length, then date. Download, preparation and playback share a fixed action slot; queued work says Queued. Search has no placeholder, empty Articles points to the toolbar Add action, and publication status is one sidebar footer line.
 - Apple Watch Up Next show names now use the system secondary color, so they stay readable on the grey row background.
 - Local source-qualified Siri behavior now rejects stale nameless selected requests, preserves the cached-list boundary while refusing unavailable media before playback, skips an ineligible automatic candidate, and keeps an explicitly removed loaded item unloaded even if its decision later rolls back. This local checkpoint does not claim installed or accepted device behavior.
 - iPhone playback now refuses stale, corrupt, unavailable, or no-longer-eligible audio before loading or resuming it, while verified offline downloads remain playable after the Mac withdraws its offer. Continue from Mac keeps the Mac playback rate and refuses a mismatched revision.

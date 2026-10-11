@@ -141,19 +141,95 @@ extension WiltedMacModel {
         return didQueue || hasSendablePending
     }
 
+    /// Frozen before any publication suspension: an older command may never
+    /// publish a newer command's durable position as its own checkpoint.
+    struct PlaybackCheckpointCapture {
+        let itemID: ItemID
+        let revisionID: RevisionID
+        let sessionID: String?
+        let sequence: Int64
+        let positionSeconds: Double
+        let completed: Bool
+        let intent: PlaybackIntent
+
+        func matches(_ state: PlaybackState) -> Bool {
+            state.sessionID == sessionID && state.sequence == sequence
+                && state.positionSeconds == positionSeconds && state.completed == completed
+                && state.intent == intent
+        }
+    }
+
+    private func captureCurrentPlaybackCheckpoint() -> PlaybackCheckpointCapture? {
+        guard let playback, let itemID = playback.itemID, let revisionID = playback.revisionID,
+              selectedArticleID == itemID.rawValue,
+              articles.contains(where: { $0.id == itemID.rawValue }) else { return nil }
+        return PlaybackCheckpointCapture(itemID: itemID, revisionID: revisionID,
+                                         sessionID: playback.sessionID, sequence: playback.sequence,
+                                         positionSeconds: playback.positionSeconds,
+                                         completed: playback.completed, intent: playback.intent)
+    }
+
+    /// Transport publications serialize independently of audio effects. The
+    /// finite-writer ledger already cancels and joins them on close/deinit.
+    /// Other checkpoint callers retain their existing awaited ordering.
+    func enqueueCurrentPlaybackCheckpoint() {
+        guard !isClosingTemporaryState else { return }
+        let captured = captureCurrentPlaybackCheckpoint()
+        let token = UUID()
+        let predecessor = playbackCommands.checkpointTailToken.flatMap { subscriptionWriteTasks[$0] }
+        let task = Task { @MainActor [weak self] in
+            defer {
+                if let self {
+                    self.subscriptionWriteTasks[token] = nil
+                    if self.playbackCommands.checkpointTailToken == token {
+                        self.playbackCommands.checkpointTailToken = nil
+                    }
+                }
+            }
+            await predecessor?.value
+            guard let self, !self.isClosingTemporaryState, !Task.isCancelled else { return }
+            await self.performPlaybackCheckpoint(captured, strict: true)
+        }
+        subscriptionWriteTasks[token] = task
+        playbackCommands.checkpointTailToken = token
+    }
+
+    func waitForPlaybackCheckpointForTesting() async {
+        while let token = playbackCommands.checkpointTailToken, let task = subscriptionWriteTasks[token] {
+            await task.value
+        }
+    }
+
     func queueCurrentPlaybackCheckpoint() async {
+        await performPlaybackCheckpoint(nil, strict: false)
+    }
+
+    private func performPlaybackCheckpoint(_ captured: PlaybackCheckpointCapture?, strict: Bool) async {
+        await playbackCommands.beforeCheckpointForTesting?()
+        guard !strict || (!isClosingTemporaryState && !Task.isCancelled) else { return }
         await refreshLifetimeStatistics()
-        guard let store, let syncLifecycle, let playbackItemID = playback?.itemID,
-              selectedArticleID == playbackItemID.rawValue,
-              articles.contains(where: { $0.id == playbackItemID.rawValue }),
-              let playbackRevisionID = playback?.revisionID,
-              let state = try? await store.playbackState(for: playbackItemID, revisionID: playbackRevisionID) else { return }
-        let sidecar = try? await store.playbackSidecar(for: playbackItemID, revisionID: playbackRevisionID)
+        guard !strict || (!isClosingTemporaryState && !Task.isCancelled),
+              let captured = strict ? captured : captureCurrentPlaybackCheckpoint(),
+              let store, let syncLifecycle else { return }
+        let state: PlaybackState?
+        do {
+            state = try await store.playbackState(for: captured.itemID, revisionID: captured.revisionID)
+        } catch {
+            Self.playbackLog.error("Playback checkpoint could not be read for publication")
+            return
+        }
+        guard !strict || (!isClosingTemporaryState && !Task.isCancelled),
+              let state, !strict || captured.matches(state) else { return }
+        await playbackCommands.checkpointCapturedForTesting?(state)
+        guard !strict || (!isClosingTemporaryState && !Task.isCancelled) else { return }
+        let sidecar = try? await store.playbackSidecar(for: captured.itemID, revisionID: captured.revisionID)
+        guard !strict || (!isClosingTemporaryState && !Task.isCancelled) else { return }
         let opaque = sidecar.map {
             WiltedOpaqueSidecar(changeTag: $0.changeTag, encodedSystemFields: $0.encodedSystemFields)
         }
-        if case .success = await syncLifecycle.queuePlayback(state, sidecar: opaque) {
-            articlePlaybackCheckpointCount += 1
+        switch await syncLifecycle.queuePlayback(state, sidecar: opaque) {
+        case .success: articlePlaybackCheckpointCount += 1
+        case .failure: Self.playbackLog.error("Playback checkpoint publication failed")
         }
     }
 

@@ -20,6 +20,8 @@ struct WiltedMacFeedsView: View {
         nonmutating set { model.navigationState.selectedFeedEpisodeIDs = newValue }
     }
     @State private var feedRemoval = WiltedMacRemovalFlow()
+    @State private var feedRename = WiltedMacFeedRenameDraft()
+    @FocusState private var feedNameFocused: Bool
     @State private var policyBoard: WiltedMacFeedPolicyBoard
 
     init(model: WiltedMacModel, policyBoard: WiltedMacFeedPolicyBoard? = nil) {
@@ -166,7 +168,7 @@ struct WiltedMacFeedsView: View {
                     .accessibilityIdentifier("wilted-feeds-count")
             }
             if visible.isEmpty && articles.isEmpty {
-                Text("Nothing new. Every episode from your feeds is already in Larder.")
+                Text("No new episodes.")
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-empty")
@@ -316,9 +318,32 @@ struct WiltedMacFeedsView: View {
     private func feedRow(_ subscription: WiltedMacSubscription) -> some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Text(subscription.title)
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                if feedRename.feedID == subscription.id {
+                    TextField("Feed name", text: $feedRename.text)
+                        .wiltedFont(.body)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($feedNameFocused)
+                        .disabled(feedRename.isSaving)
+                        .onAppear { feedNameFocused = true }
+                        .onSubmit { Task { await saveFeedName(subscription) } }
+                        .onExitCommand { feedRename.cancel() }
+                        .accessibilityLabel("Name for \(subscription.publisherTitle ?? subscription.title)")
+                        .accessibilityIdentifier("wilted-podcast-feed-name-editor-\(subscription.id)")
+                    if let error = feedRename.error {
+                        Text(error).wiltedFont(.utility).foregroundStyle(.red)
+                    }
+                } else {
+                    Button { feedRename.begin(subscription) } label: {
+                        Text(subscription.title)
+                            .wiltedFont(.body)
+                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Rename feed")
+                    .disabled(feedRename.isSaving || model.isFeedWritePending(subscription.id))
+                    .accessibilityLabel("Rename \(subscription.title)")
+                    .accessibilityIdentifier("wilted-podcast-feed-name-\(subscription.id)")
+                }
                 Text(subscription.feedURL.host ?? subscription.feedURL.absoluteString)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -342,9 +367,13 @@ struct WiltedMacFeedsView: View {
             .accessibilityLabel("Show episodes from \(subscription.title)")
             .accessibilityIdentifier("wilted-podcast-feed-enabled-\(subscription.id)")
             WiltedMacFeedPolicyButton(board: policyBoard, subscription: subscription)
-            Button("Unsubscribe…") { feedRemoval.request(.feed(subscription)) }
-                .disabled(feedRemoval.isSaving || model.isFeedWritePending(subscription.id))
-                .accessibilityIdentifier("wilted-podcast-feed-unsubscribe-\(subscription.id)")
+            Button { feedRemoval.request(.feed(subscription)) } label: {
+                Image(systemName: "trash")
+            }
+            .help("Unsubscribe")
+            .accessibilityLabel("Unsubscribe from \(subscription.title)")
+            .disabled(feedRemoval.isSaving || model.isFeedWritePending(subscription.id))
+            .accessibilityIdentifier("wilted-podcast-feed-unsubscribe-\(subscription.id)")
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         // Subscribing to a feed already followed adds nothing, so the answer is
@@ -358,6 +387,16 @@ struct WiltedMacFeedsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(model.selectedPodcastFeedID == subscription.id ? [.isSelected] : [])
         .accessibilityIdentifier("wilted-podcast-feed-row-\(subscription.id)")
+    }
+
+    @MainActor private func saveFeedName(_ subscription: WiltedMacSubscription) async {
+        guard feedRename.beginSaving() else { return }
+        do {
+            try await model.renameSubscription(subscription, to: feedRename.text)
+            feedRename.finish()
+        } catch {
+            feedRename.finish(error: "\(subscription.title) could not be renamed. Try again.")
+        }
     }
 
 }

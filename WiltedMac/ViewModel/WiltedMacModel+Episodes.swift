@@ -376,13 +376,10 @@ extension WiltedMacModel {
             return article.title + " · " + article.source
         }
         if let episode = currentEpisode {
-            return episode.title + " — " + episode.feedTitle
+            return episode.title + " - " + episode.feedTitle
         }
         return nil
     }
-
-    /// Said beside the title and show when there is no page to link to.
-    static let noEpisodePageText = "No episode page"
 
     var currentPlaybackShareTitle: String {
         currentArticle?.title ?? currentEpisode?.title ?? "Now Playing"
@@ -393,9 +390,7 @@ extension WiltedMacModel {
             return article.title + " · " + article.source
         }
         if let episode = currentEpisode {
-            return episode.episodeLink == nil
-                ? Self.noEpisodePageText
-                : episode.title + " · " + episode.feedTitle
+            return episode.title + " · " + episode.feedTitle
         }
         return "Now Playing"
     }

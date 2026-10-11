@@ -6,8 +6,9 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
   wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
 fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root=''
+trap 'if [[ -n "$root" ]]; then rm -rf "$root"; fi' EXIT
 root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-ios-meta.XXXXXX")"
-trap 'rm -rf "$root"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 fail() { printf 'record-meta.fail %s\n' "$*" >&2; exit 1; }
@@ -58,7 +59,17 @@ cat >"$fixture/scripts/build-with-cache.py" <<'PYBUILD'
 import os, sys
 from pathlib import Path
 args = sys.argv
+assert args[1:4] == ["run", "xcode", "native-ios-pixel-snapshot-tests"], "recorder.guard.shared-cache-rejected"
 project = Path(args[args.index("-project") + 1]).parent
+products = project.parent / "products"
+suffix = "/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)"
+expected = "CONFIGURATION_BUILD_DIR=" + str(products) + suffix
+settings = [arg for arg in args if arg.startswith("CONFIGURATION_BUILD_DIR=")]
+value = settings[0].partition("=")[2] if len(settings) == 1 else ""
+prefix = value[:-len(suffix)] if value.endswith(suffix) else ""
+assert len(settings) == 1 and prefix and Path(prefix).resolve() == products.resolve(), (
+    "recorder.guard.foreign-products-rejected " + repr({"settings": settings, "expected": expected}))
+assert products.is_dir(), "recorder.guard.owned-products-missing"
 fresh = project / "WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"
 # Copied baselines must have been cleared before starting this invocation.
 assert not list(fresh.glob("*.png")), "recording reused stale PNGs"
@@ -79,6 +90,27 @@ elif scenario != "missing":
     (fresh / "library-larder-dark.png").write_bytes(b"" if scenario == "empty" else b"new-dark")
 PYBUILD
 export PATH="$root/bin:$PATH"
+# Prove the new guards reject each old invocation boundary before testing publication.
+if python3 "$fixture/scripts/build-with-cache.py" run xcode ios-snapshot-recording -- xcodebuild test \
+  -project "$root/guard-record-root/Wilted.xcodeproj" >"$root/shared-cache.log" 2>&1; then
+  fail 'shared installer cache was accepted'
+fi
+grep -q 'recorder.guard.shared-cache-rejected' "$root/shared-cache.log" || fail 'shared cache rejection sentinel absent'
+if python3 "$fixture/scripts/build-with-cache.py" run xcode native-ios-pixel-snapshot-tests -- xcodebuild test \
+  -project "$root/guard-record-root/Wilted.xcodeproj" \
+  "CONFIGURATION_BUILD_DIR=$root/foreign-products/\$(CONFIGURATION)\$(EFFECTIVE_PLATFORM_NAME)" \
+  >"$root/foreign-products.log" 2>&1; then
+  fail 'foreign product directory was accepted'
+fi
+grep -q 'recorder.guard.foreign-products-rejected' "$root/foreign-products.log" || fail 'product containment rejection sentinel absent'
+# Redundant separators still identify the exact owned product directory.
+mkdir -p "$root/products" "$root/guard-record-root/$snapshots"
+if ! RECORD_META_SCENARIO=success python3 "$fixture/scripts/build-with-cache.py" run xcode native-ios-pixel-snapshot-tests -- xcodebuild test \
+  -project "$root/guard-record-root/Wilted.xcodeproj" \
+  "CONFIGURATION_BUILD_DIR=$root//products/\$(CONFIGURATION)\$(EFFECTIVE_PLATFORM_NAME)" \
+  >"$root/redundant-separator.log" 2>&1; then
+  cat "$root/redundant-separator.log" >&2; fail 'owned product directory with redundant separator was rejected'
+fi
 before="$(shasum -a 256 "$fixture/$snapshots/"*.png)"
 if ! TMPDIR="$root/scratch" RECORD_META_SCENARIO=success bash "$fixture/scripts/record-ios-snapshots.sh" \
   testLibraryLarderLightPixelBaseline testLibraryLarderDarkPixelBaseline >"$root/staging.log" 2>&1; then

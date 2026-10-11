@@ -153,12 +153,20 @@ public final class PlaybackController {
     public internal(set) var intent: PlaybackIntent = .progress
     public internal(set) var completed = false
     public internal(set) var recoverableFault: PlaybackControllerError?
+    /// Optional per-item policy for successful queue EOF. Nil preserves queue advancement;
+    /// returning false lets a surface choose its successor through the stop callback.
+    @ObservationIgnored public var automaticPodcastQueueAdvancePredicate: (@MainActor @Sendable (ItemID) -> Bool)?
     @ObservationIgnored public var podcastStateHandler: (@MainActor @Sendable (ItemID?, PlaybackControllerError?) -> Void)?
     /// Fired when the backend stops unsuccessfully, or finishes an item with
     /// nothing advancing behind it: an article, or the last queued episode.
     /// `podcastStateHandler` carries queue advances and podcast faults; this
     /// handler also lets surfaces observe that playback stopped.
     @ObservationIgnored public var playbackDidFinishHandler: (@MainActor @Sendable () -> Void)?
+    /// Captures a surface's natural-end intent synchronously, once per admitted backend generation.
+    /// The returned handler runs after the durable podcast completion, before the stop observer.
+    @ObservationIgnored public var podcastNaturalCompletionHandlerFactory:
+        (@MainActor @Sendable (ItemID) -> (@MainActor @Sendable () -> Void)?)?
+
     /// Fired once the durable "finished" checkpoint for a podcast episode has
     /// been written, before any queue-advance logic runs. Never fired for
     /// articles. The caller must not touch the podcast queue from inside
@@ -218,10 +226,16 @@ public final class PlaybackController {
         self.backend.completionHandler = { [weak self] generation, successfully in
             // Read at the end of file itself, so a pause issued before the
             // task below runs still counts as issued after the end.
-            let holdAtEnd = self?.explicitHoldSerial ?? 0
+            guard let self, generation == self.loadedBackendGeneration,
+                  self.completionHandledGeneration != generation, let itemID = self.itemID else { return }
+            self.completionHandledGeneration = generation
+            let holdAtEnd = self.explicitHoldSerial
+            let completion = successfully && self.loadedIsPodcastEpisode
+                ? self.podcastNaturalCompletionHandlerFactory?(itemID) : nil
             Task { @MainActor [weak self] in
                 await self?.handleBackendCompletion(
-                    generation: generation, successfully: successfully, holdAtEnd: holdAtEnd)
+                    generation: generation, successfully: successfully, holdAtEnd: holdAtEnd,
+                    naturalCompletion: completion)
             }
         }
     }
@@ -551,11 +565,13 @@ public final class PlaybackController {
         return .applied
     }
 
-    private func handleBackendCompletion(generation: UInt64, successfully: Bool, holdAtEnd: UInt64) async {
+    private func handleBackendCompletion(
+        generation: UInt64, successfully: Bool, holdAtEnd: UInt64,
+        naturalCompletion: (@MainActor @Sendable () -> Void)?
+    ) async {
         guard generation == loadedBackendGeneration,
-              completionHandledGeneration != generation,
+              completionHandledGeneration == generation,
               let completedItemID = itemID else { return }
-        completionHandledGeneration = generation
         if successfully {
             backend.pause()
             isPlaying = false
@@ -577,6 +593,12 @@ public final class PlaybackController {
                 // An article, or an episode played outside the queue (loaded with `load`, even when
                 // it is also the queue's current item). Nothing advances, so this is the only
                 // notice that the audio stopped.
+                naturalCompletion?()
+                playbackDidFinishHandler?()
+                return
+            }
+            guard automaticPodcastQueueAdvancePredicate?(completedItemID) ?? true else {
+                naturalCompletion?()
                 playbackDidFinishHandler?()
                 return
             }

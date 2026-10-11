@@ -254,7 +254,7 @@ extension WiltedMacModel: WiltedMacTerminationDraining {
     func drainLocalWorkForTermination() async throws {
         stopAdmittingWorkForTermination()
         try await flushPlaybackForTermination()
-        await cancelAndAwaitDownloadsForTermination()
+        try await cancelAndAwaitDownloadsForTermination()
     }
 
     func closeNetworkWorkForTermination() async {

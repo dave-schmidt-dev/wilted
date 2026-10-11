@@ -311,6 +311,151 @@ extension LocalLibraryStoreTests {
         )
     }
 
+    func testQuitInterruptedDownloadCountsStartsAndStopsAfterThreeAttempts() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let id = try ItemID(rawValue: "item-" + String(repeating: "e", count: 64))
+        let now = Timestamp(Date())
+        var ticket = try await store.applyWorkTicketTransition(
+            kind: .podcastDownload, subjectID: id.rawValue, to: .running, at: now
+        )
+        for attempt in 1...3 {
+            try await store.save(download: try PodcastDownload(
+                episodeID: id, status: .downloading, bytesReceived: Int64(attempt * 100), updatedAt: now
+            ))
+            XCTAssertEqual(ticket.attemptCount, attempt)
+            let interrupted = try await store.interruptPodcastDownloadForTermination(
+                subjectID: id.rawValue, requestSequence: ticket.requestSequence,
+                attemptCount: ticket.attemptCount, at: now
+            )
+            XCTAssertEqual(interrupted?.attemptCount, attempt)
+            XCTAssertEqual(interrupted?.state, attempt < 3 ? .pending : .failed)
+            XCTAssertEqual(interrupted?.failureKind, WorkTicketFailure.interrupted.rawValue)
+            let repeated = try await store.interruptPodcastDownloadForTermination(
+                subjectID: id.rawValue, requestSequence: ticket.requestSequence,
+                attemptCount: ticket.attemptCount, at: now
+            )
+            XCTAssertNil(repeated, "an already settled attempt cannot interrupt twice")
+            _ = try await store.reconcileWorkTickets(now: now, sequenceFloor: 0, importedDeferrals: [])
+            let reconciled = try await store.workTicket(kind: .podcastDownload, subjectID: id.rawValue)
+            XCTAssertEqual(reconciled, interrupted, "pending recovery spends no attempt")
+            let next = try await store.beginInterruptedPodcastDownloadAttempt(
+                subjectID: id.rawValue, requestSequence: ticket.requestSequence,
+                attemptCount: attempt, at: now
+            )
+            if attempt < 3 { ticket = try XCTUnwrap(next) }
+            else {
+                XCTAssertNil(next, "there is no fourth automatic transfer")
+                let before = try await store.download(for: id)
+                let forced = try await store.beginInterruptedPodcastDownloadAttempt(
+                    subjectID: id.rawValue, requestSequence: ticket.requestSequence,
+                    attemptCount: attempt, claimingDownload: true, at: now
+                )
+                XCTAssertNil(forced)
+                let after = try await store.download(for: id)
+                XCTAssertEqual(after, before, "exhausted automatic recovery cannot take a fresh claim")
+            }
+        }
+        let download = try await store.download(for: id)
+        XCTAssertEqual(download?.status, .failed)
+        XCTAssertEqual(download?.failureKind, .terminal)
+        XCTAssertEqual(download?.bytesReceived, 300)
+        let resumable = try await store.resumablePodcastDownloads()
+        XCTAssertTrue(resumable.isEmpty)
+    }
+
+    func testQuitInterruptionRejectsStaleRequestAndAttemptOwnership() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let now = Timestamp(Date())
+        let original = try await store.applyWorkTicketTransition(
+            kind: .podcastDownload, subjectID: "owned", to: .running, at: now
+        )
+        _ = try await store.interruptPodcastDownloadForTermination(
+            subjectID: "owned", requestSequence: original.requestSequence, attemptCount: 1, at: now
+        )
+        let replay = try await store.beginInterruptedPodcastDownloadAttempt(
+            subjectID: "owned", requestSequence: original.requestSequence, attemptCount: 1, at: now
+        )
+        let lateAttempt = try await store.interruptPodcastDownloadForTermination(
+            subjectID: "owned", requestSequence: original.requestSequence, attemptCount: 1, at: now
+        )
+        XCTAssertNil(lateAttempt)
+        let afterLateAttempt = try await store.workTicket(kind: .podcastDownload, subjectID: "owned")
+        XCTAssertEqual(afterLateAttempt, replay)
+        let newer = try await store.readmitWorkTicket(
+            kind: .podcastDownload, subjectID: "owned", requestSequence: original.requestSequence + 1,
+            to: .running, at: now
+        )
+        let lateRequest = try await store.interruptPodcastDownloadForTermination(
+            subjectID: "owned", requestSequence: original.requestSequence, attemptCount: 2, at: now
+        )
+        XCTAssertNil(lateRequest)
+        let afterLateRequest = try await store.workTicket(kind: .podcastDownload, subjectID: "owned")
+        XCTAssertEqual(afterLateRequest, newer)
+    }
+
+    func testQuitInterruptionPreservesCompletedTransferAndCancelledTicket() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let id = try ItemID(rawValue: "item-" + String(repeating: "f", count: 64))
+        let now = Timestamp(Date())
+        let ticket = try await store.applyWorkTicketTransition(
+            kind: .podcastDownload, subjectID: id.rawValue, to: .running, at: now
+        )
+        let completed = try PodcastDownload(
+            episodeID: id, status: .completed, bytesReceived: 200,
+            localURL: url.deletingLastPathComponent().appendingPathComponent("complete.mp3"),
+            contentHash: "sha256:" + String(repeating: "f", count: 64), updatedAt: now
+        )
+        try await store.save(download: completed)
+        let settled = try await store.interruptPodcastDownloadForTermination(
+            subjectID: id.rawValue, requestSequence: ticket.requestSequence, attemptCount: 1, at: now
+        )
+        XCTAssertEqual(settled?.state, .succeeded)
+        let after = try await store.download(for: id)
+        XCTAssertEqual(after, completed)
+        let cancelled = try await store.applyWorkTicketTransition(
+            kind: .podcastDownload, subjectID: "cancelled", to: .cancelled, at: now
+        )
+        let interrupted = try await store.interruptPodcastDownloadForTermination(
+            subjectID: "cancelled", requestSequence: cancelled.requestSequence, attemptCount: 0, at: now
+        )
+        let replay = try await store.beginInterruptedPodcastDownloadAttempt(
+            subjectID: "cancelled", requestSequence: cancelled.requestSequence, attemptCount: 0, at: now
+        )
+        XCTAssertNil(interrupted)
+        XCTAssertNil(replay)
+        let afterCancel = try await store.workTicket(kind: .podcastDownload, subjectID: "cancelled")
+        XCTAssertEqual(afterCancel, cancelled)
+
+        // A deliberate new request must receive a fresh interruption budget,
+        // even when the previous completed request used all three starts.
+        var previous = try XCTUnwrap(settled)
+        previous.attemptCount = 3
+        previous.failureKind = WorkTicketFailure.interrupted.rawValue
+        try await store.upsertWorkTicket(previous)
+        let manual = try await store.beginManualInterruptedPodcastDownload(
+            subjectID: id.rawValue, requestSequence: previous.requestSequence,
+            attemptCount: 3, at: now
+        )
+        let first = try XCTUnwrap(manual)
+        XCTAssertGreaterThan(first.requestSequence, previous.requestSequence)
+        XCTAssertEqual(first.attemptCount, 1)
+        XCTAssertNil(first.failureKind)
+        let interruptedManual = try await store.interruptPodcastDownloadForTermination(
+            subjectID: id.rawValue, requestSequence: first.requestSequence, attemptCount: 1, at: now
+        )
+        XCTAssertEqual(interruptedManual?.state, .pending)
+        XCTAssertEqual(interruptedManual?.attemptCount, 1)
+        let latePrevious = try await store.interruptPodcastDownloadForTermination(
+            subjectID: id.rawValue, requestSequence: previous.requestSequence, attemptCount: 3, at: now
+        )
+        XCTAssertNil(latePrevious)
+        let current = try await store.workTicket(kind: .podcastDownload, subjectID: id.rawValue)
+        XCTAssertEqual(current, interruptedManual)
+    }
+
     // MARK: - V13 episode removals
 
     /// Task 4.5 done-condition 2: a V12 store seeded with a bare `retiredAt`

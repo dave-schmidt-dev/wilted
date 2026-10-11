@@ -285,8 +285,12 @@ extension WiltedMacModelTests {
                       "Play the first is a bulk action too")
         XCTAssertTrue(view.contains(".disabled(model.isSearchingLarder)"),
                       "the group clear is a bulk action too")
-        XCTAssertTrue(view.contains(".searchable(text: $model.librarySearchQuery,"),
-                      "the Larder must expose the search field")
+        XCTAssertTrue(view.contains("TextField(\"\", text: $model.librarySearchQuery)"),
+                      "the actual toolbar field binds the query without a placeholder")
+        XCTAssertTrue(view.contains(".accessibilityIdentifier(\"wilted-larder-search\")"))
+        XCTAssertTrue(view.contains(".accessibilityLabel(\"Search episodes\")"))
+        XCTAssertTrue(view.contains(".focused($isSearchFocused)"))
+        XCTAssertTrue(view.contains(".focusedSceneValue(\\.wiltedLarderSearchFocus, { isSearchFocused = true })"))
     }
 
     /// The sidebar totals describe the Larder, not the current search.

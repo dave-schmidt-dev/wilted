@@ -6,6 +6,25 @@ import XCTest
 @testable import WiltedMac
 
 extension WiltedPixelSnapshotTests {
+    /// Real waiting/download counts at the minimum and full detail widths.
+    func testRealSizeLarderHeaderPixelBaselines() throws {
+        for appearance in WiltedAppearance.allCases {
+            for (kind, width) in [("minimum", 520.0), ("full", 1000.0)] {
+                let model = WiltedMacRealSizeLarderFixture.make(self, "real-header-pixel-\(kind)-\(appearance)")
+                XCTAssertEqual(model.podcastQueueIDs.count, 64)
+                XCTAssertEqual(model.larderDownloadableEpisodes.count, 43)
+                let image = render(
+                    WiltedMacLarderView(model: model, paneMode: .bottom),
+                    variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
+                    size: CGSize(width: width, height: 560))
+                assertSnapshot(
+                    image,
+                    named: WiltedSnapshotContract.shellName(kind: "larder-real-size-\(kind)", appearance: appearance),
+                    testName: "testRealSizeLarderHeaderPixelBaselines")
+            }
+        }
+    }
+
     // MARK: Larder kinds and audiobooks
 
     /// A book as the Larder queues it: one single-file volume with chapter marks.
@@ -53,7 +72,7 @@ extension WiltedPixelSnapshotTests {
         }
     }
 
-    /// A book row: author, length and chapter count under the title.
+    /// A book row follows the same title, feed–length and date geometry as episodes.
     func testLarderBookRowPixelBaselines() throws {
         for appearance in WiltedAppearance.allCases {
             let model = larderModel("larder-book-row")
@@ -78,8 +97,9 @@ extension WiltedPixelSnapshotTests {
         let shown = try WiltedMacHeadless.recognizedText(
             WiltedMacLarderView(model: model, paneMode: .side).larderRow(book, position: 1, count: 1, showsGroupName: false),
             size: CGSize(width: 760, height: 110)).joined(separator: " ")
-        XCTAssertTrue(shown.contains("Frank Herbert"), shown)
-        XCTAssertTrue(shown.contains("3 chapters"), shown)
+        XCTAssertTrue(shown.contains("Audiobook"), shown)
+        XCTAssertTrue(shown.contains("21h 35m"), shown)
+        XCTAssertTrue(shown.contains(book.presentation.publicationLabel), shown)
     }
 
     /// The player while a book plays: the chapter under the playhead and the previous and next steps.

@@ -228,6 +228,120 @@ extension LocalLibraryStore {
         )
     }
 
+    /// Quit alone may return a running download to pending. Sequence and
+    /// attempt ownership prevent a late drain from rewriting a newer transfer.
+    /// Ticket and transfer disposition are saved in one local transaction.
+    @discardableResult
+    public func interruptPodcastDownloadForTermination(
+        subjectID: String, requestSequence: Int, attemptCount: Int, at now: Timestamp
+    ) throws -> WorkTicket? {
+        let context = ModelContext(container)
+        let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+            .first(where: { $0.id == id }),
+              record.requestSequence == requestSequence, record.attemptCount == attemptCount,
+              record.state == WorkTicketState.running.rawValue else { return nil }
+        let download = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
+            .first { $0.episodeID == subjectID }
+        if download?.status == PodcastDownloadStatus.completed.rawValue {
+            // The verified file landed before quit interrupted later bookkeeping.
+            record.state = WorkTicketState.succeeded.rawValue
+            record.failureKind = nil
+            record.lastFailureMessage = nil
+        } else {
+            let exhausted = attemptCount >= 3
+            record.state = (exhausted ? WorkTicketState.failed : .pending).rawValue
+            record.failureKind = WorkTicketFailure.interrupted.rawValue
+            record.lastFailureMessage = "Download interrupted by quit."
+            download?.status = PodcastDownloadStatus.failed.rawValue
+            download?.failureKind = (exhausted ? PodcastDownloadFailureKind.terminal : .retryable).rawValue
+            download?.updatedAt = now.date
+        }
+        record.updatedAt = now.date
+        try context.save()
+        return Self.decodeWorkTicket(record)
+    }
+
+    /// Resumes only quit-interrupted transfers. Admission counts actual starts;
+    /// reconciliation and repeated terminal writes do not spend another attempt.
+    public func beginInterruptedPodcastDownloadAttempt(
+        subjectID: String, requestSequence: Int, attemptCount: Int,
+        claimingDownload: Bool = false, at now: Timestamp
+    ) throws -> WorkTicket? {
+        let context = ModelContext(container)
+        let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+            .first(where: { $0.id == id }),
+              record.requestSequence == requestSequence, record.attemptCount == attemptCount,
+              record.failureKind == WorkTicketFailure.interrupted.rawValue,
+              record.state == WorkTicketState.pending.rawValue || record.state == WorkTicketState.failed.rawValue,
+              attemptCount < 3 else { return nil }
+        if claimingDownload {
+            let download = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
+                .first { $0.episodeID == subjectID }
+            guard download?.status != PodcastDownloadStatus.queued.rawValue,
+                  download?.status != PodcastDownloadStatus.downloading.rawValue else { return nil }
+            let claim = try PodcastDownload(episodeID: ItemID(rawValue: subjectID), status: .queued, updatedAt: now)
+            if let download {
+                download.status = claim.status.rawValue
+                download.bytesReceived = 0
+                download.expectedByteCount = nil
+                download.localURL = nil
+                download.contentHash = nil
+                download.failureKind = nil
+                download.updatedAt = now.date
+            } else { context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(claim)) }
+        }
+        record.state = WorkTicketState.running.rawValue
+        record.attemptCount += 1
+        record.updatedAt = now.date
+        try context.save()
+        return Self.decodeWorkTicket(record)
+    }
+
+    /// An explicit user request may supersede interruption metadata after it
+    /// wins the durable download claim. Claim, newer sequence, and running
+    /// admission share one save, so a lost claim or failed save spends nothing.
+    public func beginManualInterruptedPodcastDownload(
+        subjectID: String, requestSequence: Int, attemptCount: Int, at now: Timestamp
+    ) throws -> WorkTicket? {
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
+        guard let record = records.first(where: { $0.id == id }),
+              var ticket = Self.decodeWorkTicket(record),
+              ticket.requestSequence == requestSequence, ticket.attemptCount == attemptCount,
+              ticket.failureKind == WorkTicketFailure.interrupted.rawValue else { return nil }
+        let download = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
+            .first { $0.episodeID == subjectID }
+        guard download?.status != PodcastDownloadStatus.queued.rawValue,
+              download?.status != PodcastDownloadStatus.downloading.rawValue else { return nil }
+        let claim = try PodcastDownload(episodeID: ItemID(rawValue: subjectID), status: .queued, updatedAt: now)
+        if let download {
+            download.status = claim.status.rawValue
+            download.bytesReceived = 0
+            download.expectedByteCount = nil
+            download.localURL = nil
+            download.contentHash = nil
+            download.failureKind = nil
+            download.updatedAt = now.date
+        } else { context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(claim)) }
+        ticket.requestSequence = (records.map(\.requestSequence).max() ?? 0) + 1
+        ticket.state = .running
+        // This sequence is a new user request, whose first transfer is one;
+        // previous request attempts cannot exhaust its interruption budget.
+        ticket.attemptCount = 1
+        ticket.failureKind = nil
+        ticket.lastFailureMessage = nil
+        ticket.nextEligibleAt = nil
+        ticket.runID = nil
+        ticket.requestedAt = now
+        ticket.updatedAt = now
+        record.apply(ticket)
+        try context.save()
+        return ticket
+    }
+
     private func transitionWorkTicket(
         kind: WorkTicketKind,
         subjectID: String,
@@ -429,9 +543,11 @@ extension LocalLibraryStore {
                 #if DEBUG
                 try Self.injectWorkTicketReconciliationFailure(for: .closingInterruptedRuns, subjectID: record.subjectID)
                 #endif
-                let attemptCount = record.attemptCount + 1
+                let quitInterruptedDownload = record.kind == WorkTicketKind.podcastDownload.rawValue
+                    && record.failureKind == WorkTicketFailure.interrupted.rawValue
+                let attemptCount = record.attemptCount + (quitInterruptedDownload ? 0 : 1)
                 let isTerminalClassification = record.failureKind == PodcastDownloadFailureKind.terminal.rawValue
-                if isTerminalClassification || attemptCount > 3 {
+                if isTerminalClassification || (quitInterruptedDownload ? attemptCount >= 3 : attemptCount > 3) {
                     record.state = WorkTicketState.failed.rawValue
                     record.failureKind = WorkTicketFailure.interrupted.rawValue
                 } else {

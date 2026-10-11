@@ -183,7 +183,7 @@ extension WiltedMacModel {
                     for itemID in forcedRedownloadEpisodeIDs {
                         guard !Task.isCancelled else { return }
                         guard let episode = self.episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
-                        self.downloadEpisode(episode, ignoringExisting: true)
+                        self.downloadEpisode(episode, ignoringExisting: true, automaticRecovery: true)
                         if let task = self.podcastDownloadTasks[episode.id] {
                             _ = try? await task.value
                         }
@@ -415,6 +415,10 @@ extension WiltedMacModel {
                 deviceID: "mac"
             )
         }
+        playback?.automaticPodcastQueueAdvancePredicate = { [weak self] itemID in
+            // Books retain their existing queue completion policy. Podcasts use Ready order.
+            self?.episodes.first(where: { $0.id == itemID.rawValue })?.isAudiobook == true
+        }
         playback?.defaultRate = Float(playbackRate)
         playback?.episodeEligibilityPredicate = { [weak self] itemID in
             guard let self else { return false }
@@ -431,12 +435,9 @@ extension WiltedMacModel {
         playback?.podcastStateHandler = { [weak self] itemID, fault in
             self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
         }
-        // Fires for every podcast completion, including the auto-advance
-        // case that never reaches `handlePodcastPlaybackFinished` (that one
-        // only fires when nothing was queued behind it). Retirement alone,
-        // not queue removal: this runs mid-suspension inside the
-        // controller's own completion handling, before it re-reads queue
-        // state, and mutating the queue here would race that read.
+        // Retire every durable podcast completion. The Mac owns natural-end
+        // selection through the finish callback below; this handler does not
+        // mutate queue membership while the controller is checkpointing.
         playback?.podcastCompletionHandler = { [weak self] episodeID in
             Task { [weak self] in
                 guard let self else { return }
@@ -444,15 +445,25 @@ extension WiltedMacModel {
                 await self.reloadLibraryRows()
             }
         }
-        // An episode that ends with nothing behind it stops the audio without
-        // changing which item is loaded. The on-screen readout would catch up
-        // on its next tick, but the system widget has no tick of its own, so
-        // without this it would sit there claiming to be playing. For a
-        // podcast episode this is also the only signal that the Producer's
-        // own Up Next queue had nothing to advance into, which is where
-        // continuing across the Larder picks up.
+        // The controller's Mac policy stops at every natural podcast end so
+        // the model can choose the first Ready row, including earlier entries.
+        // Playlist and non-podcast completion remain guarded by the model.
+        playback?.podcastNaturalCompletionHandlerFactory = { [weak self] itemID in
+            guard let self, self.isPodcastPlayback, !self.playlistSessionIsCurrent,
+                  self.episodes.first(where: { $0.id == itemID.rawValue })?.isAudiobook != true else { return nil }
+            let advance = self.beginAutomaticAdvance()
+            let keepsFinishedOnPause = self.isLarderQueuePlayback
+            return { [weak self] in
+                self?.continueNaturalPodcastEnd(finishedID: itemID.rawValue, advance: advance,
+                                               keepsFinishedOnPause: keepsFinishedOnPause)
+            }
+        }
         playback?.playbackDidFinishHandler = { [weak self] in
-            self?.handlePodcastPlaybackFinished()
+            guard let self else { return }
+            // Podcasts use the EOF-captured owner; the legacy observer still handles playlist ends.
+            if self.playlistSessionIsCurrent || !self.isPodcastPlayback {
+                self.handlePodcastPlaybackFinished()
+            }
         }
         let resolvedPodcastDownloadTransportFactory: WiltedMacPodcastDownloadTransportFactory?
         if let podcastDownloadTransportFactory {

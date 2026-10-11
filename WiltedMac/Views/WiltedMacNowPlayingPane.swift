@@ -94,9 +94,10 @@ struct WiltedMacNowPlayingPane: View {
     }
 
     private var playing: some View {
-        VStack(spacing: WiltedTheme.Spacing.large) {
+        VStack(spacing: WiltedTheme.Spacing.medium) {
             header
             transportRow
+            WiltedMacSpeedSaveLine(model: model)
             scrubber
             if showsStatus {
                 HStack(spacing: WiltedTheme.Spacing.small) {
@@ -109,7 +110,7 @@ struct WiltedMacNowPlayingPane: View {
             }
             tabs
         }
-        .padding(WiltedTheme.Spacing.xLarge)
+        .padding(WiltedTheme.Spacing.large)
         .frame(maxWidth: 720)
         .frame(maxWidth: .infinity)
     }
@@ -122,13 +123,13 @@ struct WiltedMacNowPlayingPane: View {
     // MARK: Header
 
     private var header: some View {
-        VStack(spacing: WiltedTheme.Spacing.medium) {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
             artwork
-            VStack(spacing: WiltedTheme.Spacing.xSmall) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(title)
                     .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
                     .lineLimit(2)
                     .accessibilityIdentifier("wilted-player-item-title")
                 Text(detail)
@@ -136,16 +137,17 @@ struct WiltedMacNowPlayingPane: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .lineLimit(1)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     @ViewBuilder private var artwork: some View {
-        let side = WiltedTheme.scaled(110, scale: model.textScale)
+        let side = WiltedTheme.scaled(48, scale: model.textScale)
         if let url = model.currentEpisode?.artworkURL {
             AsyncImage(url: url) { image in
                 image.resizable().scaledToFill()
             } placeholder: {
-                WiltedProduceTile(symbol: .cabbage, size: 110)
+                WiltedProduceTile(symbol: .cabbage, size: 48)
             }
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: WiltedTheme.Radius.card))
@@ -155,7 +157,7 @@ struct WiltedMacNowPlayingPane: View {
             )
             .accessibilityHidden(true)
         } else {
-            WiltedProduceTile(symbol: model.currentEpisode == nil ? .lettuce : .cabbage, size: 110)
+            WiltedProduceTile(symbol: model.currentEpisode == nil ? .lettuce : .cabbage, size: 48)
                 .accessibilityLabel("Playback artwork unavailable")
         }
     }
@@ -174,54 +176,47 @@ struct WiltedMacNowPlayingPane: View {
     // MARK: Transport
 
     private var transportRow: some View {
-        VStack(spacing: WiltedTheme.Spacing.small) {
-            HStack(spacing: WiltedTheme.Spacing.large) {
-                transport("backward.end.fill", label: "Previous episode", id: "wilted-player-previous") {
-                    model.previousPlayback()
-                }
-                .disabled(!model.canSelectPreviousEpisode)
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
-                transport("gobackward.15", label: "Rewind 15 seconds", id: WiltedScreenCopy.playerRewindIdentifier) {
-                    model.rewind()
-                }
-                .keyboardShortcut(.leftArrow, modifiers: .command)
-                transport(
-                    model.isPlaying ? "pause.circle.fill" : "play.circle.fill",
-                    label: model.isPlaying ? "Pause" : "Play",
-                    id: WiltedScreenCopy.playerPlayPauseIdentifier,
-                    size: 48
-                ) {
-                    model.togglePlayback()
-                }
-                .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                .onKeyPress(.space) {
-                    model.togglePlayback()
-                    return .handled
-                }
-                transport("goforward.30", label: "Skip forward 30 seconds", id: WiltedScreenCopy.playerForwardIdentifier) {
-                    model.forward()
-                }
-                .keyboardShortcut(.rightArrow, modifiers: .command)
-                transport("forward.end.fill", label: "Next episode", id: "wilted-player-next") {
-                    model.nextPlayback()
-                }
-                .disabled(!model.canSelectNextEpisode)
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            transport("backward.end.fill", label: "Previous episode", id: "wilted-player-previous") {
+                model.previousPlayback()
             }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("wilted-player-keyboard-transports")
-
-            // One line when the pane has the room; the share control says "No episode page" in
-            // words, which can push the row past a narrow pane, so it then wraps.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: WiltedTheme.Spacing.medium) { actionItems }
-                WiltedMacFlowLayout(spacing: WiltedTheme.Spacing.medium) { actionItems }
+            .disabled(!model.canSelectPreviousEpisode)
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
+            transport("gobackward.15", label: "Rewind 15 seconds", id: WiltedScreenCopy.playerRewindIdentifier) {
+                model.rewind()
             }
-            .controlSize(.regular)
+            .keyboardShortcut(.leftArrow, modifiers: .command)
+            transport(
+                model.isPlaying ? "pause.circle.fill" : "play.circle.fill",
+                label: model.isPlaying ? "Pause" : "Play",
+                id: WiltedScreenCopy.playerPlayPauseIdentifier,
+                size: 48
+            ) {
+                model.togglePlayback()
+            }
+            .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+            .onKeyPress(.space) {
+                model.togglePlayback()
+                return .handled
+            }
+            transport("goforward.30", label: "Skip forward 30 seconds", id: WiltedScreenCopy.playerForwardIdentifier) {
+                model.forward()
+            }
+            .keyboardShortcut(.rightArrow, modifiers: .command)
+            transport("forward.end.fill", label: "Next episode", id: "wilted-player-next") {
+                model.nextPlayback()
+            }
+            .disabled(!model.canSelectNextEpisode)
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
+            speedControl
+            overflowMenu
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-player-keyboard-transports")
+        .controlSize(.regular)
     }
 
-    @ViewBuilder private var actionItems: some View {
+    private var speedControl: some View {
         Picker("Speed", selection: Binding(
             get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
         )) {
@@ -232,22 +227,33 @@ struct WiltedMacNowPlayingPane: View {
         .labelsHidden()
         .fixedSize()
         .accessibilityLabel("Speed")
+        .help("Playback speed")
         .accessibilityIdentifier("wilted-player-speed")
-        WiltedMacSpeedSaveLine(model: model)
+    }
 
-        Button("Restart") { model.restartPlayback() }
-            .keyboardShortcut("r", modifiers: .command)
-            .accessibilityIdentifier("wilted-player-restart")
-        Button(model.playbackCompletionIsSettled ? "Completed" : "Mark completed") {
-            model.markCurrentPlaybackCompleted()
+    private var overflowMenu: some View {
+        Menu {
+            Button("Restart") { model.restartPlayback() }
+                .keyboardShortcut("r", modifiers: .command)
+                .accessibilityIdentifier("wilted-player-restart")
+            Button(model.playbackCompletionIsSettled ? "Completed" : "Mark completed") {
+                model.markCurrentPlaybackCompleted()
+            }
+            .disabled(model.playbackCompletionIsSettled)
+            .accessibilityIdentifier("wilted-player-mark-completed")
+            if model.audioRouteFault {
+                Button("Recover audio") { model.recoverAudioRoute() }
+                    .accessibilityIdentifier("wilted-player-route-recovery")
+            }
+            share
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
-        .disabled(model.playbackCompletionIsSettled)
-        .accessibilityIdentifier("wilted-player-mark-completed")
-        if model.audioRouteFault {
-            Button("Recover audio") { model.recoverAudioRoute() }
-                .accessibilityIdentifier("wilted-player-route-recovery")
-        }
-        share
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("More playback actions")
+        .accessibilityLabel("More playback actions")
+        .accessibilityIdentifier("wilted-player-menu")
     }
 
     private var share: some View { WiltedMacPlaybackShareLink(model: model) }
@@ -268,6 +274,7 @@ struct WiltedMacNowPlayingPane: View {
                 }
         }
         .buttonStyle(.borderless)
+        .help(busy ? model.playbackCommands.pending?.message ?? label : label)
         .accessibilityLabel(label)
         .accessibilityValue(busy ? model.playbackCommands.pending?.message ?? "" : "")
         .accessibilityIdentifier(id)

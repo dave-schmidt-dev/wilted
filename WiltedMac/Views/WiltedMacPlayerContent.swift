@@ -398,14 +398,11 @@ struct WiltedMacPlaybackShareLink: View {
                 subject: Text(model.currentPlaybackShareTitle),
                 message: Text(model.currentPlaybackShareMessage)
             ) {
-                // Said where it is seen, not only in the tooltip: what goes out is the title and
-                // show, and the control says why.
-                Label(WiltedMacModel.noEpisodePageText, systemImage: "square.and.arrow.up")
-                    .lineLimit(1)
+                Image(systemName: "square.and.arrow.up")
             }
-            .help("Share title and show: \(WiltedMacModel.noEpisodePageText)")
-            .accessibilityLabel("Share title and show")
-            .accessibilityHint(WiltedMacModel.noEpisodePageText)
+            .help("Only title and show text is shared.")
+            .accessibilityLabel("Share")
+            .accessibilityHint("Only title and show text is shared.")
             .accessibilityIdentifier("wilted-player-share")
         }
         #if canImport(WiltedProducer)

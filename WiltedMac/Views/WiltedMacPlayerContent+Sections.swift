@@ -132,6 +132,7 @@ extension WiltedMacPlayerContent {
                 }
         }
         .buttonStyle(.borderless)
+        .help(busy ? model.playbackCommands.pending?.message ?? label : label)
         .accessibilityLabel(label)
         .accessibilityValue(busy ? model.playbackCommands.pending?.message ?? "" : "")
         .accessibilityIdentifier(id)

@@ -7,6 +7,7 @@ import WiltedProducer
 struct WiltedMacApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model: WiltedMacModel
+    @FocusedValue(\.wiltedLarderSearchFocus) private var focusLarderSearch: (() -> Void)?
     /// Owns `applicationShouldTerminate`, so a normal quit drains local work
     /// before the process exits (see `WiltedMacTerminationCoordinator`).
     @NSApplicationDelegateAdaptor(WiltedMacAppDelegate.self) private var appDelegate
@@ -105,6 +106,11 @@ struct WiltedMacApp: App {
                 }
         }
         .commands {
+            CommandGroup(after: .textEditing) {
+                Button("Find…") { focusLarderSearch?() }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .disabled(focusLarderSearch == nil)
+            }
             // New opens the Add sheet (B6.2 Task 3.1); the toolbar Add button carries no shortcut of its own.
             CommandGroup(replacing: .newItem) {
                 Button("Add\u{2026}") { model.presentAddSheet() }

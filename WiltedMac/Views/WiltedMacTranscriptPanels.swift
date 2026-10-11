@@ -19,10 +19,6 @@ struct WiltedMacTranscriptPanel: View {
         // scroll view would fight.
         if model.hasCurrentPlayback, transcript.isSynchronized {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                Text(transcript.disclosureTitle)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-now-playing-transcript")
                 WiltedSyncedTranscriptView(
                     cues: transcript.cues.map {
                         WiltedTranscriptCueLine(id: $0.id, startSeconds: $0.startSeconds, text: $0.text, speaker: $0.speaker)
@@ -41,6 +37,7 @@ struct WiltedMacTranscriptPanel: View {
                 .frame(height: viewportHeight)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("wilted-now-playing-transcript")
         } else {
             unsyncedTranscriptContent(transcript)
         }
@@ -53,15 +50,23 @@ struct WiltedMacTranscriptPanel: View {
                     Text(WiltedScreenCopy.nowPlayingEmptyDetailProducer)
                         .wiltedFont(.body)
                 } else {
-                    WiltedTranscriptSection(
-                        isReadable: transcript.isReadable,
-                        title: transcript.disclosureTitle,
-                        text: transcript.text,
-                        unavailableLabel: model.currentEpisode == nil
-                            ? transcript.unavailableLabel
-                            : "Transcript unavailable. Prepare this episode to add one.",
-                        identifier: "wilted-now-playing-transcript"
-                    )
+                    Group {
+                        if transcript.isReadable, let text = transcript.text {
+                            Text(text)
+                                .wiltedFont(.body)
+                                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Label(
+                                model.currentEpisode == nil ? transcript.unavailableLabel
+                                    : "Transcript unavailable. Prepare this episode to add one.",
+                                systemImage: "doc.text.magnifyingglass")
+                                .wiltedFont(.utility)
+                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        }
+                    }
+                    .accessibilityIdentifier("wilted-now-playing-transcript")
                     // Untimed prose has nowhere to put a marker in place, so
                     // the cuts are listed instead of dropped silently.
                     if !model.currentRemovedSpans.isEmpty {

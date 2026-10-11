@@ -174,7 +174,7 @@ extension WiltedVisualSystemTests {
         let larderRowRect = try actualLarderRowCaptureRect(
             larder, size: larderSize, bitmap: larderFrame, episode: larderEpisode)
         func rowPixels() throws -> Data {
-            try actualLarderRowPixels(larder, size: larderSize, rect: larderRowRect)
+            try actualLarderRowPixels(larder, size: larderSize, rect: larderRowRect, episode: larderEpisode)
         }
         let pausedRow = try rowPixels()
         let paused = try capture("paused")
@@ -244,7 +244,7 @@ extension WiltedVisualSystemTests {
         let larderRowRect = try actualLarderRowCaptureRect(
             larder, size: larderSize, bitmap: larderFrame, episode: episode)
         func rowPixels() throws -> Data {
-            try actualLarderRowPixels(larder, size: larderSize, rect: larderRowRect)
+            try actualLarderRowPixels(larder, size: larderSize, rect: larderRowRect, episode: episode)
         }
         let idleRow = try rowPixels()
         let idle = try capture("idle")
@@ -285,18 +285,26 @@ extension WiltedVisualSystemTests {
 
     @MainActor
     private func actualLarderRowPixels(
-        _ view: WiltedMacLarderView, size: CGSize, rect: CGRect
+        _ view: WiltedMacLarderView, size: CGSize, rect: CGRect, episode: WiltedMacEpisode
     ) throws -> Data {
         let bitmap = try WiltedMacHeadless.render(view, size: size)
         let image = try XCTUnwrap(bitmap.cgImage?.cropping(to: rect))
         let row = NSBitmapImageRep(cgImage: image)
-        // The 28pt Play now slot follows the 58pt trailing actions, one 8pt gap,
-        // and the view's 16pt destination and card insets.
+        let control = view.nextStepControl(episode, group: .playable).fixedSize()
+        let host = NSHostingView(rootView: control)
+        host.layoutSubtreeIfNeeded()
+        let actionSize = host.fittingSize
+        XCTAssertEqual(actionSize, CGSize(width: WiltedMacLarderView.readyActionSlotWidth, height: 32),
+                       "measure the installed fixed action, rather than the retired text button")
+        // The native action follows the shipping trailing slot and gap, inside destination/card insets.
+        let trailingInset = 2 * WiltedTheme.Spacing.large + WiltedMacLarderView.trailingActionSlotsWidth
+            + WiltedTheme.Spacing.small
         let playSlot = NSRect(
-            x: CGFloat(row.pixelsWide - 126), y: 0, width: 28, height: CGFloat(row.pixelsHigh)
+            x: CGFloat(row.pixelsWide) - trailingInset - actionSize.width,
+            y: 0, width: actionSize.width, height: CGFloat(row.pixelsHigh)
         )
         XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: row, region: playSlot), 4,
-                             "The visible Play now control must be painted in the captured row")
+                             "The visible fixed Play action must be painted in the captured row")
         return Data(bytes: try XCTUnwrap(row.bitmapData), count: row.bytesPerRow * row.pixelsHigh)
     }
 

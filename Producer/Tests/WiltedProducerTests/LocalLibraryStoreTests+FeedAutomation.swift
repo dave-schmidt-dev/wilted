@@ -30,7 +30,7 @@ final class LocalLibraryFeedAutomationTests: XCTestCase {
             }
             XCTAssertEqual(try LocalLibraryStoreCompatibilityTests.sha256(of: backup),
                            try LocalLibraryStoreCompatibilityTests.sha256(of: source))
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(17))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(18))
             let after = try LocalLibraryStore.tableRowCounts(at: copied)
             for (table, count) in before { XCTAssertEqual(after[table], count, "\(name): \(table)") }
         }

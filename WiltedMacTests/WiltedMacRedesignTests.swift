@@ -23,7 +23,7 @@ final class WiltedMacRedesignTests: XCTestCase {
             let size = CGSize(width: width, height: 1_400)
             let text = try WiltedMacHeadless.recognizedText(view, size: size).joined(separator: " ")
             XCTAssertEqual(text.contains("Audio in Larder:"), summaryExpected, "\(name): \(text)")
-            XCTAssertEqual(text.contains("Ready:"), summaryExpected, "\(name): \(text)")
+            XCTAssertFalse(text.contains("Ready:"), "\(name): the lifecycle filter already owns this count: \(text)")
             XCTAssertTrue(text.contains("Ready"), "section/standing total remains: \(text)")
             if name == "full" {
                 XCTAssertTrue(text.localizedCaseInsensitiveContains("Needs Prep"), text)
@@ -243,13 +243,29 @@ final class WiltedMacRedesignTests: XCTestCase {
         XCTAssertEqual(state.tab, .notes)
     }
 
-    /// Both apps share one search prompt, short enough for the Mac field.
-    func testSearchPromptIsTheSameOnBothApps() throws {
+    func testMacSearchHasNoPlaceholderAndRetainsItsAccessibleLabel() throws {
+        let source = try WiltedMacHeadless.viewSource("WiltedMacLarderView.swift")
+        XCTAssertTrue(source.contains("TextField(\"\", text: $model.librarySearchQuery)"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Search episodes\")"))
+        XCTAssertTrue(source.contains(".focused($isSearchFocused)"))
+        XCTAssertTrue(source.contains(".focusedSceneValue(\\.wiltedLarderSearchFocus, { isSearchFocused = true })"))
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        for path in ["WiltedMac/Views/WiltedMacLarderView.swift", "WiltediOS/Library/LibraryListView.swift"] {
-            let source = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
-            XCTAssertTrue(source.contains("prompt: \"Search episodes\""), path)
-        }
+        let app = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacApp.swift"), encoding: .utf8)
+        XCTAssertTrue(app.contains("Button(\"Find…\") { focusLarderSearch?() }"))
+        XCTAssertTrue(app.contains(".keyboardShortcut(\"f\", modifiers: .command)"))
+        XCTAssertTrue(app.contains(".disabled(focusLarderSearch == nil)"))
+
+    }
+
+    func testEmptyArticlesShowTheToolbarAddHintInsteadOfAnotherButton() throws {
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("articles-hint"),
+                                   preferences: WiltedMacTestPreferences.ephemeral())
+        let view = WiltedMacLarderView(model: model, paneMode: .side).addArticleButton
+        let text = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 400, height: 90)).joined(separator: " ")
+        XCTAssertTrue(text.contains("Add articles with +"), text)
+        XCTAssertTrue(text.contains("N"), text)
+        let source = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
+        XCTAssertFalse(source.contains("wilted-larder-add-button"))
     }
 
     /// The list is one view in both compositions, so its scroll position is
@@ -372,13 +388,14 @@ final class WiltedMacRedesignTests: XCTestCase {
         XCTAssertEqual(WiltedMacNavigation.settings.symbolName, WiltedNavigation.settings.symbolName)
     }
 
-    /// The pane's artwork is a small cover, not the page's centerpiece.
-    func testPaneArtworkIsHalfTheOriginalSide() throws {
+    /// Selected B uses a compact 48-point cover to leave height for the reader.
+    func testPaneArtworkUsesSelectedBCompact48PointSide() throws {
         let source = try String(
             contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
                 .deletingLastPathComponent().appendingPathComponent("WiltedMac/Views/WiltedMacNowPlayingPane.swift"),
             encoding: .utf8)
-        XCTAssertTrue(source.contains("WiltedTheme.scaled(110, scale: model.textScale)"))
+        XCTAssertTrue(source.contains("WiltedTheme.scaled(48, scale: model.textScale)"))
+        XCTAssertFalse(source.contains("WiltedTheme.scaled(110, scale: model.textScale)"))
         XCTAssertFalse(source.contains("size: 220"))
     }
 }

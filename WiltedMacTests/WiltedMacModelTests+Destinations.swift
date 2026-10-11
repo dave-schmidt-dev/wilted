@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import CryptoKit
 import Foundation
 import XCTest
@@ -260,7 +262,28 @@ extension WiltedMacModelTests {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let view = try WiltedMacSource.views(root: root)
         XCTAssertTrue(view.contains("model.preparationFraction(forEpisode: episode.id)"))
-        XCTAssertTrue(view.contains("wilted-larder-progress-"))
+        XCTAssertTrue(view.contains("ProgressView(value: fraction).frame(width: 28)"))
+        XCTAssertTrue(view.contains("wilted-larder-stop-"))
+        var painted: [Data] = []
+        for fraction in [0.25, 0.75] {
+            model.processorRuns = [WiltedMacProcessorRun(
+                id: "known-progress", itemID: preparing.id, isPodcast: true, title: preparing.title,
+                source: preparing.feedTitle, stage: "preparing", detail: "Preparing", fraction: fraction,
+                outcome: .running, updatedAt: Date(timeIntervalSince1970: 1_700_000_000))]
+            XCTAssertEqual(model.preparationFraction(forEpisode: preparing.id), fraction)
+            let control = WiltedMacLarderView(model: model, paneMode: .side)
+                .nextStepControl(preparing, group: .downloaded).fixedSize()
+            let host = NSHostingView(rootView: control)
+            host.layoutSubtreeIfNeeded()
+            XCTAssertEqual(host.fittingSize, CGSize(width: WiltedMacLarderView.readyActionSlotWidth, height: 32))
+            let bitmap = try WiltedMacHeadless.render(control.padding(24), size: CGSize(width: 112, height: 80))
+            XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: bitmap), 4, "the actual progress control is painted")
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            painted.append(png)
+            let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+            attachment.name = "larder-preparing-fraction-\(fraction)"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        XCTAssertNotEqual(painted[0], painted[1], "changing known progress changes the actual fixed-slot pixels")
     }
 
     func testASelectedLarderFilterRendersExactlyThatGroup() {

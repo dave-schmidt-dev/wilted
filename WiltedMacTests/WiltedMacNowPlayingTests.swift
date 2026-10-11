@@ -3,6 +3,8 @@ import Foundation
 import XCTest
 import AppKit
 import MediaPlayer
+import Vision
+import CoreML
 import WiltedLibrary
 @testable import WiltedMac
 
@@ -293,27 +295,32 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         model.installPlaybackStateForTesting(episode: linkless, isPlaying: false, position: 0, duration: 1_800)
 
         XCTAssertNil(model.currentPlaybackShareURL, "the feed address is not the episode's page")
-        XCTAssertEqual(model.currentPlaybackShareText, "The Cost of Everything — Quarterly")
-        XCTAssertEqual(model.currentPlaybackShareMessage, "No episode page")
+        XCTAssertEqual(model.currentPlaybackShareText, "The Cost of Everything - Quarterly")
+        XCTAssertEqual(model.currentPlaybackShareMessage, "The Cost of Everything · Quarterly")
+        XCTAssertFalse(model.currentPlaybackShareMessage.contains("Only title and show text is shared."),
+                       "control guidance must not be sent as the shared message")
         XCTAssertFalse((model.currentPlaybackShareText ?? "").contains(waveformFeed.absoluteString))
     }
 
-    /// The fallback is said where it is seen: the two renders differ, not just the tooltip.
-    func testTheNoPageFallbackIsVisibleTextAndAPageIsNot() throws {
+    /// Both destinations keep the normal Share control; the fallback explains its payload in help.
+    func testTextFallbackKeepsTheNormalShareControlAndExplainsItsPayloadInHelp() throws {
         let (model, _, _) = makeModel()
         var linked = episode()
         linked.episodeLink = waveformPage
         model.installPlaybackStateForTesting(episode: linked, isPlaying: false, position: 0, duration: 1_800)
         let withPage = try WiltedMacHeadless.recognizedText(
             WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 320, height: 90))
-        XCTAssertFalse(withPage.contains { $0.contains("No episode page") })
+        XCTAssertFalse(withPage.contains { $0.contains("Only title") })
 
         let linkless = episode(id: "linkless-share")
         model.installPlaybackStateForTesting(episode: linkless, isPlaying: false, position: 0, duration: 1_800)
         let without = try WiltedMacHeadless.recognizedText(
             WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 320, height: 90))
-        XCTAssertTrue(without.contains { $0.contains("No episode page") }, "got \(without)")
-        XCTAssertNotEqual(withPage, without, "the two controls read differently")
+        XCTAssertEqual(withPage, without, "the fallback must retain the normal Share presentation, got \(without)")
+        let source = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
+        XCTAssertTrue(source.contains(".help(\"Only title and show text is shared.\")"))
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: ".accessibilityLabel(\"Share\")", in: source), 2,
+                       "both destinations have the same normal accessible Share name")
     }
 
     func testAnArticleKeepsItsCanonicalURL() {
@@ -334,6 +341,76 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         let player = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "currentPlaybackShareURL", in: player), 1,
                        "only the shared control reads it")
+    }
+
+    func testSelectedBPaneKeepsHeaderAndSpeedAboveTheReaderAtNarrowAndFullWidths() throws {
+        let (model, _, _) = makeModel()
+        let item = WiltedMacEpisode(
+            id: "selected-b-quiet-machines", title: "Quiet Machines", feedTitle: "Field Notes", summary: "A quiet workshop.",
+            notes: WiltedMacModel.fixtureEpisodeNotes, artworkURL: nil,
+            releasedAt: Date(timeIntervalSince1970: 1_699_827_200), durationSeconds: 1482, playbackSeconds: 90,
+            downloadState: .completed, preparationState: .prepared(summary: "Ready"))
+        model.installPlaybackStateForTesting(episode: item, isPlaying: true, position: 90, duration: 1482)
+        model.playbackRate = 1.25
+        model.currentTranscript = WiltedMacTranscript(availability: .available, text: "The small pump keeps the garden quiet.",
+            cues: [WiltedMacTranscriptCue(id: 0, startSeconds: 0, endSeconds: 200,
+                                         text: "The small pump keeps the garden quiet.", speaker: "Host")],
+            timingSource: "Synthetic fixture")
+        for width in [CGFloat(360), 640] {
+            for scheme in [ColorScheme.light, .dark] {
+                let bitmap = try WiltedMacHeadless.render(
+                    WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))
+                        .environment(\.colorScheme, scheme), size: CGSize(width: width, height: 740))
+                XCTAssertEqual(bitmap.pixelsWide, Int(width))
+                XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: bitmap), 8)
+                let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+                attachment.name = "selected-B-\(Int(width))-\(scheme)"; attachment.lifetime = .keepAlways; add(attachment)
+                let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
+                request.recognitionLanguages = ["en-US"]; request.usesLanguageCorrection = false
+                let devices = try request.supportedComputeStageDevices
+                let cpu = try XCTUnwrap(devices[.main]?.first { device in
+                    if case .cpu = device { return true }
+                    return false
+                }, "accurate OCR must vend a supported main-stage CPU device")
+                request.setComputeDevice(cpu, for: .main)
+                try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
+                let lines = (request.results ?? []).compactMap { observation -> (text: String, top: CGFloat)? in
+                    guard let text = observation.topCandidates(1).first?.string else { return nil }
+                    return (text, (1 - observation.boundingBox.maxY) * 740)
+                }
+                let context = "\(width)/\(scheme): \(lines)"
+                let title = try XCTUnwrap(lines.first { $0.text.contains("Quiet Machines") }, context)
+                // Vision can merge transport symbols into the picker line. Locate only the
+                // numeric token, then independently require its isolated pixels to read 1.25.
+                let speedBounds = try XCTUnwrap((request.results ?? []).compactMap { observation -> CGRect? in
+                    guard let text = observation.topCandidates(1).first,
+                          let range = text.string.range(of: #"(?<![0-9])1[.,]?25(?:[×xх])?(?![0-9])"#,
+                                                        options: .regularExpression) else { return nil }
+                    return try text.boundingBox(for: range)?.boundingBox
+                }.first, context)
+                let speedCrop = CGRect(x: speedBounds.minX * width - 4,
+                                       y: (1 - speedBounds.maxY) * 740 - 4,
+                                       width: speedBounds.width * width + 8,
+                                       height: speedBounds.height * 740 + 8)
+                    .integral.intersection(CGRect(x: 0, y: 0, width: width, height: 740))
+                let speedImage = try XCTUnwrap(bitmap.cgImage?.cropping(to: speedCrop), context)
+                try VNImageRequestHandler(cgImage: speedImage).perform([request])
+                let speedLines = (request.results ?? []).compactMap { observation -> (text: String, top: CGFloat)? in
+                    guard let text = observation.topCandidates(1).first?.string else { return nil }
+                    return (text, speedCrop.minY + (1 - observation.boundingBox.maxY) * speedCrop.height)
+                }
+                let speed = try XCTUnwrap(speedLines.first { $0.text.contains("1.25") },
+                                          "isolated speed must read the exact rate: \(context), \(speedLines)")
+                let reader = try XCTUnwrap(lines.first { $0.text.contains("Transcript") }, context)
+                XCTAssertLessThan(title.top, 72, "compact48-point header: \(context)")
+                XCTAssertLessThan(speed.top, 130, "speed shares the first transport row: \(context)")
+                XCTAssertLessThan(reader.top, 225, "compact controls leave reader height: \(context)")
+                XCTAssertFalse(lines.contains { $0.text.contains("Restart") || $0.text.contains("Mark completed") },
+                               "secondary actions stay inside overflow: \(context)")
+                XCTAssertTrue(lines.contains { $0.text.contains("garden quiet") }, context)
+            }
+        }
     }
 
     // MARK: - Fixtures

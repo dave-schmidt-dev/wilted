@@ -17,8 +17,9 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_cache="$repo_root/scripts/build-with-cache.py"
+tmp_root=''
+trap 'if [[ -n "$tmp_root" ]]; then rm -rf "$tmp_root"; fi' EXIT
 tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-ios-snapshots.XXXXXX")"
-trap 'rm -rf "$tmp_root"' EXIT
 # shellcheck source=lib/simctl_gate_lib.sh
 source "$repo_root/scripts/lib/simctl_gate_lib.sh"
 
@@ -46,7 +47,8 @@ stale_simulators_swept="$(gate_sweep wilted)"
 status "record.simulator.sweep wilted_deleted=${stale_simulators_swept:-0}"
 
 root="$tmp_root/record-root"
-mkdir -p "$root/WiltedKit" "$root/Producer" "$root/CloudSync" "$root/Playback"
+products_dir="$tmp_root/products"
+mkdir -p "$products_dir" "$root/WiltedKit" "$root/Producer" "$root/CloudSync" "$root/Playback"
 cp "$repo_root/project.yml" "$root/project.yml"
 cp -R "$repo_root/Shared" "$repo_root/WiltedMac" "$repo_root/WiltedMacTests" \
   "$repo_root/WiltedMacUITests" "$repo_root/WiltediOS" "$repo_root/WiltediOSTests" \
@@ -80,11 +82,12 @@ fi
 
 status "record.start device=iPhone 17 Pro runtime=$runtime methods=${*:-all}"
 gate_ui_test_lock --label 'Wilted iOS snapshot recording' --simulator-udid "$udid" \
-  env TEST_RUNNER_WILTED_RECORD_SNAPSHOTS=1 python3 "$build_cache" run xcode ios-snapshot-recording -- xcodebuild test \
+  env TEST_RUNNER_WILTED_RECORD_SNAPSHOTS=1 python3 "$build_cache" run xcode native-ios-pixel-snapshot-tests -- xcodebuild test \
   -project "$root/Wilted.xcodeproj" \
   -scheme WiltediOS \
   -destination "platform=iOS Simulator,id=$udid" \
   -parallel-testing-enabled NO \
+  "CONFIGURATION_BUILD_DIR=$products_dir/\$(CONFIGURATION)\$(EFFECTIVE_PLATFORM_NAME)" \
   "${only[@]}" 2>&1 | tee "$tmp_root/record.log" >&2 || {
     python3 - "$tmp_root/expected.json" "$root/$snapshots" "$tmp_root/record.log" <<'PYFAILED'
 import json, re, sys

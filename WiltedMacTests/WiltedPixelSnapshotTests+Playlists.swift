@@ -31,7 +31,7 @@ extension WiltedPixelSnapshotTests {
             let width = WiltedTheme.scaled(WiltedMacShellLayout.sidebarIdealWidth, scale: model.textScale)
             let content = VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                 sidebar.row(.larder)
-                sidebar.playlistsHeader
+                sidebar.playlistsHeader(scheme: appearance == .dark ? .dark : .light)
                 ForEach(model.playlists.playlists, id: \.id) { sidebar.playlistRow($0) }
                 Spacer(minLength: 0)
             }
