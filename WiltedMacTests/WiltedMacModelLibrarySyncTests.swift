@@ -371,6 +371,42 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTAssertFalse(model.startLibrarySyncIfEnabled(environment: ["WILTED_LIBRARY_SYNC": "0"]))
     }
 
+    func testCommittedPodcastAndArticleRenamesRequestPublisherWithPollerStopped() async throws {
+        for article in [false, true] {
+            let (model, store) = try await bootstrapped("rename-publisher-\(article)")
+            let url = URL(string: "https://feeds.example.test/publish-\(article).xml")!
+            let id: ItemID
+            if article {
+                let feed = try ArticleFeed(canonicalURL: url, title: "Publisher", createdAt: created)
+                id = feed.itemID
+                try await store.save(articleFeed: feed)
+            } else {
+                id = try ItemID.derivePodcastFeed(from: url)
+                try await store.save(feed: PodcastFeed(itemID: id, canonicalURL: url, title: "Publisher", createdAt: created))
+            }
+            try await store.save(subscription: PodcastSubscription(feedID: id, subscribedAt: created))
+            await model.reloadLibraryRows()
+            let row = try XCTUnwrap(model.subscriptions.first { $0.id == id.rawValue })
+            let server = InMemoryLibraryServer(writerDeviceID: "mac-test")
+            let transport = InMemoryLibraryTransport(deviceID: "mac-test", server: server)
+            XCTAssertTrue(model.startLibrarySyncIfEnabled(environment: flagOn, transport: transport, debounce: .milliseconds(1)))
+            await model.librarySyncController?.inbound?.stop()?.value
+            XCTAssertNil(model.librarySyncController?.inbound?.poller)
+            try await eventually("initial publisher title") { await server.currentSnapshot.sources[id]?.title == "Publisher" }
+            let gate = FeedRenameGate()
+            model.subscriptionWriteHookForTesting = { await gate.hold() }
+            let writer = Task { try await model.renameSubscription(row, to: "Saved owner") }
+            await gate.waitForEntries(1)
+            await model.librarySyncController?.syncNow().value
+            let blocked = await server.currentSnapshot
+            XCTAssertEqual(blocked.sources[id]?.title, "Publisher", "an optimistic pass cannot publish an unsaved alias")
+            await gate.release()
+            try await writer.value
+            try await eventually("post-commit alias without polling") { await server.currentSnapshot.sources[id]?.title == "Saved owner" }
+            await model.close()
+        }
+    }
+
     func testPublisherRepublishesOnQueueRemovalAndPlaybackChanges() async throws {
         let (model, store) = try await bootstrapped("library-sync-publish")
         let ids = try await seedEpisodes(store)

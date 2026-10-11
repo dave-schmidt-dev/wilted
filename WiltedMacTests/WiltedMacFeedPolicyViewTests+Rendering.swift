@@ -1,10 +1,124 @@
 import SwiftUI
 import Vision
 import XCTest
+import WiltedDomain
+import WiltedProducer
 @testable import WiltedMac
 
 @MainActor
 extension WiltedMacFeedPolicyViewTests {
+    func testPolicyAndRuleWritesDuringReloadRemainVisibleAndDurable() async throws {
+        let model = await WiltedMacHeadless.model(
+            self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "feed-policy-write-race"
+        )
+        addTeardownBlock { await model.close() }
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let feedID = try ItemID(rawValue: subscription.id)
+        let store = try XCTUnwrap(model.store)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
+
+        let policyGate = FeedPolicyReloadGate()
+        board.afterFeedPolicyReadHookForTesting = { _ in await policyGate.pause() }
+        let policyReload = Task { await board.reload() }
+        await policyGate.waitUntilEntered()
+        XCTAssertTrue(board.update(subscription.id, keptLimit: .explicit(3)))
+        XCTAssertEqual(board.policy(for: subscription.id).keptLimit, .explicit(3))
+        await board.settle()
+        board.afterFeedPolicyReadHookForTesting = nil
+        await policyGate.release()
+        await policyReload.value
+        XCTAssertEqual(board.policy(for: subscription.id).keptLimit, .explicit(3))
+        let storedPolicy = try await store.feedAutomationPolicy(for: feedID)
+        XCTAssertEqual(storedPolicy.keptLimit, .explicit(3))
+
+        let rulesGate = FeedPolicyReloadGate()
+        board.afterFeedPolicyReadHookForTesting = { _ in await rulesGate.pause() }
+        let rulesReload = Task { await board.reload() }
+        await rulesGate.waitUntilEntered()
+        let savedRules = EpisodeMatchRules(rules: [
+            EpisodeMatchRule(field: .title, includePattern: "never matches", action: .skip)
+        ])
+        XCTAssertTrue(board.replaceRules(savedRules, for: subscription.id))
+        XCTAssertEqual(board.rules(for: subscription.id), savedRules)
+        await board.settle()
+        board.afterFeedPolicyReadHookForTesting = nil
+        await rulesGate.release()
+        await rulesReload.value
+        XCTAssertEqual(board.rules(for: subscription.id), savedRules)
+        let storedRules = try await store.episodeMatchRules(for: feedID)
+        XCTAssertEqual(storedRules, savedRules)
+    }
+
+    func testNewsWriteDuringReloadRemainsVisibleAndDurable() async throws {
+        let directory = wiltedTemporaryDirectory("feed-policy-news-race")
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/news.xml"))
+        let createdAt = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let articleFeed = try ArticleFeed(canonicalURL: feedURL, title: "News feed", createdAt: createdAt)
+        let feedID = articleFeed.itemID
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(articleFeed: articleFeed)
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: createdAt))
+                return store
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        addTeardownBlock { await model.close() }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        XCTAssertEqual(subscription.id, feedID.rawValue)
+        let store = try XCTUnwrap(model.store)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
+        XCTAssertTrue(board.isArticleFeed(feedID.rawValue))
+
+        let gate = FeedPolicyReloadGate()
+        board.afterFeedPolicyReadHookForTesting = { _ in await gate.pause() }
+        let reload = Task { await board.reload() }
+        await gate.waitUntilEntered()
+        XCTAssertTrue(board.setNews(true, for: feedID.rawValue))
+        XCTAssertTrue(board.isNews(feedID.rawValue))
+        await board.settle()
+        board.afterFeedPolicyReadHookForTesting = nil
+        await gate.release()
+        await reload.value
+
+        XCTAssertTrue(board.isNews(feedID.rawValue))
+        let storedNews = try await store.isNews(feedID: feedID)
+        XCTAssertTrue(storedNews)
+    }
+
+    func testCancelledPolicyReadReturnsToIdleAndAllowsReload() async throws {
+        let model = await WiltedMacHeadless.model(
+            self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "feed-policy-cancel"
+        )
+        addTeardownBlock { await model.close() }
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
+        let gate = FeedPolicyReloadGate()
+        board.afterFeedPolicyReadHookForTesting = { _ in
+            await gate.pause()
+            throw CancellationError()
+        }
+        let reload = Task { await board.reload() }
+        await gate.waitUntilEntered()
+        reload.cancel()
+        board.afterFeedPolicyReadHookForTesting = nil
+        await gate.release()
+        await reload.value
+
+        XCTAssertFalse(board.isLoading)
+        XCTAssertNil(board.loadFailureMessage)
+        XCTAssertTrue(board.isLoaded(subscription.id))
+        await board.reload()
+        XCTAssertEqual(board.loadState, .loaded)
+    }
+
     func testPreloadedCapacitySnapshotRemainsVisibleDuringBlockedReload() async throws {
         let model = await WiltedMacHeadless.model(
             self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "feed-policy-reload"

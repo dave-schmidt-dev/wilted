@@ -10,7 +10,8 @@ final class WiltedMacQuitUITests: XCTestCase {
         let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-ui-quit")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         let app = XCUIApplication()
-        addTeardownBlock { [root] in
+        addTeardownBlock { [weak self, root] in
+            if (self?.testRun?.totalFailureCount ?? 0) > 0 { self?.attachFixtureWindowIfAvailable(app) }
             if app.state != .notRunning { app.terminate() }
             try WiltedMacUITemporaryState.removeFixtureRoot(root)
         }
@@ -24,6 +25,7 @@ final class WiltedMacQuitUITests: XCTestCase {
         ]
         app.launch()
         app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "the fixture became foreground")
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "the fixture window appeared")
         XCTAssertTrue(waitFor(timeout: 30) { Self.events(journal).contains { $0["event"] == "ready" } },
                       "the fixture reported ready")
@@ -37,6 +39,20 @@ final class WiltedMacQuitUITests: XCTestCase {
         let playhead = try XCTUnwrap(events.last { $0["event"] == "playhead" })
         XCTAssertEqual(Double(playhead["position"] ?? ""), 37, "the drained playhead is the fixture's seek")
         XCTAssertGreaterThanOrEqual(Int(playhead["playedMilliseconds"] ?? "") ?? 0, 1_400)
+    }
+
+    /// Diagnostics are limited to the synthetic fixture window.
+    private func attachFixtureWindowIfAvailable(_ app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        guard window.exists else { return }
+        let hierarchy = XCTAttachment(string: window.debugDescription)
+        hierarchy.name = "Fixture window hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        let image = XCTAttachment(screenshot: window.screenshot())
+        image.name = "Fixture window"
+        image.lifetime = .keepAlways
+        add(image)
     }
 
     private func waitFor(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {

@@ -259,6 +259,8 @@ final class WiltedMacModel {
     var subscriptions: [WiltedMacSubscription] = []
     /// Per-feed optimistic names survive reloads until their tracked writer settles.
     var pendingFeedRenames: [String: WiltedMacFeedRenameState] = [:]
+    var feedRenameReadEpoch: UInt64 = 0
+    var feedRenameNeedsReload = false
     /// Read-order metadata only. A committed Feed decision advances this
     /// boundary so a snapshot that began beforehand cannot publish over it.
     var libraryReadEpoch: UInt64 = 0

@@ -27,7 +27,9 @@ final class WiltedMacFeedPolicyBoard {
     @ObservationIgnored private var editors: [String: WiltedMacFeedRulesEditor] = [:]
     @ObservationIgnored private var writeChain: Task<Void, Never>?
     @ObservationIgnored private var activeReloadID: UUID?
+    @ObservationIgnored private var mutationRevision: UInt64 = 0
     @ObservationIgnored var reloadReadHookForTesting: (@MainActor () async -> Void)?
+    @ObservationIgnored var afterFeedPolicyReadHookForTesting: (@MainActor (String) async throws -> Void)?
 
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
@@ -77,6 +79,8 @@ final class WiltedMacFeedPolicyBoard {
         do {
             guard isActiveReload(reloadID) else { return }
             let store = try await availableStore()
+            await settle()
+            let readRevision = mutationRevision
             await reloadReadHookForTesting?()
             var loaded: [String: FeedAutomationPolicy] = [:]
             var loadedRules: [String: EpisodeMatchRules] = [:]
@@ -90,15 +94,22 @@ final class WiltedMacFeedPolicyBoard {
                 }
                 do {
                     loaded[subscription.id] = try await store.feedAutomationPolicy(for: feedID)
+                    try await afterFeedPolicyReadHookForTesting?(subscription.id)
                     loadedRules[subscription.id] = try await store.episodeMatchRules(for: feedID)
+                } catch let error as CancellationError {
+                    throw error
                 } catch {
+                    if Task.isCancelled { throw CancellationError() }
                     throw LoadError.feedRead(subscription.title, error.localizedDescription)
                 }
             }
             let articleFeeds: [ArticleFeed]
             do {
                 articleFeeds = try await store.articleFeeds()
+            } catch let error as CancellationError {
+                throw error
             } catch {
+                if Task.isCancelled { throw CancellationError() }
                 throw LoadError.articleRead(error.localizedDescription)
             }
             var news: Set<String> = []
@@ -106,11 +117,21 @@ final class WiltedMacFeedPolicyBoard {
                 guard isActiveReload(reloadID) else { return }
                 do {
                     if try await store.isNews(feedID: feed.itemID) { news.insert(feed.itemID.rawValue) }
+                } catch let error as CancellationError {
+                    throw error
                 } catch {
+                    if Task.isCancelled { throw CancellationError() }
                     throw LoadError.articleRead(error.localizedDescription)
                 }
             }
+            await settle()
             guard isActiveReload(reloadID) else { return }
+            guard mutationRevision == readRevision else {
+                // A write landed during this read. Its optimistic value and durable write win;
+                // start a fresh read after the write settles instead of publishing stale data.
+                await reload()
+                return
+            }
             policies = loaded
             rules = loadedRules
             articleFeedIDs = Set(articleFeeds.map(\.itemID.rawValue))
@@ -198,6 +219,7 @@ final class WiltedMacFeedPolicyBoard {
     @discardableResult
     func setNews(_ value: Bool, for feedID: String) -> Bool {
         guard isLoaded(feedID), isArticleFeed(feedID) else { return false }
+        mutationRevision &+= 1
         if value { newsFeedIDs.insert(feedID) } else { newsFeedIDs.remove(feedID) }
         failedFeedIDs.remove(feedID)
         let previous = writeChain
@@ -246,6 +268,7 @@ final class WiltedMacFeedPolicyBoard {
     @discardableResult
     func replaceRules(_ next: EpisodeMatchRules, for feedID: String) -> Bool {
         guard isLoaded(feedID), (try? next.validate()) != nil else { return false }
+        mutationRevision &+= 1
         rules[feedID] = next
         failedFeedIDs.remove(feedID)
         let previous = writeChain
@@ -292,6 +315,7 @@ final class WiltedMacFeedPolicyBoard {
             autoPrepare: autoPrepare ?? current.autoPrepare, keptLimit: keptLimit ?? current.keptLimit
         )
         guard next != current else { return true }
+        mutationRevision &+= 1
         policies[feedID] = next
         failedFeedIDs.remove(feedID)
         // Only a change to what may be kept can open or close places.

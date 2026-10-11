@@ -398,6 +398,20 @@ final class WiltedMacSmokeUITests: XCTestCase {
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
+    /// Diagnostics are limited to the synthetic fixture window.
+    private func attachFixtureWindowIfAvailable(_ app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        guard window.exists else { return }
+        let hierarchy = XCTAttachment(string: window.debugDescription)
+        hierarchy.name = "Fixture window hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        let image = XCTAttachment(screenshot: window.screenshot())
+        image.name = "Fixture window"
+        image.lifetime = .keepAlways
+        add(image)
+    }
+
     private func launch(arguments: [String]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments + [
@@ -405,16 +419,19 @@ final class WiltedMacSmokeUITests: XCTestCase {
         ]
         app.launch()
         launchedFixtureApps.append(app)
-        // On macOS 27 a fixture app launched by XCUITest can stay inactive, and an inactive app
-        // exposes only its menu bar to accessibility, so bring it forward before looking for a window.
+        app.activate()
+        // Match the Chrome journey activation pattern; foreground and window
+        // readiness remain separate checks while this launch hypothesis is qualified.
         if !app.wait(for: .runningForeground, timeout: 10) {
             app.activate()
             guard app.wait(for: .runningForeground, timeout: 10) else {
+                attachFixtureWindowIfAvailable(app)
                 XCTFail("Fixture app did not reach runningForeground; observed state: \(app.state)")
                 fatalError("Fixture app did not become frontmost")
             }
         }
         guard app.windows.firstMatch.waitForExistence(timeout: 10) else {
+            attachFixtureWindowIfAvailable(app)
             XCTFail("Fixture app did not present a window; observed state: \(app.state)")
             fatalError("Fixture app window is unavailable")
         }
@@ -426,6 +443,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         do {
             let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-ui-test")
             addTeardownBlock { [weak self, root] in
+                if (self?.testRun?.totalFailureCount ?? 0) > 0 {
+                    self?.launchedFixtureApps.forEach { self?.attachFixtureWindowIfAvailable($0) }
+                }
                 self?.launchedFixtureApps.forEach { $0.terminate() }
                 try WiltedMacUITemporaryState.removeFixtureRoot(root)
             }

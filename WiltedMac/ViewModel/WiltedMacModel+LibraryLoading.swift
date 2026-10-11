@@ -162,13 +162,25 @@ extension WiltedMacModel {
     /// successful read produced, and replacing them with nothing because a
     /// refresh failed would take the library away over a transient error.
     func reloadLibraryRows() async {
-        guard let store, let values = try? await loadLibrary(from: store) else { return }
-        guard applyEpisodes(values.episodes) else { return }
-        articles = values.articles
-        subscriptions = values.subscriptions
-        pruneNavigationState()
-        // A sync that removed the selected playlist must not leave a blank destination.
-        if playlists.isLoaded { await loadPlaylists() }
+        guard let store else { return }
+        // Retry a rename-invalidated read once, using a fresh store snapshot and the same
+        // decision epoch guard. Reads rejected while a writer is pending wait for settlement.
+        for _ in 0..<2 {
+            guard let values = try? await loadLibrary(from: store) else { return }
+            guard applyEpisodes(values.episodes) else {
+                guard values.episodes.readEpoch < feedRenameReadEpoch else { return }
+                if !pendingFeedRenames.isEmpty {
+                    feedRenameNeedsReload = true
+                    return
+                }
+                continue
+            }
+            articles = values.articles
+            subscriptions = values.subscriptions
+            pruneNavigationState()
+            if playlists.isLoaded { await loadPlaylists() }
+            return
+        }
     }
 
     func loadLibrary(from store: LocalLibraryStore) async throws
@@ -362,8 +374,8 @@ extension WiltedMacModel {
                 id: dismissal.episodeID.rawValue,
                 feedID: dismissal.feedID?.rawValue,
                 title: dismissal.title ?? "Removed podcast episode",
-                feedTitle: dismissal.feedID.flatMap { displayNames[$0] ?? feeds[$0]?.title }
-                    ?? factualEpisode.flatMap { displayNames[$0.feedID] ?? feeds[$0.feedID]?.title },
+                feedTitle: dismissal.feedID.flatMap { feedRenameHistoryTitle($0.rawValue, stored: displayNames[$0], publisherTitle: feeds[$0]?.title) }
+                    ?? factualEpisode.flatMap { feedRenameHistoryTitle($0.feedID.rawValue, stored: displayNames[$0.feedID], publisherTitle: feeds[$0.feedID]?.title) },
                 publishedAt: factualEpisode?.publishedTime?.date,
                 sourceDurationSeconds: factualEpisode?.durationSeconds,
                 dismissedAt: dismissal.dismissedAt.date,
@@ -467,7 +479,10 @@ extension WiltedMacModel {
         Task { [weak self] in
             guard let self else { return }
             guard let values = try? await self.loadLibrary(from: store) else { return }
-            guard self.applyEpisodes(values.episodes) else { return }
+            guard self.applyEpisodes(values.episodes) else {
+                if values.episodes.readEpoch < self.feedRenameReadEpoch { await self.reloadLibraryRows() }
+                return
+            }
             self.articles = values.articles
             self.subscriptions = values.subscriptions
             self.dismissedEpisodes = (try? await self.loadDismissedEpisodes(from: store)) ?? self.dismissedEpisodes

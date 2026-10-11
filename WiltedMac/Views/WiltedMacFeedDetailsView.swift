@@ -29,7 +29,10 @@ struct WiltedMacFeedDetailsView: View {
             factRow("Followed", value: subscription.subscribedAt.formatted(date: .abbreviated, time: .shortened))
             factRow("Visibility", value: subscription.enabled ? "Shown in Feeds" : "Hidden from Feeds")
             factRow("Refresh status", value: model.feedRowStatus(subscription.id) ?? "Not currently refreshing")
-            factRow("Last refreshed", value: model.lastPodcastRefreshExactText)
+            factRow(
+                "Global podcast refresh",
+                value: model.lastPodcastRefreshAt?.formatted(date: .complete, time: .standard) ?? "Never"
+            )
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text("Source URL").wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

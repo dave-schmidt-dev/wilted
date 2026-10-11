@@ -37,6 +37,95 @@ extension WiltedMacModelTests {
         return model
     }
 
+    func testFeedRenameProjectsRemovedHistoryWithoutChangingRemovalFacts() async throws {
+        let model = try await feedRenameFixture()
+        let store = try XCTUnwrap(model.store)
+        let row = try XCTUnwrap(model.subscriptions.first)
+        let episode = try XCTUnwrap(model.episodes.first)
+        _ = try await store.dismissPodcastEpisode(ItemID(rawValue: episode.id))
+        model.dismissedEpisodes = try await model.loadDismissedEpisodes(from: store)
+        let before = try XCTUnwrap(model.dismissedEpisodes.first)
+        let gate = FeedRenameGate()
+        model.subscriptionWriteHookForTesting = { await gate.hold() }
+        let writer = Task { try await model.renameSubscription(row, to: "History owner") }
+        await gate.waitForEntries(1)
+        XCTAssertEqual(model.dismissedEpisodes.first?.feedTitle, "History owner")
+        let pending = try await model.loadDismissedEpisodes(from: store)
+        XCTAssertEqual(pending.first?.feedTitle, "History owner", "history reads share the pending alias")
+        await gate.release()
+        try await writer.value
+        model.dismissedEpisodes = try await model.loadDismissedEpisodes(from: store)
+        let renamed = try XCTUnwrap(model.dismissedEpisodes.first)
+        XCTAssertEqual(renamed.feedTitle, "History owner", "history label, filter and search use this field")
+        XCTAssertEqual(renamed.id, before.id)
+        XCTAssertEqual(renamed.feedID, before.feedID)
+        XCTAssertEqual(renamed.title, before.title)
+        XCTAssertEqual(renamed.publishedAt, before.publishedAt)
+        XCTAssertEqual(renamed.sourceDurationSeconds, before.sourceDurationSeconds)
+        XCTAssertEqual(renamed.dismissedAt, before.dismissedAt)
+        XCTAssertEqual(renamed.hasPreparationHistory, before.hasPreparationHistory)
+        try await model.renameSubscription(try XCTUnwrap(model.subscriptions.first), to: "  ")
+        XCTAssertEqual(model.dismissedEpisodes.first?.feedTitle, "Publisher title")
+        await model.close()
+    }
+
+    func testFailedRenameAndBlockedReadCannotReapplyFailedAlias() async throws {
+        let model = try await feedRenameFixture()
+        let row = try XCTUnwrap(model.subscriptions.first)
+        let writerGate = FeedRenameGate()
+        model.subscriptionWriteHookForTesting = {
+            await writerGate.hold()
+            throw FeedRenameFailure.refused
+        }
+        let writer = Task { try await model.renameSubscription(row, to: "Failed alias") }
+        await writerGate.waitForEntries(1)
+        let readGate = FeedRenameGate()
+        model.librarySnapshotReadBarrierForTesting = { await readGate.hold() }
+        let read = Task { await model.reloadLibraryRows() }
+        await readGate.waitForEntries(1)
+        model.librarySnapshotReadBarrierForTesting = nil
+        await writerGate.release()
+        do { try await writer.value; XCTFail("write must fail") } catch {}
+        XCTAssertNil(model.pendingFeedRenames[row.id])
+        await readGate.release()
+        await read.value
+        XCTAssertEqual(model.subscriptions.first, row)
+        XCTAssertEqual(model.episodes.first?.feedTitle, "Publisher title")
+        XCTAssertTrue(model.podcastOperationMessage?.contains("could not be renamed") == true)
+        await model.close()
+    }
+
+    func testRenameInvalidatedReloadRereadsFreshFeedRowsAfterSettlement() async throws {
+        let model = try await feedRenameFixture()
+        let store = try XCTUnwrap(model.store)
+        let row = try XCTUnwrap(model.subscriptions.first)
+        let readGate = FeedRenameGate()
+        model.librarySnapshotReadBarrierForTesting = { await readGate.hold() }
+        let read = Task { await model.reloadLibraryRows() }
+        await readGate.waitForEntries(1)
+        model.librarySnapshotReadBarrierForTesting = nil
+        let url = URL(string: "https://feeds.example.test/fresh.xml")!
+        let id = try ItemID.derivePodcastFeed(from: url)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        try await store.save(feed: PodcastFeed(itemID: id, canonicalURL: url, title: "Fresh feed", createdAt: created))
+        try await store.save(subscription: PodcastSubscription(feedID: id, subscribedAt: created))
+        let writerGate = FeedRenameGate()
+        model.subscriptionWriteHookForTesting = { await writerGate.hold() }
+        let rename = Task { try await model.renameSubscription(row, to: "Saved owner") }
+        await writerGate.waitForEntries(1)
+        await readGate.release()
+        await read.value
+        XCTAssertTrue(model.feedRenameNeedsReload, "invalidated refresh waits for the pending writer")
+        await writerGate.release()
+        try await rename.value
+        let settledReads = Array(model.subscriptionWriteTasks.values)
+        for task in settledReads { await task.value }
+        XCTAssertFalse(model.feedRenameNeedsReload)
+        XCTAssertEqual(model.subscriptions.first { $0.id == id.rawValue }?.title, "Fresh feed")
+        XCTAssertEqual(model.subscriptions.first { $0.id == row.id }?.title, "Saved owner")
+        await model.close()
+    }
+
     func testFeedRenameDisplaysBeforeBlockedWriterAndSurvivesPendingReload() async throws {
         let model = try await feedRenameFixture()
         let store = try XCTUnwrap(model.store)
@@ -217,7 +306,7 @@ extension WiltedMacModelTests {
 
 private enum FeedRenameFailure: Error { case refused }
 
-private actor FeedRenameGate {
+actor FeedRenameGate {
     private var entries = 0
     private var released = false
     private var writers: [CheckedContinuation<Void, Never>] = []

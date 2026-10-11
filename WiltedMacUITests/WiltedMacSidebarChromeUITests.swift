@@ -6,7 +6,8 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
     func testCollapsedSidebarKeepsContentBelowWindowControls() throws {
         let app = XCUIApplication()
         let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-ui-chrome")
-        addTeardownBlock {
+        addTeardownBlock { [weak self] in
+            if (self?.testRun?.totalFailureCount ?? 0) > 0 { self?.attachFixtureWindowIfAvailable(app) }
             app.terminate()
             try WiltedMacUITemporaryState.removeFixtureRoot(root)
         }
@@ -25,7 +26,7 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         let sidebar = app.descendants(matching: .any)["wilted-mac-sidebar"]
         let heading = app.descendants(matching: .any)["wilted-larder-audio-total"]
-        let controls = [XCUIIdentifierCloseWindow, XCUIIdentifierMinimizeWindow, XCUIIdentifierZoomWindow]
+        let controls = [XCUIIdentifierCloseWindow, XCUIIdentifierMinimizeWindow, "_XCUI:FullScreenWindow"]
             .map { window.buttons[$0] }
         for control in controls { XCTAssertTrue(control.exists, "native window control must be available") }
 
@@ -50,4 +51,19 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed)
         }
     }
+
+    /// Diagnostics are limited to the synthetic fixture window.
+    private func attachFixtureWindowIfAvailable(_ app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        guard window.exists else { return }
+        let hierarchy = XCTAttachment(string: window.debugDescription)
+        hierarchy.name = "Fixture window hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        let image = XCTAttachment(screenshot: window.screenshot())
+        image.name = "Fixture window"
+        image.lifetime = .keepAlways
+        add(image)
+    }
+
 }

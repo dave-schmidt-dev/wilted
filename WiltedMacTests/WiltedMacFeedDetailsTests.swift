@@ -39,15 +39,19 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
         let board = WiltedMacFeedPolicyBoard(model: model)
         await board.reload()
 
-        let text = try WiltedMacHeadless.recognizedText(
+        let recognizedText = try WiltedMacHeadless.recognizedText(
             WiltedMacFeedDetailsView(model: model, board: board, subscription: subscription),
             size: CGSize(width: 900, height: 2_000)
         ).joined(separator: "\n")
+        let text = recognizedText.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         XCTAssertTrue(text.contains(subscription.title), text)
         XCTAssertTrue(text.contains(subscription.feedURL.absoluteString), text)
         XCTAssertTrue(text.contains(subscription.publisherTitle ?? "Publisher not provided"), text)
         XCTAssertTrue(text.contains("Followed"), text)
-        XCTAssertTrue(text.contains(model.lastPodcastRefreshExactText), text)
+        XCTAssertTrue(text.contains("Global podcast refresh"), text)
+        let globalRefresh = model.lastPodcastRefreshAt?.formatted(date: .complete, time: .standard) ?? "Never"
+        XCTAssertTrue(text.contains(globalRefresh), text)
+        XCTAssertFalse(text.contains("Last refreshed: Last refreshed"), text)
         XCTAssertTrue(text.contains("Current settings"), text)
         XCTAssertTrue(text.contains("Episode history"), text)
     }

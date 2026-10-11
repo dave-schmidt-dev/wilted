@@ -16,6 +16,18 @@ extension WiltedMacModel {
         return stored
     }
 
+    /// History actor reads can cross a rename; the existing subscription presentation
+    /// supplies its newer alias, while the snapshot keeps the factual publisher fallback.
+    func feedRenameHistoryTitle(_ feedID: String, stored: String?, publisherTitle: String?) -> String? {
+        let name: String?
+        if let current = subscriptions.first(where: { $0.id == feedID }) {
+            name = current.displayName
+        } else {
+            name = stored
+        }
+        return feedRenameDisplayName(feedID, stored: name) ?? publisherTitle
+    }
+
     func applyingPendingFeedRename(_ row: WiltedMacSubscription) -> WiltedMacSubscription {
         guard let pending = pendingFeedRenames[row.id] else { return row }
         return renamedSubscription(row, displayName: pending.displayName)
@@ -36,11 +48,19 @@ extension WiltedMacModel {
         for index in episodes.indices where episodes[index].feedID == feedID {
             episodes[index].feedTitle = row.title
         }
+        for index in dismissedEpisodes.indices where dismissedEpisodes[index].feedID == feedID {
+            let old = dismissedEpisodes[index]
+            dismissedEpisodes[index] = WiltedMacDismissedEpisode(
+                id: old.id, feedID: old.feedID, title: old.title, feedTitle: row.title,
+                publishedAt: old.publishedAt, sourceDurationSeconds: old.sourceDurationSeconds,
+                dismissedAt: old.dismissedAt, hasPreparationHistory: old.hasPreparationHistory)
+        }
     }
 
     private func invalidateFeedRenameReads() {
         libraryReadEpoch &+= 1
         lastAppliedLibraryReadEpoch = libraryReadEpoch
+        feedRenameReadEpoch = libraryReadEpoch
     }
 
 #if canImport(WiltedProducer)
@@ -60,6 +80,10 @@ extension WiltedMacModel {
             pendingFeedRenames[subscription.id] = nil
             pendingFeedWrites[subscription.id] = nil
             invalidateFeedRenameReads()
+            if pendingFeedRenames.isEmpty, feedRenameNeedsReload {
+                feedRenameNeedsReload = false
+                trackSubscriptionWrite { await self.reloadLibraryRows() }
+            }
             if let queued = queuedFeedEnabled.removeValue(forKey: subscription.id),
                let latest = subscriptions.first(where: { $0.id == subscription.id }) {
                 setSubscription(latest, enabled: queued)
@@ -72,9 +96,12 @@ extension WiltedMacModel {
                     guard !self.isClosingTemporaryState, !Task.isCancelled else { throw WiltedMacRemovalUnavailable() }
                     try await store.setSubscriptionDisplayName(
                         feedID: ItemID(rawValue: subscription.id), displayName: name)
-                    // A rename never republishes a whole library snapshot over a newer Keep/Skip.
+                    // Request the existing debounced publisher only after the alias is durable.
+                    self.librarySyncController?.requestPublish()
                     continuation.resume()
                 } catch {
+                    self.pendingFeedRenames[subscription.id] = nil
+                    self.invalidateFeedRenameReads()
                     self.showFeedName(subscription.id, displayName: before.displayName)
                     self.podcastOperationMessage = "\(before.title) could not be renamed. Try again."
                     continuation.resume(throwing: error)
