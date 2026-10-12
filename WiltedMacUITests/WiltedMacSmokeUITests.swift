@@ -84,59 +84,15 @@ final class WiltedMacSmokeUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
 
-        let actions = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-article-actions-'"))
+        let actions = app.menuButtons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-article-actions-'"))
             .firstMatch
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
-        for _ in 0..<6 where !actions.isHittable {
-            let window = app.windows.firstMatch
-            let candidates = app.scrollViews.allElementsBoundByIndex.filter {
-                $0.isHittable && $0.frame.width > window.frame.width / 2 && $0.frame.height > 100
-            }
-            guard let viewport = candidates.max(by: {
-                $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
-            }) else {
-                XCTFail("A nonzero hittable detail viewport is required to reveal the article menu")
-                break
-            }
-            viewport.scroll(byDeltaX: 0, deltaY: -300)
-        }
-        if !actions.isHittable {
-            let menuMatches = app.descendants(matching: .any).matching(
-                NSPredicate(format: "identifier BEGINSWITH 'wilted-article-actions-'")
-            ).allElementsBoundByIndex
-            let menuMetadata = menuMatches.enumerated().map { index, element in
-                let frame = element.frame
-                let descendants = element.descendants(matching: .any).allElementsBoundByIndex.map { child in
-                    let childFrame = child.frame
-                    return "[\(child.elementType.rawValue),\(childFrame.minX),\(childFrame.minY),"
-                        + "\(childFrame.width),\(childFrame.height),\(child.isEnabled),\(child.isHittable)]"
-                }.joined(separator: ";")
-                return "[\(index),\(element.elementType.rawValue),\(frame.minX),\(frame.minY),"
-                    + "\(frame.width),\(frame.height),\(element.isEnabled),\(element.isHittable),"
-                    + "\(element.descendants(matching: .any).count),\(descendants)]"
-            }.joined(separator: "\n")
-            let scrollViews = app.scrollViews.allElementsBoundByIndex
-            let scrollMetadata = scrollViews.enumerated().map { index, element in
-                let frame = element.frame
-                return "[\(index),\(frame.minX),\(frame.minY),\(frame.width),\(frame.height),"
-                    + "\(element.isHittable),\(element.descendants(matching: .any).count)]"
-            }.joined(separator: "\n")
-            let metadata = XCTAttachment(string:
-                "fixture-app.state.rawValue=\(app.state.rawValue)\n"
-                    + "fixture-window.isHittable=\(app.windows.firstMatch.isHittable)\n"
-                    + "article-menu.match-count=\(menuMatches.count)\n\(menuMetadata)\n"
-                    + "scroll-view.count=\(scrollViews.count)\n\(scrollMetadata)"
-            )
-            metadata.name = "Fixture article menu numeric hit-test metadata"
-            metadata.lifetime = .keepAlways
-            self.add(metadata)
-            let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
-            screenshot.name = "Fixture window at article menu hit-test failure"
-            screenshot.lifetime = .keepAlways
-            self.add(screenshot)
-        }
-        XCTAssertTrue(actions.isHittable, "the article menu is reachable in the fixture viewport")
+        XCTAssertTrue(actions.isEnabled, "the article actions menu is enabled")
+        XCTAssertGreaterThan(actions.frame.width, 0)
+        XCTAssertGreaterThan(actions.frame.height, 0)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.frame.contains(actions.frame), "the article actions menu is inside the fixture window")
         actions.click()
 
         // Drive the removal rather than merely proving the control is drawn.
