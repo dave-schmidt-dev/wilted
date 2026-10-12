@@ -261,21 +261,85 @@ final class WiltedMacRedesignTests: XCTestCase {
     }
 
     func testMacSearchHasNoPlaceholderAndRetainsItsAccessibleLabel() throws {
-        let source = try WiltedMacHeadless.viewSource("WiltedMacLarderView.swift")
+        let source = try ["WiltedMacLarderView.swift", "WiltedMacLarderSearchField.swift"]
+            .map { try WiltedMacHeadless.viewSource($0) }.joined()
         XCTAssertTrue(source.contains("WiltedMacLarderSearchField(query: $model.librarySearchQuery) { searchFocusAction = $0 }"))
-        XCTAssertTrue(source.contains("TextField(\"\", text: $query)"))
-        XCTAssertTrue(source.contains(".accessibilityLabel(\"Search episodes\")"))
-        XCTAssertTrue(source.contains("let focus = $isSearchFocused"))
-        XCTAssertTrue(source.contains(".focused(focus)"))
+        XCTAssertTrue(source.contains("context.coordinator.query = $query"))
+        XCTAssertTrue(source.contains("setAccessibilityLabel(\"Search episodes\")"))
+        XCTAssertTrue(source.contains("field.placeholderString = \"\""))
+        XCTAssertTrue(source.contains("window.makeFirstResponder(field)"))
         XCTAssertTrue(source.contains(".focusedSceneValue(\\.wiltedLarderSearchFocus, searchFocusAction)"))
-        XCTAssertNotNil(source.range(of: #"\.onAppear\s*\{[\s\S]*?registerFocusAction\s*\{\s*\[focus\]\s*in[\s\S]*?focus\.wrappedValue\s*=\s*true[\s\S]*?\}"#, options: .regularExpression))
-        XCTAssertNotNil(source.range(of: #"\.onDisappear\s*\{[\s\S]*?registerFocusAction\(nil\)"#, options: .regularExpression))
+        XCTAssertTrue(source.contains("field.windowChanged = { [weak self] field in self?.windowChanged(field) }"))
+        XCTAssertTrue(source.contains("registerFocusAction(nil)"))
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let app = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacApp.swift"), encoding: .utf8)
         XCTAssertNotNil(app.range(of: #"Button\(\"Find…\"\)\s*\{[\s\S]*?focusLarderSearch\?\(\)[\s\S]*?\}"#, options: .regularExpression))
         XCTAssertTrue(app.contains(".keyboardShortcut(\"f\", modifiers: .command)"))
         XCTAssertTrue(app.contains(".disabled(focusLarderSearch == nil)"))
 
+    }
+
+    func testNativeSearchDelegateWritesTheLatestQueryBinding() {
+        var original = ""
+        var replacement = "new"
+        let coordinator = WiltedMacLarderSearchField.Coordinator(
+            query: Binding(get: { original }, set: { original = $0 }), registerFocusAction: { _ in })
+        let field = WiltedMacLarderSearchField.Field(frame: .zero)
+        coordinator.connect(field)
+        field.stringValue = "garden"
+        coordinator.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+        XCTAssertEqual(original, "garden")
+        coordinator.query = Binding(get: { replacement }, set: { replacement = $0 })
+        field.stringValue = "quiet"
+        coordinator.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+        XCTAssertEqual(replacement, "quiet")
+        XCTAssertEqual(original, "garden", "the delegate must not keep the old binding")
+        coordinator.disconnect(field)
+    }
+
+    func testNativeSearchExternalUpdatePreservesUnchangedEditingSelection() throws {
+        var query = "garden"
+        let coordinator = WiltedMacLarderSearchField.Coordinator(
+            query: Binding(get: { query }, set: { query = $0 }), registerFocusAction: { _ in })
+        let field = WiltedMacLarderSearchField.Field(frame: NSRect(x: 0, y: 0, width: 160, height: 24))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 100),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { coordinator.disconnect(field); window.close() }
+        coordinator.connect(field)
+        window.contentView?.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.setSelectedRange(NSRange(location: 1, length: 3))
+        coordinator.updateText(field)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 1, length: 3), "unchanged text must retain editor selection")
+        query = "external"
+        coordinator.updateText(field)
+        XCTAssertEqual(field.stringValue, "external", "external model changes reach the native field")
+    }
+
+    func testNativeSearchUnmountClearsTheExactFieldCapability() throws {
+        var action: (() -> Void)?
+        var query = ""
+        let coordinator = WiltedMacLarderSearchField.Coordinator(
+            query: Binding(get: { query }, set: { query = $0 }), registerFocusAction: { action = $0 })
+        let field = WiltedMacLarderSearchField.Field(frame: NSRect(x: 0, y: 0, width: 160, height: 24))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 100),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { coordinator.disconnect(field); window.close() }
+        coordinator.connect(field)
+        XCTAssertNil(action, "an unmounted field cannot supply a responder capability")
+        window.contentView?.addSubview(field)
+        let mountedAction = try XCTUnwrap(action)
+        field.removeFromSuperview()
+        XCTAssertNil(action, "window detach unregisters the exact field")
+        mountedAction()
+        WiltedMacLarderSearchField.dismantleNSView(field, coordinator: coordinator)
+        XCTAssertNil(action)
+        field.stringValue = "orphan"
+        coordinator.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+        XCTAssertEqual(query, "", "dismantled delegates cannot keep writing the model")
     }
 
     func testEmptyArticlesShowTheToolbarAddHintInsteadOfAnotherButton() throws {
