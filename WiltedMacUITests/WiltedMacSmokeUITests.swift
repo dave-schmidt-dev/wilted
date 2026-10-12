@@ -96,6 +96,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
                 "Edit exists=\(editExists) enabled=\(editEnabled) hittable=\(editHittable) "
                     + "Find prefixReady=\(findPrefixReady) labels=\(findLabels) "
                     + "actionCount=\(findCount) enabled=\(findEnabled) menuProbeMatched=\(menuProbeMatched)")
+            attachFixtureWindowLifecycleTrace(stage: "after Find failure probe")
             diagnostic.name = "Fixture Find command routing"
             diagnostic.lifetime = .keepAlways
             add(diagnostic)

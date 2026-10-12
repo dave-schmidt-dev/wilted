@@ -122,7 +122,13 @@ struct WiltedMacApp: App {
         }
         .commands {
             CommandGroup(after: .textEditing) {
-                Button("Find…") { focusLarderSearch?() }
+                Button("Find…") {
+                    WiltedMacAppDelegate.windowLifecycleTrace?.recordWindowLifecycle(
+                        focusLarderSearch == nil ? "find-command-action-missing" : "find-command-action-present",
+                        application: NSApplication.shared
+                    )
+                    focusLarderSearch?()
+                }
                     .keyboardShortcut("f", modifiers: .command)
                     .disabled(focusLarderSearch == nil)
             }

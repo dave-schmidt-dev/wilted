@@ -264,12 +264,26 @@ final class WiltedMacTerminationJournal: @unchecked Sendable {
         entry["editMenuEnabled"] = edit?.isEnabled ?? false
         entry["findMenuPresent"] = find != nil
         entry["findMenuEnabled"] = find?.isEnabled ?? false
+        let exactFindItems = edit?.submenu?.items.filter { $0.title == "Find…" || $0.title == "Find..." } ?? []
+        entry["findMenuExactMatchCount"] = exactFindItems.count
+        entry["findMenuExactMatches"] = exactFindItems.map { item -> [String: Any] in
+            ["title": item.title, "enabled": item.isEnabled, "keyEquivalent": item.keyEquivalent,
+             "action": item.action.map { NSStringFromSelector($0) } ?? "nil",
+             "targetClass": item.target.map { String(describing: type(of: $0)) } ?? "nil"]
+        }
+        entry["appActive"] = application.isActive
+        entry["mainWindowPresent"] = application.mainWindow != nil
+        let fieldEditor = application.keyWindow?.firstResponder as? NSTextView
+        entry["firstResponderIsTextView"] = fieldEditor != nil
+        entry["firstResponderIsFieldEditor"] = fieldEditor?.isFieldEditor ?? false
         for (index, window) in windows.enumerated() {
             let prefix = "window\(index)_"
             entry[prefix + "frameWidth"] = Double(window.frame.width)
             entry[prefix + "frameHeight"] = Double(window.frame.height)
             entry[prefix + "visible"] = window.isVisible
             entry[prefix + "key"] = window.isKeyWindow
+            entry[prefix + "main"] = window.isMainWindow
+            entry[prefix + "canBecomeMain"] = window.canBecomeMain
             entry[prefix + "onActiveSpace"] = window.isOnActiveSpace
         }
         append(entry)
