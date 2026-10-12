@@ -118,16 +118,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
 
         navFeeds.click()
-        XCTAssertTrue(
-            app.descendants(matching: .any)["wilted-mac-feeds-detail"].waitForExistence(timeout: 5)
-        )
-        XCTAssertTrue(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
+        let card = app.descendants(matching: .any)["wilted-podcast-feeds"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5), "navigation opens the podcast feeds card")
+        XCTAssertTrue(card.exists)
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(addArticle.exists)
         XCTAssertFalse(larderEmpty.exists)
-
-        let card = app.descendants(matching: .any)["wilted-podcast-feeds"]
         XCTAssertTrue(card.waitForExistence(timeout: 8))
+
         XCTAssertTrue(
             app.descendants(matching: .any).matching(
                 NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-row-'")
@@ -164,6 +162,10 @@ final class WiltedMacSmokeUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-name-editor-'")
         ).firstMatch
         XCTAssertTrue(nameEditor.waitForExistence(timeout: 5), "the pencil opens rename")
+        nameEditor.click()
+        nameEditor.typeKey("a", modifierFlags: .command)
+        nameEditor.typeText("Draft rename")
+        XCTAssertEqual(nameEditor.value as? String, "Draft rename", "the editor accepted focused text entry")
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(nameEditor.waitForNonExistence(timeout: 5), "Escape cancels rename")
         XCTAssertTrue(feedName.exists)
@@ -225,7 +227,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(syncControls.exists)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
 
-        addArticle.click()
+        let finalAddButton = app.descendants(matching: .any)["wilted-add-button"]
+        XCTAssertTrue(finalAddButton.waitForExistence(timeout: 8), "the toolbar Add button opens the Add sheet")
+        finalAddButton.click()
         XCTAssertTrue(
             add.waitForExistence(timeout: 8),
             "Opening the Larder's Add button after the roundtrip must expose the Add sheet's field."
