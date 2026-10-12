@@ -76,6 +76,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let add = app.descendants(matching: .any)["wilted-add-field"]
         XCTAssertTrue(add.waitForExistence(timeout: 8), "the trigger must open the Add sheet's field")
         app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(add.waitForNonExistence(timeout: 8), "Escape closes the Add sheet before article menu interaction")
+        app.activate()
 
         let row = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-article-row-'"))
@@ -121,7 +123,9 @@ final class WiltedMacSmokeUITests: XCTestCase {
                     + "\(element.isHittable),\(element.descendants(matching: .any).count)]"
             }.joined(separator: "\n")
             let metadata = XCTAttachment(string:
-                "article-menu.match-count=\(menuMatches.count)\n\(menuMetadata)\n"
+                "fixture-app.state.rawValue=\(app.state.rawValue)\n"
+                    + "fixture-window.isHittable=\(app.windows.firstMatch.isHittable)\n"
+                    + "article-menu.match-count=\(menuMatches.count)\n\(menuMetadata)\n"
                     + "scroll-view.count=\(scrollViews.count)\n\(scrollMetadata)"
             )
             metadata.name = "Fixture article menu numeric hit-test metadata"
