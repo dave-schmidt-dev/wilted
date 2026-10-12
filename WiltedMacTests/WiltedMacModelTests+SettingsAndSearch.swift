@@ -290,7 +290,7 @@ extension WiltedMacModelTests {
         XCTAssertTrue(view.contains(".accessibilityIdentifier(\"wilted-larder-search\")"))
         XCTAssertTrue(view.contains(".accessibilityLabel(\"Search episodes\")"))
         XCTAssertTrue(view.contains(".focused($isSearchFocused)"))
-        XCTAssertNotNil(view.range(of: #"\.focusedSceneValue\(\\\.wiltedLarderSearchFocus,\s*\{[\s\S]*?isSearchFocused\s*=\s*true[\s\S]*?\}\)"#, options: .regularExpression))
+        XCTAssertNotNil(view.range(of: #"\.focusedSceneValue\(\\\.wiltedLarderSearchFocus,\s*\{\s*\[focus\s*=\s*\$isSearchFocused\]\s*in[\s\S]*?focus\.wrappedValue\s*=\s*true[\s\S]*?\}\)"#, options: .regularExpression))
     }
 
     /// The sidebar totals describe the Larder, not the current search.

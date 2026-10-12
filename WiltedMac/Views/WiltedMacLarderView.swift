@@ -51,11 +51,11 @@ struct WiltedMacLarderView: View {
                     .accessibilityIdentifier("wilted-larder-search")
             }
         }
-        .focusedSceneValue(\.wiltedLarderSearchFocus, {
+        .focusedSceneValue(\.wiltedLarderSearchFocus, { [focus = $isSearchFocused] in
             WiltedMacAppDelegate.windowLifecycleTrace?.recordWindowLifecycle(
                 "larder-search-focus-requested", application: NSApplication.shared
             )
-            isSearchFocused = true
+            focus.wrappedValue = true
         })
         .onChange(of: isSearchFocused) { _, focused in
             WiltedMacAppDelegate.windowLifecycleTrace?.record(
