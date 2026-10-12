@@ -93,7 +93,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertGreaterThan(actions.frame.height, 0)
         let window = app.windows.firstMatch
         XCTAssertTrue(window.frame.contains(actions.frame), "the article actions popover button is inside the fixture window")
-        actions.click()
+        // A centered HID click bypasses XCTest's rejected AX click; the Delete outcome below proves it opened.
+        actions.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
 
         // Drive the removal rather than merely proving the control is drawn.
         // This is the library's only destructive path, so "the menu exists" is
