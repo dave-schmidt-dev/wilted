@@ -84,21 +84,21 @@ final class WiltedMacSmokeUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
 
-        let actions = app.menuButtons.matching(
+        let actions = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-article-actions-'"))
             .firstMatch
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
-        XCTAssertTrue(actions.isEnabled, "the article actions menu is enabled")
+        XCTAssertTrue(actions.isEnabled, "the article actions popover button is enabled")
         XCTAssertGreaterThan(actions.frame.width, 0)
         XCTAssertGreaterThan(actions.frame.height, 0)
         let window = app.windows.firstMatch
-        XCTAssertTrue(window.frame.contains(actions.frame), "the article actions menu is inside the fixture window")
+        XCTAssertTrue(window.frame.contains(actions.frame), "the article actions popover button is inside the fixture window")
         actions.click()
 
         // Drive the removal rather than merely proving the control is drawn.
         // This is the library's only destructive path, so "the menu exists" is
         // not evidence that pressing it removes anything.
-        let remove = app.menuItems["Delete…"]
+        let remove = app.buttons["Delete…"]
         XCTAssertTrue(remove.waitForExistence(timeout: 5))
         remove.click()
         confirmRemoval(in: app, label: "Confirm delete")

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import XCTest
 import WiltedDomain
 @testable import WiltedProducer
@@ -10,7 +11,7 @@ import WiltedDomain
 /// every durable record exactly as they were, with a Retry.
 ///
 /// Failures are injected at each real persistence stage through the store's
-/// task-local `removalStageObserver`; nothing here inspects source text.
+/// task-local `removalStageObserver`; rendered controls cover the row entry point.
 @MainActor
 final class WiltedMacDeletionSafetyTests: XCTestCase {
     // MARK: Unsubscribe
@@ -171,6 +172,79 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
     }
 
     // MARK: Article delete
+
+    func testArticlePopoverDeleteRequestsConfirmationWithoutWriting() async throws {
+        let model = try await fixtureModel()
+        let article = try await openArticle(model)
+        let flow = WiltedMacRemovalFlow()
+        let row = WiltedMacArticleRow(model: model, article: article, removal: flow)
+        let before = try await durable(model)
+        for scheme in [ColorScheme.light, .dark] {
+            let closed = try WiltedMacHeadless.recognizedText(
+                row.environment(\.colorScheme, scheme)
+                    .background(WiltedTheme.color(.page, scheme: scheme)), size: CGSize(width: 480, height: 140))
+            XCTAssertFalse(closed.contains { $0.contains("Delete") || $0.contains("Retry removal") },
+                           "Secondary actions stay inside the closed native popover")
+            let text = try WiltedMacHeadless.recognizedText(
+                row.articleActions.environment(\.colorScheme, scheme)
+                    .background(WiltedTheme.color(.page, scheme: scheme)), size: CGSize(width: 240, height: 140))
+            XCTAssertTrue(text.contains { $0.contains("Delete") }, "Delete must render in the native popover: \(scheme), \(text)")
+            XCTAssertFalse(text.contains { $0.contains("Retry") }, "Retry only belongs to failed removals: \(scheme), \(text)")
+            if !text.contains(where: { $0.contains("Delete") }) || text.contains(where: { $0.contains("Retry") }) {
+                try retainArticleActions(row, scheme: scheme, size: CGSize(width: 240, height: 140))
+            }
+        }
+        row.requestRemoval()
+        XCTAssertEqual(flow.requested, .article(article))
+        XCTAssertNil(flow.phase, "The popover action only requests confirmation")
+        let after = try await durable(model)
+        XCTAssertEqual(after, before)
+        let source = try WiltedMacHeadless.viewSource("WiltedMacFeedsComponents.swift")
+        let rowSource = try XCTUnwrap(source.components(separatedBy: "struct WiltedMacArticleRow: View {").last)
+            .components(separatedBy: "struct WiltedMacLarderArticleAction: View {")[0]
+        XCTAssertTrue(rowSource.contains(".frame(width: 32, height: 32)"))
+        XCTAssertTrue(rowSource.contains(".contentShape(Rectangle())"))
+        XCTAssertTrue(rowSource.contains(".buttonStyle(.plain)"))
+        XCTAssertTrue(rowSource.contains(".popover(isPresented: $showsActions"))
+        XCTAssertFalse(rowSource.contains("Menu {"))
+    }
+
+    func testArticlePopoverOffersRetryAfterFailureAndRepeatsConfirmedRemoval() async throws {
+        let model = try await fixtureModel()
+        let article = try await openArticle(model)
+        let flow = WiltedMacRemovalFlow()
+        let row = WiltedMacArticleRow(model: model, article: article, removal: flow)
+        row.requestRemoval()
+        let target = try XCTUnwrap(flow.requested)
+        let probe = StageProbe(failingAt: LocalLibraryStageList.articleRemoval[0])
+        LocalLibraryStore.$removalStageObserver.withValue(probe.observer) { flow.confirm(target, model: model) }
+        await model.waitForPodcastOperations()
+        XCTAssertEqual(flow.phase, .failed)
+        for scheme in [ColorScheme.light, .dark] {
+            let text = try WiltedMacHeadless.recognizedText(
+                row.articleActions.environment(\.colorScheme, scheme)
+                    .background(WiltedTheme.color(.page, scheme: scheme)), size: CGSize(width: 260, height: 180))
+            XCTAssertTrue(text.contains { $0.contains("Retry removal") }, "\(scheme): \(text)")
+            XCTAssertTrue(text.contains { $0.contains("Delete") }, "\(scheme): \(text)")
+            if !text.contains(where: { $0.contains("Retry removal") }) || !text.contains(where: { $0.contains("Delete") }) {
+                try retainArticleActions(row, scheme: scheme, size: CGSize(width: 260, height: 180))
+            }
+        }
+        row.retryRemoval()
+        await model.waitForPodcastOperations()
+        XCTAssertEqual(flow.phase, .saved)
+        XCTAssertTrue(model.articles.isEmpty)
+    }
+
+    private func retainArticleActions(_ row: WiltedMacArticleRow, scheme: ColorScheme, size: CGSize) throws {
+        let bitmap = try WiltedMacHeadless.render(row.articleActions.environment(\.colorScheme, scheme)
+            .background(WiltedTheme.color(.page, scheme: scheme)), size: size)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+        attachment.name = "article-actions-\(scheme)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
 
     func testCancelledArticleDeleteWritesNothing() async throws {
         let model = try await fixtureModel()

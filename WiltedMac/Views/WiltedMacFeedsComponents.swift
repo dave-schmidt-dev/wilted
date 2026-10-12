@@ -271,7 +271,14 @@ struct WiltedMacArticleRow: View {
     let model: WiltedMacModel
     let article: WiltedMacArticle
     @Environment(\.colorScheme) private var colorScheme
-    @State private var removal = WiltedMacRemovalFlow()
+    @State private var removal: WiltedMacRemovalFlow
+    @State private var showsActions = false
+
+    init(model: WiltedMacModel, article: WiltedMacArticle, removal: WiltedMacRemovalFlow = WiltedMacRemovalFlow()) {
+        self.model = model
+        self.article = article
+        _removal = State(initialValue: removal)
+    }
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.small) {
@@ -301,23 +308,19 @@ struct WiltedMacArticleRow: View {
 
             WiltedMacLarderArticleAction(model: model, article: article)
 
-            Menu {
-                if removal.phase == .failed {
-                    Button("Retry removal") { removal.retry(model: model) }
-                        .accessibilityIdentifier("wilted-removal-retry-\(article.id)")
-                }
-                Button("Delete…", role: .destructive) { removal.request(.article(article)) }
-                    .disabled(removal.isSaving)
-            } label: {
+            Button { showsActions.toggle() } label: {
                 Image(systemName: removal.phase == .failed ? "exclamationmark.triangle" : "ellipsis")
-                    .accessibilityLabel("More actions for \(article.title)")
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            .buttonStyle(.plain)
             .frame(width: WiltedMacLarderView.trailingActionSlotsWidth, alignment: .trailing)
             .help(removal.statusText ?? "More actions for \(article.title)")
+            .accessibilityLabel("More actions for \(article.title)")
             .accessibilityIdentifier("wilted-article-actions-\(article.id)")
+            .popover(isPresented: $showsActions, arrowEdge: .bottom) {
+                articleActions
+            }
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .contentShape(Rectangle())
@@ -326,6 +329,32 @@ struct WiltedMacArticleRow: View {
         .accessibilityValue(removal.statusText ?? "")
         .accessibilityIdentifier("wilted-article-row-\(article.id)")
     }
+
+    /// The native popover content can also be hosted without opening a window.
+    var articleActions: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            if removal.phase == .failed {
+                Button("Retry removal", action: retryRemoval)
+                    .accessibilityIdentifier("wilted-removal-retry-\(article.id)")
+            }
+            Button("Delete…", role: .destructive, action: requestRemoval)
+                .disabled(removal.isSaving)
+        }
+        .padding(WiltedTheme.Spacing.large)
+        .frame(minWidth: 160, alignment: .leading)
+        .controlSize(.regular)
+    }
+
+    func requestRemoval() {
+        showsActions = false
+        removal.request(.article(article))
+    }
+
+    func retryRemoval() {
+        showsActions = false
+        removal.retry(model: model)
+    }
+
 }
 
 /// The article's real Larder control shares the episode action slot without changing the Feeds row.
