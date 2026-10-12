@@ -262,10 +262,12 @@ final class WiltedMacRedesignTests: XCTestCase {
 
     func testMacSearchHasNoPlaceholderAndRetainsItsAccessibleLabel() throws {
         let source = try WiltedMacHeadless.viewSource("WiltedMacLarderView.swift")
-        XCTAssertTrue(source.contains("TextField(\"\", text: $model.librarySearchQuery)"))
+        XCTAssertTrue(source.contains("WiltedMacLarderSearchField(query: $model.librarySearchQuery)"))
+        XCTAssertTrue(source.contains("TextField(\"\", text: $query)"))
         XCTAssertTrue(source.contains(".accessibilityLabel(\"Search episodes\")"))
-        XCTAssertTrue(source.contains(".focused($isSearchFocused)"))
-        XCTAssertNotNil(source.range(of: #"\.focusedSceneValue\(\\\.wiltedLarderSearchFocus,\s*\{\s*\[focus\s*=\s*\$isSearchFocused\]\s*in[\s\S]*?focus\.wrappedValue\s*=\s*true[\s\S]*?\}\)"#, options: .regularExpression))
+        XCTAssertTrue(source.contains("let focus = $isSearchFocused"))
+        XCTAssertTrue(source.contains(".focused(focus)"))
+        XCTAssertNotNil(source.range(of: #"\.focusedSceneValue\(\\\.wiltedLarderSearchFocus,\s*\{\s*\[focus\]\s*in[\s\S]*?focus\.wrappedValue\s*=\s*true[\s\S]*?\}\)"#, options: .regularExpression))
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let app = try String(contentsOf: root.appendingPathComponent("WiltedMac/WiltedMacApp.swift"), encoding: .utf8)
         XCTAssertNotNil(app.range(of: #"Button\(\"Find…\"\)\s*\{[\s\S]*?focusLarderSearch\?\(\)[\s\S]*?\}"#, options: .regularExpression))

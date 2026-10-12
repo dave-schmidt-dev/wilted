@@ -285,12 +285,14 @@ extension WiltedMacModelTests {
                       "Play the first is a bulk action too")
         XCTAssertTrue(view.contains(".disabled(model.isSearchingLarder)"),
                       "the group clear is a bulk action too")
-        XCTAssertTrue(view.contains("TextField(\"\", text: $model.librarySearchQuery)"),
+        XCTAssertTrue(view.contains("WiltedMacLarderSearchField(query: $model.librarySearchQuery)"))
+        XCTAssertTrue(view.contains("TextField(\"\", text: $query)"),
                       "the actual toolbar field binds the query without a placeholder")
         XCTAssertTrue(view.contains(".accessibilityIdentifier(\"wilted-larder-search\")"))
         XCTAssertTrue(view.contains(".accessibilityLabel(\"Search episodes\")"))
-        XCTAssertTrue(view.contains(".focused($isSearchFocused)"))
-        XCTAssertNotNil(view.range(of: #"\.focusedSceneValue\(\\\.wiltedLarderSearchFocus,\s*\{\s*\[focus\s*=\s*\$isSearchFocused\]\s*in[\s\S]*?focus\.wrappedValue\s*=\s*true[\s\S]*?\}\)"#, options: .regularExpression))
+        XCTAssertTrue(view.contains("let focus = $isSearchFocused"))
+        XCTAssertTrue(view.contains(".focused(focus)"))
+        XCTAssertNotNil(view.range(of: #"\.focusedSceneValue\(\\\.wiltedLarderSearchFocus,\s*\{\s*\[focus\]\s*in[\s\S]*?focus\.wrappedValue\s*=\s*true[\s\S]*?\}\)"#, options: .regularExpression))
     }
 
     /// The sidebar totals describe the Larder, not the current search.

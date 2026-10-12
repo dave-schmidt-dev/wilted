@@ -27,7 +27,6 @@ struct WiltedMacLarderView: View {
     }
     @Environment(\.colorScheme) var colorScheme
     @State var dropTargetID: String?
-    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         WiltedMacDestination(
@@ -43,27 +42,8 @@ struct WiltedMacLarderView: View {
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                TextField("", text: $model.librarySearchQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($isSearchFocused)
-                    .frame(width: 160)
-                    .accessibilityLabel("Search episodes")
-                    .accessibilityIdentifier("wilted-larder-search")
+                WiltedMacLarderSearchField(query: $model.librarySearchQuery)
             }
-        }
-        .focusedSceneValue(\.wiltedLarderSearchFocus, { [focus = $isSearchFocused] in
-            WiltedMacAppDelegate.windowLifecycleTrace?.recordWindowLifecycle(
-                "larder-search-focus-requested", application: NSApplication.shared
-            )
-            focus.wrappedValue = true
-        })
-        .onChange(of: isSearchFocused) { _, focused in
-            WiltedMacAppDelegate.windowLifecycleTrace?.record(
-                "larder-search-focus-changed", values: ["focused": String(focused)]
-            )
-            WiltedMacAppDelegate.windowLifecycleTrace?.recordWindowLifecycle(
-                "larder-search-focus-state-snapshot", application: NSApplication.shared
-            )
         }
     }
 
@@ -197,5 +177,35 @@ extension FocusedValues {
     var wiltedLarderSearchFocus: (() -> Void)? {
         get { self[WiltedMacLarderSearchFocusKey.self] }
         set { self[WiltedMacLarderSearchFocusKey.self] = newValue }
+    }
+}
+
+/// Owns the field and its focus location inside the native toolbar hosting context.
+private struct WiltedMacLarderSearchField: View {
+    @Binding var query: String
+    @FocusState private var isSearchFocused: Bool
+
+    var body: some View {
+        let focus = $isSearchFocused
+        TextField("", text: $query)
+            .textFieldStyle(.roundedBorder)
+            .focused(focus)
+            .frame(width: 160)
+            .accessibilityLabel("Search episodes")
+            .accessibilityIdentifier("wilted-larder-search")
+            .focusedSceneValue(\.wiltedLarderSearchFocus, { [focus] in
+                WiltedMacAppDelegate.windowLifecycleTrace?.recordWindowLifecycle(
+                    "larder-search-focus-requested", application: NSApplication.shared
+                )
+                focus.wrappedValue = true
+            })
+            .onChange(of: isSearchFocused) { _, focused in
+                WiltedMacAppDelegate.windowLifecycleTrace?.record(
+                    "larder-search-focus-changed", values: ["focused": String(focused)]
+                )
+                WiltedMacAppDelegate.windowLifecycleTrace?.recordWindowLifecycle(
+                    "larder-search-focus-state-snapshot", application: NSApplication.shared
+                )
+            }
     }
 }
