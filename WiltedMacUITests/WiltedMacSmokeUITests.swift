@@ -99,6 +99,39 @@ final class WiltedMacSmokeUITests: XCTestCase {
             }
             viewport.scroll(byDeltaX: 0, deltaY: -300)
         }
+        if !actions.isHittable {
+            let menuMatches = app.descendants(matching: .any).matching(
+                NSPredicate(format: "identifier BEGINSWITH 'wilted-article-actions-'")
+            ).allElementsBoundByIndex
+            let menuMetadata = menuMatches.enumerated().map { index, element in
+                let frame = element.frame
+                let descendants = element.descendants(matching: .any).allElementsBoundByIndex.map { child in
+                    let childFrame = child.frame
+                    return "[\(child.elementType.rawValue),\(childFrame.minX),\(childFrame.minY),"
+                        + "\(childFrame.width),\(childFrame.height),\(child.isEnabled),\(child.isHittable)]"
+                }.joined(separator: ";")
+                return "[\(index),\(element.elementType.rawValue),\(frame.minX),\(frame.minY),"
+                    + "\(frame.width),\(frame.height),\(element.isEnabled),\(element.isHittable),"
+                    + "\(element.descendants(matching: .any).count),\(descendants)]"
+            }.joined(separator: "\n")
+            let scrollViews = app.scrollViews.allElementsBoundByIndex
+            let scrollMetadata = scrollViews.enumerated().map { index, element in
+                let frame = element.frame
+                return "[\(index),\(frame.minX),\(frame.minY),\(frame.width),\(frame.height),"
+                    + "\(element.isHittable),\(element.descendants(matching: .any).count)]"
+            }.joined(separator: "\n")
+            let metadata = XCTAttachment(string:
+                "article-menu.match-count=\(menuMatches.count)\n\(menuMetadata)\n"
+                    + "scroll-view.count=\(scrollViews.count)\n\(scrollMetadata)"
+            )
+            metadata.name = "Fixture article menu numeric hit-test metadata"
+            metadata.lifetime = .keepAlways
+            add(metadata)
+            let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+            screenshot.name = "Fixture window at article menu hit-test failure"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
         XCTAssertTrue(actions.isHittable, "the article menu is reachable in the fixture viewport")
         actions.click()
 
