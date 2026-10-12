@@ -353,4 +353,77 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
             [ready], grouping: .status, sort: .custom)
         XCTAssertEqual(listening.first?.items.map(\.id).first, "ep", "queued rows lead in listening order")
     }
+
+    // MARK: Empty status sections
+
+    func testStatusGroupingKeepsAnAdmittedGroupWithNoRowsWithItsHeadingDetail() throws {
+        // The model hands over no Downloaded section when that group has no rows.
+        let source = [
+            section(.playable, [.episode(episodeRow("ready", seconds: 60))]),
+            section(.available, [.episode(episodeRow("far", seconds: 60))]),
+        ]
+        let result = WiltedMacEpisodePresentationSections.displaySections(
+            source, grouping: .status, statusGroups: WiltedMacLarderGroup.allCases)
+        XCTAssertEqual(result.map(\.title), ["Ready", "Downloaded", "Not downloaded"])
+        let downloaded = try XCTUnwrap(result.first { $0.statusGroup == .downloaded })
+        XCTAssertEqual(downloaded.id, "status-Downloaded", "the model's identity, so its help identifier matches")
+        XCTAssertEqual(downloaded.detail, WiltedMacLarderGroup.downloaded.detail, "the help button has its text")
+        XCTAssertTrue(downloaded.items.isEmpty)
+        let numbering = WiltedMacEpisodePresentationSections.visibleNumbering(result)
+        XCTAssertEqual(numbering.positions, ["ready": 1, "far": 2], "an empty section numbers no rows")
+        XCTAssertEqual(numbering.count, 2)
+    }
+
+    func testAStatusFilterThatExcludesDownloadedOmitsItsSection() {
+        let source = [section(.playable, [.episode(episodeRow("ready", seconds: 60))])]
+        let result = WiltedMacEpisodePresentationSections.displaySections(
+            source, grouping: .status, statusGroups: [.playable])
+        XCTAssertEqual(result.map(\.title), ["Ready"])
+        XCTAssertFalse(result.contains { $0.statusGroup == .downloaded })
+    }
+
+    func testFeedAndDateGroupingStillOmitEmptySections() {
+        var downloading = episodeRow("downloading", seconds: 60)
+        downloading.downloadState = .downloading(received: 1, expected: 2)
+        let feeds = [
+            WiltedMacLarderSection(id: "feed-a", title: "A", detail: nil, statusGroup: nil,
+                                   items: [.episode(episodeRow("kept", seconds: 60))]),
+            WiltedMacLarderSection(id: "feed-b", title: "B", detail: nil, statusGroup: nil,
+                                   items: [.episode(downloading)]),
+        ]
+        let byFeed = WiltedMacEpisodePresentationSections.displaySections(
+            feeds, grouping: .feed, statusGroups: WiltedMacLarderGroup.allCases)
+        XCTAssertEqual(byFeed.map(\.id), ["active-work", "feed-a"], "a feed emptied by Active work is dropped")
+
+        let byDate = WiltedMacEpisodePresentationSections.displaySections(
+            [section(.playable, [.episode(episodeRow("dated", seconds: 60))])],
+            grouping: .date, statusGroups: WiltedMacLarderGroup.allCases)
+        XCTAssertEqual(byDate.flatMap(\.items).map(\.id), ["dated"])
+        XCTAssertTrue(byDate.allSatisfy { !$0.items.isEmpty && $0.statusGroup == nil },
+                      "Date grouping draws no lifecycle sections")
+    }
+
+    func testActiveWorkAppearsOnlyWhenSomethingIsInFlight() {
+        let idle = [section(.playable, [.episode(episodeRow("ready", seconds: 60))])]
+        let quiet = WiltedMacEpisodePresentationSections.displaySections(
+            idle, grouping: .status, statusGroups: WiltedMacLarderGroup.allCases)
+        XCTAssertEqual(quiet.map(\.title), ["Ready", "Downloaded", "Not downloaded"])
+        XCTAssertFalse(quiet.contains { $0.id == "active-work" }, "no in-flight rows, no Active work")
+    }
+
+    func testAGroupWhoseRowsAreAllInFlightStaysAsAnEmptySection() {
+        var downloading = episodeRow("downloading", seconds: 60)
+        downloading.downloadState = .downloading(received: 1, expected: 2)
+        let source = [
+            section(.available, [.episode(downloading)]),
+            WiltedMacLarderSection(id: "status-synthesizing", title: "Active work", detail: nil, statusGroup: nil,
+                                   items: [.article(article("synth", ready: false))]),
+        ]
+        let result = WiltedMacEpisodePresentationSections.displaySections(
+            source, grouping: .status, statusGroups: WiltedMacLarderGroup.allCases)
+        XCTAssertEqual(result.map(\.title), ["Ready", "Active work", "Downloaded", "Not downloaded"])
+        XCTAssertEqual(Set(result[1].items.map(\.id)), ["downloading", "synth"])
+        XCTAssertTrue(result[3].items.isEmpty, "Not downloaded keeps its heading once its row is in flight")
+        XCTAssertFalse(result.contains { $0.id == "status-synthesizing" }, "a groupless section is never kept empty")
+    }
 }

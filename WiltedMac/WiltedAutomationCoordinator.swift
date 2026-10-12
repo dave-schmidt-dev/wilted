@@ -93,6 +93,17 @@ actor WiltedAutomationCoordinator {
         var unfinishedClaims: @Sendable () async throws -> [String]
     }
 
+    /// Brackets the feed-refresh loop, and only that loop, so Feeds can show
+    /// an automatic refresh the way it shows a manual one. `begin` returns
+    /// `false` when a refresh it does not own is already running; the pass
+    /// then skips its refresh rather than fetching every feed twice.
+    struct RefreshActivity: Sendable {
+        var begin: @Sendable () async -> Bool
+        var end: @Sendable () async -> Void
+
+        static let untracked = RefreshActivity(begin: { true }, end: {})
+    }
+
     /// How many times a transient failure is retried, and how long the waits
     /// grow. Bounded because an automatic loop that never gives up is a way to
     /// hammer a feed host from a machine nobody is watching.
@@ -105,9 +116,13 @@ actor WiltedAutomationCoordinator {
     private let lastRefreshSuccess: @Sendable () async -> Date?
     private let recordRefreshSuccess: @Sendable (Date) async -> Void
     private let report: @Sendable (WiltedAutomationStatus) async -> Void
+    private let refreshActivity: RefreshActivity
     private let sleep: @Sendable (TimeInterval) async throws -> Void
 
     private var running: Task<Void, Never>?
+    /// Whether the last feed loop ended in `.failed`. `launch` re-reports it
+    /// after reconcile, whose own terminal status would otherwise replace it.
+    private var lastRefreshFailed = false
 
     init(
         operations: Operations,
@@ -115,6 +130,7 @@ actor WiltedAutomationCoordinator {
         lastRefreshSuccess: @escaping @Sendable () async -> Date?,
         recordRefreshSuccess: @escaping @Sendable (Date) async -> Void,
         report: @escaping @Sendable (WiltedAutomationStatus) async -> Void,
+        refreshActivity: RefreshActivity = .untracked,
         now: @escaping @Sendable () -> Date = Date.init,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -125,6 +141,7 @@ actor WiltedAutomationCoordinator {
         self.lastRefreshSuccess = lastRefreshSuccess
         self.recordRefreshSuccess = recordRefreshSuccess
         self.report = report
+        self.refreshActivity = refreshActivity
         self.now = now
         self.sleep = sleep
     }
@@ -203,8 +220,22 @@ actor WiltedAutomationCoordinator {
         guard running == nil else { return }
         let task = Task { await self.performPass(trigger: trigger) }
         running = task
-        await task.value
+        await Self.awaitForwardingCancellation(task)
         running = nil
+    }
+
+    /// This launch's refresh, then last session's claims.
+    ///
+    /// Resuming first held a due refresh behind every stranded transfer, and
+    /// Feeds said "Last refreshed 23 hours ago" for as long as they took. The
+    /// cost is the other way round now: episodes the refresh admits with Auto
+    /// download (`automaticRefresh` returns their claims) download before the
+    /// stranded ones resume. Both finish; only their order changes.
+    func launch() async {
+        lastRefreshFailed = false
+        await run(trigger: .launch)
+        await reconcile()
+        if lastRefreshFailed, !Task.isCancelled { await report(.failed(Self.failureLabel)) }
     }
 
     /// Stops the pass in flight. The claims it already made stay durable, and
@@ -227,8 +258,19 @@ actor WiltedAutomationCoordinator {
         guard running == nil else { return }
         let task = Task { await self.performReconcile() }
         running = task
-        await task.value
+        await Self.awaitForwardingCancellation(task)
         running = nil
+    }
+
+    /// The pass runs in its own unstructured task, which does not inherit the
+    /// caller's cancellation; without this, cancelling the caller (closing the
+    /// window) left the pass running until it finished on its own.
+    private static func awaitForwardingCancellation(_ task: Task<Void, Never>) async {
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func performReconcile() async {
@@ -240,7 +282,16 @@ actor WiltedAutomationCoordinator {
             return
         }
         guard !claims.isEmpty else { return }
-        await drain(claims)
+        let downloaded = await drain(claims)
+        // Terminal, because the launch pass now runs before this rather than
+        // after it, and nothing else would replace the last `.downloading`.
+        await report(Task.isCancelled ? .cancelled : .finished(refreshed: 0, downloaded: downloaded))
+    }
+
+    private enum RefreshOutcome {
+        /// Failed or cancelled; the status is already reported.
+        case stopped
+        case refreshed(Int, claimed: [String])
     }
 
     private func performPass(trigger: WiltedAutomationTrigger) async {
@@ -250,15 +301,39 @@ actor WiltedAutomationCoordinator {
             await report(.idle)
             return
         }
+        // A manual refresh owns Feeds. Skipping writes no timestamp, so the
+        // next tick re-evaluates.
+        guard await refreshActivity.begin() else {
+            await report(.idle)
+            return
+        }
+        let outcome = await refreshFeeds(plan)
+        // One exit for every outcome, and before any download, so Feeds shows
+        // the feed loop and nothing else.
+        await refreshActivity.end()
+        guard case let .refreshed(refreshed, claimed) = outcome else { return }
+        let downloaded = await drain(claimed)
+        if Task.isCancelled {
+            await report(.cancelled)
+        } else {
+            await report(.finished(refreshed: refreshed, downloaded: downloaded))
+        }
+    }
+
+    /// The feed loop alone, so `performPass` can end the refresh activity in
+    /// one place whatever the outcome.
+    private func refreshFeeds(_ plan: WiltedAutomationPlan) async -> RefreshOutcome {
+        lastRefreshFailed = false
         let feeds: [URL]
         do {
             feeds = try await withRetries { try await self.operations.enabledFeedURLs() }
         } catch is CancellationError {
             await report(.cancelled)
-            return
+            return .stopped
         } catch {
+            lastRefreshFailed = true
             await report(.failed(Self.failureLabel))
-            return
+            return .stopped
         }
 
         var remaining = plan.refreshDownloadBudget
@@ -267,7 +342,7 @@ actor WiltedAutomationCoordinator {
         for (index, feed) in feeds.enumerated() {
             if Task.isCancelled {
                 await report(.cancelled)
-                return
+                return .stopped
             }
             await report(.refreshing(feedsRemaining: feeds.count - index))
             let limit = plan.limit(remainingBudget: remaining)
@@ -278,7 +353,7 @@ actor WiltedAutomationCoordinator {
                 if let budget = remaining { remaining = max(0, budget - feedClaims.count) }
             } catch is CancellationError {
                 await report(.cancelled)
-                return
+                return .stopped
             } catch {
                 // One unreachable feed is not a reason to abandon the others.
                 // The refresh timestamp below still moves only if something
@@ -287,12 +362,7 @@ actor WiltedAutomationCoordinator {
             }
         }
         if refreshed > 0 { await recordRefreshSuccess(now()) }
-        let downloaded = await drain(claimed)
-        if Task.isCancelled {
-            await report(.cancelled)
-        } else {
-            await report(.finished(refreshed: refreshed, downloaded: downloaded))
-        }
+        return .refreshed(refreshed, claimed: claimed)
     }
 
     /// Starts each claimed episode in turn.

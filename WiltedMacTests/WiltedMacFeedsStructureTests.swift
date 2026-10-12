@@ -59,6 +59,18 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         XCTAssertFalse(shown.contains { $0.hasPrefix("Last updated") }, "the label is Last refreshed")
     }
 
+    /// Owner report 2026-10-12: Feeds read "Last refreshed 23 hours ago" while the launch refresh ran
+    /// unseen. An automatic pass shows Refreshing; Cancel stays with a manual refresh it can stop.
+    func testAnAutomaticRefreshShowsRefreshingWithoutAManualCancel() async throws {
+        let model = await WiltedMacHeadless.model(self, arguments)
+        model.automaticFeedRefreshInFlight = true
+
+        let shown = try lines(model).map(\.text)
+        XCTAssertTrue(shown.contains { $0.contains("Refreshing") }, "\(shown)")
+        XCTAssertFalse(shown.contains { $0.contains("Last refreshed") }, "\(shown)")
+        XCTAssertFalse(shown.contains("Cancel"), "Cancel cannot stop an automatic pass: \(shown)")
+    }
+
     func testRenderedSectionOrderIsOperationsThenSubscriptionsThenOffTheList() async throws {
         let model = await WiltedMacHeadless.model(self, arguments)
         let episode = try XCTUnwrap(model.feedsEpisodes.first)
@@ -156,9 +168,32 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
         model.larderFilter = .downloaded
         XCTAssertTrue(model.larderEpisodes(in: .downloaded).isEmpty)
-        let text = try WiltedMacHeadless.recognizedText(
+        let lines = try WiltedMacHeadless.recognizedLines(
             WiltedMacLarderView(model: model, paneMode: .side), size: CGSize(width: 1_000, height: 1_200))
-        XCTAssertTrue(text.contains { $0.contains("Downloaded audio is empty") }, "\(text)")
+        let text = lines.map(\.text)
+        let copy = try XCTUnwrap(text.firstIndex { $0.contains("Downloaded audio is empty") }, "\(text)")
+        // The selected chip keeps the group's heading (and its help) directly above the copy.
+        XCTAssertTrue(copy > 0 && text[copy - 1].hasPrefix("Downloaded"), "\(text)")
+    }
+
+    /// Owner report 2026-10-12: an empty Downloaded group lost its heading and help. The default
+    /// Larder keeps every empty status group; a search shows only groups with matching rows.
+    func testEmptyStatusGroupsShowInTheDefaultLarderButNotDuringASearch() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        XCTAssertTrue(model.larderEpisodes(in: .downloaded).isEmpty)
+        let larder = {
+            try WiltedMacHeadless.recognizedText(
+                WiltedMacLarderView(model: model, paneMode: .side), size: CGSize(width: 1_000, height: 1_200))
+        }
+        let emptyGroup = "No episode is in this group"
+        let shown = try larder()
+        XCTAssertTrue(shown.contains { $0.contains(emptyGroup) }, "\(shown)")
+        XCTAssertTrue(shown.contains { $0.hasPrefix("Downloaded") }, "\(shown)")
+
+        // The ready fixture's Larder holds articles, not episodes.
+        model.librarySearchQuery = try XCTUnwrap(model.larderFilteredItems.first?.title, "\(shown)")
+        let searched = try larder()
+        XCTAssertFalse(searched.contains { $0.contains(emptyGroup) }, "\(searched)")
     }
 
     // The Feeds subscribe popover and its per-feed Episodes listed picker were
@@ -168,6 +203,69 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "WiltedMacPodcastOperationMessage(model: model)", in: source), 1,
                        "the message component is mounted once")
     }
+
+    /// Owner report 2026-10-12: every Feeds visit drew "Capacity loading" for a second or two, because
+    /// the board was Feeds' own state and left with it. The root's state now holds the one board.
+    func testRootOwnsTheFeedPolicyBoardEveryFeedsVisitShares() throws {
+        let root = try WiltedMacHeadless.viewSource("WiltedMacRootView.swift")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(
+            of: "@State private var feedPolicyBoard: WiltedMacFeedPolicyBoard", in: root), 1,
+                       "the root's state holds the board for the window's life")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(
+            of: "_feedPolicyBoard = State(initialValue: WiltedMacFeedPolicyBoard(model: model))", in: root), 1)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(
+            of: "WiltedMacFeedsView(model: model, policyBoard: feedPolicyBoard)", in: root), 1,
+                       "Feeds draws the root's board")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "WiltedMacFeedsView(model: model)", in: root), 0,
+                       "no Feeds visit builds a board of its own")
+    }
+
+    /// A revisit is a fresh Feeds view over the board the first visit loaded. It draws that capacity
+    /// while the revisit's own background refresh is still reading, rather than "Capacity loading".
+    func testRevisitDrawsCachedCapacityWhileTheSharedBoardRefreshes() async throws {
+        let model = await WiltedMacHeadless.model(self, arguments)
+        addTeardownBlock { await model.close() }
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
+        XCTAssertFalse(model.subscriptions.isEmpty)
+        XCTAssertTrue(model.subscriptions.allSatisfy { board.isLoaded($0.id) })
+
+        let hold = WiltedMacFeedsRefreshHold()
+        board.reloadReadHookForTesting = { await hold.pause() }
+        let refresh = Task { await board.reload() }
+        await WiltedMacHeadless.eventually("the revisit's refresh is reading") { hold.entered }
+        XCTAssertTrue(board.isLoading)
+        let text: String
+        do {
+            text = try WiltedMacHeadless.recognizedText(
+                WiltedMacFeedsView(model: model, policyBoard: board), size: tall).joined(separator: " ")
+        } catch {
+            hold.release()
+            await refresh.value
+            throw error
+        }
+        hold.release()
+        await refresh.value
+        XCTAssertFalse(text.contains("Capacity loading"), text)
+        XCTAssertTrue(text.contains("kept"), text)
+        await WiltedMacHeadless.eventually("the refresh settles") { !board.isLoading }
+        XCTAssertTrue(model.subscriptions.allSatisfy { board.isLoaded($0.id) })
+    }
+}
+
+/// Holds a board's refresh at its read so a render can land while the refresh is in flight.
+@MainActor
+private final class WiltedMacFeedsRefreshHold {
+    private(set) var entered = false
+    private var released = false
+
+    func pause() async {
+        entered = true
+        // A cancelled sleep throws at once; stop waiting then rather than spin on the main actor.
+        while !released && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    func release() { released = true }
 }
 
 /// A real store-backed capacity snapshot shared by the count regressions; no fabricated board state.

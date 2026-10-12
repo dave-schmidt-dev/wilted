@@ -155,11 +155,14 @@ extension WiltedMacLarderView {
             grouping: model.larderGrouping,
             sort: model.larderSort,
             direction: model.larderSortDirection,
+            statusGroups: keptEmptyStatusGroups,
             isDeferredForOffPeak: { model.isDeferredForOffPeak($0) }
         )
         let numbering = WiltedMacEpisodePresentationSections.visibleNumbering(sections)
         let total = numbering.count
-        if model.larderFilteredItems.isEmpty {
+        // A selected status chip keeps its heading and help even when empty; with no chip, an
+        // empty Larder shows one whole-list line instead of three empty headings.
+        if model.larderFilteredItems.isEmpty && (model.larderFilter == nil || sections.isEmpty) {
             Label(model.isSearchingLarder
                   ? (model.isSearchingTranscripts ? "Still reading transcripts…" : "Nothing matches this search.")
                   : emptyLarderCopy, symbol: .larder)
@@ -173,13 +176,20 @@ extension WiltedMacLarderView {
                 ForEach(sections) { section in
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                         groupHeader(section, colorScheme: colorScheme)
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
-                                if index > 0 { Divider() }
-                                itemRow(item, index: index, section: section, numbering: numbering, total: total)
+                        if section.items.isEmpty {
+                            Text(model.larderFilter == nil ? Self.emptyGroupCopy : emptyLarderCopy)
+                                .wiltedFont(.body)
+                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                .accessibilityIdentifier("\(larderSectionIdentifier(section))-empty")
+                        } else {
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
+                                    if index > 0 { Divider() }
+                                    itemRow(item, index: index, section: section, numbering: numbering, total: total)
+                                }
                             }
+                            .wiltedCard(colorScheme)
                         }
-                        .wiltedCard(colorScheme)
                     }
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier(larderSectionIdentifier(section))
@@ -222,8 +232,19 @@ extension WiltedMacLarderView {
     private var emptyLarderCopy: String {
         if model.larderKind != .all && model.larderFilter == nil { return "Nothing of this kind is in Larder." }
         if model.larderFilter == .downloaded { return emptyDownloadedCopy }
-        return model.larderWaitingEpisodes.isEmpty ? emptyLarderPolicyCopy : "No episode is in this group right now."
+        return model.larderWaitingEpisodes.isEmpty ? emptyLarderPolicyCopy : Self.emptyGroupCopy
     }
+
+    /// Every group the status filter admits keeps its heading and help, even when empty. A search
+    /// or an Articles or Audiobooks view shows only groups with rows: those empties are noise.
+    private var keptEmptyStatusGroups: [WiltedMacLarderGroup] {
+        guard !model.isSearchingLarder, [.all, .podcasts].contains(model.larderKind) else { return [] }
+        return model.larderFilter.map { [$0] } ?? WiltedMacLarderGroup.allCases
+    }
+
+    /// The line a group with no rows shows, in the whole-list empty state and under an empty
+    /// Status section heading alike.
+    private static let emptyGroupCopy = "No episode is in this group right now."
 
     private var emptyDownloadedCopy: String {
         model.automationSettings.downloadEverythingOnLarder
@@ -241,18 +262,20 @@ extension WiltedMacLarderView {
     }
 
     /// The shipping group header, also rendered directly to prove complete labels at real widths.
+    /// A section with no rows keeps its heading and help but offers no group actions.
     func groupHeader(_ section: WiltedMacLarderSection, colorScheme: ColorScheme) -> some View {
-        ViewThatFits(in: .horizontal) {
+        let actionGroup = section.items.isEmpty ? nil : section.statusGroup
+        return ViewThatFits(in: .horizontal) {
             HStack(alignment: .firstTextBaseline) {
                 sectionHeading(section, colorScheme: colorScheme)
-                if let group = section.statusGroup {
+                if let group = actionGroup {
                     groupActions(group).buttonStyle(.bordered).controlSize(.small)
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 sectionHeading(section, colorScheme: colorScheme)
-                if let group = section.statusGroup {
+                if let group = actionGroup {
                     WiltedMacFlowLayout { groupActions(group) }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
@@ -322,176 +345,11 @@ extension WiltedMacLarderView {
 /// durable queue, the model's sort fallback, or lifecycle eligibility.
 ///
 /// Rows are podcast episodes, audiobooks and articles. The fixed status order is Ready, Active
-/// work, Downloaded, Not downloaded; the sort applies within each group.
+/// work, Downloaded, Not downloaded; the sort applies within each group. The section rules live
+/// in `WiltedMacLarderSectionPresentation.swift`.
 enum WiltedMacEpisodePresentationSections {
     struct VisibleNumbering {
         let positions: [String: Int]
         let count: Int
-    }
-
-    /// Continuous visible ordinals across the actual rendered sections.
-    /// Only presentation changes: durable queue order and episode values stay intact. Articles are
-    /// not in the queue, so they carry no ordinal.
-    static func visibleNumbering(_ sections: [WiltedMacLarderSection]) -> VisibleNumbering {
-        let episodes = sections.flatMap(\.episodes)
-        let positions = Dictionary(uniqueKeysWithValues: episodes.enumerated().map {
-            ($0.element.id, $0.offset + 1)
-        })
-        return VisibleNumbering(positions: positions, count: episodes.count)
-    }
-
-    static func displaySections(
-        _ sections: [WiltedMacLarderSection],
-        grouping: WiltedMacLarderGrouping,
-        sort: WiltedMacLarderSort = .custom,
-        direction: WiltedMacLarderSortDirection = .ascending,
-        calendar: Calendar = .autoupdatingCurrent,
-        now: Date = Date(),
-        isDeferredForOffPeak: (String) -> Bool = { _ in false }
-    ) -> [WiltedMacLarderSection] {
-        func isActive(_ item: WiltedMacLibraryItem) -> Bool {
-            switch item {
-            case .article(let article): !article.isReady
-            case .audiobook: false
-            case .episode(let episode):
-                episode.downloadState.isInFlight
-                    || (episode.preparationState.isRunning && !isDeferredForOffPeak(episode.id))
-            }
-        }
-        let active = sections.flatMap(\.items).filter(isActive)
-        let activeIDs = Set(active.map(\.id))
-        let remaining = sections.compactMap { section -> WiltedMacLarderSection? in
-            let rows = presentationOrder(
-                section.items.filter { !activeIDs.contains($0.id) }, sort: sort, direction: direction
-            )
-            guard !rows.isEmpty else { return nil }
-            return WiltedMacLarderSection(
-                id: section.id, title: section.title, detail: section.detail,
-                statusGroup: section.statusGroup, items: rows
-            )
-        }
-        let content = grouping == .date
-            ? publicationDateSections(remaining.flatMap(\.items), calendar: calendar, now: now)
-            : remaining
-        guard !active.isEmpty else { return content }
-        let activeSection = WiltedMacLarderSection(
-            id: "active-work", title: "Active work", detail: "download or preparation in progress",
-            statusGroup: nil, items: active
-        )
-        // Status keeps its lifecycle order: Ready, then work in progress, then what still needs a step.
-        guard grouping == .status else { return [activeSection] + content }
-        let readyEnd = content.firstIndex { $0.statusGroup == .playable }.map { $0 + 1 } ?? 0
-        return Array(content[..<readyEnd]) + [activeSection] + Array(content[readyEnd...])
-    }
-
-    /// Newest keeps unknown feed publication facts after known facts while it
-    /// presents each existing status or feed section. It deliberately does
-    /// not rewrite the model's durable comparator or merge lifecycle sections.
-    static func presentationOrder(
-        _ episodes: [WiltedMacEpisode], sort: WiltedMacLarderSort
-    ) -> [WiltedMacEpisode] {
-        guard sort == .newest else { return episodes }
-        return episodes.filter { $0.publishedAt != nil }
-            + episodes.filter { $0.publishedAt == nil }
-    }
-
-    /// One section's rows in order. Without articles the queue order the model already holds is kept
-    /// (the legacy rule above). With articles, which have no queue position, a calculated sort orders
-    /// every row together; Listening order keeps the queued rows first and the articles after them,
-    /// newest first.
-    static func presentationOrder(
-        _ items: [WiltedMacLibraryItem], sort: WiltedMacLarderSort,
-        direction: WiltedMacLarderSortDirection = .ascending
-    ) -> [WiltedMacLibraryItem] {
-        let hasArticle = items.contains { if case .article = $0 { true } else { false } }
-        guard hasArticle else {
-            let episodes = items.compactMap { item -> WiltedMacEpisode? in
-                switch item { case .episode(let value), .audiobook(let value): value; case .article: nil }
-            }
-            return presentationOrder(episodes, sort: sort).map(WiltedMacLibraryItem.init(episode:))
-        }
-        guard sort.canonical != .custom else {
-            let queued = items.filter { if case .article = $0 { false } else { true } }
-            let articles = items.filter { if case .article = $0 { true } else { false } }
-            return queued + articles.sorted { $0.date > $1.date }
-        }
-        return items.sorted { precedes($0, $1, sort: sort, direction: direction) }
-    }
-
-    /// The model's calculated-sort comparator, applied to any row kind. Unknown lengths and dates sort
-    /// last in either direction.
-    private static func precedes(
-        _ lhs: WiltedMacLibraryItem, _ rhs: WiltedMacLibraryItem,
-        sort: WiltedMacLarderSort, direction: WiltedMacLarderSortDirection
-    ) -> Bool {
-        let ascending = (sort.legacyDirection ?? direction) == .ascending
-        switch sort.canonical {
-        case .length, .age:
-            let isLength = sort.canonical == .length
-            let left = isLength ? lhs.progress.duration : knownDate(lhs)?.timeIntervalSince1970
-            let right = isLength ? rhs.progress.duration : knownDate(rhs)?.timeIntervalSince1970
-            switch (left, right) {
-            case let (left?, right?) where left != right:
-                // Age ascending means younger first; length ascending means shortest first.
-                return isLength ? (ascending ? left < right : left > right) : (ascending ? left > right : left < right)
-            case (nil, .some): return false
-            case (.some, nil): return true
-            default: break
-            }
-        case .alphabetical:
-            let comparison = LibrarySortKey.title(lhs.title).localizedStandardCompare(LibrarySortKey.title(rhs.title))
-            if comparison != .orderedSame { return comparison == (ascending ? .orderedAscending : .orderedDescending) }
-        default: break
-        }
-        return lhs.id < rhs.id
-    }
-
-    /// The factual date of a row: a feed's publication date, or when an article was saved.
-    private static func knownDate(_ item: WiltedMacLibraryItem) -> Date? {
-        switch item {
-        case .article(let value): value.createdAt
-        case .episode(let value), .audiobook(let value): value.publishedAt
-        }
-    }
-
-    /// `releasedAt` stays the legacy sort/grouping fallback, but a section
-    /// header describes only the feed's actual optional publication date.
-    /// Unknown facts are collected last rather than borrowing intake time.
-    static func publicationDateSections(
-        _ items: [WiltedMacLibraryItem], calendar: Calendar, now: Date
-    ) -> [WiltedMacLarderSection] {
-        var dated: [(date: Date, items: [WiltedMacLibraryItem])] = []
-        var unknown: [WiltedMacLibraryItem] = []
-        for item in items {
-            guard let publishedAt = knownDate(item) else {
-                unknown.append(item)
-                continue
-            }
-            let date = calendar.startOfDay(for: publishedAt)
-            if let index = dated.firstIndex(where: { calendar.isDate($0.date, inSameDayAs: date) }) {
-                dated[index].items.append(item)
-            } else {
-                dated.append((date, [item]))
-            }
-        }
-        let known = dated.map { value in
-            WiltedMacLarderSection(
-                id: "publication-date-\(value.date.timeIntervalSinceReferenceDate)",
-                title: publicationDateTitle(value.date, calendar: calendar, now: now), detail: nil,
-                statusGroup: nil, items: value.items
-            )
-        }
-        guard !unknown.isEmpty else { return known }
-        return known + [WiltedMacLarderSection(
-            id: "publication-date-unknown", title: "Unknown publication date", detail: nil,
-            statusGroup: nil, items: unknown
-        )]
-    }
-
-    private static func publicationDateTitle(_ date: Date, calendar: Calendar, now: Date) -> String {
-        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
-        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
-           calendar.isDate(date, inSameDayAs: yesterday) { return "Yesterday" }
-        return date.formatted(date: .abbreviated, time: .omitted)
     }
 }

@@ -159,19 +159,17 @@ extension WiltedMacModel {
     /// CloudKit.
     static let playbackCheckpointInterval: TimeInterval = 10
 
-    /// Resumes last session's claims, then evaluates this launch.
+    /// Evaluates this launch, then resumes last session's claims.
     ///
-    /// Sequential, and started only once the library has loaded. The coordinator
-    /// runs one pass at a time, so firing both concurrently would drop one, and
-    /// resuming a claim before `episodes` is populated would fault every
-    /// recovered download.
+    /// Sequential (`WiltedAutomationCoordinator.launch`), and started only once
+    /// the library has loaded. The coordinator runs one pass at a time, so
+    /// firing both concurrently would drop one, and resuming a claim before
+    /// `episodes` is populated would fault every recovered download. The
+    /// refresh goes first so a due one never waits behind resumed downloads.
     func startAutomationOnLaunch() {
 #if canImport(WiltedProducer)
         guard !isClosingTemporaryState, !fixtureMode, let coordinator = automationCoordinator() else { return }
-        automationTask = Task {
-            await coordinator.reconcile()
-            await coordinator.run(trigger: .launch)
-        }
+        automationTask = Task { await coordinator.launch() }
 #endif
     }
 
@@ -413,10 +411,27 @@ extension WiltedMacModel {
             settings: { [weak self] in await self?.automationSettings ?? .defaults },
             lastRefreshSuccess: { [weak self] in await self?.lastAutomationRefreshAt },
             recordRefreshSuccess: { [weak self] date in await self?.setLastAutomationRefresh(date) },
-            report: { [weak self] status in await self?.setAutomationStatus(status) }
+            report: { [weak self] status in await self?.setAutomationStatus(status) },
+            refreshActivity: .init(
+                begin: { [weak self] in await self?.beginAutomaticFeedRefresh() ?? false },
+                end: { [weak self] in await self?.endAutomaticFeedRefresh() }
+            )
         )
         automation = coordinator
         return coordinator
+    }
+
+    /// Shows an automatic pass's feed loop in Feeds, unless a manual refresh
+    /// already owns it: the pass then skips its refresh. A manual refresh
+    /// started during an automatic one still runs, and Feeds reads both.
+    func beginAutomaticFeedRefresh() -> Bool {
+        guard podcastRefreshTask == nil else { return false }
+        automaticFeedRefreshInFlight = true
+        return true
+    }
+
+    func endAutomaticFeedRefresh() {
+        automaticFeedRefreshInFlight = false
     }
 
     private func automationFeedURLs() async throws -> [URL] {

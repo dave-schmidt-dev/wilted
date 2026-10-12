@@ -74,6 +74,8 @@ struct WiltedMacFeedsView: View {
         }
     }
 
+    /// The root passes its window-long board, which the details sheet and rules editor share.
+    /// A board built here serves only headless tests that render Feeds on its own.
     init(model: WiltedMacModel, policyBoard: WiltedMacFeedPolicyBoard? = nil) {
         _model = Bindable(model)
         _policyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
@@ -240,13 +242,16 @@ struct WiltedMacFeedsView: View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             // The destination's own title is the page's one "Feeds" heading.
             Spacer()
-            if model.isRefreshingPodcasts {
+            if model.isRefreshingPodcasts || model.automaticFeedRefreshInFlight {
                 ProgressView().controlSize(.small).accessibilityIdentifier("wilted-podcast-refresh-progress")
                 Text("Refreshing")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                Button("Cancel") { model.cancelPodcastRefresh() }
-                    .accessibilityIdentifier("wilted-podcast-refresh-cancel")
+                // Cancel stops a manual refresh only; Settings stops an automatic pass.
+                if model.isRefreshingPodcasts {
+                    Button("Cancel") { model.cancelPodcastRefresh() }
+                        .accessibilityIdentifier("wilted-podcast-refresh-cancel")
+                }
             } else {
                 WiltedMacLastRefreshedLabel(model: model, identifier: "wilted-podcast-last-updated")
                 Button("Refresh") { model.refreshPodcastFeeds() }
@@ -309,7 +314,8 @@ struct WiltedMacFeedsView: View {
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(WiltedScreenCopy.feedsIdentifier)
-        // The board holds each feed's stored policy; reload when the list of feeds changes.
+        // The board keeps each feed's stored policy across visits. Each visit, and each change to
+        // the list of feeds, refreshes it in the background; reload publishes only when it finishes.
         .task(id: model.subscriptions.map(\.id)) { await policyBoard.reload() }
     }
 

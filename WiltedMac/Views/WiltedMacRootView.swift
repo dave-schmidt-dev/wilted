@@ -24,6 +24,8 @@ struct WiltedMacRootView: View {
     @State private var playerFocusRequest: WiltedMacPlayerSection?
     @State private var windowWidth: CGFloat = 0
     @State private var paneState = WiltedMacPaneState()
+    /// Outlives each Feeds visit, so a revisit draws cached capacity while Feeds refreshes it.
+    @State private var feedPolicyBoard: WiltedMacFeedPolicyBoard
 
     /// What the window's width gives the sidebar and the Now Playing pane.
     private var shell: WiltedMacShellLayout {
@@ -38,6 +40,7 @@ struct WiltedMacRootView: View {
 
     init(model: WiltedMacModel) {
         _model = Bindable(model)
+        _feedPolicyBoard = State(initialValue: WiltedMacFeedPolicyBoard(model: model))
     }
 
     var body: some View {
@@ -86,7 +89,7 @@ struct WiltedMacRootView: View {
                         Group {
                             switch model.selectedNavigation {
                             case .feeds:
-                                WiltedMacFeedsView(model: model)
+                                WiltedMacFeedsView(model: model, policyBoard: feedPolicyBoard)
                             case .larder:
                                 WiltedMacLarderView(model: model, paneMode: shell.pane, sidebarMode: shell.sidebar)
                             case .settings:

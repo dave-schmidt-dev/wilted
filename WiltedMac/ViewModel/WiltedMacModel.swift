@@ -166,6 +166,8 @@ final class WiltedMacModel {
     /// episode: nothing was dismissed, so the undo needs no feed check.
     var undoableSkip: WiltedMacEpisode?
     var isRefreshingPodcasts = false
+    /// An automatic pass is in its feed loop; Feeds shows it like a manual refresh.
+    var automaticFeedRefreshInFlight = false
     /// Per-feed progress of the refresh in flight, keyed by feed ID; a feed that is not here is idle.
     var feedRefreshStates: [String: WiltedMacFeedRefreshState] = [:]
     /// The durable write each feed's row is waiting on, set before the write is awaited.

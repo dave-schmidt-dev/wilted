@@ -26,6 +26,7 @@ All notable changes to this project are documented in this file.
 - Alphabetical sorting on Mac and iPhone ignores a leading “The” case-insensitively without changing displayed titles.
 - Share keeps its normal control when a page address is unavailable and sends `title - show` as text instead.
 - Now Playing uses compact 48-point artwork, one transport row, speed, and secondary actions in an overflow menu.
+- Now Playing: Mark completed is a bordered button, and Share sits beside the episode title instead of in the More menu.
 - Subscribing on the Mac no longer asks how many episodes to list; new feeds use the Episodes listed default in Settings.
 - A pasted feed with no audio episodes is offered as an article feed to follow instead of being refused; a feed with neither audio nor posts says "This feed has no audio and no posts to follow."
 - The Mac Larder is one list grouped Ready, Active work, Downloaded, then Not downloaded, with articles and books in the same list and a kind filter (All, Podcasts, Articles, Audiobooks); the iPhone Larder has the same kind filter.
@@ -37,6 +38,10 @@ All notable changes to this project are documented in this file.
 - Re-downloading an episode deletes the copy it replaces, and the Mac startup has a "Reclaiming storage" step that deletes audio no record names and clears records whose audio is missing.
 
 ### Fixed
+- Opening the Mac app runs a due feed refresh before it resumes unfinished downloads, and Feeds shows Refreshing while it runs, instead of "Last refreshed 23 hours ago" until those downloads finished. An automatic refresh skips itself while a manual one is running, and closing the app stops an automatic pass in progress.
+- Returning to Feeds keeps each feed's capacity on screen while it updates, instead of showing "Capacity loading" on every visit.
+- Feed History says Played for an episode you finished and Skipped for one you skipped, replacing Skipped and Removed, which read the same; the status filter offers Played and Skipped.
+- An empty Larder status group, such as Downloaded with nothing in it, keeps its heading and info button and says "No episode is in this group right now." Selecting an empty group's chip also keeps its heading and info button above the explanation. A search, or the Articles or Audiobooks view, still shows only groups with rows.
 - Quit-interrupted downloads resume on relaunch with a three-attempt automatic bound, while an explicit Cancel stays cancelled and a new explicit request resets its own attempt count.
 - Playback checkpoints remain ordered without delaying audio controls; a newer selection or Pause supersedes natural continuation, and a removed Ready candidate is skipped.
 - SwiftPM package test builds recover from Finder metadata signing failures by clearing File Provider metadata and retrying once within the shared work budget.

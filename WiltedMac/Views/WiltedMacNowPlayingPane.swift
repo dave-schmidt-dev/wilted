@@ -136,9 +136,12 @@ struct WiltedMacNowPlayingPane: View {
                 Text(detail)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Share sits on the trailing side of the title, as in the rail player. Borderless icons
+            // leave the show and date room; at the narrowest width the date may wrap, never truncate.
+            share.buttonStyle(.borderless)
         }
     }
 
@@ -229,8 +232,7 @@ struct WiltedMacNowPlayingPane: View {
         Button(model.playbackCompletionIsSettled ? "Completed" : "Mark completed") {
             model.markCurrentPlaybackCompleted()
         }
-        .buttonStyle(.borderless)
-        .wiltedFont(.utility)
+        .buttonStyle(.bordered)
         .fixedSize()
         .disabled(model.playbackCompletionIsSettled)
         .accessibilityIdentifier("wilted-player-mark-completed")
@@ -282,7 +284,6 @@ struct WiltedMacNowPlayingPane: View {
                 }
                 .accessibilityIdentifier("wilted-player-route-recovery")
             }
-            share
         }
         .padding(WiltedTheme.Spacing.large)
         .frame(minWidth: 200, alignment: .leading)

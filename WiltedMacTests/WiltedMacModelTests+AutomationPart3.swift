@@ -387,4 +387,39 @@ extension WiltedMacModelTests {
         XCTAssertEqual(relaunched.automationSettings.refreshPolicy, .whileOpen(everyHours: 6))
     }
 
+    /// A manual refresh already owns Feeds, so an automatic pass that comes due
+    /// skips its refresh rather than fetching every feed twice, and writes no
+    /// timestamp so the next tick re-evaluates. Without one, the pass shows
+    /// itself through `automaticFeedRefreshInFlight`, which Feeds reads.
+    func testAnAutomaticPassSkipsItsRefreshWhileAManualRefreshIsInFlight() async throws {
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: temporaryDirectory("automation-yields"),
+                                   preferences: try automationSettingsPreferences())
+        let due = WiltedAutomationSettings(
+            refreshPolicy: .whileOpen(everyHours: 6), downloadPolicy: .manual,
+            processingPolicy: .immediate, transcriptPolicy: .bestAvailable, removeAds: true
+        )
+        let subject = WiltedAutomationCoordinator(
+            operations: .init(
+                enabledFeedURLs: { XCTFail("a skipped pass reads no feeds"); return [] },
+                refreshFeed: { _, _ in XCTFail("a skipped pass refreshes nothing"); return [] },
+                startDownload: { _ in },
+                unfinishedClaims: { [] }
+            ),
+            settings: { due },
+            lastRefreshSuccess: { nil },
+            recordRefreshSuccess: { _ in XCTFail("a skipped pass writes no timestamp") },
+            report: { _ in },
+            refreshActivity: .init(begin: { await model.beginAutomaticFeedRefresh() },
+                                   end: { await model.endAutomaticFeedRefresh() })
+        )
+        model.podcastRefreshTask = Task {}
+        await subject.run(trigger: .openWindowTick)
+        XCTAssertFalse(model.automaticFeedRefreshInFlight)
+        model.podcastRefreshTask = nil
+
+        XCTAssertTrue(model.beginAutomaticFeedRefresh(), "with no manual refresh the pass shows itself")
+        XCTAssertTrue(model.automaticFeedRefreshInFlight)
+        model.endAutomaticFeedRefresh()
+        XCTAssertFalse(model.automaticFeedRefreshInFlight)
+    }
 }

@@ -346,6 +346,33 @@ final class WiltedMacNowPlayingTests: XCTestCase {
                        "only the shared control reads it")
     }
 
+    /// Share is a direct control beside the title and Mark completed reads as a button; neither
+    /// hides in the overflow popover or looks like loose text.
+    func testPaneShareSitsBesideTheTitleAndMarkCompletedIsABorderedButton() throws {
+        let source = try WiltedMacHeadless.viewSource("WiltedMacNowPlayingPane.swift")
+        func section(_ start: String, until end: String) throws -> String {
+            let begin = try XCTUnwrap(source.range(of: start), start)
+            let finish = try XCTUnwrap(source.range(of: end, range: begin.upperBound..<source.endIndex), end)
+            return String(source[begin.lowerBound..<finish.lowerBound])
+        }
+        let header = try section("private var header:", until: "@ViewBuilder private var artwork")
+        let headerLines = header.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let titleLine = try XCTUnwrap(headerLines.firstIndex { $0.contains("wilted-player-item-title") }, "title in header")
+        XCTAssertTrue(headerLines[titleLine...].contains { $0.hasPrefix("share") }, "Share follows the title block inside the header HStack")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "WiltedMacPlaybackShareLink(model: model)", in: source), 1,
+                       "one Share definition, mounted in the header")
+        let actions = try section("var playbackActions:", until: "var share:")
+        XCTAssertFalse(actions.contains("share"), "the More popover no longer holds Share")
+        XCTAssertFalse(actions.contains("wilted-player-share"))
+        let completion = try section("private var completionControl:", until: "private var speedControl:")
+        XCTAssertTrue(completion.contains(".buttonStyle(.bordered)"))
+        XCTAssertFalse(completion.contains(".buttonStyle(.borderless)"))
+        XCTAssertFalse(completion.contains(".wiltedFont(.utility)"), "bordered button keeps the native control font")
+        XCTAssertTrue(completion.contains("\"Mark completed\""))
+        XCTAssertTrue(completion.contains(".disabled(model.playbackCompletionIsSettled)"))
+        XCTAssertTrue(completion.contains("wilted-player-mark-completed"))
+    }
+
     func testPaneKeepsCompletionAboveTheReaderAndSpeedHiddenAtNarrowAndFullWidths() throws {
         let (model, _, _) = makeModel()
         let item = WiltedMacEpisode(
@@ -422,6 +449,7 @@ final class WiltedMacNowPlayingTests: XCTestCase {
                 XCTAssertTrue(lines.contains { $0.contains("Speed") }, context)
                 XCTAssertTrue(lines.contains { $0.contains("1.25") }, context)
                 XCTAssertTrue(lines.contains { $0.contains("Restart") }, context)
+                // Share now lives in the header; it is still rendered here as a unit.
                 let share = WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))
                     .share.environment(\.colorScheme, scheme)
                     .background(WiltedTheme.color(.page, scheme: scheme))

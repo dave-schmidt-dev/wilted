@@ -139,7 +139,8 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
              WiltedMacHeadless.windowCanvas),
         ]
         for (name, view, size) in surfaces {
-            let shown = try text(view, size: size)
+            // The side pane shares its header with Share, so at its narrowest the subtitle may wrap (never truncate).
+            let shown = try text(view, size: size).replacingOccurrences(of: "\n", with: " ")
             XCTAssertTrue(shown.contains("Publication date unknown"), "\(name) player states the missing date: \(shown)")
             XCTAssertFalse(shown.contains(intake), "\(name) player must not show the intake date")
         }

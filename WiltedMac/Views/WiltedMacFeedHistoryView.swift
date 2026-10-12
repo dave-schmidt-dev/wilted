@@ -1,34 +1,78 @@
 import SwiftUI
 
+/// What History calls a row. Retirement records both a manual skip and a
+/// finished episode, so the label follows completion, not the stored removal.
 enum WiltedMacFeedHistoryStatus: String, CaseIterable, Identifiable {
+    case played = "Played"
     case skipped = "Skipped"
-    case removed = "Removed"
 
     var id: String { rawValue }
 }
 
 struct WiltedMacFeedHistoryRecord: Identifiable, Equatable {
+    /// The stored removal behind a row. Restore and its identifier follow
+    /// this, never the label: a played row restores exactly like a skipped one.
+    enum Kind: Equatable {
+        case retired
+        /// A legacy dismissal. Nothing writes these now; old rows still restore.
+        case dismissed
+    }
+
     let id: String
     let feedID: String?
     let feedTitle: String?
     let presentation: WiltedMacEpisodePresentation
+    let kind: Kind
     let status: WiltedMacFeedHistoryStatus
     let changedAt: Date?
+
+    /// History rows, newest change first. A retired episode with a completion
+    /// record reads Played; any other retirement and every legacy dismissal
+    /// reads Skipped. An episode both retired and dismissed shows once, as retired.
+    static func history(
+        retired: [WiltedMacEpisode], dismissed: [WiltedMacDismissedEpisode]
+    ) -> [WiltedMacFeedHistoryRecord] {
+        let retiredRecords = retired.map { episode in
+            WiltedMacFeedHistoryRecord(
+                id: episode.id, feedID: episode.feedID, feedTitle: episode.feedTitle,
+                presentation: episode.presentation, kind: .retired,
+                status: episode.isPlayed ? .played : .skipped, changedAt: episode.retiredAt
+            )
+        }
+        let retiredIDs = Set(retiredRecords.map(\.id))
+        let dismissedRecords = dismissed.filter { !retiredIDs.contains($0.id) }.map { dismissal in
+            WiltedMacFeedHistoryRecord(
+                id: dismissal.id, feedID: dismissal.feedID, feedTitle: dismissal.feedTitle,
+                presentation: dismissal.presentation, kind: .dismissed, status: .skipped,
+                changedAt: dismissal.dismissedAt
+            )
+        }
+        return (retiredRecords + dismissedRecords).sorted { left, right in
+            switch (left.changedAt, right.changedAt) {
+            case let (leftDate?, rightDate?):
+                if leftDate != rightDate { return leftDate > rightDate }
+                return left.id < right.id
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return left.id < right.id
+            }
+        }
+    }
 }
 
 /// Search and page state stays independent of the Feeds inbox selection and scroll anchor.
 struct WiltedMacFeedHistoryQuery {
     enum StatusFilter: String, CaseIterable, Identifiable {
         case all = "All statuses"
+        case played = "Played"
         case skipped = "Skipped"
-        case removed = "Removed"
 
         var id: String { rawValue }
         var status: WiltedMacFeedHistoryStatus? {
             switch self {
             case .all: nil
+            case .played: .played
             case .skipped: .skipped
-            case .removed: .removed
             }
         }
     }
@@ -85,29 +129,7 @@ struct WiltedMacFeedHistoryView: View {
     }
 
     private var records: [WiltedMacFeedHistoryRecord] {
-        let skipped = model.skippedFeedEpisodes.map { episode in
-            WiltedMacFeedHistoryRecord(
-                id: episode.id, feedID: episode.feedID, feedTitle: episode.feedTitle,
-                presentation: episode.presentation, status: .skipped, changedAt: episode.retiredAt
-            )
-        }
-        let skippedIDs = Set(skipped.map(\.id))
-        let removed = model.dismissedEpisodes.filter { !skippedIDs.contains($0.id) }.map { dismissal in
-            WiltedMacFeedHistoryRecord(
-                id: dismissal.id, feedID: dismissal.feedID, feedTitle: dismissal.feedTitle,
-                presentation: dismissal.presentation, status: .removed, changedAt: dismissal.dismissedAt
-            )
-        }
-        return (skipped + removed).sorted { left, right in
-            switch (left.changedAt, right.changedAt) {
-            case let (leftDate?, rightDate?):
-                if leftDate != rightDate { return leftDate > rightDate }
-                return left.id < right.id
-            case (_?, nil): return true
-            case (nil, _?): return false
-            case (nil, nil): return left.id < right.id
-            }
-        }
+        WiltedMacFeedHistoryRecord.history(retired: model.skippedFeedEpisodes, dismissed: model.dismissedEpisodes)
     }
 
     private var filteredRecords: [WiltedMacFeedHistoryRecord] {
@@ -198,7 +220,7 @@ struct WiltedMacFeedHistoryView: View {
     private func historyRow(_ record: WiltedMacFeedHistoryRecord) -> some View {
         let isPending = model.pendingFeedDecisionIDs.contains(record.id) || model.podcastRestoreTasks[record.id] != nil
         let failed = model.failedFeedDecisionIDs.contains(record.id)
-        let restoreIdentifier = record.status == .skipped
+        let restoreIdentifier = record.kind == .retired
             ? WiltedMacFeedHistoryAccessibilityID.restoreSkipped(record.id)
             : WiltedMacFeedHistoryAccessibilityID.restoreRemoved(record.id)
         return HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
@@ -243,12 +265,12 @@ struct WiltedMacFeedHistoryView: View {
     }
 
     private func restore(_ record: WiltedMacFeedHistoryRecord) {
-        switch record.status {
-        case .skipped:
+        switch record.kind {
+        case .retired:
             if let episode = model.skippedFeedEpisodes.first(where: { $0.id == record.id }) {
                 model.restoreSkippedFeedEpisode(episode)
             }
-        case .removed:
+        case .dismissed:
             if let dismissal = model.dismissedEpisodes.first(where: { $0.id == record.id }) {
                 model.restoreEpisode(dismissal)
             }

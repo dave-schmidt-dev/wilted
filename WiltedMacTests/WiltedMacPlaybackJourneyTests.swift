@@ -139,9 +139,10 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         XCTAssertTrue(overflow.contains("wilted-player-menu"))
         XCTAssertFalse(source.contains("Menu {"), "plain ellipsis must have no native menu chevron")
         let actions = try section("var playbackActions:", until: "var share:")
-        for action in ["speedControl", "model.restartPlayback()", "share", "model.recoverAudioRoute()"] {
+        for action in ["speedControl", "model.restartPlayback()", "model.recoverAudioRoute()"] {
             XCTAssertTrue(actions.contains(action), action)
         }
+        XCTAssertFalse(actions.contains("share"), "Share sits beside the title, not in the More popover")
         XCTAssertFalse(actions.contains("markCurrentPlaybackCompleted"))
         XCTAssertTrue(actions.contains("wilted-player-restart"))
         XCTAssertTrue(actions.contains("wilted-player-route-recovery"))

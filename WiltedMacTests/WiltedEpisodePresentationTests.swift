@@ -212,7 +212,10 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertTrue(views.contains(".buttonStyle(.borderedProminent)"))
         XCTAssertTrue(views.contains(".buttonStyle(.bordered)"))
         XCTAssertTrue(sections.contains("WiltedMacEpisodePresentationSections.displaySections"))
-        XCTAssertTrue(sections.contains("Unknown publication date"))
+        let sectionPresentation = try String(contentsOf: root.appendingPathComponent(
+            "WiltedMac/Views/WiltedMacLarderSectionPresentation.swift"), encoding: .utf8
+        )
+        XCTAssertTrue(sectionPresentation.contains("Unknown publication date"))
         XCTAssertTrue(sections.contains("automatic download setting"))
         XCTAssertTrue(sections.contains("emptyDownloadedCopy"))
         XCTAssertTrue(sections.contains("downloadEverythingOnLarder"))

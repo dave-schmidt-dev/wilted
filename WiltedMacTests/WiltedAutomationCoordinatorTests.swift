@@ -25,6 +25,12 @@ private actor AutomationSpy {
     /// time -- the shape a claim-lost or user-cancel outcome takes once it
     /// reaches `startClaimedDownload`. `withRetries` must never retry these.
     var nonRetryableDownloadFailures: Set<String> = []
+    /// The refresh activity Feeds shows: every open and close, and what each
+    /// refresh attempt and download start saw of it.
+    var refreshActive = false
+    var activity: [Bool] = []
+    var activeDuringRefresh: [Bool] = []
+    var activeDuringDownload: [Bool] = []
 
     init(claimsByFeed: [String: [String]] = [:], unfinished: [String] = [],
          transientFailures: [String: Int] = [:], downloadFailures: Set<String> = [],
@@ -44,6 +50,7 @@ private actor AutomationSpy {
     struct NonRetryable: Error, WiltedAutomationNonRetryable {}
 
     func refreshFeed(_ url: URL, limit: Int) throws -> [String] {
+        activeDuringRefresh.append(refreshActive)
         let host = url.host ?? url.absoluteString
         if let remaining = transientFailures[host], remaining > 0 {
             transientFailures[host] = remaining - 1
@@ -54,6 +61,7 @@ private actor AutomationSpy {
     }
 
     func startDownload(_ episodeID: String) throws {
+        activeDuringDownload.append(refreshActive)
         downloadAttempts[episodeID, default: 0] += 1
         if nonRetryableDownloadFailures.contains(episodeID) { throw NonRetryable() }
         if downloadFailures.contains(episodeID) { throw Transient() }
@@ -69,6 +77,7 @@ private actor AutomationSpy {
     func record(_ status: WiltedAutomationStatus) { statuses.append(status) }
     func record(sleep seconds: TimeInterval) { sleeps.append(seconds) }
     func record(success date: Date) { recordedSuccesses.append(date) }
+    func setRefreshActive(_ active: Bool) { refreshActive = active; activity.append(active) }
 }
 
 final class WiltedAutomationCoordinatorTests: XCTestCase {
@@ -86,24 +95,36 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         spy: AutomationSpy,
         settings: WiltedAutomationSettings,
         lastSuccess: Date? = nil,
-        now: Date? = nil
+        now: Date? = nil,
+        slowRefresh: (@Sendable () async -> Void)? = nil,
+        slowDownload: (@Sendable () async -> Void)? = nil,
+        feedListFails: Bool = false
     ) -> WiltedAutomationCoordinator {
         let clock = now ?? origin
         return WiltedAutomationCoordinator(
             operations: .init(
                 enabledFeedURLs: {
-                    [URL(string: "https://one.example.test/feed.xml")!,
+                    if feedListFails { throw AutomationSpy.Transient() }
+                    return [URL(string: "https://one.example.test/feed.xml")!,
                      URL(string: "https://two.example.test/feed.xml")!,
                      URL(string: "https://three.example.test/feed.xml")!]
                 },
-                refreshFeed: { url, limit in try await spy.refreshFeed(url, limit: limit) },
-                startDownload: { id in try await spy.startDownload(id) },
+                refreshFeed: { url, limit in
+                    await slowRefresh?()
+                    return try await spy.refreshFeed(url, limit: limit)
+                },
+                startDownload: { id in
+                    try await spy.startDownload(id)
+                    await slowDownload?()
+                },
                 unfinishedClaims: { await spy.unfinishedClaims() }
             ),
             settings: { settings },
             lastRefreshSuccess: { lastSuccess },
             recordRefreshSuccess: { await spy.record(success: $0) },
             report: { await spy.record($0) },
+            refreshActivity: .init(begin: { await spy.setRefreshActive(true); return true },
+                                   end: { await spy.setRefreshActive(false) }),
             now: { clock },
             sleep: { await spy.record(sleep: $0) }
         )
@@ -409,5 +430,81 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         XCTAssertTrue(started.isEmpty)
         let statuses = await spy.statuses
         XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0))
+    }
+
+    // MARK: - Launch order and refresh visibility
+
+    /// A due launch refresh must not queue behind last session's downloads: a
+    /// stranded transfer can take minutes, and Feeds read "Last refreshed 23
+    /// hours ago" for all of them. Asserted while the download is still held.
+    func testADueLaunchRefreshStartsBeforeASlowResumedDownloadFinishes() async {
+        let (started, downloadStarted) = AsyncStream.makeStream(of: Void.self)
+        let (release, releaseDownload) = AsyncStream.makeStream(of: Void.self)
+        let spy = AutomationSpy(unfinished: ["stranded"])
+        let subject = coordinator(spy: spy, settings: settings(refresh: .whileOpen(everyHours: 6)),
+                                  lastSuccess: origin.addingTimeInterval(-23 * 3_600),
+                                  slowDownload: { downloadStarted.yield(); for await _ in release { break } })
+        let launch = Task { await subject.launch() }
+        for await _ in started { break }
+
+        let refreshed = await spy.refreshedFeeds
+        XCTAssertEqual(refreshed.count, 3, "every feed refreshed before the resumed download began")
+        let successes = await spy.recordedSuccesses
+        XCTAssertEqual(successes, [origin], "the Feeds timestamp moved while the download is in flight")
+        releaseDownload.yield()
+        await launch.value
+        let statuses = await spy.statuses
+        XCTAssertEqual(statuses.last, .finished(refreshed: 0, downloaded: 1),
+                       "resuming ends on a terminal status, not a stale Downloading")
+    }
+
+    /// Feeds shows an automatic refresh for its feed loop alone: open while
+    /// each feed is fetched, closed before any download, and closed again
+    /// whether the loop succeeds, fails, or its caller is cancelled.
+    func testTheRefreshActivityCoversOnlyTheFeedLoopAndClosesOnEveryOutcome() async {
+        let spy = AutomationSpy(unfinished: ["stranded"])
+        await coordinator(spy: spy, settings: settings(refresh: .onLaunch)).launch()
+        let duringRefresh = await spy.activeDuringRefresh
+        XCTAssertEqual(duringRefresh, [true, true, true])
+        let duringDownload = await spy.activeDuringDownload
+        XCTAssertEqual(duringDownload, [false], "a resumed download is not a refresh")
+        let succeeded = await spy.activity
+        XCTAssertEqual(succeeded, [true, false])
+
+        let outage = AutomationSpy(transientFailures: [
+            "one.example.test": 99, "two.example.test": 99, "three.example.test": 99
+        ])
+        await coordinator(spy: outage, settings: settings(refresh: .whileOpen(everyHours: 6)))
+            .run(trigger: .openWindowTick)
+        let failed = await outage.activity
+        XCTAssertEqual(failed, [true, false], "a tick whose every feed failed still closes")
+
+        let (entered, refreshEntered) = AsyncStream.makeStream(of: Void.self)
+        let (hold, holdRefresh) = AsyncStream.makeStream(of: Void.self)
+        let stopped = AutomationSpy()
+        let subject = coordinator(spy: stopped, settings: settings(refresh: .onLaunch),
+                                  slowRefresh: { refreshEntered.yield(); for await _ in hold { break } })
+        let pass = Task { await subject.run(trigger: .launch) }
+        for await _ in entered { break }
+        pass.cancel() // the caller, as closing the window does, not `subject.cancel()`
+        holdRefresh.finish() // no hang if cancellation never reached the pass
+        await pass.value
+        let cancelled = await stopped.activity
+        XCTAssertEqual(cancelled, [true, false])
+        let statuses = await stopped.statuses
+        XCTAssertEqual(statuses.last, .cancelled)
+        let refreshedBeforeStop = await stopped.refreshedFeeds
+        XCTAssertEqual(refreshedBeforeStop.count, 1, "the caller's cancellation reaches the pass")
+    }
+
+    /// Resumed downloads now run after the launch refresh, so their Finished must not replace a
+    /// refresh that failed: Settings still says automatic updates could not finish.
+    func testAFailedLaunchRefreshStaysTheLastStatusAfterResumedDownloads() async {
+        let spy = AutomationSpy(unfinished: ["stranded"])
+        await coordinator(spy: spy, settings: settings(refresh: .onLaunch), feedListFails: true).launch()
+        let started = await spy.startedDownloads
+        XCTAssertEqual(started, ["stranded"])
+        let statuses = await spy.statuses
+        XCTAssertEqual(statuses.last, .failed(WiltedAutomationCoordinator.failureLabel))
     }
 }
