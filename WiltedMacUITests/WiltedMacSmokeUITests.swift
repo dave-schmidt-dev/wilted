@@ -126,11 +126,11 @@ final class WiltedMacSmokeUITests: XCTestCase {
             )
             metadata.name = "Fixture article menu numeric hit-test metadata"
             metadata.lifetime = .keepAlways
-            add(metadata)
+            self.add(metadata)
             let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
             screenshot.name = "Fixture window at article menu hit-test failure"
             screenshot.lifetime = .keepAlways
-            add(screenshot)
+            self.add(screenshot)
         }
         XCTAssertTrue(actions.isHittable, "the article menu is reachable in the fixture viewport")
         actions.click()
