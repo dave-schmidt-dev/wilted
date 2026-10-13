@@ -156,7 +156,8 @@ struct WiltedMacFeedRulesPreview: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         if index > 0 { Divider() }
-                        WiltedMacFeedRulesPreviewRow(row: row)
+                        WiltedMacFeedRulesPreviewRow(
+                            row: row, source: editor.episodeInfoSource(forRowID: row.episodeID))
                     }
                 }
                 .wiltedCard(colorScheme, padding: WiltedTheme.Spacing.medium)
@@ -169,10 +170,14 @@ struct WiltedMacFeedRulesPreview: View {
 
 /// One episode's verdict and what Apply would do. A row Apply would change
 /// leads with an arrow; a retired or finished one with the history clock,
-/// dimmed, because its verdict is shown but never acted on.
+/// because its verdict is shown but never acted on. The title itself is the
+/// button: it opens the same episode info popover every other episode-name
+/// surface uses, while the row keeps its verdict and its identity.
 private struct WiltedMacFeedRulesPreviewRow: View {
     let row: FeedRulesPreviewRow
+    let source: WiltedMacEpisodeInfoSource
     @Environment(\.colorScheme) private var colorScheme
+    @State private var isShowingNotes = false
 
     private var symbol: String {
         if row.outcome.isChange { return "arrow.right.circle.fill" }
@@ -186,12 +191,14 @@ private struct WiltedMacFeedRulesPreviewRow: View {
                 .frame(width: 16)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(row.title)
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(
-                        row.outcome == .history ? .secondaryText : .primaryText, scheme: colorScheme
-                    ))
-                    .lineLimit(2)
+                WiltedMacEpisodeNotesTitle(
+                    id: row.episodeID, title: row.title, prefix: "wilted-feed-rules",
+                    isPresented: $isShowingNotes, titleLineLimit: 2
+                ) {
+                    WiltedMacEpisodeInfoPopoverContent(
+                        id: row.episodeID, seed: nil, prefix: "wilted-feed-rules",
+                        source: source, initialSection: .notes, actions: { EmptyView() })
+                }
                 Text("\(row.verdict) · \(row.outcome.explanation)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -205,7 +212,8 @@ private struct WiltedMacFeedRulesPreviewRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, WiltedTheme.Spacing.xSmall)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(row.title): \(row.verdict) · \(row.outcome.explanation)")
         .accessibilityIdentifier("wilted-feed-rules-row-\(row.episodeID)")
     }
 }

@@ -93,7 +93,11 @@ struct WiltedMacFeedsEpisodeRow: View {
     }
 
     private var notesPopover: some View {
-        WiltedMacEpisodeNotes(episode: episode, prefix: "wilted-feeds") {
+        WiltedMacEpisodeNotes(
+            episode: episode,
+            prefix: "wilted-feeds",
+            source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)
+        ) {
             // The popover repeats the row's two answers from the same enum, so
             // reading notes and deciding stays in one place. A popover, rather
             // than inline disclosure, keeps long notes from reflowing the list

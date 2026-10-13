@@ -164,6 +164,43 @@ extension LocalLibraryStore {
         return try decodeTranscript(record)
     }
 
+    /// Returns the transcript belonging to the newest revision for an item.
+    ///
+    /// Retired episodes keep their transcript records after their media
+    /// revisions are removed, so an item without a revision falls back to the
+    /// newest transcript by update time. A record with unavailable content is
+    /// still meaningful and is returned rather than replaced by older text.
+    public func latestTranscript(for itemID: ItemID) throws -> Transcript? {
+        let context = ModelContext(container)
+        let rawItemID = itemID.rawValue
+        let transcripts = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>(
+                predicate: #Predicate { $0.itemID == rawItemID }
+            )
+        )
+        guard !transcripts.isEmpty else { return nil }
+
+        let revisions = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>(
+                predicate: #Predicate { $0.itemID == rawItemID }
+            )
+        )
+        let selected: LocalLibrarySchemaV7Models.TranscriptRecord?
+        if let newestRevision = revisions.max(by: {
+            if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+            return $0.id < $1.id
+        }) {
+            selected = transcripts.first(where: { $0.revisionID == newestRevision.id })
+        } else {
+            selected = transcripts.max {
+                if $0.updatedAt != $1.updatedAt { return $0.updatedAt < $1.updatedAt }
+                return $0.revisionID < $1.revisionID
+            }
+        }
+        guard let selected else { return nil }
+        return try decodeTranscript(selected)
+    }
+
     /// Item identifiers whose current transcript contains `query`.
     ///
     /// The search runs here rather than in a presentation layer because a

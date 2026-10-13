@@ -229,10 +229,7 @@ struct WiltedMacFeedHistoryView: View {
         return HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 HStack {
-                    Text(record.presentation.title)
-                        .wiltedFont(.body)
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .lineLimit(1)
+                    WiltedMacFeedHistoryTitle(model: model, record: record)
                     Spacer(minLength: WiltedTheme.Spacing.small)
                     Text(record.status.rawValue)
                         .wiltedFont(.utility)

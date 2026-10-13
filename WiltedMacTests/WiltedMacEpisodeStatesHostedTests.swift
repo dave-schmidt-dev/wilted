@@ -104,12 +104,12 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
         let shown = try text(row, size: CGSize(width: 520, height: 100))
         XCTAssertTrue(shown.contains("Hosted episode"), shown)
         let source = try WiltedMacHeadless.viewSource("WiltedMacEpisodeNotes.swift")
-        XCTAssertTrue(source.contains(".accessibilityLabel(\"Show notes for \\(episode.title)\")"))
-        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"\\(prefix)-show-notes-\\(episode.id)\")"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Show notes for \\(title)\")"))
+        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"\\(prefix)-show-notes-\\(id)\")"))
         let rows = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
-        XCTAssertTrue(rows.contains("WiltedMacThreeLineNotesTitle(episode: episode)"))
+        XCTAssertTrue(rows.contains("source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)"))
         XCTAssertTrue(rows.contains("WiltedMacEpisodeNotesTitle(episode: episode, prefix: \"wilted-larder\", isPresented: $isPresented, titleLineLimit: 1)"))
-        XCTAssertTrue(rows.contains("WiltedMacEpisodeNotes(episode: episode, prefix: \"wilted-larder\")"))
+        XCTAssertTrue(rows.contains("WiltedMacEpisodeNotes(episode: episode, prefix: \"wilted-larder\", source: source)"))
     }
 
     func testPlaybackNotesUseTheSameExplicitEmptyStateAsTheRow() throws {

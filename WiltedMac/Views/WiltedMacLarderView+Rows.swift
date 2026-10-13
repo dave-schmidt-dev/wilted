@@ -28,7 +28,10 @@ extension WiltedMacLarderView {
                 .accessibilityHidden(true)
             rowArtwork(episode)
             VStack(alignment: .leading, spacing: 2) {
-                WiltedMacThreeLineNotesTitle(episode: episode)
+                WiltedMacThreeLineNotesTitle(
+                    episode: episode,
+                    source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)
+                )
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 0) {
                     Text(episode.presentation.showLabel).lineLimit(1)
@@ -271,10 +274,11 @@ private struct WiltedMacLarderNextStepControl: View {
 
 private struct WiltedMacThreeLineNotesTitle: View {
     let episode: WiltedMacEpisode
+    let source: WiltedMacEpisodeInfoSource
     @State private var isPresented = false
     var body: some View {
         WiltedMacEpisodeNotesTitle(episode: episode, prefix: "wilted-larder", isPresented: $isPresented, titleLineLimit: 1) {
-            WiltedMacEpisodeNotes(episode: episode, prefix: "wilted-larder") { EmptyView() }
+            WiltedMacEpisodeNotes(episode: episode, prefix: "wilted-larder", source: source) { EmptyView() }
         }
     }
 }

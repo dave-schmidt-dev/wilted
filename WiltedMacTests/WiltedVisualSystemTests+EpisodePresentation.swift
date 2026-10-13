@@ -27,7 +27,9 @@ extension WiltedVisualSystemTests {
         )
 
         XCTAssertTrue(row.contains("WiltedMacModel.larderGroup(for: episode)"))
-        XCTAssertTrue(row.contains("WiltedMacThreeLineNotesTitle(episode: episode)"))
+        XCTAssertTrue(row.contains("WiltedMacThreeLineNotesTitle("))
+        XCTAssertTrue(row.contains("episode: episode,"))
+        XCTAssertTrue(row.contains("source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)"))
         XCTAssertTrue(row.contains("episode.presentation.showLabel"))
         XCTAssertTrue(row.contains("episode.presentation.publicationLabel"))
         XCTAssertTrue(row.contains("wilted-larder-metadata-\\(episode.id)"))

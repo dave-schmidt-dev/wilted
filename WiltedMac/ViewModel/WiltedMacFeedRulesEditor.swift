@@ -66,6 +66,17 @@ final class WiltedMacFeedRulesEditor {
     /// The number of rules, from the draft once it is loaded.
     var ruleCount: Int { hasLoaded ? drafts.count : board.rules(for: feedID).rules.count }
 
+    /// One preview row's info source. A row holds only the episode identity
+    /// the plan carries, so its title's popover resolves notes and transcript
+    /// through the board's model as it opens, with the show title this feed is
+    /// known by. The source captures that model strongly, so the popover
+    /// outlives this editor's unowned board.
+    func episodeInfoSource(forRowID rowID: String) -> WiltedMacEpisodeInfoSource {
+        let model = board.model
+        let showTitle = model.subscriptions.first { $0.id == feedID }?.title
+        return model.episodeInfoSource(id: rowID, showTitle: showTitle)
+    }
+
     // MARK: Editing
 
     var rules: EpisodeMatchRules {

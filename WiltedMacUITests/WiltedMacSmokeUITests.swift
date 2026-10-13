@@ -364,7 +364,7 @@ final class WiltedMacSmokeUITests: XCTestCase {
         app.terminate()
         let playing = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
                                          "--wilted-ui-fixture-window-width", "1400"])
-        let itemTitle = playing.staticTexts["wilted-player-item-title"]
+        let itemTitle = playing.descendants(matching: .any)["wilted-player-item-title"]
         XCTAssertTrue(itemTitle.waitForExistence(timeout: 10), "the actual playing item is visible in the side pane")
         XCTAssertGreaterThan(itemTitle.frame.minX, playing.windows.firstMatch.frame.midX,
                              "the real item title occupies the side pane beside the Larder")

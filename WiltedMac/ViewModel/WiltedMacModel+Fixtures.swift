@@ -21,6 +21,44 @@ extension WiltedMacModel {
         return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
     }
 
+    /// Explicit native-test failures leave ordinary fixture and live reads unchanged.
+    func fixtureEpisodeInfoSource(
+        id: String, showTitle: String?, arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> WiltedMacEpisodeInfoSource? {
+        let failInfo = arguments.contains("--wilted-ui-fixture-info-read-fails-once")
+        let failTranscript = arguments.contains("--wilted-ui-fixture-transcript-read-fails-once")
+        guard fixtureMode, failInfo || failTranscript else { return nil }
+        let root = Self.fixtureStateDirectoryOverride(arguments: arguments)
+        let diagnosticsRoot = root.flatMap { root -> URL? in
+            let canonical = root.standardizedFileURL
+            guard canonical == root.resolvingSymlinksInPath().standardizedFileURL,
+                  canonical == libraryURL.deletingLastPathComponent().standardizedFileURL,
+                  canonical.lastPathComponent.hasPrefix("wilted-"),
+                  (try? canonical.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            else { return nil }
+            return canonical
+        }
+        let counts: WiltedMacFixtureEpisodeInfoReadCounts
+        if let existing = fixtureEpisodeInfoReadCounts[id] {
+            counts = existing
+        } else {
+            counts = WiltedMacFixtureEpisodeInfoReadCounts(id: id, root: diagnosticsRoot)
+            fixtureEpisodeInfoReadCounts[id] = counts
+        }
+        return WiltedMacEpisodeInfoSource(
+            loadInfo: { [self, counts] in
+                counts.recordInfo()
+                if failInfo, counts.info == 1 { return .failed }
+                return await episodeInfo(id: id, showTitle: showTitle)
+            },
+            loadTranscript: { [self, counts] in
+                counts.recordTranscript()
+                if failTranscript, counts.transcript == 1 { return .failed }
+                return await savedTranscript(forEpisodeID: id)
+            }
+        )
+    }
+
     func installFixture(ready: Bool, preparing: Bool = false, podcasts: Bool = false) {
         if preparing {
             let url = URL(string: "https://example.test/wilted-preparing-fixture")!
@@ -410,3 +448,37 @@ extension WiltedMacModel {
     }
 #endif
 }
+
+#if canImport(WiltedProducer)
+/// One fixture episode owns its attempts; diagnostics stay in its fixture root.
+@MainActor
+final class WiltedMacFixtureEpisodeInfoReadCounts {
+    private let id: String
+    private let root: URL?
+    private(set) var info = 0
+    private(set) var transcript = 0
+
+    init(id: String, root: URL?) {
+        self.id = id
+        self.root = root
+    }
+
+    func recordInfo() {
+        info += 1
+        write()
+    }
+
+    func recordTranscript() {
+        transcript += 1
+        write()
+    }
+
+    private func write() {
+        guard let root,
+              let data = try? JSONSerialization.data(withJSONObject: [
+                "episodeID": id, "info": info, "transcript": transcript,
+              ]) else { return }
+        try? data.write(to: root.appendingPathComponent("episode-info-ui-read-counts.json"), options: .atomic)
+    }
+}
+#endif

@@ -126,12 +126,9 @@ struct WiltedMacNowPlayingPane: View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             artwork
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Text(title)
-                    .wiltedFont(.title)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-                    .accessibilityIdentifier("wilted-player-item-title")
+                WiltedMacPlayerEpisodeTitle(
+                    model: model, title: title, font: .title, titleLineLimit: 2,
+                    labelIdentifier: "wilted-player-item-title")
                 Text(detail)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

@@ -91,10 +91,9 @@ struct WiltedMacPlayerContent: View {
                 HStack(spacing: WiltedTheme.Spacing.medium) {
                 artwork
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .lineLimit(1)
-                        .wiltedFont(.body)
-                        .accessibilityIdentifier("wilted-player-item-title")
+                    WiltedMacPlayerEpisodeTitle(
+                        model: model, title: title, font: .body, titleLineLimit: 1,
+                        labelIdentifier: "wilted-player-item-title")
                     Text(detail)
                         .lineLimit(1)
                         .wiltedFont(.utility)

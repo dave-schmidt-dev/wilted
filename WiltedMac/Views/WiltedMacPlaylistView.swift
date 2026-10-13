@@ -100,10 +100,7 @@ struct WiltedMacPlaylistView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title)
-                        .wiltedFont(.body)
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .lineLimit(2)
+                    WiltedMacPlaylistItemTitle(model: model, item: item)
                     Text(subtitle(item, ready: ready))
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -162,6 +159,35 @@ struct WiltedMacPlaylistView: View {
         switch item {
         case .article(let article): article.durationSeconds
         case .episode(let episode), .audiobook(let episode): episode.durationSeconds
+        }
+    }
+}
+
+/// Each playlist row owns its popover; articles remain ordinary titles.
+struct WiltedMacPlaylistItemTitle: View {
+    let model: WiltedMacModel
+    let item: WiltedMacLibraryItem
+    @State private var isPresented = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        switch item {
+        case .article(let article):
+            Text(article.title)
+                .wiltedFont(.body)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .lineLimit(2)
+        case .episode(let episode), .audiobook(let episode):
+            WiltedMacEpisodeNotesTitle(
+                episode: episode, prefix: "wilted-playlist", isPresented: $isPresented,
+                titleLineLimit: 2
+            ) {
+                WiltedMacEpisodeNotes(
+                    episode: episode, prefix: "wilted-playlist",
+                    source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)
+                ) { EmptyView() }
+            }
+            .id(episode.id)
         }
     }
 }

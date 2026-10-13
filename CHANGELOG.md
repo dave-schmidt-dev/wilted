@@ -166,6 +166,11 @@ All notable changes to this project are documented in this file.
 - Audited Phase 0 and native-gate temporary entries by identity before and after each owned run, so a new leak cannot hide behind shrinking totals.
 - Required positive ownership and inactivity before the crash backstop removes stale Wilted scratch, and registered migration validation cleanup before copying.
 
+## [0.6.0] - 2026-10-13
+
+### Added
+- Mac episode information popovers: the episode name opens a popover whose Notes are shown by default and whose Transcript tab shows the episode's saved transcript text, including a retired or already-played episode while its text is retained, with a neutral line when nothing is saved and a Retry action when the read fails. The same popover opens from Larder, Feeds, History (Off the list and feed details), the rules preview, Playlists, and the player pane and rail; articles keep ordinary titles. Opening it prepares no transcript and leaves Now Playing's transcript and playback independent, and dismissing or unsubscribing still deletes transcripts as before. iPhone parity is follow-up.
+
 ## [0.5.0] - 2026-10-13
 
 ### Changed

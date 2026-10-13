@@ -33,11 +33,16 @@ enum WiltedMacUITestApplicationLaunch {
         }
         let expectedBundlePath = targetURL.standardizedFileURL.resolvingSymlinksInPath().path
         let expectedExecutablePath = executableURL.standardizedFileURL.resolvingSymlinksInPath().path
+        // The installed owner app shares the bundle ID. Only the exact sibling
+        // build product participates in the fixture's single-process contract.
+        let isSiblingFixture: (NSRunningApplication) -> Bool = { candidate in
+            !candidate.isTerminated &&
+                candidate.bundleURL?.standardizedFileURL.resolvingSymlinksInPath().path == expectedBundlePath &&
+                candidate.executableURL?.standardizedFileURL.resolvingSymlinksInPath().path == expectedExecutablePath
+        }
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-        guard running.count == 1, let application = running.first,
-              !application.isTerminated,
-              application.bundleURL?.standardizedFileURL.resolvingSymlinksInPath().path == expectedBundlePath,
-              application.executableURL?.standardizedFileURL.resolvingSymlinksInPath().path == expectedExecutablePath else {
+            .filter(isSiblingFixture)
+        guard running.count == 1, let application = running.first else {
             throw LaunchError.refused("Exactly one already-running sibling fixture target is required.")
         }
         let expectedPID = application.processIdentifier
@@ -69,6 +74,7 @@ enum WiltedMacUITestApplicationLaunch {
         }
         if let failure = result.failure { throw LaunchError.refused(failure) }
         let current = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter(isSiblingFixture)
         guard current.count == 1, let reopened = current.first,
               reopened.processIdentifier == expectedPID, !reopened.isTerminated,
               reopened.bundleURL?.standardizedFileURL.resolvingSymlinksInPath().path == expectedBundlePath,

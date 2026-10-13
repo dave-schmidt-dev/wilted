@@ -235,6 +235,8 @@ final class WiltedMacModel {
     let fixtureMode: Bool
 
 #if canImport(WiltedProducer)
+    /// Explicit fixture failures survive SwiftUI rebuilding their source closures.
+    @ObservationIgnored var fixtureEpisodeInfoReadCounts: [String: WiltedMacFixtureEpisodeInfoReadCounts] = [:]
     /// Ownership exists only for fixture roots this model created itself.
     /// Injected roots belong to their caller (the app, a test, or a relaunch
     /// scenario) and are never removed by this model.

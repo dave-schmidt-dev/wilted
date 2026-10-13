@@ -296,8 +296,8 @@ result_bundle_summary_passed() {
 
 validate_mac_ui_selector() {
   local selector="$1"
-  if [[ ! "$selector" =~ ^WiltedMacUITests/(WiltedMacSmokeUITests|WiltedMacSidebarChromeUITests)/test[A-Za-z0-9_]+$ ]]; then
-    fail 'WILTED_MAC_UI_SELECTOR must name one registered Smoke or SidebarChrome test method'
+  if [[ ! "$selector" =~ ^WiltedMacUITests/(WiltedMacSmokeUITests|WiltedMacSidebarChromeUITests|WiltedMacEpisodeInfoUITests)/test[A-Za-z0-9_]+$ ]]; then
+    fail 'WILTED_MAC_UI_SELECTOR must name one registered Smoke, SidebarChrome, or EpisodeInfo test method'
     return 1
   fi
 }
@@ -309,7 +309,7 @@ validate_mac_ui_selector() {
 mac_ui_declared_test_count() {
   local count source source_count
   count=0
-  for source in WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests; do
+  for source in WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests WiltedMacEpisodeInfoUITests; do
     [[ -f "$repo_root/WiltedMacUITests/$source.swift" ]] || fail "missing Mac UI journey source: $source"
     source_count="$(grep -cE '^[[:space:]]*func[[:space:]]+test' "$repo_root/WiltedMacUITests/$source.swift" || true)"
     [[ "$source_count" =~ ^[1-9][0-9]*$ ]] || fail "$source declares no test methods"
@@ -345,6 +345,12 @@ assert_mac_ui_selector_floor_contract() {
   grep -q 'testCollapsedSidebarKeepsContentBelowWindowControls' \
     "$repo_root/WiltedMacUITests/WiltedMacSidebarChromeUITests.swift" ||
     fail 'collapsed sidebar native window chrome journey must stay registered'
+  local episode_info='WiltedMacUITests/WiltedMacEpisodeInfoUITests/testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer'
+  [[ "$(WILTED_MAC_UI_SELECTOR="$episode_info" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
+    fail 'focused EpisodeInfo selector must require exactly one test'
+  grep -Eq '^[[:space:]]*func[[:space:]]+testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer\(' \
+    "$repo_root/WiltedMacUITests/WiltedMacEpisodeInfoUITests.swift" ||
+    fail 'saved episode info native journey must stay registered'
   [[ "$(WILTED_MAC_UI_SELECTOR="$focused" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
     fail 'validated focused Mac UI selector must require exactly one test'
   [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == \
