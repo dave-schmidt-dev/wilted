@@ -14,35 +14,6 @@ import CloudKit
 #endif
 
 extension WiltedMacModel {
-    /// Downloaded rows genuinely preparing. A row waiting for the off-peak
-    /// window carries a queued `.preparing` stage but is not running, and
-    /// `larderPreparableEpisodes` already offers it, so it is excluded here.
-    var larderPreparationsInFlight: [WiltedMacEpisode] {
-        larderUnfilteredEpisodes(in: .downloaded).filter {
-            $0.preparationState.isRunning && !isDeferredForOffPeak($0.id)
-        }
-    }
-
-    /// The Larder's Available bulk action: the row's Download applied to the
-    /// whole group, so acting on a group is one click rather than N.
-    func downloadAllAvailableLarderEpisodes() {
-        for episode in larderDownloadableEpisodes {
-            downloadEpisode(episode)
-        }
-    }
-
-    /// The Larder's Downloaded bulk action: the row's own step applied to the
-    /// group. Preparing stays in Downloaded with progress on each row.
-    func prepareAllDownloadedLarderEpisodes() {
-        for episode in larderPreparableEpisodes {
-            if isDeferredForOffPeak(episode.id) {
-                _ = prepareDeferredEpisodeNow(episode)
-            } else {
-                prepareEpisode(episode)
-            }
-        }
-    }
-
     /// Whether the reader has started an episode: a saved position, a
     /// finished-by-hand record, or it is the one playing right now. The one
     /// definition `skipEpisode` guards on and the row's label reads.

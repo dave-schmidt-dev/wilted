@@ -30,6 +30,7 @@ final class WiltedMacFeedPolicyBoard {
     @ObservationIgnored private var mutationRevision: UInt64 = 0
     @ObservationIgnored var reloadReadHookForTesting: (@MainActor () async -> Void)?
     @ObservationIgnored var afterFeedPolicyReadHookForTesting: (@MainActor (String) async throws -> Void)?
+    @ObservationIgnored var beforeFeedPolicySaveHookForTesting: (@MainActor (String) async throws -> Void)?
 
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
@@ -323,15 +324,22 @@ final class WiltedMacFeedPolicyBoard {
         let previous = writeChain
         writeChain = Task { [weak self] in
             await previous?.value
-            await self?.persist(feedID, next, releasing: changesCapacity)
+            await self?.persist(feedID, from: current, to: next, releasing: changesCapacity)
         }
         return true
     }
 
-    private func persist(_ feedID: String, _ policy: FeedAutomationPolicy, releasing: Bool) async {
+    private func persist(
+        _ feedID: String, from prior: FeedAutomationPolicy, to policy: FeedAutomationPolicy, releasing: Bool
+    ) async {
         guard let store = model.store, !model.isClosingTemporaryState,
               let id = try? ItemID(rawValue: feedID) else { return }
+        // What this save changes is measured from the last saved policy, not the
+        // optimistic value the edit saw: an earlier queued save may have failed.
+        // Writes are serialized, so this read is the last saved state.
+        let saved = (try? await store.feedAutomationPolicy(for: id)) ?? prior
         do {
+            try await beforeFeedPolicySaveHookForTesting?(feedID)
             try await store.save(feedAutomationPolicy: policy, for: id)
         } catch {
             failedFeedIDs.insert(feedID)
@@ -341,6 +349,10 @@ final class WiltedMacFeedPolicyBoard {
         // A raised limit, or Auto keep switched on, fills open places now,
         // through the same admission a refresh uses. Nothing is ever removed.
         if releasing { await model.releaseWaitingEpisodes(feedIDs: [feedID]) }
+        // Auto download or Auto prepare switched on acts on the episodes the
+        // feed already keeps, after any release so newly kept ones are not
+        // started twice. Switching either off leaves issued work alone.
+        model.startKeptEpisodeWork(feedID: feedID, from: saved, to: policy)
     }
 
     // MARK: Waiting for space
