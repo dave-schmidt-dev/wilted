@@ -46,7 +46,7 @@ On 2026-08-18 an attended Development run published and reconciled the producer-
 - A podcast ending naturally continues with the first displayed eligible Ready episode, including an earlier unfinished row. Playlist and audiobook completion keep their own rules; a newer selection or Pause takes precedence.
 - Downloads interrupted by quitting resume on relaunch, with at most three automatic attempts. Normal quit hides the window immediately while the existing bounded safe drain runs; failure or timeout restores the app and retry state. Explicit Cancel stays cancelled.
 - Alphabetical sorting on Mac and iPhone ignores a leading “The”, regardless of case, while keeping displayed titles intact. Share remains a normal action: with no usable page address, it shares `title - show` as text.
-- Now Playing keeps Mark completed visible beside the transport. A plain ellipsis button opens a native popover containing Speed and secondary actions.
+- Now Playing keeps Mark completed visible beside the transport, followed by a labelled native More menu (Restart, and Recover audio on a route fault). Share sits beside the episode title and Speed at the end of the Transcript/Notes row.
 - Mac and iOS startup use the native Wilted W motif until actual local readiness. Progress reflects actual work, reduced motion shows settled art, and initialization failures remain actionable.
 
 ## Priorities (in order)

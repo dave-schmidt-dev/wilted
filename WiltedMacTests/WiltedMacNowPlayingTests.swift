@@ -3,8 +3,6 @@ import Foundation
 import XCTest
 import AppKit
 import MediaPlayer
-import Vision
-import CoreML
 import WiltedLibrary
 @testable import WiltedMac
 
@@ -347,7 +345,7 @@ final class WiltedMacNowPlayingTests: XCTestCase {
     }
 
     /// Share is a direct control beside the title and Mark completed reads as a button; neither
-    /// hides in the overflow popover or looks like loose text.
+    /// hides in the More menu or looks like loose text.
     func testPaneShareSitsBesideTheTitleAndMarkCompletedIsABorderedButton() throws {
         let source = try WiltedMacHeadless.viewSource("WiltedMacNowPlayingPane.swift")
         func section(_ start: String, until end: String) throws -> String {
@@ -362,106 +360,15 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "WiltedMacPlaybackShareLink(model: model)", in: source), 1,
                        "one Share definition, mounted in the header")
         let actions = try section("var playbackActions:", until: "var share:")
-        XCTAssertFalse(actions.contains("share"), "the More popover no longer holds Share")
+        XCTAssertFalse(actions.contains("share"), "the More menu does not hold Share")
         XCTAssertFalse(actions.contains("wilted-player-share"))
-        let completion = try section("private var completionControl:", until: "private var speedControl:")
+        let completion = try section("private var completionControl:", until: "private var moreMenu:")
         XCTAssertTrue(completion.contains(".buttonStyle(.bordered)"))
         XCTAssertFalse(completion.contains(".buttonStyle(.borderless)"))
         XCTAssertFalse(completion.contains(".wiltedFont(.utility)"), "bordered button keeps the native control font")
         XCTAssertTrue(completion.contains("\"Mark completed\""))
         XCTAssertTrue(completion.contains(".disabled(model.playbackCompletionIsSettled)"))
         XCTAssertTrue(completion.contains("wilted-player-mark-completed"))
-    }
-
-    func testPaneKeepsCompletionAboveTheReaderAndSpeedHiddenAtNarrowAndFullWidths() throws {
-        let (model, _, _) = makeModel()
-        let item = WiltedMacEpisode(
-            id: "selected-b-quiet-machines", title: "Quiet Machines", feedTitle: "Field Notes", summary: "A quiet workshop.",
-            notes: WiltedMacModel.fixtureEpisodeNotes, artworkURL: nil,
-            releasedAt: Date(timeIntervalSince1970: 1_699_827_200), durationSeconds: 1482, playbackSeconds: 90,
-            downloadState: .completed, preparationState: .prepared(summary: "Ready"))
-        model.installPlaybackStateForTesting(episode: item, isPlaying: true, position: 90, duration: 1482)
-        model.playbackRate = 1.25
-        model.currentTranscript = WiltedMacTranscript(availability: .available, text: "The small pump keeps the garden quiet.",
-            cues: [WiltedMacTranscriptCue(id: 0, startSeconds: 0, endSeconds: 200,
-                                         text: "The small pump keeps the garden quiet.", speaker: "Host")],
-            timingSource: "Synthetic fixture")
-        for width in [CGFloat(360), 640] {
-            for scheme in [ColorScheme.light, .dark] {
-                let bitmap = try WiltedMacHeadless.render(
-                    WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))
-                        .environment(\.colorScheme, scheme), size: CGSize(width: width, height: 740))
-                XCTAssertEqual(bitmap.pixelsWide, Int(width))
-                XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: bitmap), 8)
-                let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
-                attachment.name = "selected-B-\(Int(width))-\(scheme)"; attachment.lifetime = .keepAlways; add(attachment)
-                let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
-                request.recognitionLanguages = ["en-US"]; request.usesLanguageCorrection = false
-                let devices = try request.supportedComputeStageDevices
-                let cpu = try XCTUnwrap(devices[.main]?.first { device in
-                    if case .cpu = device { return true }
-                    return false
-                }, "accurate OCR must vend a supported main-stage CPU device")
-                request.setComputeDevice(cpu, for: .main)
-                try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
-                let lines = (request.results ?? []).compactMap { observation -> (text: String, top: CGFloat)? in
-                    guard let text = observation.topCandidates(1).first?.string else { return nil }
-                    return (text, (1 - observation.boundingBox.maxY) * 740)
-                }
-                let context = "\(width)/\(scheme): \(lines)"
-                let title = try XCTUnwrap(lines.first { $0.text.contains("Quiet Machines") }, context)
-                // Adjacent SF Symbols confuse Vision language selection. Read the actual
-                // completion pixels alone, retaining exact copy and absolute geometry checks.
-                let completionCrop = CGRect(x: width / 2 + 12, y: 64, width: width / 2 - 24, height: 70)
-                let completionImage = try XCTUnwrap(bitmap.cgImage?.cropping(to: completionCrop), context)
-                try VNImageRequestHandler(cgImage: completionImage).perform([request])
-                let completion = try XCTUnwrap((request.results ?? []).first {
-                    $0.topCandidates(1).first?.string.contains("Mark completed") == true
-                }, "isolated completion must read its exact label: \(context)")
-                let completionBounds = completion.boundingBox
-                let completionTop = completionCrop.minY + (1 - completionBounds.maxY) * completionCrop.height
-                XCTAssertGreaterThan(completionCrop.minX + completionBounds.minX * completionCrop.width, 12, context)
-                XCTAssertLessThan(completionCrop.minX + completionBounds.maxX * completionCrop.width, width - 12, context)
-                let reader = try XCTUnwrap(lines.first { $0.text.contains("Transcript") }, context)
-                XCTAssertLessThan(title.top, 72, "compact48-point header: \(context)")
-                XCTAssertLessThan(completionTop, 130, "completion shares the first transport row: \(context)")
-                XCTAssertLessThan(reader.top, 225, "compact controls leave reader height: \(context)")
-                XCTAssertFalse(lines.contains { $0.text.contains("Restart") || $0.text.contains("Speed") || $0.text.contains("1.25") },
-                               "secondary actions stay inside overflow: \(context)")
-                XCTAssertTrue(lines.contains { $0.text.contains("garden quiet") }, context)
-            }
-        }
-    }
-
-    func testPopoverRendersSpeedAndOnlyAvailableSecondaryActionsInBothThemes() throws {
-        let (model, _, _) = makeModel()
-        model.installPlaybackStateForTesting(episode: episode(), isPlaying: false, position: 90, duration: 1800)
-        model.playbackRate = 1.25
-        for scheme in [ColorScheme.light, .dark] {
-            for fault in [false, true] {
-                model.audioRouteFault = fault
-                let view = WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))
-                    .playbackActions.environment(\.colorScheme, scheme)
-                    .background(WiltedTheme.color(.page, scheme: scheme))
-                let lines = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 300, height: 300))
-                let context = "\(scheme)/fault=\(fault): \(lines)"
-                XCTAssertTrue(lines.contains { $0.contains("Speed") }, context)
-                XCTAssertTrue(lines.contains { $0.contains("1.25") }, context)
-                XCTAssertTrue(lines.contains { $0.contains("Restart") }, context)
-                // Share now lives in the header; it is still rendered here as a unit.
-                let share = WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))
-                    .share.environment(\.colorScheme, scheme)
-                    .background(WiltedTheme.color(.page, scheme: scheme))
-                let shareBitmap = try WiltedMacHeadless.render(share, size: CGSize(width: 120, height: 80))
-                XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: shareBitmap), 8,
-                                     "the native Share icon must render: \(context)")
-                XCTAssertEqual(lines.contains { $0.contains("Recover audio") }, fault, context)
-                XCTAssertFalse(lines.contains { $0.contains("Mark completed") }, context)
-                try retainCopyEvidence(WiltedMacHeadless.render(view, size: CGSize(width: 300, height: 300)),
-                                       name: "playback-popover-\(scheme)-fault-\(fault)")
-            }
-        }
     }
 
     // MARK: - Fixtures

@@ -47,7 +47,6 @@ struct WiltedMacNowPlayingPane: View {
     @Bindable var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
     @Binding var state: WiltedMacPaneState
-    @State private var showsPlaybackActions = false
 
     var body: some View {
         Group {
@@ -213,13 +212,13 @@ struct WiltedMacNowPlayingPane: View {
             .disabled(!model.canSelectNextEpisode)
             .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
             completionControl
-            overflowButton
+            moreMenu
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-player-keyboard-transports")
         .controlSize(.regular)
-        // The popover is unmounted when closed; keep Cmd-R available beside
-        // the transport for the entire loaded playback session.
+        // A shortcut on a More menu item does not fire while the menu is closed,
+        // so Cmd-R stays here, the pane's one binding for it, for the whole session.
         .background {
             Button("Restart") { model.restartPlayback() }
                 .keyboardShortcut("r", modifiers: .command)
@@ -238,56 +237,22 @@ struct WiltedMacNowPlayingPane: View {
         .accessibilityIdentifier("wilted-player-mark-completed")
     }
 
-    private var speedControl: some View {
-        Picker("Speed", selection: Binding(
-            get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
-        )) {
-            ForEach(PlaybackSpeeds.all, id: \.self) {
-                Text("\($0, specifier: "%g")×").tag($0)
-            }
-        }
-        .fixedSize()
-        .accessibilityLabel("Speed")
-        .help("Playback speed")
-        .accessibilityIdentifier("wilted-player-speed")
+    /// The rare whole-episode actions, in a native pull-down that says what it is.
+    private var moreMenu: some View {
+        Menu("More") { playbackActions }
+            .fixedSize()
+            .help("More playback actions")
+            .accessibilityIdentifier("wilted-player-menu")
     }
 
-    private var overflowButton: some View {
-        Button { showsPlaybackActions.toggle() } label: {
-            Image(systemName: "ellipsis")
-                .wiltedSquare(24)
-        }
-        .buttonStyle(.borderless)
-        .fixedSize()
-        .help("More playback actions")
-        .accessibilityLabel("More playback actions")
-        .accessibilityIdentifier("wilted-player-menu")
-        .popover(isPresented: $showsPlaybackActions, arrowEdge: .bottom) {
-            playbackActions
-        }
-    }
-
-    /// The native popover content, also hosted directly by headless render tests.
-    var playbackActions: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            speedControl
-            Divider()
-            Button("Restart") {
-                showsPlaybackActions = false
-                model.restartPlayback()
-            }
+    /// The More menu's items, also hosted directly by headless render tests.
+    @ViewBuilder var playbackActions: some View {
+        Button("Restart", systemImage: "arrow.counterclockwise") { model.restartPlayback() }
             .accessibilityIdentifier("wilted-player-restart")
-            if model.audioRouteFault {
-                Button("Recover audio") {
-                    showsPlaybackActions = false
-                    model.recoverAudioRoute()
-                }
+        if model.audioRouteFault {
+            Button("Recover audio", systemImage: "speaker.wave.2") { model.recoverAudioRoute() }
                 .accessibilityIdentifier("wilted-player-route-recovery")
-            }
         }
-        .padding(WiltedTheme.Spacing.large)
-        .frame(minWidth: 200, alignment: .leading)
-        .controlSize(.regular)
     }
 
     var share: some View { WiltedMacPlaybackShareLink(model: model) }
@@ -342,12 +307,19 @@ struct WiltedMacNowPlayingPane: View {
 
     private var tabs: some View {
         VStack(spacing: WiltedTheme.Spacing.small) {
-            Picker("Section", selection: $state.tab) {
-                ForEach(WiltedMacPaneTab.allCases) { Text($0.rawValue).tag($0) }
+            // One line over the reader: the section switch starts at the column's leading
+            // edge and Speed ends at its trailing edge, so the header keeps its full width.
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Picker("Section", selection: $state.tab) {
+                    ForEach(WiltedMacPaneTab.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .accessibilityIdentifier("wilted-player-pane-tabs")
+                Spacer(minLength: WiltedTheme.Spacing.small)
+                speedMenu
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityIdentifier("wilted-player-pane-tabs")
             Group {
                 switch state.tab {
                 case .transcript:
@@ -361,6 +333,28 @@ struct WiltedMacNowPlayingPane: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxHeight: .infinity)
+    }
+
+    /// The frequent control, always showing the current rate, worded like the iPhone player's.
+    private var speedMenu: some View {
+        Menu {
+            Picker("Speed", selection: Binding(
+                get: { model.playbackRate }, set: { model.setPlaybackRate($0) }
+            )) {
+                ForEach(PlaybackSpeeds.all, id: \.self) {
+                    Text("\($0, specifier: "%g")×").tag($0)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Text("Speed \(model.playbackRate, specifier: "%g")×")
+        }
+        .fixedSize()
+        .help("Playback speed")
+        .accessibilityLabel("Speed")
+        .accessibilityValue(Text("\(model.playbackRate, specifier: "%g")×"))
+        .accessibilityIdentifier("wilted-player-speed")
     }
 }
 

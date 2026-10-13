@@ -373,17 +373,18 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(completion.isHittable, "completion stays visible beside transport")
         XCTAssertTrue(playing.buttons["wilted-player-play-pause"].isHittable)
         let speed = playing.descendants(matching: .any)["wilted-player-speed"]
-        XCTAssertFalse(speed.exists, "speed stays inside the closed popover")
-        playing.buttons["wilted-player-menu"].click()
-        XCTAssertTrue(speed.waitForExistence(timeout: 5), "ellipsis opens the native speed popover")
+        XCTAssertTrue(speed.waitForExistence(timeout: 5), "speed sits in the Transcript and Notes row")
         XCTAssertTrue(speed.isHittable)
-        XCTAssertTrue(playing.buttons["wilted-player-restart"].exists)
+        let restartItem = playing.menuItems["Restart"]
+        XCTAssertFalse(restartItem.exists, "Restart stays inside the closed More menu")
+        playing.descendants(matching: .any)["wilted-player-menu"].click()
+        XCTAssertTrue(restartItem.waitForExistence(timeout: 5), "More opens the native menu with Restart")
         playing.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(speed.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(restartItem.waitForNonExistence(timeout: 5))
         XCTAssertTrue(completion.isHittable)
 
         // The fixture clock stays put: a forward press establishes a measurable
-        // playhead, and Cmd-R must reset it while the popover stays closed.
+        // playhead, and Cmd-R must reset it while the More menu stays closed.
         let position = playing.sliders["wilted-player-scrubber"]
         XCTAssertTrue(position.waitForExistence(timeout: 5))
         playing.buttons["wilted-player-forward"].click()
@@ -392,14 +393,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter().wait(for: [advanced], timeout: 5), .completed,
                        "the forward transport establishes 30 seconds before restart")
-        XCTAssertFalse(speed.exists)
+        XCTAssertFalse(restartItem.exists)
         playing.typeKey("r", modifierFlags: .command)
         let restarted = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in Double(String(describing: position.value ?? "")) == 0 }, object: position
         )
         XCTAssertEqual(XCTWaiter().wait(for: [restarted], timeout: 5), .completed,
-                       "Command-R resets the actual playhead with the popover closed")
-        XCTAssertFalse(speed.exists, "restart does not open the actions popover")
+                       "Command-R resets the actual playhead with the More menu closed")
+        XCTAssertFalse(restartItem.exists, "restart does not open the More menu")
     }
 
     /// The words an element shows. macOS puts a Text's words in its value, not

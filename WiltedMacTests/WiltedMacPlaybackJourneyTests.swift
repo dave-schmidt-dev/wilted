@@ -110,7 +110,7 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         }
     }
 
-    func testSelectedBPaneKeepsCompletionVisibleAndSecondaryActionsInNativePopover() throws {
+    func testPaneShowsSpeedOnTheTabRowAndKeepsRareActionsInALabelledMoreMenu() throws {
         let source = try WiltedMacHeadless.viewSource("WiltedMacNowPlayingPane.swift")
         func section(_ start: String, until end: String) throws -> String {
             let begin = try XCTUnwrap(source.range(of: start))
@@ -121,32 +121,47 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         XCTAssertTrue(header.contains("HStack("), "horizontal artwork/title header")
         XCTAssertTrue(header.contains("WiltedTheme.scaled(48, scale: model.textScale)"))
         XCTAssertFalse(header.contains("size: 110"))
+        XCTAssertFalse(header.contains("Menu"), "the header is artwork, title and Share; nothing else joins it")
         let transport = try section("private var transportRow:", until: "private var completionControl:")
         XCTAssertTrue(transport.contains("completionControl"))
-        XCTAssertTrue(transport.contains("overflowButton"))
-        XCTAssertFalse(transport.contains("speedControl"), "speed is only inside the popover")
+        XCTAssertTrue(transport.contains("moreMenu"))
+        XCTAssertFalse(transport.contains("speedMenu"), "speed sits on the reader's tab row")
         XCTAssertFalse(transport.contains("ViewThatFits"), "transport stays one compact row")
         XCTAssertTrue(transport.contains(".keyboardShortcut(\"r\", modifiers: .command)"))
-        XCTAssertTrue(transport.contains("model.restartPlayback()"), "Cmd-R works while the popover is closed")
-        let completion = try section("private var completionControl:", until: "private var speedControl:")
+        XCTAssertTrue(transport.contains("model.restartPlayback()"), "Cmd-R works while More is closed")
+        let completion = try section("private var completionControl:", until: "private var moreMenu:")
         XCTAssertTrue(completion.contains("model.markCurrentPlaybackCompleted()"))
         XCTAssertTrue(completion.contains(".disabled(model.playbackCompletionIsSettled)"))
         XCTAssertTrue(completion.contains("wilted-player-mark-completed"))
-        let overflow = try section("private var overflowButton:", until: "var playbackActions:")
-        XCTAssertTrue(overflow.contains("Button { showsPlaybackActions.toggle() }"))
-        XCTAssertTrue(overflow.contains("Image(systemName: \"ellipsis\")"))
-        XCTAssertTrue(overflow.contains(".popover(isPresented: $showsPlaybackActions"))
-        XCTAssertTrue(overflow.contains("wilted-player-menu"))
-        XCTAssertFalse(source.contains("Menu {"), "plain ellipsis must have no native menu chevron")
+        let more = try section("private var moreMenu:", until: "var playbackActions:")
+        XCTAssertTrue(more.contains("Menu(\"More\") { playbackActions }"), "a labelled native pull-down")
+        XCTAssertTrue(more.contains("wilted-player-menu"))
+        for retired in [".popover(", "showsPlaybackActions", "\"ellipsis\""] {
+            XCTAssertFalse(source.contains(retired), "the More popover is retired: \(retired)")
+        }
         let actions = try section("var playbackActions:", until: "var share:")
-        for action in ["speedControl", "model.restartPlayback()", "model.recoverAudioRoute()"] {
+        for action in ["model.restartPlayback()", "model.recoverAudioRoute()"] {
             XCTAssertTrue(actions.contains(action), action)
         }
-        XCTAssertFalse(actions.contains("share"), "Share sits beside the title, not in the More popover")
-        XCTAssertFalse(actions.contains("markCurrentPlaybackCompleted"))
+        for absent in ["share", "Speed", "markCurrentPlaybackCompleted"] {
+            XCTAssertFalse(actions.contains(absent), "the More menu holds only Restart and Recover audio: \(absent)")
+        }
         XCTAssertTrue(actions.contains("wilted-player-restart"))
         XCTAssertTrue(actions.contains("wilted-player-route-recovery"))
         XCTAssertTrue(actions.contains("if model.audioRouteFault {"))
+        XCTAssertFalse(actions.contains(".keyboardShortcut("), "a closed menu's item shortcut is not live")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: ".keyboardShortcut(\"r\", modifiers: .command)", in: source), 1,
+                       "exactly one Cmd-R binding")
+        let tabs = try section("private var tabs:", until: "private var speedMenu:")
+        let row = ["HStack(", ".pickerStyle(.segmented)", "Spacer(", "speedMenu"].map { tabs.range(of: $0)?.lowerBound }
+        XCTAssertFalse(row.contains(nil), "Speed shares the Transcript/Notes row")
+        XCTAssertEqual(row.compactMap { $0 }, row.compactMap { $0 }.sorted(), "Speed ends the tab row")
+        let speed = try section("private var speedMenu:", until: "/// The scrubber's two end labels.")
+        for part in ["Menu {", "PlaybackSpeeds.all", "model.setPlaybackRate($0)", ".pickerStyle(.inline)",
+                     "Text(\"Speed \\(model.playbackRate, specifier: \"%g\")×\")",
+                     ".accessibilityLabel(\"Speed\")", ".accessibilityValue(", "wilted-player-speed"] {
+            XCTAssertTrue(speed.contains(part), part)
+        }
         for identifier in ["wilted-player-menu", "wilted-player-speed", "wilted-player-mark-completed",
                            "wilted-player-restart", "wilted-player-route-recovery"] {
             XCTAssertEqual(WiltedMacHeadless.occurrences(of: "\"\(identifier)\"", in: source), 1, identifier)
@@ -175,7 +190,7 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         await model.waitForPlaybackOperationForTesting()
         XCTAssertNotEqual(model.playback?.sessionID, session)
         XCTAssertLessThan(model.playbackPositionSeconds, 5)
-        XCTAssertEqual(model.playbackRate, 1.5, "restart preserves the popover speed")
+        XCTAssertEqual(model.playbackRate, 1.5, "restart preserves the chosen speed")
         XCTAssertFalse(model.playbackCompletionIsSettled)
         model.markCurrentPlaybackCompleted()
         await WiltedMacHeadless.eventually("episode retired after completion") {

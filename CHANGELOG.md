@@ -25,8 +25,7 @@ All notable changes to this project are documented in this file.
 - Natural podcast completion chooses the first displayed eligible Ready row, including earlier unfinished episodes. Playlist and audiobook completion keep their own rules.
 - Alphabetical sorting on Mac and iPhone ignores a leading “The” case-insensitively without changing displayed titles.
 - Share keeps its normal control when a page address is unavailable and sends `title - show` as text instead.
-- Now Playing uses compact 48-point artwork, one transport row, speed, and secondary actions in an overflow menu.
-- Now Playing: Mark completed is a bordered button, and Share sits beside the episode title instead of in the More menu.
+- Now Playing uses compact 48-point artwork and one transport row. Mark completed is a bordered button, Share sits beside the episode title, Speed sits at the end of the Transcript and Notes row, and Restart and Recover audio are in a labelled More menu.
 - Subscribing on the Mac no longer asks how many episodes to list; new feeds use the Episodes listed default in Settings.
 - A pasted feed with no audio episodes is offered as an article feed to follow instead of being refused; a feed with neither audio nor posts says "This feed has no audio and no posts to follow."
 - The Mac Larder is one list grouped Ready, Active work, Downloaded, then Not downloaded, with articles and books in the same list and a kind filter (All, Podcasts, Articles, Audiobooks); the iPhone Larder has the same kind filter.
