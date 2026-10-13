@@ -7,8 +7,10 @@ extension LocalLibraryStore {
     /// episodes' media and returns the URLs they named. One fetch per record
     /// type; the caller commits with one save and only then hands the URLs to
     /// `deleteMediaIfUnreferenced`, so a failed save never deletes audio the
-    /// surviving records still name. Mirrors the collection dismissal and
-    /// unsubscribe read, so every removal reclaims the same set of files.
+    /// surviving records still name. Dismissal calls it too; unsubscribe reads
+    /// the same set through `mediaURLs`, because its staged cascade deletes
+    /// these records in separate stages, so every removal reclaims the same
+    /// set of files.
     static func deleteMediaRecords(
         forEpisodesWithIDs episodeIDs: Set<String>,
         in context: ModelContext

@@ -61,18 +61,12 @@ extension LocalLibraryStore {
             return true
         }
         guard episode.removalKind != PodcastEpisodeRemovalKind.dismissed.rawValue else { return false }
-        let doomedMedia = try mediaURLs(forEpisodesWithIDs: [identifier], in: context)
+        let doomedMedia = try Self.deleteMediaRecords(forEpisodesWithIDs: [identifier], in: context)
         episode.removalKind = PodcastEpisodeRemovalKind.dismissed.rawValue
         episode.retiredAt = dismissedAt.date
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
         where record.episodeID == identifier { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
-        where record.episodeID == identifier { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
-        where record.itemID == identifier { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
-        where record.ownerID == identifier { context.delete(record) }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
         where record.itemID == identifier { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
         where record.itemID == identifier { context.delete(record) }
@@ -200,8 +194,8 @@ extension LocalLibraryStore {
     }
 
     /// The media files the given episodes' revision, download, and artwork
-    /// records name, read before those records are deleted so dismissal and
-    /// unsubscribe reclaim the same set.
+    /// records name: the set `deleteMediaRecords` collects, read without
+    /// deleting because unsubscribe deletes those records in separate stages.
     private func mediaURLs(
         forEpisodesWithIDs episodeIDs: Set<String>,
         in context: ModelContext
