@@ -1,0 +1,255 @@
+{
+  "app": "wilted",
+  "approvedOn": "2026-10-11",
+  "sourcePage": "/Users/dave/.codex/visualizations/2026/10/11/01a12cf8-35d3-7f92-a383-15ee0df1920d/wilted-v2/wilted-v2.html",
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "elements": [
+    {
+      "id": "loading-larder-serpentine",
+      "title": "Loading / retry: Larder shelf serpentine",
+      "ownerKey": "wilted.loading",
+      "ownerSelection": {
+        "option": "A",
+        "label": "Larder shelf serpentine"
+      },
+      "kind": "animated",
+      "multicolor": false,
+      "sizes": {
+        "20": {
+          "selector": "[data-testid=\"loader-a-20\"]",
+          "displayPx": {
+            "width": 20,
+            "height": 20
+          },
+          "viewBox": "0 0 64 64",
+          "outsideViewBox": false,
+          "markup": "own markup",
+          "a11yLabel": null
+        },
+        "64": {
+          "selector": "[data-testid=\"loader-a-64\"]",
+          "displayPx": {
+            "width": 64,
+            "height": 64
+          },
+          "viewBox": "0 0 64 64",
+          "outsideViewBox": false,
+          "markup": "own markup",
+          "a11yLabel": null
+        }
+      },
+      "colors": [
+        {
+          "layer": "rect",
+          "prop": "stroke",
+          "cssVar": "--accent",
+          "cssVarCandidates": [
+            "--accent"
+          ],
+          "dark": "#7fd48c",
+          "light": "#4d6b22"
+        },
+        {
+          "layer": "path",
+          "prop": "stroke",
+          "cssVar": "--accent",
+          "cssVarCandidates": [
+            "--accent"
+          ],
+          "dark": "#7fd48c",
+          "light": "#4d6b22"
+        },
+        {
+          "layer": "motion-trace",
+          "prop": "stroke",
+          "cssVar": "--accent",
+          "cssVarCandidates": [
+            "--accent"
+          ],
+          "dark": "#7fd48c",
+          "light": "#4d6b22"
+        }
+      ],
+      "a11yLabel": "Loading / retry: Larder shelf serpentine",
+      "assets": {
+        "svg": {
+          "20": {
+            "dark": "assets/loading-larder-serpentine-20-dark.svg",
+            "light": "assets/loading-larder-serpentine-20-light.svg"
+          },
+          "64": {
+            "dark": "assets/loading-larder-serpentine-64-dark.svg",
+            "light": "assets/loading-larder-serpentine-64-light.svg"
+          }
+        },
+        "template": {
+          "20": "assets/loading-larder-serpentine-20-template.svg",
+          "64": "assets/loading-larder-serpentine-64-template.svg"
+        },
+        "frames": {
+          "dark": "frames/loading-larder-serpentine-dark.png",
+          "light": "frames/loading-larder-serpentine-light.png"
+        }
+      },
+      "inkColors": [
+        "#7fd48c"
+      ],
+      "a11yLabelSource": "title (page svg has no aria-label)",
+      "motion": {
+        "cycleMs": 1600,
+        "sampleTimesMs": [
+          0,
+          200,
+          400,
+          800,
+          1200,
+          1550,
+          1599,
+          1600
+        ],
+        "auditSampleTimesMs": [
+          0,
+          200,
+          400,
+          800,
+          1200,
+          1550,
+          1599,
+          1600
+        ],
+        "designContractTimesMs": [
+          0,
+          400,
+          800,
+          1200
+        ],
+        "sampleTimesNote": "sampleTimesMs = audit times merged with the design-contract times, limited to one cycle (times past cycleMs only repeat the loop)",
+        "drivenBy": "js",
+        "seekSeed": 0,
+        "phases": [
+          {
+            "name": "trace",
+            "startMs": 0,
+            "endMs": 1600,
+            "easing": "linear",
+            "description": "dash offset 0 -> -100 along path (pathLength=100, dash 18 gap 82)"
+          }
+        ],
+        "reducedMotion": "Page reduced-motion pauses the loop; exported frame is cycle time 0 (dash at path start, top-left corner), larder at .58 opacity.",
+        "motionNote": "Web Animations API (script in page). One dash (18 of pathLength 100) travels the closed serpentine larder outline once per 1600 ms; linear; strokeDashoffset 0 to -100. The larder rect, shelves and slats stay static at opacity .58.",
+        "animations": [
+          {
+            "name": null,
+            "kind": "Animation",
+            "keyframes": [
+              {
+                "offset": 0,
+                "strokeDashoffset": "0"
+              },
+              {
+                "offset": 1,
+                "strokeDashoffset": "-100"
+              }
+            ],
+            "timing": {
+              "durationMs": 1600,
+              "delayMs": 0,
+              "iterations": "infinite",
+              "easing": "linear",
+              "direction": "normal",
+              "fill": "auto"
+            },
+            "targets": [
+              "path.motion-trace.dash-trace.loader-tracer"
+            ]
+          }
+        ],
+        "contract": {
+          "contractTimesMs": [
+            0,
+            400,
+            800,
+            1200
+          ]
+        },
+        "auditVariant": "larder-snake",
+        "seekNote": "frames are captured with window.designReview.seek(t, 0) (generic Animation.currentTime fallback on Due Good/Argus); seed 0 makes t equal the cycle time on Wilted and Pantry, where the audit seed 42 would add 546 ms / 42 ms."
+      }
+    },
+    {
+      "id": "feed-refresh-circular-arrow",
+      "title": "Feed refresh action: Circular arrow",
+      "ownerKey": "wilted.feed_refresh",
+      "ownerSelection": {
+        "option": "A",
+        "label": "Circular arrow"
+      },
+      "kind": "static",
+      "multicolor": false,
+      "sizes": {
+        "20": {
+          "selector": "[data-testid=\"refresh-a-20\"]",
+          "displayPx": {
+            "width": 20,
+            "height": 20
+          },
+          "viewBox": "0 0 64 64",
+          "outsideViewBox": false,
+          "markup": "own markup",
+          "a11yLabel": null
+        },
+        "64": {
+          "selector": "[data-testid=\"refresh-a-64\"]",
+          "displayPx": {
+            "width": 64,
+            "height": 64
+          },
+          "viewBox": "0 0 64 64",
+          "outsideViewBox": false,
+          "markup": "own markup",
+          "a11yLabel": null
+        }
+      },
+      "colors": [
+        {
+          "layer": "path",
+          "prop": "stroke",
+          "cssVar": "--accent",
+          "cssVarCandidates": [
+            "--accent"
+          ],
+          "dark": "#7fd48c",
+          "light": "#4d6b22"
+        }
+      ],
+      "a11yLabel": "Feed refresh action: Circular arrow",
+      "assets": {
+        "svg": {
+          "20": {
+            "dark": "assets/feed-refresh-circular-arrow-20-dark.svg",
+            "light": "assets/feed-refresh-circular-arrow-20-light.svg"
+          },
+          "64": {
+            "dark": "assets/feed-refresh-circular-arrow-64-dark.svg",
+            "light": "assets/feed-refresh-circular-arrow-64-light.svg"
+          }
+        },
+        "template": {
+          "20": "assets/feed-refresh-circular-arrow-20-template.svg",
+          "64": "assets/feed-refresh-circular-arrow-64-template.svg"
+        },
+        "frames": {
+          "dark": "frames/feed-refresh-circular-arrow-dark.png",
+          "light": "frames/feed-refresh-circular-arrow-light.png"
+        }
+      },
+      "inkColors": [
+        "#7fd48c"
+      ],
+      "a11yLabelSource": "title (page svg has no aria-label)"
+    }
+  ]
+}
