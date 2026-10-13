@@ -152,10 +152,71 @@ final class WiltedMacFeedPolicyWorkTests: XCTestCase {
         await f.drain()
 
         XCTAssertEqual(saves.count, 2, "the first save failed and the second ran")
-        let stored = try await f.store.feedAutomationPolicy(for: try ItemID(rawValue: f.feedA))
+        let feedID = try ItemID(rawValue: f.feedA)
+        let stored = try await f.store.feedAutomationPolicy(for: feedID)
         XCTAssertEqual(stored.autoDownload, .on, "the second save carried Auto download On")
+        XCTAssertEqual(stored.keptLimit, .explicit(5))
+        XCTAssertEqual(f.board.policy(for: f.feedA), stored, "the board shows what the second save stored")
+        XCTAssertFalse(f.board.failedFeedIDs.contains(f.feedA), "the save that decided succeeded")
         let downloads = try await f.subjects(.podcastDownload)
         XCTAssertEqual(downloads, Set(["kept1", "kept2"].map(f.id)), "the kept episodes downloaded")
+
+        // The next edit builds on what the board shows, so it keeps Auto download On.
+        XCTAssertTrue(f.board.update(f.feedA, keptLimit: .explicit(6)))
+        await f.drain()
+        let next = try await f.store.feedAutomationPolicy(for: feedID)
+        XCTAssertEqual(next.autoDownload, .on, "a later edit does not revert Auto download")
+        XCTAssertEqual(next.keptLimit, .explicit(6))
+        XCTAssertEqual(f.board.policy(for: f.feedA), next)
+    }
+
+    /// Only an edit to the same feed defers the restore: another feed's queued
+    /// edit leaves the failed feed restored and marked.
+    func testAFailedSaveWithOnlyAnotherFeedsEditQueuedStillRestoresAndMarksTheFeed() async throws {
+        let f = try await makeFixture(feedA: .init(autoDownload: .off, autoPrepare: .off))
+        let feedA = f.feedA
+        f.board.beforeFeedPolicySaveHookForTesting = { feedID in
+            if feedID == feedA { throw CocoaError(.fileWriteUnknown) }
+        }
+
+        XCTAssertTrue(f.board.update(f.feedA, autoDownload: .on))
+        XCTAssertTrue(f.board.update(f.feedB, keptLimit: .explicit(3)))
+        await f.drain()
+
+        XCTAssertTrue(f.board.failedFeedIDs.contains(f.feedA))
+        XCTAssertEqual(f.board.policy(for: f.feedA), FeedAutomationPolicy(autoDownload: .off, autoPrepare: .off))
+        XCTAssertFalse(f.board.failedFeedIDs.contains(f.feedB))
+        XCTAssertEqual(f.board.policy(for: f.feedB).keptLimit, .explicit(3))
+    }
+
+    /// Rule edits are saved whole, in order, so the same holds for them: a
+    /// failed save behind which another edit waits leaves that edit shown, and
+    /// a failed save with nothing behind it restores what is stored.
+    func testARulesEditQueuedBehindAFailedRulesSaveKeepsItsRules() async throws {
+        let f = try await makeFixture(feedA: .init())
+        let feedID = try ItemID(rawValue: f.feedA)
+        let saves = DownloadAttemptCounter()
+        f.board.beforeRulesSaveHookForTesting = { _ in
+            saves.increment()
+            if saves.count != 2 { throw CocoaError(.fileWriteUnknown) }
+        }
+        let first = EpisodeMatchRules(rules: [.init(field: .title, includePattern: "alpha", action: .keep)])
+        var second = first
+        second.rules.append(.init(field: .title, includePattern: "beta", action: .skip))
+
+        XCTAssertTrue(f.board.replaceRules(first, for: f.feedA))
+        XCTAssertTrue(f.board.replaceRules(second, for: f.feedA))
+        await f.drain()
+        let stored = try await f.store.episodeMatchRules(for: feedID)
+        XCTAssertEqual(stored, second, "the second save stored the whole set")
+        XCTAssertEqual(f.board.rules(for: f.feedA), second)
+        XCTAssertFalse(f.board.failedFeedIDs.contains(f.feedA))
+
+        XCTAssertTrue(f.board.replaceRules(first, for: f.feedA))
+        await f.drain()
+        XCTAssertEqual(saves.count, 3)
+        XCTAssertEqual(f.board.rules(for: f.feedA), second, "the board shows what is stored")
+        XCTAssertTrue(f.board.failedFeedIDs.contains(f.feedA))
     }
 }
 
@@ -176,6 +237,7 @@ private struct PolicyWorkFixture {
     let board: WiltedMacFeedPolicyBoard
     let store: LocalLibraryStore
     let feedA: String
+    let feedB: String
     let ids: [String: String]
     let transport: DownloadAttemptCounter
     let runner: CountingPreparationRunner
@@ -289,7 +351,8 @@ extension WiltedMacFeedPolicyWorkTests {
         XCTAssertTrue(board.isLoaded(feedIDs[0].rawValue))
         XCTAssertEqual(Set(model.podcastQueueIDs), Set(zip(specs, episodeIDs).filter { $0.0.kept }.map(\.1.rawValue)))
         return PolicyWorkFixture(
-            model: model, board: board, store: try XCTUnwrap(model.store), feedA: feedIDs[0].rawValue,
+            model: model, board: board, store: try XCTUnwrap(model.store),
+            feedA: feedIDs[0].rawValue, feedB: feedIDs[1].rawValue,
             ids: Dictionary(uniqueKeysWithValues: zip(specs.map(\.guid), episodeIDs.map(\.rawValue))),
             transport: counter, runner: runner
         )

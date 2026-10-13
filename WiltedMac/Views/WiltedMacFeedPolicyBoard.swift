@@ -28,9 +28,15 @@ final class WiltedMacFeedPolicyBoard {
     @ObservationIgnored private var writeChain: Task<Void, Never>?
     @ObservationIgnored private var activeReloadID: UUID?
     @ObservationIgnored private var mutationRevision: UInt64 = 0
+    /// Each feed's latest policy and rules edit. A failed save restores what is
+    /// stored only while its edit is the latest: an edit queued behind it keeps
+    /// its value on the board, and its own save decides.
+    @ObservationIgnored private var policyEdits: [String: UInt64] = [:]
+    @ObservationIgnored private var ruleEdits: [String: UInt64] = [:]
     @ObservationIgnored var reloadReadHookForTesting: (@MainActor () async -> Void)?
     @ObservationIgnored var afterFeedPolicyReadHookForTesting: (@MainActor (String) async throws -> Void)?
     @ObservationIgnored var beforeFeedPolicySaveHookForTesting: (@MainActor (String) async throws -> Void)?
+    @ObservationIgnored var beforeRulesSaveHookForTesting: (@MainActor (String) async throws -> Void)?
 
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
@@ -270,24 +276,30 @@ final class WiltedMacFeedPolicyBoard {
     func replaceRules(_ next: EpisodeMatchRules, for feedID: String) -> Bool {
         guard isLoaded(feedID), (try? next.validate()) != nil else { return false }
         mutationRevision &+= 1
+        ruleEdits[feedID, default: 0] &+= 1
+        let edit = ruleEdits[feedID, default: 0]
         rules[feedID] = next
         failedFeedIDs.remove(feedID)
         let previous = writeChain
         writeChain = Task { [weak self] in
             await previous?.value
-            await self?.persist(rules: next, feedID)
+            await self?.persist(rules: next, feedID, edit: edit)
         }
         return true
     }
 
-    private func persist(rules next: EpisodeMatchRules, _ feedID: String) async {
+    private func persist(rules next: EpisodeMatchRules, _ feedID: String, edit: UInt64) async {
         guard let store = model.store, !model.isClosingTemporaryState,
               let id = try? ItemID(rawValue: feedID) else { return }
         do {
+            try await beforeRulesSaveHookForTesting?(feedID)
             try await store.replaceEpisodeMatchRules(next, for: id)
         } catch {
+            // A later edit holds the whole rule set and saves it next.
+            guard ruleEdits[feedID] == edit else { return }
             failedFeedIDs.insert(feedID)
-            if let stored = try? await store.episodeMatchRules(for: id) { rules[feedID] = stored }
+            let stored = try? await store.episodeMatchRules(for: id)
+            if let stored, ruleEdits[feedID] == edit { rules[feedID] = stored }
         }
     }
 
@@ -317,6 +329,8 @@ final class WiltedMacFeedPolicyBoard {
         )
         guard next != current else { return true }
         mutationRevision &+= 1
+        policyEdits[feedID, default: 0] &+= 1
+        let edit = policyEdits[feedID, default: 0]
         policies[feedID] = next
         failedFeedIDs.remove(feedID)
         // Only a change to what may be kept can open or close places.
@@ -324,13 +338,14 @@ final class WiltedMacFeedPolicyBoard {
         let previous = writeChain
         writeChain = Task { [weak self] in
             await previous?.value
-            await self?.persist(feedID, from: current, to: next, releasing: changesCapacity)
+            await self?.persist(feedID, edit: edit, from: current, to: next, releasing: changesCapacity)
         }
         return true
     }
 
     private func persist(
-        _ feedID: String, from prior: FeedAutomationPolicy, to policy: FeedAutomationPolicy, releasing: Bool
+        _ feedID: String, edit: UInt64, from prior: FeedAutomationPolicy, to policy: FeedAutomationPolicy,
+        releasing: Bool
     ) async {
         guard let store = model.store, !model.isClosingTemporaryState,
               let id = try? ItemID(rawValue: feedID) else { return }
@@ -342,8 +357,13 @@ final class WiltedMacFeedPolicyBoard {
             try await beforeFeedPolicySaveHookForTesting?(feedID)
             try await store.save(feedAutomationPolicy: policy, for: id)
         } catch {
+            // A later edit was built on this value and saves it again, so the
+            // board keeps showing it. Restoring here would revert the user's
+            // choice, and their next edit would save the revert.
+            guard policyEdits[feedID] == edit else { return }
             failedFeedIDs.insert(feedID)
-            if let stored = try? await store.feedAutomationPolicy(for: id) { policies[feedID] = stored }
+            let stored = try? await store.feedAutomationPolicy(for: id)
+            if let stored, policyEdits[feedID] == edit { policies[feedID] = stored }
             return
         }
         // A raised limit, or Auto keep switched on, fills open places now,

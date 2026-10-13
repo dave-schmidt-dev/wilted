@@ -42,6 +42,7 @@ All notable changes to this project are documented in this file.
 - History loads one page at a time from the library, so it stays fast with thousands of episodes. Rule skips say "Skipped by rule" and are included under Skipped; search matches episode titles, and All feeds History includes feeds that are turned off.
 
 ### Fixed
+- When a feed setting or rule change fails to save while a later change to the same feed is waiting, the popover keeps your later choice instead of snapping back and saving the old value on your next edit.
 - Turning on a feed's Auto download or Auto prepare in its popover now acts on the episodes that feed already keeps: they download, or prepare under your processing schedule, right away instead of only on the next new episode. Turning either off leaves running work alone.
 - Opening the Mac app runs a due feed refresh before it resumes unfinished downloads, and Feeds shows Refreshing while it runs, instead of "Last refreshed 23 hours ago" until those downloads finished. An automatic refresh skips itself while a manual one is running, and closing the app stops an automatic pass in progress.
 - Returning to Feeds keeps each feed's capacity on screen while it updates, instead of showing "Capacity loading" on every visit.
