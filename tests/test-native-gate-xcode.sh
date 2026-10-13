@@ -455,6 +455,44 @@ exit "$result"
         finally:
             if process.poll() is None:process.terminate();process.communicate(timeout=60)
 
+    def test_testmanagerd_absent_runs_mac_leg_without_sampling(self):
+        args=self.root / 'pgrep-args'
+        status,err,events=self.run_testmanagerd_leg(pid='',FAKE_PGREP_ARGS=str(args))
+        self.assertEqual(status,0,err)
+        self.assertEqual(args.read_text().split(),['-U',str(os.getuid()),'-fx','/usr/libexec/testmanagerd'])
+        self.assertFalse([e for e in events if e.startswith('sample ')]);self.assertIn('test start',events)
+
+    def test_testmanagerd_healthy_stack_is_sampled_then_mac_leg_runs(self):
+        healthy=self.wedged_report[:self.wedged_report.index('    3968 Thread_176065638')]
+        self.assertNotIn('XAMLocalAuthenticationProvider',healthy);self.assertNotIn('LAContext evaluatePolicy',healthy)
+        status,err,events=self.run_testmanagerd_leg(report=healthy)
+        self.assertEqual(status,0,err);self.assertIn('native.testmanagerd.sample pid=66575 seconds=1',err)
+        self.assertTrue(events[0].startswith('sample 66575 1 -file '+str(self.root)+'/testmanagerd-sample.'),events)
+        self.assertIn('test start',events)
+
+    def test_testmanagerd_wedged_stack_fails_before_build_with_remedy(self):
+        status,err,events=self.run_testmanagerd_leg(report=self.wedged_report)
+        self.assertEqual(status,1,err)
+        for text in ['pid=66575','unanswered authentication prompt','Answer or cancel the prompt','kill -9 66575','SIGTERM is not enough']:
+            self.assertIn(text,err)
+        self.assertEqual([e for e in events if e.startswith('build') or e.startswith('test')],[],events)
+
+    def test_testmanagerd_sample_failure_warns_and_runs_mac_leg(self):
+        status,err,events=self.run_testmanagerd_leg(report=self.wedged_report,FAKE_SAMPLE_STATUS='255')
+        self.assertEqual(status,0,err);self.assertIn('native.testmanagerd.warning pid=66575 sample-status=255',err)
+        self.assertIn('test start',events)
+
+    def test_testmanagerd_sample_timeout_warns_and_runs_mac_leg(self):
+        started=time.monotonic()
+        status,err,events=self.run_testmanagerd_leg(report=self.wedged_report,FAKE_SAMPLE_DELAY='30',WILTED_TESTMANAGERD_SAMPLE_TIMEOUT_SECONDS='1')
+        self.assertEqual(status,0,err);self.assertIn('native.testmanagerd.warning pid=66575 sample-status=124',err)
+        self.assertIn('test start',events);self.assertLess(time.monotonic()-started,25)
+
+    def test_testmanagerd_preflight_skips_simulator_destinations(self):
+        self.select();self.env['FAKE_TESTMANAGERD_PID']='66575'
+        self.ios_admission_leg('ios-unit-tests')
+        self.assertNotIn('sample ',self.events.read_text())
+
     def test_persistent_reuse_ready_wait_excluded_and_shutdown(self):
         self.assertEqual(self.select(), self.select())
         result = self.session(dict(self.env, FAKE_READY_DELAY='4', WILTED_TEST_TIMEOUT_SECONDS='3', FAKE_TEST_DELAY='.1'))

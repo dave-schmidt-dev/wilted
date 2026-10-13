@@ -1,4 +1,42 @@
 # shellcheck shell=bash
+# A host testmanagerd blocked on an unanswered Automation Mode authentication prompt hangs every
+# Mac-hosted run until its budget ends (HISTORY 2026-10-12). Sample the user's daemon once and fail
+# at once on that stack. Absent (launchd starts it on demand), healthy or unsampleable daemons pass.
+# Simulator legs use the runtime's own testmanagerd, so only Mac destinations call this.
+wilted_testmanagerd_preflight() {
+  local pgrep_bin="${WILTED_TESTMANAGERD_PGREP:-pgrep}" sample_bin="${WILTED_TESTMANAGERD_SAMPLE:-/usr/bin/sample}"
+  local pids="" pid scratch="" lookup_status=0 sample_status
+  pids="$("$pgrep_bin" -U "$(id -u)" -fx /usr/libexec/testmanagerd)" || lookup_status=$?
+  [[ "$lookup_status" -ne 1 ]] || return 0
+  if [[ "$lookup_status" -ne 0 ]]; then
+    printf 'native.testmanagerd.warning lookup-status=%s; continuing without preflight\n' "$lookup_status" >&2
+    return 0
+  fi
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    printf 'native.testmanagerd.sample pid=%s seconds=1\n' "$pid" >&2
+    sample_status=0
+    scratch="$(mktemp -d "$tmp_root/testmanagerd-sample.XXXXXX")" || sample_status=$?
+    if [[ "$sample_status" -eq 0 ]]; then
+      env WILTED_WORK_PHASE=testmanagerd-preflight python3 "${repo_root:?}/scripts/run-bounded.py" \
+        --timeout-seconds "${WILTED_TESTMANAGERD_SAMPLE_TIMEOUT_SECONDS:-30}" -- \
+        "$sample_bin" "$pid" 1 -file "$scratch/sample.txt" </dev/null >"$scratch/sample.log" 2>&1 || sample_status=$?
+      [[ "$sample_status" -ne 0 || -s "$scratch/sample.txt" ]] || sample_status=1
+    fi
+    if [[ "$sample_status" -ne 0 ]]; then
+      printf 'native.testmanagerd.warning pid=%s sample-status=%s; continuing without preflight\n' "$pid" "$sample_status" >&2
+    elif grep -q 'XAMLocalAuthenticationProvider' "$scratch/sample.txt" && grep -q 'LAContext evaluatePolicy' "$scratch/sample.txt"; then
+      rm -rf "$scratch"
+      printf 'native.testmanagerd.error pid=%s is blocked on an unanswered authentication prompt (%s); hosted tests would hang.\n' \
+        "$pid" 'XAMLocalAuthenticationProvider -> LAContext evaluatePolicy' >&2
+      printf 'native.testmanagerd.remedy Answer or cancel the prompt, or run: kill -9 %s (plain SIGTERM is not enough).\n' "$pid" >&2
+      return 1
+    fi
+    [[ -z "$scratch" ]] || rm -rf "$scratch"
+    scratch=""
+  done <<<"$pids"
+}
+
 # Each build-and-test transaction holds its product lock; work starts after destination readiness.
 xcode_test_leg() {
   local label="$1" source_dir="$2" scheme="$3" destination="$4" target="$5"
@@ -8,6 +46,8 @@ xcode_test_leg() {
   for target in "$@"; do only_testing_args+=(-only-testing:"$target"); done
   require_tool xcodebuild; require_tool jq; require_tool xmllint
   assert_test_sources "$label" "$source_dir" || return 1
+  # Before any copy, build or trap: a wedged host daemon fails here instead of after the test budget.
+  if [[ "$destination" != *'id='* ]]; then wilted_testmanagerd_preflight || return 1; fi
   # Legs with private test environments modify owned copies of the generated scheme.
   project="$(find_project)" || return 1
   # Build real runnable products in the owned leg, while retaining DerivedData.

@@ -1,0 +1,77 @@
+Analysis of sampling testmanagerd (pid 66575) every 1 millisecond
+Process:         testmanagerd [66575]
+Path:            /usr/libexec/testmanagerd
+Load Address:    0x10091c000
+Identifier:      testmanagerd
+Version:         27.0 (25207.2)
+Code Type:       ARM64E
+Platform:        macOS
+Parent Process:  launchd [1]
+Target Type:     live task
+
+Date/Time:       2026-10-12 17:44:31.467 -0400
+Launch Time:     2026-09-30 08:49:29.173 -0400
+OS Version:      macOS 27.0.1 (26A434)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+----
+
+Call graph:
+    3968 Thread_1684750   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 3968 start  (in dyld) + 6688  [0x18682fe80]
+    +   3968 main  (in testmanagerd) + 16  [0x10091f798]
+    +     3968 static testmanagerd.main()  (in testmanagerd) + 2896  [0x10091f6c0]
+    +       3968 -[XCTDDaemon run]  (in testmanagerd) + 320  [0x100958824]
+    +         3968 CFRunLoopRun  (in CoreFoundation) + 64  [0x186d3d4c4]
+    +           3968 _CFRunLoopRunSpecificWithOptions  (in CoreFoundation) + 536  [0x186d9f82c]
+    +             3968 __CFRunLoopRun  (in CoreFoundation) + 1172  [0x186cc5334]
+    +               3968 __CFRunLoopServiceMachPort  (in CoreFoundation) + 160  [0x186cc6aec]
+    +                 3968 mach_msg  (in libsystem_kernel.dylib) + 24  [0x186bc0fac]
+    +                   3968 mach_msg_overwrite  (in libsystem_kernel.dylib) + 480  [0x186bc9a28]
+    +                     3968 mach_msg2_internal  (in libsystem_kernel.dylib) + 76  [0x186bd38e0]
+    +                       3968 mach_msg2_trap  (in libsystem_kernel.dylib) + 8  [0x186bc0c20]
+    3968 Thread_176065638   DispatchQueue_821: la_client  (concurrent)
+    + 3968 start_wqthread  (in libsystem_pthread.dylib) + 8  [0x186c00ce0]
+    +   3968 _pthread_wqthread  (in libsystem_pthread.dylib) + 292  [0x186c01f9c]
+    +     3968 _dispatch_workloop_worker_thread  (in libdispatch.dylib) + 720  [0x186a5785c]
+    +       3968 _dispatch_root_queue_drain_deferred_wlh  (in libdispatch.dylib) + 284  [0x186a57f58]
+    +         3968 _dispatch_lane_invoke  (in libdispatch.dylib) + 448  [0x186a4daf4]
+    +           3968 _dispatch_lane_serial_drain  (in libdispatch.dylib) + 332  [0x186a4ce24]
+    +             3968 _dispatch_mach_invoke  (in libdispatch.dylib) + 472  [0x186a61cdc]
+    +               3968 _dispatch_lane_serial_drain  (in libdispatch.dylib) + 332  [0x186a4ce24]
+    +                 3968 _dispatch_mach_msg_invoke  (in libdispatch.dylib) + 480  [0x186a60f84]
+    +                   3968 _dispatch_client_callout4  (in libdispatch.dylib) + 16  [0x186a5e5e8]
+    +                     3968 _xpc_connection_mach_event  (in libxpc.dylib) + 1140  [0x1868cf408]
+    +                       3968 _xpc_connection_call_event_handler  (in libxpc.dylib) + 112  [0x1868d101c]
+    +                         3968 message_handler  (in Foundation) + 136  [0x18838ed74]
+    +                           3968 message_handler_message  (in Foundation) + 88  [0x18862df48]
+    +                             3968 -[NSXPCConnection _decodeAndInvokeMessageWithEvent:reply:flags:]  (in Foundation) + 1444  [0x18862c820]
+    +                               3968 __NSXPCCONNECTION_IS_CALLING_OUT_TO_EXPORTED_OBJECT_S1__  (in Foundation) + 16  [0x188419fa8]
+    +                                 3968 -[XCTestSession _XCT_enableAutomationModeWithReply:]  (in testmanagerd) + 260  [0x100951124]
+    +                                   3968 -[XCTDAutomationModeInterface enableAutomationModeForClient:error:]  (in testmanagerd) + 360  [0x10092bde0]
+    +                                     3968 XAMEnableAutomationMode  (in AutomationMode) + 48  [0x2356d3ff8]
+    +                                       3968 -[XAMWriter enableAutomationModeWithError:]  (in AutomationMode) + 100  [0x2356d5a94]
+    +                                         3968 -[XAMWriter _usingSyncProxy:withError:]  (in AutomationMode) + 328  [0x2356d5748]
+    +                                           3968 __43-[XAMWriter enableAutomationModeWithError:]_block_invoke  (in AutomationMode) + 376  [0x2356d5c18]
+    +                                             3968 -[XAMLocalAuthenticationProvider authorizationWithError:]  (in AutomationMode) + 144  [0x2356d6400]
+    +                                               3968 -[LAContext evaluatePolicy:options:error:]  (in LocalAuthentication) + 108  [0x1a357066c]
+    +                                                 3968 -[LAContext _evaluatePolicy:options:log:cid:error:]  (in LocalAuthentication) + 276  [0x1a3595c7c]
+    +                                                   3968 -[LAContext _evaluatePolicy:options:log:cid:synchronous:reply:]  (in LocalAuthentication) + 412  [0x1a3595714]
+    +                                                     3968 -[LAContext _evaluatePolicy:options:synchronous:reply:]  (in LocalAuthentication) + 200  [0x1a3595aa4]
+    +                                                       3968 -[LAClient evaluatePolicy:options:uiDelegate:synchronous:reply:]  (in LocalAuthentication) + 348  [0x1a3581b6c]
+    +                                                         3968 -[LAClient _performSynchronous:callId:finally:]  (in LocalAuthentication) + 208  [0x1a3580dbc]
+    +                                                           3968 _dispatch_sync_invoke_and_complete  (in libdispatch.dylib) + 56  [0x186a54b60]
+    +                                                             3968 _dispatch_client_callout  (in libdispatch.dylib) + 16  [0x186a5e5a0]
+    +                                                               3968 __47-[LAClient _performSynchronous:callId:finally:]_block_invoke  (in LocalAuthentication) + 536  [0x1a3581024]
+    +                                                                 3968 __64-[LAClient evaluatePolicy:options:uiDelegate:synchronous:reply:]_block_invoke  (in LocalAuthentication) + 220  [0x1a3581c90]
+    +                                                                   3968 _CF_forwarding_prep_0  (in CoreFoundation) + 96  [0x186ca38d0]
+    +                                                                     3968 ___forwarding___  (in CoreFoundation) + 1088  [0x186ca3dd0]
+    +                                                                       3968 -[NSXPCConnection _sendInvocation:orArguments:count:methodSignature:selector:withProxy:]  (in Foundation) + 2248  [0x18838a8f8]
+    +                                                                         3968 __NSXPCCONNECTION_IS_WAITING_FOR_A_SYNCHRONOUS_REPLY__  (in Foundation) + 16  [0x18838c908]
+    +                                                                           3968 xpc_connection_send_message_with_reply_sync  (in libxpc.dylib) + 328  [0x1868ce588]
+    +                                                                             3968 dispatch_mach_send_with_result_and_wait_for_reply  (in libdispatch.dylib) + 60  [0x186a600f4]
+    +                                                                               3968 _dispatch_mach_send_and_wait_for_reply  (in libdispatch.dylib) + 548  [0x186a5fd54]
+    +                                                                                 3968 mach_msg  (in libsystem_kernel.dylib) + 24  [0x186bc0fac]
+    +                                                                                   3968 mach_msg_overwrite  (in libsystem_kernel.dylib) + 480  [0x186bc9a28]
+    +                                                                                     3968 mach_msg2_internal  (in libsystem_kernel.dylib) + 76  [0x186bd38e0]
+    +                                                                                       3968 mach_msg2_trap  (in libsystem_kernel.dylib) + 8  [0x186bc0c20]

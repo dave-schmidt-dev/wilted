@@ -23,8 +23,21 @@ class XcodeFixture:
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
                         TMPDIR=str(self.root), FAKE_STATE=str(self.state), FAKE_EVENTS=str(self.events),
                         APPLE_UI_TEST_LOCK=str(self.bin / 'ui-lock'), GATE_XCTEST_DEVICE_SET=str(self.root / 'no-clones'),
-                        WILTED_BOUNDED_HEARTBEAT_SECONDS='.1')
+                        WILTED_BOUNDED_HEARTBEAT_SECONDS='.1', WILTED_TESTMANAGERD_PGREP=str(self.bin / 'testmanagerd-pgrep'),
+                        WILTED_TESTMANAGERD_SAMPLE=str(self.bin / 'testmanagerd-sample'))
         (self.bin / 'ui-lock').write_text('#!/bin/bash\nwhile [[ "$1" != -- ]]; do shift; done\nshift\nexec "$@"\n')
+        # Hermetic host daemon: no testmanagerd unless a case names one, so no test samples the real host.
+        (self.bin / 'testmanagerd-pgrep').write_text('''#!/bin/bash
+[[ -z "${FAKE_PGREP_ARGS:-}" ]] || printf '%s\\n' "$@" >"$FAKE_PGREP_ARGS"
+[[ -n "${FAKE_TESTMANAGERD_PID:-}" ]] || exit 1
+printf '%s\\n' "$FAKE_TESTMANAGERD_PID"
+''')
+        (self.bin / 'testmanagerd-sample').write_text('''#!/bin/bash
+printf 'sample %s\\n' "$*" >>"$FAKE_EVENTS"
+sleep "${FAKE_SAMPLE_DELAY:-0}"
+[[ "${FAKE_SAMPLE_STATUS:-0}" == 0 ]] || exit "$FAKE_SAMPLE_STATUS"
+cp "$FAKE_SAMPLE_REPORT" "$4"
+''')
         (self.bin / 'xcrun').write_text('''#!/usr/bin/env python3
 import json, os, subprocess, sys, time
 from pathlib import Path
@@ -92,4 +105,12 @@ with open(os.environ['FAKE_EVENTS'],'a') as f: f.write(phase+' end\\n')
 raise SystemExit(int(os.environ.get('FAKE_TEST_STATUS','0')) if phase=='test' else 0)
 ''')
         for p in self.bin.iterdir(): p.chmod(0o755)
+        self.wedged_report = (self.repository_root / 'tests/fixtures/testmanagerd-wedged-sample.txt').read_text()
     def tearDown(self): self.temp.cleanup()
+    def run_testmanagerd_leg(self, pid='66575', report='', **extra):
+        """Run the Mac unit leg against a fake host testmanagerd; the preflight leaves no scratch behind."""
+        report_path = self.root / 'testmanagerd-report.txt'; report_path.write_text(report)
+        process = self.managed_mac_leg(extra_env=dict(FAKE_TESTMANAGERD_PID=pid, FAKE_SAMPLE_REPORT=str(report_path), **extra))
+        out, err = process.communicate(timeout=60)
+        self.assertEqual(list(self.root.glob('testmanagerd-sample.*')), [], err)
+        return process.returncode, err, self.events.read_text().splitlines() if self.events.exists() else []
