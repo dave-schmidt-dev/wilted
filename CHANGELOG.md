@@ -25,7 +25,6 @@ All notable changes to this project are documented in this file.
 - Natural podcast completion chooses the first displayed eligible Ready row, including earlier unfinished episodes. Playlist and audiobook completion keep their own rules.
 - Alphabetical sorting on Mac and iPhone ignores a leading “The” case-insensitively without changing displayed titles.
 - Share keeps its normal control when a page address is unavailable and sends `title - show` as text instead.
-- Now Playing uses compact 48-point artwork and one transport row. Mark completed is a bordered button, Share sits beside the episode title, Speed sits at the end of the Transcript and Notes row, and Restart and Recover audio are in a labelled More menu.
 - Subscribing on the Mac no longer asks how many episodes to list; new feeds use the Episodes listed default in Settings.
 - A pasted feed with no audio episodes is offered as an article feed to follow instead of being refused; a feed with neither audio nor posts says "This feed has no audio and no posts to follow."
 - The Mac Larder is one list grouped Ready, Active work, Downloaded, then Not downloaded, with articles and books in the same list and a kind filter (All, Podcasts, Articles, Audiobooks); the iPhone Larder has the same kind filter.
@@ -35,21 +34,8 @@ All notable changes to this project are documented in this file.
 - iPhone Settings: the device ID moves into a Diagnostics disclosure, sync detail appears inline only when sync has an error, and the listening totals are titled "This iPhone".
 - Records equal audio: finishing, skipping or retiring an episode now deletes its downloaded audio, and unsubscribing deletes the feed's audio, once the change is saved (a file another episode still uses stays). A restored episode comes back as not downloaded; Feeds keeps the history so it can be downloaded again. The unsubscribe confirmation says so.
 - Re-downloading an episode deletes the copy it replaces, and the Mac startup has a "Reclaiming storage" step that deletes audio no record names and clears records whose audio is missing.
-- A feed's Skip rule now acts on every refresh, automatic or manual: a new matching episode leaves Feeds at once and shows in History as "Skipped by rule", even with Auto keep Off. Keep rules still act only with Auto keep On.
-- A manual refresh applies Auto keep and rules to new episodes the same way an automatic refresh does.
-- Match rules open in their own resizable sheet from the feed gear, with the rules beside their results. Results update as you edit (the Preview button is gone), and Apply asks before it deletes downloaded audio.
-- The feed rules preview covers every episode of the feed, including skipped and finished ones (shown, never changed), and updates as you type. Apply's Skip moves the episode to History and deletes its downloaded audio, as a manual Skip does, and the preview marks those rows; Undo brings the episode back without its audio. Apply also moves to History an episode a Skip rule matched earlier that was still in Feeds, and its audio confirmation counts every episode it changes, not only those shown.
-- History loads one page at a time from the library, so it stays fast with thousands of episodes. Rule skips say "Skipped by rule" and are included under Skipped; search matches episode titles, and All feeds History includes feeds that are turned off.
 
 ### Fixed
-- When a feed setting or rule change fails to save while a later change to the same feed is waiting, the popover keeps your later choice instead of snapping back and saving the old value on your next edit.
-- Turning on a feed's Auto download or Auto prepare in its popover now acts on the episodes that feed already keeps: they download, or prepare under your processing schedule, right away instead of only on the next new episode. Turning either off leaves running work alone.
-- Opening the Mac app runs a due feed refresh before it resumes unfinished downloads, and Feeds shows Refreshing while it runs, instead of "Last refreshed 23 hours ago" until those downloads finished. An automatic refresh skips itself while a manual one is running, and closing the app stops an automatic pass in progress.
-- Returning to Feeds keeps each feed's capacity on screen while it updates, instead of showing "Capacity loading" on every visit.
-- Feed History says Played for an episode you finished and Skipped for one you skipped, replacing Skipped and Removed, which read the same; the status filter offers Played and Skipped.
-- An empty Larder status group, such as Downloaded with nothing in it, keeps its heading and info button and says "No episode is in this group right now." Selecting an empty group's chip also keeps its heading and info button above the explanation. A search, or the Articles or Audiobooks view, still shows only groups with rows.
-- Pause on the Mac stops audio at once without a spinner, and Play no longer waits on its own read of the iPhone's position before starting.
-- New transcripts no longer split a word across two lines (such as "meas" and "urable") where speech recognition cut a long passage mid-word. Existing transcripts keep the split until they are transcribed again.
 - Quit-interrupted downloads resume on relaunch with a three-attempt automatic bound, while an explicit Cancel stays cancelled and a new explicit request resets its own attempt count.
 - Playback checkpoints remain ordered without delaying audio controls; a newer selection or Pause supersedes natural continuation, and a removed Ready candidate is skipped.
 - SwiftPM package test builds recover from Finder metadata signing failures by clearing File Provider metadata and retrying once within the shared work budget.
@@ -179,6 +165,26 @@ All notable changes to this project are documented in this file.
 - Fixed a transcript never reaching an episode downloaded before transcripts shipped: the Mac now publishes the transcript of every prepared queued entry that has one without waiting for a request, keeps it after the phone acknowledges the audio (it leaves with the entry, not with the acknowledgement), and the phone asks again at most once a minute instead of once per session.
 - Audited Phase 0 and native-gate temporary entries by identity before and after each owned run, so a new leak cannot hide behind shrinking totals.
 - Required positive ownership and inactivity before the crash backstop removes stale Wilted scratch, and registered migration validation cleanup before copying.
+
+## [0.5.0] - 2026-10-13
+
+### Changed
+- Now Playing uses compact 48-point artwork and one transport row. Mark completed is a bordered button, Share sits beside the episode title, Speed sits at the end of the Transcript and Notes row, and Restart and Recover audio are in a labelled More menu.
+- A feed's Skip rule now acts on every refresh, automatic or manual: a new matching episode leaves Feeds at once and shows in History as "Skipped by rule", even with Auto keep Off. Keep rules still act only with Auto keep On.
+- A manual refresh applies Auto keep and rules to new episodes the same way an automatic refresh does.
+- Match rules open in their own resizable sheet from the feed gear, with the rules beside their results. Results update as you edit (the Preview button is gone), and Apply asks before it deletes downloaded audio.
+- The feed rules preview covers every episode of the feed, including skipped and finished ones (shown, never changed), and updates as you type. Apply's Skip moves the episode to History and deletes its downloaded audio, as a manual Skip does, and the preview marks those rows; Undo brings the episode back without its audio. Apply also moves to History an episode a Skip rule matched earlier that was still in Feeds, and its audio confirmation counts every episode it changes, not only those shown.
+- History loads one page at a time from the library, so it stays fast with thousands of episodes. Rule skips say "Skipped by rule" and are included under Skipped; search matches episode titles, and All feeds History includes feeds that are turned off.
+
+### Fixed
+- When a feed setting or rule change fails to save while a later change to the same feed is waiting, the popover keeps your later choice instead of snapping back and saving the old value on your next edit.
+- Turning on a feed's Auto download or Auto prepare in its popover now acts on the episodes that feed already keeps: they download, or prepare under your processing schedule, right away instead of only on the next new episode. Turning either off leaves running work alone.
+- Opening the Mac app runs a due feed refresh before it resumes unfinished downloads, and Feeds shows Refreshing while it runs, instead of "Last refreshed 23 hours ago" until those downloads finished. An automatic refresh skips itself while a manual one is running, and closing the app stops an automatic pass in progress.
+- Returning to Feeds keeps each feed's capacity on screen while it updates, instead of showing "Capacity loading" on every visit.
+- Feed History says Played for an episode you finished and Skipped for one you skipped, replacing Skipped and Removed, which read the same; the status filter offers Played and Skipped.
+- An empty Larder status group, such as Downloaded with nothing in it, keeps its heading and info button and says "No episode is in this group right now." Selecting an empty group's chip also keeps its heading and info button above the explanation. A search, or the Articles or Audiobooks view, still shows only groups with rows.
+- Pause on the Mac stops audio at once without a spinner, and Play no longer waits on its own read of the iPhone's position before starting.
+- New transcripts no longer split a word across two lines (such as "meas" and "urable") where speech recognition cut a long passage mid-word. Existing transcripts keep the split until they are transcribed again.
 
 ## [0.4.0] - 2026-10-11
 
