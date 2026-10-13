@@ -376,7 +376,7 @@ cp "$repo_root/scripts/record-mac-snapshots.sh" "$repo_root/scripts/record-walkt
   "$repo_root/scripts/build-with-cache.py" "$capture_repo/scripts/"
 cp "$repo_root/scripts/run-bounded.py" "$repo_root/scripts/check-temp-leaks.py" "$capture_repo/scripts/"
 cp "$repo_root/scripts/lib/test-runner.sh" "$repo_root/scripts/lib/test-temp-state.sh" \
-  "$repo_root/scripts/lib/mac-test-parent.sh" "$capture_repo/scripts/lib/"
+  "$repo_root/scripts/lib/mac-test-parent.sh" "$repo_root/scripts/lib/native-gate-xcode.sh" "$capture_repo/scripts/lib/"
 printf 'fixture\n' >"$capture_repo/project.yml"
 for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltediOSUITests WiltedWatch WiltedWatchTests; do
   mkdir -p "$capture_repo/$directory"
@@ -431,7 +431,20 @@ cat >"$capture_bin/ioreg" <<'IOREG'
 #!/usr/bin/env bash
 exit 0
 IOREG
+cat >"$capture_bin/testmanagerd-pgrep" <<'PGREP'
+#!/usr/bin/env bash
+[[ -n "${FAKE_TESTMANAGERD_PID:-}" ]] || exit 1
+printf '%s\n' "$FAKE_TESTMANAGERD_PID"
+PGREP
+cat >"$capture_bin/testmanagerd-sample" <<'SAMPLE'
+#!/usr/bin/env bash
+cp "$FAKE_SAMPLE_REPORT" "$4"
+SAMPLE
 chmod +x "$capture_bin"/*
+# Hermetic host daemon: absent unless a case names one, so no capture case samples the real host.
+export WILTED_TESTMANAGERD_PGREP="$capture_bin/testmanagerd-pgrep" WILTED_TESTMANAGERD_SAMPLE="$capture_bin/testmanagerd-sample"
+capture_healthy_report="$fixture_root/testmanagerd-healthy.txt"
+printf '%s\n' 'Call graph:' '    1000 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)' >"$capture_healthy_report"
 
 assert_capture_temp_empty() {
   local parent="$1" leftover
@@ -442,19 +455,32 @@ run_capture_case() {
   local kind="$1" mode="$2" expected="$3" keep="${4:-0}"
   local parent="$fixture_root/capture-$kind-$mode-parent" marker="$fixture_root/capture-$kind-$mode-marker"
   local child="$fixture_root/capture-$kind-$mode-child" output="$fixture_root/capture-$kind-$mode.log" entry actual
+  local daemon_pid="" daemon_report="$capture_healthy_report"
+  [[ "$mode" != healthy && "$mode" != wedged ]] || daemon_pid=66575
+  [[ "$mode" != wedged ]] || daemon_report="$repo_root/tests/fixtures/testmanagerd-wedged-sample.txt"
   mkdir -p "$parent"
   entry="$capture_repo/scripts/record-mac-snapshots.sh"
   [[ "$kind" != walkthrough ]] || entry="$capture_repo/scripts/record-walkthrough-frames.sh"
   set +e
   env WILTED_BOUNDED_ENTRY=0 PATH="$capture_bin:$PATH" TMPDIR="$parent" FAKE_CAPTURE_KIND="$kind" FAKE_XCODE_MODE="$mode" \
     FAKE_PARENT_MARKER="$marker" FAKE_CHILD_MARKER="$child" WILTED_CAPTURE_KEEP="$keep" \
+    FAKE_TESTMANAGERD_PID="$daemon_pid" FAKE_SAMPLE_REPORT="$daemon_report" \
     WILTED_TEST_RUNNER_TIMEOUT_SECONDS=5 bash "$entry" >"$output" 2>&1
   actual=$?
   set -e
   [[ "$actual" -eq "$expected" ]] || { echo "capture $kind/$mode status=$actual expected=$expected" >&2; cat "$output" >&2; exit 1; }
   assert_capture_temp_empty "$parent"
-  if [[ "$mode" == success || "$mode" == fail ]]; then
+  if [[ "$mode" == success || "$mode" == fail || "$mode" == healthy ]]; then
     [[ -s "$marker" ]] || { echo "capture $kind/$mode never reached fake xcodebuild" >&2; exit 1; }
+  fi
+  if [[ "$mode" == healthy ]] && ! grep -Fq 'native.testmanagerd.sample pid=66575' "$output"; then
+    echo "capture $kind never sampled a present testmanagerd" >&2; cat "$output" >&2; exit 1
+  fi
+  if [[ "$mode" == wedged ]]; then
+    # The preflight refuses before the copy and build, so fake xcodebuild never runs.
+    if [[ -e "$marker" ]] || ! grep -Fq 'native.testmanagerd.error pid=66575' "$output"; then
+      echo "capture $kind ran past a wedged testmanagerd" >&2; cat "$output" >&2; exit 1
+    fi
   fi
   if [[ "$mode" == timeout ]]; then
     [[ -s "$child" ]] || { echo "capture $kind timeout did not start descendant" >&2; exit 1; }
@@ -466,6 +492,9 @@ run_capture_case snapshot success 0
 run_capture_case snapshot fail 37
 run_capture_case walkthrough success 0 1
 run_capture_case walkthrough fail 37
+run_capture_case snapshot healthy 0
+run_capture_case snapshot wedged 1
+run_capture_case walkthrough wedged 1
 run_capture_case snapshot timeout 124
 run_capture_case walkthrough timeout 124
 

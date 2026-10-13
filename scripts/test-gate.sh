@@ -572,6 +572,8 @@ leg_macos_ui_tests() {
     fail 'WILTED_DEVELOPMENT_TEAM must be a ten-character Apple team identifier'
     return 1
   fi
+  # Before the build: a wedged host daemon fails here instead of after the test budget.
+  if ! wilted_testmanagerd_preflight; then return 1; fi
   wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$WILTED_TEMP_LEG_WORK" || fail "could not bind $label XCTest to its owned temp parent"
   label_data="$(build_cache_path xcode "$cache_key")"
   # Build pre-actions execute under the cache helper's lock, before Xcode

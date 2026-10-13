@@ -32,6 +32,8 @@ build_cache="$repo_root/scripts/build-with-cache.py"
 source "$repo_root/scripts/lib/mac-test-parent.sh"
 # shellcheck source=lib/test-temp-state.sh
 source "$repo_root/scripts/lib/test-temp-state.sh"
+# shellcheck source=lib/native-gate-xcode.sh
+source "$repo_root/scripts/lib/native-gate-xcode.sh"
 temp_parent="$(cd -P "${TMPDIR:?TMPDIR must be set}" 2>/dev/null && pwd)" || exit 1
 tmp_root="$(mktemp -d "$temp_parent/wilted-record-snapshots.XXXXXX")"
 
@@ -51,6 +53,8 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 wilted_temp_mark_owned "$tmp_root"
+# Before the copy and build: a wedged host testmanagerd fails here instead of hanging the run.
+wilted_testmanagerd_preflight || exit 1
 
 root="$tmp_root/record-root"
 mkdir -p "$root/WiltedKit" "$root/Producer" "$root/CloudSync" "$root/Playback"

@@ -121,6 +121,19 @@ assert_gatekeeper_contract() {
 
 assert_gatekeeper_contract
 
+# The self-test never runs the Mac UI leg, so pin that its testmanagerd preflight precedes the build.
+assert_mac_ui_testmanagerd_preflight_contract() {
+  local mac_ui_block preflight_line build_line
+  mac_ui_block="$(sed -n '/^leg_macos_ui_tests()/,/^}$/p' "$gate")"
+  preflight_line="$(printf '%s\n' "$mac_ui_block" | rg -nF 'if ! wilted_testmanagerd_preflight; then return 1; fi' | head -1 | cut -d: -f1)"
+  build_line="$(printf '%s\n' "$mac_ui_block" | rg -n 'xcodebuild build-for-testing' | head -1 | cut -d: -f1)"
+  [[ -n "$preflight_line" && -n "$build_line" && "$preflight_line" -lt "$build_line" ]] || {
+    printf '%s\n' 'assertion failed: Mac UI testmanagerd preflight must precede build-for-testing' >&2
+    exit 1
+  }
+}
+assert_mac_ui_testmanagerd_preflight_contract
+
 assert_mac_test_parent_static_contract() {
   assert_contains 'wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK"' "$native_gate_xcode"
   assert_contains 'mac_test_env=("WILTED_TEST_TMPDIR=$WILTED_TEMP_LEG_WORK")' "$native_gate_xcode"
