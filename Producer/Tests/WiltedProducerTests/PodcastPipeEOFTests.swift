@@ -242,11 +242,20 @@ struct PodcastPipeEOFTests {
                     }
                     usleep(50_000)
                 }
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                    // The tracee may already have completed and disappeared, so
+                    // an unbounded wait here can hang under direct xctest. Poll
+                    // a short bounded window instead and report if it survives.
+                    let killDeadline = Date().addingTimeInterval(5)
+                    while process.isRunning && Date() < killDeadline {
+                        usleep(50_000)
+                    }
+                    if process.isRunning {
+                        Issue.record("isolated EOF CPU case process remained running after SIGKILL")
+                    }
+                }
             }
-            // Reap after descendant supervision and its watchdog finish,
-            // before closing output or removing its temporary root.
-            process.waitUntilExit()
         }
         let deadline = Date().addingTimeInterval(300)
         var lastProgress = Date.distantPast
