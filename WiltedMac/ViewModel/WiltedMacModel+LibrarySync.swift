@@ -274,8 +274,6 @@ final class WiltedMacLibrarySyncController {
     var inbound: WiltedMacInboundRuntime?
     /// The only writer of the Mac's playback records; stopped with the controller.
     var handoff: WiltedMacHandoffController?
-    /// The fresh read of the phone's position a Play press makes before the audio starts.
-    var playRefresher: WiltedMacPlayPositionRefresher?
     /// The iCloud account binding that gates every server call; nil when unmanaged (Task 5.0).
     var account: WiltedMacLibraryAccountController?
     private weak var model: WiltedMacModel?
@@ -571,10 +569,6 @@ extension WiltedMacModel {
             model: self, publisher: publisher, sink: sink, debounce: debounce
         )
         controller.inbound = inbound
-        // Play reads the phone's position itself (one bounded fetch) instead of waiting for a poll.
-        controller.playRefresher = WiltedMacPlayPositionRefresher(
-            fetch: { try await resolvedTransport.fetchDeviceRecords() }, importer: importer,
-            onRecords: { [weak self] records in self?.updatePhonePositions(from: records) })
         // The Mac's one 30 s sync round: reads, then its own writes (state, statistics, checkpoint).
         let startPolling = { [weak controller] in
             _ = inbound.start(sink: sink, publishRound: { [weak controller] in await controller?.tickRound() })

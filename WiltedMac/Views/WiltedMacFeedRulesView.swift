@@ -2,41 +2,70 @@ import SwiftUI
 import WiltedDomain
 import WiltedProducer
 
-// MARK: - Page
+// MARK: - Sheet
 
-/// One feed's match rules: an ordered editor, a preview of what they decide for
-/// the feed's current episodes, and Apply to existing with Undo. It replaces the
-/// feed-settings page inside the same popover.
+/// One feed's match rules in a resizable sheet: the ordered editor beside a
+/// live preview of what the rules decide for the feed's episodes, with Apply
+/// to existing and Undo. The feed-settings popover opens it.
 struct WiltedMacFeedRulesView: View {
-    static let width: CGFloat = 460
+    /// The sheet's smallest size. It opens a little larger and can grow.
+    static let width: CGFloat = 720
+    static let height: CGFloat = 560
+    /// The editor column's widest; the results take the rest.
+    static let editorMaxWidth: CGFloat = 440
 
     let editor: WiltedMacFeedRulesEditor
     let subscription: WiltedMacSubscription
     let resolved: EffectiveFeedAutomationPolicy
-    let back: () -> Void
     var dismiss: () -> Void = {}
-    /// How tall the rules and preview may grow before they scroll. Nil never
-    /// scrolls, which is how a headless render sees all of it.
-    var maximumHeight: CGFloat? = 460
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+        VStack(spacing: 0) {
             header
-            if let maximumHeight {
-                ScrollView { content.padding(.trailing, WiltedTheme.Spacing.small) }
-                    .frame(maxHeight: maximumHeight)
-            } else {
-                content
+            Divider()
+            HStack(alignment: .top, spacing: 0) {
+                ScrollView { editorColumn.padding(WiltedTheme.Spacing.large) }
+                    .frame(minWidth: 340, maxWidth: Self.editorMaxWidth, maxHeight: .infinity)
+                Divider()
+                WiltedMacFeedRulesPreview(editor: editor, subscription: subscription)
+                    .padding(WiltedTheme.Spacing.large)
+                    .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .frame(width: Self.width)
+        .frame(
+            minWidth: Self.width, idealWidth: 820, maxWidth: .infinity,
+            minHeight: Self.height, idealHeight: 640, maxHeight: .infinity
+        )
+        .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-feed-rules-\(subscription.id)")
-        .task { editor.loadIfNeeded() }
+        // Opening previews at once; each edit previews again once editing pauses.
+        .task {
+            editor.loadIfNeeded()
+            editor.preview()
+        }
     }
 
-    private var content: some View {
+    private var header: some View {
+        HStack(spacing: WiltedTheme.Spacing.medium) {
+            Text("Match rules for \(subscription.title)")
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("wilted-feed-rules-title")
+            Spacer(minLength: WiltedTheme.Spacing.medium)
+            Button("Done", action: dismiss)
+                .keyboardShortcut(.cancelAction)
+                .accessibilityLabel("Close match rules for \(subscription.title)")
+                .accessibilityIdentifier("wilted-feed-rules-done")
+        }
+        .padding(.horizontal, WiltedTheme.Spacing.large)
+        .padding(.vertical, WiltedTheme.Spacing.medium)
+    }
+
+    private var editorColumn: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             notes
             ForEach(Array(editor.drafts.enumerated()), id: \.element.id) { index, draft in
@@ -52,28 +81,6 @@ struct WiltedMacFeedRulesView: View {
             }
             .accessibilityLabel("Add a match rule for \(subscription.title)")
             .accessibilityIdentifier("wilted-feed-rules-add")
-            Divider()
-            WiltedMacFeedRulesPreview(editor: editor, subscription: subscription)
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: WiltedTheme.Spacing.small) {
-            Button(action: back) {
-                Label("Feed settings", systemImage: "chevron.left")
-            }
-            .buttonStyle(.borderless)
-            .help("Feed settings")
-            .accessibilityLabel("Back to feed settings for \(subscription.title)")
-            .accessibilityIdentifier("wilted-feed-rules-back")
-            Text("Match rules")
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Spacer()
-            Button("Done", action: dismiss)
-                .keyboardShortcut(.defaultAction)
-                .accessibilityLabel("Close feed settings for \(subscription.title)")
-                .accessibilityIdentifier("wilted-feed-rules-done")
         }
     }
 
@@ -81,7 +88,7 @@ struct WiltedMacFeedRulesView: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             Text("The first rule that matches decides. Matching ignores case.")
             if !resolved.autoKeep {
-                Text("Auto keep is Off for this feed, so rules decide nothing until it is On.")
+                Text("Auto keep is Off for this feed, so only Skip rules decide until it is On.")
                     .accessibilityIdentifier("wilted-feed-rules-inactive")
             }
             if editor.hasProblems {
@@ -95,9 +102,9 @@ struct WiltedMacFeedRulesView: View {
     }
 }
 
-// MARK: - Entry from the settings page
+// MARK: - Entry from the settings popover
 
-/// The row on the feed-settings page that opens the rules page.
+/// The row in the feed-settings popover that opens the rules sheet.
 struct WiltedMacFeedRulesEntry: View {
     let editor: WiltedMacFeedRulesEditor
     let subscription: WiltedMacSubscription
@@ -143,6 +150,18 @@ private struct WiltedMacFeedRuleRow: View {
                 Toggle("On", isOn: binding(\.isEnabled))
                     .accessibilityLabel("Rule \(number) enabled for \(feedTitle)")
                     .accessibilityIdentifier("wilted-feed-rule-enabled-\(number)")
+                Spacer(minLength: 0)
+                iconButton("chevron.up", "Move rule \(number) up", "up", enabled: number > 1) {
+                    editor.move(draft.id, by: -1)
+                }
+                iconButton("chevron.down", "Move rule \(number) down", "down", enabled: number < count) {
+                    editor.move(draft.id, by: 1)
+                }
+                iconButton("trash", "Delete rule \(number)", "delete", enabled: true) {
+                    editor.delete(draft.id)
+                }
+            }
+            HStack(spacing: WiltedTheme.Spacing.small) {
                 Picker("Action", selection: binding(\.action)) {
                     Text("Keep").tag(EpisodeMatchAction.keep)
                     Text("Skip").tag(EpisodeMatchAction.skip)
@@ -160,16 +179,6 @@ private struct WiltedMacFeedRuleRow: View {
                 .fixedSize()
                 .accessibilityLabel("Rule \(number) searches in, for \(feedTitle)")
                 .accessibilityIdentifier("wilted-feed-rule-field-\(number)")
-                Spacer(minLength: 0)
-                iconButton("chevron.up", "Move rule \(number) up", "up", enabled: number > 1) {
-                    editor.move(draft.id, by: -1)
-                }
-                iconButton("chevron.down", "Move rule \(number) down", "down", enabled: number < count) {
-                    editor.move(draft.id, by: 1)
-                }
-                iconButton("trash", "Delete rule \(number)", "delete", enabled: true) {
-                    editor.delete(draft.id)
-                }
             }
             patternField(
                 "Matches (text or regular expression)", text: binding(\.include), error: problems.include,
@@ -180,11 +189,7 @@ private struct WiltedMacFeedRuleRow: View {
                 label: "Rule \(number) exception pattern for \(feedTitle)", identifier: "exclude"
             )
         }
-        .padding(WiltedTheme.Spacing.small)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(WiltedTheme.color(.secondaryText, scheme: colorScheme).opacity(0.3))
-        )
+        .wiltedCard(colorScheme, padding: WiltedTheme.Spacing.medium)
         .opacity(draft.isEnabled ? 1 : 0.6)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-feed-rule-\(number)")
@@ -229,135 +234,5 @@ private struct WiltedMacFeedRuleRow: View {
             get: { draft[keyPath: keyPath] },
             set: { value in editor.update(draft.id) { $0[keyPath: keyPath] = value } }
         )
-    }
-}
-
-// MARK: - Preview and Apply
-
-private struct WiltedMacFeedRulesPreview: View {
-    let editor: WiltedMacFeedRulesEditor
-    let subscription: WiltedMacSubscription
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            Text("Rule results")
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            HStack(spacing: WiltedTheme.Spacing.small) {
-                Button("Preview") { editor.preview() }
-                    .disabled(!editor.canRun)
-                    .accessibilityLabel("Preview match rules for \(subscription.title)")
-                    .accessibilityIdentifier("wilted-feed-rules-preview")
-                Button("Apply to existing") { editor.apply() }
-                    .disabled(!editor.canApply)
-                    .accessibilityLabel("Apply match rules to existing episodes of \(subscription.title)")
-                    .accessibilityIdentifier("wilted-feed-rules-apply")
-                if editor.isBusy, editor.progress != nil {
-                    Button("Cancel") { editor.cancel() }
-                        .accessibilityLabel("Cancel checking rules for \(subscription.title)")
-                        .accessibilityIdentifier("wilted-feed-rules-cancel")
-                }
-            }
-            if let progress = editor.progress {
-                ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1))) {
-                    Text("Checked \(progress.done) of \(progress.total) episodes")
-                        .wiltedFont(.utility)
-                }
-                .accessibilityLabel("Checked \(progress.done) of \(progress.total) episodes")
-                .accessibilityIdentifier("wilted-feed-rules-progress")
-            }
-            if let message = editor.message {
-                Text(message)
-                    .wiltedFont(.utility)
-                    .accessibilityIdentifier("wilted-feed-rules-message")
-            }
-            if editor.undo != nil {
-                Button("Undo") { editor.undoLastApply() }
-                    .disabled(editor.isBusy)
-                    .accessibilityLabel("Undo applied match rules for \(subscription.title)")
-                    .accessibilityIdentifier("wilted-feed-rules-undo")
-            }
-            if let plan = editor.plan {
-                results(plan)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-feed-rules-preview-section")
-    }
-
-    private func results(_ plan: FeedRulesPlan) -> some View {
-        let counts = plan.counts
-        return VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            if plan.rows.isEmpty {
-                Text("This feed has no current episodes to check.")
-            }
-            group(
-                "Undecided episodes", "\(counts.keeps) to keep, \(counts.skips) to skip",
-                rows: plan.rows.filter { $0.outcome == .keep || $0.outcome == .skip }, identifier: "undecided"
-            )
-            group(
-                "Automatic decisions", "\(counts.keepToSkip) Keep to Skip, \(counts.skipToKeep) Skip to Keep",
-                rows: plan.rows.filter { $0.outcome == .keepToSkip || $0.outcome == .skipToKeep }, identifier: "automatic"
-            )
-            group(
-                "Left as they are",
-                "\(counts.protectedManual) yours, \(counts.heldStarted) started, \(counts.waiting) held by the kept limit",
-                rows: plan.rows.filter { !$0.outcome.isChange }, identifier: "unchanged"
-            )
-        }
-        .wiltedFont(.utility)
-        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-feed-rules-results")
-    }
-
-    @ViewBuilder
-    private func group(_ title: String, _ summary: String, rows: [FeedRulesPreviewRow], identifier: String) -> some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-            Text("\(title): \(summary)")
-                .fontWeight(.semibold)
-                .accessibilityIdentifier("wilted-feed-rules-summary-\(identifier)")
-            ForEach(rows) { row in
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(row.title).lineLimit(2)
-                    Text("\(row.verdict) · \(row.outcome.explanation)")
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("wilted-feed-rules-row-\(row.episodeID)")
-            }
-        }
-    }
-}
-
-extension FeedRulesPreviewRow {
-    /// The rule engine's verdict, with the rule that gave it.
-    var verdict: String {
-        let rule = ruleNumber.map { " (rule \($0))" } ?? ""
-        switch result {
-        case .keep: return "Keep\(rule)"
-        case .skip: return "Skip\(rule)"
-        case .noMatch: return outcome == .keep ? "No match (Kept by Auto keep)" : "No match"
-        case .timedOut: return "Timed out\(rule)"
-        }
-    }
-}
-
-extension FeedRulesOutcome {
-    /// What Apply to existing would do, in the words the preview shows.
-    var explanation: String {
-        switch self {
-        case .keep: "will keep"
-        case .skip: "will skip"
-        case .keepToSkip: "Keep becomes Skip"
-        case .skipToKeep: "Skip becomes Keep"
-        case .unchanged: "no change"
-        case .protectedManual: "your choice, left as is"
-        case .heldStarted: "started, left as is"
-        case .waiting: "held by the kept limit"
-        case .unfinished: "rule timed out, left as is"
-        case .inactive: "Auto keep is Off"
-        }
     }
 }

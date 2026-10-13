@@ -36,6 +36,8 @@ extension WiltedMacModel {
     /// feed.
     struct PodcastRefreshResult {
         var newEpisodeIDs: [ItemID] = []
+        /// New episodes per feed from a refresh (never a subscribe), for admission.
+        var newEpisodeIDsByFeed: [ItemID: [ItemID]] = [:]
         var duplicateSubscription: ItemID?
         /// Feeds this pass handled as article feeds rather than podcasts.
         var articleFeedIDs: Set<ItemID> = []
@@ -137,6 +139,9 @@ extension WiltedMacModel {
                 try Task.checkCancellation()
                 withheld += loaded.droppedEpisodeCount + admission.skipped
                 result.newEpisodeIDs.append(contentsOf: admission.newlyAdmitted)
+                if !subscribing, !admission.newlyAdmitted.isEmpty {
+                    result.newEpisodeIDsByFeed[loaded.feed.itemID, default: []] += admission.newlyAdmitted
+                }
                 result.successfulFeedTitles.append(loaded.feed.title)
                 result.successfulFeedCount += 1
                 result.feedOutcomes[url] = .done
@@ -169,16 +174,26 @@ extension WiltedMacModel {
         }
         withheldPodcastEpisodeCount = withheld
         try Task.checkCancellation()
-        let values = try await loadLibrary(from: store)
+        var values = try await loadLibrary(from: store)
+        // Admit what the refresh found, as automatic refresh does. A rule Skip retires: read again,
+        // and stop reporting those episodes as added.
+        let admitted = try await admitAfterManualRefresh(result.newEpisodeIDsByFeed, rows: values.episodes.values, store: store)
+        if !admitted.ruleSkipped.isEmpty {
+            values = try await loadLibrary(from: store)
+            let skipped = Set(admitted.ruleSkipped)
+            result.newEpisodeIDs.removeAll { skipped.contains($0.rawValue) }
+        }
         let dismissed = try await loadDismissedEpisodes(from: store)
         try Task.checkCancellation()
         guard requestID == nil || podcastSubscriptionRequestID == requestID else {
             throw CancellationError()
         }
-        guard applyEpisodes(values.episodes) else { return result }
+        guard applyEpisodes(values.episodes) else { startClaimedDownloads(admitted.downloads); return result }
         articles = values.articles
         subscriptions = values.subscriptions
         dismissedEpisodes = dismissed
+        if !result.newEpisodeIDsByFeed.isEmpty { await refreshPodcastQueueState() }
+        startClaimedDownloads(admitted.downloads)
         return result
     }
 

@@ -15,7 +15,7 @@ private let pollerLog = Logger(subsystem: "com.zerodelta.wilted", category: "Mac
 /// startup (retried until it succeeds) and again every `rediscoverEveryCycles` cycles while no other
 /// device is known, or every `rediscoverEveryCyclesWithPeers` once one is, which teaches the
 /// transport the device and entry names to ask for. Nothing in the background is faster than the
-/// tick, and a Mac Play press reads the phone's position itself. `pollNow()` runs a cycle on demand
+/// tick, and a Mac Play press makes no read of its own. `pollNow()` runs a cycle on demand
 /// and joins one already running.
 actor WiltedMacInboundPoller {
     static let pollInterval: Duration = .seconds(SyncCadence.tickInterval)

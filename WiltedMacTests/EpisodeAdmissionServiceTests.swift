@@ -98,6 +98,37 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
         XCTAssertTrue(offTickets.isEmpty)
         XCTAssertTrue(offQueue.episodeIDs.isEmpty)
 
+        // Auto keep Off still lets a Skip rule retire its match; a Keep rule
+        // and the policy wait for Auto keep, so nothing is kept.
+        let offRules = EpisodeMatchRules(rules: [
+            .init(field: .title, includePattern: "Sponsored", action: .skip),
+            .init(field: .title, includePattern: "Bonus", action: .keep)
+        ])
+        let offRuled = try await makeFixture(
+            policy: FeedAutomationPolicy(autoKeep: .off, autoDownload: .on, autoPrepare: .on), rules: offRules,
+            feedItems: [.init("ad", title: "Sponsored special", day: 1), .init("bonus", title: "Bonus round", day: 2),
+                        .init("show", day: 3)]
+        )
+        let offRuledClaims = try await offRuled.model.automaticRefresh(offRuled.feedURL, claimingNewest: 0)
+        XCTAssertTrue(offRuledClaims.isEmpty)
+        let offAdID = try ItemID(rawValue: offRuled.id("ad"))
+        let offAdDecision = try await offRuled.store.episodeDecision(for: offAdID)
+        XCTAssertEqual(offAdDecision?.decision, .skip)
+        XCTAssertEqual(offAdDecision?.source, .rule)
+        XCTAssertEqual(offAdDecision?.ruleID, offRules.rules[0].id)
+        let offAdRemoval = try await offRuled.store.removalKind(for: offAdID)
+        XCTAssertEqual(offAdRemoval, .retired)
+        XCTAssertEqual(offRuled.episode("ad")?.removalKind, .retired, "the refresh re-read the retired row")
+        for guid in ["bonus", "show"] {
+            let undecided = try await offRuled.store.episodeDecision(for: ItemID(rawValue: offRuled.id(guid)))
+            XCTAssertNil(undecided, "\(guid) waits for the listener while Auto keep is Off")
+            XCTAssertNil(offRuled.episode(guid)?.removalKind)
+        }
+        let offRuledTickets = try await offRuled.store.workTickets()
+        let offRuledQueue = try await offRuled.store.podcastQueueState()
+        XCTAssertTrue(offRuledTickets.isEmpty)
+        XCTAssertTrue(offRuledQueue.episodeIDs.isEmpty)
+
         let manual = try await makeFixture(
             policy: allOn, feedItems: [.init("skipped", day: 1), .init("fresh", day: 2)],
             seededDecisions: [("skipped", .skip, .manual)]
@@ -108,7 +139,7 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
         XCTAssertFalse(manualTickets.contains { $0.subjectID == manual.id("skipped") })
         XCTAssertNotNil(manual.model.episodes.first { $0.id == manual.id("skipped") })
 
-        let rules = try EpisodeMatchRules(rules: [
+        let rules = EpisodeMatchRules(rules: [
             .init(field: .title, includePattern: "Sponsored", action: .skip)
         ])
         let ruled = try await makeFixture(
@@ -122,6 +153,10 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
         let adDecision = try await ruled.store.episodeDecision(for: ItemID(rawValue: ruled.id("ad")))
         XCTAssertEqual(adDecision?.decision, .skip)
         XCTAssertEqual(adDecision?.source, .rule)
+        XCTAssertEqual(adDecision?.ruleID, rules.rules[0].id)
+        let adRemoval = try await ruled.store.removalKind(for: ItemID(rawValue: ruled.id("ad")))
+        XCTAssertEqual(adRemoval, .retired, "a rule Skip takes the episode out of the feed")
+        XCTAssertEqual(ruled.episode("ad")?.removalKind, .retired)
         let ruledQueue = try await ruled.store.podcastQueueState()
         XCTAssertEqual(ruledQueue.episodeIDs.map(\.rawValue), [ruled.id("show")])
     }

@@ -191,7 +191,13 @@ EXPLICIT_SPONSOR_NAME_LEADING_FILLER = frozenset(
 
 ALIGNED_STT_MODEL = "mlx-community/parakeet-tdt-1.1b"
 
-ALIGNED_STT_CACHE_SCHEMA_VERSION = 1
+ALIGNED_STT_CACHE_SCHEMA_VERSION = 2
+
+# Parakeet computes a token's end as its start plus its duration, and the next
+# token's start from its own frame step, so two adjacent tokens can disagree by
+# a few ulps. A word fragment is still contiguous with the token before it when
+# it starts this much earlier; a real overlapping chunk stitch is far larger.
+SPLIT_WORD_CONTIGUITY_TOLERANCE_S = 0.001
 
 ALIGNED_STT_CACHE_MAXIMUM_ENTRIES = 32
 

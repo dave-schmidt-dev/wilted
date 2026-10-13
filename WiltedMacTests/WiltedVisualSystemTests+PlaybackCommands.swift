@@ -193,15 +193,21 @@ extension WiltedVisualSystemTests {
         XCTAssertEqual(try rowPixels(), pausedRow, "A player start must not spin the unrelated Larder Play now button")
         gate.release(); await model.waitForPlaybackOperationForTesting()
         XCTAssertTrue(model.isPlaying); XCTAssertEqual(backend.playCount, starts + 1)
-        let playing = try capture("playing"); let playingRow = try rowPixels()
-        gate.arm(); model.togglePlayback(); await gate.waitUntilHeld()
-        XCTAssertEqual(model.playbackCommands.pending?.command.kind, .pause)
-        XCTAssertEqual(model.playbackCommands.pending?.usesPlayPauseButtonFeedback, true)
-        let pauseGeneration = model.playbackCommands.generation; let pauses = backend.pauseCount
-        model.togglePlayback(); model.pausePlayback()
-        XCTAssertEqual(model.playbackCommands.generation, pauseGeneration)
-        compare(playing, try capture("pausing"))
-        XCTAssertEqual(try rowPixels(), playingRow, "A player pause must not spin the unrelated Larder Play now button")
+        _ = try capture("playing")
+        // Pause is answered before the press returns: the audio has stopped and no
+        // pending state shows, while its checkpoint is still held on the effect tail.
+        let pauses = backend.pauseCount
+        gate.arm(); model.togglePlayback()
+        XCTAssertNil(model.playbackCommands.pending)
+        XCTAssertFalse(backend.isPlaying); XCTAssertFalse(model.isPlaying)
+        XCTAssertEqual(backend.pauseCount, pauses + 1)
+        await gate.waitUntilHeld()
+        let pauseGeneration = model.playbackCommands.generation
+        model.pausePlayback()
+        XCTAssertEqual(model.playbackCommands.generation, pauseGeneration, "a repeated Pause issues nothing")
+        XCTAssertEqual(backend.pauseCount, pauses + 1)
+        compare(paused, try capture("pausing"))
+        XCTAssertEqual(try rowPixels(), pausedRow, "A player pause must not spin the unrelated Larder Play now button")
         gate.release(); await model.waitForPlaybackOperationForTesting()
         XCTAssertFalse(model.isPlaying); XCTAssertEqual(backend.pauseCount, pauses + 1)
         XCTAssertNil(model.playbackCommands.pending)

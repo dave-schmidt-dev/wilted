@@ -368,12 +368,12 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         let f = try await makeFixture(); let board = WiltedMacFeedPolicyBoard(model: f.model); await board.reload()
         let editor = board.rulesEditor(for: f.feed); editor.loadIfNeeded()
         let id = editor.addRule(); editor.update(id) { $0.include = "Episode"; $0.exclude = "Bonus" }
-        let view = WiltedMacFeedRulesView(editor: editor, subscription: try XCTUnwrap(f.model.subscriptions.first), resolved: board.resolved(for: f.feed), back: {}, maximumHeight: nil)
-        let text = try capture(view, "rules-filled", width: 460, height: 1100)
+        let view = WiltedMacFeedRulesView(editor: editor, subscription: try XCTUnwrap(f.model.subscriptions.first), resolved: board.resolved(for: f.feed))
+        let text = try WiltedMacRulesSheetCapture.text(view, size: CGSize(width: WiltedMacFeedRulesView.width, height: WiltedMacFeedRulesView.height), name: "rules-filled", in: self)
         for label in ["Matches", "Unless it also matches", "Rule 1", "On", "Episode", "Bonus"] {
             XCTAssertTrue(text.contains(label), "\(label): \(text)")
         }
-        XCTAssertEqual(editor.drafts.first?.include, "Episode"); XCTAssertEqual(editor.drafts.first?.exclude, "Bonus")
+        XCTAssertEqual(editor.drafts.first?.include, "Episode"); XCTAssertEqual(editor.drafts.first?.exclude, "Bonus"); await editor.task?.value
     }
 
     func testNoMatchPreviewStatesTheActualAutoKeepConsequence() async throws {
@@ -384,22 +384,24 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         editor.preview(); await editor.task?.value
         let row = try XCTUnwrap(editor.plan?.rows.first)
         XCTAssertEqual(row.result, .noMatch); XCTAssertEqual(row.outcome, .keep)
-        let view = WiltedMacFeedRulesView(editor: editor, subscription: try XCTUnwrap(f.model.subscriptions.first), resolved: board.resolved(for: f.feed), back: {}, maximumHeight: nil)
-        let text = try capture(view, "rules-preview", width: 460, height: 1100)
+        let view = WiltedMacFeedRulesView(editor: editor, subscription: try XCTUnwrap(f.model.subscriptions.first), resolved: board.resolved(for: f.feed))
+        let text = try WiltedMacRulesSheetCapture.text(view, size: CGSize(width: WiltedMacFeedRulesView.width, height: WiltedMacFeedRulesView.height), name: "rules-preview", in: self)
         XCTAssertTrue(text.contains("Rule results"), text)
         XCTAssertTrue(text.contains("Kept by Auto keep"), text)
-        XCTAssertEqual(f.model.podcastQueueIDs, [], "preview does not apply the proposed Keep")
+        await editor.task?.value; XCTAssertEqual(f.model.podcastQueueIDs, [], "preview does not apply the proposed Keep")
     }
 
-    func testBothPopoverPagesUse460AndExposeBackAndDone() async throws {
+    func testPopoverStays460AndTheRulesSheetOpensAtLeastAtItsMinimumWithTitleAndDone() async throws {
         let f = try await makeFixture(); let board = WiltedMacFeedPolicyBoard(model: f.model); await board.reload()
         let subscription = try XCTUnwrap(f.model.subscriptions.first)
         let policy = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
         XCTAssertEqual(NSHostingView(rootView: policy).fittingSize.width, 460, accuracy: 1)
-        let rules = WiltedMacFeedRulesView(editor: board.rulesEditor(for: f.feed), subscription: subscription, resolved: board.resolved(for: f.feed), back: {}, maximumHeight: nil)
-        XCTAssertEqual(NSHostingView(rootView: rules).fittingSize.width, 460, accuracy: 1)
-        let text = try capture(rules, "rules-controls", width: 460, height: 800)
-        XCTAssertTrue(text.contains("Feed settings"), text); XCTAssertTrue(text.contains("Done"), text)
+        let rules = WiltedMacFeedRulesView(editor: board.rulesEditor(for: f.feed), subscription: subscription, resolved: board.resolved(for: f.feed))
+        let opening = NSHostingView(rootView: rules).fittingSize
+        XCTAssertGreaterThanOrEqual(opening.width, 720); XCTAssertGreaterThanOrEqual(opening.height, 560)
+        let text = try WiltedMacRulesSheetCapture.text(rules, size: CGSize(width: 720, height: 560), name: "rules-controls", in: self)
+        XCTAssertTrue(text.contains("Match rules for Policy Feed"), text); XCTAssertTrue(text.contains("Done"), text)
+        XCTAssertFalse(text.contains("Feed settings"), "no page swap back to the popover: \(text)"); await board.rulesEditor(for: f.feed).task?.value
     }
 
     func testDefaultsAndGearExposeTheirActualSourcesAtNarrowAndWideWidths() async throws {

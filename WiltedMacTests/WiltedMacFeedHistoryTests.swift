@@ -1,48 +1,34 @@
 import XCTest
+import WiltedDomain
 import WiltedProducer
 @testable import WiltedMac
 
 @MainActor
 final class WiltedMacFeedHistoryTests: XCTestCase {
-    func testHistoryQueryKeepsAll281RecordsAndFiltersPagesOf25() {
-        let records = (0..<281).map { index in
-            WiltedMacFeedHistoryRecord(
-                id: "episode-\(index)",
-                feedID: index.isMultiple(of: 2) ? "feed-a" : "feed-b",
-                feedTitle: index.isMultiple(of: 2) ? "Alpha show" : "Beta show",
-                presentation: WiltedMacEpisodePresentation(
-                    title: "Episode \(index)", showTitle: "Show \(index % 3)", publishedAt: nil,
-                    sourceDurationSeconds: nil, playableDurationSeconds: nil
-                ),
-                kind: .retired,
-                status: index.isMultiple(of: 2) ? .skipped : .played,
-                changedAt: Date(timeIntervalSince1970: Double(index))
-            )
-        }
-        var query = WiltedMacFeedHistoryQuery()
-
-        XCTAssertEqual(query.filtered(records).count, 281)
-        XCTAssertEqual(query.page(in: records).count, 25)
-        XCTAssertEqual(query.pageCount(in: records), 12)
-        query.pageIndex = 11
-        XCTAssertEqual(query.page(in: records).count, 6, "the final page retains every remaining record")
-
-        query.pageIndex = 0
-        query.feedID = "feed-b"
-        query.statusFilter = .played
-        let filtered = query.filtered(records)
-        XCTAssertEqual(filtered.count, 140)
-        XCTAssertTrue(filtered.allSatisfy { $0.feedID == "feed-b" && $0.status == .played })
-        query.searchText = "Episode 27"
-        XCTAssertFalse(query.filtered(records).isEmpty)
-        XCTAssertTrue(query.filtered(records).allSatisfy { $0.presentation.title.localizedCaseInsensitiveContains("Episode 27") })
+    func testStoreRowBecomesARecordWithFactsKindAndRestoreIdentifier() async throws {
+        let labelled = try await labelledHistory(feedTitle: "History show")
+        let passed = try XCTUnwrap(labelled.records["passed"])
+        XCTAssertEqual(passed.presentation.title, "Episode passed")
+        XCTAssertEqual(passed.presentation.showTitle, "History show")
+        XCTAssertEqual(passed.presentation.publishedAt, Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(passed.presentation.sourceDurationSeconds, 1_800)
+        XCTAssertNil(passed.presentation.playableDurationSeconds, "History never claims a playable cut")
+        XCTAssertEqual(passed.feedTitle, "History show")
+        XCTAssertEqual(passed.changedAt, Date(timeIntervalSince1970: 1_900_000_020))
+        XCTAssertEqual(WiltedMacFeedHistoryAccessibilityID.restoreSkipped(passed.id), "wilted-feeds-restore-skipped-\(passed.id)")
+        XCTAssertEqual(labelled.records.values.map(\.feedID), Array(repeating: Optional(labelled.feedID), count: 4))
+        XCTAssertEqual(labelled.loader.rows.map(\.episodeID.rawValue),
+                       ["rule", "finished", "passed", "legacy"].map { labelled.ids[$0]! }, "newest removal first")
     }
 
     func testHistoryPagePreservesRestorePathsAndAccessibleSearchFiltersAndPaging() throws {
         let source = try WiltedMacHeadless.viewSource("WiltedMacFeedHistoryView.swift")
+        let loader = try WiltedMacHeadless.viewSource("WiltedMacFeedHistoryLoader.swift")
         XCTAssertTrue(source.contains("model.restoreSkippedFeedEpisode(episode)"))
         XCTAssertTrue(source.contains("model.restoreEpisode(dismissal)"))
-        XCTAssertTrue(source.contains("static let pageSize = 25"))
+        XCTAssertTrue(loader.contains("record.requestRestore(through: model)"))
+        XCTAssertTrue(loader.contains("static let pageSize = 25"))
+        XCTAssertTrue(loader.contains("static let searchDebounce: Duration = .milliseconds(300)"))
         for identifier in [
             "wilted-feed-history-search", "wilted-feed-history-feed-filter", "wilted-feed-history-status-filter",
             "wilted-feed-history-previous", "wilted-feed-history-next", "wilted-feed-history-range",
@@ -52,6 +38,11 @@ final class WiltedMacFeedHistoryTests: XCTestCase {
         XCTAssertTrue(source.contains("WiltedMacFeedHistoryAccessibilityID.restoreSkipped(record.id)"))
         XCTAssertTrue(source.contains("WiltedMacFeedHistoryAccessibilityID.restoreRemoved(record.id)"))
         XCTAssertTrue(source.contains(".accessibilityIdentifier(restoreIdentifier)"))
+        XCTAssertTrue(source.contains("Button(\"Restore\") { restore(record) }"))
+        XCTAssertTrue(source.contains("loader.restore(record, model: model)"))
+        for retired in ["model.skippedFeedEpisodes", "history(retired:", "WiltedMacFeedHistoryQuery"] {
+            XCTAssertFalse(source.contains(retired), "History renders the store page, not \(retired)")
+        }
         let feeds = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
         XCTAssertTrue(feeds.contains(".sheet(item: $presentedSheet)"))
         XCTAssertTrue(feeds.contains("Button(\"Done\") { presentedSheet = nil }"))
@@ -63,44 +54,46 @@ final class WiltedMacFeedHistoryTests: XCTestCase {
 
     /// A finished episode leaves the list through the same retirement a skip
     /// writes; its completion record is what makes History call it Played.
-    func testCompletedRetiredEpisodeReadsPlayed() throws {
-        let records = WiltedMacFeedHistoryRecord.history(retired: [retired("finished", played: true, at: 30)], dismissed: [])
-        XCTAssertEqual(records.count, 1)
-        let record = try XCTUnwrap(records.first)
+    func testCompletedRetiredEpisodeReadsPlayed() async throws {
+        let records = try await labelledHistory().records
+        let record = try XCTUnwrap(records["finished"])
         XCTAssertEqual(record.status, .played)
         XCTAssertEqual(record.status.rawValue, "Played")
         XCTAssertEqual(record.kind, .retired, "Restore still runs the retirement reversal")
     }
 
-    func testUncompletedRetiredEpisodeReadsSkipped() throws {
-        let records = WiltedMacFeedHistoryRecord.history(retired: [retired("passed", played: false, at: 20)], dismissed: [])
-        XCTAssertEqual(records.count, 1)
-        let record = try XCTUnwrap(records.first)
+    func testUncompletedRetiredEpisodeReadsSkipped() async throws {
+        let records = try await labelledHistory().records
+        let record = try XCTUnwrap(records["passed"])
         XCTAssertEqual(record.status, .skipped)
         XCTAssertEqual(record.status.rawValue, "Skipped")
         XCTAssertEqual(record.kind, .retired)
     }
 
+    /// A feed rule's skip names itself, and restores like any retirement.
+    func testRuleSkippedEpisodeReadsSkippedByRule() async throws {
+        let records = try await labelledHistory().records
+        let record = try XCTUnwrap(records["rule"])
+        XCTAssertEqual(record.status, .skippedByRule)
+        XCTAssertEqual(record.status.rawValue, "Skipped by rule")
+        XCTAssertEqual(record.kind, .retired)
+    }
+
     /// Nothing writes a dismissal now, so an old one reads Skipped, but its
     /// Restore and identifier still follow the dismissal it really is.
-    func testLegacyDismissedRowReadsSkippedAndKeepsItsDismissalRestorePath() throws {
-        let records = WiltedMacFeedHistoryRecord.history(retired: [], dismissed: [dismissed("legacy", at: 10)])
-        XCTAssertEqual(records.count, 1)
-        let record = try XCTUnwrap(records.first)
+    func testLegacyDismissedRowReadsSkippedAndKeepsItsDismissalRestorePath() async throws {
+        let labelled = try await labelledHistory()
+        let record = try XCTUnwrap(labelled.records["legacy"])
         XCTAssertEqual(record.status, .skipped)
         XCTAssertEqual(record.kind, .dismissed)
         XCTAssertFalse(WiltedMacFeedHistoryStatus.allCases.map(\.rawValue).contains("Removed"))
-        XCTAssertEqual(WiltedMacFeedHistoryAccessibilityID.restoreRemoved(record.id), "wilted-feeds-restore-removed-legacy")
-
-        let overlap = WiltedMacFeedHistoryRecord.history(
-            retired: [retired("legacy", played: false, at: 20)], dismissed: [dismissed("legacy", at: 10)]
-        )
-        XCTAssertEqual(overlap.map(\.kind), [.retired], "a row both retired and dismissed shows once, as retired")
+        XCTAssertEqual(WiltedMacFeedHistoryAccessibilityID.restoreRemoved(record.id), "wilted-feeds-restore-removed-\(record.id)")
+        XCTAssertEqual(record.storeRestoreDismissal.id, record.id, "an unloaded row still restores by its own identity")
 
         let source = try WiltedMacHeadless.viewSource("WiltedMacFeedHistoryView.swift")
         XCTAssertTrue(source.contains("let restoreIdentifier = record.kind == .retired"),
                       "the restore identifier follows the stored removal, not the label")
-        let dispatch = try XCTUnwrap(source.range(of: "switch record.kind {"), "Restore dispatches on the stored removal")
+        let dispatch = try XCTUnwrap(source.range(of: "switch kind {"), "Restore dispatches on the stored removal")
         let body = source[dispatch.lowerBound...]
         let order = try [
             "case .retired:", "model.restoreSkippedFeedEpisode(episode)",
@@ -109,61 +102,78 @@ final class WiltedMacFeedHistoryTests: XCTestCase {
         XCTAssertEqual(order, order.sorted(), "each removal kind keeps its own restore call")
     }
 
-    func testStatusFilterSeparatesPlayedFromSkippedRows() {
-        let records = WiltedMacFeedHistoryRecord.history(
-            retired: [retired("finished", played: true, at: 30), retired("passed", played: false, at: 20)],
-            dismissed: [dismissed("legacy", at: 10)]
-        )
-        XCTAssertEqual(WiltedMacFeedHistoryQuery.StatusFilter.allCases.map(\.rawValue), ["All statuses", "Played", "Skipped"])
-        var query = WiltedMacFeedHistoryQuery()
-        XCTAssertEqual(query.filtered(records).map(\.id), ["finished", "passed", "legacy"])
-        query.statusFilter = .played
-        XCTAssertEqual(query.filtered(records).map(\.id), ["finished"])
-        query.statusFilter = .skipped
-        XCTAssertEqual(query.filtered(records).map(\.id), ["passed", "legacy"])
-        query.statusFilter = .all
-        query.searchText = "played"
-        XCTAssertEqual(query.filtered(records).map(\.id), ["finished"], "search matches the label a person reads")
+    func testStatusFilterSeparatesPlayedFromSkippedRows() async throws {
+        typealias Filter = WiltedMacFeedHistoryLoader.StatusFilter
+        XCTAssertEqual(Filter.allCases.map(\.rawValue), ["All statuses", "Played", "Skipped"])
+        XCTAssertEqual(Filter.allCases.map(\.storeFilter), [nil, .played, .skipped])
+        let labelled = try await labelledHistory()
+        let loader = labelled.loader
+        let ids = labelled.ids
+        loader.setStatusFilter(.played)
+        await loader.settle()
+        XCTAssertEqual(loader.rows.map(\.episodeID.rawValue), [ids["finished"]!])
+        loader.setStatusFilter(.skipped)
+        await loader.settle()
+        XCTAssertEqual(loader.rows.map(\.episodeID.rawValue), ["rule", "passed", "legacy"].map { ids[$0]! },
+                       "Skipped includes rule skips and legacy dismissals")
+        loader.setStatusFilter(.all)
+        loader.setSearchText("passed")
+        await loader.settle()
+        XCTAssertEqual(loader.rows.map(\.episodeID.rawValue), [ids["passed"]!], "search matches the episode title")
     }
 
-    /// Feed details embeds this same history, so its rows carry the same two labels.
-    func testFeedDetailsHistoryRendersPlayedAndSkippedLabels() throws {
+    /// Feed details embeds this same history, so its rows carry the same labels.
+    func testFeedDetailsHistoryRendersPlayedSkippedAndRuleLabels() async throws {
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("history-labels"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         addTeardownBlock { await model.close() }
-        model.installEpisodeForTesting(retired("finished", played: true, at: 30))
-        model.installEpisodeForTesting(retired("passed", played: false, at: 20))
-        model.dismissedEpisodes = [dismissed("legacy", at: 10)]
-        XCTAssertEqual(Set(model.skippedFeedEpisodes.map(\.id)), ["finished", "passed"])
+        let labelled = try await labelledHistory()
+        XCTAssertEqual(labelled.loader.rows.count, 4)
 
         let drawn = try WiltedMacHeadless.recognizedText(
-            WiltedMacFeedHistoryView(model: model, feedID: "feed-a"), size: CGSize(width: 900, height: 1_000)
+            WiltedMacFeedHistoryView(model: model, feedID: labelled.feedID, loader: labelled.loader),
+            size: CGSize(width: 900, height: 1_000)
         )
         let text = drawn.joined(separator: " ")
         XCTAssertTrue(text.contains("Played"), text)
         XCTAssertTrue(text.contains("Skipped"), text)
+        XCTAssertTrue(text.contains("Skipped by rule"), text)
         XCTAssertFalse(text.contains("Removed"), text)
-        XCTAssertEqual(drawn.filter { $0 == "Restore" }.count, 3, text)
+        XCTAssertEqual(drawn.filter { $0 == "Restore" }.count, 4, text)
         let details = try WiltedMacHeadless.viewSource("WiltedMacFeedDetailsView.swift")
         XCTAssertTrue(details.contains("WiltedMacFeedHistoryView(model: model, feedID: subscription.id)"))
     }
 
-    private func retired(_ id: String, played: Bool, at seconds: TimeInterval) -> WiltedMacEpisode {
-        WiltedMacEpisode(
-            id: id, title: "Episode \(id)", feedTitle: "History show", summary: "", artworkURL: nil,
-            releasedAt: Date(timeIntervalSince1970: seconds), durationSeconds: 60,
-            playbackSeconds: played ? 60 : 0, isPlayed: played,
-            retiredAt: Date(timeIntervalSince1970: seconds + 100), removalKind: .retired,
-            downloadState: .completed, feedID: "feed-a"
-        )
-    }
+    /// One feed's History in a fresh store, loaded: a finished episode, a hand
+    /// skip, a feed rule's skip and a legacy dismissal. `ids` maps each
+    /// fixture name to its episode identifier, and `records` is keyed by name.
+    private func labelledHistory(feedTitle: String? = nil) async throws -> (
+        loader: WiltedMacFeedHistoryLoader, records: [String: WiltedMacFeedHistoryRecord],
+        ids: [String: String], feedID: String
+    ) {
+        let fixture = try WiltedMacHistoryStoreFixture(self)
+        let feed = try WiltedMacHistoryStoreFixture.Feed("labels")
+        let names = ["finished", "passed", "rule", "legacy"]
+        let episodes = try names.map { try feed.episode($0, title: "Episode \($0)") }
+        let byName = Dictionary(uniqueKeysWithValues: zip(names, episodes))
+        try await fixture.store.savePodcastEpisodes(episodes, admission: .backfill)
+        let finished = try XCTUnwrap(byName["finished"]).itemID
+        _ = try await fixture.store.completeAndRetireEpisode(listening: PodcastListeningState(
+            episodeID: finished, completedAt: fixture.at(29), lastRevisionID: nil, updatedAt: fixture.at(29)
+        ), at: fixture.at(30))
+        _ = try await fixture.store.retireEpisode(try XCTUnwrap(byName["passed"]).itemID, at: fixture.at(20))
+        try await fixture.seedRuleSkip(try XCTUnwrap(byName["rule"]).itemID, at: 40)
+        _ = try await fixture.store.dismissPodcastEpisode(try XCTUnwrap(byName["legacy"]).itemID, at: fixture.at(10))
 
-    private func dismissed(_ id: String, at seconds: TimeInterval) -> WiltedMacDismissedEpisode {
-        WiltedMacDismissedEpisode(
-            id: id, feedID: "feed-a", title: "Episode \(id)", feedTitle: "History show",
-            dismissedAt: Date(timeIntervalSince1970: seconds), hasPreparationHistory: false
-        )
+        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch)
+        await loader.start(feedID: feed.id.rawValue)
+        let ids = byName.mapValues(\.itemID.rawValue)
+        let nameByID = Dictionary(uniqueKeysWithValues: ids.map { ($1, $0) })
+        let records = Dictionary(uniqueKeysWithValues: loader.rows.compactMap { row in
+            nameByID[row.episodeID.rawValue].map { ($0, WiltedMacFeedHistoryRecord(row: row, feedTitle: feedTitle)) }
+        })
+        return (loader, records, ids, feed.id.rawValue)
     }
 }

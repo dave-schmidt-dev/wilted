@@ -292,7 +292,9 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         XCTAssertEqual(backend.pauseCount, pausesBefore, "the second press coalesced instead of pausing")
         await gate.waitUntilHeld()
         model.handleRemoteCommand(.pause)
-        XCTAssertEqual(model.playbackStatusMessage, "Pausing…")
+        // Pause is answered at once: no "Pausing…" state, the start is cancelled.
+        XCTAssertNil(model.playbackCommands.pending)
+        XCTAssertEqual(model.playbackStatusMessage, "Paused")
         gate.release()
         await model.waitForPlaybackOperationForTesting()
 

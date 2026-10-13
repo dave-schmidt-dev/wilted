@@ -1,10 +1,13 @@
 import SwiftUI
+import WiltedProducer
 
 /// What History calls a row. Retirement records both a manual skip and a
 /// finished episode, so the label follows completion, not the stored removal.
+/// A skip a feed rule made says so, so a wrong rule skip is easy to find.
 enum WiltedMacFeedHistoryStatus: String, CaseIterable, Identifiable {
     case played = "Played"
     case skipped = "Skipped"
+    case skippedByRule = "Skipped by rule"
 
     var id: String { rawValue }
 }
@@ -25,137 +28,141 @@ struct WiltedMacFeedHistoryRecord: Identifiable, Equatable {
     let kind: Kind
     let status: WiltedMacFeedHistoryStatus
     let changedAt: Date?
+}
 
-    /// History rows, newest change first. A retired episode with a completion
-    /// record reads Played; any other retirement and every legacy dismissal
-    /// reads Skipped. An episode both retired and dismissed shows once, as retired.
-    static func history(
-        retired: [WiltedMacEpisode], dismissed: [WiltedMacDismissedEpisode]
-    ) -> [WiltedMacFeedHistoryRecord] {
-        let retiredRecords = retired.map { episode in
-            WiltedMacFeedHistoryRecord(
-                id: episode.id, feedID: episode.feedID, feedTitle: episode.feedTitle,
-                presentation: episode.presentation, kind: .retired,
-                status: episode.isPlayed ? .played : .skipped, changedAt: episode.retiredAt
-            )
+extension WiltedMacFeedHistoryRecord {
+    /// One store History row as History draws it. The store decides the
+    /// status: a completed episode reads Played; otherwise a feed rule's skip
+    /// decision reads Skipped by rule, and anything else reads Skipped.
+    init(row: LocalLibraryStore.HistoryRow, feedTitle: String?) {
+        let status: WiltedMacFeedHistoryStatus = switch row.status {
+        case .played: .played
+        case .skipped: .skipped
+        case .skippedByRule: .skippedByRule
         }
-        let retiredIDs = Set(retiredRecords.map(\.id))
-        let dismissedRecords = dismissed.filter { !retiredIDs.contains($0.id) }.map { dismissal in
-            WiltedMacFeedHistoryRecord(
-                id: dismissal.id, feedID: dismissal.feedID, feedTitle: dismissal.feedTitle,
-                presentation: dismissal.presentation, kind: .dismissed, status: .skipped,
-                changedAt: dismissal.dismissedAt
-            )
-        }
-        return (retiredRecords + dismissedRecords).sorted { left, right in
-            switch (left.changedAt, right.changedAt) {
-            case let (leftDate?, rightDate?):
-                if leftDate != rightDate { return leftDate > rightDate }
-                return left.id < right.id
-            case (_?, nil): return true
-            case (nil, _?): return false
-            case (nil, nil): return left.id < right.id
+        self.init(
+            id: row.episodeID.rawValue,
+            feedID: row.feedID.rawValue,
+            feedTitle: feedTitle,
+            presentation: WiltedMacEpisodePresentation(
+                title: row.title, showTitle: feedTitle, publishedAt: row.publishedTime?.date,
+                sourceDurationSeconds: row.durationSeconds, playableDurationSeconds: nil
+            ),
+            kind: row.removalKind == .retired ? .retired : .dismissed,
+            status: status,
+            changedAt: row.retiredAt?.date
+        )
+    }
+
+    /// Sends this row's Restore through the model, unchanged: it writes a
+    /// manual Keep, so a feed rule never skips the episode again. The episode
+    /// is found where it always was: a retired row in the model's episodes, a
+    /// dismissal in its dismissed list. A row neither holds (a disabled feed's
+    /// episode, say) restores through the store's removal-agnostic restore,
+    /// which records the same manual Keep. Returns the model tasks the Restore
+    /// started, so the caller can reload once the write commits.
+    @MainActor
+    func requestRestore(through model: WiltedMacModel) -> [Task<Void, Never>] {
+        switch kind {
+        case .retired:
+            if let episode = model.episodes.first(where: { $0.id == id }) {
+                let before = Set(model.subscriptionWriteTasks.keys)
+                model.restoreSkippedFeedEpisode(episode)
+                return model.subscriptionWriteTasks.filter { !before.contains($0.key) }.map(\.value)
+            }
+        case .dismissed:
+            if let dismissal = model.dismissedEpisodes.first(where: { $0.id == id }) {
+                model.restoreEpisode(dismissal)
+                return model.podcastRestoreTasks[id].map { [$0] } ?? []
             }
         }
+        model.restoreEpisode(storeRestoreDismissal)
+        return model.podcastRestoreTasks[id].map { [$0] } ?? []
+    }
+
+    /// The row as a dismissal, for a Restore whose episode the model does not
+    /// hold in memory. The store's restore clears either removal kind.
+    var storeRestoreDismissal: WiltedMacDismissedEpisode {
+        WiltedMacDismissedEpisode(
+            id: id, feedID: feedID, title: presentation.title, feedTitle: feedTitle,
+            publishedAt: presentation.publishedAt, sourceDurationSeconds: presentation.sourceDurationSeconds,
+            dismissedAt: changedAt ?? Date(), hasPreparationHistory: false
+        )
     }
 }
 
-/// Search and page state stays independent of the Feeds inbox selection and scroll anchor.
-struct WiltedMacFeedHistoryQuery {
-    enum StatusFilter: String, CaseIterable, Identifiable {
-        case all = "All statuses"
-        case played = "Played"
-        case skipped = "Skipped"
-
-        var id: String { rawValue }
-        var status: WiltedMacFeedHistoryStatus? {
-            switch self {
-            case .all: nil
-            case .played: .played
-            case .skipped: .skipped
-            }
-        }
-    }
-
-    static let pageSize = 25
-    var searchText = ""
-    var feedID: String?
-    var statusFilter: StatusFilter = .all
-    var pageIndex = 0
-
-    func filtered(_ records: [WiltedMacFeedHistoryRecord], onlyFeedID: String? = nil) -> [WiltedMacFeedHistoryRecord] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return records.filter { record in
-            if let onlyFeedID, record.feedID != onlyFeedID { return false }
-            if onlyFeedID == nil, let feedID, record.feedID != feedID { return false }
-            if let status = statusFilter.status, record.status != status { return false }
-            guard !query.isEmpty else { return true }
-            return [record.presentation.title, record.presentation.showLabel, record.feedTitle ?? "", record.status.rawValue]
-                .contains { $0.localizedCaseInsensitiveContains(query) }
-        }
-    }
-
-    func pageCount(in records: [WiltedMacFeedHistoryRecord], onlyFeedID: String? = nil) -> Int {
-        max(1, (filtered(records, onlyFeedID: onlyFeedID).count + Self.pageSize - 1) / Self.pageSize)
-    }
-
-    func page(in records: [WiltedMacFeedHistoryRecord], onlyFeedID: String? = nil) -> [WiltedMacFeedHistoryRecord] {
-        let matches = filtered(records, onlyFeedID: onlyFeedID)
-        let start = min(pageIndex, max(0, pageCount(in: records, onlyFeedID: onlyFeedID) - 1)) * Self.pageSize
-        return Array(matches.dropFirst(start).prefix(Self.pageSize))
-    }
-}
-
-/// Searchable, filtered history shared by the global Off the list page and feed details.
+/// Searchable, filtered history shared by the global Off the list page and feed
+/// details. It renders one store page at a time from its loader; search and
+/// page state stay independent of the Feeds inbox selection and scroll anchor.
 struct WiltedMacFeedHistoryView: View {
     let model: WiltedMacModel
-    var feedID: String? = nil
+    var feedID: String?
     @Environment(\.colorScheme) private var colorScheme
-    @State private var query = WiltedMacFeedHistoryQuery()
+    @State private var loader: WiltedMacFeedHistoryLoader
+
+    /// `loader` lets a test hand in a loader whose page is already loaded.
+    init(model: WiltedMacModel, feedID: String? = nil, loader: WiltedMacFeedHistoryLoader? = nil) {
+        self.model = model
+        self.feedID = feedID
+        _loader = State(initialValue: loader ?? WiltedMacFeedHistoryLoader())
+    }
+
+    /// Restarts the load when the scope changes or the store becomes available.
+    private struct LoadKey: Hashable {
+        let feedID: String?
+        let hasStore: Bool
+    }
 
     var body: some View {
-        if let feedID {
-            historyContent(onlyFeedID: feedID)
-        } else {
-            WiltedMacDestination(
-                title: "History",
-                identifier: "wilted-mac-feed-history",
-                contentWidth: 760
-            ) {
-                historyContent(onlyFeedID: nil)
+        Group {
+            if let feedID {
+                historyContent(onlyFeedID: feedID)
+            } else {
+                WiltedMacDestination(
+                    title: "History",
+                    identifier: "wilted-mac-feed-history",
+                    contentWidth: 760
+                ) {
+                    historyContent(onlyFeedID: nil)
+                }
+                .frame(minWidth: 620, minHeight: 520)
             }
-            .frame(minWidth: 620, minHeight: 520)
+        }
+        .task(id: LoadKey(feedID: feedID, hasStore: model.store != nil)) {
+            if model.store != nil { loader.useStore(of: model) }
+            await loader.start(feedID: feedID)
         }
     }
 
+    /// The page's rows, titled by the subscriptions the model already holds.
     private var records: [WiltedMacFeedHistoryRecord] {
-        WiltedMacFeedHistoryRecord.history(retired: model.skippedFeedEpisodes, dismissed: model.dismissedEpisodes)
+        let titles = Dictionary(model.subscriptions.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+        return loader.rows.map { WiltedMacFeedHistoryRecord(row: $0, feedTitle: titles[$0.feedID.rawValue]) }
     }
 
-    private var filteredRecords: [WiltedMacFeedHistoryRecord] {
-        query.filtered(records, onlyFeedID: feedID)
-    }
-
-    private var visibleRecords: [WiltedMacFeedHistoryRecord] {
-        query.page(in: records, onlyFeedID: feedID)
+    private var emptyMessage: String {
+        if loader.loadFailed { return "History could not be loaded." }
+        if !loader.hasLoaded { return "Loading history…" }
+        return loader.isFiltered ? "No matching history." : "No history to show."
     }
 
     @ViewBuilder
     private func historyContent(onlyFeedID: String?) -> some View {
+        let records = records
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             if onlyFeedID != nil {
                 Text("Episode history").wiltedFont(.title)
             }
             WiltedMacPodcastOperationMessage(model: model)
             controls(onlyFeedID: onlyFeedID)
-            if visibleRecords.isEmpty {
-                Text(filteredRecords.isEmpty ? "No matching history." : "No history to show.")
+            if records.isEmpty {
+                Text(emptyMessage)
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feed-history-empty")
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(visibleRecords.enumerated()), id: \.element.id) { index, record in
+                    ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
                         if index > 0 { Divider() }
                         historyRow(record)
                     }
@@ -163,30 +170,27 @@ struct WiltedMacFeedHistoryView: View {
                 .wiltedCard(colorScheme)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("wilted-feed-history-rows")
-                pageControls(onlyFeedID: onlyFeedID)
+                pageControls
             }
-        }
-        .onChange(of: query.searchText) { _, _ in query.pageIndex = 0 }
-        .onChange(of: query.feedID) { _, _ in query.pageIndex = 0 }
-        .onChange(of: query.statusFilter) { _, _ in query.pageIndex = 0 }
-        .onChange(of: filteredRecords.count) { _, count in
-            let lastPage = max(0, (count - 1) / WiltedMacFeedHistoryQuery.pageSize)
-            query.pageIndex = min(query.pageIndex, lastPage)
         }
     }
 
     @ViewBuilder
     private func controls(onlyFeedID: String?) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            TextField("Search history", text: $query.searchText)
+            TextField("Search history", text: Binding(
+                get: { loader.searchText }, set: { loader.setSearchText($0) }
+            ))
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Search feed history")
                 .accessibilityIdentifier("wilted-feed-history-search")
             HStack(spacing: WiltedTheme.Spacing.medium) {
                 if onlyFeedID == nil {
-                    Picker("Feed", selection: $query.feedID) {
+                    Picker("Feed", selection: Binding(
+                        get: { loader.feedFilter }, set: { loader.setFeedFilter($0) }
+                    )) {
                         Text("All feeds").tag(String?.none)
-                        ForEach(feedChoices, id: \.id) { feed in
+                        ForEach(model.subscriptions) { feed in
                             Text(feed.title).tag(Optional(feed.id))
                         }
                     }
@@ -194,8 +198,10 @@ struct WiltedMacFeedHistoryView: View {
                     .accessibilityLabel("Filter history by feed")
                     .accessibilityIdentifier("wilted-feed-history-feed-filter")
                 }
-                Picker("Status", selection: $query.statusFilter) {
-                    ForEach(WiltedMacFeedHistoryQuery.StatusFilter.allCases) { filter in
+                Picker("Status", selection: Binding(
+                    get: { loader.statusFilter }, set: { loader.setStatusFilter($0) }
+                )) {
+                    ForEach(WiltedMacFeedHistoryLoader.StatusFilter.allCases) { filter in
                         Text(filter.rawValue).tag(filter)
                     }
                 }
@@ -203,22 +209,19 @@ struct WiltedMacFeedHistoryView: View {
                 .accessibilityLabel("Filter history by status")
                 .accessibilityIdentifier("wilted-feed-history-status-filter")
                 Spacer()
+                if loader.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Loading history")
+                        .accessibilityIdentifier("wilted-feed-history-loading")
+                }
             }
-        }
-    }
-
-    private var feedChoices: [(id: String, title: String)] {
-        let names = Dictionary(records.compactMap { record -> (String, String)? in
-            guard let feedID = record.feedID else { return nil }
-            return (feedID, record.feedTitle ?? "Feed")
-        }, uniquingKeysWith: { first, _ in first })
-        return names.map { (id: $0.key, title: $0.value) }.sorted {
-            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
     }
 
     private func historyRow(_ record: WiltedMacFeedHistoryRecord) -> some View {
         let isPending = model.pendingFeedDecisionIDs.contains(record.id) || model.podcastRestoreTasks[record.id] != nil
+            || loader.restoringIDs.contains(record.id)
         let failed = model.failedFeedDecisionIDs.contains(record.id)
         let restoreIdentifier = record.kind == .retired
             ? WiltedMacFeedHistoryAccessibilityID.restoreSkipped(record.id)
@@ -234,6 +237,7 @@ struct WiltedMacFeedHistoryView: View {
                     Text(record.status.rawValue)
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-feed-history-status-\(record.id)")
                 }
                 WiltedMacEpisodeMetadata(
                     presentation: record.presentation,
@@ -264,38 +268,30 @@ struct WiltedMacFeedHistoryView: View {
         .padding(.vertical, WiltedTheme.Spacing.small)
     }
 
+    /// Restores through the model, then reloads the page once the write commits.
     private func restore(_ record: WiltedMacFeedHistoryRecord) {
-        switch record.kind {
-        case .retired:
-            if let episode = model.skippedFeedEpisodes.first(where: { $0.id == record.id }) {
-                model.restoreSkippedFeedEpisode(episode)
-            }
-        case .dismissed:
-            if let dismissal = model.dismissedEpisodes.first(where: { $0.id == record.id }) {
-                model.restoreEpisode(dismissal)
-            }
-        }
+        loader.restore(record, model: model)
     }
 
-    private func pageControls(onlyFeedID: String?) -> some View {
-        let total = filteredRecords.count
-        let pageCount = query.pageCount(in: records, onlyFeedID: onlyFeedID)
-        let first = query.pageIndex * WiltedMacFeedHistoryQuery.pageSize + 1
-        let last = min(first + WiltedMacFeedHistoryQuery.pageSize - 1, total)
+    private var pageControls: some View {
+        let total = loader.total
+        let pageSize = WiltedMacFeedHistoryLoader.pageSize
+        let first = loader.shownOffset + 1
+        let last = min(loader.shownOffset + loader.rows.count, total)
         return HStack {
             Text("Showing \(first)–\(last) of \(total)")
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-feed-history-range")
             Spacer()
-            Button("Previous") { query.pageIndex = max(0, query.pageIndex - 1) }
-                .disabled(query.pageIndex == 0)
+            Button("Previous") { loader.showPage(loader.pageIndex - 1) }
+                .disabled(loader.pageIndex == 0)
                 .accessibilityIdentifier("wilted-feed-history-previous")
-            Text("Page \(query.pageIndex + 1) of \(pageCount)")
+            Text("Page \(loader.shownOffset / pageSize + 1) of \(loader.pageCount)")
                 .wiltedFont(.utility)
                 .accessibilityIdentifier("wilted-feed-history-page")
-            Button("Next") { query.pageIndex = min(pageCount - 1, query.pageIndex + 1) }
-                .disabled(query.pageIndex + 1 >= pageCount)
+            Button("Next") { loader.showPage(loader.pageIndex + 1) }
+                .disabled(loader.pageIndex + 1 >= loader.pageCount)
                 .accessibilityIdentifier("wilted-feed-history-next")
         }
     }

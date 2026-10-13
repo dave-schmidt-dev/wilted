@@ -26,11 +26,5 @@ extension WiltedMacModel {
         guard selected != phonePositions else { return }
         phonePositions = selected
     }
-
-    /// One bounded read of the phone's position before Play starts the audio; returns when the
-    /// position is stored, or when the read failed or timed out (then playback uses what is stored).
-    func refreshPhonePositionBeforePlay() async {
-        await librarySyncController?.playRefresher?.refreshBeforePlay()
-    }
 }
 #endif

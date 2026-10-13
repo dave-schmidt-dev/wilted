@@ -22,7 +22,7 @@ from pathlib import Path
 from . import cue_timing as _worker_cue_timing
 from . import reporting as _worker_reporting
 from .constants import ALIGNED_STT_CACHE_MAXIMUM_ENTRIES, ALIGNED_STT_CACHE_SCHEMA_VERSION, ALIGNED_STT_MODEL, PUBLISHED_TRANSCRIPT_GAP_FLOOR_S, PUBLISHED_TRANSCRIPT_GAP_FRACTION, TIMED_MEDIA_TYPES
-from .cue_timing import CachedAlignedSegment, in_time_order
+from .cue_timing import CachedAlignedSegment, in_time_order, join_split_words
 
 CUE_MARKUP_PATTERN = re.compile(r"<[^>]*>")
 
@@ -316,5 +316,10 @@ def transcribe_with_daemon(audio_path: Path, model: str = ALIGNED_STT_MODEL):
 
     _worker_reporting.progress("transcript.stt.start", str(audio_path.name))
     segments = in_time_order(transcribe.transcribe_audio(audio_path, model_name=model))
+    if segments:
+        # Rejoin words the aligner split across segments before anything, the
+        # aligned cache included, keeps them. A join moves a segment's start
+        # later, which can pass an overlapping neighbour, so order is restored.
+        segments = in_time_order(join_split_words(segments))
     _worker_reporting.progress("transcript.stt.complete", f"{len(segments)} segments")
     return segments

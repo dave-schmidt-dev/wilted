@@ -40,7 +40,6 @@ final class SyncCadenceTests: XCTestCase {
     }
 
     func testEdgeAndBackoffConstants() {
-        XCTAssertEqual(SyncCadence.playPressFetchTimeout, 2)
         XCTAssertEqual(SyncCadence.macTickInterval, 2)
         XCTAssertEqual(SyncCadence.backoffBase, 5)
         XCTAssertEqual(SyncCadence.backoffCap, 300)

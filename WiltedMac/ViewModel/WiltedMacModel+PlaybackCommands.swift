@@ -111,7 +111,6 @@ struct WiltedMacPlaybackCommandState {
 
 enum WiltedMacPlaybackCopy {
     static let starting = "Starting playback…"
-    static let pausing = "Pausing…"
     static let refused = "Playback refused. Your position is kept."
     static let missing = "This episode's saved audio is unavailable."
     static let notReady = "Audio is not ready. Finish preparation first."
@@ -252,37 +251,48 @@ extension WiltedMacModel {
     }
 
     /// An explicit start: coalesces into a pending command and is ignored
-    /// while audio already runs.
+    /// while audio already runs. It starts from the stored position; the
+    /// Larder sync's 30-second round already imports newer phone positions,
+    /// so Play makes no network read of its own.
     func startPlayback() {
         guard let playback, playbackCommands.pending == nil,
               !(playback.liveIsPlaying || isPlaying) else { return }
-        issuePlaybackCommand(.start, pending: WiltedMacPlaybackCopy.starting) { [weak self] command in
-            guard let self else { return }
-            // Play reads the phone's newest position first (bounded; a failure changes nothing).
-            await self.refreshPhonePositionBeforePlay()
-            try self.ensureCurrentPlaybackCommand(command)
-            try await self.startLoadedPlayback(playback)
+        issuePlaybackCommand(.start, pending: WiltedMacPlaybackCopy.starting) { [weak self] _ in
+            try await self?.startLoadedPlayback(playback)
         }
     }
 
-    /// Explicit or system Pause. It supersedes a pending start, so the start
-    /// never reaches the backend, and it is honoured with nothing loaded yet.
+    /// Explicit or system Pause. The audio stops here, before any queued
+    /// effect, sync, transcript or store work, and the press is answered at
+    /// once: no pending state. As a command it still supersedes a pending
+    /// start, so that start never reaches the backend, and it is honoured
+    /// with nothing loaded yet. Only the durable checkpoint waits its turn.
     func pausePlayback() {
         // An explicit Pause also means "do not move on to the next episode".
         if let owed = playbackCommands.automaticAdvance { playbackCommands.pausedAdvance = owed }
         playbackCommands.automaticAdvance = nil
         guard let playback else { return }
         let startPending = playbackCommands.pending?.command.kind.startsAudio == true
-        guard startPending || playback.liveIsPlaying || isPlaying,
-              playbackCommands.pending?.command.kind != .pause else { return }
-        issuePlaybackCommand(.pause, pending: WiltedMacPlaybackCopy.pausing,
+        guard startPending || playback.liveIsPlaying || isPlaying else { return }
+        issuePlaybackCommand(.pause, pending: nil,
                              failureMessage: WiltedMacPlaybackCopy.pauseNotSaved) { [weak self] _ in
             guard let self else { return }
             defer { self.isPlaying = playback.liveIsPlaying }
             guard playback.revisionID != nil else { return }
-            try await playback.pause()
+            try await playback.checkpoint()
             self.refreshPlaybackReadout()
             self.enqueueCurrentPlaybackCheckpoint()
+        }
+        // Nothing loaded yet means nothing is audible; the superseded
+        // selection will not start it.
+        if playback.revisionID != nil {
+            // Cannot throw here: its only error is `noLoadedRevision`, and the
+            // controller sets `revisionID` with its loaded revision in one
+            // synchronous step of a load and never clears either.
+            try? playback.pauseAudio()
+            refreshPlaybackReadout()
+        } else {
+            isPlaying = playback.liveIsPlaying
         }
     }
 

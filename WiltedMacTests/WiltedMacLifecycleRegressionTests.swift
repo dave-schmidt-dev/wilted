@@ -181,12 +181,19 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
         defer { WiltedMacModel.advanceDecisionLogObserverForTesting = nil }
 
         var pauseIssued = false
+        var advanceHeld = false
         try await finish(rig) {
+            // EOF has already owed the advance; Pause shows no pending state, so
+            // its issue is read from the command generation instead.
+            let owed = rig.model.playbackCommands.automaticAdvance
+            let generation = rig.model.playbackCommands.generation
             rig.model.pausePlayback()
-            pauseIssued = rig.model.playbackCommands.pending?.command.kind == .pause
+            pauseIssued = rig.model.playbackCommands.generation > generation
+            advanceHeld = owed != nil && rig.model.playbackCommands.pausedAdvance == owed
         }
 
         XCTAssertTrue(pauseIssued, "the Pause reached the command owner")
+        XCTAssertTrue(advanceHeld, "the Pause held the advance owed at the end")
         try await assertNeverAdvancedInto(20, rig, completed: [19])
         XCTAssertFalse(rig.backend.isPlaying, "a Pause after the end must leave nothing playing")
         XCTAssertEqual(rig.model.currentPodcastEpisodeID, rig.id(19), "the finished episode stays current")

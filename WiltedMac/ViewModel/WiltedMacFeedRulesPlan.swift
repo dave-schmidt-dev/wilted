@@ -4,7 +4,7 @@ import WiltedProducer
 
 // MARK: - Input
 
-/// What the rules plan needs to know about one live, unfinished episode.
+/// What the rules plan needs to know about one of the feed's episodes.
 struct FeedRulesEpisode: Sendable, Equatable {
     let id: String
     let title: String
@@ -12,6 +12,10 @@ struct FeedRulesEpisode: Sendable, Equatable {
     let releasedAt: Date
     /// Playing now or part-heard. A started episode is never changed.
     let isStarted: Bool
+    /// Retired or finished. Its verdict is shown, but it is never changed.
+    var isHistory = false
+    /// Its downloaded or prepared audio is on disk, which a Skip deletes.
+    var hasDownloadedAudio = false
 }
 
 /// A value snapshot of one feed's rules, episodes, decisions and Larder, so the
@@ -31,7 +35,9 @@ struct FeedRulesInput: Sendable {
 enum FeedRulesOutcome: Sendable, Equatable {
     /// Undecided, becomes Keep.
     case keep
-    /// Undecided, becomes Skip.
+    /// Undecided, becomes Skip, which retires it. A live episode already
+    /// holding an automatic Skip that never retired it (written before rule
+    /// Skips retired episodes) is retired the same way.
     case skip
     /// An automatic Keep becomes Skip.
     case keepToSkip
@@ -47,8 +53,11 @@ enum FeedRulesOutcome: Sendable, Equatable {
     case waiting
     /// A rule could not finish in time, so the episode stays as it is.
     case unfinished
-    /// Auto keep is Off for this feed, so rules decide nothing.
+    /// Auto keep is Off for this feed, so only a Skip rule decides.
     case inactive
+    /// Retired or finished: the verdict shows what the rules say, and Apply
+    /// never changes it.
+    case history
 
     var isChange: Bool {
         switch self {
@@ -74,6 +83,8 @@ struct FeedRulesPreviewRow: Identifiable, Sendable, Equatable {
     let current: FeedRulesCurrent
     let isKept: Bool
     let outcome: FeedRulesOutcome
+    /// Apply would skip it and delete its downloaded audio, as a manual Skip does.
+    let deletesDownloadedAudio: Bool
 
     var id: String { episodeID }
 }
@@ -106,13 +117,25 @@ struct FeedRulesCounts: Sendable, Equatable {
 }
 
 struct FeedRulesPlan: Sendable, Equatable {
+    /// The episodes the preview shows, newest first: see `previewRows`.
     var rows: [FeedRulesPreviewRow]
+    /// Every change Apply makes, including episodes the preview does not show.
     var admissions: [FeedRulesAdmission]
+    /// Every episode's outcome counted, including those the preview does not show.
+    var counts: FeedRulesCounts
+    /// How many episodes Apply would skip whose downloaded audio is on disk,
+    /// including those the preview does not show.
+    var audioDeletions: Int
 
-    var counts: FeedRulesCounts {
+    /// At most this many rule matches are shown.
+    static let shownMatchLimit = 25
+    /// Fewer matches than this are padded with the newest non-matching episodes.
+    static let shownRowMinimum = 10
+
+    fileprivate static func counts(of outcomes: some Sequence<FeedRulesOutcome>) -> FeedRulesCounts {
         var counts = FeedRulesCounts()
-        for row in rows {
-            switch row.outcome {
+        for outcome in outcomes {
+            switch outcome {
             case .keep: counts.keeps += 1
             case .skip: counts.skips += 1
             case .keepToSkip: counts.keepToSkip += 1
@@ -120,7 +143,7 @@ struct FeedRulesPlan: Sendable, Equatable {
             case .protectedManual: counts.protectedManual += 1
             case .heldStarted: counts.heldStarted += 1
             case .waiting: counts.waiting += 1
-            case .unchanged, .unfinished, .inactive: break
+            case .unchanged, .unfinished, .inactive, .history: break
             }
         }
         return counts
@@ -135,12 +158,15 @@ extension FeedRulesPlan {
     /// with the count done and the total; the plan checks for cancellation
     /// there, so a cancelled evaluation returns no plan at all.
     ///
-    /// Only undecided episodes and episodes holding a rule or policy decision
-    /// can change. A listener's decision, and any playing or part-heard
-    /// episode, is left exactly as it is. Rule Keeps follow the same contract
-    /// as refresh, which does not hold them to the kept limit, but they do use
-    /// up places; the rest are kept in release order by `FeedAdmissionPlanner`,
-    /// which never removes an episode.
+    /// Every episode is evaluated, but only undecided episodes and episodes
+    /// holding a rule or policy decision can change. A retired or finished
+    /// episode, a listener's decision, and any playing or part-heard episode
+    /// is left exactly as it is. Rule Keeps follow the same contract as
+    /// refresh, which does not hold them to the kept limit, but they do use up
+    /// places; the rest are kept in release order by `FeedAdmissionPlanner`,
+    /// which never removes an episode. With Auto keep Off, the only automatic
+    /// authority to Keep, a Skip rule still skips; Keep rules and the policy
+    /// decide nothing.
     static func make(
         _ input: FeedRulesInput,
         step: @Sendable (_ done: Int, _ total: Int) async -> Void = { _, _ in }
@@ -167,22 +193,22 @@ extension FeedRulesPlan {
         for episode in ordered {
             let record = input.records[episode.id]
             let result = results[episode.id] ?? .noMatch
+            if episode.isHistory { outcomes[episode.id] = .history; continue }
             if record?.source == .manual { outcomes[episode.id] = .protectedManual; continue }
-            if !autoKeep { outcomes[episode.id] = .inactive; continue }
             if episode.isStarted { outcomes[episode.id] = .heldStarted; continue }
             let isKept = kept.contains(episode.id)
             switch result {
             case .timedOut:
                 outcomes[episode.id] = .unfinished
             case let .skip(ruleID):
-                if record?.decision == .skip {
-                    outcomes[episode.id] = .unchanged
-                } else {
-                    outcomes[episode.id] = record == nil ? .skip : .keepToSkip
-                    admissions.append(.init(episodeID: episode.id, decision: .skip, source: .rule,
-                                            ruleID: ruleID, expected: record))
-                    kept.remove(episode.id)
-                }
+                // A live episode holding a Skip was recorded without being
+                // retired, so Apply retires it and replaces that record.
+                outcomes[episode.id] = record?.decision == .keep ? .keepToSkip : .skip
+                admissions.append(.init(episodeID: episode.id, decision: .skip, source: .rule,
+                                        ruleID: ruleID, expected: record))
+                kept.remove(episode.id)
+            case .keep where !autoKeep, .noMatch where !autoKeep:
+                outcomes[episode.id] = .inactive
             case let .keep(ruleID):
                 if isKept, record == nil || record?.decision == .keep {
                     outcomes[episode.id] = .unchanged
@@ -203,10 +229,10 @@ extension FeedRulesPlan {
 
         // What no rule decided goes to the shared planner, which honours the
         // kept limit using the places the rules above have already taken.
-        let planned = FeedAdmissionPlanner.plan(
+        let planned = autoKeep ? FeedAdmissionPlanner.plan(
             candidates: undecidedForPolicy, keptEpisodeIDs: kept, playingEpisodeID: nil,
             partHeardEpisodeIDs: [], manualDecisions: [:], policy: input.policy
-        )
+        ) : []
         for decision in planned {
             let id = decision.candidate.id
             switch decision.outcome {
@@ -220,18 +246,48 @@ extension FeedRulesPlan {
             }
         }
 
+        // A Skip deletes downloaded audio, as a manual Skip does.
+        func deletesAudio(_ episode: FeedRulesEpisode) -> Bool {
+            let outcome = outcomes[episode.id] ?? .unchanged
+            return episode.hasDownloadedAudio && (outcome == .skip || outcome == .keepToSkip)
+        }
         let order = Dictionary(ordered.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let rows = ordered.map { episode in
+        let rows = previewRows(ordered, results: results).map { episode in
             let record = input.records[episode.id]
             let result = results[episode.id] ?? .noMatch
             return FeedRulesPreviewRow(
                 episodeID: episode.id, title: episode.title, result: result,
                 ruleNumber: ruleNumber(of: result, in: input.rules),
                 current: record.map { .decided($0.decision, $0.source) } ?? .undecided,
-                isKept: input.keptIDs.contains(episode.id), outcome: outcomes[episode.id] ?? .unchanged
+                isKept: input.keptIDs.contains(episode.id), outcome: outcomes[episode.id] ?? .unchanged,
+                deletesDownloadedAudio: deletesAudio(episode)
             )
         }
-        return FeedRulesPlan(rows: rows, admissions: admissions.sorted { (order[$0.episodeID] ?? 0) < (order[$1.episodeID] ?? 0) })
+        return FeedRulesPlan(
+            rows: rows, admissions: admissions.sorted { (order[$0.episodeID] ?? 0) < (order[$1.episodeID] ?? 0) },
+            counts: counts(of: ordered.map { outcomes[$0.id] ?? .unchanged }),
+            audioDeletions: ordered.filter(deletesAudio).count
+        )
+    }
+
+    /// The rows worth showing, newest first: up to `shownMatchLimit` rule
+    /// matches, padded with the newest episodes no rule matched (a timed-out
+    /// rule is not a match) to `shownRowMinimum`, so a rule can be tested
+    /// against a feed whose episodes are mostly decided.
+    private static func previewRows(
+        _ ordered: [FeedRulesEpisode], results: [String: EpisodeMatchResult]
+    ) -> [FeedRulesEpisode] {
+        let newestFirst = Array(ordered.reversed())
+        func matches(_ episode: FeedRulesEpisode) -> Bool {
+            switch results[episode.id] ?? .noMatch {
+            case .keep, .skip: true
+            default: false
+            }
+        }
+        var shown = Set(newestFirst.filter(matches).prefix(shownMatchLimit).map(\.id))
+        let padding = newestFirst.filter { !matches($0) }.prefix(max(0, shownRowMinimum - shown.count))
+        shown.formUnion(padding.map(\.id))
+        return newestFirst.filter { shown.contains($0.id) }
     }
 
     private static func ruleNumber(of result: EpisodeMatchResult, in rules: EpisodeMatchRules) -> Int? {

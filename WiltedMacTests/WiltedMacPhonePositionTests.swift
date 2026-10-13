@@ -5,8 +5,8 @@ import WiltedProducer
 import XCTest
 @testable import WiltedMac
 
-/// "Last played on iPhone at mm:ss": which records speak for it, its wording, and the bounded
-/// fetch a Mac Play press makes before the audio starts.
+/// "Last played on iPhone at mm:ss": which records speak for it and its wording, plus how the
+/// sync round's position importer adopts what the phone published.
 @MainActor
 final class WiltedMacPhonePositionTests: XCTestCase {
     private let macID = "mac-test"
@@ -82,7 +82,7 @@ final class WiltedMacPhonePositionTests: XCTestCase {
         XCTAssertEqual(label(3_723), "Last played on iPhone at 1:02:03")
     }
 
-    // MARK: Play-press refresh
+    // MARK: importer fixture
 
     @MainActor private final class Host: WiltedMacPositionImportHost {
         var requests: [RemotePositionRequest] = []
@@ -99,73 +99,13 @@ final class WiltedMacPhonePositionTests: XCTestCase {
         }
     }
 
-    private struct FetchFailed: Error {}
-
     private func makeImporter() -> (WiltedMacPositionImporter, Host) {
         let host = Host(target: WiltedMacImportTarget(revision: revision, durationSeconds: 3_000), episode: episode)
         let clock = now
         return (WiltedMacPositionImporter(host: host, deviceID: macID, now: { clock }), host)
     }
 
-    private func refresher(
-        fetch: @escaping WiltedMacPlayPositionRefresher.Fetch, timeout: Duration = .seconds(2)
-    ) -> (WiltedMacPlayPositionRefresher, Host) {
-        let (importer, host) = makeImporter()
-        return (WiltedMacPlayPositionRefresher(fetch: fetch, importer: importer, timeout: timeout), host)
-    }
-
-    func testPlayReadsThePhonesNewerPositionBeforeTheAudioStarts() async throws {
-        let phone = try observed(device: phoneID, position: 1_200, epoch: 2, savedSecondsAgo: 10)
-        let fresh = records(phone)
-        let (refresher, host) = refresher(fetch: { fresh })
-        await refresher.refreshBeforePlay()
-        XCTAssertEqual(host.requests.map(\.positionSeconds), [1_200])
-        XCTAssertEqual(refresher.refreshCount, 1)
-        XCTAssertEqual(refresher.skippedCount, 0)
-    }
-
-    func testAFailedFetchProceedsWithTheStoredPosition() async {
-        let (refresher, host) = refresher(fetch: { throw FetchFailed() })
-        await refresher.refreshBeforePlay()
-        XCTAssertTrue(host.requests.isEmpty)
-        XCTAssertEqual(refresher.skippedCount, 1)
-    }
-
-    func testAClosedGateProceedsWithoutWaiting() async {
-        let (refresher, host) = refresher(fetch: { throw TransportThrottled(retryAt: Date().addingTimeInterval(30)) })
-        await refresher.refreshBeforePlay()
-        XCTAssertTrue(host.requests.isEmpty)
-        XCTAssertEqual(refresher.skippedCount, 1)
-    }
-
-    func testASlowFetchIsAbandonedAtTheTimeout() async throws {
-        let phone = try observed(device: phoneID, position: 1_200, epoch: 2, savedSecondsAgo: 10)
-        let late = records(phone)
-        let (refresher, host) = refresher(
-            fetch: {
-                try await Task.sleep(for: .seconds(30))
-                return late
-            },
-            timeout: .milliseconds(50))
-        let started = ContinuousClock.now
-        await refresher.refreshBeforePlay()
-        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "Play is not held for a slow network")
-        XCTAssertTrue(host.requests.isEmpty)
-        XCTAssertEqual(refresher.skippedCount, 1)
-    }
-
-    func testPlayReportsWhatItReadToTheLine() async throws {
-        let phone = try observed(device: phoneID, position: 1_200, epoch: 2, savedSecondsAgo: 10)
-        let fresh = records(phone)
-        let (importer, _) = makeImporter()
-        var reported: LibraryDeviceRecords?
-        let refresher = WiltedMacPlayPositionRefresher(
-            fetch: { fresh }, importer: importer, onRecords: { reported = $0 })
-        await refresher.refreshBeforePlay()
-        XCTAssertEqual(reported?.nowPlaying.count, 1)
-    }
-
-    // MARK: importer additions
+    // MARK: importer
 
     func testAPlayingPhoneIsAdoptedAheadOfItsRecordAndRemembered() async throws {
         let phone = try observed(device: phoneID, position: 300, epoch: 2, playing: true, savedSecondsAgo: 20)
@@ -189,12 +129,5 @@ final class WiltedMacPhonePositionTests: XCTestCase {
         let (importer, host) = makeImporter()
         await importer.handle(records(phone))
         XCTAssertEqual(host.requests.first?.positionSeconds, 300)
-    }
-
-    func testHandleAwaitingReturnsOnlyAfterTheRecordsAreActedOn() async throws {
-        let phone = try observed(device: phoneID, position: 300, epoch: 2, savedSecondsAgo: 20)
-        let (importer, host) = makeImporter()
-        await importer.handleAwaiting(records(phone))
-        XCTAssertEqual(host.requests.count, 1, "stored before it returned")
     }
 }

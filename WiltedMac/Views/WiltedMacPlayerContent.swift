@@ -227,9 +227,9 @@ struct WiltedMacPlayerContent: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            // Play/Pause progress belongs to its button, never an inserted row.
+            // Play progress belongs to its button, never an inserted row.
             if let status = model.playbackOperationStatus, status != model.playbackStatusMessage,
-               status != WiltedMacPlaybackCopy.starting, status != WiltedMacPlaybackCopy.pausing {
+               status != WiltedMacPlaybackCopy.starting {
                 Text(status)
                     .wiltedFont(.utility)
                     .accessibilityIdentifier("wilted-player-operation-status")

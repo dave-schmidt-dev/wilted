@@ -345,7 +345,7 @@ extension WiltedMacModel {
                 // The outgoing episode is still current here; the forced
                 // publish below is the one that names the new episode.
                 self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
-                await self.refreshPhonePositionBeforePlay()
+                // No phone read here: the Larder sync's round imports newer positions.
                 // Before the queue moves, any newer command cancels this one
                 // outright; once it has moved, only a newer selection does.
                 try self.ensureCurrentPlaybackCommand(command)

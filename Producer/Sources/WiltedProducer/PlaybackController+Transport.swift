@@ -126,7 +126,11 @@ extension PlaybackController {
         return .started
     }
 
-    public func pause() async throws {
+    /// Stops the audio now and touches nothing durable: no store write, no
+    /// speed or lifetime-statistics flush. A caller that must answer Pause at
+    /// once, whatever the store is busy with, calls this and checkpoints
+    /// later; `pause()` is the two together.
+    public func pauseAudio() throws {
         // Recorded before anything can fail: a Pause pressed in the gap after
         // an episode ends still means "do not start the next one".
         explicitHoldSerial &+= 1
@@ -134,6 +138,10 @@ extension PlaybackController {
         backend.pause()
         isPlaying = false
         meterListening()
+    }
+
+    public func pause() async throws {
+        try pauseAudio()
         try await checkpoint()
     }
 

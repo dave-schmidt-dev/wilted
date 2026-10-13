@@ -1,5 +1,4 @@
 import SwiftUI
-import Vision
 import XCTest
 import WiltedDomain
 import WiltedProducer
@@ -111,16 +110,16 @@ final class WiltedMacFeedRulesTests: XCTestCase {
         XCTAssertEqual(hoisted1.episodeIDs.count, 3, "a preview writes nothing")
     }
 
-    func testPreviewWithAutoKeepOffStillShowsVerdictsButChangesNothing() async throws {
+    func testPreviewWithAutoKeepOffPlansSkipRuleSkipsAndLeavesKeepRulesInactive() async throws {
         let fixture = try await makeFixture(mixed, policy: FeedAutomationPolicy(autoKeep: .off))
         fixture.editor.preview()
         await fixture.editor.task?.value
-        let plan = try XCTUnwrap(fixture.editor.plan)
-        XCTAssertEqual(plan.counts.totalChanges, 0)
-        XCTAssertTrue(plan.admissions.isEmpty)
-        XCTAssertEqual(plan.rows.first { $0.title == "Bonus A" }?.outcome, .inactive)
-        XCTAssertEqual(plan.rows.first { $0.title == "Bonus A" }?.result, .keep(ruleID: keepBonus))
-        XCTAssertFalse(fixture.editor.canApply)
+        let outcomes = Dictionary(uniqueKeysWithValues: try XCTUnwrap(fixture.editor.plan).rows.map { ($0.title, $0.outcome) })
+        XCTAssertEqual(outcomes, ["Bonus A": .inactive, "Ad B": .skip, "Plain C": .inactive, "Ad D": .keepToSkip, "Bonus E": .inactive,
+                                  "Ad F": .protectedManual, "Bonus G": .protectedManual, "Ad H": .heldStarted])
+        XCTAssertEqual(fixture.editor.plan?.admissions.map(\.episodeID), ["b", "d"].map(fixture.id), "Skip rules still skip")
+        XCTAssertEqual(fixture.editor.plan?.rows.first { $0.title == "Bonus A" }?.result, .keep(ruleID: keepBonus))
+        XCTAssertTrue(fixture.editor.canApply)
     }
 
     // MARK: Done when 2: Apply, then Undo
@@ -506,105 +505,84 @@ final class WiltedMacFeedRulesTests: XCTestCase {
         XCTAssertEqual(fixed.rules.map(\.includePattern), ["^Ad", "^Bonus", "fixed"])
     }
 
-    // MARK: Hosted views, accessibility, narrow and wide
+    // MARK: Hosted sheet, accessibility, minimum and wide sizes
 
-    /// Uses the existing shipping-theme bitmap seam without the journey renderer's extra margin.
-    private func rulesText<V: View>(_ view: V, name: String, size: CGSize) throws -> String {
-        let content = view.environment(\.colorScheme, .light)
-            .frame(width: size.width, height: size.height, alignment: .topLeading)
-            .background(WiltedTheme.color(.card, scheme: .light))
-        let bitmap = try WiltedMacHeadless.render(content, size: size)
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
-        request.recognitionLanguages = ["en-US"]
-        request.minimumTextHeight = 0.004
-        try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
-        let attachment = XCTAttachment(
-            data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
-            uniformTypeIdentifier: "public.png")
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-    }
-
-    func testRulesPageShowsEditorErrorsPreviewAndSeparateCountsAtNarrowAndWideWidths() async throws {
+    func testRulesSheetShowsEditorErrorsPreviewAndSeparateCountsAtMinimumAndWideSizes() async throws {
         let fixture = try await makeFixture(mixed)
         fixture.editor.loadIfNeeded()
-        fixture.editor.preview()
-        await fixture.editor.task?.value
         let subscription = try XCTUnwrap(fixture.model.subscriptions.first)
-        let resolved = fixture.board.resolved(for: fixture.feed)
-        for width in [WiltedMacFeedRulesView.width + 48, 700] {
-            let shown = try rulesText(
-                WiltedMacFeedRulesView(editor: fixture.editor, subscription: subscription, resolved: resolved, back: {}, maximumHeight: nil)
-                    .frame(width: WiltedMacFeedRulesView.width),
-                name: "rules-preview-\(Int(width))", size: CGSize(width: width, height: 2_400)
-            )
-            for text in ["Match rules", "Add rule", "Apply to existing", "Undecided episodes", "Automatic decisions"] {
-                XCTAssertTrue(shown.contains(text), "\(text) at \(width): \(shown)")
+        let sheet = WiltedMacFeedRulesView(
+            editor: fixture.editor, subscription: subscription, resolved: fixture.board.resolved(for: fixture.feed)
+        )
+        let minimum = CGSize(width: WiltedMacFeedRulesView.width, height: WiltedMacFeedRulesView.height)
+        var host = WiltedMacRulesSheetCapture.host(sheet, size: minimum)
+        for size in [minimum, CGSize(width: 1_100, height: 900)] {
+            if size != minimum { host = WiltedMacRulesSheetCapture.host(sheet, size: size) }
+            await fixture.editor.task?.value  // the preview the sheet runs as it opens
+            let shown = try WiltedMacRulesSheetCapture.text(host, name: "rules-sheet-\(Int(size.width))", in: self)
+            for text in ["Match rules for Rules Feed", "Add rule", "Apply to existing", "Undecided episodes", "Automatic decisions"] {
+                XCTAssertTrue(shown.contains(text), "\(text) at \(size): \(shown)")
             }
-            XCTAssertTrue(shown.contains("2 to keep, 1 to skip"), "\(width): \(shown)")
-            XCTAssertTrue(shown.contains("1 Keep to Skip, 1 Skip to Keep"), "\(width): \(shown)")
-            XCTAssertTrue(shown.contains("2 yours, 1 started"), "\(width): \(shown)")
+            XCTAssertTrue(shown.contains("2 to keep, 1 to skip"), "\(size): \(shown)")
+            XCTAssertTrue(shown.contains("1 Keep to Skip, 1 Skip to Keep"), "\(size): \(shown)")
+            // The minimum sheet scrolls the last group into view; the wide one shows it at once.
+            if size != minimum { XCTAssertTrue(shown.contains("2 yours, 1 started"), shown) }
         }
 
         let bad = fixture.editor.addRule()
         fixture.editor.update(bad) { $0.include = "(" }
-        let shown = try rulesText(
-            WiltedMacFeedRulesView(editor: fixture.editor, subscription: subscription, resolved: resolved, back: {}, maximumHeight: nil)
-                .frame(width: WiltedMacFeedRulesView.width),
-            name: "rules-invalid-warning", size: CGSize(width: 700, height: 2_400)
-        )
+        let shown = try WiltedMacRulesSheetCapture.text(host, name: "rules-invalid-warning", in: self)
         XCTAssertTrue(shown.contains("not a valid pattern"), shown)
         XCTAssertTrue(shown.contains("Fix the rules marked below"), shown)
+        XCTAssertTrue(shown.contains("Results appear when every rule is valid"), shown)
 
         fixture.editor.update(bad) { $0.include = "valid" }
         XCTAssertFalse(fixture.editor.hasProblems)
-        let corrected = try rulesText(
-            WiltedMacFeedRulesView(editor: fixture.editor, subscription: subscription, resolved: resolved, back: {}, maximumHeight: nil),
-            name: "rules-warning-cleared", size: CGSize(width: 700, height: 2_400))
+        let corrected = try WiltedMacRulesSheetCapture.text(host, name: "rules-warning-cleared", in: self)
         XCTAssertFalse(corrected.contains("Fix the rules marked below"), corrected)
+        await fixture.editor.task?.value
     }
 
-    func testRulesPageSaysSoWhenAutoKeepIsOffAndTheSettingsPageLinksToIt() async throws {
+    func testRulesSheetSaysSoWhenAutoKeepIsOffAndTheSettingsPopoverLinksToIt() async throws {
         let fixture = try await makeFixture(mixed, policy: FeedAutomationPolicy(autoKeep: .off))
         fixture.editor.loadIfNeeded()
         let subscription = try XCTUnwrap(fixture.model.subscriptions.first)
-        let rulesPage = try rulesText(
+        let rulesSheet = try WiltedMacRulesSheetCapture.text(
             WiltedMacFeedRulesView(
-                editor: fixture.editor, subscription: subscription,
-                resolved: fixture.board.resolved(for: fixture.feed), back: {}, maximumHeight: nil
+                editor: fixture.editor, subscription: subscription, resolved: fixture.board.resolved(for: fixture.feed)
             ),
-            name: "rules-auto-keep-off", size: CGSize(width: 600, height: 1_400)
+            size: CGSize(width: WiltedMacFeedRulesView.width, height: WiltedMacFeedRulesView.height),
+            name: "rules-auto-keep-off", in: self
         )
-        XCTAssertTrue(rulesPage.contains("Auto keep is Off"), rulesPage)
+        XCTAssertTrue(rulesSheet.contains("Auto keep is Off"), rulesSheet)
+        await fixture.editor.task?.value
 
-        // The retired 380pt fixture cannot contain the shipping 460pt page's count suffix.
+        // The retired 380pt fixture cannot contain the shipping 460pt popover's count suffix.
         let oldCanvas = try WiltedMacHeadless.recognizedText(
             WiltedMacFeedPolicyContent(board: fixture.board, subscription: subscription).frame(width: 380).padding(16),
             size: CGSize(width: 412, height: 800)
         ).joined(separator: " ")
         XCTAssertFalse(oldCanvas.contains("2 rules"), "old narrow canvas must fail the exact count: \(oldCanvas)")
-        let settings = try rulesText(
+        let settings = try WiltedMacRulesSheetCapture.text(
             WiltedMacFeedPolicyContent(board: fixture.board, subscription: subscription),
-            name: "feed-settings-full-count", size: CGSize(width: WiltedMacFeedRulesView.width, height: 800)
+            size: CGSize(width: WiltedMacFeedPolicyContent.width, height: 800), columns: false,
+            name: "feed-settings-full-count", in: self
         )
         XCTAssertTrue(settings.contains("Match rules"), settings)
         XCTAssertTrue(settings.contains("2 rules"), settings)
     }
 
     func testEveryNewControlCarriesAnAccessibilityLabel() throws {
-        let source = try WiltedMacHeadless.viewSource("WiltedMacFeedRulesView.swift")
+        let source = try ["WiltedMacFeedRulesView.swift", "WiltedMacFeedRulesPreviewView.swift"]
+            .map { try WiltedMacHeadless.viewSource($0) }.joined(separator: "\n")
         let controls = ["Picker(", "TextField(", "Stepper(", "Button(", "Toggle(", "Menu("].reduce(0) {
             $0 + WiltedMacHeadless.occurrences(of: $1, in: source)
         } - WiltedMacHeadless.occurrences(of: "iconButton(", in: source)  // the three icon buttons share one labelled helper
         XCTAssertGreaterThan(controls, 8)
         XCTAssertGreaterThanOrEqual(WiltedMacHeadless.occurrences(of: ".accessibilityLabel(", in: source), controls)
         for label in [
-            "Add a match rule for", "Preview match rules for", "Apply match rules to existing episodes of",
-            "Cancel checking rules for", "Undo applied match rules for", "Back to feed settings for",
+            "Add a match rule for", "Apply match rules to existing episodes of", "Close match rules for",
+            "Cancel checking rules for", "Undo applied match rules for",
             "Rule \\(number) enabled for", "Rule \\(number) action for", "Rule \\(number) pattern to match for",
             "Rule \\(number) exception pattern for",
         ] {
@@ -612,7 +590,7 @@ final class WiltedMacFeedRulesTests: XCTestCase {
         }
         XCTAssertTrue(source.contains("\"Edit match rules for \\(subscription.title)\""))
         let policy = try WiltedMacHeadless.viewSource("WiltedMacFeedPolicyView.swift")
-        XCTAssertTrue(policy.contains("WiltedMacFeedRulesEntry("), "the settings page opens the rules page")
+        XCTAssertTrue(policy.contains("WiltedMacFeedRulesEntry("), "the settings popover opens the rules sheet")
     }
 
     // MARK: Fixture

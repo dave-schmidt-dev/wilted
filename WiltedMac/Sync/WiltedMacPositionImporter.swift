@@ -57,8 +57,8 @@ enum WiltedMacPositionImport {
 /// Adopts the phone's playback positions into the Mac's stored playback state, so playing an
 /// episode on the Mac that was last listened to on the phone starts where the phone stopped.
 ///
-/// Called with every fetch of the device records: the poller's cycles (first at sync start) and
-/// the fresh read a Mac Play press makes. The rules that keep it safe:
+/// Called with every fetch of the device records, which is each of the poller's cycles (the
+/// first at sync start). The rules that keep it safe:
 /// - Only other devices' records, only for the revision the Mac offers, never a stale epoch
 ///   (`HandoffPositionImport`), never one that is not newer than the Mac's stored position,
 ///   never a finished episode, never an episode playing on the Mac (the controller decides).
@@ -86,7 +86,6 @@ final class WiltedMacPositionImporter {
     private var lastNote: [ItemID: String] = [:]
     private var running = false
     private var pending: LibraryDeviceRecords?
-    private var waiters: [CheckedContinuation<Void, Never>] = []
     private(set) var appliedCount = 0
     private(set) var adopted: [ItemID: Adoption] = [:]
 
@@ -111,18 +110,6 @@ final class WiltedMacPositionImporter {
             next = pending
         }
         running = false
-        let finished = waiters
-        waiters = []
-        for waiter in finished { waiter.resume() }
-    }
-
-    /// Like `handle`, but returns only once `records` have been acted on, including when a pass
-    /// was already running. For a Mac Play press, which must not start the audio before the
-    /// phone's position is stored.
-    func handleAwaiting(_ records: LibraryDeviceRecords) async {
-        guard running else { return await handle(records) }
-        pending = records
-        await withCheckedContinuation { waiters.append($0) }
     }
 
     private func pass(_ records: LibraryDeviceRecords) async {

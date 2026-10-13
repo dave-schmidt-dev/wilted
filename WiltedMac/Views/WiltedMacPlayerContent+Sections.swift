@@ -141,7 +141,8 @@ extension WiltedMacPlayerContent {
 
 extension WiltedMacPlaybackPending {
     /// Presentation only: the command owner remains the source of pending state.
-    var usesPlayPauseButtonFeedback: Bool { command.kind == .start || command.kind == .pause }
+    /// Only a start is ever pending here; Pause is answered before it returns.
+    var usesPlayPauseButtonFeedback: Bool { command.kind == .start }
     var usesInitiatingButtonFeedback: Bool { usesPlayPauseButtonFeedback || command.kind == .select }
 }
 

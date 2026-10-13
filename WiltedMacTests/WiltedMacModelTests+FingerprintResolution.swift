@@ -327,37 +327,36 @@ extension WiltedMacModelTests {
     }
 
     /// Feeds opens History, whose skipped and removed rows each render Restore.
-    func testFeedsRendersRestoreControlsForSkippedAndRemovedEpisodes() throws {
+    func testFeedsRendersRestoreControlsForSkippedAndRemovedEpisodes() async throws {
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: temporaryDirectory("history-render"),
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         addTeardownBlock { await model.close() }
-        var skipped = WiltedMacEpisode(
-            id: "history-skipped", title: "Skipped history episode", feedTitle: "History show",
-            summary: "", artworkURL: nil, releasedAt: Date(), durationSeconds: 60,
-            playbackSeconds: 0, downloadState: .completed, preparationState: .prepared(summary: "Ready")
-        )
-        skipped.retiredAt = Date()
-        skipped.removalKind = .retired
-        model.installEpisodeForTesting(skipped)
-        model.dismissedEpisodes = [WiltedMacDismissedEpisode(
-            id: "history-removed", feedID: nil, title: "Removed history episode", feedTitle: "History show",
-            dismissedAt: Date(), hasPreparationHistory: true
-        )]
-        model.navigationState.selectedFeedEpisodeIDs = [skipped.id]
+        // History pages from the store, so the rows are seeded there and the
+        // view is handed a loader whose page has already arrived.
+        let fixture = try WiltedMacHistoryStoreFixture(self)
+        let feed = try WiltedMacHistoryStoreFixture.Feed("render")
+        let skipped = try feed.episode("skipped", title: "Skipped history episode")
+        let removed = try feed.episode("removed", title: "Removed history episode")
+        try await fixture.store.savePodcastEpisodes([skipped, removed], admission: .backfill)
+        _ = try await fixture.store.retireEpisode(skipped.itemID, at: fixture.at(20))
+        _ = try await fixture.store.dismissPodcastEpisode(removed.itemID, at: fixture.at(10))
+        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch)
+        await loader.start(feedID: nil)
+        model.navigationState.selectedFeedEpisodeIDs = [skipped.itemID.rawValue]
         model.scrollAnchor(for: .feeds).wrappedValue = "feeds-subscriptions"
         let navigation = model.navigationState
         let drawn = try WiltedMacHeadless.recognizedText(
-            WiltedMacFeedHistoryView(model: model), size: CGSize(width: 900, height: 1_000)
+            WiltedMacFeedHistoryView(model: model, loader: loader), size: CGSize(width: 900, height: 1_000)
         )
         let text = drawn.joined(separator: " ")
         XCTAssertTrue(text.contains("History"), text)
         XCTAssertTrue(text.contains(skipped.title), text)
-        XCTAssertTrue(text.contains("Removed history episode"), text)
+        XCTAssertTrue(text.contains(removed.title), text)
         XCTAssertEqual(drawn.filter { $0 == "Restore" }.count, 2, text)
         XCTAssertEqual(model.navigationState, navigation, "Rendering History preserves Feeds selection and scroll position")
-        XCTAssertEqual(WiltedMacFeedHistoryAccessibilityID.restoreSkipped(skipped.id), "wilted-feeds-restore-skipped-history-skipped")
+        XCTAssertEqual(WiltedMacFeedHistoryAccessibilityID.restoreSkipped("history-skipped"), "wilted-feeds-restore-skipped-history-skipped")
         XCTAssertEqual(WiltedMacFeedHistoryAccessibilityID.restoreRemoved("history-removed"), "wilted-feeds-restore-removed-history-removed")
         let history = try WiltedMacHeadless.viewSource("WiltedMacFeedHistoryView.swift")
         XCTAssertTrue(history.contains("WiltedMacFeedHistoryAccessibilityID.restoreSkipped(record.id)"))

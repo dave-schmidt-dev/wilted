@@ -319,7 +319,6 @@ extension WiltedMacModel {
                 throw WiltedMacPlaylistError.notReady
             }
             let savedRate = try? await store.playbackSpeed(for: itemID)
-            await self.refreshPhonePositionBeforePlay()
             try self.ensureCurrentPlaybackCommand(command)
             self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
             try await playback.load(stored)

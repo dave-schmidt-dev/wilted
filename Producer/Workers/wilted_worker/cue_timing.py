@@ -16,11 +16,11 @@ import tempfile
 import threading
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
-from .constants import ALIGNED_TIMING_TAIL_ALLOWANCE_S, NOMINATED_SECONDS_FLOOR, NOMINATED_SHARE_FLOOR, RENDER_DURATION_TOLERANCE_S, RENDER_PROGRESS_INTERVAL_S, RENDER_TIMEOUT_S
+from .constants import ALIGNED_TIMING_TAIL_ALLOWANCE_S, NOMINATED_SECONDS_FLOOR, NOMINATED_SHARE_FLOOR, RENDER_DURATION_TOLERANCE_S, RENDER_PROGRESS_INTERVAL_S, RENDER_TIMEOUT_S, SPLIT_WORD_CONTIGUITY_TOLERANCE_S
 from .reporting import WorkerError
 
 @dataclass(frozen=True)
@@ -366,6 +366,80 @@ def in_time_order(segments):
     if not segments:
         return segments
     return sorted(segments, key=lambda segment: (float(segment.start_s), float(segment.end_s)))
+
+_SENTENCE_ENDINGS = (".", "?", "!")
+
+def join_split_words(segments) -> list:
+    """Reattach word fragments that speech-to-text cut off a segment's start.
+
+    The aligner closes a segment once it reaches its duration cap without
+    checking whether the next token begins a word, so a cue can end on "meas"
+    while the next one opens on "urable". A token that starts a word begins
+    with whitespace, which marks everything ahead of the first such token in
+    a segment as the tail of its predecessor's last word. That tail moves back
+    onto the predecessor, extending its end to the last moved token, and the
+    segment then starts at its first remaining token. A segment made only of
+    continuation tokens is merged into its predecessor whole.
+
+    A pair is left alone when either side has no aligned tokens, when the
+    predecessor already ends a sentence, when the fragment does not follow the
+    predecessor's last token in time (an overlapping stitch, not a split word),
+    or when the segment's text does not begin with the fragment's text. Text
+    and tokens that disagree are not a basis for rewriting either.
+
+    Args:
+        segments: Time-ordered transcript segments. Segments carrying a
+            ``tokens`` tuple must be dataclass instances; segments without
+            tokens pass through unchanged.
+
+    Returns:
+        A new list of segments. The inputs are never mutated; changed
+        segments are copies made with ``dataclasses.replace``.
+    """
+    joined: list = []
+    for segment in segments:
+        result = _join_onto_previous(joined[-1], segment) if joined else None
+        if result is None:
+            joined.append(segment)
+            continue
+        joined[-1], remainder = result
+        if remainder is not None:
+            joined.append(remainder)
+    return joined
+
+def _join_onto_previous(previous, segment):
+    """Return ``(previous, remainder or None)`` after a join, or ``None`` when the pair stays as is."""
+    previous_tokens = getattr(previous, "tokens", None)
+    tokens = getattr(segment, "tokens", None)
+    if not previous_tokens or not tokens or not is_dataclass(previous) or not is_dataclass(segment):
+        return None
+    if previous.text.rstrip().endswith(_SENTENCE_ENDINGS):
+        return None
+    split = next((index for index, token in enumerate(tokens) if token.text[:1].isspace()), len(tokens))
+    if split == 0:
+        return None
+    moved, remaining = tuple(tokens[:split]), tuple(tokens[split:])
+    if float(moved[0].start_s) < float(previous_tokens[-1].end_s) - SPLIT_WORD_CONTIGUITY_TOLERANCE_S:
+        return None
+    fragment = "".join(token.text for token in moved)
+    text = segment.text.lstrip()
+    if not text.startswith(fragment):
+        return None
+    rest = " ".join(text[len(fragment):].split())
+    merged_text = " ".join((previous.text.rstrip() + fragment).split())
+    merged_end = max(float(previous.end_s), float(moved[-1].end_s))
+    if not rest:
+        # Nothing but the fragment: the whole segment belongs to its predecessor.
+        extended = replace(previous, text=merged_text, end_s=max(merged_end, float(segment.end_s)),
+                           tokens=tuple(previous_tokens) + tuple(tokens))
+        return extended, None
+    if not remaining:
+        return None
+    new_start = max(float(segment.start_s), float(remaining[0].start_s))
+    if not new_start < float(segment.end_s):
+        return None
+    extended = replace(previous, text=merged_text, end_s=merged_end, tokens=tuple(previous_tokens) + moved)
+    return extended, replace(segment, text=rest, start_s=new_start, tokens=remaining)
 
 def segments_to_cues(segments) -> list[dict]:
     """Project the previous pipeline's segments onto the cue contract.

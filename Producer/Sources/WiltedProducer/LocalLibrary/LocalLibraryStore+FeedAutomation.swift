@@ -162,9 +162,16 @@ extension LocalLibraryStore {
     /// save. A `nil` value returns that episode to undecided by deleting its
     /// record; a non-nil value is written as it was. Used only to undo or roll
     /// back automatic changes, never to record a new decision.
+    ///
+    /// `unretiring` names episodes a rule Skip retired. Each one still
+    /// retired returns to the feed in the same save as its decision, as
+    /// `restoreEpisodes` returns it, so no failure can leave it retired
+    /// without its skip record or live with one. Its audio is not restored.
     public func restoreEpisodeDecisions(_ prior: [ItemID: EpisodeDecisionRecord?], queue: PodcastQueueState,
+                                        unretiring: Set<ItemID> = [],
                                         addedAt: Timestamp = Timestamp(Date())) throws {
         let context = ModelContext(container)
+        if !unretiring.isEmpty { try Self.stageUnretirement(Set(unretiring.map(\.rawValue)), in: context) }
         let records = try context.fetch(FetchDescriptor<DecisionRecord>())
         for (episodeID, value) in prior {
             let existing = records.first { $0.episodeID == episodeID.rawValue }
@@ -192,7 +199,29 @@ extension LocalLibraryStore {
                                       addedAt: Timestamp(existingDates[episodeID.rawValue] ?? addedAt.date))
             ))
         }
+        #if DEBUG
+        try Self.feedAutomationBeforeSave?()
+        #endif
         try context.save()
+    }
+
+    /// Returns the named retired episodes to the feed in `context`, mirroring
+    /// `restoreEpisodes`: only a retired row changes (a dismissed one keeps its
+    /// stronger removal), and its listening record forgets the revision it
+    /// last played, which retirement deleted.
+    // TODO: Share with restoreEpisodes(_:) once that body is shared across files.
+    private static func stageUnretirement(_ episodeIDs: Set<String>, in context: ModelContext) throws {
+        var restored: Set<String> = []
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+        where episodeIDs.contains(record.id) && record.removalKind == PodcastEpisodeRemovalKind.retired.rawValue {
+            record.removalKind = nil; record.retiredAt = nil
+            restored.insert(record.id)
+        }
+        let now = Date()
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
+        where restored.contains(record.id) {
+            record.lastRevisionID = nil; record.updatedAt = now
+        }
     }
 
     /// Atomically appends an episode to the queue, records its decision, and
@@ -233,5 +262,73 @@ extension LocalLibraryStore {
         #endif
         try context.save()
         return tickets
+    }
+
+    /// Applies a match rule's Skip to one episode found by a refresh: retires
+    /// it and records the skip, its rule source and the rule ID in one save,
+    /// so History can name the rule and no crash can leave a retired episode
+    /// without its reason (or a skip record on a live one).
+    ///
+    /// Retirement matches a manual Skip through `retireEpisodes`: `retiredAt`
+    /// and the retired removal kind are set, and the episode's revision,
+    /// download and artwork records go in the same save, their files only
+    /// after it commits. A manual decision is the listener's and always wins:
+    /// an episode restored from History carries a manual Keep, so a rule never
+    /// retires it again. Returns false, writing nothing, for a missing or
+    /// already removed episode or one with a manual decision.
+    @discardableResult
+    public func retireEpisodeBySkipRule(_ episodeID: ItemID, ruleID: UUID,
+                                        at decidedAt: Timestamp = Timestamp(Date())) throws -> Bool {
+        let context = ModelContext(container)
+        let identifier = episodeID.rawValue
+        guard let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+            .first(where: { $0.id == identifier }), episode.removalKind == nil else { return false }
+        let existing = try context.fetch(FetchDescriptor<DecisionRecord>()).first { $0.episodeID == identifier }
+        guard existing?.source != EpisodeDecisionSource.manual.rawValue else { return false }
+        episode.retiredAt = decidedAt.date
+        episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
+        if let existing {
+            existing.decision = EpisodeDecision.skip.rawValue; existing.source = EpisodeDecisionSource.rule.rawValue
+            existing.ruleID = ruleID; existing.decidedAt = decidedAt.date
+        } else {
+            context.insert(DecisionRecord(episodeID: identifier, decision: EpisodeDecision.skip.rawValue,
+                                          source: EpisodeDecisionSource.rule.rawValue, ruleID: ruleID,
+                                          decidedAt: decidedAt.date))
+        }
+        let doomedMedia = try Self.stageRetiredEpisodeMediaDeletion(identifier, in: context)
+        #if DEBUG
+        try Self.feedAutomationBeforeSave?()
+        #endif
+        try context.save()
+        deleteMediaIfUnreferenced(doomedMedia)
+        return true
+    }
+
+    /// Deletes one retired episode's revision, download and artwork records in
+    /// `context` and returns the media URLs they named, for the caller to hand
+    /// to `deleteMediaIfUnreferenced` once its save commits.
+    ///
+    /// Mirrors the private `deleteMediaRecords(forEpisodesWithIDs:in:)` in
+    /// LocalLibraryStore+EpisodeState.swift so a rule Skip reclaims exactly
+    /// what a manual Skip does.
+    // TODO: Merge with deleteMediaRecords(forEpisodesWithIDs:in:) once that helper is shared across files.
+    private static func stageRetiredEpisodeMediaDeletion(_ episodeID: String, in context: ModelContext) throws -> [URL] {
+        var doomed: [URL] = []
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        where record.itemID == episodeID {
+            if let value = record.mediaURL, let url = URL(string: value) { doomed.append(url) }
+            context.delete(record)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
+        where record.episodeID == episodeID {
+            if let value = record.localURL, let url = URL(string: value) { doomed.append(url) }
+            context.delete(record)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
+        where record.ownerID == episodeID {
+            if let value = record.localURL, let url = URL(string: value) { doomed.append(url) }
+            context.delete(record)
+        }
+        return doomed
     }
 }

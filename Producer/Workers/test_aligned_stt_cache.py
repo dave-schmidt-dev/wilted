@@ -41,6 +41,25 @@ from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import transcript_sources as _worker_transcript_sources
+from wilted_worker.constants import ALIGNED_STT_CACHE_SCHEMA_VERSION
+
+@dataclass
+class AlignedToken:
+    text: str
+    start_s: float
+    end_s: float
+
+@dataclass
+class AlignedSegment:
+    start_s: float
+    end_s: float
+    text: str
+    tokens: tuple | None = None
+
+def aligned(*pieces) -> AlignedSegment:
+    """Build a segment the way parakeet does: text is its tokens joined, stripped."""
+    tokens = tuple(AlignedToken(text, start, end) for text, start, end in pieces)
+    return AlignedSegment(tokens[0].start_s, tokens[-1].end_s, "".join(t.text for t in tokens).strip(), tokens)
 
 class AlignedSTTCacheTests(unittest.TestCase):
     """The detector transcript is reusable only for its exact model and bytes."""
@@ -131,9 +150,15 @@ class AlignedSTTCacheTests(unittest.TestCase):
     def test_malformed_mismatched_and_invalid_entries_are_deleted_before_fresh_stt(self):
         cases = {
             "malformed": "{not json",
-            "mismatched": json.dumps({"schemaVersion": 1, "sourceHash": "sha256:other", "model": "detector-v1", "segments": []}),
-            "invalid-cue": json.dumps({"schemaVersion": 1, "sourceHash": "sha256:source-one", "model": "detector-v1",
-                                        "segments": [{"text": "", "start_s": 1, "end_s": 1}]}),
+            "mismatched": json.dumps({"schemaVersion": ALIGNED_STT_CACHE_SCHEMA_VERSION, "sourceHash": "sha256:other",
+                                      "model": "detector-v1", "segments": []}),
+            "invalid-cue": json.dumps({"schemaVersion": ALIGNED_STT_CACHE_SCHEMA_VERSION, "sourceHash": "sha256:source-one",
+                                        "model": "detector-v1", "segments": [{"text": "", "start_s": 1, "end_s": 1}]}),
+            # A transcript cached before split words were rejoined is valid in
+            # every other respect, and must still not be reused.
+            "stale-schema": json.dumps({"schemaVersion": ALIGNED_STT_CACHE_SCHEMA_VERSION - 1,
+                                         "sourceHash": "sha256:source-one", "model": "detector-v1",
+                                         "segments": [{"text": "This is meas", "start_s": 0, "end_s": 1}]}),
         }
         for name, body in cases.items():
             with self.subTest(name=name):
@@ -209,3 +234,34 @@ class AlignedSTTCacheTests(unittest.TestCase):
         }}
         self.run_pipeline(published)
         self.assertFalse(self.cache_path(published).exists())
+
+    def test_words_split_by_the_aligner_are_rejoined_before_they_are_returned_or_cached(self):
+        install_fake_wilted()
+        sys.modules["wilted.transcribe"].transcribe_audio = lambda _path, model_name, **_: [
+            aligned(("urable", 0.6, 0.7), (" and", 0.7, 0.8), (" more", 0.8, 0.9)),
+            aligned((" This", 0.0, 0.1), (" is", 0.1, 0.2), (" meas", 0.5, 0.6)),
+        ]
+        with redirect_stderr(io.StringIO()):
+            returned = _worker_transcript_sources.transcribe_with_daemon(self.audio, "detector-v1")
+        self.assertEqual([(s.text, s.start_s, s.end_s) for s in returned],
+                         [("This is measurable", 0.0, 0.7), ("and more", 0.7, 0.9)])
+
+        self.run_pipeline()
+        cached = json.loads(self.cache_path().read_text())
+        self.assertEqual(cached["schemaVersion"], ALIGNED_STT_CACHE_SCHEMA_VERSION)
+        self.assertEqual([(e["text"], e["start_s"], e["end_s"]) for e in cached["segments"]],
+                         [("This is measurable", 0.0, 0.7), ("and more", 0.7, 0.9)])
+
+    def test_a_join_that_moves_a_start_past_its_neighbour_still_caches_in_order(self):
+        # Overlapping stitched windows can put a segment between the fragment
+        # and the rest of the sentence it opened; the cache refuses any
+        # transcript that is not in time order.
+        install_fake_wilted()
+        sys.modules["wilted.transcribe"].transcribe_audio = lambda _path, model_name, **_: [
+            aligned((" A", 0.0, 0.1), (" meas", 0.3, 0.4)),
+            aligned(("urable", 0.4, 0.5), (" end", 0.8, 0.9)),
+            aligned((" overlap", 0.6, 0.7)),
+        ]
+        self.run_pipeline()
+        cached = json.loads(self.cache_path().read_text())
+        self.assertEqual([e["text"] for e in cached["segments"]], ["A measurable", "overlap", "end"])

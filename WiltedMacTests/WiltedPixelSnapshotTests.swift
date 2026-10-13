@@ -446,7 +446,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 board.loadForPreview(feedID: feedID, isArticleFeed: true, isNews: true)
                 return board
             }(), subscription: subscription),
-            size: CGSize(width: WiltedMacFeedRulesView.width, height: 800)
+            size: CGSize(width: WiltedMacFeedPolicyContent.width, height: 800)
         ).joined(separator: " ")
         XCTAssertTrue(shown.contains("News"), shown)
         XCTAssertFalse(shown.contains("Auto download"), "an article has nothing to download: \(shown)")

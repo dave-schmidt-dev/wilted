@@ -6,12 +6,15 @@ import WiltedProducer
 
 // MARK: - Feed row control
 
-/// The gear on a subscription row and the popover it opens.
+/// The gear on a subscription row and the popover it opens. The match rules
+/// open from the popover as a sheet hung on the gear, so the sheet outlives
+/// the popover and, from the feed-details sheet, stacks over that sheet.
 struct WiltedMacFeedPolicyButton: View {
     let board: WiltedMacFeedPolicyBoard
     let subscription: WiltedMacSubscription
     @Environment(\.colorScheme) private var colorScheme
     @State private var isPresented = false
+    @State private var isEditingRules = false
 
     var body: some View {
         Button {
@@ -26,9 +29,18 @@ struct WiltedMacFeedPolicyButton: View {
         .accessibilityLabel("Feed settings for \(subscription.title)")
         .accessibilityIdentifier("wilted-feed-policy-button-\(subscription.id)")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            WiltedMacFeedPolicyContent(board: board, subscription: subscription, dismiss: { isPresented = false })
-                .padding(WiltedTheme.Spacing.large)
-                .background(WiltedTheme.color(.card, scheme: colorScheme))
+            WiltedMacFeedPolicyContent(
+                board: board, subscription: subscription, dismiss: { isPresented = false },
+                openRules: { isPresented = false; isEditingRules = true }
+            )
+            .padding(WiltedTheme.Spacing.large)
+            .background(WiltedTheme.color(.card, scheme: colorScheme))
+        }
+        .sheet(isPresented: $isEditingRules) {
+            WiltedMacFeedRulesView(
+                editor: board.rulesEditor(for: subscription.id), subscription: subscription,
+                resolved: board.resolved(for: subscription.id), dismiss: { isEditingRules = false }
+            )
         }
     }
 }
@@ -37,31 +49,20 @@ struct WiltedMacFeedPolicyButton: View {
 
 /// The four per-feed choices and what they resolve to right now.
 struct WiltedMacFeedPolicyContent: View {
+    static let width: CGFloat = 460
+
     let board: WiltedMacFeedPolicyBoard
     let subscription: WiltedMacSubscription
     var dismiss: () -> Void = {}
+    /// Closes the popover and opens the rules sheet.
+    var openRules: () -> Void = {}
     @Environment(\.colorScheme) private var colorScheme
     @State private var limitIsRejected = false
-    @State private var showsRules = false
 
     private var feedID: String { subscription.id }
     private var policy: FeedAutomationPolicy { board.policy(for: feedID) }
 
     var body: some View {
-        Group {
-            if showsRules {
-                WiltedMacFeedRulesView(
-                    editor: board.rulesEditor(for: feedID), subscription: subscription,
-                    resolved: board.resolved(for: feedID), back: { showsRules = false }, dismiss: dismiss
-                )
-            } else {
-                settingsPage
-            }
-        }
-        .frame(width: WiltedMacFeedRulesView.width)
-    }
-
-    private var settingsPage: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             Text("Feed settings")
                 .wiltedFont(.title)
@@ -110,7 +111,7 @@ struct WiltedMacFeedPolicyContent: View {
             }
             WiltedMacFeedRulesEntry(
                 editor: board.rulesEditor(for: feedID), subscription: subscription, isEnabled: board.isLoaded(feedID),
-                open: { showsRules = true }
+                open: openRules
             )
             Divider()
             Text("A lower limit never removes \(board.isArticleFeed(feedID) ? "an article" : "an episode") already in Larder.")
@@ -127,6 +128,7 @@ struct WiltedMacFeedPolicyContent: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-feed-policy-\(subscription.id)")
+        .frame(width: Self.width)
     }
 
     /// Shown only for a feed that lists articles: label in the label column, toggle in the control column.

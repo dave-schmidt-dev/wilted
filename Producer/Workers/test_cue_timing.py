@@ -1,6 +1,7 @@
 """Podcast worker tests."""
 from __future__ import annotations
 import ast
+import copy
 import importlib.util
 import inspect
 import io
@@ -146,6 +147,135 @@ class SegmentProjectionTests(unittest.TestCase):
 
     def test_text_joins_in_reading_order(self):
         self.assertEqual(wp.cues_to_text([{"text": "one"}, {"text": "two"}]), "one two")
+
+@dataclass
+class AlignedToken:
+    """Mirror of wilted.transcribe.TranscriptToken (deliberately mutable, like it)."""
+
+    text: str
+    start_s: float
+    end_s: float
+
+@dataclass
+class AlignedSegment:
+    """Mirror of wilted.transcribe.TranscriptSegment, text derived as parakeet does."""
+
+    start_s: float
+    end_s: float
+    text: str
+    tokens: tuple | None = None
+
+def aligned(*pieces) -> AlignedSegment:
+    """Build a segment from ``(text, start, end)`` tokens: text is their join, stripped."""
+    tokens = tuple(AlignedToken(text, start, end) for text, start, end in pieces)
+    return AlignedSegment(tokens[0].start_s, tokens[-1].end_s, "".join(t.text for t in tokens).strip(), tokens)
+
+class SplitWordJoinTests(unittest.TestCase):
+    """A word the aligner cut across two segments is put back together."""
+
+    def join(self, segments):
+        return _worker_cue_timing.join_split_words(segments)
+
+    def test_a_word_split_across_segments_is_rejoined_in_the_earlier_one(self):
+        segments = [
+            aligned((" This", 0.0, 0.3), (" is", 0.3, 0.5), (" meas", 19.6, 19.9)),
+            aligned(("urable", 19.9, 20.2), (" progress", 20.3, 20.8), (".", 20.8, 21.0)),
+        ]
+        joined = self.join(segments)
+        self.assertEqual([s.text for s in joined], ["This is measurable", "progress."])
+        self.assertEqual([(s.start_s, s.end_s) for s in joined], [(0.0, 20.2), (20.3, 21.0)])
+        self.assertEqual([t.text for t in joined[0].tokens], [" This", " is", " meas", "urable"])
+        self.assertEqual([t.text for t in joined[1].tokens], [" progress", "."])
+
+    def test_a_tail_of_several_continuation_tokens_moves_together(self):
+        segments = [
+            aligned((" It", 0.0, 0.2), (" was", 0.2, 0.4), (" meas", 19.7, 19.9)),
+            aligned(("ur", 19.9, 20.0), ("able", 20.0, 20.2), (",", 20.2, 20.25), (" and", 20.3, 20.5),
+                    (" clear", 20.5, 20.9)),
+        ]
+        joined = self.join(segments)
+        self.assertEqual([s.text for s in joined], ["It was measurable,", "and clear"])
+        self.assertEqual(joined[0].end_s, 20.25)
+        self.assertEqual(joined[1].start_s, 20.3)
+
+    def test_a_segment_of_only_continuation_tokens_is_merged_and_dropped(self):
+        segments = [
+            aligned((" This", 0.0, 0.3), (" meas", 19.6, 19.9)),
+            aligned(("ur", 19.9, 20.0), ("able", 20.0, 20.2)),
+            aligned((" Next", 21.0, 21.3), (" thing", 21.3, 21.6)),
+        ]
+        joined = self.join(segments)
+        self.assertEqual([s.text for s in joined], ["This measurable", "Next thing"])
+        self.assertEqual((joined[0].start_s, joined[0].end_s), (0.0, 20.2))
+        self.assertEqual(len(joined[0].tokens), 4)
+        self.assertIs(joined[1], segments[2])
+
+    def test_segments_without_aligned_tokens_are_left_alone(self):
+        tokenless = AlignedSegment(19.9, 21.0, "urable progress.")
+        pairs = (
+            [aligned((" This", 0.0, 0.3), (" meas", 19.6, 19.9)), tokenless],
+            [AlignedSegment(0.0, 19.9, "This meas"), aligned(("urable", 19.9, 20.2), (" now", 20.3, 20.6))],
+            [FakeSegment(0.0, 19.9, "This meas"), FakeSegment(19.9, 21.0, "urable progress.")],
+        )
+        for segments in pairs:
+            with self.subTest(segments=segments):
+                joined = self.join(segments)
+                self.assertEqual(len(joined), 2)
+                self.assertIs(joined[0], segments[0])
+                self.assertIs(joined[1], segments[1])
+
+    def test_a_finished_sentence_does_not_take_the_next_fragment(self):
+        for ending in (".", "?", "!"):
+            with self.subTest(ending=ending):
+                segments = [
+                    aligned((" Done", 0.0, 0.3), (ending, 0.3, 0.4)),
+                    aligned(("Okay", 0.4, 0.7), (" then", 0.7, 0.9)),
+                ]
+                joined = self.join(segments)
+                self.assertIs(joined[0], segments[0])
+                self.assertIs(joined[1], segments[1])
+
+    def test_the_first_segment_and_an_overlapping_stitch_are_left_alone(self):
+        opening = aligned(("urable", 0.0, 0.3), (" start", 0.3, 0.6))
+        self.assertEqual(self.join([opening]), [opening])
+        # A fragment that begins before the earlier segment's last token ends
+        # is an overlapping chunk stitch, not a split word.
+        overlapping = [
+            aligned((" This", 0.0, 0.3), (" meas", 19.6, 19.9)),
+            aligned(("urable", 19.8, 20.2), (" now", 20.3, 20.6)),
+        ]
+        joined = self.join(overlapping)
+        self.assertIs(joined[0], overlapping[0])
+        self.assertIs(joined[1], overlapping[1])
+
+    def test_float_noise_between_adjacent_tokens_does_not_block_a_join(self):
+        # Parakeet's token end is start plus duration while the next start is
+        # its own frame step, so the two can disagree in the last few bits.
+        segments = [
+            aligned((" This", 0.0, 0.3), (" meas", 19.6, 19.9)),
+            aligned(("urable", 19.9 - 1e-9, 20.2), (" now", 20.3, 20.6)),
+        ]
+        self.assertEqual([s.text for s in self.join(segments)], ["This measurable", "now"])
+
+    def test_text_that_disagrees_with_its_tokens_is_not_rewritten(self):
+        mismatched = aligned(("urable", 19.9, 20.2), (" now", 20.3, 20.6))
+        mismatched.text = "corrected now"
+        segments = [aligned((" This", 0.0, 0.3), (" meas", 19.6, 19.9)), mismatched]
+        joined = self.join(segments)
+        self.assertIs(joined[0], segments[0])
+        self.assertIs(joined[1], mismatched)
+
+    def test_inputs_are_not_mutated(self):
+        segments = [
+            aligned((" This", 0.0, 0.3), (" meas", 19.6, 19.9)),
+            aligned(("ur", 19.9, 20.0), ("able", 20.0, 20.2), (" now", 20.3, 20.6)),
+            aligned(("s", 20.6, 20.7)),
+        ]
+        before = copy.deepcopy(segments)
+        joined = self.join(segments)
+        self.assertIsNot(joined, segments)
+        self.assertEqual(segments, before)
+        self.assertEqual([s.text for s in joined], ["This measurable", "nows"])
 
 class PublishedTranscriptTests(unittest.TestCase):
     def test_dispatches_on_media_type(self):

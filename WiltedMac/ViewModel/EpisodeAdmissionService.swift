@@ -1,8 +1,11 @@
 import Foundation
+import os
 
 #if canImport(WiltedProducer)
 import WiltedDomain
 import WiltedProducer
+
+private let episodeAdmissionLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "EpisodeAdmission")
 
 /// Computes the durable admission request shared by refresh and Feeds actions.
 /// It deliberately returns data rather than starting work: the caller commits
@@ -23,6 +26,10 @@ struct EpisodeAdmissionService {
         let workTicketKinds: [WorkTicketKind]
     }
 
+    /// Plans one feed's admissions. Rules run whatever the feed's Auto keep:
+    /// a Skip rule always claims its match. With Auto keep Off nothing is
+    /// kept automatically, so Keep rules and the policy planner leave their
+    /// episodes undecided.
     static func plan(
         candidates: [Candidate],
         keptEpisodeIDs: Set<String>,
@@ -30,8 +37,6 @@ struct EpisodeAdmissionService {
         rules: EpisodeMatchRules,
         policy: EffectiveFeedAutomationPolicy
     ) -> [Admission] {
-        guard policy.autoKeep else { return [] }
-
         var ruleAdmissions: [Admission] = []
         var plannerCandidates: [FeedAdmissionCandidate] = []
         for candidate in candidates where manualDecisions[candidate.id] == nil {
@@ -40,6 +45,7 @@ struct EpisodeAdmissionService {
             ))
             switch match {
             case let .keep(ruleID):
+                guard policy.autoKeep else { continue }
                 ruleAdmissions.append(keepAdmission(candidate.id, source: .rule, ruleID: ruleID, policy: policy))
             case let .skip(ruleID):
                 ruleAdmissions.append(.init(episodeID: candidate.id, decision: .skip, source: .rule,
@@ -125,56 +131,125 @@ extension WiltedMacModel {
         let loaded = try await podcastFeedClient.load(url)
         try await store.save(feed: loaded.feed)
         let saved = try await store.savePodcastEpisodes(loaded.episodes, admission: .incremental)
-        let values = try await loadLibrary(from: store)
-        let downloads = try await admitAutomatically(
+        var values = try await loadLibrary(from: store)
+        let admitted = try await admitAutomatically(
             feedID: loaded.feed.itemID, feedEpisodes: Array(values.episodes),
             newlySaved: Set(saved.newlyAdmitted.map(\.rawValue)), store: store
         )
+        // A rule Skip retired episodes after that read; read again so the Feed shows them gone.
+        if !admitted.ruleSkipped.isEmpty { values = try await loadLibrary(from: store) }
         articles = values.articles
         applyEpisodes(values.episodes)
         subscriptions = values.subscriptions
         dismissedEpisodes = try await loadDismissedEpisodes(from: store)
         await refreshPodcastQueueState()
-        return downloads
+        return admitted.downloads
+    }
+
+    /// What one automatic admission pass committed.
+    struct AutomaticAdmissionOutcome {
+        /// Episode IDs whose download claim the pass took.
+        var downloads: [String] = []
+        /// Episodes a Skip rule retired. Library rows read before the pass
+        /// still show them live.
+        var ruleSkipped: [String] = []
     }
 
     /// Plans and commits automatic admissions for one feed. Candidates are the
-    /// feed's new episodes, plus, when the feed has a kept limit, undecided
-    /// episodes waiting for a slot. Returns the episode IDs whose download
-    /// claim this call took.
+    /// feed's new episodes, plus, when Auto keep is On and the feed has a kept
+    /// limit, undecided episodes waiting for a slot. With Auto keep Off only
+    /// Skip rules act, and only on `newlySaved`; callers releasing slots pass
+    /// none, so that case reads nothing. A rule Skip on a `newlySaved` episode
+    /// retires it and records its rule in one write. A rule Skip on an older
+    /// waiting episode writes nothing: a skip record alone would leave it in
+    /// the Feed, so it stays undecided until the rules sheet's Apply retires
+    /// it. Every other admission goes through `commitAdmission`, which records
+    /// the decision. `feedEpisodes` may hold other feeds' rows: only this
+    /// feed's are considered, so one feed's rules never touch another's.
     func admitAutomatically(
         feedID: ItemID, feedEpisodes: [WiltedMacEpisode], newlySaved: Set<String>, store: LocalLibraryStore
-    ) async throws -> [String] {
+    ) async throws -> AutomaticAdmissionOutcome {
         let policy = try await store.feedAutomationPolicy(for: feedID)
             .resolved(using: EpisodeAdmissionService.globalDefaults(automationSettings))
-        guard policy.autoKeep else { return [] }
+        guard policy.autoKeep || !newlySaved.isEmpty else { return .init() }
+        let rules = try await store.episodeMatchRules(for: feedID)
+        guard policy.autoKeep || !rules.rules.isEmpty else { return .init() }
 
         let decisions = try await store.decisions(forFeed: feedID)
         let decided = Set(decisions.map(\.episodeID.rawValue))
         let manual = Dictionary(uniqueKeysWithValues: decisions.filter { $0.source == .manual }.map {
             ($0.episodeID.rawValue, $0.decision == .keep ? FeedManualDecision.keep : .skip)
         })
-        let live = feedEpisodes.filter { $0.removalKind == nil }
+        let live = feedEpisodes.filter { $0.removalKind == nil && $0.feedID == feedID.rawValue }
         let queued = Set(try await store.podcastQueueState().episodeIDs.map(\.rawValue))
         let kept = queued.intersection(live.map(\.id))
         let candidates = live.filter {
             !decided.contains($0.id) && !queued.contains($0.id) && !$0.isPlayed
-                && (newlySaved.contains($0.id) || policy.keptLimit != nil)
+                && (newlySaved.contains($0.id) || (policy.autoKeep && policy.keptLimit != nil))
         }.map {
             EpisodeAdmissionService.Candidate(id: $0.id, title: $0.title, notes: $0.notes, releasedAt: $0.releasedAt)
         }
         let admissions = EpisodeAdmissionService.plan(
-            candidates: candidates, keptEpisodeIDs: kept, manualDecisions: manual,
-            rules: try await store.episodeMatchRules(for: feedID), policy: policy
+            candidates: candidates, keptEpisodeIDs: kept, manualDecisions: manual, rules: rules, policy: policy
         )
-        var downloads: [String] = []
+        var outcome = AutomaticAdmissionOutcome()
         for admission in admissions {
             guard let id = try? ItemID(rawValue: admission.episodeID) else { continue }
-            if try await commitAdmission(admission, as: id, decidedAt: Timestamp(Date()), store: store) {
-                downloads.append(admission.episodeID)
+            if admission.decision == .skip {
+                // Only an episode this refresh found is retired: an older one
+                // may be a restore whose manual Keep failed to save, so it is
+                // left undecided. The store also refuses any episode with a
+                // manual decision.
+                guard let ruleID = admission.ruleID, newlySaved.contains(admission.episodeID),
+                      try await store.retireEpisodeBySkipRule(id, ruleID: ruleID, at: Timestamp(Date())) else { continue }
+                // Withdrawing writes a cancelled ticket even when none existed,
+                // so only an episode actually waiting in the line is withdrawn.
+                if preparationRequestSequences[admission.episodeID] != nil {
+                    withdrawPreparationRequest(for: admission.episodeID)
+                }
+                outcome.ruleSkipped.append(admission.episodeID)
+            } else if try await commitAdmission(admission, as: id, decidedAt: Timestamp(Date()), store: store) {
+                outcome.downloads.append(admission.episodeID)
             }
         }
-        return downloads
+        return outcome
+    }
+
+    /// What the admission after a manual refresh committed.
+    struct ManualRefreshAdmission {
+        var downloads: [String] = []
+        /// Episodes a Skip rule retired. When any did, the caller's library
+        /// read is stale and must be taken again, and they are not reported
+        /// as added: the listener would look for them and find nothing.
+        var ruleSkipped: [String] = []
+    }
+
+    /// Admits the episodes a manual refresh found, feed by feed, as automatic
+    /// refresh does. `rows` is the library read taken after the refresh saved
+    /// its episodes. A feed whose admission fails is logged and its new
+    /// episodes stay undecided; the other feeds and the refresh itself go on.
+    func admitAfterManualRefresh(
+        _ newEpisodes: [ItemID: [ItemID]], rows: [WiltedMacEpisode], store: LocalLibraryStore
+    ) async throws -> ManualRefreshAdmission {
+        var result = ManualRefreshAdmission()
+        for (feedID, ids) in newEpisodes.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            try Task.checkCancellation()
+            do {
+                let admitted = try await admitAutomatically(
+                    feedID: feedID, feedEpisodes: rows, newlySaved: Set(ids.map(\.rawValue)), store: store
+                )
+                result.downloads += admitted.downloads
+                result.ruleSkipped += admitted.ruleSkipped
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let reason = error.localizedDescription
+                episodeAdmissionLog.error(
+                    "Manual-refresh admission failed for \(feedID.rawValue, privacy: .public): \(reason, privacy: .public)"
+                )
+            }
+        }
+        return result
     }
 
     /// Commits one admission: decision, queue entry and tickets in one write,
@@ -207,12 +282,13 @@ extension WiltedMacModel {
         guard let store, !isClosingTemporaryState else { return }
         var started: [String] = []
         for rawFeedID in feedIDs.sorted() {
+            // No episode is new here, so a rule Skip writes nothing.
             guard let feedID = try? ItemID(rawValue: rawFeedID),
-                  let claimed = try? await admitAutomatically(
+                  let admitted = try? await admitAutomatically(
                     feedID: feedID, feedEpisodes: episodes.filter { $0.feedID == rawFeedID },
                     newlySaved: [], store: store
                   ) else { continue }
-            started += claimed
+            started += admitted.downloads
         }
         await refreshPodcastQueueState()
         startClaimedDownloads(started)

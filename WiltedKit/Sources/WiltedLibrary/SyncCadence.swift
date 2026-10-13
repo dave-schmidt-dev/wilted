@@ -36,8 +36,6 @@ public enum SyncCadence {
     public static let maxPlayingAdvance: TimeInterval = playingPublishInterval * 1.5
     /// The pause before the one confirming fetch after a takeover.
     public static let takeoverSettleDelay: TimeInterval = 1
-    /// The longest a Mac Play press waits for the fresh read of the phone's position.
-    public static let playPressFetchTimeout: TimeInterval = 2
     /// The Mac handoff tick. It performs no request by itself; publishes are paced by
     /// `playingPublishInterval` and reads by the poller.
     public static let macTickInterval: TimeInterval = 2
