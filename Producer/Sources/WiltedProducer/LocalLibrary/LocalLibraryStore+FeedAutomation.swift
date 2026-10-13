@@ -171,7 +171,7 @@ extension LocalLibraryStore {
                                         unretiring: Set<ItemID> = [],
                                         addedAt: Timestamp = Timestamp(Date())) throws {
         let context = ModelContext(container)
-        if !unretiring.isEmpty { try Self.stageUnretirement(Set(unretiring.map(\.rawValue)), in: context) }
+        if !unretiring.isEmpty { try Self.stageUnretirement(Array(unretiring), in: context) }
         let records = try context.fetch(FetchDescriptor<DecisionRecord>())
         for (episodeID, value) in prior {
             let existing = records.first { $0.episodeID == episodeID.rawValue }
@@ -203,25 +203,6 @@ extension LocalLibraryStore {
         try Self.feedAutomationBeforeSave?()
         #endif
         try context.save()
-    }
-
-    /// Returns the named retired episodes to the feed in `context`, mirroring
-    /// `restoreEpisodes`: only a retired row changes (a dismissed one keeps its
-    /// stronger removal), and its listening record forgets the revision it
-    /// last played, which retirement deleted.
-    // TODO: Share with restoreEpisodes(_:) once that body is shared across files.
-    private static func stageUnretirement(_ episodeIDs: Set<String>, in context: ModelContext) throws {
-        var restored: Set<String> = []
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-        where episodeIDs.contains(record.id) && record.removalKind == PodcastEpisodeRemovalKind.retired.rawValue {
-            record.removalKind = nil; record.retiredAt = nil
-            restored.insert(record.id)
-        }
-        let now = Date()
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
-        where restored.contains(record.id) {
-            record.lastRevisionID = nil; record.updatedAt = now
-        }
     }
 
     /// Atomically appends an episode to the queue, records its decision, and
@@ -295,40 +276,12 @@ extension LocalLibraryStore {
                                           source: EpisodeDecisionSource.rule.rawValue, ruleID: ruleID,
                                           decidedAt: decidedAt.date))
         }
-        let doomedMedia = try Self.stageRetiredEpisodeMediaDeletion(identifier, in: context)
+        let doomedMedia = try Self.deleteMediaRecords(forEpisodesWithIDs: [identifier], in: context)
         #if DEBUG
         try Self.feedAutomationBeforeSave?()
         #endif
         try context.save()
         deleteMediaIfUnreferenced(doomedMedia)
         return true
-    }
-
-    /// Deletes one retired episode's revision, download and artwork records in
-    /// `context` and returns the media URLs they named, for the caller to hand
-    /// to `deleteMediaIfUnreferenced` once its save commits.
-    ///
-    /// Mirrors the private `deleteMediaRecords(forEpisodesWithIDs:in:)` in
-    /// LocalLibraryStore+EpisodeState.swift so a rule Skip reclaims exactly
-    /// what a manual Skip does.
-    // TODO: Merge with deleteMediaRecords(forEpisodesWithIDs:in:) once that helper is shared across files.
-    private static func stageRetiredEpisodeMediaDeletion(_ episodeID: String, in context: ModelContext) throws -> [URL] {
-        var doomed: [URL] = []
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
-        where record.itemID == episodeID {
-            if let value = record.mediaURL, let url = URL(string: value) { doomed.append(url) }
-            context.delete(record)
-        }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
-        where record.episodeID == episodeID {
-            if let value = record.localURL, let url = URL(string: value) { doomed.append(url) }
-            context.delete(record)
-        }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
-        where record.ownerID == episodeID {
-            if let value = record.localURL, let url = URL(string: value) { doomed.append(url) }
-            context.delete(record)
-        }
-        return doomed
     }
 }

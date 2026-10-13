@@ -100,7 +100,7 @@ extension LocalLibraryStore {
         var mediaRecordFetchCount = 0
         if !committed.isEmpty {
             mediaRecordFetchCount = 3
-            let doomedMedia = try deleteMediaRecords(
+            let doomedMedia = try Self.deleteMediaRecords(
                 forEpisodesWithIDs: Set(committed.map(\.rawValue)), in: context
             )
             try context.save()
@@ -119,64 +119,19 @@ extension LocalLibraryStore {
     public func restoreEpisodes(_ requested: [ItemID]) throws -> PodcastEpisodeBatchResult {
         let unique = uniqueEpisodeIDs(requested)
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
-        let listening = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
-        let listeningByID = Dictionary(uniqueKeysWithValues: listening.map { ($0.id, $0) })
-        let now = Date()
-        var committed: [ItemID] = []
-        var unresolved: [ItemID] = []
-        var alreadyAtTarget: [ItemID] = []
-        for id in unique {
-            guard let record = byID[id.rawValue] else { unresolved.append(id); continue }
-            if record.removalKind == nil { alreadyAtTarget.append(id); continue }
-            guard record.removalKind == PodcastEpisodeRemovalKind.retired.rawValue else { unresolved.append(id); continue }
-            record.removalKind = nil; record.retiredAt = nil
-            listeningByID[id.rawValue]?.lastRevisionID = nil
-            listeningByID[id.rawValue]?.updatedAt = now
-            committed.append(id)
-        }
-        if !committed.isEmpty { try context.save() }
+        let staged = try Self.stageUnretirement(unique, in: context)
+        if !staged.committed.isEmpty { try context.save() }
         return PodcastEpisodeBatchResult(
-            committed: committed, alreadyAtTarget: alreadyAtTarget, unresolved: unresolved,
+            committed: staged.committed, alreadyAtTarget: staged.alreadyAtTarget, unresolved: staged.unresolved,
             retiredAtByID: [:],
             episodeRecordFetchCount: 1, listeningRecordFetchCount: 1,
-            mediaRecordFetchCount: 0, saveCount: committed.isEmpty ? 0 : 1
+            mediaRecordFetchCount: 0, saveCount: staged.committed.isEmpty ? 0 : 1
         )
     }
 
     private func uniqueEpisodeIDs(_ requested: [ItemID]) -> [ItemID] {
         var seen = Set<ItemID>()
         return requested.filter { seen.insert($0).inserted }
-    }
-
-    /// Deletes the revision, download, and artwork records naming the given
-    /// episodes' media and returns the URLs they named. One fetch per record
-    /// type; the caller commits with one save and only then hands the URLs to
-    /// `deleteMediaIfUnreferenced`, so a failed save never deletes audio the
-    /// surviving records still name. Mirrors the collection dismissal and
-    /// unsubscribe read, so every removal reclaims the same set of files.
-    private func deleteMediaRecords(
-        forEpisodesWithIDs episodeIDs: Set<String>,
-        in context: ModelContext
-    ) throws -> [URL] {
-        var doomedMedia: [URL] = []
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
-        where episodeIDs.contains(record.itemID) {
-            if let value = record.mediaURL, let mediaURL = URL(string: value) { doomedMedia.append(mediaURL) }
-            context.delete(record)
-        }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
-        where episodeIDs.contains(record.episodeID) {
-            if let value = record.localURL, let mediaURL = URL(string: value) { doomedMedia.append(mediaURL) }
-            context.delete(record)
-        }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
-        where episodeIDs.contains(record.ownerID) {
-            if let value = record.localURL, let mediaURL = URL(string: value) { doomedMedia.append(mediaURL) }
-            context.delete(record)
-        }
-        return doomedMedia
     }
 
     public func savePreparationOutcome(_ outcome: PodcastPreparationOutcome) throws {
@@ -315,7 +270,7 @@ extension LocalLibraryStore {
         let identifier = episodeID.rawValue
         guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .first(where: { $0.id == identifier }), record.removalKind == nil else { return false }
-        let doomedMedia = try deleteMediaRecords(forEpisodesWithIDs: [identifier], in: context)
+        let doomedMedia = try Self.deleteMediaRecords(forEpisodesWithIDs: [identifier], in: context)
         record.retiredAt = retiredAt.date
         record.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
         try context.save()
