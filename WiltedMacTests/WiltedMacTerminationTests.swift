@@ -273,8 +273,11 @@ final class WiltedMacTerminationTests: XCTestCase {
                 try await store.addPodcastQueueEpisode(id)
                 model.downloadEpisode(episode, alreadyClaimed: true)
             }
+            // The first request's 4 KB must be counted before the quit, or a
+            // loaded host drains first and the lifetime total reads zero.
             try await waitFor { transport.requestCount == attempt && model.episodes.contains { row in
-                if row.id == episode.id, case .downloading = row.downloadState { return true }; return false
+                guard row.id == episode.id, case let .downloading(received, _) = row.downloadState else { return false }
+                return attempt > 1 || received == 4_096
             } }
             try await model.drainLocalWorkForTermination()
             let ticket = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
