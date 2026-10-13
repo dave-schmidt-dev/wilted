@@ -375,16 +375,13 @@ final class WiltedMacSmokeUITests: XCTestCase {
         let speed = playing.descendants(matching: .any)["wilted-player-speed"]
         XCTAssertTrue(speed.waitForExistence(timeout: 5), "speed sits in the Transcript and Notes row")
         XCTAssertTrue(speed.isHittable)
-        // A closed native menu still lists its items for accessibility, so
-        // only an open menu makes Restart hittable.
-        let restartItem = playing.menuItems["Restart"]
-        XCTAssertFalse(restartItem.isHittable, "Restart stays inside the closed More menu")
+        // By identifier: the Apple menu carries its own hidden "Restart" item.
+        let restartItem = playing.menuItems["wilted-player-restart"]
+        XCTAssertFalse(restartItem.exists, "Restart stays inside the closed More menu")
         playing.descendants(matching: .any)["wilted-player-menu"].click()
-        let menuOpen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: restartItem)
-        XCTAssertEqual(XCTWaiter().wait(for: [menuOpen], timeout: 5), .completed, "More opens the native menu with Restart")
+        XCTAssertTrue(restartItem.waitForExistence(timeout: 5), "More opens the native menu with Restart")
         playing.typeKey(.escape, modifierFlags: [])
-        let menuClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == false"), object: restartItem)
-        XCTAssertEqual(XCTWaiter().wait(for: [menuClosed], timeout: 5), .completed, "Escape closes the More menu")
+        XCTAssertTrue(restartItem.waitForNonExistence(timeout: 5))
         XCTAssertTrue(completion.isHittable)
 
         // The fixture clock stays put: a forward press establishes a measurable
@@ -397,14 +394,14 @@ final class WiltedMacSmokeUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter().wait(for: [advanced], timeout: 5), .completed,
                        "the forward transport establishes 30 seconds before restart")
-        XCTAssertFalse(restartItem.isHittable)
+        XCTAssertFalse(restartItem.exists)
         playing.typeKey("r", modifierFlags: .command)
         let restarted = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in Double(String(describing: position.value ?? "")) == 0 }, object: position
         )
         XCTAssertEqual(XCTWaiter().wait(for: [restarted], timeout: 5), .completed,
                        "Command-R resets the actual playhead with the More menu closed")
-        XCTAssertFalse(restartItem.isHittable, "restart does not open the More menu")
+        XCTAssertFalse(restartItem.exists, "restart does not open the More menu")
     }
 
     /// The words an element shows. macOS puts a Text's words in its value, not
