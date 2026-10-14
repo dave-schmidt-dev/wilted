@@ -8,19 +8,20 @@ extension WiltedMacEpisodeInfoUITests {
     /// delete that falls back to the Larder without touching the episode.
     func testManualPlaylistDiscoveryRenameDeleteAndShare() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-playlist-write-delay"])
-        let episodeID = keepFixtureEpisode(app)
-        openLarderForEpisode(app, id: episodeID)
+        let episodeID = try keepFixtureEpisode(app)
+        try openLarderForEpisode(app, id: episodeID)
         let playlistID = try createManualPlaylistFromLarder(app, entryID: episodeID)
 
         // Creation is optimistic: the row, its entry and the selected page
         // appear before the delayed durable write has run.
-        let creating = element(app, "wilted-sidebar-playlist-creating")
-        XCTAssertTrue(creating.waitForExistence(timeout: 3), "New Playlist shows its pending create")
+        let creating = element(app, "wilted-sidebar-playlist-saving-\(playlistID)")
+        XCTAssertTrue(creating.waitForExistence(timeout: 3), "the new playlist row shows its pending create")
         let pageSaving = element(app, "wilted-playlist-saving")
         XCTAssertTrue(pageSaving.waitForExistence(timeout: 3))
         XCTAssertTrue(words(pageSaving).contains("Creating playlist"))
-        XCTAssertTrue(element(app, "wilted-playlist-row-\(episodeID)").waitForExistence(timeout: 3),
+        XCTAssertTrue(app.buttons["wilted-playlist-show-notes-\(episodeID)"].waitForExistence(timeout: 3),
                       "the new manual playlist shows the kept entry while the create is pending")
+        try releasePlaylistWrite(1)
         XCTAssertTrue(creating.waitForNonExistence(timeout: 10), "the create's durable write settles")
         XCTAssertTrue(pageSaving.waitForNonExistence(timeout: 10))
         try waitForPlaylistWriteAcknowledgments(1)
@@ -28,15 +29,15 @@ extension WiltedMacEpisodeInfoUITests {
         // Rename while a fresh delayed write is pending: the new name is on
         // the page immediately, and the pencil and trash stay with the title.
         let rename = app.buttons["wilted-playlist-rename"]
-        XCTAssertTrue(rename.waitForExistence(timeout: 5))
+        try requireControl(rename, name: "Rename playlist")
         rename.click()
         let name = try renamePlaylist(app, to: "Field Notes List")
         XCTAssertTrue(pageSaving.waitForExistence(timeout: 3), "the rename is pending before its durable write")
         XCTAssertTrue(words(pageSaving).contains("Saving playlist"))
         XCTAssertTrue(element(app, "wilted-sidebar-playlist-saving-\(playlistID)").waitForExistence(timeout: 3))
-        let destination = element(app, "wilted-playlist-\(playlistID)")
-        XCTAssertTrue(destination.waitForExistence(timeout: 5))
-        let title = destination.staticTexts[name]
+        let title = app.staticTexts.matching(
+            NSPredicate(format: "label == %@ OR value == %@", name, name)
+        ).firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 3), "the new name shows while the write is pending")
         let deleteButton = app.buttons["wilted-playlist-delete"]
         XCTAssertTrue(deleteButton.exists)
@@ -50,6 +51,7 @@ extension WiltedMacEpisodeInfoUITests {
         XCTAssertGreaterThan(actionRow.frame.minY, title.frame.maxY,
                              "the item action row sits below the title row")
         attachWindow(app, name: "Manual playlist rename pending")
+        try releasePlaylistWrite(2)
         XCTAssertTrue(pageSaving.waitForNonExistence(timeout: 10), "the rename's durable write settles")
         try waitForPlaylistWriteAcknowledgments(2)
 
@@ -60,51 +62,51 @@ extension WiltedMacEpisodeInfoUITests {
         XCTAssertTrue(sidebarRow.waitForExistence(timeout: 10), "the created playlist survives a relaunch")
         XCTAssertEqual(sidebarRow.label, name)
         sidebarRow.click()
-        XCTAssertTrue(element(app, "wilted-playlist-\(playlistID)").waitForExistence(timeout: 10))
-        XCTAssertEqual(destination.staticTexts[name].label, name)
-        XCTAssertTrue(element(app, "wilted-playlist-row-\(episodeID)").waitForExistence(timeout: 10),
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "the renamed playlist heading survives relaunch")
+        XCTAssertTrue(words(title).contains(name))
+        XCTAssertTrue(app.buttons["wilted-playlist-show-notes-\(episodeID)"].waitForExistence(timeout: 10),
                       "the durable playlist keeps the kept entry")
 
         // A fixture relaunch rebuilds the Larder queue from Keep, so the
         // established fixture path re-keeps the same episode before playing.
-        XCTAssertEqual(keepFixtureEpisode(app), episodeID)
-        // The established fixture path plays the prepared episode, and the
+        XCTAssertEqual(try keepFixtureEpisode(app), episodeID)
+        // Delete before playback: the active episode moves to Now Playing, so
+        // the waiting-row retention check belongs before that transition.
+        sidebarRow.click()
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "the selected playlist shows its heading")
+        let delete = app.buttons["wilted-playlist-delete"]
+        try requireControl(delete, name: "Delete playlist")
+        delete.click()
+        let confirm = app.sheets.firstMatch.buttons["Delete Playlist"]
+        try requireControl(confirm, name: "Confirm Delete Playlist")
+        confirm.click()
+        XCTAssertTrue(element(app, "wilted-navigation-larder").isSelected,
+                      "deleting the selected playlist falls back to the Larder")
+        XCTAssertTrue(app.buttons["wilted-larder-show-notes-\(episodeID)"].waitForExistence(timeout: 10),
+                      "the retained episode is still in the Larder after deleting its playlist")
+        try releasePlaylistWrite(3)
+        try waitForPlaylistWriteAcknowledgments(3)
+        XCTAssertTrue(sidebarRow.waitForNonExistence(timeout: 5), "the deleted playlist's row stays gone")
+        XCTAssertFalse(element(app, "wilted-sidebar-playlist-error-\(playlistID)").exists,
+                       "the durable delete did not fail")
+        attachWindow(app, name: "Manual playlist deleted, episode kept")
+
+        // The retained episode still plays after deleting its playlist, and the
         // labelled Share options control opens its panel without sharing.
-        openLarderForEpisode(app, id: episodeID)
+        try openLarderForEpisode(app, id: episodeID)
         let play = app.buttons["wilted-larder-play-\(episodeID)"]
         XCTAssertTrue(play.waitForExistence(timeout: 10))
-        clickVerified(play, in: app, name: "Play \(episodeID)", label: "Play Quiet Machines now")
+        try clickVerified(play, in: app, name: "Play \(episodeID)", label: "Play Quiet Machines now")
         let share = element(app, "wilted-player-share-options")
         XCTAssertTrue(share.waitForExistence(timeout: 10))
         XCTAssertEqual(share.label, "Share options")
-        clickVerified(share, in: app, name: "Share options")
+        try clickVerified(share, in: app, name: "Share options")
         let includeSummary = app.descendants(matching: .any).matching(
             NSPredicate(format: "label == 'Include transcript summary'")
         ).firstMatch
         XCTAssertTrue(includeSummary.waitForExistence(timeout: 5), "Share options opens its panel")
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(includeSummary.waitForNonExistence(timeout: 5), "the panel closes without sharing")
-
-        // Delete confirms, falls back to the Larder, and the episode remains.
-        sidebarRow.click()
-        XCTAssertTrue(element(app, "wilted-playlist-\(playlistID)").waitForExistence(timeout: 10))
-        let delete = app.buttons["wilted-playlist-delete"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 5))
-        delete.click()
-        let confirm = app.buttons["Delete Playlist"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        confirm.click()
-        XCTAssertTrue(element(app, "wilted-mac-larder-detail").waitForExistence(timeout: 10),
-                      "deleting the selected playlist falls back to the Larder")
-        XCTAssertTrue(element(app, "wilted-player-show-notes-\(episodeID)").waitForExistence(timeout: 10),
-                      "the episode is not deleted with the playlist")
-        XCTAssertTrue(element(app, "wilted-larder-row-\(episodeID)").waitForExistence(timeout: 10),
-                      "the retained episode is still in the Larder after deleting its playlist")
-        try waitForPlaylistWriteAcknowledgments(3)
-        XCTAssertTrue(sidebarRow.waitForNonExistence(timeout: 5), "the deleted playlist's row stays gone")
-        XCTAssertFalse(element(app, "wilted-sidebar-playlist-error-\(playlistID)").exists,
-                       "the durable delete did not fail")
-        attachWindow(app, name: "Manual playlist deleted, episode kept")
     }
 
     /// The automatic editor: copied rules, a grouped formula with its live
@@ -112,46 +114,47 @@ extension WiltedMacEpisodeInfoUITests {
     /// notes, and a save whose pending and completion states are visible.
     func testAutomaticPlaylistFormulaPreviewAndSave() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-playlist-write-delay"])
+        let episodeID = try keepFixtureEpisode(app)
         let playlistID = try createAutomaticPlaylist(app)
         XCTAssertTrue(element(app, "wilted-playlist-saving").waitForExistence(timeout: 3),
                       "the automatic playlist appears before its delayed write completes")
+        try releasePlaylistWrite(1)
         XCTAssertTrue(element(app, "wilted-playlist-saving").waitForNonExistence(timeout: 10),
                       "the new automatic playlist's create write settles")
         try waitForPlaylistWriteAcknowledgments(1)
         let editRules = app.buttons["wilted-playlist-edit-rules"]
-        XCTAssertTrue(editRules.waitForExistence(timeout: 10))
+        try requireControl(editRules, name: "Edit Rules", timeout: 10)
         editRules.click()
         let sheet = element(app, "wilted-playlist-rules-sheet")
-        XCTAssertTrue(sheet.waitForExistence(timeout: 10))
+        try requireElement(sheet, name: "Rules sheet", timeout: 10)
 
         let add = app.buttons["wilted-playlist-rules-add"]
-        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        try requireControl(add, name: "Add rule")
         add.click()
-        choose(app, picker: "Rule 1 field", option: "Feed")
-        XCTAssertTrue(pickerValue(app, "Rule 1 value").contains("Field Notes"))
+        try choose(app, picker: "Rule 1 field", option: "Feed")
+        XCTAssertTrue(try pickerValue(app, "Rule 1 value").contains("Field Notes"))
         add.click()
-        XCTAssertTrue(pickerValue(app, "Rule 2 field").contains("Feed"), "Add copies the last field")
-        XCTAssertTrue(pickerValue(app, "Rule 2 comparison").contains("is"), "Add copies the last comparison")
-        choose(app, picker: "Rule 2 comparison", option: "is not")
+        XCTAssertTrue(try pickerValue(app, "Rule 2 field").contains("Feed"), "Add copies the last field")
+        XCTAssertTrue(try pickerValue(app, "Rule 2 comparison").contains("is"), "Add copies the last comparison")
+        try choose(app, picker: "Rule 2 comparison", option: "is not")
         add.click()
-        XCTAssertTrue(pickerValue(app, "Rule 3 comparison").contains("is not"), "Add copies the last comparison")
-        choose(app, picker: "Rule 3 field", option: "Played")
-        XCTAssertTrue(pickerValue(app, "Rule 3 value").contains("Unplayed"))
+        XCTAssertTrue(try pickerValue(app, "Rule 3 comparison").contains("is not"), "Add copies the last comparison")
+        try choose(app, picker: "Rule 3 field", option: "Played")
+        XCTAssertTrue(try pickerValue(app, "Rule 3 value").contains("Unplayed"))
         add.click()
-        XCTAssertTrue(pickerValue(app, "Rule 4 field").contains("Played"), "Add copies the last field")
-        choose(app, picker: "Rule 4 field", option: "Ready")
-        XCTAssertTrue(pickerValue(app, "Rule 4 value").contains("Yes"))
+        XCTAssertTrue(try pickerValue(app, "Rule 4 field").contains("Played"), "Add copies the last field")
+        try choose(app, picker: "Rule 4 field", option: "Ready")
+        XCTAssertTrue(try pickerValue(app, "Rule 4 value").contains("Yes"))
 
         let expression = element(app, "wilted-playlist-rule-expression")
-        XCTAssertTrue(expression.waitForExistence(timeout: 5))
+        try requireControl(expression, name: "Match expression")
         replaceText(expression, with: "(1 OR 2) AND 3 AND 4")
         let count = element(app, "wilted-playlist-rule-preview-count")
         XCTAssertTrue(count.waitForExistence(timeout: 10), "the grouped formula previews live")
-        XCTAssertEqual(count.label, "2 matching", "the live count reflects the matching episodes")
-        let previewTitle = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-playlist-preview-show-notes-'")
-        ).firstMatch
-        XCTAssertTrue(previewTitle.waitForExistence(timeout: 5))
+        let countText = (count.value as? String ?? count.label).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(countText, "2 matching", "the live count reflects the matching episodes")
+        let previewTitle = app.buttons["wilted-playlist-preview-show-notes-\(episodeID)"]
+        try requireControl(previewTitle, name: "Quiet Machines preview")
         XCTAssertTrue(words(previewTitle).contains("Quiet Machines"))
         attachWindow(app, name: "Automatic playlist valid preview")
 
@@ -181,58 +184,71 @@ extension WiltedMacEpisodeInfoUITests {
         XCTAssertTrue(element(app, "wilted-playlist-preview-notes-popover-\(previewID)")
             .waitForNonExistence(timeout: 5), "Escape closes the preview's notes")
 
+        try requireControl(save, name: "Save valid rules")
         save.click()
         let saving = element(app, "wilted-playlist-rules-saving")
         XCTAssertTrue(saving.waitForExistence(timeout: 3), "Save shows its spinner while the write is pending")
         XCTAssertFalse(save.isEnabled, "Save is disabled while the write is pending")
         XCTAssertFalse(expression.isEnabled, "the expression field is locked while the save is pending")
+        try releasePlaylistWrite(2)
         XCTAssertTrue(sheet.waitForNonExistence(timeout: 10), "the sheet dismisses when the save completes")
         XCTAssertTrue(element(app, "wilted-playlist-edit-rules").waitForExistence(timeout: 5))
-        XCTAssertTrue(element(app, "wilted-playlist-row-\(previewID)").waitForExistence(timeout: 10),
+        XCTAssertTrue(app.buttons["wilted-playlist-show-notes-\(previewID)"].waitForExistence(timeout: 10),
                       "the saved automatic playlist holds its matching entry")
+        XCTAssertTrue(element(app, "wilted-navigation-playlist:\(playlistID)").exists,
+                      "the saved automatic playlist remains in the sidebar")
         try waitForPlaylistWriteAcknowledgments(2)
         attachWindow(app, name: "Automatic playlist saved")
     }
 
     /// Keeps the prepared fixture episode from Feeds and returns its ID.
-    private func keepFixtureEpisode(_ app: XCUIApplication) -> String {
+    private func keepFixtureEpisode(_ app: XCUIApplication) throws -> String {
         let feeds = element(app, "wilted-navigation-feeds")
-        XCTAssertTrue(feeds.waitForExistence(timeout: 10))
+        try requireControl(feeds, name: "Feeds", timeout: 10)
         feeds.click()
-        XCTAssertTrue(element(app, "wilted-mac-feeds-detail").waitForExistence(timeout: 10))
-        let keep = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-keep-'")
+        XCTAssertTrue(feeds.isSelected)
+        let episodeTitle = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-show-notes-' AND label == 'Show notes for Quiet Machines'")
         ).firstMatch
-        XCTAssertTrue(keep.waitForExistence(timeout: 10))
-        let id = String(keep.identifier.dropFirst("wilted-feeds-keep-".count))
+        try requireControl(episodeTitle, name: "Quiet Machines in Feeds", timeout: 10)
+        let id = String(episodeTitle.identifier.dropFirst("wilted-feeds-show-notes-".count))
         XCTAssertFalse(id.isEmpty)
+        let keep = app.buttons["wilted-feeds-keep-\(id)"]
+        try requireControl(keep, name: "Keep Quiet Machines", timeout: 10)
         keep.click()
         return id
     }
 
-    private func openLarderForEpisode(_ app: XCUIApplication, id: String) {
-        element(app, "wilted-navigation-larder").click()
-        XCTAssertTrue(element(app, "wilted-mac-larder-detail").waitForExistence(timeout: 10))
-        XCTAssertTrue(element(app, "wilted-larder-row-\(id)").waitForExistence(timeout: 10))
+    private func openLarderForEpisode(_ app: XCUIApplication, id: String) throws {
+        let larder = element(app, "wilted-navigation-larder")
+        try requireControl(larder, name: "Larder")
+        larder.click()
+        XCTAssertTrue(larder.isSelected)
+        XCTAssertTrue(app.buttons["wilted-larder-show-notes-\(id)"].waitForExistence(timeout: 10),
+                      "the kept episode's visible title is in the Larder")
     }
 
     /// Requires the visible Larder action and returns the new playlist's ID.
     private func createManualPlaylistFromLarder(_ app: XCUIApplication, entryID: String) throws -> String {
         let rowAction = element(app, "wilted-add-to-playlist-\(entryID)")
-        XCTAssertTrue(rowAction.waitForExistence(timeout: 5), "Add to Playlist is visible in the Larder row")
-        clickVerified(rowAction, in: app, name: "Add to Playlist")
+        try requireControl(rowAction, name: "Visible Add to Playlist in Larder")
+        try clickVerified(rowAction, in: app, name: "Add to Playlist")
         let newPlaylist = app.menuItems["New Playlist…"]
-        XCTAssertTrue(newPlaylist.waitForExistence(timeout: 5), "New Playlist is offered")
+        try requireControl(newPlaylist, name: "New Playlist menu item")
         newPlaylist.click()
         return try XCTUnwrap(newPlaylistID(app))
     }
 
     private func createAutomaticPlaylist(_ app: XCUIApplication) throws -> String {
-        let menu = element(app, "wilted-sidebar-new-playlist")
-        XCTAssertTrue(menu.waitForExistence(timeout: 10))
-        menu.click()
+        // macOS exports the Section header identifier on this MenuButton.
+        let menu = app.descendants(matching: .menuButton).matching(
+            identifier: "wilted-sidebar-playlists-header"
+        ).firstMatch
+        try requireControl(menu, name: "Sidebar New Playlist", timeout: 10)
+        XCTAssertEqual(menu.label, "add", "the captured sidebar New Playlist menu is the visible plus")
+        try clickVerified(menu, in: app, name: "New Playlist", label: "add")
         let item = app.menuItems["New Automatic Playlist"]
-        XCTAssertTrue(item.waitForExistence(timeout: 5))
+        try requireControl(item, name: "New Automatic Playlist menu item")
         item.click()
         return try XCTUnwrap(newPlaylistID(app))
     }
@@ -251,12 +267,12 @@ extension WiltedMacEpisodeInfoUITests {
         let field = app.textFields.matching(
             NSPredicate(format: "placeholderValue == 'Name' OR label == 'Name'")
         ).firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "the rename prompt exposes its name field")
+        try requireControl(field, name: "Rename name field")
         field.click()
         field.typeKey("a", modifierFlags: .command)
         field.typeText(name)
-        let confirm = app.buttons["Rename"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        let confirm = app.sheets.firstMatch.buttons["Rename"]
+        try requireControl(confirm, name: "Confirm rename")
         confirm.click()
         return name
     }
@@ -269,29 +285,26 @@ extension WiltedMacEpisodeInfoUITests {
     }
 
     private func pickerControl(_ app: XCUIApplication, _ label: String) -> XCUIElement {
-        let popUp = app.popUpButtons[label]
-        if popUp.exists { return popUp }
-        let labelled = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label == %@", label)
+        app.popUpButtons.matching(
+            NSPredicate(format: "label == %@ OR label ENDSWITH %@", label, ", " + label)
         ).firstMatch
-        return labelled.exists ? labelled : element(app, label)
     }
 
-    private func pickerValue(_ app: XCUIApplication, _ label: String) -> String {
+    private func pickerValue(_ app: XCUIApplication, _ label: String) throws -> String {
         let control = pickerControl(app, label)
-        XCTAssertTrue(control.waitForExistence(timeout: 5), label)
+        try requireControl(control, name: label)
         if let value = control.value as? String, !value.isEmpty { return value }
         return words(control)
     }
 
-    private func choose(_ app: XCUIApplication, picker label: String, option: String) {
+    private func choose(_ app: XCUIApplication, picker label: String, option: String) throws {
         let control = pickerControl(app, label)
-        XCTAssertTrue(control.waitForExistence(timeout: 5), label)
-        clickVerified(control, in: app, name: label)
+        try requireControl(control, name: label)
+        try clickVerified(control, in: app, name: label)
         let menuItem = app.menuItems[option]
         let buttonItem = app.buttons[option]
         let choice = menuItem.waitForExistence(timeout: 5) ? menuItem : buttonItem
-        XCTAssertTrue(choice.waitForExistence(timeout: 5), "\(label) offers \(option)")
+        try requireControl(choice, name: "\(label) option \(option)")
         choice.click()
     }
 
@@ -299,7 +312,8 @@ extension WiltedMacEpisodeInfoUITests {
     /// on-window center when XCTest rejects that action.
     private func clickVerified(
         _ control: XCUIElement, in app: XCUIApplication, name: String, label: String? = nil
-    ) {
+    ) throws {
+        try requireControl(control, name: name)
         let hittable = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "hittable == true"), object: control)
         if XCTWaiter().wait(for: [hittable], timeout: 3) == .completed {
@@ -310,9 +324,33 @@ extension WiltedMacEpisodeInfoUITests {
         guard control.exists, control.isEnabled, label == nil || control.label == label,
               control.frame.width > 0, control.frame.height > 0,
               window.exists, window.frame.contains(control.frame) else {
-            return XCTFail("\(name) must be a visible control inside its fixture window")
+            throw PlaylistUIPrerequisiteError(message: "\(name) must be a visible control inside its fixture window")
         }
         control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    }
+
+    private struct PlaylistUIPrerequisiteError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    private func requireElement(_ control: XCUIElement, name: String, timeout: TimeInterval = 5) throws {
+        guard control.waitForExistence(timeout: timeout) else {
+            throw PlaylistUIPrerequisiteError(message: "\(name) must exist before the journey continues")
+        }
+    }
+
+    private func requireControl(_ control: XCUIElement, name: String, timeout: TimeInterval = 5) throws {
+        try requireElement(control, name: name, timeout: timeout)
+        guard control.isEnabled else {
+            throw PlaylistUIPrerequisiteError(message: "\(name) must be enabled before interaction")
+        }
+    }
+
+    /// Releases only one numbered write in this test's already-owned synthetic root.
+    private func releasePlaylistWrite(_ number: Int) throws {
+        let root = try XCTUnwrap(latestFixtureRoot)
+        try Data().write(to: root.appendingPathComponent("playlist-ui-write-release-\(number)"), options: .atomic)
     }
 
     /// Relaunches the same fixture over its own state directory.
