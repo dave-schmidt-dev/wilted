@@ -2,8 +2,8 @@ import XCTest
 
 @MainActor
 final class WiltedMacEpisodeInfoUITests: XCTestCase {
-    private var latestFixtureRoot: URL?
-    private let savedNotes = "A walk through the machines that keep the field office quiet."
+    var latestFixtureRoot: URL?
+    let savedNotes = "A walk through the machines that keep the field office quiet."
     private let savedTranscript = "Welcome back to Field Notes. Today, the machines that keep the office quiet."
 
     func testTranscriptRetryReadsAgainAndShowsSavedText() throws {
@@ -193,17 +193,17 @@ final class WiltedMacEpisodeInfoUITests: XCTestCase {
         XCTAssertEqual(counts["transcript"] as? Int, transcript)
     }
 
-    private func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
+    func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
         app.descendants(matching: .any)[identifier]
     }
 
-    private func words(_ element: XCUIElement) -> String {
+    func words(_ element: XCUIElement) -> String {
         ([element] + element.staticTexts.allElementsBoundByIndex).map {
             [$0.label, $0.value as? String ?? ""].joined(separator: " ")
         }.joined(separator: " ")
     }
 
-    private func attachWindow(_ app: XCUIApplication, name: String) {
+    func attachWindow(_ app: XCUIApplication, name: String) {
         guard app.windows.firstMatch.exists else { return }
         let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
         attachment.name = name
@@ -211,7 +211,7 @@ final class WiltedMacEpisodeInfoUITests: XCTestCase {
         add(attachment)
     }
 
-    private func launchFixture(extraArguments: [String] = []) throws -> XCUIApplication {
+    func launchFixture(extraArguments: [String] = []) throws -> XCUIApplication {
         let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-episode-info-ui-test")
         let app = XCUIApplication()
         addTeardownBlock { [weak self, app, root] in

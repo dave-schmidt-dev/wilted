@@ -16,14 +16,27 @@ struct WiltedMacPlaylistView: View {
         if let playlist = model.playlist(playlistID) {
             let items = model.playlistItems(playlist)
             WiltedMacDestination(
-                title: playlist.name, identifier: "wilted-playlist-\(playlist.id)"
+                title: playlist.name, identifier: "wilted-playlist-\(playlist.id)",
+                titleAccessory: { titleActions(playlist) }
             ) {
                 header(playlist, items: items)
-                if let message = model.playlists.message {
+                if let message = model.playlists.ruleReadErrors[playlist.id]
+                    ?? model.playlists.failures[playlist.id] ?? model.playlists.message {
                     Text(message)
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-playlist-message")
+                }
+                if model.playlists.ruleReadErrors[playlist.id] != nil {
+                    HStack(spacing: WiltedTheme.Spacing.small) {
+                        if model.playlists.retryingRuleIDs.contains(playlist.id) {
+                            ProgressView().controlSize(.small)
+                                .accessibilityLabel("Retrying playlist rules")
+                        }
+                        Button("Retry") { Task { await model.retryPlaylistRules(playlist.id) } }
+                            .disabled(model.playlists.retryingRuleIDs.contains(playlist.id))
+                            .accessibilityIdentifier("wilted-playlist-rules-retry")
+                    }
                 }
                 if items.isEmpty {
                     empty(playlist)
@@ -58,27 +71,51 @@ struct WiltedMacPlaylistView: View {
             Text(playlist.kind == .manual ? "Manual playlist" : "Automatic playlist")
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            if let operation = model.playlistOperation(playlist.id) {
+                HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                    ProgressView().controlSize(.small)
+                    Text(operation.progressCopy)
+                }
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("wilted-playlist-saving")
+            }
             Spacer()
             if playlist.kind == .automatic {
                 Button("Edit Rules…") { isEditingRules = true }
+                    .disabled(model.playlists.ruleReadErrors[playlist.id] != nil)
                     .accessibilityIdentifier("wilted-playlist-edit-rules")
             }
-            Button { model.playlists.prompt = .rename(playlist.id) } label: { Image(systemName: "pencil") }
-                .buttonStyle(.borderless)
-                .help("Rename playlist")
-                .accessibilityLabel("Rename \(playlist.name)")
-            Button { model.playlists.prompt = .delete(playlist.id) } label: { Image(systemName: "trash") }
-                .buttonStyle(.borderless)
-                .help("Delete playlist")
-                .accessibilityLabel("Delete \(playlist.name)")
         }
         .accessibilityElement(children: .contain)
     }
 
+    /// Rename and delete act on the playlist itself, so they sit with its name
+    /// rather than in the row that acts on the items inside it.
+    private func titleActions(_ playlist: Playlist) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            Button { model.playlists.prompt = .rename(playlist.id) } label: { Image(systemName: "pencil") }
+                .disabled(model.playlistOperation(playlist.id) != nil)
+                .buttonStyle(.borderless)
+                .help("Rename playlist")
+                .accessibilityLabel("Rename \(playlist.name)")
+                .accessibilityIdentifier("wilted-playlist-rename")
+            Button { model.playlists.prompt = .delete(playlist.id) } label: { Image(systemName: "trash") }
+                .disabled(model.playlistOperation(playlist.id) != nil)
+                .buttonStyle(.borderless)
+                .help("Delete playlist")
+                .accessibilityLabel("Delete \(playlist.name)")
+                .accessibilityIdentifier("wilted-playlist-delete")
+        }
+    }
+
     private func empty(_ playlist: Playlist) -> some View {
-        Text(playlist.kind == .manual
-             ? "Nothing here yet. Use Add to Playlist on a Larder row."
-             : "Nothing matches these rules yet. Use Edit Rules to choose what belongs here.")
+        Text(model.playlists.ruleReadErrors[playlist.id] != nil
+             ? "These rules are unavailable until they can be read."
+             : playlist.kind == .manual
+                 ? "Nothing here yet. Use Add to Playlist on a Larder row."
+                 : "Nothing matches these rules yet. Use Edit Rules to choose what belongs here.")
             .wiltedFont(.body)
             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             .accessibilityIdentifier("wilted-playlist-empty")

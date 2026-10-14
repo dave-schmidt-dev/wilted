@@ -18,6 +18,7 @@ All notable changes to this project are documented in this file.
 - A full feed makes new episodes wait for space instead of removing anything: an existing, playing or part-heard episode is never removed to make room, and finishing, completing or removing a kept episode lets the oldest waiting one in.
 - Per-feed match rules: ordered patterns on title or notes that Keep or Skip new episodes, with inline errors, a preview of every episode's verdict, and "Apply to existing", which changes only undecided and automatically decided episodes, never your own choices or anything you have started, and can be undone.
 - Your own Keep, Skip and Restore, on the Mac or the iPhone, are recorded as yours, and automation never reverses them.
+- Mac automatic-playlist rule editor: stable numbered rules combine with case-insensitive AND, OR and NOT and parentheses (for example `(1 OR 2 OR 3 OR 4 OR 5) AND 6 AND 7` over feed, Unplayed and Ready leaves), preview the matching count and titles live, and explain an invalid formula inline.
 
 ### Changed
 - Feed names can be edited inline: Return saves, Escape cancels, and an empty name restores the publisher title. Refresh preserves a saved name; Unsubscribe retains its confirmation.
@@ -32,11 +33,14 @@ All notable changes to this project are documented in this file.
 - The Mac Now Playing pane's episode title is smaller, and the narrow sidebar rail shows the Ready audio time under a play icon.
 - iPhone Larder: rows grouped by feed no longer repeat the feed name, Sort and Group are titled sections ("None" is now "No Grouping"), Sort and Filter show a filled icon while active, and episode detail puts Share below Play and Download.
 - iPhone Settings: the device ID moves into a Diagnostics disclosure, sync detail appears inline only when sync has an error, and the listening totals are titled "This iPhone".
-- Records equal audio: finishing, skipping or retiring an episode now deletes its downloaded audio, and unsubscribing deletes the feed's audio, once the change is saved (a file another episode still uses stays). A restored episode comes back as not downloaded; Feeds keeps the history so it can be downloaded again. The unsubscribe confirmation says so.
+- Records equal audio: finishing an episode, or skipping it from Feeds, or retiring it, now deletes its downloaded audio, and unsubscribing deletes the feed's audio, once the change is saved (a file another episode still uses stays); a manual Mark completed is the exception, keeping its audio, transcript and revisions so Undo restores it. A restored episode comes back as not downloaded; Feeds keeps the history so it can be downloaded again. The unsubscribe confirmation says so.
 - Re-downloading an episode deletes the copy it replaces, and the Mac startup has a "Reclaiming storage" step that deletes audio no record names and clears records whose audio is missing.
+- Mac playlist create, rename, delete, add, remove, reorder and rules edits appear immediately while their write runs and roll back only the playlist that failed; Add to Playlist, the playlist's title actions and a labelled Share options panel stay visible.
+- Per-feed match rules match case-insensitively, and their preview names the rule that decided each episode.
 
 ### Fixed
 - Quit-interrupted downloads resume on relaunch with a three-attempt automatic bound, while an explicit Cancel stays cancelled and a new explicit request resets its own attempt count.
+- A playlist read that settles after a newer edit no longer reverts the edit, and a settling read no longer resurrects a playlist row a delete removed.
 - Playback checkpoints remain ordered without delaying audio controls; a newer selection or Pause supersedes natural continuation, and a removed Ready candidate is skipped.
 - SwiftPM package test builds recover from Finder metadata signing failures by clearing File Provider metadata and retrying once within the shared work budget.
 - Mac Play/Pause pending feedback now stays inside the initiating button without shifting the player layout.

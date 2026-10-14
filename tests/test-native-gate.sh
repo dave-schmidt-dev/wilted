@@ -244,12 +244,17 @@ assert_macos_ui_leg_is_executed() {
   assert_contains 'wilted_gate_parallel_launch "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"' "$repo_root/scripts/lib/native-gate-legs.sh"
   assert_contains '  macos-ui-tests' "$gate"
   assert_validation_contains 'macos-ui-tests) mac_ui_declared_test_count ;;'
-  assert_validation_contains 'WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests WiltedMacEpisodeInfoUITests'
+  assert_validation_contains 'WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests WiltedMacEpisodeInfoUITests WiltedMacPlaylistUITests'
   assert_validation_contains 'WiltedMacSmokeUITests|WiltedMacSidebarChromeUITests|WiltedMacEpisodeInfoUITests'
   assert_validation_contains 'WiltedMacUITests/WiltedMacEpisodeInfoUITests/testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer'
   assert_validation_contains 'focused EpisodeInfo selector must require exactly one test'
   assert_validation_contains 'saved episode info native journey must stay registered'
   assert_contains 'func testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer' "$repo_root/WiltedMacUITests/WiltedMacEpisodeInfoUITests.swift"
+  assert_validation_contains 'testManualPlaylistDiscoveryRenameDeleteAndShare'
+  assert_validation_contains 'testAutomaticPlaylistFormulaPreviewAndSave'
+  assert_validation_contains 'playlist owner-feedback native journey must stay registered'
+  assert_contains 'func testManualPlaylistDiscoveryRenameDeleteAndShare' "$repo_root/WiltedMacUITests/WiltedMacPlaylistUITests.swift"
+  assert_contains 'func testAutomaticPlaylistFormulaPreviewAndSave' "$repo_root/WiltedMacUITests/WiltedMacPlaylistUITests.swift"
   assert_validation_contains 'testCommandQuitDrainsRepliesOnceAndExits'
   assert_contains 'func testCommandQuitDrainsRepliesOnceAndExits' "$repo_root/WiltedMacUITests/WiltedMacQuitUITests.swift"
   assert_validation_contains 'testCollapsedSidebarKeepsContentBelowWindowControls'

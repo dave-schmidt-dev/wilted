@@ -141,9 +141,11 @@ struct WiltedMacShareComposer: View {
     }
     var body: some View {
         @Bindable var state = state
-        Button { state.presented = true } label: { Image(systemName: "chevron.down") }
-            .help("Share options").accessibilityLabel("Share options")
-            .accessibilityIdentifier("wilted-player-share-options")
+        Button { state.presented = true } label: {
+            Label("Share options", systemImage: "ellipsis.circle")
+        }
+        .help("Share options").accessibilityLabel("Share options")
+        .accessibilityIdentifier("wilted-player-share-options")
             .popover(isPresented: $state.presented) {
                 WiltedMacShareComposerPanel(includeSummary: Binding(get: { state.includeSummary }, set: state.setIncludeSummary),
                     progress: state.progress, failure: state.failure,

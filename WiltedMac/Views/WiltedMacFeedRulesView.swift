@@ -87,6 +87,7 @@ struct WiltedMacFeedRulesView: View {
     private var notes: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             Text("The first rule that matches decides. Matching ignores case.")
+            regexGuidance
             if !resolved.autoKeep {
                 Text("Auto keep is Off for this feed, so only Skip rules decide until it is On.")
                     .accessibilityIdentifier("wilted-feed-rules-inactive")
@@ -99,6 +100,26 @@ struct WiltedMacFeedRulesView: View {
         .wiltedFont(.utility)
         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// What the pattern boxes accept. The examples stay behind a disclosure so
+    /// the editor column still fits the sheet's minimum height.
+    private var regexGuidance: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text("Patterns are case insensitive regular expressions.")
+                Text("Plain text matches a substring: MMA")
+                Text("Alternatives: MMA|boxing")
+                Text("Whole word: \\bMMA\\b")
+                Text("Literal metacharacters need a backslash to escape: \\. \\( \\[")
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, WiltedTheme.Spacing.xSmall)
+            .accessibilityIdentifier("wilted-feed-rules-regex-help-detail")
+        } label: {
+            Text("Regex help")
+        }
+        .accessibilityIdentifier("wilted-feed-rules-regex-help")
     }
 }
 

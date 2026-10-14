@@ -10,18 +10,41 @@ struct WiltedMacPlaylistsState: Equatable {
     var playlists: [Playlist] = []
     /// Whether the store has been read. A stored playlist selection is only judged after this.
     var isLoaded = false
-    /// The newest `loadPlaylists()` started. A load that finds it has moved on discards its read.
+    /// The newest `loadPlaylists()` started. A load that finds it has moved on discards its read;
+    /// every playlist edit moves it on too, so a read that began before the edit is stale.
     var loadGeneration: UInt64 = 0
     /// A manual playlist's entry IDs in order.
     var entryIDs: [String: [String]] = [:]
     /// An automatic playlist's rules in order.
     var rules: [String: [PlaylistRule]] = [:]
+    /// Automatic playlists whose stored rule payload could not be read. They fail closed until a
+    /// later load succeeds, leaving the untouched stored payload available for recovery.
+    var ruleReadErrors: [String: String] = [:]
+    /// Rule payloads being retried locally. This prevents duplicate retry taps without claiming a
+    /// playlist write is running.
+    var retryingRuleIDs: Set<String> = []
     /// The playlist now playing through, if any. Playlists never touch the Larder queue.
     var session: WiltedMacPlaylistSession?
     /// The rename or delete the sidebar is asking about.
     var prompt: WiltedMacPlaylistPrompt?
     /// The last failure or outcome worth saying out loud, shown on the playlist.
     var message: String?
+    /// The write a playlist is waiting on, by playlist ID. A second action on the same playlist is
+    /// refused while its token stands; different playlists write independently.
+    var pending: [String: WiltedMacPlaylistPending] = [:]
+    /// How many New Playlist creates are writing. The sidebar shows feedback while it is above zero.
+    var creatingCount = 0
+    /// The New Playlist menu's last failure, kept until the next create starts.
+    var createFailure: String?
+    /// The names in-flight creates reserved, so two menus make distinct names.
+    var reservedNames: Set<String> = []
+    /// Rows a mutation added optimistically; a settling store read may not hold them yet.
+    var optimisticCreatedIDs: Set<String> = []
+    /// Rows a delete removed optimistically; a settling store read must not resurrect them.
+    var optimisticDeletedIDs: Set<String> = []
+    /// The last failure for one playlist, shown on its page and sidebar row and cleared only by
+    /// that playlist's next operation.
+    var failures: [String: String] = [:]
 }
 
 /// A playlist being played in order. `entryIDs` is the order taken when Play was pressed and
@@ -42,6 +65,39 @@ enum WiltedMacPlaylistPrompt: Equatable {
     case delete(String)
 }
 
+/// What a playlist is waiting on. The copy names the operation the reader is waiting for.
+enum WiltedMacPlaylistOperation: Equatable, Sendable {
+    case creating
+    case playlist
+    case rules
+
+    var progressCopy: String {
+        switch self {
+        case .creating: "Creating playlist\u{2026}"
+        case .playlist: "Saving playlist\u{2026}"
+        case .rules: "Saving rules\u{2026}"
+        }
+    }
+}
+
+/// The write one playlist is waiting on. The token identifies that exact write, so a late call that
+/// belongs to an older one can never clear a newer write's pending state.
+struct WiltedMacPlaylistPending: Equatable {
+    let token: UUID
+    let operation: WiltedMacPlaylistOperation
+}
+
+/// The matching episodes a rule editor shows: how many, and which.
+struct WiltedMacPlaylistRulePreview: Equatable {
+    struct Entry: Identifiable, Equatable {
+        let id: String
+        let title: String
+    }
+
+    var matchCount: Int
+    var entries: [Entry]
+}
+
 extension WiltedMacModel {
     // MARK: - Reading
 
@@ -56,9 +112,15 @@ extension WiltedMacModel {
     /// older load last. Nil in production.
     static var afterPlaylistsRead: (@MainActor () async -> Void)?
 
+    /// Test seam: runs before each playlist store write. A test holds it open to observe the
+    /// optimistic state (or to fail the write and exercise the rollback path); when it returns the
+    /// real store is written. Nil in production.
+    static var playlistWriteHookForTesting: (@MainActor () async throws -> Void)?
+
     /// Reads every playlist, its entries and its rules, then judges a stored playlist selection.
-    /// Loads can overlap (a reload, then a create), so only the newest one started may write; an
-    /// older read is stale by the time it returns.
+    /// Loads can overlap (a reload, a create, a sync pass), so a load only writes when it is still
+    /// the newest start and no edit began after it read; a pending playlist's optimistic fields and
+    /// an optimistically deleted row are merged rather than overwritten.
     func loadPlaylists() async {
         playlists.loadGeneration &+= 1
         let generation = playlists.loadGeneration
@@ -71,23 +133,62 @@ extension WiltedMacModel {
             let all = try await store.playlists()
             var entries: [String: [String]] = [:]
             var rules: [String: [PlaylistRule]] = [:]
+            var ruleReadErrors: [String: String] = [:]
             for playlist in all {
                 switch playlist.kind {
                 case .manual: entries[playlist.id] = try await store.playlistEntryIDs(playlistID: playlist.id)
-                case .automatic: rules[playlist.id] = try await store.playlistRules(playlistID: playlist.id)
+                case .automatic:
+                    do {
+                        rules[playlist.id] = try await store.playlistRules(playlistID: playlist.id)
+                    } catch {
+                        ruleReadErrors[playlist.id] = "The playlist rules could not be read."
+                    }
                 }
             }
             await Self.afterPlaylistsRead?()
             guard generation == playlists.loadGeneration else { return }
-            playlists.playlists = all
-            playlists.entryIDs = entries
-            playlists.rules = rules
+            applyLoadedPlaylists(all, entries: entries, rules: rules, ruleReadErrors: ruleReadErrors)
             playlists.isLoaded = true
             reconcilePlaylistSelection()
         } catch {
             guard generation == playlists.loadGeneration else { return }
             playlists.message = "Playlists could not be read."
         }
+    }
+
+    /// Merges a settle store read into the visible state. A playlist with a write in flight keeps
+    /// its optimistic row and its rows' entries; a row deleted optimistically is never resurrected.
+    private func applyLoadedPlaylists(
+        _ all: [Playlist], entries: [String: [String]], rules: [String: [PlaylistRule]],
+        ruleReadErrors: [String: String]
+    ) {
+        var merged = all.filter { !playlists.optimisticDeletedIDs.contains($0.id) }
+        for current in playlists.playlists
+        where playlists.pending[current.id] != nil || playlists.optimisticCreatedIDs.contains(current.id) {
+            if let index = merged.firstIndex(where: { $0.id == current.id }) {
+                merged[index] = current
+            } else {
+                merged.append(current)
+            }
+        }
+        merged.sort { ($0.sortIndex, $0.id) < ($1.sortIndex, $1.id) }
+        playlists.playlists = merged
+        var mergedEntries = entries
+        var mergedRules = rules
+        var mergedRuleReadErrors = ruleReadErrors
+        for id in playlists.pending.keys where !playlists.optimisticDeletedIDs.contains(id) {
+            if let current = playlists.entryIDs[id] { mergedEntries[id] = current }
+            if let current = playlists.rules[id] { mergedRules[id] = current }
+            mergedRuleReadErrors[id] = playlists.ruleReadErrors[id]
+        }
+        for id in playlists.optimisticDeletedIDs {
+            mergedEntries[id] = nil
+            mergedRules[id] = nil
+            mergedRuleReadErrors[id] = nil
+        }
+        playlists.entryIDs = mergedEntries
+        playlists.rules = mergedRules
+        playlists.ruleReadErrors = mergedRuleReadErrors
     }
 
     /// A selected playlist that no longer exists resolves to the Larder.
@@ -99,90 +200,18 @@ extension WiltedMacModel {
 
     // MARK: - Editing
 
-    /// A name no other playlist has: "New Playlist", then "New Playlist 2" and so on.
-    func newPlaylistName() -> String {
-        let taken = Set(playlists.playlists.map(\.name))
-        guard taken.contains("New Playlist") else { return "New Playlist" }
-        var number = 2
-        while taken.contains("New Playlist \(number)") { number += 1 }
-        return "New Playlist \(number)"
+    /// The operation a playlist is waiting on, for its spinner.
+    func playlistOperation(_ id: String) -> WiltedMacPlaylistOperation? {
+        playlists.pending[id]?.operation
     }
 
-    /// Creates a playlist after the existing ones and opens it.
-    @discardableResult
-    func createPlaylist(kind: PlaylistKind, name: String? = nil, adding entryID: String? = nil) async -> Playlist? {
-        guard let store else { return nil }
-        do {
-            let created = try await store.createPlaylist(name: name ?? newPlaylistName(), kind: kind)
-            if let entryID, kind == .manual {
-                try await store.addPlaylistEntry(playlistID: created.id, entryID: entryID)
-            }
-            await loadPlaylists()
-            selectedNavigation = .playlist(created.id)
-            return created
-        } catch {
-            playlists.message = "The playlist could not be created."
-            return nil
-        }
-    }
-
-    func renamePlaylist(_ id: String, to name: String) async {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let store, !trimmed.isEmpty else { return }
-        do {
-            try await store.updatePlaylist(id: id, name: trimmed)
-            await loadPlaylists()
-        } catch { playlists.message = "The playlist could not be renamed." }
-    }
-
-    /// Deletes the playlist and its entries and rules. Library items are untouched. A deleted
-    /// selection resolves to the Larder, and a session playing it ends.
-    func deletePlaylist(_ id: String) async {
-        guard let store else { return }
-        do {
-            try await store.deletePlaylist(id: id)
-            if playlists.session?.playlistID == id { playlists.session = nil }
-            await loadPlaylists()
-        } catch { playlists.message = "The playlist could not be deleted." }
-    }
-
-    func addToPlaylist(_ playlistID: String, entryID: String) async {
-        guard let store else { return }
-        do {
-            try await store.addPlaylistEntry(playlistID: playlistID, entryID: entryID)
-            await loadPlaylists()
-        } catch { playlists.message = "That could not be added to the playlist." }
-    }
-
-    func removeFromPlaylist(_ playlistID: String, entryID: String) async {
-        guard let store else { return }
-        do {
-            try await store.removePlaylistEntry(playlistID: playlistID, entryID: entryID)
-            await loadPlaylists()
-        } catch { playlists.message = "That could not be removed from the playlist." }
-    }
-
-    /// Moves a manual playlist's entry so it sits at `index` in the resulting order.
-    func movePlaylistEntry(_ playlistID: String, entryID: String, to index: Int) async {
-        guard let store else { return }
-        do {
-            try await store.movePlaylistEntry(playlistID: playlistID, entryID: entryID, to: index)
-            await loadPlaylists()
-        } catch { playlists.message = "The playlist could not be reordered." }
-    }
-
-    /// Saves an automatic playlist's rules and its all-of or any-of choice.
-    func savePlaylistRules(_ playlistID: String, rules: [PlaylistRule], matchAll: Bool) async -> Bool {
-        guard let store else { return false }
-        do {
-            try await store.setPlaylistRules(playlistID: playlistID, rules: rules)
-            try await store.updatePlaylist(id: playlistID, matchAll: matchAll)
-            await loadPlaylists()
-            return true
-        } catch {
-            playlists.message = "The rules could not be saved."
-            return false
-        }
+    /// Rereads a broken automatic playlist's rules. The retry state is local so a second tap gets
+    /// immediate feedback without blocking writes for a different playlist.
+    func retryPlaylistRules(_ id: String) async {
+        guard playlists.ruleReadErrors[id] != nil, !playlists.retryingRuleIDs.contains(id) else { return }
+        playlists.retryingRuleIDs.insert(id)
+        defer { playlists.retryingRuleIDs.remove(id) }
+        await loadPlaylists()
     }
 
     // MARK: - Items
@@ -197,13 +226,60 @@ extension WiltedMacModel {
                 larderEntries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             return (playlists.entryIDs[playlist.id] ?? []).compactMap { byID[$0] }
         case .automatic:
+            guard playlists.ruleReadErrors[playlist.id] == nil else { return [] }
             let ordered = larderEntries.sorted { $0.date > $1.date }
             let byID = Dictionary(ordered.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let matched = PlaylistRules.evaluate(
                 playlists.rules[playlist.id] ?? [], matchAll: playlist.matchAll,
-                candidates: ordered.map(Self.playlistCandidate), now: now)
+                candidates: ordered.map { Self.playlistCandidate($0, ready: canPlayPlaylistItem($0)) },
+                now: now)
             return matched.compactMap { byID[$0.entryID] }
         }
+    }
+
+    /// Every candidate an automatic playlist evaluates today, newest first, carrying the same
+    /// readiness the playlist page uses to decide Play. The rule editor's preview evaluates exactly
+    /// this list, so preview and page cannot disagree.
+    func playlistCandidates() -> [PlaylistCandidate] {
+        larderEntries.sorted { $0.date > $1.date }
+            .map { Self.playlistCandidate($0, ready: canPlayPlaylistItem($0)) }
+    }
+
+    /// All facts the evaluator reads, so a change of played state, duration, date or feed refreshes
+    /// the preview even when the same entries remain ready.
+    var playlistPreviewFingerprint: String {
+        let facts = playlistCandidates().map {
+            "\($0.entryID.debugDescription):\($0.feedID.debugDescription):\($0.kind):"
+                + "\($0.durationSeconds.debugDescription):\($0.publishedAt.timeIntervalSinceReferenceDate):"
+                + "\($0.playedState.rawValue):\($0.isReady)"
+        }.joined(separator: ",")
+        return facts + "|" + larderEntries.map { "\($0.id.debugDescription):\($0.title.debugDescription)" }
+            .joined(separator: ",")
+    }
+
+    /// Evaluates `rules` over `playlistCandidates()`, off the main actor, and names what matched.
+    /// The editor's preview and its Save both go through the compiled rule and this evaluation.
+    func playlistRulePreview(
+        for rules: [PlaylistRule], matchAll: Bool, now: Date = Date()
+    ) async -> WiltedMacPlaylistRulePreview {
+        let candidates = playlistCandidates()
+        let titles = Dictionary(
+            larderEntries.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+        let matched = await Task.detached(priority: .userInitiated) {
+            PlaylistRules.evaluate(rules, matchAll: matchAll, candidates: candidates, now: now)
+        }.value
+        return WiltedMacPlaylistRulePreview(
+            matchCount: matched.count,
+            entries: matched.compactMap { candidate -> WiltedMacPlaylistRulePreview.Entry? in
+                guard let title = titles[candidate.entryID] else { return nil }
+                return WiltedMacPlaylistRulePreview.Entry(id: candidate.entryID, title: title)
+            })
+    }
+
+    /// The Larder item behind a preview row, so its title's popover opens the same notes the
+    /// playlist page shows. Nothing here touches playback or a transcript.
+    func playlistLibraryItem(_ entryID: String) -> WiltedMacLibraryItem? {
+        larderEntries.first { $0.id == entryID }
     }
 
     /// Every Larder entry a playlist can hold: the episodes and books on the shelf, and the articles.
@@ -211,19 +287,38 @@ extension WiltedMacModel {
         larderVisibleEpisodes.map(WiltedMacLibraryItem.init(episode:)) + articles.map(WiltedMacLibraryItem.article)
     }
 
-    nonisolated static func playlistCandidate(_ item: WiltedMacLibraryItem) -> PlaylistCandidate {
+    /// The facts a rule reads of one entry. The ready flag is passed in by the caller so a candidate
+    /// carries the same readiness the page uses; the compatibility default reads as not ready.
+    nonisolated static func playlistCandidate(
+        _ item: WiltedMacLibraryItem, ready: Bool = false
+    ) -> PlaylistCandidate {
+        candidate(item, isReady: ready)
+    }
+
+    /// The explicit-readiness spelling of `playlistCandidate(_:ready:)`.
+    nonisolated static func playlistCandidate(
+        _ item: WiltedMacLibraryItem, isReady: Bool
+    ) -> PlaylistCandidate {
+        candidate(item, isReady: isReady)
+    }
+
+    private nonisolated static func candidate(
+        _ item: WiltedMacLibraryItem, isReady: Bool
+    ) -> PlaylistCandidate {
         switch item {
         case .article(let article):
             return PlaylistCandidate(
                 entryID: article.id, feedID: nil, kind: "article", durationSeconds: article.durationSeconds,
                 publishedAt: article.createdAt,
-                playedState: article.isPlayed ? .played : (article.playbackSeconds != 0 ? .inProgress : .unplayed))
+                playedState: article.isPlayed ? .played : (article.playbackSeconds != 0 ? .inProgress : .unplayed),
+                isReady: isReady)
         case .episode(let episode), .audiobook(let episode):
             return PlaylistCandidate(
                 entryID: episode.id, feedID: episode.feedID,
                 kind: episode.isAudiobook ? "audiobook" : "podcast.episode",
                 durationSeconds: episode.durationSeconds, publishedAt: episode.publishedAt ?? episode.releasedAt,
-                playedState: episode.isPlayed ? .played : (episode.playbackSeconds != 0 ? .inProgress : .unplayed))
+                playedState: episode.isPlayed ? .played : (episode.playbackSeconds != 0 ? .inProgress : .unplayed),
+                isReady: isReady)
         }
     }
 

@@ -382,7 +382,7 @@ private struct WiltedWindowTitleHider: NSViewRepresentable {
 /// Every destination opens with its own name, at one weight, in one place.
 /// Three different title treatments across the two apps is what let a
 /// composer heading pass for a destination heading.
-struct WiltedMacDestination<Content: View>: View {
+struct WiltedMacDestination<Content: View, TitleAccessory: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     let title: String
     let identifier: String
@@ -396,19 +396,58 @@ struct WiltedMacDestination<Content: View>: View {
     /// Where the page was scrolled to, by the id of the top visible block. The blocks of `content`
     /// carry `.id`s; an id the page no longer has scrolls nowhere.
     var scrollAnchor: Binding<String?>?
+    /// Controls that belong to the destination itself, beside its name: a
+    /// playlist's rename and delete. The name still renders exactly once.
+    @ViewBuilder let titleAccessory: TitleAccessory
     @ViewBuilder let content: Content
     /// Where the destination's rows begin, as the content reports it: the
     /// lettuce sits below everything above them.
     @State private var rowsTop: CGFloat = 0
     static var topAnchor: String { "destination-top" }
 
+    init(
+        title: String, identifier: String,
+        contentWidth: CGFloat? = 760, inset: CGFloat = WiltedTheme.Spacing.section,
+        watermark: Bool = false, scrollAnchor: Binding<String?>? = nil,
+        @ViewBuilder content: () -> Content
+    ) where TitleAccessory == EmptyView {
+        self.title = title
+        self.identifier = identifier
+        self.contentWidth = contentWidth
+        self.inset = inset
+        self.watermark = watermark
+        self.scrollAnchor = scrollAnchor
+        self.titleAccessory = EmptyView()
+        self.content = content()
+    }
+
+    init(
+        title: String, identifier: String,
+        contentWidth: CGFloat? = 760, inset: CGFloat = WiltedTheme.Spacing.section,
+        watermark: Bool = false, scrollAnchor: Binding<String?>? = nil,
+        @ViewBuilder titleAccessory: () -> TitleAccessory,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.identifier = identifier
+        self.contentWidth = contentWidth
+        self.inset = inset
+        self.watermark = watermark
+        self.scrollAnchor = scrollAnchor
+        self.titleAccessory = titleAccessory()
+        self.content = content()
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xLarge) {
-                Text(title)
-                    .wiltedFont(.display)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .id(Self.topAnchor)
+                HStack(alignment: .center, spacing: WiltedTheme.Spacing.small) {
+                    Text(title)
+                        .wiltedFont(.display)
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    titleAccessory
+                }
+                .id(Self.topAnchor)
                 content
             }
             .scrollTargetLayout()

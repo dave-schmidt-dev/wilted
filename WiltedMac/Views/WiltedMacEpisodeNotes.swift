@@ -8,6 +8,9 @@ struct WiltedMacEpisodeNotesTitle<Content: View>: View {
     let font: WiltedTheme.TypographyRole
     @Binding var isPresented: Bool
     var titleLineLimit = 1
+    /// A title already carrying its own runs, such as a rule match highlight.
+    /// Nil -- every caller that predates the rules preview -- draws `title`.
+    let attributedTitle: AttributedString?
     @ViewBuilder let content: () -> Content
     @Environment(\.colorScheme) private var colorScheme
     @State private var isHovering = false
@@ -21,6 +24,7 @@ struct WiltedMacEpisodeNotesTitle<Content: View>: View {
         font: WiltedTheme.TypographyRole = .body,
         isPresented: Binding<Bool>,
         titleLineLimit: Int = 1,
+        attributedTitle: AttributedString? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.id = id
@@ -29,6 +33,7 @@ struct WiltedMacEpisodeNotesTitle<Content: View>: View {
         self.font = font
         self._isPresented = isPresented
         self.titleLineLimit = titleLineLimit
+        self.attributedTitle = attributedTitle
         self.content = content
     }
 
@@ -39,18 +44,19 @@ struct WiltedMacEpisodeNotesTitle<Content: View>: View {
         font: WiltedTheme.TypographyRole = .body,
         isPresented: Binding<Bool>,
         titleLineLimit: Int = 1,
+        attributedTitle: AttributedString? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.init(
             id: episode.id, title: episode.title, prefix: prefix, font: font,
-            isPresented: isPresented, titleLineLimit: titleLineLimit, content: content)
+            isPresented: isPresented, titleLineLimit: titleLineLimit, attributedTitle: attributedTitle,
+            content: content)
     }
 
     var body: some View {
         Button { isPresented = true } label: {
-            Text(title)
+            titleText
                 .wiltedFont(font)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 .lineLimit(titleLineLimit)
                 .fixedSize(horizontal: false, vertical: true)
                 .underline(isHovering)
@@ -61,6 +67,16 @@ struct WiltedMacEpisodeNotesTitle<Content: View>: View {
         .accessibilityLabel("Show notes for \(title)")
         .accessibilityIdentifier("\(prefix)-show-notes-\(id)")
         .popover(isPresented: $isPresented, arrowEdge: .bottom, content: content)
+    }
+
+    @ViewBuilder private var titleText: some View {
+        if let attributedTitle {
+            Text(attributedTitle)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+        } else {
+            Text(title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+        }
     }
 }
 

@@ -68,6 +68,9 @@ extension WiltedMacLarderView {
                 }
             nextStepControl(episode, group: group)
                 .controlSize(.small)
+            // Visible, not only in the context menu: a row can reach the
+            // reader's playlists without discovering a right-click.
+            WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id, style: .rowAction)
             // Completion is available only after listening has started and
             // before its durable completion record exists. Unstarted and
             // already completed rows keep this slot empty.

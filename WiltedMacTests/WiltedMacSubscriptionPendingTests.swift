@@ -62,6 +62,52 @@ final class WiltedMacSubscriptionPendingTests: XCTestCase {
         }
     }
 
+    /// Blocks the first write until opened, then fails every later write, so a
+    /// test can commit one value and then fail the coalesced successor.
+    private actor FlakyWriteGate {
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var isOpen = false
+        private(set) var writes = 0
+
+        func arrive() async throws {
+            writes += 1
+            guard writes == 1 else { throw URLError(.cannotConnectToHost) }
+            guard !isOpen else { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func open() {
+            isOpen = true
+            waiters.forEach { $0.resume() }
+            waiters = []
+        }
+    }
+
+    /// Holds the first library snapshot read, so a test can toggle a feed while
+    /// a read that began before it is still in flight.
+    private actor ReadGate {
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var held = false
+        private(set) var arrivals = 0
+
+        func arrive() async {
+            arrivals += 1
+            guard arrivals == 1 else { return }
+            held = true
+            await withCheckedContinuation { waiters.append($0) }
+            held = false
+        }
+
+        func waitUntilHeld() async {
+            while !held { await Task.yield() }
+        }
+
+        func open() {
+            waiters.forEach { $0.resume() }
+            waiters = []
+        }
+    }
+
     private let urls = [
         URL(string: "https://feeds.example.test/one.xml")!, URL(string: "https://feeds.example.test/two.xml")!,
     ]
@@ -79,11 +125,14 @@ final class WiltedMacSubscriptionPendingTests: XCTestCase {
         Dictionary(uniqueKeysWithValues: zip(urls, ["One", "Two"]).map { ($0, xml($1)) })
     }
 
-    /// A model with both feeds saved and subscribed.
+    /// A model with both feeds saved and subscribed, optionally with one
+    /// stored episode per named feed so Larder visibility can be asserted.
     private func model(
-        loader: PendingLoader, feeds: Int = 2, preferences: UserDefaults = WiltedMacTestPreferences.ephemeral()
+        loader: PendingLoader, feeds: Int = 2, preferences: UserDefaults = WiltedMacTestPreferences.ephemeral(),
+        seededEpisodesInFeedIndexes: Set<Int> = []
     ) async throws -> WiltedMacModel {
         let seeded = Array(urls.prefix(feeds))
+        let seededEpisodeIndexes = seededEpisodesInFeedIndexes
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("subscription-pending"),
             storeBootstrap: { [created] root in
@@ -93,6 +142,19 @@ final class WiltedMacSubscriptionPendingTests: XCTestCase {
                     try await store.save(feed: PodcastFeed(
                         itemID: id, canonicalURL: url, title: index == 0 ? "One" : "Two", createdAt: created))
                     try await store.save(subscription: PodcastSubscription(feedID: id, subscribedAt: created))
+                }
+                for index in seededEpisodeIndexes.sorted() where seeded.indices.contains(index) {
+                    let url = seeded[index]
+                    let feedID = try ItemID.derivePodcastFeed(from: url)
+                    let enclosureURL = URL(string: "https://media.example.test/seed-\(index).mp3")!
+                    try await store.save(episode: try PodcastEpisode(
+                        itemID: try ItemID.derivePodcastEpisode(
+                            feedURL: url, rssGUID: "seed-\(index)", enclosureURL: enclosureURL
+                        ),
+                        feedID: feedID, feedURL: url, rssGUID: "seed-\(index)",
+                        title: "Seeded \(index)", enclosureURL: enclosureURL,
+                        enclosureMediaType: "audio/mpeg", createdAt: created
+                    ))
                 }
                 return store
             }, podcastFeedClient: PodcastFeedClient(loader: loader), preferences: preferences)
@@ -106,6 +168,13 @@ final class WiltedMacSubscriptionPendingTests: XCTestCase {
     }
 
     private func feedID(_ index: Int) throws -> String { try ItemID.derivePodcastFeed(from: urls[index]).rawValue }
+
+    private func seededEpisodeID(_ index: Int) throws -> String {
+        try ItemID.derivePodcastEpisode(
+            feedURL: urls[index], rssGUID: "seed-\(index)",
+            enclosureURL: URL(string: "https://media.example.test/seed-\(index).mp3")!
+        ).rawValue
+    }
 
     // MARK: - Writes
 
@@ -163,6 +232,161 @@ final class WiltedMacSubscriptionPendingTests: XCTestCase {
         XCTAssertEqual(model.podcastOperationMessage, "One could not be updated.")
         XCTAssertTrue(model.queuedFeedEnabled.isEmpty)
         XCTAssertEqual(model.subscriptions.first?.enabled, true)
+    }
+
+    func testDisablingAFeedProjectsTheToggleAndHidesItsEpisodesBeforeTheWriteCommits() async throws {
+        let model = try await model(
+            loader: PendingLoader(documents: documents(), held: false), feeds: 1, seededEpisodesInFeedIndexes: [0]
+        )
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let episodeID = try seededEpisodeID(0)
+        XCTAssertTrue(model.episodes.contains { $0.id == episodeID }, "the control: the row is loaded")
+
+        let gate = WriteGate()
+        model.subscriptionWriteHookForTesting = { await gate.arrive() }
+        model.setSubscription(subscription, enabled: false)
+
+        XCTAssertEqual(model.subscriptions.first?.enabled, false, "the toggle answers the tap")
+        XCTAssertEqual(model.feedRowStatus(subscription.id), "Saving…")
+        XCTAssertFalse(model.episodes.contains { $0.id == episodeID },
+                       "the disabled feed's rows leave the Larder with the toggle")
+
+        await gate.open()
+        await WiltedMacHeadless.eventually("the disable settles") { model.pendingFeedWrites.isEmpty }
+        XCTAssertEqual(model.subscriptions.first?.enabled, false)
+        XCTAssertFalse(model.episodes.contains { $0.id == episodeID })
+        let durable = try await XCTUnwrap(model.store).subscriptions().first?.enabled
+        XCTAssertEqual(durable, false)
+    }
+
+    func testADisableThatFailsRestoresTheToggleAndTheRowsItHid() async throws {
+        struct Failure: Error {}
+        let model = try await model(
+            loader: PendingLoader(documents: documents(), held: false), feeds: 1, seededEpisodesInFeedIndexes: [0]
+        )
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let episodeID = try seededEpisodeID(0)
+        model.subscriptionWriteHookForTesting = { throw Failure() }
+
+        model.setSubscription(subscription, enabled: false)
+        XCTAssertEqual(model.subscriptions.first?.enabled, false)
+        XCTAssertFalse(model.episodes.contains { $0.id == episodeID })
+
+        await WiltedMacHeadless.eventually("the failed disable settles") { model.pendingFeedWrites.isEmpty }
+        XCTAssertEqual(model.podcastOperationMessage, "One could not be updated.")
+        XCTAssertEqual(model.subscriptions.first?.enabled, true, "rollback restores only the enabled field")
+        XCTAssertTrue(model.episodes.contains { $0.id == episodeID }, "the withheld rows come back")
+        XCTAssertTrue(model.queuedFeedEnabled.isEmpty)
+        XCTAssertNil(model.feedRowStatus(subscription.id))
+    }
+
+    func testAQueuedFlipWritesTheNewestValueOnceAndFollowsItImmediately() async throws {
+        let model = try await model(
+            loader: PendingLoader(documents: documents(), held: false), feeds: 1, seededEpisodesInFeedIndexes: [0]
+        )
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let episodeID = try seededEpisodeID(0)
+        let gate = WriteGate()
+        model.subscriptionWriteHookForTesting = { await gate.arrive() }
+
+        model.setSubscription(subscription, enabled: false)
+        model.setSubscription(subscription, enabled: true)
+        model.setSubscription(subscription, enabled: false)
+        model.setSubscription(subscription, enabled: true)
+
+        XCTAssertEqual(model.queuedFeedEnabled[subscription.id], true, "the newest request is the one held")
+        XCTAssertEqual(model.subscriptions.first?.enabled, true, "the row follows the newest request")
+        XCTAssertTrue(model.episodes.contains { $0.id == episodeID }, "the flip back restores the rows")
+
+        await gate.open()
+        await WiltedMacHeadless.eventually("both writes settle") { model.pendingFeedWrites.isEmpty }
+        let writesAfter = await gate.writes
+        XCTAssertEqual(writesAfter, 2, "the one in flight, then the newest request, and no more")
+        XCTAssertEqual(model.subscriptions.first?.enabled, true)
+        let durable = try await XCTUnwrap(model.store).subscriptions().first?.enabled
+        XCTAssertEqual(durable, true)
+    }
+
+    func testAQueuedFailureRollsBackToTheFirstCommittedValueNotTheOriginal() async throws {
+        let model = try await model(
+            loader: PendingLoader(documents: documents(), held: false), feeds: 1, seededEpisodesInFeedIndexes: [0]
+        )
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let episodeID = try seededEpisodeID(0)
+        let gate = FlakyWriteGate()
+        model.subscriptionWriteHookForTesting = { try await gate.arrive() }
+
+        model.setSubscription(subscription, enabled: false)
+        model.setSubscription(subscription, enabled: true)
+        XCTAssertEqual(model.subscriptions.first?.enabled, true)
+
+        await gate.open()
+        await WiltedMacHeadless.eventually("both attempts settle") { model.pendingFeedWrites.isEmpty }
+        let writes = await gate.writes
+        XCTAssertEqual(writes, 2)
+        XCTAssertEqual(model.podcastOperationMessage, "One could not be updated.")
+        XCTAssertEqual(model.subscriptions.first?.enabled, false,
+                       "the failed queued write returns to the first committed value, not the original")
+        XCTAssertFalse(model.episodes.contains { $0.id == episodeID },
+                       "the committed disable's rows stay hidden after the queued failure")
+        let durable = try await XCTUnwrap(model.store).subscriptions().first?.enabled
+        XCTAssertEqual(durable, false)
+    }
+
+    func testAStaleLibraryLoadCannotReplaceAProjectedToggle() async throws {
+        let model = try await model(
+            loader: PendingLoader(documents: documents(), held: false), feeds: 1, seededEpisodesInFeedIndexes: [0]
+        )
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let episodeID = try seededEpisodeID(0)
+        let readGate = ReadGate()
+        model.librarySnapshotReadBarrierForTesting = { await readGate.arrive() }
+        model.refresh()
+        await readGate.waitUntilHeld()
+
+        let writeGate = WriteGate()
+        model.subscriptionWriteHookForTesting = { await writeGate.arrive() }
+        model.setSubscription(subscription, enabled: false)
+        XCTAssertEqual(model.subscriptions.first?.enabled, false)
+        XCTAssertFalse(model.episodes.contains { $0.id == episodeID })
+
+        await readGate.open()
+        await writeGate.open()
+        await WiltedMacHeadless.eventually("the toggle settles") { model.pendingFeedWrites.isEmpty }
+        XCTAssertEqual(model.subscriptions.first?.enabled, false,
+                       "a read that began before the toggle cannot republish the old value")
+        XCTAssertFalse(model.episodes.contains { $0.id == episodeID })
+    }
+
+    func testTogglingOneFeedLeavesTheOtherFeedAndItsStateAlone() async throws {
+        let model = try await model(
+            loader: PendingLoader(documents: documents(), held: false), feeds: 2,
+            seededEpisodesInFeedIndexes: [0, 1]
+        )
+        let firstID = try feedID(0)
+        let secondID = try feedID(1)
+        let first = try XCTUnwrap(model.subscriptions.first { $0.id == firstID })
+        let secondRow = try XCTUnwrap(model.subscriptions.first { $0.id == secondID })
+        let firstEpisodeID = try seededEpisodeID(0)
+        let secondEpisodeID = try seededEpisodeID(1)
+        let gate = WriteGate()
+        model.subscriptionWriteHookForTesting = { await gate.arrive() }
+
+        model.setSubscription(first, enabled: false)
+        XCTAssertEqual(model.subscriptions.first { $0.id == secondID }?.enabled, true,
+                       "the other feed's toggle stays where it was")
+        XCTAssertEqual(model.subscriptions.first { $0.id == secondID }?.title, secondRow.title)
+        XCTAssertNil(model.pendingFeedWrites[secondID])
+        XCTAssertFalse(model.episodes.contains { $0.id == firstEpisodeID })
+        XCTAssertTrue(model.episodes.contains { $0.id == secondEpisodeID },
+                      "the other feed's rows stay in the Larder")
+        XCTAssertEqual(model.pendingFeedWrites[firstID], .updating(enabled: false))
+
+        await gate.open()
+        await WiltedMacHeadless.eventually("the disable settles") { model.pendingFeedWrites.isEmpty }
+        XCTAssertEqual(model.subscriptions.first { $0.id == firstID }?.enabled, false)
+        XCTAssertEqual(model.subscriptions.first { $0.id == secondID }?.enabled, true)
+        XCTAssertTrue(model.episodes.contains { $0.id == secondEpisodeID })
     }
 
     func testUnsubscribeWaitsForAPendingWriteInsteadOfRacingIt() async throws {

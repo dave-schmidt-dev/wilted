@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import XCTest
 import WiltedDomain
 @testable import WiltedProducer
@@ -7,6 +8,15 @@ final class LocalLibraryStorePlaylistTests: XCTestCase {
     private func makeStore() throws -> (LocalLibraryStore, URL) {
         let directory = OwnedTestTemp.root.appendingPathComponent("wilted-playlist-\(UUID().uuidString)")
         return (try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite")), directory)
+    }
+
+    private func assertThrows(
+        _ operation: () async throws -> Void, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        do {
+            try await operation()
+            XCTFail("expected an error", file: file, line: line)
+        } catch {}
     }
 
     func testReorderingManualPlaylistLeavesLarderQueueOrderUnchanged() async throws {
@@ -97,6 +107,157 @@ final class LocalLibraryStorePlaylistTests: XCTestCase {
         XCTAssertTrue(remaining.isEmpty)
         XCTAssertTrue(leftoverEntries.isEmpty)
         XCTAssertTrue(leftoverRules.isEmpty)
+    }
+
+    // MARK: - Expressions and atomic writes
+
+    func testExpressionRulesRoundTripWithSparseUnusedLeaves() async throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let auto = try await store.createPlaylist(name: "Auto", kind: .automatic, matchAll: false)
+        let numbered = [try PlaylistNumberedRule(number: 3, rule: PlaylistRule(field: .feed, comparator: .is, value: "feed-a")),
+                        try PlaylistNumberedRule(number: 7, rule: PlaylistRule(field: .played, comparator: .is, value: "unplayed")),
+                        try PlaylistNumberedRule(number: 9, rule: PlaylistRule(field: .ready, comparator: .is, value: "true"))]
+        let formula = "3 OR 7"
+        let expression = try PlaylistRule.expression(numberedRules: numbered, expressionString: formula)
+        try await store.setPlaylistRules(playlistID: auto.id, rules: [expression], matchAll: true)
+
+        let reopened = try LocalLibraryStore(url: await store.url)
+        let stored = try await reopened.playlistRules(playlistID: auto.id)
+        XCTAssertEqual(stored.count, 1, "no duplicate rows")
+        XCTAssertEqual(stored, [expression])
+        let restored = try XCTUnwrap(stored.first)
+        XCTAssertTrue(restored.isExpression)
+        XCTAssertEqual(restored.expressionString, formula)
+        XCTAssertEqual(restored.numberedRules.map(\.number), [3, 7, 9], "sparse numbers and unused leaves survive")
+        XCTAssertEqual(restored.usedNumbers, [3, 7])
+        XCTAssertEqual(restored.usedRuleNumbers, [3, 7])
+        let reloaded = try await reopened.playlists()
+        XCTAssertEqual(reloaded.first?.matchAll, true)
+    }
+
+    func testCorruptExpressionRowThrowsAndSurvivesRead() async throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let auto = try await store.createPlaylist(name: "Auto", kind: .automatic)
+        let context = ModelContext(store.container)
+        context.insert(LocalLibrarySchemaV17Models.PlaylistRuleRecord(
+            playlistID: auto.id, field: PlaylistRuleField.expression.rawValue,
+            comparator: PlaylistComparator.expression.rawValue, value: "{ not json", sortIndex: 0))
+        try context.save()
+
+        await assertThrows { _ = try await store.playlistRules(playlistID: auto.id) }
+
+        let reopened = try LocalLibraryStore(url: await store.url)
+        await assertThrows { _ = try await reopened.playlistRules(playlistID: auto.id) }
+        let rows = try ModelContext(reopened.container)
+            .fetch(FetchDescriptor<LocalLibrarySchemaV17Models.PlaylistRuleRecord>())
+        XCTAssertEqual(rows.count, 1, "a corrupt row is reported, never erased")
+    }
+
+    func testCorruptFlatRowThrowsRatherThanDisappearing() async throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let auto = try await store.createPlaylist(name: "Auto", kind: .automatic)
+        let context = ModelContext(store.container)
+        context.insert(LocalLibrarySchemaV17Models.PlaylistRuleRecord(
+            playlistID: auto.id, field: "bogus", comparator: "is", value: "x", sortIndex: 0))
+        context.insert(LocalLibrarySchemaV17Models.PlaylistRuleRecord(
+            playlistID: auto.id, field: PlaylistRuleField.ready.rawValue,
+            comparator: PlaylistComparator.is.rawValue, value: "maybe", sortIndex: 1))
+        try context.save()
+
+        await assertThrows { _ = try await store.playlistRules(playlistID: auto.id) }
+    }
+
+    func testSetPlaylistRulesAndModeAreAtomicAndRejectManualPlaylists() async throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manual = try await store.createPlaylist(name: "Manual", kind: .manual)
+        let auto = try await store.createPlaylist(name: "Auto", kind: .automatic, matchAll: false)
+        let original = [try PlaylistRule(field: .kind, comparator: .is, value: "article")]
+        try await store.setPlaylistRules(playlistID: auto.id, rules: original, matchAll: false)
+
+        let replacement = [try PlaylistRule(field: .kind, comparator: .is, value: "audiobook")]
+        await assertThrows {
+            try await store.setPlaylistRules(playlistID: manual.id, rules: replacement, matchAll: true)
+        }
+        let unchangedRules = try await store.playlistRules(playlistID: auto.id)
+        let unchangedPlaylists = try await store.playlists()
+        let manualRules = try await store.playlistRules(playlistID: manual.id)
+        XCTAssertEqual(unchangedRules, original)
+        XCTAssertEqual(unchangedPlaylists.first { $0.id == auto.id }?.matchAll, false)
+        XCTAssertTrue(manualRules.isEmpty)
+
+        try await store.setPlaylistRules(playlistID: auto.id, rules: replacement, matchAll: true)
+        let updatedRules = try await store.playlistRules(playlistID: auto.id)
+        let updatedPlaylists = try await store.playlists()
+        XCTAssertEqual(updatedRules, replacement)
+        XCTAssertEqual(updatedPlaylists.first { $0.id == auto.id }?.matchAll, true)
+    }
+
+    func testCreatePlaylistWithInitialEntryIsAtomic() async throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let created = try await store.createPlaylist(name: "Fresh", kind: .manual, initialEntryID: "e1")
+        let createdEntries = try await store.playlistEntryIDs(playlistID: created.id)
+        XCTAssertEqual(createdEntries, ["e1"])
+
+        await assertThrows {
+            _ = try await store.createPlaylist(id: created.id, name: "Again", kind: .manual, initialEntryID: "e2")
+        }
+        let afterDuplicate = try await store.playlists()
+        let entriesAfterDuplicate = try await store.playlistEntryIDs(playlistID: created.id)
+        XCTAssertEqual(afterDuplicate.map(\.id), [created.id])
+        XCTAssertEqual(entriesAfterDuplicate, ["e1"])
+
+        await assertThrows {
+            _ = try await store.createPlaylist(name: "Auto", kind: .automatic, initialEntryID: "e3")
+        }
+        let afterAutomatic = try await store.playlists()
+        XCTAssertEqual(afterAutomatic.map(\.name), ["Fresh"])
+    }
+
+    func testPlaylistPublicInitializerBuildsOptimisticValue() {
+        let playlist = Playlist(id: "p1", name: "Optimistic", kind: .automatic, matchAll: false, sortIndex: 4)
+        XCTAssertEqual(playlist.id, "p1")
+        XCTAssertEqual(playlist.name, "Optimistic")
+        XCTAssertEqual(playlist.kind, .automatic)
+        XCTAssertFalse(playlist.matchAll)
+        XCTAssertEqual(playlist.sortIndex, 4)
+    }
+
+    func testFlatAllAnyAndEmptySemanticsSurviveReopen() async throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let auto = try await store.createPlaylist(name: "Auto", kind: .automatic, matchAll: false)
+        let rules = [try PlaylistRule(field: .played, comparator: .is, value: "unplayed"),
+                     try PlaylistRule(field: .ready, comparator: .is, value: "true")]
+        try await store.setPlaylistRules(playlistID: auto.id, rules: rules)
+
+        let reopened = try LocalLibraryStore(url: await store.url)
+        let reopenedRules = try await reopened.playlistRules(playlistID: auto.id)
+        let reopenedPlaylists = try await reopened.playlists()
+        XCTAssertEqual(reopenedRules, rules)
+        XCTAssertEqual(reopenedPlaylists.map(\.matchAll), [false])
+
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let candidates = [
+            PlaylistCandidate(entryID: "unplayedNotReady", feedID: nil, kind: "podcast.episode",
+                              durationSeconds: nil, publishedAt: origin, playedState: .unplayed, isReady: false),
+            PlaylistCandidate(entryID: "playedReady", feedID: nil, kind: "podcast.episode",
+                              durationSeconds: nil, publishedAt: origin, playedState: .played, isReady: true),
+            PlaylistCandidate(entryID: "unplayedReady", feedID: nil, kind: "podcast.episode",
+                              durationSeconds: nil, publishedAt: origin, playedState: .unplayed, isReady: true),
+        ]
+        XCTAssertEqual(
+            PlaylistRules.evaluate(rules, matchAll: false, candidates: candidates, now: origin).map(\.entryID),
+            ["unplayedNotReady", "playedReady", "unplayedReady"])
+        XCTAssertEqual(
+            PlaylistRules.evaluate(rules, matchAll: true, candidates: candidates, now: origin).map(\.entryID),
+            ["unplayedReady"])
+        XCTAssertEqual(PlaylistRules.evaluate([], matchAll: true, candidates: candidates, now: origin).map(\.entryID), [])
+        XCTAssertEqual(PlaylistRules.evaluate([], matchAll: false, candidates: candidates, now: origin).map(\.entryID), [])
     }
 
     // MARK: - Library removal

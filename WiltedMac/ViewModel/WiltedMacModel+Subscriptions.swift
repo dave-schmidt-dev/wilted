@@ -129,8 +129,13 @@ extension WiltedMacModel {
 
     /// Turns a feed's episodes on or off in the Larder without unsubscribing.
     ///
-    /// The row is marked pending before the write is awaited. A repeat of the value being saved is
-    /// acknowledged and dropped; a different value is held and written once, after the one in flight.
+    /// The row and the Larder project the new value before the write is
+    /// awaited, so the toggle answers the tap instead of waiting for the store.
+    /// A repeat of the value being saved is acknowledged and dropped; a
+    /// different value is held and written once, after the one in flight, and
+    /// the projection follows the newest request instead of the first. A
+    /// failure puts only this feed's enabled field back on its last durable
+    /// value and restores the rows this projection withheld.
     func setSubscription(_ subscription: WiltedMacSubscription, enabled: Bool) {
 #if canImport(WiltedProducer)
         guard let store, !isClosingTemporaryState else { return }
@@ -139,13 +144,33 @@ extension WiltedMacModel {
         case .removing: return
         case let .updating(inFlight):
             queuedFeedEnabled[feedID] = enabled == inFlight ? nil : enabled
+            if feedEnabledProjections[feedID] == nil {
+                feedEnabledProjections[feedID] = WiltedMacFeedEnabledProjection(
+                    committed: inFlight, projected: enabled
+                )
+            }
+            projectFeedEnabled(feedID, enabled: enabled)
+            invalidateProjectedLibraryReads()
             return
         case nil: break
         }
+        let prior = feedEnabledProjections[feedID]
+        let durable = prior?.committed
+            ?? subscriptions.first(where: { $0.id == feedID })?.enabled
+            ?? subscription.enabled
         pendingFeedWrites[feedID] = .updating(enabled: enabled)
+        feedEnabledProjections[feedID] = WiltedMacFeedEnabledProjection(
+            committed: durable, projected: enabled, withheldEpisodes: prior?.withheldEpisodes ?? []
+        )
+        projectFeedEnabled(feedID, enabled: enabled)
+        invalidateProjectedLibraryReads()
         trackSubscriptionWrite { [weak self] in
             guard let self else { return }
-            defer { self.pendingFeedWrites[feedID] = nil; self.queuedFeedEnabled[feedID] = nil }
+            defer {
+                self.pendingFeedWrites[feedID] = nil
+                self.queuedFeedEnabled[feedID] = nil
+                self.feedEnabledProjections[feedID] = nil
+            }
             var target = enabled
             var row = subscription
             while true {
@@ -154,25 +179,42 @@ extension WiltedMacModel {
                     try await store.save(subscription: PodcastSubscription(
                         feedID: try ItemID(rawValue: row.id), subscribedAt: Timestamp(row.subscribedAt), enabled: target
                     ))
-                    let values = try await self.loadLibrary(from: store)
+                } catch {
+                    self.rollbackFeedEnabledProjection(feedID, title: row.title)
+                    return
+                }
+                // The enabled write is durable now. A failed reread below must
+                // not read as a failed write: the row already holds the
+                // committed value and the projection stands as the record.
+                self.feedEnabledProjections[feedID]?.committed = target
+                if let values = try? await self.loadLibrary(from: store) {
                     self.articles = values.articles
                     self.applyEpisodes(values.episodes)
                     self.subscriptions = values.subscriptions
-                    self.podcastOperationMessage = target
-                        ? "\(row.title) is showing in Larder again."
-                        : "\(row.title) is hidden from Larder. Wilted still keeps its episodes."
-                } catch {
-                    self.podcastOperationMessage = "\(row.title) could not be updated."
-                    return
                 }
-                guard let next = self.queuedFeedEnabled.removeValue(forKey: feedID), next != target,
-                      let latest = self.subscriptions.first(where: { $0.id == feedID }) else { return }
+                self.podcastOperationMessage = target
+                    ? "\(row.title) is showing in Larder again."
+                    : "\(row.title) is hidden from Larder. Wilted still keeps its episodes."
+                guard let next = self.queuedFeedEnabled.removeValue(forKey: feedID), next != target else { return }
                 target = next
-                row = latest
+                row = self.subscriptions.first(where: { $0.id == feedID }) ?? row
                 self.pendingFeedWrites[feedID] = .updating(enabled: next)
+                self.projectFeedEnabled(feedID, enabled: next)
+                self.invalidateProjectedLibraryReads()
             }
         }
 #endif
+    }
+
+    /// Puts a failed toggle back on the value of its last durable commit,
+    /// touching only this feed's row and the episode rows this projection
+    /// withheld. A concurrent rename, another feed's pending write, and every
+    /// other row stay exactly where they are.
+    func rollbackFeedEnabledProjection(_ feedID: String, title: String) {
+        if let projection = feedEnabledProjections[feedID] {
+            projectFeedEnabled(feedID, enabled: projection.committed)
+        }
+        podcastOperationMessage = "\(title) could not be updated."
     }
 
 #if canImport(WiltedProducer)
@@ -221,98 +263,6 @@ extension WiltedMacModel {
         return removed
     }
 #endif
-
-    /// Marks an episode the listener has started completed, deleting nothing.
-    ///
-    /// The row's Skip button used to call `removeEpisode`, which erased the
-    /// episode's records and needed a network feed check to bring anything
-    /// back. The accepted Larder mockup asks for a reversible exclusion instead:
-    /// a started episode is marked finished through the same listening record
-    /// every other completion writes, and taken off the playback queue, while
-    /// its media, preparation outcome, transcript and identity all stay on
-    /// disk. `undoSkipEpisode` therefore restores it entirely offline. An
-    /// episode never started has nothing to finish, and its state is left
-    /// exactly as it was.
-    ///
-    /// `requireStarted` is false only for the phone's Mark completed, where the listening
-    /// happened on the phone and the Mac has no saved position of its own.
-    func skipEpisode(_ episode: WiltedMacEpisode, requireStarted: Bool = true) {
-#if canImport(WiltedProducer)
-        guard !requireStarted || hasStartedEpisode(episode) else {
-            podcastOperationMessage = "\(episode.title) was not started, so nothing was marked completed."
-            return
-        }
-        withdrawPreparationRequest(for: episode.id)
-        undoableRemoval = nil
-        let wasPlaying = currentPodcastEpisodeID == episode.id
-        undoableSkip = episode
-        podcastOperationMessage = "Marked \(episode.title) completed. Undo completion restores it."
-        trackSubscriptionWrite { [weak self] in
-            guard let self, let store = self.store, let id = try? ItemID(rawValue: episode.id) else { return }
-            do {
-                // `lastRevisionID` stays nil on purpose: a skip is not
-                // evidence about the revision's audio. The store persists this
-                // listening shape and the retirement together, so Feeds never
-                // sees the completed row as active between two saves.
-                let skipped = try await store.completeAndRetireEpisode(listening: PodcastListeningState(
-                    episodeID: id, completedAt: Timestamp(Date()),
-                    lastRevisionID: nil, updatedAt: Timestamp(Date())
-                ))
-                guard skipped else {
-                    self.undoableSkip = nil
-                    self.podcastOperationMessage = "\(episode.title) could not be marked completed."
-                    return
-                }
-                // The listener's own decision: automatic admission must not reverse it.
-                let recorded = await self.recordOwnerDecision(.skip, for: episode.id, store: store)
-                if let playback = self.playback {
-                    try? await playback.removePodcastQueueEpisode(id)
-                    await self.refreshPodcastQueueState()
-                }
-                if wasPlaying { await self.stopPlaybackForRemovedEpisode() }
-                await self.releaseWaitingEpisodesAfterRetirement(of: episode)
-                if !recorded {
-                    self.podcastOperationMessage = "Marked \(episode.title) completed, but the choice could not be saved. Undo completion restores it."
-                }
-            } catch {
-                self.undoableSkip = nil
-                self.podcastOperationMessage = "\(episode.title) could not be marked completed."
-            }
-        }
-#endif
-    }
-
-    /// Reverses `skipEpisode`'s local completion from local state alone.
-    ///
-    /// The listening record is cleared and the episode plays again from the
-    /// media already on disk; no feed is consulted, which is the acceptance
-    /// bar the owner set for a mistaken Skip.
-    func undoSkipEpisode(_ episode: WiltedMacEpisode) {
-#if canImport(WiltedProducer)
-        undoableSkip = nil
-        podcastOperationMessage = "Restoring \(episode.title)…"
-        trackSubscriptionWrite { [weak self] in
-            guard let self, let store = self.store, let id = try? ItemID(rawValue: episode.id) else { return }
-            do {
-                let restored = try await store.undoCompletedAndRetiredEpisode(id)
-                guard restored else {
-                    self.podcastOperationMessage = "\(episode.title) could not be restored."
-                    return
-                }
-                let recorded = await self.recordOwnerDecision(.keep, for: episode.id, store: store)
-                await self.reloadLibraryRows()
-                self.podcastOperationMessage = recorded
-                    ? "Restored \(episode.title)."
-                    : "Restored \(episode.title), but the choice could not be saved."
-                if let restored = self.episodes.first(where: { $0.id == episode.id }) {
-                    self.playEpisode(restored)
-                }
-            } catch {
-                self.podcastOperationMessage = "\(episode.title) could not be restored."
-            }
-        }
-#endif
-    }
 
     /// Removes an episode for good, not just from this view.
     ///

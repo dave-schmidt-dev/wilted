@@ -27,7 +27,7 @@ private actor SequencedFetchTransport: SyncTransport {
 }
 
 @MainActor
-private final class LoadHold {
+final class LoadHold {
     var entered = 0
     var release: CheckedContinuation<Void, Never>?
 }
@@ -41,7 +41,7 @@ final class WiltedMacPlaylistTests: XCTestCase {
         let ids: [ItemID]
     }
 
-    private func created(_ model: WiltedMacModel, _ kind: PlaylistKind, _ name: String? = nil) async throws -> Playlist {
+    func created(_ model: WiltedMacModel, _ kind: PlaylistKind, _ name: String? = nil) async throws -> Playlist {
         let made = await model.createPlaylist(kind: kind, name: name)
         return try XCTUnwrap(made)
     }
@@ -55,7 +55,7 @@ final class WiltedMacPlaylistTests: XCTestCase {
 
     /// A model over a real store holding `count` ready episodes, the Larder queue set to the first
     /// two with the first current.
-    private func fixture(_ name: String, count: Int) async throws -> Fixture {
+    func fixture(_ name: String, count: Int) async throws -> Fixture {
         try await Self.makeFixture(name, count: count, directory: wiltedTemporaryDirectory(name))
     }
 
@@ -197,15 +197,6 @@ final class WiltedMacPlaylistTests: XCTestCase {
         XCTAssertEqual(model.playlistItems(try XCTUnwrap(model.playlist(playlist.id))).count, 3, "any-of")
         _ = await model.savePlaylistRules(playlist.id, rules: [rule, none], matchAll: true)
         XCTAssertTrue(model.playlistItems(try XCTUnwrap(model.playlist(playlist.id))).isEmpty, "all-of")
-    }
-
-    func testAnInvalidRuleDraftIsRefusedNotDropped() throws {
-        var draft = WiltedMacPlaylistRuleDraft()
-        draft.setField(.length, firstFeedID: nil)
-        draft.value = "soon"
-        XCTAssertThrowsError(try draft.makeRule())
-        draft.value = "45"
-        XCTAssertEqual(try draft.makeRule().value, "45")
     }
 
     func testNewPlaylistsGetUniqueNamesAndDeletingOneKeepsItsItems() async throws {

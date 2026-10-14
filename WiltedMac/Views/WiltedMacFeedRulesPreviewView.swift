@@ -193,7 +193,8 @@ private struct WiltedMacFeedRulesPreviewRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 WiltedMacEpisodeNotesTitle(
                     id: row.episodeID, title: row.title, prefix: "wilted-feed-rules",
-                    isPresented: $isShowingNotes, titleLineLimit: 2
+                    isPresented: $isShowingNotes, titleLineLimit: 2,
+                    attributedTitle: row.highlight?.title.map { highlighted($0) }
                 ) {
                     WiltedMacEpisodeInfoPopoverContent(
                         id: row.episodeID, seed: nil, prefix: "wilted-feed-rules",
@@ -202,6 +203,19 @@ private struct WiltedMacFeedRulesPreviewRow: View {
                 Text("\(row.verdict) · \(row.outcome.explanation)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                if let notes = row.highlight?.notes {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Match in notes")
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        Text(highlighted(notes))
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("wilted-feed-rules-notes-\(row.episodeID)")
+                    }
+                }
                 if row.deletesDownloadedAudio {
                     Label("Deletes downloaded audio", systemImage: "trash")
                         .wiltedFont(.utility)
@@ -215,6 +229,35 @@ private struct WiltedMacFeedRulesPreviewRow: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(row.title): \(row.verdict) · \(row.outcome.explanation)")
         .accessibilityIdentifier("wilted-feed-rules-row-\(row.episodeID)")
+    }
+
+    /// The matched text with the theme's highlight, so a match reads without
+    /// relying on color alone.
+    private func highlighted(_ match: WiltedMacRuleMatchHighlight.TextMatch) -> AttributedString {
+        match.attributed(scheme: colorScheme)
+    }
+}
+
+// MARK: - Highlighting
+
+extension WiltedMacRuleMatchHighlight.TextMatch {
+    /// The text with each matched range made bold and backed by the theme's
+    /// highlight background. The plan found the ranges; this only draws them.
+    func attributed(scheme: ColorScheme) -> AttributedString {
+        var attributed = AttributedString(text)
+        let highlight = WiltedTheme.color(.steel, scheme: scheme)
+        let ink = WiltedTheme.color(.primaryText, scheme: scheme)
+        for range in ranges {
+            guard range.lowerBound >= 0, range.lowerBound < range.upperBound,
+                  range.upperBound <= text.count else { continue }
+            let lower = text.index(text.startIndex, offsetBy: range.lowerBound)
+            let upper = text.index(lower, offsetBy: range.upperBound - range.lowerBound)
+            guard let attributedRange = Range(lower..<upper, in: attributed) else { continue }
+            attributed[attributedRange].inlinePresentationIntent = .stronglyEmphasized
+            attributed[attributedRange].backgroundColor = highlight
+            attributed[attributedRange].foregroundColor = ink
+        }
+        return attributed
     }
 }
 

@@ -83,7 +83,7 @@ extension WiltedPixelSnapshotTests {
             let saved = try XCTUnwrap(model.playlist(playlist.id))
             let image = render(
                 WiltedMacPlaylistRulesSheet(model: model, playlist: saved),
-                variant: variant(appearance), size: CGSize(width: WiltedMacPlaylistRulesSheet.width, height: 290))
+                variant: variant(appearance), size: CGSize(width: WiltedMacPlaylistRulesSheet.width, height: 620))
             let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
             XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the rule editor drew")
             assertSnapshot(

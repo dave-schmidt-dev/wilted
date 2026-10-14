@@ -312,6 +312,8 @@ struct WiltedMacArticleRow: View {
 
             WiltedMacLarderArticleAction(model: model, article: article)
 
+            WiltedMacAddToPlaylistMenu(model: model, entryID: article.id, style: .rowAction)
+
             Button { showsActions.toggle() } label: {
                 Image(systemName: removal.phase == .failed ? "exclamationmark.triangle" : "ellipsis")
                     .frame(width: 32, height: 32)

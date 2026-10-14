@@ -9,6 +9,12 @@ public struct Playlist: Sendable, Equatable {
     /// All-of when true, any-of when false. Only automatic playlists read it.
     public let matchAll: Bool
     public let sortIndex: Int
+
+    /// Builds a playlist value directly, for an editor's optimistic model.
+    public init(id: String, name: String, kind: PlaylistKind, matchAll: Bool, sortIndex: Int) {
+        self.id = id; self.name = name; self.kind = kind
+        self.matchAll = matchAll; self.sortIndex = sortIndex
+    }
 }
 
 extension LocalLibraryStore {
@@ -40,19 +46,27 @@ extension LocalLibraryStore {
 
     // MARK: - Playlists
 
-    /// Creates a playlist after the existing ones.
+    /// Creates a playlist after the existing ones. When `initialEntryID` is
+    /// given, its manual entry is inserted in the same save, so the playlist
+    /// and its first entry appear together or not at all.
     @discardableResult
     public func createPlaylist(id: String = UUID().uuidString, name: String, kind: PlaylistKind,
-                               matchAll: Bool = true) throws -> Playlist {
+                               matchAll: Bool = true, initialEntryID: String? = nil) throws -> Playlist {
         let context = ModelContext(container)
         let existing = try context.fetch(FetchDescriptor<PlaylistModels.PlaylistRecord>())
         guard !existing.contains(where: { $0.id == id }) else {
             throw LocalLibraryStoreError.invalidPodcastState("playlist exists")
         }
+        guard initialEntryID == nil || kind == .manual else {
+            throw LocalLibraryStoreError.invalidPodcastState("initial entry needs a manual playlist")
+        }
         let record = PlaylistModels.PlaylistRecord(
             id: id, name: name, kind: kind.rawValue, matchAll: matchAll,
             sortIndex: (existing.map(\.sortIndex).max() ?? -1) + 1)
         context.insert(record)
+        if let initialEntryID {
+            context.insert(PlaylistModels.PlaylistEntryRecord(playlistID: id, entryID: initialEntryID, sortKey: 0))
+        }
         try context.save()
         return Self.playlist(record)!
     }
@@ -173,11 +187,13 @@ extension LocalLibraryStore {
 
     // MARK: - Rules
 
-    /// Replaces an automatic playlist's rules, keeping their order.
-    public func setPlaylistRules(playlistID: String, rules: [PlaylistRule]) throws {
+    /// Replaces an automatic playlist's rules, keeping their order, and writes
+    /// the playlist's all-of or any-of mode in the same save when `matchAll` is
+    /// given. A rejection leaves both the rules and the mode untouched.
+    public func setPlaylistRules(playlistID: String, rules: [PlaylistRule], matchAll: Bool? = nil) throws {
         let context = ModelContext(container)
-        guard try context.fetch(FetchDescriptor<PlaylistModels.PlaylistRecord>())
-            .contains(where: { $0.id == playlistID && $0.kind == PlaylistKind.automatic.rawValue }) else {
+        guard let playlist = try context.fetch(FetchDescriptor<PlaylistModels.PlaylistRecord>())
+            .first(where: { $0.id == playlistID && $0.kind == PlaylistKind.automatic.rawValue }) else {
             throw LocalLibraryStoreError.invalidPodcastState("automatic playlist")
         }
         for row in try context.fetch(FetchDescriptor<PlaylistModels.PlaylistRuleRecord>())
@@ -187,18 +203,37 @@ extension LocalLibraryStore {
                 playlistID: playlistID, field: rule.field.rawValue, comparator: rule.comparator.rawValue,
                 value: rule.value, sortIndex: index))
         }
+        if let matchAll { playlist.matchAll = matchAll }
         try context.save()
     }
 
+    /// An automatic playlist's rules in order. A row this build cannot decode
+    /// is a visible error, never a silent drop; the row is left in place so a
+    /// later build can repair it.
     public func playlistRules(playlistID: String) throws -> [PlaylistRule] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<PlaylistModels.PlaylistRuleRecord>())
+        let rows = try context.fetch(FetchDescriptor<PlaylistModels.PlaylistRuleRecord>())
             .filter { $0.playlistID == playlistID }
-            .sorted { $0.sortIndex < $1.sortIndex }
-            .compactMap { row in
-                guard let field = PlaylistRuleField(rawValue: row.field),
-                      let comparator = PlaylistComparator(rawValue: row.comparator) else { return nil }
-                return try? PlaylistRule(field: field, comparator: comparator, value: row.value)
+            .sorted { ($0.sortIndex, $0.value) < ($1.sortIndex, $1.value) }
+        return try rows.map(Self.playlistRule)
+    }
+
+    /// Decodes one stored rule row. Expression rows carry their versioned JSON
+    /// payload in `value`; flat rows keep their field, comparator and value.
+    static func playlistRule(_ row: LocalLibrarySchemaV17Models.PlaylistRuleRecord) throws -> PlaylistRule {
+        guard let field = PlaylistRuleField(rawValue: row.field),
+              let comparator = PlaylistComparator(rawValue: row.comparator) else {
+            throw PlaylistRuleError(reason: "stored rule has an unknown field or comparator")
+        }
+        if field == .expression {
+            guard comparator == .expression else {
+                throw PlaylistRuleError(reason: "stored expression rule needs the expression comparator")
             }
+            return try PlaylistRule.expression(storedValue: row.value)
+        }
+        guard comparator != .expression else {
+            throw PlaylistRuleError(reason: "stored rule mixes an expression comparator with a flat field")
+        }
+        return try PlaylistRule(field: field, comparator: comparator, value: row.value)
     }
 }

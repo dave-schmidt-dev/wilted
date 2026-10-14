@@ -85,6 +85,10 @@ struct FeedRulesPreviewRow: Identifiable, Sendable, Equatable {
     let outcome: FeedRulesOutcome
     /// Apply would skip it and delete its downloaded audio, as a manual Skip does.
     let deletesDownloadedAudio: Bool
+    /// Where the deciding rule matched, prepared off the main actor with the
+    /// plan so the preview never runs a pattern. Nil when there is nothing to
+    /// draw; `make` fills it, and its default keeps callers that predate it.
+    var highlight: WiltedMacRuleMatchHighlight? = nil
 
     var id: String { episodeID }
 }
@@ -260,7 +264,9 @@ extension FeedRulesPlan {
                 ruleNumber: ruleNumber(of: result, in: input.rules),
                 current: record.map { .decided($0.decision, $0.source) } ?? .undecided,
                 isKept: input.keptIDs.contains(episode.id), outcome: outcomes[episode.id] ?? .unchanged,
-                deletesDownloadedAudio: deletesAudio(episode)
+                deletesDownloadedAudio: deletesAudio(episode),
+                highlight: WiltedMacRuleMatchHighlight.make(
+                    result: result, title: episode.title, notes: episode.notes, rules: input.rules)
             )
         }
         return FeedRulesPlan(

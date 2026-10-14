@@ -60,6 +60,7 @@ extension WiltedMacModel {
     }
 
     func installFixture(ready: Bool, preparing: Bool = false, podcasts: Bool = false) {
+        installDelayedPlaylistWriteFixtureIfRequested()
         if preparing {
             let url = URL(string: "https://example.test/wilted-preparing-fixture")!
             guard let itemID = try? ItemID.derive(from: url) else { return }
@@ -481,4 +482,5 @@ final class WiltedMacFixtureEpisodeInfoReadCounts {
         try? data.write(to: root.appendingPathComponent("episode-info-ui-read-counts.json"), options: .atomic)
     }
 }
+
 #endif

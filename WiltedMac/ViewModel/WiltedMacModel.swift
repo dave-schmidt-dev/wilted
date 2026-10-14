@@ -174,6 +174,28 @@ final class WiltedMacModel {
     var pendingFeedWrites: [String: WiltedMacFeedWrite] = [:]
     /// The newest enable value asked for while a write was in flight; written once when it finishes.
     var queuedFeedEnabled: [String: Bool] = [:]
+    /// One feed's optimistic Show episodes projection while its durable write
+    /// runs. `committed` is the last value the store confirmed; `projected` is
+    /// what the row and the Larder show right now. `withheldEpisodes` keeps the
+    /// rows a projected hide took off the Larder, so a failed write can put
+    /// them back without a store round trip.
+    struct WiltedMacFeedEnabledProjection {
+        var committed: Bool
+        var projected: Bool
+        var withheldEpisodes: [WiltedMacEpisode] = []
+    }
+    /// One Larder completion whose durable write is in flight. `original` is
+    /// the row this operation replaced, so a failure restores only the fields
+    /// the projection changed; `projectedRetiredAt` is the time the Larder
+    /// projects until the store confirms it.
+    struct WiltedMacEpisodeCompletionProjection {
+        let original: WiltedMacEpisode
+        let projectedRetiredAt: Date
+    }
+    /// Optimistic Show episodes projections, keyed by feed ID. See `setSubscription`.
+    var feedEnabledProjections: [String: WiltedMacFeedEnabledProjection] = [:]
+    /// Optimistic Larder completions, keyed by episode ID. See `skipEpisode`.
+    var episodeCompletionProjections: [String: WiltedMacEpisodeCompletionProjection] = [:]
     var selectedLibraryItemID: String?
     var preparation: WiltedMacPreparation?
     var selectedArticleID: String?

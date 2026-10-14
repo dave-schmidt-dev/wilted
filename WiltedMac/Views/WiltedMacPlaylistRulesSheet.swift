@@ -1,78 +1,17 @@
 import SwiftUI
 import WiltedProducer
 
-/// One editable rule row. Values stay strings, as the store keeps them; `makeRule` is the only
-/// place that validates, so an invalid draft is explained instead of silently dropped.
-struct WiltedMacPlaylistRuleDraft: Identifiable, Equatable {
-    let id = UUID()
-    var field: PlaylistRuleField = .played
-    var comparator: PlaylistComparator = .is
-    var value = PlaylistPlayedState.unplayed.rawValue
-
-    init() {}
-    init(_ rule: PlaylistRule) { field = rule.field; comparator = rule.comparator; value = rule.value }
-
-    static func comparators(for field: PlaylistRuleField) -> [PlaylistComparator] {
-        switch field {
-        case .feed, .kind, .played: [.is, .isNot]
-        case .length: [.shorterThan, .longerThan]
-        case .published: [.withinDays, .before, .after]
-        }
-    }
-
-    /// Switching field resets the comparator and value to ones the new field accepts.
-    mutating func setField(_ new: PlaylistRuleField, firstFeedID: String?) {
-        field = new
-        comparator = Self.comparators(for: new)[0]
-        switch new {
-        case .feed: value = firstFeedID ?? ""
-        case .kind: value = "podcast.episode"
-        case .played: value = PlaylistPlayedState.unplayed.rawValue
-        case .length: value = "30"
-        case .published: value = "7"
-        }
-    }
-
-    mutating func setComparator(_ new: PlaylistComparator) {
-        comparator = new
-        guard field == .published else { return }
-        value = new == .withinDays ? "7" : PlaylistRule.dateValue(Date())
-    }
-
-    func makeRule() throws -> PlaylistRule {
-        try PlaylistRule(field: field, comparator: comparator, value: value)
-    }
-
-    static func name(_ field: PlaylistRuleField) -> String {
-        switch field {
-        case .feed: "Feed"
-        case .played: "Played"
-        case .length: "Length"
-        case .published: "Published"
-        case .kind: "Kind"
-        }
-    }
-
-    static func name(_ comparator: PlaylistComparator) -> String {
-        switch comparator {
-        case .is: "is"
-        case .isNot: "is not"
-        case .shorterThan: "is shorter than"
-        case .longerThan: "is longer than"
-        case .withinDays: "is within the last"
-        case .before: "is before"
-        case .after: "is after"
-        }
-    }
-}
-
-/// The rule editor for an automatic playlist: match all or any, then an ordered list of rules.
-/// Save validates every row; on a failure nothing is written and the drafts stay as typed.
+/// The rule editor for an automatic playlist: stable numbered rules, the match expression built
+/// from those numbers with AND, OR, NOT and parentheses, and a live preview of the episodes the
+/// exact compiled rule matches. Save validates the same editor the preview evaluated; on a failure
+/// nothing is written and the drafts stay as typed.
 struct WiltedMacPlaylistRulesSheet: View {
     @Bindable var model: WiltedMacModel
     let playlist: Playlist
-    @State private var drafts: [WiltedMacPlaylistRuleDraft]
-    @State private var matchAll: Bool
+    @State private var editor: WiltedMacPlaylistRulesEditor
+    @State private var preview: WiltedMacPlaylistRulePreview?
+    @State private var previewGeneration: UInt64 = 0
+    @State private var isSaving = false
     @State private var errorText: String?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
@@ -80,11 +19,13 @@ struct WiltedMacPlaylistRulesSheet: View {
     init(model: WiltedMacModel, playlist: Playlist) {
         self.model = model
         self.playlist = playlist
-        _drafts = State(initialValue: (model.playlists.rules[playlist.id] ?? []).map(WiltedMacPlaylistRuleDraft.init))
-        _matchAll = State(initialValue: playlist.matchAll)
+        _editor = State(initialValue: WiltedMacPlaylistRulesEditor(
+            playlist: playlist, storedRules: model.playlists.rules[playlist.id] ?? []))
     }
 
     static let width: CGFloat = 520
+    /// The pause after the last edit before a live preview runs.
+    static let livePreviewDelay: Duration = .milliseconds(150)
 
     var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
@@ -92,80 +33,201 @@ struct WiltedMacPlaylistRulesSheet: View {
                 .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 .accessibilityAddTraits(.isHeader)
-            Picker("Include items that match", selection: $matchAll) {
-                Text("All of the rules").tag(true)
-                Text("Any of the rules").tag(false)
+            HStack {
+                Text("Expression presets")
+                    .wiltedFont(.utility)
+                Button("All (AND)") {
+                    editor.applyPreset(matchAll: true)
+                    preview = nil
+                }
+                Button("Any (OR)") {
+                    editor.applyPreset(matchAll: false)
+                    preview = nil
+                }
             }
-            .pickerStyle(.segmented)
+            .help("Replace the expression with all or any of the numbered rules")
+            .disabled(isSaving)
             .accessibilityIdentifier("wilted-playlist-rules-match")
-            if drafts.isEmpty {
-                Text("No rules yet. A playlist without rules is empty.")
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            }
-            ForEach(Array(drafts.enumerated()), id: \.element.id) { index, draft in
-                ruleRow(index: index, draft: draft)
-            }
+            rulesList
+                .disabled(isSaving)
             Button {
-                drafts.append(WiltedMacPlaylistRuleDraft())
+                editor.addRule()
+                preview = nil
             } label: {
                 Label("Add rule", systemImage: "plus")
             }
             .accessibilityIdentifier("wilted-playlist-rules-add")
-            if let errorText {
-                Text(errorText)
+            .disabled(isSaving)
+            expressionField
+                .disabled(isSaving)
+            previewArea
+            if let text = model.playlists.ruleReadErrors[playlist.id] ?? editor.validationProblem ?? errorText {
+                Text(text)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("wilted-playlist-rules-error")
             }
             Divider()
             HStack {
+                if isSaving {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Saving rules")
+                        .accessibilityIdentifier("wilted-playlist-rules-saving")
+                }
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
+                    .disabled(model.playlists.ruleReadErrors[playlist.id] != nil || editor.validationProblem != nil || isSaving
+                        || model.playlists.pending[playlist.id] != nil)
                     .accessibilityIdentifier("wilted-playlist-rules-save")
             }
         }
         .padding(WiltedTheme.Spacing.large)
         .frame(width: Self.width)
+        .frame(minHeight: 420, idealHeight: 540, maxHeight: 680)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-playlist-rules-sheet")
+        .task(id: previewKey) { await refreshPreview() }
+        .onDisappear {
+            isSaving = false
+            previewGeneration &+= 1
+        }
     }
 
-    private func binding(_ id: UUID) -> Binding<WiltedMacPlaylistRuleDraft> {
+    /// The debounced preview depends on the editor's text and on the library the preview reads.
+    private var previewKey: String {
+        editor.previewSignature + "\u{1F}" + model.playlistPreviewFingerprint
+    }
+
+    private var rulesList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                if editor.leaves.isEmpty {
+                    Text("No rules yet. A playlist without rules is empty.")
+                        .wiltedFont(.body)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+                ForEach(editor.leaves) { draft in
+                    ruleRow(draft)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minHeight: 88, maxHeight: 220)
+        .accessibilityIdentifier("wilted-playlist-rules-list")
+    }
+
+    private var expressionField: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            Text("Match expression")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            TextField("e.g. (1 OR 2) AND NOT 3", text: Binding(
+                get: { editor.expression },
+                set: { editor.editExpression($0); preview = nil }))
+                .font(.system(.body, design: .monospaced))
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Match expression")
+                .accessibilityIdentifier("wilted-playlist-rule-expression")
+            Text("Rules are numbered above; combine them with AND, OR, NOT and parentheses.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            if !editor.formulaIsGenerated, !editor.unusedRuleNumbers.isEmpty {
+                Text("Not used by the expression: rule "
+                    + editor.unusedRuleNumbers.map(String.init).joined(separator: ", ") + ".")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-playlist-rule-unused")
+            }
+        }
+    }
+
+    private var previewArea: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            HStack {
+                Text("Live preview")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                Spacer()
+                if let preview {
+                    Text("\(preview.matchCount) matching")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-playlist-rule-preview-count")
+                }
+            }
+            if let preview {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                        if preview.entries.isEmpty {
+                            Text("Nothing matches these rules.")
+                                .wiltedFont(.body)
+                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                .accessibilityIdentifier("wilted-playlist-rule-preview-empty")
+                        }
+                        ForEach(preview.entries) { entry in
+                            WiltedMacPlaylistPreviewRow(model: model, entryID: entry.id)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 40, maxHeight: 160)
+            } else if editor.validationProblem == nil {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Previewing matches")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-playlist-rule-preview")
+    }
+
+    private func draftBinding(_ id: UUID) -> Binding<WiltedMacPlaylistRuleDraft> {
         Binding(
-            get: { drafts.first { $0.id == id } ?? WiltedMacPlaylistRuleDraft() },
-            set: { new in if let i = drafts.firstIndex(where: { $0.id == id }) { drafts[i] = new } })
+            get: { editor.leaves.first { $0.id == id } ?? WiltedMacPlaylistRuleDraft() },
+            set: { new in
+                editor.updateLeaf(id) { $0 = new }
+                preview = nil
+            })
     }
 
-    private func ruleRow(index: Int, draft: WiltedMacPlaylistRuleDraft) -> some View {
-        let draftBinding = binding(draft.id)
-        let number = index + 1
+    private func ruleRow(_ draft: WiltedMacPlaylistRuleDraft) -> some View {
+        let binding = draftBinding(draft.id)
+        let number = draft.number
         return HStack(spacing: WiltedTheme.Spacing.small) {
+            Text("\(number)")
+                .wiltedFont(.utility)
+                .monospacedDigit()
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .frame(minWidth: 20, alignment: .trailing)
+                .accessibilityHidden(true)
             Picker("Field", selection: Binding(
-                get: { draftBinding.wrappedValue.field },
-                set: { draftBinding.wrappedValue.setField($0, firstFeedID: model.subscriptions.first?.id) })
+                get: { binding.wrappedValue.field },
+                set: { binding.wrappedValue.setField($0, firstFeedID: model.subscriptions.first?.id) })
             ) {
-                ForEach(PlaylistRuleField.allCases, id: \.self) { Text(WiltedMacPlaylistRuleDraft.name($0)).tag($0) }
+                ForEach(editor.fieldChoices, id: \.self) { Text(WiltedMacPlaylistRuleDraft.name($0)).tag($0) }
             }
             .labelsHidden()
             .accessibilityLabel("Rule \(number) field")
             Picker("Comparison", selection: Binding(
-                get: { draftBinding.wrappedValue.comparator },
-                set: { draftBinding.wrappedValue.setComparator($0) })
+                get: { binding.wrappedValue.comparator },
+                set: { binding.wrappedValue.setComparator($0) })
             ) {
-                ForEach(WiltedMacPlaylistRuleDraft.comparators(for: draft.field), id: \.self) {
+                ForEach(WiltedMacPlaylistRuleDraft.comparators(for: binding.wrappedValue.field), id: \.self) {
                     Text(WiltedMacPlaylistRuleDraft.name($0)).tag($0)
                 }
             }
             .labelsHidden()
             .accessibilityLabel("Rule \(number) comparison")
-            valueControl(draftBinding, number: number)
+            valueControl(binding, number: number)
             Button {
-                drafts.removeAll { $0.id == draft.id }
+                editor.removeRule(number: number)
+                preview = nil
             } label: {
                 Image(systemName: "minus.circle")
             }
@@ -200,6 +262,12 @@ struct WiltedMacPlaylistRulesSheet: View {
                 Text("Played").tag(PlaylistPlayedState.played.rawValue)
             }
             .labelsHidden().accessibilityLabel(label)
+        case .ready:
+            Picker("Ready", selection: draft.value) {
+                Text("Yes").tag("true")
+                Text("No").tag("false")
+            }
+            .labelsHidden().accessibilityLabel(label)
         case .length:
             HStack(spacing: 4) {
                 TextField("Minutes", text: draft.value).frame(width: 64).accessibilityLabel(label)
@@ -218,22 +286,100 @@ struct WiltedMacPlaylistRulesSheet: View {
                     displayedComponents: .date)
                     .labelsHidden().accessibilityLabel(label)
             }
+        case .expression:
+            EmptyView()
         }
     }
 
-    private func save() {
-        var rules: [PlaylistRule] = []
-        for (index, draft) in drafts.enumerated() {
-            do { rules.append(try draft.makeRule()) } catch {
-                errorText = "Rule \(index + 1) is not valid: check its value."
-                return
-            }
+    /// Waits out the debounce, then evaluates the compiled editor over the Larder. A newer edit
+    /// cancels this one; a failing validation clears the preview so no last-good rows stand.
+    private func refreshPreview() async {
+        previewGeneration &+= 1
+        let generation = previewGeneration
+        preview = nil
+        errorText = nil
+        do { try await Task.sleep(for: Self.livePreviewDelay) } catch { return }
+        guard generation == previewGeneration, !Task.isCancelled else { return }
+        guard let validated = try? editor.validated() else { return }
+        let rules: [PlaylistRule]
+        switch validated {
+        case .empty: rules = []
+        case .expression(let rule): rules = [rule]
         }
+        let result = await model.playlistRulePreview(for: rules, matchAll: true)
+        guard generation == previewGeneration, !Task.isCancelled else { return }
+        preview = result
+    }
+
+    /// Captures the compiled rule, playlist ID and match mode synchronously, marks the save state
+    /// synchronously (so a second Save cannot slip in before the task is scheduled), and only then
+    /// starts the write.
+    private func save() {
+        guard !isSaving, model.playlists.ruleReadErrors[playlist.id] == nil else { return }
+        let snapshot = editor
+        let validated: WiltedMacPlaylistRulesEditor.Validated
+        do {
+            validated = try snapshot.validated()
+        } catch let error as PlaylistRuleError {
+            errorText = error.reason
+            preview = nil
+            return
+        } catch {
+            errorText = "The expression is not valid."
+            preview = nil
+            return
+        }
+        let rules: [PlaylistRule]
+        switch validated {
+        case .empty:
+            rules = []
+        case .expression(let rule):
+            rules = [rule]
+        }
+        let matchAll = snapshot.matchAll
+        let playlistID = playlist.id
+        isSaving = true
+        errorText = nil
         Task {
-            if await model.savePlaylistRules(playlist.id, rules: rules, matchAll: matchAll) {
+            let saved = await model.savePlaylistRules(playlistID, rules: rules, matchAll: matchAll)
+            isSaving = false
+            if saved {
                 dismiss()
             } else {
                 errorText = "The rules could not be saved."
+            }
+        }
+    }
+}
+
+/// One preview row: the same title and popover the playlist page uses, under the preview prefix so
+/// a hosted test can tell preview surfaces apart. Opening it reads notes only; playback and the
+/// current transcript are untouched.
+private struct WiltedMacPlaylistPreviewRow: View {
+    let model: WiltedMacModel
+    let entryID: String
+    @State private var isPresented = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        if let item = model.playlistLibraryItem(entryID) {
+            switch item {
+            case .article(let article):
+                Text(article.title)
+                    .wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .lineLimit(1)
+            case .episode(let episode), .audiobook(let episode):
+                WiltedMacEpisodeNotesTitle(
+                    episode: episode, prefix: "wilted-playlist-preview", isPresented: $isPresented,
+                    titleLineLimit: 1
+                ) {
+                    WiltedMacEpisodeNotes(
+                        episode: episode, prefix: "wilted-playlist-preview",
+                        source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)
+                    ) { EmptyView() }
+                }
+                .id(episode.id)
             }
         }
     }

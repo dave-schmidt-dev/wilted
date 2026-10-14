@@ -213,7 +213,13 @@ extension WiltedMacModel {
         let displayNames = Dictionary(allSubscriptions.compactMap { subscription in
             subscription.displayName.map { (subscription.feedID, $0) }
         }, uniquingKeysWith: { first, _ in first })
-        let subscribed = Set(allSubscriptions.filter(\.enabled).map(\.feedID))
+        // A pending Show episodes projection decides the feed's Larder
+        // visibility, not only the snapshot's durable enabled flag, so a load
+        // that began before the toggle cannot republish the hidden rows.
+        let subscribed = Set(allSubscriptions.compactMap { subscription -> ItemID? in
+            let enabled = projectedFeedEnabled(subscription.feedID.rawValue) ?? subscription.enabled
+            return enabled ? subscription.feedID : nil
+        })
         var episodeCounts: [ItemID: Int] = [:]
         for episode in snapshot.episodes { episodeCounts[episode.feedID, default: 0] += 1 }
         let subscriptionValues = allSubscriptions.compactMap { subscription -> WiltedMacSubscription? in
@@ -316,8 +322,13 @@ extension WiltedMacModel {
         let allSubscriptionValues = Self.subscriptionRows(
             subscriptionValues, articleFeeds: snapshot.articleFeeds, stored: allSubscriptions
         )
-        return (articleValues, LibraryEpisodeRows(values: episodeValues, readEpoch: readEpoch),
-                allSubscriptionValues.map(applyingPendingFeedRename))
+        // In-flight removals stay projected onto the reload, so a snapshot
+        // cannot resurrect a row whose completion is still writing.
+        let projectedEpisodeValues = Self.applyingPendingEpisodeCompletions(
+            episodeValues, projections: episodeCompletionProjections
+        )
+        return (articleValues, LibraryEpisodeRows(values: projectedEpisodeValues, readEpoch: readEpoch),
+                allSubscriptionValues.map(applyingPendingFeedRename).map(applyingPendingFeedEnabled))
     }
 
     /// Imported audiobook volumes as episode-shaped rows, so the durable queue, the player and the

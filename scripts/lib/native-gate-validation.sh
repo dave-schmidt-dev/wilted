@@ -210,7 +210,7 @@ validate_pixel_snapshot_baselines() {
       testNowPlayingPanePixelBaselines.mac-shell-now-playing-pane-*.png) expected_size='640 x 740' ;;
       testSidebarPlaylistsSectionPixelBaselines.mac-shell-sidebar-playlists-*.png) expected_size='202 x 180' ;;
       testManualPlaylistPixelBaselines.mac-shell-playlist-manual-*.png) expected_size='760 x 420' ;;
-      testPlaylistRuleEditorPixelBaselines.mac-shell-playlist-rules-*.png) expected_size='520 x 290' ;;
+      testPlaylistRuleEditorPixelBaselines.mac-shell-playlist-rules-*.png) expected_size='520 x 620' ;;
       testReportsSettingsPixelBaselines.mac-shell-settings-reports-*.png) expected_size='760 x 560' ;;
       testBulletinBannerPixelBaselines.mac-shell-player-bulletin-banner-*.png) expected_size='760 x 150' ;;
       testLarderReportRowPixelBaselines.mac-shell-larder-report-row-*.png) expected_size='760 x 110' ;;
@@ -309,7 +309,7 @@ validate_mac_ui_selector() {
 mac_ui_declared_test_count() {
   local count source source_count
   count=0
-  for source in WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests WiltedMacEpisodeInfoUITests; do
+  for source in WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests WiltedMacEpisodeInfoUITests WiltedMacPlaylistUITests; do
     [[ -f "$repo_root/WiltedMacUITests/$source.swift" ]] || fail "missing Mac UI journey source: $source"
     source_count="$(grep -cE '^[[:space:]]*func[[:space:]]+test' "$repo_root/WiltedMacUITests/$source.swift" || true)"
     [[ "$source_count" =~ ^[1-9][0-9]*$ ]] || fail "$source declares no test methods"
@@ -351,6 +351,15 @@ assert_mac_ui_selector_floor_contract() {
   grep -Eq '^[[:space:]]*func[[:space:]]+testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer\(' \
     "$repo_root/WiltedMacUITests/WiltedMacEpisodeInfoUITests.swift" ||
     fail 'saved episode info native journey must stay registered'
+  # The playlist owner-feedback journeys raise the declared Mac UI floor from
+  # seven to nine; the two retry journeys stay unpinned.
+  for method in \
+    testManualPlaylistDiscoveryRenameDeleteAndShare \
+    testAutomaticPlaylistFormulaPreviewAndSave; do
+    grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" \
+      "$repo_root/WiltedMacUITests/WiltedMacPlaylistUITests.swift" ||
+      fail "playlist owner-feedback native journey must stay registered: $method"
+  done
   [[ "$(WILTED_MAC_UI_SELECTOR="$focused" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
     fail 'validated focused Mac UI selector must require exactly one test'
   [[ "$(unset WILTED_MAC_UI_SELECTOR; expected_test_count_floor macos-ui-tests)" == \

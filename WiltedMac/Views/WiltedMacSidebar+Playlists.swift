@@ -11,18 +11,38 @@ extension WiltedMacSidebar {
                 playlistRow(playlist)
                     .contextMenu { playlistActions(playlist) }
             }
-            if mode == .rail { WiltedMacNewPlaylistMenu(model: model, style: .icon) }
+            if mode == .rail {
+                HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                    playlistCreateFeedback(scheme: colorScheme)
+                    WiltedMacNewPlaylistMenu(model: model, style: .icon)
+                }
+            }
         } header: {
             if mode == .full { playlistsHeader(scheme: colorScheme) }
         }
     }
 
-    /// One playlist row: the shared sidebar row, named for the playlist.
+    /// One playlist row: the shared sidebar row, named for the playlist. A write in flight shows
+    /// its spinner, and the last failure stays visible until that playlist's next operation.
     func playlistRow(_ playlist: Playlist) -> some View {
         WiltedMacSidebarRow(
             destination: .playlist(playlist.id), title: playlist.name, mode: mode,
             isSelected: model.selectedNavigation == .playlist(playlist.id), textScale: model.textScale
         ) { onSelect(.playlist(playlist.id)) }
+        .overlay(alignment: .trailing) {
+            if model.playlists.pending[playlist.id] != nil {
+                ProgressView()
+                    .controlSize(.mini)
+                    .accessibilityLabel("Saving \(playlist.name)")
+                    .accessibilityIdentifier("wilted-sidebar-playlist-saving-\(playlist.id)")
+            } else if model.playlists.failures[playlist.id] != nil {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
+                    .help(model.playlists.failures[playlist.id] ?? "")
+                    .accessibilityLabel("The last change to \(playlist.name) failed")
+                    .accessibilityIdentifier("wilted-sidebar-playlist-error-\(playlist.id)")
+            }
+        }
     }
 
     /// The section heading with its New Playlist menu; the installed caller supplies its appearance.
@@ -33,9 +53,28 @@ extension WiltedMacSidebar {
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: scheme))
                 .accessibilityAddTraits(.isHeader)
             Spacer()
+            playlistCreateFeedback(scheme: scheme)
             WiltedMacNewPlaylistMenu(model: model, style: .icon)
         }
         .accessibilityIdentifier("wilted-sidebar-playlists-header")
+    }
+
+    /// Sidebar feedback while creates are writing, or the New Playlist menu's persistent failure.
+    @ViewBuilder
+    func playlistCreateFeedback(scheme: ColorScheme) -> some View {
+        if model.playlists.creatingCount > 0 {
+            ProgressView()
+                .controlSize(.small)
+                .help("Creating playlist\u{2026}")
+                .accessibilityLabel("Creating playlist")
+                .accessibilityIdentifier("wilted-sidebar-playlist-creating")
+        } else if let failure = model.playlists.createFailure {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(WiltedTheme.color(.error, scheme: scheme))
+                .help(failure)
+                .accessibilityLabel(failure)
+                .accessibilityIdentifier("wilted-sidebar-playlist-create-error")
+        }
     }
 
     @ViewBuilder
@@ -96,8 +135,10 @@ struct WiltedMacPlaylistPrompts: ViewModifier {
             )) {
                 TextField("Name", text: $draftName)
                 Button("Rename") {
-                    if let id = renamingID { Task { await model.renamePlaylist(id, to: draftName) } }
+                    guard let id = renamingID else { model.playlists.prompt = nil; return }
+                    let name = draftName
                     model.playlists.prompt = nil
+                    Task { await model.renamePlaylist(id, to: name) }
                 }
                 Button("Cancel", role: .cancel) { model.playlists.prompt = nil }
             }
@@ -108,8 +149,9 @@ struct WiltedMacPlaylistPrompts: ViewModifier {
                 titleVisibility: .visible
             ) {
                 Button("Delete Playlist", role: .destructive) {
-                    if let id = deletingID { Task { await model.deletePlaylist(id) } }
+                    guard let id = deletingID else { model.playlists.prompt = nil; return }
                     model.playlists.prompt = nil
+                    Task { await model.deletePlaylist(id) }
                 }
                 Button("Cancel", role: .cancel) { model.playlists.prompt = nil }
             } message: {
@@ -118,20 +160,51 @@ struct WiltedMacPlaylistPrompts: ViewModifier {
     }
 }
 
-/// Add to Playlist, for a Larder row's context menu: the manual playlists, then New Playlist.
+/// Add to Playlist for a Larder row: the manual playlists, then New Playlist. It renders as the
+/// row's context menu and as a named row action, so the choice is visible without opening one.
 struct WiltedMacAddToPlaylistMenu: View {
+    enum Style { case contextMenu, rowAction }
+
     @Bindable var model: WiltedMacModel
     let entryID: String
+    var style: Style = .contextMenu
 
     var body: some View {
-        Menu("Add to Playlist") {
-            ForEach(model.playlists.playlists.filter { $0.kind == .manual }, id: \.id) { playlist in
-                Button(playlist.name) { Task { await model.addToPlaylist(playlist.id, entryID: entryID) } }
+        switch style {
+        case .contextMenu:
+            Menu("Add to Playlist") { choices }
+        case .rowAction:
+            // Compact enough for the minimum Larder row: a text label there
+            // would push the episode's date out of the title column.
+            Menu { choices } label: {
+                Label("Add to Playlist", systemImage: "text.badge.plus")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
             }
-            Divider()
-            Button("New Playlist…") {
-                Task { await model.createPlaylist(kind: .manual, adding: entryID) }
-            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Add to Playlist")
+            .accessibilityLabel("Add to Playlist")
+            .accessibilityIdentifier("wilted-add-to-playlist-\(entryID)")
         }
+    }
+
+    @ViewBuilder private var choices: some View {
+        ForEach(model.playlists.playlists.filter { $0.kind == .manual }, id: \.id) { playlist in
+            Button(playlist.name) { Task { await Self.add(model: model, entryID: entryID, to: playlist) } }
+        }
+        Divider()
+        Button("New Playlist…") { Task { await Self.createManualPlaylist(model: model, entryID: entryID) } }
+    }
+
+    /// The choice both presentations run; a hosted test can invoke it without opening a menu.
+    @MainActor static func add(model: WiltedMacModel, entryID: String, to playlist: Playlist) async {
+        await model.addToPlaylist(playlist.id, entryID: entryID)
+    }
+
+    @MainActor static func createManualPlaylist(model: WiltedMacModel, entryID: String) async {
+        await model.createPlaylist(kind: .manual, adding: entryID)
     }
 }

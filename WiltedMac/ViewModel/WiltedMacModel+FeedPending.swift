@@ -31,6 +31,62 @@ extension WiltedMacModel {
 
     func isFeedWritePending(_ feedID: String) -> Bool { pendingFeedWrites[feedID] != nil }
 
+    // MARK: - Optimistic Show episodes
+
+    /// The enabled value this feed projects right now: a queued tap outranks
+    /// the write in flight, and both outrank the loaded row. Nil when idle.
+    func projectedFeedEnabled(_ feedID: String) -> Bool? {
+        if let queued = queuedFeedEnabled[feedID] { return queued }
+        if let projection = feedEnabledProjections[feedID] { return projection.projected }
+        if case let .updating(enabled)? = pendingFeedWrites[feedID] { return enabled }
+        return nil
+    }
+
+    /// Applies the pending projection to a loaded subscription row, preserving
+    /// every other field the snapshot carries.
+    func applyingPendingFeedEnabled(_ row: WiltedMacSubscription) -> WiltedMacSubscription {
+        guard let enabled = projectedFeedEnabled(row.id), enabled != row.enabled else { return row }
+        var value = row
+        value.enabled = enabled
+        return value
+    }
+
+    /// Projects the toggle's value on the loaded row and on the feed's rows in
+    /// the Larder, both before the durable write starts and for every coalesced
+    /// tap that arrives while it runs. Only this feed's row and episodes move.
+    func projectFeedEnabled(_ feedID: String, enabled: Bool) {
+        if let index = subscriptions.firstIndex(where: { $0.id == feedID }) {
+            subscriptions[index].enabled = enabled
+        }
+        guard var projection = feedEnabledProjections[feedID] else { return }
+        projection.projected = enabled
+        if enabled {
+            if !projection.withheldEpisodes.isEmpty {
+                let present = Set(episodes.map(\.id))
+                episodes.append(contentsOf: projection.withheldEpisodes.filter { !present.contains($0.id) })
+                projection.withheldEpisodes = []
+            }
+        } else {
+            let withheld = episodes.filter { $0.feedID == feedID }
+            if !withheld.isEmpty {
+                projection.withheldEpisodes = withheld
+                let ids = Set(withheld.map(\.id))
+                episodes.removeAll { ids.contains($0.id) }
+            }
+        }
+        feedEnabledProjections[feedID] = projection
+    }
+
+#if canImport(WiltedProducer)
+    /// Rejects library snapshots that began before this projection, the same
+    /// way a feed rename does, so a load already in flight cannot republish the
+    /// pre-toggle row or its episodes.
+    func invalidateProjectedLibraryReads() {
+        libraryReadEpoch &+= 1
+        lastAppliedLibraryReadEpoch = libraryReadEpoch
+    }
+#endif
+
     /// Ends a refresh for every row: queued and refreshing rows stop, finished rows go back to idle,
     /// and a failed row stays so the listener can see which feed to retry.
     func settleFeedRefreshStates() {
