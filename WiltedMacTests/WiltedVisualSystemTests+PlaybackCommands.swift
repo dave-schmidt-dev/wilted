@@ -1,9 +1,16 @@
 import XCTest
 import AppKit
 import SwiftUI
+import Vision
 import WiltedDomain
 import WiltedProducer
 @testable import WiltedMac
+
+private struct WiltedPlayerAnchor {
+    let label: String
+    let top: CGFloat
+    let box: CGRect
+}
 
 /// What every player shows for a command's pending and failed states, and
 /// the speed picker's own save line. Scenario IDs come from the retired
@@ -139,30 +146,46 @@ extension WiltedVisualSystemTests {
             ("root-min", AnyView(WiltedMacRootView(model: model)), CGSize(width: 800, height: 700)),
             ("root-normal", AnyView(WiltedMacRootView(model: model)), CGSize(width: 1100, height: 700))
         ]
-        func capture(_ phase: String) throws -> [[(String, CGFloat)]] {
-            try views.map { name, view, size in
-                let lines = try WiltedMacHeadless.recognizedLines(view, size: size)
-                let text = lines.map(\.text).joined(separator: " ")
+        func capture(_ phase: String, matching baseline: [[WiltedPlayerAnchor]]? = nil) throws -> [[WiltedPlayerAnchor]] {
+            try views.enumerated().map { index, entry in
+                let (name, view, size) = entry
+                let frame = try playerFrame(view, size: size)
+                let text = frame.observations.map(\.label).joined(separator: " ")
                 XCTAssertFalse(text.contains("Starting playback"), text)
                 XCTAssertFalse(text.contains("Pausing"), text)
                 let anchorLabels = [episode.title, "Mark completed", "Transcript", "Hide Transcript"]
-                let anchors = lines.filter { anchorLabels.contains($0.text) }
-                XCTAssertFalse(anchors.isEmpty, "\(name): player detail/transport anchors must be rendered")
-                let bitmap = try WiltedMacHeadless.render(view, size: size)
-                let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
+                let anchors: [WiltedPlayerAnchor]
+                if let expected = baseline?[index] {
+                    // Read each known label in its own nearby pixels: the Play spinner
+                    // cannot change Vision's segmentation for unrelated text.
+                    anchors = try expected.map { anchor in
+                        try XCTUnwrap(playerAnchor(matching: anchor, in: frame.bitmap),
+                                      "\(name) \(phase): missing player anchor \(anchor.label)")
+                    }
+                } else {
+                    let discovered = anchorLabels.compactMap { label in
+                        frame.observations.first { $0.label == label }
+                    }
+                    anchors = try discovered.map { anchor in
+                        try XCTUnwrap(playerAnchor(matching: anchor, in: frame.bitmap),
+                                      "\(name) \(phase): missing baseline player anchor \(anchor.label)")
+                    }
+                    XCTAssertFalse(anchors.isEmpty, "\(name): player detail/transport anchors must be rendered")
+                }
+                let attachment = XCTAttachment(data: try XCTUnwrap(frame.bitmap.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
                 attachment.name = "in-button-\(name)-\(phase)"; attachment.lifetime = .keepAlways; add(attachment)
-                return anchors.map { ($0.text, $0.top) }
+                return anchors
             }
         }
-        func sameGeometry(_ baseline: [[(String, CGFloat)]], _ current: [[(String, CGFloat)]]) -> Bool {
+        func sameGeometry(_ baseline: [[WiltedPlayerAnchor]], _ current: [[WiltedPlayerAnchor]]) -> Bool {
             guard baseline.count == current.count else { return false }
             return zip(baseline, current).enumerated().allSatisfy { index, pair in
                 let (before, after) = pair
-                guard before.map({ $0.0 }) == after.map({ $0.0 }) else { return false }
-                return zip(before, after).allSatisfy { abs($0.1 - $1.1) <= 2 / views[index].2.height }
+                guard before.map(\.label) == after.map(\.label) else { return false }
+                return zip(before, after).allSatisfy { abs($0.top - $1.top) <= 2 / views[index].2.height }
             }
         }
-        func compare(_ baseline: [[(String, CGFloat)]], _ current: [[(String, CGFloat)]]) {
+        func compare(_ baseline: [[WiltedPlayerAnchor]], _ current: [[WiltedPlayerAnchor]]) {
             XCTAssertTrue(sameGeometry(baseline, current), "Player anchors stay within two rendered pixels of their steady frames")
         }
         let larder = WiltedMacLarderView(model: model, paneMode: .side)
@@ -179,7 +202,7 @@ extension WiltedVisualSystemTests {
         let pausedRow = try rowPixels()
         let paused = try capture("paused")
         let insertedStatusRow = paused.enumerated().map { index, anchors in
-            anchors.map { ($0.0, $0.1 + 8 / views[index].2.height) }
+            anchors.map { WiltedPlayerAnchor(label: $0.label, top: $0.top + 8 / views[index].2.height, box: $0.box) }
         }
         XCTAssertFalse(sameGeometry(paused, insertedStatusRow),
                        "The same geometry check must reject an eight-pixel status-row shift in every player")
@@ -189,11 +212,11 @@ extension WiltedVisualSystemTests {
         let generation = model.playbackCommands.generation; let starts = backend.playCount
         model.togglePlayback(); model.togglePlayback()
         XCTAssertEqual(model.playbackCommands.generation, generation)
-        compare(paused, try capture("starting"))
+        compare(paused, try capture("starting", matching: paused))
         XCTAssertEqual(try rowPixels(), pausedRow, "A player start must not spin the unrelated Larder Play now button")
         gate.release(); await model.waitForPlaybackOperationForTesting()
         XCTAssertTrue(model.isPlaying); XCTAssertEqual(backend.playCount, starts + 1)
-        _ = try capture("playing")
+        _ = try capture("playing", matching: paused)
         // Pause is answered before the press returns: the audio has stopped and no
         // pending state shows, while its checkpoint is still held on the effect tail.
         let pauses = backend.pauseCount
@@ -206,12 +229,12 @@ extension WiltedVisualSystemTests {
         model.pausePlayback()
         XCTAssertEqual(model.playbackCommands.generation, pauseGeneration, "a repeated Pause issues nothing")
         XCTAssertEqual(backend.pauseCount, pauses + 1)
-        compare(paused, try capture("pausing"))
+        compare(paused, try capture("pausing", matching: paused))
         XCTAssertEqual(try rowPixels(), pausedRow, "A player pause must not spin the unrelated Larder Play now button")
         gate.release(); await model.waitForPlaybackOperationForTesting()
         XCTAssertFalse(model.isPlaying); XCTAssertEqual(backend.pauseCount, pauses + 1)
         XCTAssertNil(model.playbackCommands.pending)
-        compare(paused, try capture("settled"))
+        compare(paused, try capture("settled", matching: paused))
         backend.refusesPlay = true; model.togglePlayback(); await model.waitForPlaybackOperationForTesting()
         XCTAssertNil(model.playbackCommands.pending); XCTAssertTrue(model.canRetryPlayback)
         let fault = try WiltedMacHeadless.recognizedText(
@@ -287,6 +310,52 @@ extension WiltedVisualSystemTests {
         let rowBottom = min(CGFloat(image.height), titleTop + 51)
         return CGRect(x: 0, y: rowTop, width: CGFloat(image.width), height: rowBottom - rowTop)
             .integral.intersection(imageBounds)
+    }
+
+    /// Captures one 2x native render and reads anchors from the same pixels that
+    /// are retained as evidence; the shipping view still receives point `size`.
+    @MainActor
+    private func playerFrame<V: View>(_ view: V, size: CGSize) throws -> (bitmap: NSBitmapImageRep, observations: [WiltedPlayerAnchor]) {
+        let scale: CGFloat = 2
+        let host = NSHostingView(rootView: view.environment(\.colorScheme, .light).padding(24)
+            .frame(width: size.width, height: size.height, alignment: .topLeading).background(Color.white))
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0))
+        bitmap.size = size
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        return (bitmap, try playerAnchors(in: bitmap.cgImage))
+    }
+
+    private func playerAnchor(matching expected: WiltedPlayerAnchor, in bitmap: NSBitmapImageRep) throws -> WiltedPlayerAnchor? {
+        let image = try XCTUnwrap(bitmap.cgImage)
+        let inset: CGFloat = 12
+        let rect = CGRect(x: expected.box.minX * CGFloat(image.width) - inset,
+                          y: (1 - expected.box.maxY) * CGFloat(image.height) - inset,
+                          width: expected.box.width * CGFloat(image.width) + 2 * inset,
+                          height: expected.box.height * CGFloat(image.height) + 2 * inset)
+            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height)).integral
+        guard let crop = image.cropping(to: rect) else { return nil }
+        return try playerAnchors(in: crop).first { $0.label == expected.label }.map {
+            WiltedPlayerAnchor(label: $0.label,
+                               top: (rect.minY + $0.top * rect.height) / CGFloat(image.height), box: expected.box)
+        }
+    }
+
+    private func playerAnchors(in image: CGImage?) throws -> [WiltedPlayerAnchor] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.minimumTextHeight = 0.004
+        try VNImageRequestHandler(cgImage: try XCTUnwrap(image)).perform([request])
+        return (request.results ?? []).compactMap { observation in
+            observation.topCandidates(1).first.map {
+                WiltedPlayerAnchor(label: $0.string, top: 1 - observation.boundingBox.maxY, box: observation.boundingBox)
+            }
+        }
     }
 
     @MainActor

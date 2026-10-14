@@ -147,8 +147,16 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
             ) { EmptyView() })
         defer { close(failedWindow) }
         await settle()
-        let error = try text(of: failedWindow)
-        XCTAssertTrue(error.contains("Could not load this episode's details."), error)
+        let expectedError = "Could not load this episode's details."
+        let nativeText = accessibilityNodes(in: failedWindow)
+            .compactMap { $0.accessibilityLabel() }
+            .joined(separator: "\n")
+        // AppKit can vend this static copy semantically. If the hidden host does
+        // not, language correction is confined to this fixed English fallback.
+        let error = nativeText.contains(expectedError)
+            ? nativeText
+            : try text(of: failedWindow, usesLanguageCorrection: true)
+        XCTAssertTrue(error.contains(expectedError), error)
         XCTAssertTrue(error.contains("Retry"), error)
     }
 
@@ -310,7 +318,7 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
         XCTFail("the popover never read the transcript")
     }
 
-    private func text(of window: NSWindow) throws -> String {
+    private func text(of window: NSWindow, usesLanguageCorrection: Bool = false) throws -> String {
         let host = try XCTUnwrap(window.contentView)
         host.layoutSubtreeIfNeeded()
         let size = host.bounds.size
@@ -328,7 +336,7 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
         add(capture)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
+        request.usesLanguageCorrection = usesLanguageCorrection
         request.recognitionLanguages = ["en-US"]
         request.minimumTextHeight = 0.004
         try VNImageRequestHandler(cgImage: image).perform([request])
