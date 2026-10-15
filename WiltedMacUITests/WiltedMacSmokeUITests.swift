@@ -37,15 +37,15 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["wilted-player-keyboard-transports"].exists)
 
         let larderEmpty = app.descendants(matching: .any)["wilted-larder-empty"]
-        // The empty Articles hint points to the toolbar entry that opens the Add sheet.
-        let addArticle = app.descendants(matching: .any)["wilted-larder-add-hint"]
+        // The toolbar owns Add; the redundant Larder hint stays removed.
+        let removedAddHint = app.descendants(matching: .any)["wilted-larder-add-hint"]
         let syncControls = app.descendants(matching: .any)["wilted-sync-controls"]
         let seededArticle = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-article-row-'")
         ).firstMatch
         XCTAssertTrue(seededArticle.waitForExistence(timeout: 5), "the ready fixture seeds an article")
         XCTAssertFalse(larderEmpty.exists, "a seeded article makes the initial Larder nonempty")
-        XCTAssertFalse(addArticle.exists, "the Add hint appears after the seeded article is removed")
+        XCTAssertFalse(removedAddHint.exists, "the redundant Add hint must remain absent")
         let search = app.textFields["wilted-larder-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         XCTAssertEqual(search.label, "Search episodes")
@@ -112,17 +112,17 @@ final class WiltedMacSmokeUITests: XCTestCase {
             app.descendants(matching: .any)["wilted-larder-empty"].waitForExistence(timeout: 10),
             "Removing the only article must fall back to the Larder's empty state."
         )
-        XCTAssertTrue(
-            addArticle.waitForExistence(timeout: 5),
-            "Removing the only article must leave the Add article entry point reachable."
-        )
+        XCTAssertFalse(removedAddHint.exists, "the empty Larder must not restore the removed Add hint")
+        XCTAssertTrue(trigger.waitForExistence(timeout: 5), "Deleting the only article must leave the toolbar Add button available")
+        XCTAssertTrue(trigger.isEnabled)
+        XCTAssertTrue(trigger.isHittable, "The real Add entry point remains reachable after deletion")
 
         navFeeds.click()
         let card = app.descendants(matching: .any)["wilted-podcast-feeds"]
         XCTAssertTrue(card.waitForExistence(timeout: 5), "navigation opens the podcast feeds card")
         XCTAssertTrue(card.exists)
         XCTAssertTrue(compact.exists)
-        XCTAssertFalse(addArticle.exists)
+        XCTAssertFalse(removedAddHint.exists)
         XCTAssertFalse(larderEmpty.exists)
         XCTAssertTrue(card.waitForExistence(timeout: 8))
 
@@ -216,19 +216,22 @@ final class WiltedMacSmokeUITests: XCTestCase {
 
         navSettings.click()
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
+        XCTAssertFalse(removedAddHint.exists)
         XCTAssertTrue(compact.exists)
         app.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -600)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-mac-feeds-detail"].exists)
 
         navLarder.click()
-        XCTAssertTrue(addArticle.waitForExistence(timeout: 5))
-        XCTAssertTrue(larderEmpty.exists)
+        XCTAssertTrue(larderEmpty.waitForExistence(timeout: 5))
+        XCTAssertFalse(removedAddHint.exists, "Returning to the Larder must not restore the removed Add hint")
         XCTAssertTrue(compact.exists)
         XCTAssertFalse(syncControls.exists)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-podcast-feeds"].exists)
 
         let finalAddButton = app.descendants(matching: .any)["wilted-add-button"]
         XCTAssertTrue(finalAddButton.waitForExistence(timeout: 8), "the toolbar Add button opens the Add sheet")
+        XCTAssertTrue(finalAddButton.isEnabled)
+        XCTAssertTrue(finalAddButton.isHittable, "The real Add entry point remains reachable after returning to the Larder")
         finalAddButton.click()
         XCTAssertTrue(
             add.waitForExistence(timeout: 8),
