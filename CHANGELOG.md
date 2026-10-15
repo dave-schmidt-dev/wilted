@@ -109,6 +109,9 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Larder sort preferences (such as Age, oldest first) persist across playback, natural continuation, and app relaunch without resetting to Custom; explicit manual drag and reorder operations continue to select Custom.
+- Ready-media reconciliation and export use the existing publication snapshot to skip unrelated transcript and preparation-history decoding while retaining exact prepared-media proof.
+- The Mac transcript panel shows when the selected saved transcript is loading, distinguishes read failure from confirmed absence, and offers Retry after a failed read.
 - An ad-review call that hits the model context limit preserves original audio and reports a warning instead of failing preparation, even when other review calls succeed.
 - Startup recovery resumes saved pending preparations for kept, downloaded episodes in their original order and with saved settings through the normal admission gate, respecting off-peak; malformed saved policies show a retry message.
 - Quit-interrupted downloads resume on relaunch with a three-attempt automatic bound, while an explicit Cancel stays cancelled and a new explicit request resets its own attempt count.

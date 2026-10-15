@@ -210,7 +210,7 @@ struct WiltedMacLibraryReadyAudioSource: WiltedMacReadyAudioSource {
     }
 
     private func ownAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
-        let snapshot = try await store.podcastLibrarySnapshot()
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
         let live = Set(snapshot.articles.filter { !$0.isDeleted }.map(\.itemID))
             .union(snapshot.audiobooks.filter { !$0.isRemoved }.map(\.itemID))
         var ready: [ItemID: WiltedMacReadyAudio] = [:]

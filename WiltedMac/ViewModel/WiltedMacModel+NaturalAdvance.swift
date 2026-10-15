@@ -53,7 +53,6 @@ extension WiltedMacModel {
                     })
                     guard self.automaticAdvanceClaim(advance) == .owns else { break }
                     _ = self.claimAutomaticAdvance(advance)
-                    self.larderSort = .custom
                     self.isLarderQueuePlayback = false
                     self.currentPodcastEpisodeID = candidate.id
                     self.isPodcastPlayback = true

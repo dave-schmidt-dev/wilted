@@ -49,12 +49,12 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
     let store: LocalLibraryStore
 
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? {
-        let snapshot = try await store.podcastLibrarySnapshot()
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
         return Self.preparedAudio(in: snapshot)[entryID]
     }
 
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
-        let snapshot = try await store.podcastLibrarySnapshot()
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
         return Self.preparedAudio(in: snapshot)
     }
 

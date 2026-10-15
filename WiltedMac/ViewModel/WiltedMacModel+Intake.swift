@@ -395,7 +395,6 @@ extension WiltedMacModel {
                     try await playback.playPodcastQueueEpisodeNow(id, startsIf: { self.isCurrentPlaybackCommand(command) })
                     self.playbackCommands.trace.record(.loadCalled, token: command.token)
                     try self.ensureNewestSelection(command)
-                    self.larderSort = .custom
                     // A generic Play keeps the Larder-wide continuation
                     // contract, and it ends any queue-origin mode the
                     // previous session had.

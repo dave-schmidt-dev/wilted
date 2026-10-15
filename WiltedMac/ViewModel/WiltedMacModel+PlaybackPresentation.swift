@@ -4,14 +4,6 @@ import Foundation
 import WiltedDomain
 import WiltedProducer
 
-/// Presentation belongs to an exact loaded revision and selection, including same-item reselections.
-struct WiltedMacPlaybackPresentationOwner: Equatable {
-    let itemID: ItemID
-    let revisionID: RevisionID
-    let selectionToken: UInt64
-    let generation: UInt64
-}
-
 extension WiltedMacModel {
     func playbackPresentationOwner(
         itemID: ItemID, revisionID: RevisionID
@@ -47,6 +39,18 @@ extension WiltedMacModel {
         cancelPlaybackPresentation()
         guard let revisionID = playback?.revisionID,
               let owner = playbackPresentationOwner(itemID: itemID, revisionID: revisionID) else { return }
+        if let current = currentTranscript,
+           current.presentationOwner?.itemID == owner.itemID,
+           current.presentationOwner?.revisionID == owner.revisionID,
+           current.isReadable {
+            currentTranscript?.presentationOwner = owner
+        } else {
+            currentTranscript = WiltedMacTranscript(
+                availability: .loading,
+                text: nil,
+                presentationOwner: owner
+            )
+        }
         let id = UUID()
         playbackPresentationTaskID = id
         let task = Task { [weak self] in
@@ -82,8 +86,18 @@ extension WiltedMacModel {
 
     /// Read immutable values first; apply text and cuts together only while the owner still matches.
     func readPlaybackPresentation(_ owner: WiltedMacPlaybackPresentationOwner, includesCuts: Bool) async {
-        guard let store, ownsPlaybackPresentation(owner) else { return }
-        let transcript = try? await store.transcript(for: owner.itemID, revisionID: owner.revisionID)
+        guard ownsPlaybackPresentation(owner) else { return }
+        guard let store else {
+            currentTranscript = WiltedMacTranscript(availability: .failed, text: nil, presentationOwner: owner)
+            return
+        }
+        let transcriptResult: Result<Transcript?, Error>
+        do {
+            let transcript = try await store.transcript(for: owner.itemID, revisionID: owner.revisionID)
+            transcriptResult = .success(transcript)
+        } catch {
+            transcriptResult = .failure(error)
+        }
         guard ownsPlaybackPresentation(owner) else { return }
         var spans: [WiltedMacRemovedSpan] = []
         if includesCuts {
@@ -93,12 +107,30 @@ extension WiltedMacModel {
         }
         await playbackPresentationReadBarrierForTesting?()
         guard ownsPlaybackPresentation(owner) else { return }
-        currentTranscript = transcript.map(WiltedMacTranscript.init(stored:))
-            ?? WiltedMacTranscript(availability: .absent, text: nil)
+        switch transcriptResult {
+        case let .success(transcript):
+            if let transcript {
+                currentTranscript = WiltedMacTranscript(stored: transcript, owner: owner)
+            } else {
+                currentTranscript = WiltedMacTranscript(
+                    availability: .absent, text: nil, presentationOwner: owner
+                )
+            }
+        case .failure:
+            currentTranscript = WiltedMacTranscript(
+                availability: .failed, text: nil, presentationOwner: owner
+            )
+        }
         if includesCuts {
             removedSpansByEpisode[owner.itemID.rawValue] = spans
             rescheduleSeamMarker()
         }
+    }
+
+    /// Retries reading the current presentation after a load failure.
+    func retryCurrentTranscriptLoad() {
+        guard let playback, let itemID = playback.itemID else { return }
+        requestPlaybackPresentation(itemID: itemID, includesCuts: true)
     }
 }
 #endif

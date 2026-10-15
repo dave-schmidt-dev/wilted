@@ -57,6 +57,24 @@ struct WiltedMacTranscriptPanel: View {
                                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                                 .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
+                        } else if transcript.availability == .loading {
+                            HStack(spacing: WiltedTheme.Spacing.small) {
+                                ProgressView().controlSize(.small)
+                                Text("Loading transcript…")
+                                    .wiltedFont(.utility)
+                                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            }
+                        } else if transcript.availability == .failed {
+                            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                                Text("Could not read the saved transcript.")
+                                    .wiltedFont(.utility)
+                                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Button("Retry") {
+                                    model.retryCurrentTranscriptLoad()
+                                }
+                                .accessibilityIdentifier("wilted-now-playing-transcript-retry")
+                            }
                         } else {
                             Label(
                                 model.currentEpisode == nil ? transcript.unavailableLabel
@@ -84,7 +102,7 @@ struct WiltedMacTranscriptPanel: View {
                     }
                     // Backfill fetches article text from the web; an episode's
                     // transcript comes from preparation instead.
-                    if !transcript.isReadable, model.currentEpisode == nil {
+                    if !transcript.isReadable, transcript.availability != .loading, model.currentEpisode == nil {
                         Button(model.isBackfillingTranscript ? "Fetching transcript…" : "Fetch transcript") {
                             model.backfillCurrentTranscript()
                         }

@@ -112,6 +112,16 @@ struct WiltedMacTranscriptCue: Identifiable, Equatable, Sendable {
     var speaker: String?
 }
 
+#if canImport(WiltedProducer)
+/// Presentation belongs to an exact loaded revision and selection, including same-item reselections.
+struct WiltedMacPlaybackPresentationOwner: Equatable, Sendable {
+    let itemID: ItemID
+    let revisionID: RevisionID
+    let selectionToken: UInt64
+    let generation: UInt64
+}
+#endif
+
 struct WiltedMacTranscript: Equatable, Sendable {
     enum Availability: String, Sendable {
         case available
@@ -119,6 +129,8 @@ struct WiltedMacTranscript: Equatable, Sendable {
         case oversized
         case malformed
         case absent
+        case loading
+        case failed
     }
 
     let availability: Availability
@@ -128,6 +140,37 @@ struct WiltedMacTranscript: Equatable, Sendable {
     var cues: [WiltedMacTranscriptCue] = []
     /// Whether the timing came from the publisher or from Wilted's own pass.
     var timingSource: String?
+    #if canImport(WiltedProducer)
+    var presentationOwner: WiltedMacPlaybackPresentationOwner?
+    #endif
+
+#if canImport(WiltedProducer)
+    init(
+        availability: Availability,
+        text: String?,
+        cues: [WiltedMacTranscriptCue] = [],
+        timingSource: String? = nil,
+        presentationOwner: WiltedMacPlaybackPresentationOwner? = nil
+    ) {
+        self.availability = availability
+        self.text = text
+        self.cues = cues
+        self.timingSource = timingSource
+        self.presentationOwner = presentationOwner
+    }
+#else
+    init(
+        availability: Availability,
+        text: String?,
+        cues: [WiltedMacTranscriptCue] = [],
+        timingSource: String? = nil
+    ) {
+        self.availability = availability
+        self.text = text
+        self.cues = cues
+        self.timingSource = timingSource
+    }
+#endif
 
     /// A transcript that can follow the playback clock.
     var isSynchronized: Bool { isReadable && !cues.isEmpty }
@@ -154,6 +197,8 @@ struct WiltedMacTranscript: Equatable, Sendable {
     /// listener already did this; the producer showed no transcript at all.
     var unavailableLabel: String {
         switch availability {
+        case .loading: "Loading transcript…"
+        case .failed: "Could not read the saved transcript"
         case .oversized: "Transcript unavailable: article text is too large"
         case .malformed: "Transcript unavailable: article text could not be read"
         case .absent, .available, .stale: "Transcript unavailable"
@@ -170,7 +215,17 @@ struct WiltedMacTranscript: Equatable, Sendable {
     /// The producer rendered nothing at all when it had no transcript loaded,
     /// so this is what a missing one resolves to.
     static let unavailable = WiltedMacTranscript(availability: .absent, text: nil)
+    static let loading = WiltedMacTranscript(availability: .loading, text: nil)
 }
+
+#if canImport(WiltedProducer)
+extension WiltedMacTranscript {
+    init(stored: Transcript, owner: WiltedMacPlaybackPresentationOwner) {
+        self.init(stored: stored)
+        self.presentationOwner = owner
+    }
+}
+#endif
 
 /// One advertisement preparation cut out of an episode, placed where the cut
 /// shows up in the audio the listener is actually hearing.
