@@ -226,11 +226,21 @@ extension WiltedMacModel {
         )
         episodes = [firstEpisode]
         if fixtureEpisodeIsDeferred {
-            // The same shape `admitAutomaticPreparation` writes when the
-            // off-peak window is shut, minus the download that produced it.
+            // The named scenario must carry a real off-peak policy, even when
+            // current Settings use immediate or manual processing.
+            let deferredPolicy: WiltedAutomationProcessingPolicy
+            switch automationSettings.processingPolicy {
+            case .offPeak:
+                deferredPolicy = automationSettings.processingPolicy
+            default:
+                guard let start = WiltedAutomationLocalTime(hour: 2, minute: 0),
+                      let end = WiltedAutomationLocalTime(hour: 3, minute: 0),
+                      let window = WiltedAutomationOffPeakWindow(start: start, end: end) else { return }
+                deferredPolicy = .offPeak(window)
+            }
             deferredAutomaticPreparations = [DeferredAutomaticPreparation(
                 episodeID: episodeID.rawValue,
-                processingPolicy: automationSettings.processingPolicy,
+                processingPolicy: deferredPolicy,
                 policySnapshot: Self.preparationPolicySnapshot(from: automationSettings)
             )]
             preparationQueue.enter(WiltedMacWaitingPreparation(

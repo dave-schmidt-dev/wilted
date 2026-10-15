@@ -292,12 +292,13 @@ extension WiltedMacModel {
     }
 #endif
 
-    /// One automatic job held outside the preparation gate until its original
-    /// off-peak window opens.
+    /// One admitted job held outside the preparation gate until its saved
+    /// deadline and processing window allow it to run.
     struct DeferredAutomaticPreparation: Codable, Equatable {
         let episodeID: String
         let processingPolicy: WiltedAutomationProcessingPolicy
         let policySnapshot: PodcastPreparationPolicySnapshot
+        var notBefore: Date? = nil
     }
 
     private struct DeferredAutomaticPreparationEnvelope: Codable {
@@ -393,7 +394,10 @@ extension WiltedMacModel {
     /// deferred row sees "Preparing…" and a Stop button for work that has not
     /// started and will not start for hours.
     func isDeferredForOffPeak(_ episodeID: String) -> Bool {
-        deferredAutomaticPreparations.contains { $0.episodeID == episodeID }
+        deferredAutomaticPreparations.contains { job in
+            guard job.episodeID == episodeID, case .offPeak = job.processingPolicy else { return false }
+            return true
+        }
     }
 
     /// Prepares a deferred episode now, overriding its off-peak window.
@@ -422,11 +426,11 @@ extension WiltedMacModel {
         return true
     }
 
-    /// Re-evaluates only already-admitted off-peak jobs. Later Settings edits
-    /// do not affect the stored policy snapshot or its window.
+    /// Re-evaluates admitted jobs against their saved deadline and window.
+    /// Later Settings edits do not affect the stored admission policy.
     func startEligibleAutomaticPreparations(at date: Date = Date()) {
         let eligible = deferredAutomaticPreparations.filter { deferred in
-            WiltedAutomationCoordinator.preparationPlan(
+            (deferred.notBefore.map { date >= $0 } ?? true) && WiltedAutomationCoordinator.preparationPlan(
                 processingPolicy: deferred.processingPolicy, at: date
             ) == .prepareNow
         }

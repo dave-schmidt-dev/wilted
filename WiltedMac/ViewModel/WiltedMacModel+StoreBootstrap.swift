@@ -200,6 +200,8 @@ extension WiltedMacModel {
             // to be the only path through.
             announceStartupStep(.restoringPlayback)
             await restorePodcastPlayback()
+            await restorePendingPodcastPreparations(in: configuredStore,
+                excluding: Set(invalidation.forcedRedownloadEpisodeIDs.map(\.rawValue)))
             startupState = .ready
             // The query restored at launch could not search transcripts before the store existed.
             scheduleTranscriptSearch()

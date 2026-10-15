@@ -127,6 +127,10 @@ extension WiltedMacModelTests {
                                        "a --wilted-ui-fixture-deferred launch must reach the "
                                        + "first render still holding its deferral, or Prepare "
                                        + "now has nothing to override")
+        guard case .offPeak = try XCTUnwrap(model.deferredAutomaticPreparations.first).processingPolicy else {
+            XCTFail("The named deferred fixture must seed an actual off-peak policy")
+            return
+        }
         let episode = try XCTUnwrap(model.episodes.first { $0.id == deferredID })
         XCTAssertTrue(model.isDeferredForOffPeak(episode.id))
         XCTAssertEqual(WiltedMacModel.larderGroup(for: episode), .downloaded,

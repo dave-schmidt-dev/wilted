@@ -357,6 +357,7 @@ extension WiltedMacModel {
     func cancelEpisodePreparation(_ episode: WiltedMacEpisode) {
         if deferredAutomaticPreparations.contains(where: { $0.episodeID == episode.id }) {
             removeDeferredAutomaticPreparation(episode.id)
+            withdrawPreparationRequest(for: episode.id)
             updateEpisode(episode.id) { $0.preparationState = .notPrepared }
             podcastOperationMessage = "Preparation cancelled."
             return
@@ -404,6 +405,7 @@ extension WiltedMacModel {
     func cancelWaitingPreparation(_ waiting: WiltedMacWaitingPreparation) {
         if deferredAutomaticPreparations.contains(where: { $0.episodeID == waiting.id }) {
             removeDeferredAutomaticPreparation(waiting.id)
+            withdrawPreparationRequest(for: waiting.id)
             updateEpisode(waiting.id) { $0.preparationState = .notPrepared }
             podcastOperationMessage = "Preparation cancelled."
             return
