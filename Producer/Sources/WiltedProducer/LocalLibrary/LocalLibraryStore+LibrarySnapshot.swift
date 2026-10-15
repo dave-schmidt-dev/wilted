@@ -84,6 +84,9 @@ extension LocalLibraryStore {
         public let transcripts: [String: Transcript]
         public let preparationOutcomes: [String: PodcastPreparationOutcome]
         public let listeningStates: [ItemID: PodcastListeningState]
+        /// The owner's latest keep/skip decision per episode; the store keeps
+        /// one row per episode, so later writes replace earlier ones.
+        public let episodeDecisions: [ItemID: EpisodeDecisionRecord]
         public let retiredAtByEpisode: [ItemID: Timestamp]
         /// Which removal kind, if any, wrote `retiredAtByEpisode`'s
         /// timestamp -- what distinguishes a retired row from a dismissed one
@@ -99,7 +102,13 @@ extension LocalLibraryStore {
         public let audiobooks: [StoredAudiobook]
     }
 
-    public func podcastLibrarySnapshot() throws -> PodcastLibrarySnapshot {
+    /// Publication retains export metadata and media proof without loading display-only payloads.
+    public enum PodcastLibrarySnapshotProfile: Sendable, Equatable {
+        case full
+        case publication
+    }
+
+    public func podcastLibrarySnapshot(profile: PodcastLibrarySnapshotProfile = .full) throws -> PodcastLibrarySnapshot {
         let context = ModelContext(container)
 
         podcastLibrarySnapshotFetchCount += 1
@@ -153,11 +162,13 @@ extension LocalLibraryStore {
             playbackStates["\(record.itemID)|\(record.revisionID)"] = state
         }
 
-        podcastLibrarySnapshotFetchCount += 1
         var transcripts: [String: Transcript] = [:]
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>()) {
-            guard let transcript = try? decodeTranscript(record) else { continue }
-            transcripts["\(record.itemID)|\(record.revisionID)"] = transcript
+        if profile == .full {
+            podcastLibrarySnapshotFetchCount += 1
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>()) {
+                guard let transcript = try? decodeTranscript(record) else { continue }
+                transcripts["\(record.itemID)|\(record.revisionID)"] = transcript
+            }
         }
 
         podcastLibrarySnapshotFetchCount += 1
@@ -185,7 +196,22 @@ extension LocalLibraryStore {
         }
 
         podcastLibrarySnapshotFetchCount += 1
-        let preparationRuns = try allPreparationRunSummaries(in: context)
+        var episodeDecisions: [ItemID: EpisodeDecisionRecord] = [:]
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeDecisionRecord>()) {
+            guard let episodeID = try? ItemID(rawValue: record.episodeID),
+                  let decision = EpisodeDecision(rawValue: record.decision),
+                  let source = EpisodeDecisionSource(rawValue: record.source) else { continue }
+            episodeDecisions[episodeID] = EpisodeDecisionRecord(
+                episodeID: episodeID, decision: decision, source: source,
+                ruleID: record.ruleID, decidedAt: Timestamp(record.decidedAt)
+            )
+        }
+
+        var preparationRuns: [PreparationRunSummary] = []
+        if profile == .full {
+            podcastLibrarySnapshotFetchCount += 1
+            preparationRuns = try allPreparationRunSummaries(in: context)
+        }
 
         podcastLibrarySnapshotFetchCount += 1
         let articleFeedValues = try articleFeeds()
@@ -206,6 +232,7 @@ extension LocalLibraryStore {
             podcastQueue: podcastQueue,
             downloads: downloads, readyRevisions: readyRevisions, playbackStates: playbackStates,
             transcripts: transcripts, preparationOutcomes: preparationOutcomes, listeningStates: listeningStates,
+            episodeDecisions: episodeDecisions,
             retiredAtByEpisode: retiredAtByEpisode, removalKindByEpisode: removalKindByEpisode,
             preparationRuns: preparationRuns, articleFeeds: articleFeedValues,
             feedIDByArticle: feedIDByArticle, audiobooks: audiobookValues

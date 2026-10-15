@@ -25,6 +25,8 @@ public struct PodcastEpisodeBatchResult: Sendable {
     /// reclaims -- one read per type, and zero when nothing commits.
     public let mediaRecordFetchCount: Int
     public let saveCount: Int
+    /// Explicit Restore already committed fresh owner Keep with these receipt members.
+    public var atomicOwnerDecisionIDs: [ItemID] = []
 }
 
 extension LocalLibraryStore {
@@ -76,16 +78,34 @@ extension LocalLibraryStore {
     /// The episode row, decision records, listening history, and preparation
     /// journal stay, so Restore and history work; the restored episode has no
     /// download or ready revision and reads as not downloaded.
-    public func retireEpisodes(_ requested: [ItemID], at retiredAt: Timestamp = Timestamp(Date())) throws -> PodcastEpisodeBatchResult {
-        let unique = uniqueEpisodeIDs(requested)
+    /// Explicit group choices are guarded before mutation and retain all backing media.
+    public func retireEpisodes(_ requested: [ItemID], at retiredAt: Timestamp = Timestamp(Date()), asOwnerChoice: Bool = false) throws -> PodcastEpisodeBatchResult {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        context.autosaveEnabled = false
+        defer { if context.hasChanges { context.rollback() } }
+        let lookup = try EpisodeAssociationReadLookup(in: context)
+        var seen = Set<ItemID>()
+        let unique = asOwnerChoice ? requested.flatMap { lookup.state(for: $0)?.memberIDs ?? [$0] }
+            .filter { seen.insert($0).inserted } : uniqueEpisodeIDs(requested)
+        var denied = Set<ItemID>()
+        var retainsMedia = Set<String>()
+        if asOwnerChoice {
+            for id in requested {
+                let choice = EpisodeDecisionRecord(episodeID: id, decision: .skip, source: .manual, decidedAt: retiredAt)
+                let applies = try Self.shouldApplyEpisodeDecision(choice, in: context, lookup: lookup)
+                try Self.stageAssociationManualTie(choice, in: context, lookup: lookup)
+                let members = lookup.state(for: id)?.memberIDs ?? [id]
+                if !applies { denied.formUnion(members) }
+                if members.count > 1 { retainsMedia.formUnion(members.map(\.rawValue)) }
+            }
+        }
+        let byID = lookup.episodes
         var committed: [ItemID] = []
         var unresolved: [ItemID] = []
         var alreadyAtTarget: [ItemID] = []
         var retiredAtByID: [ItemID: Timestamp] = [:]
         for id in unique {
+            guard !denied.contains(id) else { unresolved.append(id); continue }
             guard let record = byID[id.rawValue] else { unresolved.append(id); continue }
             if record.removalKind == PodcastEpisodeRemovalKind.retired.rawValue {
                 alreadyAtTarget.append(id)
@@ -99,12 +119,21 @@ extension LocalLibraryStore {
         }
         var mediaRecordFetchCount = 0
         if !committed.isEmpty {
-            mediaRecordFetchCount = 3
-            let doomedMedia = try Self.deleteMediaRecords(
-                forEpisodesWithIDs: Set(committed.map(\.rawValue)), in: context
-            )
+            let doomed = Set(committed.map(\.rawValue)).subtracting(retainsMedia)
+            mediaRecordFetchCount = doomed.isEmpty ? 0 : 3
+            let doomedMedia = doomed.isEmpty ? [] : try Self.deleteMediaRecords(forEpisodesWithIDs: doomed, in: context)
+            if asOwnerChoice {
+                for id in committed + alreadyAtTarget {
+                    Self.stageRetirementManualDecision(id, at: retiredAt, lookup: lookup, in: context)
+                }
+            }
             try context.save()
             deleteMediaIfUnreferenced(doomedMedia)
+        } else if asOwnerChoice {
+            for id in alreadyAtTarget {
+                Self.stageRetirementManualDecision(id, at: retiredAt, lookup: lookup, in: context)
+            }
+            if context.hasChanges { try context.save() }
         }
         return PodcastEpisodeBatchResult(
             committed: committed, alreadyAtTarget: alreadyAtTarget, unresolved: unresolved,
@@ -116,16 +145,20 @@ extension LocalLibraryStore {
 
     /// Restores only Feed-retired rows. A dismissed row remains the stronger
     /// removal and continues through its existing explicit restore pathway.
-    public func restoreEpisodes(_ requested: [ItemID]) throws -> PodcastEpisodeBatchResult {
+    public func restoreEpisodes(_ requested: [ItemID], at: Date? = nil) throws -> PodcastEpisodeBatchResult {
         let unique = uniqueEpisodeIDs(requested)
         let context = ModelContext(container)
-        let staged = try Self.stageUnretirement(unique, in: context)
-        if !staged.committed.isEmpty { try context.save() }
+        context.autosaveEnabled = false
+        defer { if context.hasChanges { context.rollback() } }
+        let choiceAt = try at ?? Self.freshLocalOwnerChoiceDate(unique, in: context)
+        let staged = try Self.stageUnretirement(unique, at: choiceAt, in: context)
+        if context.hasChanges { try context.save() }
         return PodcastEpisodeBatchResult(
             committed: staged.committed, alreadyAtTarget: staged.alreadyAtTarget, unresolved: staged.unresolved,
             retiredAtByID: [:],
-            episodeRecordFetchCount: 1, listeningRecordFetchCount: 1,
-            mediaRecordFetchCount: 0, saveCount: staged.committed.isEmpty ? 0 : 1
+            episodeRecordFetchCount: 1, listeningRecordFetchCount: 0,
+            mediaRecordFetchCount: 0, saveCount: staged.manualCommitted.isEmpty ? 0 : 1,
+            atomicOwnerDecisionIDs: staged.manualCommitted
         )
     }
 
@@ -195,65 +228,6 @@ extension LocalLibraryStore {
         )
     }
 
-    /// Records a manual completion and retires the same active episode in one
-    /// save. A started Larder row uses this rather than separately writing a
-    /// listening fact and a retirement, so Feeds cannot observe a completed
-    /// episode as active after an interrupted write.
-    ///
-    /// Existing prepared media, transcripts, and revisions are deliberately
-    /// untouched. A dismissal is stronger than retirement and is never
-    /// replaced by this operation.
-    @discardableResult
-    public func completeAndRetireEpisode(
-        listening: PodcastListeningState,
-        at retiredAt: Timestamp = Timestamp(Date())
-    ) throws -> Bool {
-        let context = ModelContext(container)
-        let identifier = listening.episodeID.rawValue
-        guard let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-            .first(where: { $0.id == identifier }), episode.removalKind == nil else { return false }
-
-        let listeningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
-        if let existing = listeningRecords.first(where: { $0.id == identifier }) {
-            existing.completedAt = listening.completedAt?.date
-            existing.lastRevisionID = listening.lastRevisionID?.rawValue
-            existing.updatedAt = listening.updatedAt.date
-        } else {
-            context.insert(LocalLibrarySchemaV10Models.PodcastListeningRecord(listening))
-        }
-        episode.retiredAt = retiredAt.date
-        episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
-        try context.save()
-        return true
-    }
-
-    /// Reverses a completion written by `completeAndRetireEpisode` in one
-    /// save. It intentionally accepts only a retirement with the manual
-    /// completion shape (`lastRevisionID == nil`), so stale Undo Skip cannot
-    /// restore or alter a separately dismissed episode.
-    @discardableResult
-    public func undoCompletedAndRetiredEpisode(
-        _ episodeID: ItemID,
-        updatedAt: Timestamp = Timestamp(Date())
-    ) throws -> Bool {
-        let context = ModelContext(container)
-        let identifier = episodeID.rawValue
-        guard let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-            .first(where: { $0.id == identifier }),
-            episode.removalKind == PodcastEpisodeRemovalKind.retired.rawValue,
-            let listening = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
-            .first(where: { $0.id == identifier }),
-            listening.completedAt != nil,
-            listening.lastRevisionID == nil else { return false }
-
-        listening.completedAt = nil
-        listening.updatedAt = updatedAt.date
-        episode.removalKind = nil
-        episode.retiredAt = nil
-        try context.save()
-        return true
-    }
-
     /// Idempotent: retiring an episode already retired or dismissed is a
     /// no-op returning `false`. Retiring cannot override a dismissal --
     /// dismissal is the stronger of the two removals; see `dismissPodcastEpisode`.
@@ -298,28 +272,21 @@ extension LocalLibraryStore {
     /// episode to the library regardless of which removal it carried -- the
     /// one control both a retired and a dismissed row offer to come back.
     /// Idempotent: an episode with no removal recorded returns `false`.
+    /// An explicit phone Restore may separately record its dated owner choice
+    /// on live members; ordinary no-op calls preserve decision provenance.
     @discardableResult
-    public func restoreEpisode(_ episodeID: ItemID) throws -> Bool {
+    public func restoreEpisode(_ episodeID: ItemID, at: Date? = nil, recordLiveOwnerChoice: Bool = false) throws -> Bool {
         let context = ModelContext(container)
-        let identifier = episodeID.rawValue
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-            .first(where: { $0.id == identifier }), record.removalKind != nil else { return false }
-        record.removalKind = nil
-        record.retiredAt = nil
-        let restoredAt = Date()
-        // Clearing `lastRevisionID` (not `completedAt`) keeps "I listened to
-        // this" intact while defeating the bootstrap sweep's exact-revision
-        // match: a re-download that lands on the same content-addressed
-        // revision would otherwise get silently re-retired on next launch,
-        // undoing the restore the user just asked for.
-        if let listening = try context.fetch(
-            FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>()
-        ).first(where: { $0.id == identifier }) {
-            listening.lastRevisionID = nil
-            listening.updatedAt = restoredAt
-        }
-        try context.save()
-        return true
+        context.autosaveEnabled = false
+        defer { if context.hasChanges { context.rollback() } }
+        let lookup = try EpisodeAssociationReadLookup(in: context)
+        let members = lookup.state(for: episodeID)?.memberIDs ?? [episodeID]
+        guard recordLiveOwnerChoice || members.contains(where: { lookup.episodes[$0.rawValue]?.removalKind != nil }) else { return false }
+        let choiceAt = try at ?? Self.freshLocalOwnerChoiceDate([episodeID], in: context)
+        let staged = try Self.stageUnretirement([episodeID], at: choiceAt, includesDismissed: true,
+            recordAlreadyAtTargetOwnerChoice: recordLiveOwnerChoice, in: context)
+        if context.hasChanges { try context.save() }
+        return !staged.committed.isEmpty
     }
 
     /// Stable identifiers recorded on an outcome row translated from a legacy
@@ -384,12 +351,21 @@ extension LocalLibraryStore {
         guard !listeningRecords.isEmpty else { return }
         let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
         let readyRevisions = try newestReadyRevisionsByItemID(in: context)
+        let receiptRestored = try Self.restoredManualCompletionIDs(in: context)
+        let decisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeDecisionRecord>())
+        let manualKeeps = Dictionary(uniqueKeysWithValues: decisions.filter {
+            $0.decision == EpisodeDecision.keep.rawValue && $0.source == EpisodeDecisionSource.manual.rawValue
+        }.map { ($0.episodeID, $0.decidedAt) })
         var changed = false
         for listening in listeningRecords {
+            guard !receiptRestored.contains(listening.id) else { continue }
             guard let episode = episodes.first(where: { $0.id == listening.id }), episode.removalKind == nil,
                   let episodeID = try? ItemID(rawValue: listening.id),
                   let ready = readyRevisions[episodeID.rawValue],
                   let completedAt = listening.completedAt else { continue }
+            // An explicit later Keep/Restore wins old legacy EOF evidence.
+            // A genuine completion after that choice remains eligible to heal.
+            if let keptAt = manualKeeps[listening.id], keptAt > completedAt { continue }
             let matchesCompletedRevision = listening.lastRevisionID == ready.revision.revisionID.rawValue
             let legacyCompletionHasPriorReadyRevision = listening.lastRevisionID == nil
                 && listening.updatedAt <= completedAt

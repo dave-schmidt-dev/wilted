@@ -5,7 +5,7 @@ import WiltedLibrary
 /// A decision a person can make about an episode from the phone. Each one becomes an intent
 /// for the Mac; the phone itself never changes a slot or a removal.
 enum LibraryDecisionAction: Equatable, Sendable {
-    case removeFromLarder, markDone
+    case removeFromLarder, markDone, restore
     /// Move to just after `afterEntryID`; nil moves to the front of the Larder.
     /// The moved entry is the owner's Keep choice; the anchor's provenance is unchanged.
     case reorder(afterEntryID: ItemID?)
@@ -14,6 +14,7 @@ enum LibraryDecisionAction: Equatable, Sendable {
         switch self {
         case .removeFromLarder: "Remove from Larder"
         case .markDone: "Mark completed"
+        case .restore: "Restore"
         case .reorder: "Move"
         }
     }
@@ -22,6 +23,7 @@ enum LibraryDecisionAction: Equatable, Sendable {
         switch self {
         case .removeFromLarder: "minus.circle"
         case .markDone: "checkmark.circle"
+        case .restore: "arrow.uturn.backward"
         case .reorder: "arrow.up.arrow.down"
         }
     }
@@ -31,6 +33,7 @@ enum LibraryDecisionAction: Equatable, Sendable {
         switch self {
         case .removeFromLarder: "remove"
         case .markDone: "done"
+        case .restore: "restore"
         case .reorder: "move"
         }
     }
@@ -39,6 +42,7 @@ enum LibraryDecisionAction: Equatable, Sendable {
         switch self {
         case .removeFromLarder: .removeFromLarder(entryID: entryID)
         case .markDone: .markDone(entryID: entryID)
+        case .restore: .restore(entryID: entryID)
         case let .reorder(after): .reorder(entryID: entryID, afterEntryID: after)
         }
     }
@@ -50,7 +54,8 @@ enum LibraryDecisionAction: Equatable, Sendable {
 /// and not yet completed (W-INV-010: the phone is where a downloaded episode is finished or abandoned).
 enum LibraryRowActions {
     static func actions(for row: LibraryRow, onPhone: Bool = false) -> [LibraryDecisionAction] {
-        row.isStarted || (onPhone && row.completedAt == nil) ? [.removeFromLarder, .markDone] : [.removeFromLarder]
+        guard row.kind == .podcastEpisode else { return [.removeFromLarder] }
+        return row.completedAt == nil ? [.removeFromLarder, .markDone] : [.removeFromLarder]
     }
 }
 
@@ -97,17 +102,20 @@ struct PendingDecision: Identifiable, Equatable, Sendable {
     /// A decision the listener did not make (an episode that played to its end): sent and tracked like
     /// any other, but it changes nothing on screen and says nothing on the row; the row follows the Mac.
     var isSilent = false
+    var retiresEpisode = true
+    /// A newer group Restore replaces the local overlay, never the already-sent intent.
+    var supersededByRestore = false
 
     var id: String { intent.id }
     var entryID: ItemID { intent.action.entryID }
-    var showsOptimistically: Bool { !isSilent && phase != .pendingOnMac }
+    var showsOptimistically: Bool { !isSilent && !supersededByRestore && phase != .pendingOnMac }
 
     /// True once the fetched state already shows what this decision asked for.
     func isSatisfied(by placement: EntryPlacement) -> Bool {
         switch intent.action {
         case .keep: placement.isQueued && placement.removal == .none
         case .skip, .markDone: placement.removal != .none && !placement.isQueued
-        case .removeFromLarder: !placement.isQueued
+        case .removeFromLarder: !placement.isQueued && (!retiresEpisode || placement.removal != .none)
         case .restore: placement.removal == .none
         case let .reorder(_, after): placement.isQueued && placement.predecessor == after
         // Add-flow intents are not row decisions; nothing on a row can satisfy them.
@@ -143,31 +151,69 @@ enum LibraryDecisionOverlay {
         var next = content
         let entryID = decision.entryID
         guard let entry = content.entries[entryID] else { return content }
+        let group = LibraryEpisodeAssociation.group(for: entryID, in: Array(content.entries.values))
+        // A newer explicit owner choice supersedes an outstanding phone overlay.
+        if let at = group?.manualDecidedAt, at > decision.intent.createdAt { return content }
+        let members = group?.memberIDs ?? [entryID]
         switch decision.intent.action {
         case .keep:
             guard entry.removal == .none, content.slots[entryID] == nil else { return content }
             let last = content.slots.values.map(\.sortKey).max() ?? -1
             next.slots[entryID] = try? QueueSlot(entryID: entryID, sortKey: last + 1)
         case .removeFromLarder:
-            next.slots[entryID] = nil
+            for id in members {
+                if let member = content.entries[id], member.kind == .podcastEpisode {
+                    next.entries[id] = try? member.with(removal: .retired, removedAt: decision.intent.createdAt)
+                }
+                next.slots[id] = nil
+            }
         case .skip, .markDone:
-            next.entries[entryID] = try? entry.with(removal: .retired, removedAt: decision.intent.createdAt)
-            next.slots[entryID] = nil
+            for id in members {
+                if let member = content.entries[id] {
+                    next.entries[id] = try? member.with(removal: .retired, removedAt: decision.intent.createdAt)
+                }
+                next.slots[id] = nil
+            }
         case .restore:
-            guard entry.removal != .none else { return content }
-            next.entries[entryID] = try? entry.with(removal: .none, removedAt: nil)
+            for id in members {
+                if let member = content.entries[id], member.removal != .none {
+                    next.entries[id] = try? member.with(removal: .none, removedAt: nil)
+                }
+            }
         case let .reorder(_, after):
-            guard content.slots[entryID] != nil else { return content }
-            var order = content.queue.map(\.entryID).filter { $0 != entryID }
+            let moving = content.queue.map(\.entryID).filter { members.contains($0) }
+            guard !moving.isEmpty else { return content }
+            var order = content.queue.map(\.entryID).filter { !members.contains($0) }
             var index = 0
             if let after {
-                guard let position = order.firstIndex(of: after) else { return content }
+                let anchors = LibraryEpisodeAssociation.group(for: after, in: Array(content.entries.values))?.memberIDs ?? [after]
+                guard let position = order.lastIndex(where: { anchors.contains($0) }) else { return content }
                 index = position + 1
             }
-            order.insert(entryID, at: index)
+            order.insert(contentsOf: moving, at: index)
             for (offset, id) in order.enumerated() { next.slots[id] = try? QueueSlot(entryID: id, sortKey: Double(offset)) }
         case .requestMedia, .mediaCached, .subscribe, .addArticle, .unsupported:
             return content
+        }
+        if let group {
+            let terminal: Bool?
+            switch decision.intent.action {
+            case .removeFromLarder, .skip, .markDone: terminal = true
+            case .restore: terminal = false
+            default: terminal = nil
+            }
+            if let terminal {
+                let overlay = LibraryEpisodeAssociation(groupID: group.groupID, representativeID: group.representativeID,
+                    memberIDs: group.memberIDs, associationVersion: group.associationVersion, isTerminal: terminal,
+                    latestManualChoice: terminal ? .skip : .keep, manualDecidedAt: decision.intent.createdAt)
+                for id in members {
+                    guard let member = next.entries[id] else { continue }
+                    next.entries[id] = try? LibraryEntry(id: member.id, kind: member.kind, sourceID: member.sourceID,
+                        title: member.title, summary: member.summary, publishedAt: member.publishedAt,
+                        durationSeconds: member.durationSeconds, artworkRef: member.artworkRef,
+                        removal: member.removal, removedAt: member.removedAt, episodeAssociation: overlay, payload: member.payload)
+                }
+            }
         }
         return next
     }
@@ -179,7 +225,7 @@ extension LibraryAppModel {
     /// The decision in flight for `entryID`, if any.
     /// The listener's own pending decision for the entry; a silent one (an episode that played out) is not
     /// theirs and neither hides the row's buttons nor blocks a decision they make.
-    func pendingDecision(for entryID: ItemID) -> PendingDecision? { decisions.first { $0.entryID == entryID && !$0.isSilent } }
+    func pendingDecision(for entryID: ItemID) -> PendingDecision? { decisions.first { sameLogicalEpisode($0.entryID, entryID) && !$0.isSilent && !$0.supersededByRestore } }
 
     /// What to show under the row: the state of its decision or why one was rolled back.
     func decisionStatus(for entryID: ItemID) -> LibraryDecisionStatus? {
@@ -215,7 +261,8 @@ extension LibraryAppModel {
     /// Drops local tracking of a decision and reverts its display. The intent is already with the
     /// Mac and cannot be recalled; if the Mac still applies it, the next publish shows the result.
     func cancelDecision(entryID: ItemID) {
-        decisions.removeAll { $0.entryID == entryID }
+        if sameLogicalEpisode(undoableCompletion, entryID) { undoableCompletion = nil }
+        decisions.removeAll { sameLogicalEpisode($0.entryID, entryID) }
         decisionNotices[entryID] = nil
         rebuildRows()
     }
@@ -225,6 +272,7 @@ extension LibraryAppModel {
         decisionNotices = [:]
         decisionContent = LibrarySnapshot()
         startedEntries = []
+        undoableCompletion = nil
     }
 
     // MARK: - Settling
@@ -234,7 +282,10 @@ extension LibraryAppModel {
     /// that moved the entry somewhere else contradicts it (the Mac's state wins), and an unanswered
     /// one reverts to "Pending on Mac" after the timeout while staying tracked.
     func resolveDecisions(outcomes read: [IntentOutcome]) async {
-        guard !decisions.isEmpty else { return }
+        guard !decisions.isEmpty else {
+            clearUnavailableCompletionRestore()
+            return
+        }
         for decision in decisions where !decision.isSent { await send(decision) }
         let mine = read.filter { $0.deviceID == deviceID }
         let outcomes = Dictionary(mine.map { ($0.intentID, $0) }, uniquingKeysWith: { first, _ in first })
@@ -247,7 +298,12 @@ extension LibraryAppModel {
                 if outcome.isApplied {
                     if case .applied = decision.phase {} else { decision.phase = .applied(at: current) }
                 } else {
-                    if !decision.isSilent { decisionNotices[decision.entryID] = Self.rejectionText(outcome.reason) }
+                    if sameLogicalEpisode(undoableCompletion, decision.entryID), !decision.supersededByRestore {
+                        undoableCompletion = nil
+                    }
+                    if !decision.isSilent, !decision.supersededByRestore {
+                        decisionNotices[decision.entryID] = Self.rejectionText(outcome.reason)
+                    }
                     settled = true
                 }
             }
@@ -256,10 +312,22 @@ extension LibraryAppModel {
             if settled { changed[decision.id] = .some(nil) } else if decision != original { changed[decision.id] = decision }
         }
         if !changed.isEmpty { decisions = decisions.compactMap { changed[$0.id] ?? $0 } }
+        clearUnavailableCompletionRestore()
         rebuildRows()
     }
 
+    /// Phone Restore is durable; retain it while the episode remains retired.
+    private func clearUnavailableCompletionRestore() {
+        if let entryID = undoableCompletion, !isOffered(.restore, entryID: entryID) {
+            undoableCompletion = nil
+        }
+    }
+
     private func isSettledByFetchedState(_ decision: PendingDecision) -> Bool {
+        if let at = episodeGroup(decision.entryID)?.manualDecidedAt, at > decision.intent.createdAt { return true }
+        if case .restore = decision.intent.action, let group = episodeGroup(decision.entryID) {
+            return group.latestManualChoice == .keep && (group.manualDecidedAt.map { $0 >= decision.intent.createdAt } ?? false)
+        }
         guard let placement = EntryPlacement(of: decision.entryID, in: decisionContent) else { return true }
         return decision.isSatisfied(by: placement) || placement != decision.baseline
     }
@@ -281,16 +349,40 @@ extension LibraryAppModel {
     /// `requiresOffer` is false and `silent` true for an episode that just played out: the listener did
     /// not ask, so the row's own buttons do not gate it and nothing on screen changes until the Mac does.
     private func begin(_ action: LibraryDecisionAction, entryID: ItemID, requiresOffer: Bool = true, silent: Bool = false) -> PendingDecision? {
-        guard !accountQuarantined, !decisions.contains(where: { $0.entryID == entryID && (silent ? $0.intent.action == .markDone(entryID: entryID) : !$0.isSilent) }),
+        let priorFinishes = decisions.filter { decision in
+            guard !decision.isSilent, !decision.supersededByRestore, sameLogicalEpisode(decision.entryID, entryID) else { return false }
+            switch decision.intent.action {
+            case .markDone, .removeFromLarder, .skip: return true
+            default: return false
+            }
+        }
+        let restoringGroup = action == .restore && episodeGroup(entryID) != nil && !priorFinishes.isEmpty
+        guard !accountQuarantined, !decisions.contains(where: {
+            sameLogicalEpisode($0.entryID, entryID) && !$0.supersededByRestore
+                && (silent ? $0.intent.action == .markDone(entryID: entryID) : !$0.isSilent)
+                && !(restoringGroup && priorFinishes.contains($0))
+        }),
               !requiresOffer || isOffered(action, entryID: entryID),
               let baseline = EntryPlacement(of: entryID, in: decisionContent),
               let intent = try? LibraryIntent(
                   id: UUID().uuidString, deviceID: deviceID, createdAt: now(), action: action.intentAction(for: entryID))
         else { return nil }
+        if restoringGroup {
+            let ids = Set(priorFinishes.map(\.id))
+            for index in decisions.indices where ids.contains(decisions[index].id) {
+                decisions[index].supersededByRestore = true
+            }
+        }
         var decision = PendingDecision(intent: intent, baseline: baseline)
         decision.isSilent = silent
+        decision.retiresEpisode = decisionContent.entries[entryID]?.kind == .podcastEpisode
+        if !silent, decision.retiresEpisode, action == .removeFromLarder || action == .markDone { undoableCompletion = entryID }
+        if action == .restore { undoableCompletion = nil }
         if !silent { decisionNotices[entryID] = nil }
         decisions.append(decision)
+        if !silent, action == .removeFromLarder || action == .markDone {
+            for id in episodeGroup(entryID)?.memberIDs ?? [entryID] { withdrawQueuePlayback(id) }
+        }
         rebuildRows()
         return decision
     }
@@ -298,9 +390,12 @@ extension LibraryAppModel {
     /// Whether the displayed sections offer `action` for `entryID` right now.
     private func isOffered(_ action: LibraryDecisionAction, entryID: ItemID) -> Bool {
         switch action {
-        case .removeFromLarder, .markDone: return queued.first { $0.id == entryID }.map { LibraryRowActions.actions(for: $0, onPhone: media[$0.id] == .onPhone).contains(action) } ?? false
+        case .removeFromLarder, .markDone: return logicalRow(for: entryID).map { LibraryRowActions.actions(for: $0, onPhone: media[$0.id] == .onPhone).contains(action) } ?? false
+        case .restore:
+            let overlaid = LibraryDecisionOverlay.apply(decisions, to: decisionContent)
+            return episodeGroup(entryID)?.isTerminal == true || overlaid.entries[entryID]?.removal == .retired
         case let .reorder(after):
-            let order = queued.map(\.id)
+            let order = logicalQueued.map(\.id)
             guard let index = order.firstIndex(of: entryID), after != entryID else { return false }
             if let after, !order.contains(after) { return false }
             return (index > 0 ? order[index - 1] : nil) != after

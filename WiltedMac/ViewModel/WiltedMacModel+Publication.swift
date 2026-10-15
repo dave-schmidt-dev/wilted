@@ -294,41 +294,76 @@ extension WiltedMacModel {
     /// revision, media file, or synthesis run is created.
     func backfillCurrentTranscript() {
 #if canImport(WiltedProducer)
-        guard !isBackfillingTranscript, let store, let article = currentArticle else { return }
+        guard !isBackfillingTranscript, !isClosingTemporaryState,
+              let store, let article = currentArticle else { return }
+        let selectionToken = playbackCommands.selectionToken
+        let taskID = UUID()
+        let statusIsCurrent: @MainActor @Sendable () -> Bool = { [weak self] in
+            guard let self else { return false }
+            return self.subscriptionWriteTasks[taskID] != nil
+                && !self.isClosingTemporaryState && self.selectedArticleID == article.id
+                && self.playbackCommands.selectionToken == selectionToken
+        }
+        // Durable backfill belongs to the selected article even while idle or loading other audio.
+        // Global player presentation additionally requires the matching loaded article owner.
+        let owner: WiltedMacPlaybackPresentationOwner?
+        if let itemID = playback?.itemID, itemID.rawValue == article.id,
+           let revisionID = playback?.revisionID {
+            owner = playbackPresentationOwner(itemID: itemID, revisionID: revisionID)
+        } else { owner = nil }
         isBackfillingTranscript = true
         transcriptBackfillStatus = "Fetching article text…"
-        Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
-            defer { self.isBackfillingTranscript = false }
+            defer {
+                if !statusIsCurrent() { self.transcriptBackfillStatus = nil }
+                self.isBackfillingTranscript = false
+                self.subscriptionWriteTasks[taskID] = nil
+            }
             guard let itemID = try? ItemID(rawValue: article.id),
-                  let revision = try? await store.readyRevision(for: itemID) else {
-                self.transcriptBackfillStatus = "This article has no saved audio to attach text to."
+                  let revision = try? await store.readyRevision(for: itemID, revisionID: owner?.revisionID) else {
+                if statusIsCurrent() {
+                    self.transcriptBackfillStatus = "This article has no saved audio to attach text to."
+                }
                 return
             }
             do {
-                let extracted = try await NativeArticleExtractor().extract(article.url) { stage, _ in
-                    Task { @MainActor [weak self] in
-                        self?.transcriptBackfillStatus = "Fetching article text: \(stage.rawValue)"
+                let body: String
+                if let extract = self.transcriptBackfillBodyForTesting {
+                    body = try await extract(article.url)
+                } else {
+                    let extracted = try await NativeArticleExtractor().extract(article.url) { stage, _ in
+                        Task { @MainActor [weak self] in
+                            guard let self, statusIsCurrent() else { return }
+                            self.transcriptBackfillStatus = "Fetching article text: \(stage.rawValue)"
+                        }
                     }
+                    body = extracted.body
                 }
-                let oversized = extracted.body.utf8.count > Transcript.maximumTextUTF8Bytes
+                let oversized = body.utf8.count > Transcript.maximumTextUTF8Bytes
                 let transcript = try Transcript(
                     itemID: itemID,
                     revisionID: revision.revision.revisionID,
                     availability: oversized ? .oversized : .available,
-                    text: oversized ? nil : extracted.body,
+                    text: oversized ? nil : body,
                     updatedAt: Timestamp(Date())
                 )
                 try await store.save(transcript: transcript)
-                await self.loadTranscript(itemID: itemID, revisionID: revision.revision.revisionID)
+                if let owner, self.ownsPlaybackPresentation(owner),
+                   owner.revisionID == revision.revision.revisionID {
+                    await self.readPlaybackPresentation(owner, includesCuts: false)
+                }
+                guard statusIsCurrent() else { return }
                 self.transcriptBackfillStatus = oversized
                     ? "The article text is too large to store."
                     : nil
             } catch {
                 // Named, not swallowed: the reader has to know whether to retry.
+                guard statusIsCurrent() else { return }
                 self.transcriptBackfillStatus = Self.backfillFailureMessage(error)
             }
         }
+        subscriptionWriteTasks[taskID] = task
 #endif
     }
 

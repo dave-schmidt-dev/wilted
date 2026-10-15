@@ -19,7 +19,9 @@ private final class RecordingNowPlayingSink: WiltedNowPlayingSink {
 final class WiltedMacPlaybackHandoffTests: XCTestCase {
     func testPlayingAnEpisodePublishesItBeforeItsTranscriptLoads() async throws {
         let (model, sink, directory) = makeModel()
-        let first = try XCTUnwrap(model.episodes.first)
+        let fixture = try XCTUnwrap(model.episodes.first)
+        let first = try await addReadyEpisode(after: fixture, to: model, in: directory,
+                                             suffix: "publication-first", durationSeconds: 10)
         model.playEpisode(first)
         await model.waitForPlaybackOperationForTesting()
 
@@ -31,18 +33,59 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         XCTAssertEqual(sink.published.dropFirst(publicationCount).first?.episodeID, second.id)
         XCTAssertTrue(sink.published.dropFirst(publicationCount).first?.isPlaying ?? false)
 
-        // The fixture's transcript load finishes before anything could observe the
-        // gap, so the ordering itself is pinned: the forced publish for the new
-        // episode comes before the first await that can take real time.
-        let source = try WiltedMacSource.model(root: URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent())
-        let body = try XCTUnwrap(source.range(of: "func playEpisode(_ episode: WiltedMacEpisode)"))
-        let rest = source[body.upperBound...]
-        let publish = try XCTUnwrap(rest.range(of: "self.publishNowPlaying(force: true)"))
-        let queueRefresh = try XCTUnwrap(rest.range(of: "await self.refreshPodcastQueueState()"))
-        let transcript = try XCTUnwrap(rest.range(of: "await self.loadEpisodeTranscript(itemID: id)"))
-        XCTAssertLessThan(publish.lowerBound, queueRefresh.lowerBound)
-        XCTAssertLessThan(publish.lowerBound, transcript.lowerBound)
+        // Runtime ordering: publication already names new audio even while presentation is held.
+        let gate = WiltedMacCommandGate()
+        model.playbackCommands.beforeTranscriptTailForTesting = {
+            await gate.hold(.init(token: 0, kind: .select, itemID: nil, revisionID: nil))
+        }
+        model.pausePlayback()
+        await model.waitForPlaybackOperationForTesting()
+        gate.arm()
+        model.playEpisode(first)
+        await gate.waitUntilHeld()
+        XCTAssertEqual(sink.published.last?.episodeID, first.id)
+        XCTAssertTrue(sink.published.last?.isPlaying ?? false)
+        gate.release()
+        await model.waitForPlaybackPresentationForTesting()
+        await model.close()
+    }
+
+    func testHeldOldTranscriptDoesNotDelayNewEpisodeAudioOrPublishItsState() async throws {
+        let (model, sink, directory) = makeModel()
+        let fixture = try XCTUnwrap(model.episodes.first)
+        let first = try await addReadyEpisode(after: fixture, to: model, in: directory,
+                                             suffix: "held", durationSeconds: 10)
+        let second = try await addReadyEpisode(after: first, to: model, in: directory,
+                                              suffix: "new", durationSeconds: 10)
+        let gate = WiltedMacCommandGate()
+        gate.arm()
+        model.playbackCommands.beforeTranscriptTailForTesting = {
+            await gate.hold(.init(token: 0, kind: .select, itemID: nil, revisionID: nil))
+        }
+        model.playEpisode(first)
+        await gate.waitUntilHeld()
+        let firstToken = model.playbackCommands.generation
+        model.playEpisode(second)
+        let secondToken = model.playbackCommands.generation
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(model.playback?.itemID?.rawValue, second.id)
+        XCTAssertTrue(model.playback?.isPlaying ?? false, "new audio starts while old transcript is held")
+        XCTAssertEqual(sink.published.last?.episodeID, second.id)
+        let wait = try XCTUnwrap(model.playbackCommands.trace.measuredWait(.acknowledgedToPlayCalled, token: secondToken))
+        XCTAssertLessThan(Double(wait) / 1_000_000, Double(WiltedMacPlaybackTrace.preAudioTargetMilliseconds))
+        await model.waitForPlaybackPresentationForTesting()
+        let current = model.currentTranscript
+        try await Task.sleep(for: .milliseconds(500))
+        gate.release()
+        // Close must also join the cancelled old request, which is still in the ledger.
+        await model.close()
+        XCTAssertEqual(model.currentTranscript, current)
+        XCTAssertEqual(model.currentPodcastEpisodeID, second.id)
+        let trace = model.playbackCommands.trace
+        XCTAssertLessThan(try XCTUnwrap(trace.offsetNanos(.playCalled, token: secondToken)),
+                          try XCTUnwrap(trace.offsetNanos(.transcriptTailEnded, token: firstToken)))
+        print(trace.report())
+        retainTraceReport(trace.report(), name: "Held old presentation and newer audio call boundaries")
     }
 
     func testMarkingCompleteAdvancesTheWidgetToTheNextEpisode() async throws {
@@ -119,9 +162,11 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         // Real audio: the controller has to load and start this episode, and
         // a placeholder file fails that load and never reaches the widget.
         let mediaURL = directory.appendingPathComponent("playback-handoff-\(suffix).m4a")
+        // Revision identity is derived from audio bytes, so distinct items need distinct content.
+        let toneHz = 220 + Double(suffix.utf8.reduce(0) { $0 + Int($1) })
         let assembled = try AudioAssembler().assemble(
             pcm: (0..<(44_100 * durationSeconds)).map {
-                Float(0.2 * sin(2 * Double.pi * 220 * Double($0) / 44_100))
+                Float(0.2 * sin(2 * Double.pi * toneHz * Double($0) / 44_100))
             },
             itemID: itemID, destinationURL: mediaURL
         )
@@ -159,6 +204,69 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         return episode
     }
 
+    // TRACE 1.1: catalog-scan timing excludes actor mailbox wait. This records
+    // fetch/decode samples; the causal contention fixture belongs to Task 1.2.
+    func testScaledCatalogScanTimingReportsFetchAndDecodeSamples() async throws {
+        let directory = wiltedTemporaryDirectory("store-scan-trace")
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        try await addScaledCatalog(to: store, in: directory, itemCount: 1)
+        let itemID = try ItemID(rawValue: "trace-scale-item-0")
+        let revisionID = try RevisionID(rawValue: "trace-scale-revision-0")
+        LocalLibraryStoreStageTrace.reset()
+        LocalLibraryStoreStageTrace.isEnabled = true
+        defer { LocalLibraryStoreStageTrace.isEnabled = false }
+
+        for _ in 0..<6 {
+            _ = try await store.readyRevision(for: itemID)
+            _ = try await store.transcript(for: itemID, revisionID: revisionID)
+        }
+        let oneRowReport = "catalog rows=1\n" + LocalLibraryStoreStageTrace.report()
+        print(oneRowReport)
+        retainTraceReport(oneRowReport, name: "Store playback reads at one row")
+        let baseline = LocalLibraryStoreStageTrace.summaries()
+        let baselineFetch = try XCTUnwrap(baseline.first { $0.stage == .revisionFetch })
+        XCTAssertGreaterThanOrEqual(baselineFetch.sampleCount, 6)
+
+        try await addScaledCatalog(to: store, in: directory, itemCount: 160)
+
+        LocalLibraryStoreStageTrace.reset()
+        for _ in 0..<6 {
+            _ = try await store.readyRevision(for: itemID)
+            _ = try await store.transcript(for: itemID, revisionID: revisionID)
+        }
+        let scaled = LocalLibraryStoreStageTrace.summaries()
+        let scaledFetch = try XCTUnwrap(scaled.first { $0.stage == .revisionFetch })
+        XCTAssertGreaterThanOrEqual(scaledFetch.sampleCount, baselineFetch.sampleCount)
+        let decode = try XCTUnwrap(scaled.first { $0.stage == .transcriptDecode })
+        XCTAssertGreaterThanOrEqual(decode.sampleCount, 6)
+        let scaledReport = "catalog rows=160\n" + LocalLibraryStoreStageTrace.report()
+        print(scaledReport)
+        retainTraceReport(scaledReport, name: "Store playback reads at 160 rows")
+    }
+
+    /// Adds synthetic ready revisions and transcripts for higher item IDs, so
+    /// the store's whole-table fetches scale without touching real media.
+    private func addScaledCatalog(to store: LocalLibraryStore, in directory: URL, itemCount: Int) async throws {
+        for offset in 0..<itemCount {
+            let itemID = try ItemID(rawValue: "trace-scale-item-\(offset)")
+            let revisionID = try RevisionID(rawValue: "trace-scale-revision-\(offset)")
+            try await store.saveReadyRevision(
+                try AudioRevision(
+                    itemID: itemID, revisionID: revisionID,
+                    durationSeconds: 600, byteCount: 1_024,
+                    contentHash: "sha256:" + String(repeating: "a", count: 64),
+                    mediaType: "audio/mp4", createdAt: Timestamp(Date()), schemaVersion: 1
+                ),
+                mediaURL: directory.appendingPathComponent("trace-scale-\(offset).m4a")
+            )
+            try await store.save(transcript: try Transcript(
+                itemID: itemID, revisionID: revisionID, availability: .available,
+                text: "Synthetic transcript \(offset) exists only to scale the store fixture.",
+                updatedAt: Timestamp(Date())
+            ))
+        }
+    }
+
     /// Polls until a background task has produced the state under test.
     private func waitUntil(
         timeout: Duration = .seconds(10), _ condition: () -> Bool
@@ -171,4 +279,11 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
     }
+    private func retainTraceReport(_ report: String, name: String) {
+        let attachment = XCTAttachment(string: report)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
 }

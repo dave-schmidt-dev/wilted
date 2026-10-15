@@ -304,9 +304,12 @@ extension WiltedMacModelTests {
         try await settle(model)
         XCTAssertEqual(model.currentEpisode?.id, firstID.rawValue)
 
-        model.addEpisodeToUpNext(second)
-        model.addEpisodeToUpNext(third)
-        try await settle(model)
+        // Seed the historical queue shape explicitly; normal Add correctly
+        // refuses retired B and Remove now owns manual completion.
+        model.larderSort = .custom
+        try await model.store?.replacePodcastQueue(PodcastQueueState(
+            episodeIDs: [firstID, secondID, thirdID], currentEpisodeID: firstID))
+        await model.refreshPodcastQueueState()
 
         XCTAssertTrue(model.canSelectNextEpisode,
                       "C is ready and queued after retired B, so Next must be enabled")
@@ -323,10 +326,9 @@ extension WiltedMacModelTests {
         XCTAssertNil(model.playbackError)
 
         // When only retired B is queued after current, Next must be disabled
-        model.removeEpisodeFromUpNext(second.id)
-        try await settle(model)
-        model.addEpisodeToUpNext(second)
-        try await settle(model)
+        try await model.store?.replacePodcastQueue(PodcastQueueState(
+            episodeIDs: [firstID, thirdID, secondID], currentEpisodeID: thirdID))
+        await model.refreshPodcastQueueState()
         XCTAssertEqual(model.podcastQueueIDs.last, second.id,
                        "B must be after current C to exercise retired Next eligibility")
         XCTAssertFalse(model.canSelectNextEpisode,

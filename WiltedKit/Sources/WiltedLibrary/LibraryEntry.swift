@@ -40,6 +40,8 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
     /// When the Mac retired or dismissed the entry; nil while live, and nil for entries
     /// published before this field existed (decoders treat an absent key as nil).
     public let removedAt: Date?
+    /// Optional producer-owned logical group; raw identity and queue membership remain unchanged.
+    public let episodeAssociation: LibraryEpisodeAssociation?
     /// Kind-specific JSON, strictly smaller than `payloadLimitBytes`.
     public let payload: Data
 
@@ -54,6 +56,7 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         artworkRef: String? = nil,
         removal: LibraryRemoval = .none,
         removedAt: Date? = nil,
+        episodeAssociation: LibraryEpisodeAssociation? = nil,
         payload: Data = Data("{}".utf8)
     ) throws {
         guard payload.count < Self.payloadLimitBytes else {
@@ -77,11 +80,12 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         self.artworkRef = artworkRef
         self.removal = removal
         self.removedAt = removedAt
+        self.episodeAssociation = episodeAssociation
         self.payload = payload
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, sourceID, title, summary, publishedAt, durationSeconds, artworkRef, removal, removedAt, payload
+        case id, kind, sourceID, title, summary, publishedAt, durationSeconds, artworkRef, removal, removedAt, episodeAssociation, payload
     }
 
     public init(from decoder: Decoder) throws {
@@ -97,6 +101,7 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
             artworkRef: c.decodeIfPresent(String.self, forKey: .artworkRef),
             removal: c.decode(LibraryRemoval.self, forKey: .removal),
             removedAt: c.decodeIfPresent(Date.self, forKey: .removedAt),
+            episodeAssociation: try? c.decode(LibraryEpisodeAssociation.self, forKey: .episodeAssociation),
             payload: c.decode(Data.self, forKey: .payload)
         )
     }
@@ -106,7 +111,7 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         try LibraryEntry(
             id: id, kind: kind, sourceID: sourceID, title: title, summary: summary,
             publishedAt: publishedAt, durationSeconds: durationSeconds, artworkRef: artworkRef,
-            removal: removal, removedAt: removedAt, payload: payload
+            removal: removal, removedAt: removedAt, episodeAssociation: episodeAssociation, payload: payload
         )
     }
 
@@ -130,12 +135,14 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         artworkRef: String? = nil,
         removal: LibraryRemoval = .none,
         removedAt: Date? = nil,
+        episodeAssociation: LibraryEpisodeAssociation? = nil,
         payload: PodcastEpisodePayload
     ) throws -> LibraryEntry {
         try LibraryEntry(
             id: id, kind: .podcastEpisode, sourceID: sourceID, title: title, summary: summary,
             publishedAt: publishedAt, durationSeconds: durationSeconds, artworkRef: artworkRef,
-            removal: removal, removedAt: removedAt, payload: PodcastEpisodePayload.encoder.encode(payload)
+            removal: removal, removedAt: removedAt, episodeAssociation: episodeAssociation,
+            payload: PodcastEpisodePayload.encoder.encode(payload)
         )
     }
 

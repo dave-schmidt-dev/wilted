@@ -195,7 +195,7 @@ final class LibraryPlayer: ObservableObject {
     /// Loads `item` and, unless `autoplay` is false, starts it at `start`. Returns false and
     /// sets `.failed` when the file cannot be loaded or the session or engine refuses.
     @discardableResult
-    func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true) -> Bool {
+    func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true, traceToken: UInt64 = 0) -> Bool {
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
@@ -213,6 +213,7 @@ final class LibraryPlayer: ObservableObject {
             remoteCommands.uninstall()
             return fail(.unreadableFile)
         }
+        LibraryPlaybackTrace.shared.record(.loadCalled, token: traceToken)
         self.item = item
         artworkData = artwork?.loadedData(for: item.artworkURL)
         if artworkData == nil { loadArtwork(for: item) }
@@ -227,7 +228,7 @@ final class LibraryPlayer: ObservableObject {
             publishNowPlaying()
             return true
         }
-        return playAdmitted()
+        return playAdmitted(traceToken: traceToken)
     }
 
     /// Starts or resumes; after the end, starts over.
@@ -238,15 +239,17 @@ final class LibraryPlayer: ObservableObject {
 
     /// Synchronous effect consumed only after the model or system boundary admitted this target.
     @discardableResult
-    func playAdmitted() -> Bool {
+    func playAdmitted(traceToken: UInt64 = 0) -> Bool {
         skipSpeechForCommand()
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
         guard item != nil else { return false }
         do { try session.activate() } catch { return fail(.audioSession) }
+        LibraryPlaybackTrace.shared.record(.sessionActivated, token: traceToken)
         if status == .ended { engine.currentTime = 0 }
         guard engine.play() else { return fail(.engineRefused) }
+        LibraryPlaybackTrace.shared.record(.playCalled, token: traceToken)
         lastFailure = nil
         status = .playing
         lastAccrual = .now

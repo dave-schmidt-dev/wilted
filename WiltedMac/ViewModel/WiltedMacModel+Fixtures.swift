@@ -402,7 +402,17 @@ extension WiltedMacModel {
                 ? playback.selectPreviousPodcastQueueEpisode(autoplay: false)
                 : playback.selectNextPodcastQueueEpisode(autoplay: false))
             try self.ensureNewestSelection(command)
-            guard selected else { return }
+            guard selected else {
+                // A boundary selection still took the selection token. Replace the invalidated
+                // presentation owner for the same loaded bytes without starting or awaiting audio.
+                if self.isPodcastPlayback, let itemID = playback.itemID, let revisionID = playback.revisionID,
+                   self.currentPodcastEpisodeID == itemID.rawValue,
+                   command.itemID == itemID.rawValue, command.revisionID == revisionID.rawValue {
+                    self.requestPlaybackPresentation(itemID: itemID, includesCuts: true,
+                                                     refreshQueue: true, traceToken: command.token)
+                }
+                return
+            }
             try self.startIfCurrent(playback, for: command)
             self.isPlaying = playback.isPlaying
             await self.refreshPodcastQueueState()

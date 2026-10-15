@@ -214,6 +214,8 @@ extension WiltedMacModelTests {
         fixture.model.installPlaybackStateForTesting(
             episode: episode, isPlaying: false, position: 120, duration: 12
         )
+        try await fixture.model.store?.addPodcastQueueEpisode(fixture.episodeID)
+        await fixture.model.refreshPodcastQueueState()
         fixture.model.skipEpisode(episode)
         try await settle(fixture.model)
         await fixture.model.waitForPodcastOperations()
@@ -236,11 +238,11 @@ extension WiltedMacModelTests {
         XCTAssertNil(restoredRemovalKind)
         XCTAssertNil(restoredListening?.completedAt)
         XCTAssertTrue(fixture.model.podcastQueueIDs.contains(episode.id),
-                      "Undo resumes local playback, so the restored episode belongs in Larder rather than Feeds")
+                      "Undo restores its prior Larder membership without starting playback")
     }
 
     /// A skip on an episode that was never started changes nothing about it.
-    func testSkippingANeverStartedEpisodeChangesNothing() {
+    func testCompletionWithoutADurableStoreChangesNothing() {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let episode = WiltedMacEpisode(
             id: "skip-untouched", title: "Untouched", feedTitle: "Show", summary: "",
@@ -252,7 +254,7 @@ extension WiltedMacModelTests {
         model.skipEpisode(episode)
 
         XCTAssertNil(model.undoableSkip)
-        XCTAssertEqual(model.podcastOperationMessage, "Untouched was not started, so nothing was marked completed.")
+        XCTAssertNil(model.podcastOperationMessage)
         guard let stored = model.episodes.first(where: { $0.id == episode.id }) else {
             return XCTFail("the skipped row must stay exactly where it was")
         }
@@ -282,8 +284,8 @@ extension WiltedMacModelTests {
         XCTAssertNil(fixture.model.undoableSkip)
         let restored = try XCTUnwrap(fixture.model.episodes.first { $0.id == fixture.episodeID.rawValue })
         XCTAssertFalse(restored.isPlayed, "undo clears the listening record it wrote")
-        XCTAssertEqual(fixture.model.currentPodcastEpisodeID, fixture.episodeID.rawValue,
-                       "the episode plays again from local media")
+        XCTAssertNil(fixture.model.currentPodcastEpisodeID, "Undo never starts retained audio")
+        XCTAssertFalse(fixture.model.isPlaying)
         XCTAssertNil(fixture.model.playbackError)
     }
 

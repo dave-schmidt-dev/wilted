@@ -162,7 +162,6 @@ struct WiltedMacLarderView: View {
                     .accessibilityLabel("Larder sort direction: \(model.larderSortDirection.displayName)")
                     .accessibilityIdentifier("wilted-larder-sort-direction")
                 }
-                addArticleButton
             }
         }
 

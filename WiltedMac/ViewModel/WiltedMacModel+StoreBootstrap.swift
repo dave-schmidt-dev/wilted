@@ -547,12 +547,17 @@ extension WiltedMacModel {
 
     private func restorePodcastPlayback() async {
         guard let playback else { return }
+        let selectionToken = playbackCommands.selectionToken
         playbackOperationStatus = "Restoring Larder…"
         isRestoringPodcastPlayback = true
         await playback.restorePodcastQueue()
         await refreshPodcastQueueState()
         let restoredQueueState = try? await store?.podcastQueueState()
         let restoredOrigin = restoredQueueState.flatMap { restoredPodcastPlaybackOrigin(for: $0) }
+        guard playbackCommands.selectionToken == selectionToken, !isClosingTemporaryState else {
+            isRestoringPodcastPlayback = false
+            return
+        }
         if let itemID = playback.itemID,
            episodes.contains(where: { $0.id == itemID.rawValue }) {
             currentPodcastEpisodeID = itemID.rawValue
@@ -562,7 +567,7 @@ extension WiltedMacModel {
             isLarderQueuePlayback = restoredOrigin ?? false
             isNowPlaying = true
             refreshPlaybackReadout()
-            await loadEpisodeTranscript(itemID: itemID)
+            requestPlaybackPresentation(itemID: itemID, includesCuts: true)
             isRestoringPodcastPlayback = false
             if let restoredQueueState { persistPodcastPlaybackOrigin(for: restoredQueueState) }
         } else {

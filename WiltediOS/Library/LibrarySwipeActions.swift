@@ -32,8 +32,8 @@ enum LibrarySwipe: Equatable {
 
         var message: String {
             switch self {
-            case .removeFromLarder: "It is removed from the Larder on the Mac and every device."
-            case .markCompleted: "It is marked completed on the Mac too, and leaves the Larder."
+            case .removeFromLarder: "It is marked completed and leaves the Larder and active Feeds. Downloaded audio is kept for Restore."
+            case .markCompleted: "It is marked completed and leaves the Larder and active Feeds. Downloaded audio is kept for Restore."
             }
         }
 

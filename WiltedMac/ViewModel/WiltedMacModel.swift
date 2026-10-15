@@ -155,6 +155,7 @@ final class WiltedMacModel {
     }
     var articles: [WiltedMacArticle] = []
     var episodes: [WiltedMacEpisode] = []
+    var episodeAssociations: [String: LibraryEpisodeAssociation] = [:]
     var podcastOperationMessage: String?
     /// The episode an Undo button beside `podcastOperationMessage` would
     /// restore. Set only by `removeEpisode`'s success path, and cleared at the
@@ -224,6 +225,8 @@ final class WiltedMacModel {
     /// fetch never runs without the surface saying so).
     var transcriptBackfillStatus: String?
     var isBackfillingTranscript = false
+    /// Native tests replace extraction text only; production retains the extractor's progress path.
+    var transcriptBackfillBodyForTesting: (@MainActor (URL) async throws -> String)?
     var currentTranscript: WiltedMacTranscript?
     var podcastQueueIDs: [String] = []
     var currentPodcastEpisodeID: String?
@@ -268,7 +271,27 @@ final class WiltedMacModel {
     let registeredTestRoot: URL?
     var isClosingTemporaryState = false
     var temporaryStateCloseTask: Task<Void, Never>?
-    var store: LocalLibraryStore? { didSet { bulletinLifecycleChanged() } }
+    @ObservationIgnored var manualCompletionNow: @MainActor () -> Date = { Date() }
+    @ObservationIgnored var manualCompletionSleep: @MainActor (TimeInterval) async throws -> Void = {
+        try await Task.sleep(for: .seconds($0))
+    }
+    var manualCompletionExpiryTask: Task<Void, Never>?
+    var manualCompletionExpiryDeadline: Date?
+    var manualCompletionExpiryGeneration = UUID()
+    var manualCompletionRecoveryTask: Task<Void, Never>?
+    var store: LocalLibraryStore? {
+        didSet {
+            bulletinLifecycleChanged()
+            manualCompletionRecoveryTask?.cancel()
+            guard store != nil, !isClosingTemporaryState else { return }
+            manualCompletionRecoveryTask = Task { [weak self] in
+                // Bootstrap first establishes the queue and current library rows.
+                await self?.startupTask?.value
+                guard let self, !Task.isCancelled, !self.isClosingTemporaryState else { return }
+                await self.recoverManualCompletionWindows()
+            }
+        }
+    }
     var coordinator: PreparationCoordinator?
     var playback: PlaybackController?
     var syncLifecycle: WiltedMacSyncLifecycle?
@@ -459,6 +482,11 @@ final class WiltedMacModel {
     /// The playback command owner: token order, pending and failure state,
     /// the serialized effect tail, and the speed-save line.
     var playbackCommands = WiltedMacPlaybackCommandState()
+    var playbackPresentationGeneration: UInt64 = 0
+    var playbackPresentationTaskID: UUID?
+    /// Presentation joins teardown but never becomes a durable-write predecessor.
+    var playbackPresentationTasks: [UUID: Task<Void, Never>] = [:]
+    var playbackPresentationReadBarrierForTesting: (@MainActor () async -> Void)?
     var isPodcastPlayback = false {
         didSet {
             if oldValue && !isPodcastPlayback { clearPodcastPlaybackOrigin() }
@@ -620,6 +648,8 @@ final class WiltedMacModel {
             fixturePodcastInstallTask,
             fixtureInstallTask,
             playbackOperationTask,
+            manualCompletionRecoveryTask,
+            manualCompletionExpiryTask,
             larderAdditionTask,
             automationTask,
             automationTicker,
@@ -629,6 +659,7 @@ final class WiltedMacModel {
             + Array(podcastPreparationTasks.values)
             + Array(podcastRestoreTasks.values)
             + Array(subscriptionWriteTasks.values)
+            + Array(playbackPresentationTasks.values)
         let downloadTasks = Array(podcastDownloadTasks.values)
         let automation = automation
         let syncLifecycle = syncLifecycle

@@ -30,6 +30,11 @@ public actor LocalLibraryStore {
     /// exact-key fetches regardless of ledger size.
     var lifetimeStatisticsFetchCount = 0
 
+    /// Number of journal rows materialized by exact event-ID upserts since
+    /// this store opened. Test-only: proves preparation writes do not scan
+    /// unrelated journal history.
+    var preparationJournalLookupRowsRead = 0
+
     /// Whether a summary rebuild is running; only one may run at a time.
     var lifetimeStatisticsRebuildRunning = false
 

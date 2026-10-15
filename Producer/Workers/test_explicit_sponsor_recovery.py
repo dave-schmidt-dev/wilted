@@ -169,6 +169,25 @@ class ExplicitSponsorRecoveryTests(ExplicitSponsorRecoveryMixinB, unittest.TestC
         self.assertEqual(spans, [])
         self.assertNotIn("ads.detect.recovery.nominated", [event["stage"] for event in events])
 
+    def test_production_share_refusal_preserves_whole_original_and_explicit_anchor_warning(self):
+        segments = [
+            FakeSegment(0, 10, "support for the show comes from granola"),
+            FakeSegment(10, 20, "visit granola dot com for the details"),
+            FakeSegment(20, 30, "learn more and get started today"),
+            FakeSegment(30, 40, "back to the gadget discussion"),
+        ]
+        install_fake_ads(FakeLLM(boundary_content_start_id=3))
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=50.0), \
+                mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
+            path, spans, keeps, raw, audit = wp.detect_and_cut(
+                self.request, self.audio, [], segments, with_report=True
+            )
+        self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+        self.assertIn("explicit sponsor anchors", audit["incompleteError"])
+        self.assertIn("original audio includes ads", audit["warning"])
+        render.assert_not_called()
+
     def test_post_cut_audit_fails_if_a_proposed_explicit_anchor_is_dropped(self):
         segments = [
             FakeSegment(0.0, 10.0, "support for the show comes from granola"),
@@ -369,4 +388,108 @@ class ExplicitSponsorRecoveryTests(ExplicitSponsorRecoveryMixinB, unittest.TestC
         ]
         self.assertEqual(wp.consecutive_preroll_start(ads, llm, segments, 1), 60.01)
         self.assertEqual(llm.requests, [])
+
+
+class UncertainAdDetectionTests(unittest.TestCase):
+    """Production quality fallbacks preserve playable original audio and evidence."""
+
+    def setUp(self):
+        self.audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
+        self.segments = [FakeSegment(0, 2, "buy this"), FakeSegment(2, 4, "content")]
+        self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
+
+    def test_production_model_failure_retains_original_with_diagnostics(self):
+        for llm, reason in (
+            (FakeLLM(fail_load=FileNotFoundError("missing GGUF")), "missing GGUF"),
+            (FakeLLM(fail_generate=RuntimeError("decode failed")), "decode failed"),
+        ):
+            with self.subTest(reason=reason):
+                install_fake_ads(llm)
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
+                        mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
+                    path, spans, keeps, raw, audit = wp.detect_and_cut(
+                        self.request, self.audio, [], self.segments, with_report=True
+                    )
+                self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+                self.assertIn(reason, audit["incompleteError"])
+                self.assertTrue(audit["warning"].startswith("original audio includes ads:"))
+                render.assert_not_called()
+                self.assertTrue(llm.closed)
+
+    def test_production_unresolved_and_invalid_classifier_contract_retain_original(self):
+        for code in ("ads-classification-unresolved", "ads-classification-incomplete",
+                     "ads-audit-contract-unavailable", "ads-recovery-audit-failed"):
+            with self.subTest(code=code):
+                install_fake_ads(FakeLLM())
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
+                        mock.patch.object(_worker_ad_removal, "analyze_ad_detections", side_effect=wp.WorkerError(code, "IDs 0, 1 unresolved")), \
+                        mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
+                    path, spans, keeps, raw, audit = wp.detect_and_cut(
+                        self.request, self.audio, [], self.segments, with_report=True
+                    )
+                self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+                self.assertIn("IDs 0, 1", audit["incompleteError"])
+                render.assert_not_called()
+
+    def test_invalid_singleton_answers_keep_actual_unresolved_ids_and_counts(self):
+        llm = FakeLLM(classifier_answer="invalid JSON")
+        ads = install_fake_ads(llm)
+        def detector(segments, backend):
+            for prompt in (ads._AD_DETECT_SYSTEM_PROMPT, ads._AD_DETECT_CORRECTION_PROMPT):
+                backend.generate(prompt, "[ID 0] buy this", response_format=ads._AD_DETECT_RESPONSE_FORMAT)
+            return []
+        ads.detect_ads = detector
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
+            path, spans, keeps, raw, audit = wp.detect_and_cut(
+                self.request, self.audio, [], self.segments, with_report=True
+            )
+        self.assertEqual((path, spans, keeps), (self.audio, [], []))
+        self.assertEqual(audit["unresolvedIds"], [0])
+        self.assertEqual(audit["classifierValidRequests"], 0)
+        self.assertEqual(audit["classifierInvalidRequests"], 4)
+        self.assertEqual(audit["modelRequests"], 4)
+        self.assertIn("global IDs: 0", audit["incompleteError"])
+
+    def test_definite_programme_seed_preserves_an_independent_confirmed_cut(self):
+        segments = [FakeSegment(0, 10, "programme before"),
+                    FakeSegment(10, 20, "visit acme dot"),
+                    FakeSegment(20, 30, "com to get started today"),
+                    FakeSegment(30, 40, "programme after")]
+        install_fake_ads(FakeLLM(commercial_ad_ids=[1, 2], commercial_programme_ids=[0, 1, 2, 3]),
+                         detections=[FakeAd(100, 120)])
+        with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=lambda path: 480.0 if ".rendering-" in path.name else 500.0), \
+                mock.patch.object(_worker_cue_timing, "_run_render_with_progress", side_effect=lambda command, **_kwargs: Path(command[-1]).write_bytes(b"synthetic")):
+            request = {**self.request, "outputPath": str(Path(directory, "cut.mp3"))}
+            path, spans, keeps, raw, audit = wp.detect_and_cut(request, self.audio, [], segments, with_report=True)
+        self.assertNotEqual(path, self.audio)
+        self.assertEqual([(span["startSeconds"], span["endSeconds"]) for span in spans], [(100.0, 120.0)])
+        self.assertTrue(keeps)
+        self.assertIsNone(audit["warning"])
+        self.assertEqual(audit["declinedCommercialEvidenceSeeds"][0]["reason"], "review-declined")
+
+    def test_unexpected_detector_and_backend_defects_remain_fatal(self):
+        for error in (ValueError("coding defect"), TypeError("coding defect"), AttributeError("coding defect")):
+            with self.subTest(error=type(error).__name__):
+                install_fake_ads(FakeLLM())
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
+                        mock.patch.object(_worker_ad_removal, "analyze_ad_detections", side_effect=error), \
+                        self.assertRaises(type(error)):
+                    wp.detect_and_cut(self.request, self.audio, [], self.segments, with_report=True)
+                install_fake_ads(FakeLLM(fail_generate=error))
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
+                        self.assertRaises(type(error)):
+                    wp.detect_and_cut(self.request, self.audio, [], self.segments, with_report=True)
+
+    def test_audio_probe_failure_remains_fatal_in_production(self):
+        install_fake_ads(FakeLLM())
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=RuntimeError("invalid audio")), \
+                self.assertRaisesRegex(RuntimeError, "invalid audio"):
+            wp.detect_and_cut(self.request, self.audio, [], self.segments, with_report=True)
 

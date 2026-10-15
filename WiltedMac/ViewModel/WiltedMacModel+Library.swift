@@ -86,11 +86,56 @@ extension WiltedMacModel {
         }
     }
 
+    func logicalRepresentativeID(_ id: String) -> String {
+        let association = episodeAssociations[id]
+        return association?.isSupported == true ? association!.representativeID.rawValue : id
+    }
+
+    func logicalMemberIDs(_ id: String) -> Set<String> {
+        guard let association = episodeAssociations[id], association.isSupported else { return [id] }
+        return Set(association.memberIDs.map(\.rawValue))
+    }
+
+    /// Display alone folds; raw rows remain available to checkpoints, cuts and queue writes.
+    func logicalEpisodeRows(_ rows: [WiltedMacEpisode], hidesTerminal: Bool = false) -> [WiltedMacEpisode] {
+        var seen = Set<String>()
+        return rows.compactMap { row in
+            guard let association = episodeAssociations[row.id], association.isSupported else { return row }
+            if hidesTerminal && association.isTerminal { return nil }
+            let key = association.representativeID.rawValue
+            guard seen.insert(key).inserted else { return nil }
+            var representative = episodes.first { $0.id == key } ?? row
+            if let backing = backingEpisode(for: representative) {
+                representative.downloadState = backing.downloadState
+                representative.preparationState = backing.preparationState
+                representative.isReadyMediaAvailable = backing.isReadyMediaAvailable
+                representative.playableDurationSeconds = backing.playableDurationSeconds
+                representative.playbackSeconds = backing.playbackSeconds
+            }
+            representative.isPlayed = association.isTerminal
+            if !association.isTerminal { representative.retiredAt = nil; representative.removalKind = nil }
+            return representative
+        }
+    }
+
+    /// Prefer a loaded raw source, then prepared audio already in the durable queue.
+    func backingEpisode(for display: WiltedMacEpisode) -> WiltedMacEpisode? {
+        // Singleton targets retain their original asynchronous admission/error path,
+        // including rows that are not in the current display projection.
+        guard episodeAssociations[display.id]?.isSupported == true else { return display }
+        let members = logicalMemberIDs(display.id)
+        let candidates = episodes.filter { members.contains($0.id) && $0.retiredAt == nil && !hiddenEpisodeIDs.contains($0.id) }
+        if let loaded = currentPodcastEpisodeID, let row = candidates.first(where: { $0.id == loaded }) { return row }
+        if let row = candidates.first(where: { podcastQueueIDs.contains($0.id) && $0.preparationState.isPrepared && $0.isReadyMediaAvailable }) { return row }
+        return candidates.first(where: { $0.preparationState.isPrepared && $0.isReadyMediaAvailable })
+            ?? candidates.first(where: { $0.id == display.id }) ?? candidates.first
+    }
+
     /// The durable episode records the shelf retains. Hidden and retired
     /// records are not on the shelf; presentation applies its active-podcast
     /// exclusion separately so queue and playback code retain this full set.
     var larderVisibleEpisodes: [WiltedMacEpisode] {
-        episodes.filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil }
+        logicalEpisodeRows(episodes.filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil }, hidesTerminal: true)
     }
 
     /// The Larder is a waiting list; its active podcast is represented by Now
@@ -102,7 +147,7 @@ extension WiltedMacModel {
         guard isPodcastPlayback, let currentPodcastEpisodeID else {
             return larderVisibleEpisodes
         }
-        return larderVisibleEpisodes.filter { $0.id != currentPodcastEpisodeID }
+        return larderVisibleEpisodes.filter { !logicalMemberIDs($0.id).contains(currentPodcastEpisodeID) }
     }
 
     /// How many rows one feed contributes to the Larder, counted against the

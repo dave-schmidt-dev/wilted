@@ -496,4 +496,77 @@ extension LocalLibraryStoreTests {
         XCTAssertFalse(retainedFiles.isEmpty)
     }
 
+    /// One feed item listed twice is one episode. Left in, the duplicate would
+    /// land in the admitted list twice, count twice as newly admitted, and race
+    /// the unique download record with two queued claims for a single episode.
+    func testRepeatedCanonicalIDsAdmitOnceAndClaimOnce() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/repeated/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1, 2])
+        let duplicate = try PodcastEpisode(
+            itemID: all[0].itemID, feedID: all[0].feedID, feedURL: all[0].feedURL,
+            rssGUID: all[0].rssGUID, title: "Later spelling", publishedTime: all[0].publishedTime,
+            enclosureURL: all[0].enclosureURL, enclosureMediaType: all[0].enclosureMediaType,
+            createdAt: all[0].createdAt
+        )
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feed.itemID, subscribedAt: Timestamp(origin.addingTimeInterval(-10 * 86_400))
+        ))
+
+        let offered = [all[0], all[1], duplicate]
+        let first = try await store.admitPodcastEpisodes(offered, admission: .incremental, claimingNewest: 5)
+        XCTAssertEqual(first.admission.saved, [all[0].itemID, all[1].itemID])
+        XCTAssertEqual(first.admission.newlyAdmitted, [all[0].itemID, all[1].itemID])
+        XCTAssertEqual(first.claimed, [all[0].itemID, all[1].itemID])
+        let storedTitle = try await store.podcastEpisode(for: all[0].itemID)?.title
+        XCTAssertEqual(storedTitle, all[0].title, "the first publisher position supplies the row")
+        let claimedIDs = Set(try await store.downloads().map(\.episodeID))
+        XCTAssertEqual(claimedIDs, Set([all[0].itemID, all[1].itemID]))
+
+        // The same refresh again: nothing is newly admitted and no episode is
+        // claimed a second time.
+        let second = try await store.admitPodcastEpisodes(offered, admission: .incremental, claimingNewest: 5)
+        XCTAssertEqual(second.admission.saved, [all[0].itemID, all[1].itemID])
+        XCTAssertEqual(second.admission.newlyAdmitted, [])
+        XCTAssertEqual(second.claimed, [])
+        let downloadsAfterRefresh = try await store.downloads()
+        XCTAssertEqual(downloadsAfterRefresh.count, 2)
+    }
+
+    /// Two feed items with different GUIDs stay two episodes even when title,
+    /// publication date, and duration all match. Only a repeated canonical ID
+    /// collapses; metadata similarity is never association proof.
+    func testDistinctGUIDTwinsRemainSeparateWithoutAssociationProof() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://podcasts.example.test/twins/feed.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let feed = try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Show", createdAt: Timestamp(origin))
+        func twin(_ guid: String, enclosure: String) throws -> PodcastEpisode {
+            let enclosureURL = URL(string: enclosure)!
+            return try PodcastEpisode(
+                itemID: ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosureURL),
+                feedID: feedID, feedURL: feedURL, rssGUID: guid, title: "Same words",
+                publishedTime: Timestamp(origin.addingTimeInterval(-86_400)), enclosureURL: enclosureURL,
+                enclosureMediaType: "audio/mpeg", durationSeconds: 3_600, createdAt: Timestamp(origin)
+            )
+        }
+        let first = try twin("twin-one", enclosure: "https://cdn.example.test/twins/one.mp3")
+        let second = try twin("twin-two", enclosure: "https://cdn.example.test/twins/two.mp3")
+        let store = try LocalLibraryStore(url: url)
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(
+            feedID: feedID, subscribedAt: Timestamp(origin.addingTimeInterval(-10 * 86_400))
+        ))
+
+        let result = try await store.admitPodcastEpisodes([first, second], admission: .incremental, claimingNewest: 5)
+        XCTAssertEqual(Set(result.admission.saved), Set([first.itemID, second.itemID]))
+        XCTAssertEqual(Set(result.claimed), Set([first.itemID, second.itemID]))
+        let storedTwins = try await store.podcastEpisodes(for: feedID)
+        XCTAssertEqual(storedTwins.count, 2)
+    }
+
 }

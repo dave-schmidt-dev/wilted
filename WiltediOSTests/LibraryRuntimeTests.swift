@@ -281,7 +281,11 @@ final class LibraryRuntimeTests: XCTestCase {
         XCTAssertFalse(installed(.play))
         XCTAssertNil(rig.remote.handler)
         XCTAssertGreaterThan(rig.nowPlaying.clears, 0)
-        XCTAssertEqual(rig.runtime.model.media[item.entryID], .onPhone)
+        XCTAssertNotEqual(rig.runtime.model.mediaState(for: item.entryID), .onPhone)
+        let retained = await rig.runtime.model.mediaCache.cachedEntries()
+        XCTAssertNotNil(retained[item.entryID]?.preparation)
+        let admitted = await rig.runtime.model.verifiedCachedMedia(item.entryID, token: rig.runtime.model.beginExternalStart())
+        XCTAssertNil(admitted, "Retained prepared bytes cannot resume outside the current Larder")
     }
 
     func testMediaLossImmediatelyInvalidatesSystemRemoteResume() async throws {

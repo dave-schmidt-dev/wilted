@@ -59,6 +59,77 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTFail("Timed out waiting for \(what)")
     }
 
+    func testDownloadBytesDoNotReadOrPublishButReadinessAndRemovalStillDo() async throws {
+        let (model, store) = try await bootstrapped("library-sync-byte-progress")
+        let ids = try await seedEpisodes(store)
+        // The model projects subscribed feeds; raw export fixtures alone have no Larder rows.
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+        await model.reloadLibraryRowsForTesting()
+        XCTAssertEqual(Set(model.episodes.map(\.id)), Set(ids.map(\.rawValue)))
+        let index = try XCTUnwrap(model.episodes.firstIndex { $0.id == ids[0].rawValue })
+        model.episodes[index].downloadState = .downloading(received: 1, expected: 100)
+        let original = model.librarySyncPublicationInputs()
+        model.episodes[index].manualCompletionOperationID = UUID()
+        XCTAssertNotEqual(model.librarySyncPublicationInputs(), original)
+        model.episodes[index].manualCompletionOperationID = nil
+        let server = InMemoryLibraryServer(writerDeviceID: "mac-test")
+        let sink = WiltedMacLibraryIntentSink()
+        let publisher = WiltedMacLibraryPublisher(source: source(store),
+            transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server), sink: sink, isEnabled: true)
+        let controller = WiltedMacLibrarySyncController(model: model, publisher: publisher, sink: sink, debounce: .zero)
+        try await eventually("initial publication") { controller.passCount == 1 }
+        let baseline = model.librarySyncPublicationInputs()
+        let reads = await store.podcastLibrarySnapshotFetchCount
+        for step in 1...3 {
+            model.episodes[index].downloadState = .downloading(received: Int64(step * 20), expected: nil)
+            try await eventually("byte observation rearmed") { controller.observedChangeCount == step }
+            XCTAssertEqual(model.librarySyncPublicationInputs(), baseline)
+            XCTAssertEqual(controller.passCount, 1)
+            let currentReads = await store.podcastLibrarySnapshotFetchCount
+            XCTAssertEqual(currentReads, reads)
+        }
+        model.episodes[index].downloadState = .completed
+        model.episodes[index].preparationState = .prepared(summary: "Ready")
+        try await eventually("readiness publication") { controller.passCount == 2 }
+        XCTAssertNotEqual(model.librarySyncPublicationInputs(), baseline)
+        let readyReads = await store.podcastLibrarySnapshotFetchCount
+        XCTAssertGreaterThan(readyReads, reads)
+        try await store.replacePodcastQueue(try PodcastQueueState(episodeIDs: [ids[0], ids[1]]))
+        model.podcastQueueIDs = [ids[0].rawValue, ids[1].rawValue]
+        try await eventually("queue publication") { await server.currentSnapshot.queue.count == 2 }
+        _ = try await store.retireEpisode(ids[0]); model.episodes[index].removalKind = .retired
+        try await eventually("removal publication") { await server.currentSnapshot.entries[ids[0]]?.removal == .retired }
+        await controller.close(); await model.close()
+    }
+
+    func testPublicationIdentityExportMatchesFullSnapshotWithRawAliasesAndManualChoice() async throws {
+        let (model, store) = try await bootstrapped("library-sync-profile-aliases")
+        let ids = try await seedEpisodes(store)
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let confirmation = PodcastEpisodePairConfirmation(confirmationID: UUID(), feedID: feedID,
+            first: ids[0], second: ids[1], confirmedAt: created)
+        let preview = try await store.previewEpisodeAssociation(confirming: confirmation, representativeID: ids[0])
+        _ = try await store.applyEpisodeAssociation(preview)
+        _ = try await store.save(episodeDecision: EpisodeDecisionRecord(episodeID: ids[0], decision: .keep,
+            source: .manual, decidedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_020))))
+        try await store.replacePodcastQueue(try PodcastQueueState(episodeIDs: [ids[1], ids[0], ids[2]]))
+        let full = try await store.podcastLibraryIdentitySnapshot()
+        let expected = try WiltedMacLocalLibraryStateSource.state(from: full.library,
+            queue: full.library.podcastQueue.episodeIDs, playback: nil, deviceID: "mac-test",
+            associations: WiltedMacLocalLibraryStateSource.associationMetadata(associations: full.associations, states: full.states))
+        let before = await store.podcastLibrarySnapshotFetchCount
+        let actual = try await source(store).currentState()
+        let cost = await store.podcastLibrarySnapshotFetchCount - before
+        XCTAssertEqual(actual, expected); XCTAssertEqual(actual.queue, [ids[1], ids[0], ids[2]])
+        XCTAssertEqual(actual.episodes.first { $0.id == ids[1] }?.episodeAssociation?.latestManualChoice, .keep)
+        let publicationStart = await store.podcastLibrarySnapshotFetchCount
+        _ = try await store.podcastLibrarySnapshot(profile: .publication)
+        let publicationCost = await store.podcastLibrarySnapshotFetchCount - publicationStart
+        XCTAssertEqual(cost, publicationCost)
+        await model.close()
+    }
+
     func testManagedPublisherWiresStableDeviceAndDurableApprovedOwnerReceipt() async throws {
         let (model, store) = try await bootstrapped("publication-model-managed")
         let device = model.libraryDeviceID(); let server = InMemoryLibraryServer(writerDeviceID: device)

@@ -240,6 +240,21 @@ public actor HandoffCoordinator {
             now: clock(), clockOffset: clockOffset, durationSeconds: durationSeconds)
     }
 
+    /// Association-aware continuation. This only selects a target; `takeover` and
+    /// checkpoints must receive the returned actual raw target ID and revision.
+    public func resumeTarget(
+        entries: [LibraryEntry], localRevision: @Sendable (ItemID) -> RevisionID?,
+        mediaOffer: @Sendable (ItemID) -> LibraryMediaOffer?,
+        durationSeconds: @Sendable (ItemID) -> Double? = { _ in nil }
+    ) async throws -> HandoffAssociatedResumeTarget {
+        let records = try await transport.fetchDeviceRecords()
+        learnClockOffset(from: records)
+        return HandoffResolver.resumeTarget(
+            observed: records.nowPlaying, localDeviceID: deviceID, entries: entries,
+            localRevision: localRevision, mediaOffer: mediaOffer, now: clock(),
+            clockOffset: clockOffset, durationSeconds: durationSeconds)
+    }
+
     private func learnClockOffset(from records: LibraryDeviceRecords) {
         guard let own = records.nowPlaying.first(where: { $0.record.deviceID == deviceID }),
               let offset = HandoffResolver.clockOffset(of: own) else { return }

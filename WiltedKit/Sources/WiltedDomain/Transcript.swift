@@ -42,6 +42,7 @@ public struct TranscriptCue: Codable, Equatable, Sendable {
     /// typed, and a publisher who types an essay into one does not get to
     /// multiply the size of every cue in the transcript.
     public static let maximumSpeakerUTF8Bytes = 128
+    public static let maximumRawTextUTF8Bytes = 8_192
 
     public let startSeconds: Double
     public let endSeconds: Double
@@ -57,8 +58,19 @@ public struct TranscriptCue: Codable, Equatable, Sendable {
     /// and ad detection read, and threading names through it would corrupt both
     /// to buy a display feature.
     public let speaker: String?
+    /// The uncleaned, source-original text for this cue when cleanup has modified text.
+    public let rawText: String?
+    /// Word-level timing detail when preserved or derived from speech-to-text tokens.
+    public let words: [TranscriptWord]?
 
-    public init(startSeconds: Double, endSeconds: Double, text: String, speaker: String? = nil) throws {
+    public init(
+        startSeconds: Double,
+        endSeconds: Double,
+        text: String,
+        speaker: String? = nil,
+        rawText: String? = nil,
+        words: [TranscriptWord]? = nil
+    ) throws {
         guard startSeconds.isFinite, endSeconds.isFinite else {
             throw DomainError.invalidValue(field: "transcriptCue.time", reason: "must be finite")
         }
@@ -90,13 +102,41 @@ public struct TranscriptCue: Codable, Equatable, Sendable {
             // change?" true between two cues nobody attributed.
             self.speaker = nil
         }
+
+        let trimmedRaw = rawText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedRaw, !trimmedRaw.isEmpty {
+            guard trimmedRaw.utf8.count <= Self.maximumRawTextUTF8Bytes else {
+                throw DomainError.invalidValue(
+                    field: "transcriptCue.rawText",
+                    reason: "exceeds the 8192-byte raw text limit"
+                )
+            }
+            self.rawText = trimmedRaw
+        } else {
+            self.rawText = nil
+        }
+
+        if let words, !words.isEmpty {
+            for (previous, next) in zip(words, words.dropFirst()) where next.startSeconds < previous.startSeconds {
+                throw DomainError.invalidValue(field: "transcriptCue.words", reason: "must be ordered by startSeconds")
+            }
+            for word in words {
+                guard word.startSeconds >= startSeconds, word.endSeconds <= endSeconds else {
+                    throw DomainError.invalidValue(field: "transcriptCue.words", reason: "word timestamps must be within cue")
+                }
+            }
+            self.words = words
+        } else {
+            self.words = nil
+        }
+
         self.startSeconds = startSeconds
         self.endSeconds = endSeconds
         self.text = trimmed
     }
 
     private enum CodingKeys: CodingKey {
-        case startSeconds, endSeconds, text, speaker
+        case startSeconds, endSeconds, text, speaker, rawText, words
     }
 
     public init(from decoder: Decoder) throws {
@@ -107,7 +147,9 @@ public struct TranscriptCue: Codable, Equatable, Sendable {
             text: container.decode(String.self, forKey: .text),
             // Absent on every cue written before schema version three, and on
             // every cue from a source that never named anyone.
-            speaker: container.decodeIfPresent(String.self, forKey: .speaker)
+            speaker: container.decodeIfPresent(String.self, forKey: .speaker),
+            rawText: container.decodeIfPresent(String.self, forKey: .rawText),
+            words: container.decodeIfPresent([TranscriptWord].self, forKey: .words)
         )
     }
 
@@ -119,6 +161,8 @@ public struct TranscriptCue: Codable, Equatable, Sendable {
         // Encoded only when present, so an unattributed transcript stays the
         // same bytes it was at version two.
         try container.encodeIfPresent(speaker, forKey: .speaker)
+        try container.encodeIfPresent(rawText, forKey: .rawText)
+        try container.encodeIfPresent(words, forKey: .words)
     }
 }
 

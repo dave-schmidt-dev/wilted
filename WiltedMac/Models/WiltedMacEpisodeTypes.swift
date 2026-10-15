@@ -307,6 +307,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     /// end and still be finished, and an episode marked finished by hand never
     /// reached the end at all.
     var isPlayed: Bool = false
+    /// Transient UI handle to the durable batch receipt; never inferred from listening shape.
+    var manualCompletionOperationID: UUID? = nil
     /// When the store says this episode left the Larder -- by retirement or
     /// by dismissal, `removalKind` says which. `nil` for an episode still on
     /// the shelf, or for one restored after either removal cleared it.

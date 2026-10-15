@@ -204,7 +204,10 @@ def run(request: dict) -> dict:
             raise WorkerError("cut-output-missing", "ad removal requires a distinct outputPath")
         if strict_v2 and Path(request["outputPath"]).resolve() == audio_path.resolve():
             raise WorkerError("cut-output-alias", "prepared output must not alias the downloaded audio")
-        _worker_ad_audit.preflight_ad_removal(request)
+        if strict_v2:
+            _worker_ad_audit.preflight_cut_tools()
+        else:
+            _worker_ad_audit.preflight_ad_removal(request)
         if strict_v2 and request.get("alignedTranscriptModel", ALIGNED_STT_MODEL) != ALIGNED_STT_MODEL:
             raise WorkerError("aligned-stt-model-required", f"ad removal requires {ALIGNED_STT_MODEL}")
 
@@ -273,15 +276,32 @@ def run(request: dict) -> dict:
             from wilted import llm as llm_module
 
             model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
-            model_lock = _worker_gpu_admission.prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
+            model_available = True
             if strict_v2:
+                try:
+                    _worker_ad_audit.preflight_ad_removal(request)
+                except WorkerError as error:
+                    if error.code != "ads-model-missing":
+                        raise
+                    model_available = False
+                    warning = f"original audio includes ads: {error}"
+                    _worker_reporting.progress("ads.uncertain", warning)
+                    ad_audit = _worker_cue_timing.serialize_ad_audit(
+                        _worker_ad_audit.AdAnalysisAudit(incomplete_error=str(error), warning=warning)
+                    )
+            model_lock = (_worker_gpu_admission.prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
+                          if model_available else None)
+            if strict_v2 and model_available:
                 output_path, ad_spans, keeps, raw_nominations, ad_audit = _worker_ad_removal.detect_and_cut(
                     request, audio_path, cues, segments, model_lock=model_lock, with_report=True
                 )
-            else:
+            elif not strict_v2:
                 output_path, ad_spans, keeps = _worker_ad_removal.detect_and_cut(
                     request, audio_path, cues, segments, model_lock=model_lock
                 )
+            if strict_v2 and ad_audit and (ad_audit.get("warning") or ad_audit.get("incompleteError") or ad_audit.get("unresolvedIds")):
+                if output_path.resolve() != audio_path.resolve() or ad_spans or keeps:
+                    raise WorkerError("ads-uncertain-output-invalid", "uncertain ad removal must retain the whole original audio")
             if keeps:
                 before = len(cues)
                 cues = remap_cues(cues, keeps)
@@ -301,12 +321,32 @@ def run(request: dict) -> dict:
         duration = None
         _worker_reporting.progress("audio.probe.failed", f"{type(error).__name__}: {error}")
 
-    outcome = "disabled" if not remove_ads else ("cut" if keeps else "noAds")
+    uncertain_warning = None
+    if not remove_ads:
+        outcome = "disabled"
+    elif ad_audit and (
+        ad_audit.get("warning") is not None
+        or ad_audit.get("incompleteError") is not None
+        or bool(ad_audit.get("unresolvedIds"))
+    ):
+        outcome = "uncertain"
+        uncertain_warning = ad_audit.get("warning") or (
+            f"original audio includes ads: {ad_audit['incompleteError']}" if ad_audit.get("incompleteError")
+            else f"original audio includes ads: unresolved global IDs: {ad_audit.get('unresolvedIds')}"
+        )
+        output_path = audio_path
+        ad_spans = []
+        keeps = []
+    elif keeps:
+        outcome = "cut"
+    else:
+        outcome = "noAds"
+
     if strict_v2 and remove_ads and (duration is None or not duration > 0 or not duration < float("inf")):
         raise WorkerError("output-duration-invalid", "ad removal output has no finite measured duration")
     if strict_v2 and remove_ads and ad_audit is None:
         raise WorkerError("ads-audit-missing", "ad removal produced no auditable detector evidence")
-    return {
+    result = {
         "ok": True,
         "protocolVersion": PROTOCOL_VERSION,
         "durationSeconds": duration,
@@ -331,6 +371,10 @@ def run(request: dict) -> dict:
             "audit": ad_audit,
         },
     }
+    if uncertain_warning is not None:
+        result["warning"] = uncertain_warning
+        result["report"]["warning"] = uncertain_warning
+    return result
 
 def main() -> int:
     try:

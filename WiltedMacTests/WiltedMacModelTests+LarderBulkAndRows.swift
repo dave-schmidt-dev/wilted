@@ -28,31 +28,27 @@ extension WiltedMacModelTests {
         XCTAssertTrue(view.contains("model.larderGroupClearLabel(group)"))
     }
 
-    func testAGroupClearRemovesExactlyItsOwnRows() {
-        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+    func testAGroupClearRemovesExactlyItsOwnRows() async throws {
         let available = destinationEpisode("clear-available", download: .notDownloaded, preparation: .notPrepared)
         var started = destinationEpisode("clear-started", download: .completed, preparation: .notPrepared)
         started.playbackSeconds = 30
         let untouched = destinationEpisode("clear-untouched", download: .completed, preparation: .notPrepared)
         let ready = destinationEpisode("clear-ready", download: .completed,
                                        preparation: .prepared(summary: "Ready"))
-        for value in [available, started, untouched, ready] {
-            model.installEpisodeForTesting(value)
-            model.seedPodcastQueueMembershipForTesting(value)
-        }
-
+        let (model, canonical) = try await manualCompletionModel([available, started, untouched, ready])
         model.clearLarderGroup(.downloaded)
 
-        XCTAssertEqual(model.larderEpisodes(in: .available).map(\.id), [available.id])
-        XCTAssertEqual(model.larderEpisodes(in: .playable).map(\.id), [ready.id])
+        XCTAssertEqual(model.larderEpisodes(in: .available).map(\.id), [canonical[0].id])
+        XCTAssertEqual(model.larderEpisodes(in: .playable).map(\.id), [canonical[3].id])
         XCTAssertTrue(model.larderEpisodes(in: .downloaded).isEmpty)
-        XCTAssertEqual(Set(model.larderWaitingEpisodes.map(\.id)), Set([available.id, ready.id]),
+        XCTAssertEqual(Set(model.larderWaitingEpisodes.map(\.id)), Set([canonical[0].id, canonical[3].id]),
                        "only the cleared group's rows leave the Larder")
         // Nothing about the removed rows changed beyond Larder membership: no
         // download was cancelled and no prepared cut was touched.
-        XCTAssertEqual(model.episodes.first { $0.id == started.id }?.downloadState, .completed)
-        XCTAssertEqual(model.episodes.first { $0.id == started.id }?.preparationState, .notPrepared)
-        XCTAssertEqual(model.episodes.first { $0.id == untouched.id }?.downloadState, .completed)
+        XCTAssertEqual(model.episodes.first { $0.id == canonical[1].id }?.downloadState, .completed)
+        XCTAssertEqual(model.episodes.first { $0.id == canonical[1].id }?.preparationState, .notPrepared)
+        XCTAssertEqual(model.episodes.first { $0.id == canonical[2].id }?.downloadState, .completed)
+        await WiltedMacHeadless.drainDecisions(model)
     }
 
     func testAClearLabelSaysClearWhenAnyRowWasStartedAndSkipOtherwise() {
@@ -71,32 +67,59 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.larderGroupClearLabel(.playable), "Remove all 1 from Larder")
     }
 
-    func testAGroupRemovalDoesNotMarkStartedRowsCompletedOrSkipped() throws {
-        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+    func testAGroupRemovalCompletesStartedAndUnstartedPodcastsTogether() async throws {
         var started = destinationEpisode("report-started", download: .completed, preparation: .notPrepared)
         started.playbackSeconds = 12
         let fresh = destinationEpisode("report-fresh", download: .completed, preparation: .notPrepared)
-        for value in [started, fresh] {
-            model.installEpisodeForTesting(value)
-            model.seedPodcastQueueMembershipForTesting(value)
-        }
-
+        let (model, canonical) = try await manualCompletionModel([started, fresh])
         model.clearLarderGroup(.downloaded)
+        for original in canonical {
+            let completed = try XCTUnwrap(model.episodes.first { $0.id == original.id })
+            XCTAssertTrue(completed.isPlayed)
+            XCTAssertEqual(completed.removalKind, .retired)
+            XCTAssertEqual(completed.downloadState, original.downloadState)
+        }
+        await WiltedMacHeadless.drainDecisions(model)
+        let undo = try XCTUnwrap(model.undoableSkip)
+        model.undoSkipEpisode(undo)
+        await WiltedMacHeadless.drainDecisions(model)
+        XCTAssertEqual(Set(model.podcastQueueIDs), Set(canonical.map(\.id)))
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertTrue(model.episodes.allSatisfy { !$0.isPlayed && $0.removalKind == nil })
+    }
 
-        let message = try XCTUnwrap(model.podcastOperationMessage)
-        XCTAssertEqual(message,
-                       "Removed all 2 in Downloaded from Larder. No download, prepared cut, transcript, or listening history was touched.")
-        XCTAssertFalse(model.episodes.first { $0.id == started.id }?.isPlayed == true)
-        XCTAssertNil(model.undoableSkip, "a bulk clear leaves nothing single for Undo Skip")
-
-        // The same queue-only contract applies when no row was started.
-        let freshModel = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
-        let neverStarted = destinationEpisode("report-never", download: .completed, preparation: .notPrepared)
-        freshModel.installEpisodeForTesting(neverStarted)
-        freshModel.seedPodcastQueueMembershipForTesting(neverStarted)
-        freshModel.clearLarderGroup(.downloaded)
-        XCTAssertEqual(freshModel.podcastOperationMessage,
-                       "Removed all 1 in Downloaded from Larder. No download, prepared cut, transcript, or listening history was touched.")
+    private func manualCompletionModel(_ candidates: [WiltedMacEpisode]) async throws -> (WiltedMacModel, [WiltedMacEpisode]) {
+        let directory = temporaryDirectory("manual-bulk-\(UUID())")
+        let feedURL = URL(string: "https://fixtures.example.test/manual-bulk.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let canonical = try candidates.map { row -> WiltedMacEpisode in
+            let enclosure = URL(string: "https://fixtures.example.test/\(row.id).mp3")!
+            let id = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: row.id, enclosureURL: enclosure)
+            return WiltedMacEpisode(id: id.rawValue, title: row.title, feedTitle: row.feedTitle, summary: row.summary,
+                artworkURL: row.artworkURL, releasedAt: row.releasedAt, durationSeconds: row.durationSeconds,
+                playbackSeconds: row.playbackSeconds, downloadState: row.downloadState,
+                preparationState: row.preparationState, feedID: feedID.rawValue, feedURL: feedURL)
+        }
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Show", createdAt: created))
+                for (row, seeded) in zip(candidates, canonical) {
+                    let id = try ItemID(rawValue: seeded.id)
+                    try await store.save(episode: PodcastEpisode(itemID: id, feedID: feedID, feedURL: feedURL,
+                        rssGUID: row.id, title: row.title, enclosureURL: URL(string: "https://fixtures.example.test/\(row.id).mp3")!,
+                        enclosureMediaType: "audio/mpeg", createdAt: created))
+                    try await store.addPodcastQueueEpisode(id)
+                }
+                return store
+            }, preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await model.close() }
+        model.startStoreBootstrap(); await model.waitForStoreBootstrap()
+        _ = try XCTUnwrap(model.store, "The canonical durable fixture must finish bootstrapping")
+        model.episodes = canonical
+        await model.refreshPodcastQueueState()
+        return (model, canonical)
     }
 
     func testTheToolbarBulkActionsActOnTheSetTheirCountNames() throws {
@@ -362,7 +385,7 @@ extension WiltedMacModelTests {
         XCTAssertFalse(modelSource.contains("larderRowRetirementLabel"))
         XCTAssertFalse(view.contains("replacingOccurrences(of: \"could not be skipped\""),
                        "the view must present the model's completion message verbatim")
-        XCTAssertTrue(modelSource.contains("Marked \\(episode.title) completed. Undo completion restores it."))
+        XCTAssertTrue(modelSource.contains("Undo completion is available for 10 seconds."))
         XCTAssertTrue(modelSource.contains("could not be marked completed."))
         XCTAssertEqual(view.components(separatedBy: "model.removeEpisode(").count - 1, 0,
                        "the destructive path gets no row surface")

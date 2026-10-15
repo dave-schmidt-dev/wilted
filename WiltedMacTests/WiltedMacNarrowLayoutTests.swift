@@ -106,7 +106,7 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
         XCTAssertTrue(rows.contains("Self.trailingActionSlotsWidth"))
     }
 
-    func testLongLarderAndActiveWorkRowsHaveExactlyThreeLinesAtMinimumAndFullWidths() throws {
+    func testLongLarderRowsKeepThreeMetadataLinesAndActiveRowsShowBoundedLiveStatus() throws {
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("three-line-rows"),
                                    preferences: WiltedMacTestPreferences.ephemeral())
         model.setTextScale(.standard)
@@ -118,7 +118,7 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
         let minimum = WiltedMacShellLayout.windowMinimumWidth(scale: .standard) - WiltedMacShellLayout.railWidth
         for (index, state) in states.enumerated() {
             let episode = WiltedMacEpisode(id: "three-line-\(index)",
-                title: "An exceptionally long garden report title that must stay on a single line even at the minimum window width",
+                title: "Evening garden report with an exceptionally long title that must stay on a single line even at the minimum window width",
                 feedTitle: "Garden Radio", summary: "", artworkURL: nil, releasedAt: published,
                 durationSeconds: 3723, playbackSeconds: 0, downloadState: state.0, preparationState: state.1)
             model.installEpisodeForTesting(episode)
@@ -131,11 +131,29 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
                     for line in lines where !baselines.contains(where: { abs($0 - line.top) < 0.025 }) {
                         baselines.append(line.top)
                     }
-                    XCTAssertEqual(baselines.count, 3, "state=\(index) width=\(width) active=\(active): \(lines)")
-                    let date = try XCTUnwrap(lines.first { $0.text.contains(published.formatted(date: .numeric, time: .omitted)) })
-                    let feed = try XCTUnwrap(lines.first { $0.text.contains("Garden Radio") })
-                    XCTAssertGreaterThan(date.top, feed.top + 0.025, "date owns its third line: \(lines)")
-                    XCTAssertTrue(lines.contains { $0.text.contains("1h 02m") }, "\(lines)")
+                    let title = try XCTUnwrap(lines.first { $0.text.contains("Evening") }, "title stays visible: \(lines)")
+                    XCTAssertEqual(lines.filter { $0.text.contains("Evening") }.count, 1, "one title line: \(lines)")
+                    let publication = published.formatted(date: .numeric, time: .omitted)
+                    if state.0.isInFlight || state.1.isRunning {
+                        XCTAssertTrue((2...3).contains(baselines.count),
+                                      "one title and up to two visible status lines; state=\(index) width=\(width): \(lines)")
+                        let expectedStatus = index == 1 ? "Downloading" : "Preparing"
+                        let status = try XCTUnwrap(lines.first { $0.text.contains(expectedStatus) }, "live status stays visible: \(lines)")
+                        XCTAssertGreaterThan(status.top, title.top + 0.025, "status follows the one-line title: \(lines)")
+                        XCTAssertLessThan(status.top, 0.5, "status remains inside the rendered row: \(lines)")
+                        let text = lines.map(\.text).joined(separator: " ")
+                        XCTAssertTrue(text.contains(index == 1 ? "25%" : "Transcribing"), "live progress is visible: \(lines)")
+                        for staleMetadata in ["Garden Radio", publication, "1h 02m"] {
+                            XCTAssertFalse(text.contains(staleMetadata), "active status replaces stale \(staleMetadata): \(lines)")
+                        }
+                    } else {
+                        XCTAssertEqual(baselines.count, 3, "state=\(index) width=\(width) active=\(active): \(lines)")
+                        let date = try XCTUnwrap(lines.first { $0.text.contains(publication) })
+                        let feed = try XCTUnwrap(lines.first { $0.text.contains("Garden Radio") })
+                        XCTAssertGreaterThan(date.top, feed.top + 0.025, "date owns its third line: \(lines)")
+                        XCTAssertTrue(lines.contains { $0.text.contains("1h 02m") }, "\(lines)")
+                        XCTAssertFalse(lines.contains { $0.text.contains("Downloading") || $0.text.contains("Transcribing") }, "idle metadata has no active status: \(lines)")
+                    }
                     let bitmap = try WiltedMacHeadless.render(view, size: CGSize(width: width, height: 200))
                     let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
                                                    uniformTypeIdentifier: "public.png")
@@ -143,6 +161,13 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
                     attachment.lifetime = .keepAlways; add(attachment)
                 }
             }
+        }
+        let rows = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
+        XCTAssertTrue(rows.contains("titleLineLimit: 1"), "titles remain capped at one line")
+        XCTAssertTrue(rows.contains(".lineLimit(2)"), "active status remains capped at two lines")
+        for identifier in ["wilted-larder-active-status-", "wilted-larder-metadata-", "wilted-larder-date-",
+                           "wilted-larder-play-", "wilted-larder-remove-"] {
+            XCTAssertTrue(rows.contains(identifier), "status, metadata and action identifiers remain stable")
         }
     }
 

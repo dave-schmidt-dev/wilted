@@ -33,14 +33,16 @@ enum LibraryContinuationPlanner {
     /// (the phone was the last to play, so the Mac's older checkpoint is not something to continue).
     static func plan(
         records: LibraryDeviceRecords, deviceID: String, cachedRevisions: [ItemID: RevisionID],
-        durations: [ItemID: Double], now: Date, clockOffset: TimeInterval
+        durations: [ItemID: Double], now: Date, clockOffset: TimeInterval,
+        entries: [LibraryEntry] = [], mediaOffers: [ItemID: LibraryMediaOffer] = [:]
     ) -> LibraryContinuation? {
         let own = records.nowPlaying.first { $0.record.deviceID == deviceID }
         let others = records.nowPlaying.filter { $0.record.deviceID != deviceID }
         guard let winner = HandoffResolver.winner(among: others) else { return nil }
         if let own, !HandoffResolver.supersedes(winner, over: own) { return nil }
         let target = HandoffResolver.resumeTarget(
-            observed: records.nowPlaying, localDeviceID: deviceID, localRevision: { cachedRevisions[$0] },
+            observed: records.nowPlaying, localDeviceID: deviceID, entries: entries,
+            localRevision: { cachedRevisions[$0] }, mediaOffer: { mediaOffers[$0] },
             now: now, clockOffset: clockOffset, durationSeconds: { durations[$0] })
         switch target {
         case .nothing:
@@ -49,6 +51,8 @@ enum LibraryContinuationPlanner {
             return .ready(
                 entryID: resume.entryID, positionSeconds: resume.positionSeconds, rate: resume.rate,
                 wasPlaying: resume.wasPlaying, sourceDeviceID: resume.sourceDeviceID, source: winner)
+        case let .conflict(entryID, _):
+            return .refused(entryID: entryID, reason: mismatchReason, source: winner)
         case let .needsMedia(entryID, revision):
             return cachedRevisions[entryID] == nil
                 ? .needsAudio(entryID: entryID, revision: revision, source: winner)

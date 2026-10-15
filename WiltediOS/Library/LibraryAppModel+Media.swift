@@ -93,10 +93,11 @@ struct LibraryMediaRun {
 
 extension LibraryAppModel {
     /// The state shown for `entryID`.
-    func mediaState(for entryID: ItemID) -> LibraryMediaState { media[entryID] ?? .available }
+    func mediaState(for entryID: ItemID) -> LibraryMediaState { media[backingEntryID(for: entryID)] ?? .available }
 
     /// Routes a row action. Fire-and-forget: progress and outcome arrive through `media`.
     func performMediaAction(_ action: LibraryMediaAction, entryID: ItemID) {
+        let entryID = backingEntryID(for: entryID)
         switch action {
         case .request: startMediaRequest(entryID: entryID)
         case .cancel: cancelMediaRequest(entryID: entryID)

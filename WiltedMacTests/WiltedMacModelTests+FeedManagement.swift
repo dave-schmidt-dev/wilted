@@ -141,8 +141,9 @@ extension WiltedMacModelTests {
 
         model.removeEpisode(unwanted)
         try await settle(model)
-        XCTAssertEqual(model.episodes.map(\.feedTitle), ["Beta"])
-        XCTAssertEqual(model.podcastOperationMessage, "Removed \(unwanted.title).")
+        XCTAssertEqual(model.episodes.filter { $0.retiredAt == nil }.map(\.feedTitle), ["Beta"])
+        XCTAssertTrue(model.episodes.contains { $0.id == unwanted.id && $0.isPlayed && $0.retiredAt != nil })
+        XCTAssertEqual(model.podcastOperationMessage, "Marked \(unwanted.title) completed. Undo completion is available for 10 seconds.")
 
         let relaunched = WiltedMacModel(
             arguments: [],
@@ -155,13 +156,13 @@ extension WiltedMacModelTests {
         relaunched.startStoreBootstrap()
         await relaunched.waitForStoreBootstrap()
         try await settle(relaunched)
-        XCTAssertEqual(relaunched.episodes.map(\.feedTitle), ["Beta"],
+        XCTAssertEqual(relaunched.episodes.filter { $0.retiredAt == nil }.map(\.feedTitle), ["Beta"],
                        "a removal that only lives in memory reappears here")
     }
 
     /// The Undo button beside the removal message needs the removed episode's
     /// identity to restore it. `removeEpisode` must record that identity once
-    /// the store confirms the dismissal, not just the optimistic hide.
+    /// the store confirms receipt-backed completion, not just the optimistic hide.
     func testRemovingAnEpisodeRecordsItForUndo() async throws {
         let directory = temporaryDirectory("episode-remove-undo")
 
@@ -171,8 +172,10 @@ extension WiltedMacModelTests {
         model.removeEpisode(unwanted)
         try await settle(model)
 
-        XCTAssertEqual(model.undoableRemoval?.id, unwanted.id)
-        XCTAssertEqual(model.podcastOperationMessage, "Removed \(unwanted.title).")
+        XCTAssertEqual(model.undoableSkip?.id, unwanted.id)
+        XCTAssertNotNil(model.undoableSkip?.manualCompletionOperationID)
+        XCTAssertTrue(model.dismissedEpisodes.isEmpty)
+        XCTAssertEqual(model.podcastOperationMessage, "Marked \(unwanted.title) completed. Undo completion is available for 10 seconds.")
     }
 
     /// A second removal must replace the first's undo record: only the most
@@ -186,11 +189,11 @@ extension WiltedMacModelTests {
 
         model.removeEpisode(first)
         try await settle(model)
-        XCTAssertEqual(model.undoableRemoval?.id, first.id)
+        XCTAssertEqual(model.undoableSkip?.id, first.id)
 
         model.removeEpisode(second)
         try await settle(model)
-        XCTAssertEqual(model.undoableRemoval?.id, second.id,
+        XCTAssertEqual(model.undoableSkip?.id, second.id,
                         "the newer removal must own the undo record, not the older one")
     }
 

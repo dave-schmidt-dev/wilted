@@ -278,9 +278,12 @@ final class WiltedVisualSystemTests: XCTestCase {
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
+        await model.fixturePodcastInstallTask?.value
         let first = try XCTUnwrap(model.episodes.first)
+        try await persistFixtureDownload(model, episodeID: first.id)
         model.playEpisode(first)
         await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackPresentationForTesting()
 
         let store = try LocalLibraryStore(url: root.appendingPathComponent("library.sqlite"))
         // The fixture supplies a ready revision and an in-memory completed
@@ -333,6 +336,9 @@ final class WiltedVisualSystemTests: XCTestCase {
             schemaVersion: 1
         )
         try await store.saveReadyRevision(revision, mediaURL: mediaURL)
+        try await store.save(download: PodcastDownload(episodeID: secondID, status: .completed,
+            bytesReceived: revision.byteCount, expectedByteCount: revision.byteCount, localURL: mediaURL,
+            contentHash: revision.contentHash, updatedAt: Timestamp(Date())))
         try await store.savePreparationOutcome(PodcastPreparationOutcome(
             episodeID: secondID, revisionID: revision.revisionID,
             policyDigest: "fixture-policy", pipelineFingerprint: "fixture-fingerprint",
@@ -353,17 +359,20 @@ final class WiltedVisualSystemTests: XCTestCase {
         model.installEpisodeForTesting(second)
         model.playEpisode(second)
         await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackPresentationForTesting()
 
         // Play Now swaps the requested episode into the displaced episode's
         // slot, so the new current episode is the first queue item here.
         model.previousPlayback()
         await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackPresentationForTesting()
         XCTAssertEqual(model.currentEpisode?.id, second.id)
         var queue = try await store.podcastQueueState()
         XCTAssertEqual(queue.currentEpisodeID?.rawValue, second.id)
 
         model.previousPlayback()
         await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackPresentationForTesting()
         XCTAssertEqual(model.currentEpisode?.id, second.id)
         queue = try await store.podcastQueueState()
         XCTAssertEqual(queue.currentEpisodeID?.rawValue, second.id)
@@ -377,12 +386,14 @@ final class WiltedVisualSystemTests: XCTestCase {
         XCTAssertEqual(model.nextEligiblePodcastQueueEpisode()?.id, first.id)
         model.nextPlayback()
         await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackPresentationForTesting()
         XCTAssertEqual(model.currentEpisode?.id, first.id)
         queue = try await store.podcastQueueState()
         XCTAssertEqual(queue.currentEpisodeID?.rawValue, first.id)
 
         model.nextPlayback()
         await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackPresentationForTesting()
         XCTAssertEqual(model.currentEpisode?.id, first.id)
         queue = try await store.podcastQueueState()
         XCTAssertEqual(queue.currentEpisodeID?.rawValue, first.id)
@@ -416,6 +427,7 @@ final class WiltedVisualSystemTests: XCTestCase {
             downloadState: .completed
         )
 
+        XCTAssertFalse(model.episodes.contains { $0.id == missingID.rawValue }, "The singleton target is outside the live row projection")
         model.playEpisode(missingEpisode)
         XCTAssertEqual(model.playbackOperationStatus, "Opening Missing audio episode…")
         await model.waitForPlaybackOperationForTesting()
@@ -492,31 +504,35 @@ final class WiltedVisualSystemTests: XCTestCase {
     }
 
     @MainActor
-    func testRemovingPlayingEpisodeFromUpNextRetainsActiveCompactPlayerIdentity() async throws {
+    func testRemovingPlayingEpisodeCompletesAndWithdrawsCompactPlayer() async throws {
         let root = wiltedTemporaryDirectory("visual-system")
 
         let model = WiltedMacModel(
             arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
             stateDirectoryOverride: root, preferences: WiltedMacTestPreferences.ephemeral()
         )
+        await model.fixturePodcastInstallTask?.value
         let episode = try XCTUnwrap(model.episodes.first)
+        try await persistFixtureDownload(model, episodeID: episode.id)
         model.playEpisode(episode)
         await model.waitForPlaybackOperationForTesting()
+        await model.waitForPlaybackPresentationForTesting()
         XCTAssertTrue(model.isPlaying)
         XCTAssertTrue(model.podcastQueueIDs.contains(episode.id))
 
         model.removeEpisodeFromUpNext(episode.id)
+        await model.waitForPodcastOperations()
         for _ in 0..<100 {
             if model.playbackOperationStatus == nil, !model.podcastQueueIDs.contains(episode.id) { break }
             try await Task.sleep(for: .milliseconds(10))
         }
 
         XCTAssertFalse(model.podcastQueueIDs.contains(episode.id))
-        XCTAssertEqual(model.currentPodcastEpisodeID, episode.id)
-        XCTAssertEqual(model.currentEpisode?.id, episode.id)
-        XCTAssertTrue(model.hasCurrentPlayback)
-        XCTAssertTrue(model.isNowPlaying)
-        XCTAssertTrue(model.isPlaying)
+        XCTAssertNil(model.currentPodcastEpisodeID)
+        XCTAssertNil(model.currentEpisode)
+        XCTAssertFalse(model.hasCurrentPlayback)
+        XCTAssertFalse(model.isNowPlaying)
+        XCTAssertFalse(model.isPlaying)
     }
 
     @MainActor
@@ -750,4 +766,16 @@ final class WiltedVisualSystemTests: XCTestCase {
         <rss><channel><title>Stored show</title><item><title>\(title)</title><guid>\(guid)</guid>\(pubDate)<enclosure url="https://cdn.example.test/\(guid).mp3" type="audio/mpeg" /></item></channel></rss>
         """.utf8)
     }
+    @MainActor
+    private func persistFixtureDownload(_ model: WiltedMacModel, episodeID: String) async throws {
+        let store = try XCTUnwrap(model.store)
+        let id = try ItemID(rawValue: episodeID)
+        let stored = try await store.readyRevision(for: id)
+        let ready = try XCTUnwrap(stored)
+        try await store.save(download: PodcastDownload(episodeID: id, status: .completed,
+            bytesReceived: ready.revision.byteCount, expectedByteCount: ready.revision.byteCount,
+            localURL: ready.mediaURL, contentHash: ready.revision.contentHash, updatedAt: Timestamp(Date())))
+        await model.reloadLibraryRows()
+    }
+
 }

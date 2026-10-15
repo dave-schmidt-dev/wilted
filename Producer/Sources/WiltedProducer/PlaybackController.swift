@@ -394,7 +394,8 @@ public final class PlaybackController {
             return nil
         }
         guard endIndex > state.episodeIDs.startIndex else { return nil }
-        for candidate in state.episodeIDs[..<endIndex].reversed() {
+        let sameEpisode = Set(try await store.logicalEpisodeIDs(activeID.map { [$0] } ?? []))
+        for candidate in state.episodeIDs[..<endIndex].reversed() where !sameEpisode.contains(candidate) {
             if try await isEpisodeEligible(candidate) {
                 return candidate
             }
@@ -448,7 +449,8 @@ public final class PlaybackController {
             startIndex = state.episodeIDs.startIndex
         }
         guard startIndex < state.episodeIDs.endIndex else { return nil }
-        for candidate in state.episodeIDs[startIndex...] {
+        let sameEpisode = Set(try await store.logicalEpisodeIDs(activeID.map { [$0] } ?? []))
+        for candidate in state.episodeIDs[startIndex...] where !sameEpisode.contains(candidate) {
             if try await isEpisodeEligible(candidate) {
                 return candidate
             }

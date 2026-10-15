@@ -433,7 +433,9 @@ extension WiltedMacModel {
     /// this remains a defensive presentation projection while that write is
     /// in flight.
     var larderDisplayEpisodeIDs: [String] {
-        sortedLarderEpisodeIDs(podcastQueueIDs, by: larderSort)
+        var seen = Set<String>()
+        return sortedLarderEpisodeIDs(podcastQueueIDs, by: larderSort).map(logicalRepresentativeID)
+            .filter { seen.insert($0).inserted }
     }
 
     /// The whole Larder's known listening time, summed from the same waiting set

@@ -342,4 +342,145 @@ extension WiltedMacModelTests {
                        "no parallel filter may rebuild the Larder list")
     }
 
+    func testActiveEpisodeRowReplacesIdleMetadataWithActiveStatusAndRetainsControls() throws {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let idleEpisode = destinationEpisode("idle-ep", download: .notDownloaded, preparation: .notPrepared)
+        model.installEpisodeForTesting(idleEpisode)
+        model.seedPodcastQueueMembershipForTesting(idleEpisode)
+
+        let larder = WiltedMacLarderView(model: model, paneMode: .side)
+        XCTAssertFalse(larder.isActiveEpisode(idleEpisode), "idle episode is not active")
+
+        let idleRow = larder.larderRow(idleEpisode, position: 1, count: 1, showsGroupName: false)
+        let idleBitmap = try WiltedMacHeadless.render(idleRow, size: CGSize(width: 480, height: 72))
+        XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: idleBitmap), 4, "idle row renders successfully")
+
+        // Active queued episode shows queued status
+        var activeEpisode = destinationEpisode("active-ep", download: .queued, preparation: .notPrepared)
+        model.installEpisodeForTesting(activeEpisode)
+        model.seedPodcastQueueMembershipForTesting(activeEpisode)
+        XCTAssertTrue(larder.isActiveEpisode(activeEpisode), "queued download is active work")
+        XCTAssertEqual(larder.activeStatusLabel(for: activeEpisode), "Download queued")
+
+        // Active downloading episode shows percent or byte count
+        activeEpisode.downloadState = .downloading(received: 45, expected: 100)
+        model.installEpisodeForTesting(activeEpisode)
+        XCTAssertEqual(larder.activeStatusLabel(for: activeEpisode), "Downloading 45%")
+
+        // Active preparing episode shows running processorRuns narrative
+        activeEpisode.downloadState = .completed
+        activeEpisode.preparationState = .preparing(stage: "Preparing…")
+        model.installEpisodeForTesting(activeEpisode)
+        model.processorRuns = [WiltedMacProcessorRun(
+            id: "run-narrative-1", itemID: activeEpisode.id, isPodcast: true, title: activeEpisode.title,
+            source: activeEpisode.feedTitle, stage: "preparing", detail: "Preparing",
+            narrative: "Finding advertisements…", fraction: 0.25, outcome: .running,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )]
+        XCTAssertEqual(larder.activeStatusLabel(for: activeEpisode), "Preparing · Finding advertisements…")
+
+        let row1 = larder.larderRow(activeEpisode, position: 1, count: 1, showsGroupName: false)
+        let bitmap1 = try WiltedMacHeadless.render(row1, size: CGSize(width: 480, height: 72))
+        let png1 = try XCTUnwrap(bitmap1.representation(using: .png, properties: [:]))
+
+        // Narrative change updates the rendered row pixels
+        model.processorRuns = [WiltedMacProcessorRun(
+            id: "run-narrative-2", itemID: activeEpisode.id, isPodcast: true, title: activeEpisode.title,
+            source: activeEpisode.feedTitle, stage: "preparing", detail: "Preparing",
+            narrative: "Transcribing audio…", fraction: 0.25, outcome: .running,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )]
+        XCTAssertEqual(larder.activeStatusLabel(for: activeEpisode), "Preparing · Transcribing audio…")
+
+        let row2 = larder.larderRow(activeEpisode, position: 1, count: 1, showsGroupName: false)
+        let bitmap2 = try WiltedMacHeadless.render(row2, size: CGSize(width: 480, height: 72))
+        let png2 = try XCTUnwrap(bitmap2.representation(using: .png, properties: [:]))
+        XCTAssertNotEqual(png1, png2, "changing narrative updates the rendered row pixels")
+
+        // Progress change updates the rendered row pixels
+        model.processorRuns = [WiltedMacProcessorRun(
+            id: "run-narrative-3", itemID: activeEpisode.id, isPodcast: true, title: activeEpisode.title,
+            source: activeEpisode.feedTitle, stage: "preparing", detail: "Preparing",
+            narrative: "Transcribing audio…", fraction: 0.85, outcome: .running,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )]
+        let row3 = larder.larderRow(activeEpisode, position: 1, count: 1, showsGroupName: false)
+        let bitmap3 = try WiltedMacHeadless.render(row3, size: CGSize(width: 480, height: 72))
+        let png3 = try XCTUnwrap(bitmap3.representation(using: .png, properties: [:]))
+        XCTAssertNotEqual(png2, png3, "changing progress fraction updates the rendered row pixels")
+
+        // Fallback when narrative is absent
+        model.processorRuns = []
+        XCTAssertEqual(larder.activeStatusLabel(for: activeEpisode), "Preparing", "narrative fallback uses lifecycle presentation")
+
+        // Source checks: active status identifier distinct from idle metadata
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let view = try WiltedMacSource.views(root: root)
+        XCTAssertTrue(view.contains("wilted-larder-active-status-"), "active status identifier must be present")
+        XCTAssertTrue(view.contains("wilted-larder-metadata-"), "idle metadata identifier must be present")
+        XCTAssertTrue(view.contains("wilted-larder-date-"), "idle date identifier must be present")
+    }
+
+    func testModelCausalNextActionableRowAdvancesOnQueuedAndRestoresOnFailureOrCancel() throws {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let ep1 = destinationEpisode("ep-causal-1", download: .notDownloaded, preparation: .notPrepared)
+        let ep2 = destinationEpisode("ep-causal-2", download: .notDownloaded, preparation: .notPrepared)
+        let ep3 = destinationEpisode("ep-causal-3", download: .notDownloaded, preparation: .notPrepared)
+        for ep in [ep1, ep2, ep3] {
+            model.installEpisodeForTesting(ep)
+            model.seedPodcastQueueMembershipForTesting(ep)
+        }
+
+        // 1. Initial state: All three episodes are in Not downloaded; ep-causal-1 leads
+        var sections = WiltedMacEpisodePresentationSections.displaySections(
+            model.larderSections(), grouping: .status, statusGroups: WiltedMacLarderGroup.allCases
+        )
+        XCTAssertEqual(sections.map(\.title), ["Ready", "Downloaded", "Not downloaded"])
+        let availableInit = try XCTUnwrap(sections.first { $0.statusGroup == .available })
+        XCTAssertEqual(availableInit.items.map(\.id), ["ep-causal-1", "ep-causal-2", "ep-causal-3"])
+        XCTAssertFalse(sections.contains { $0.id == "active-work" })
+
+        // 2. Click download on ep1: queued synchronously, Active work appended, ep-causal-2 advances to top
+        model.updateEpisode("ep-causal-1") { $0.downloadState = .queued }
+        sections = WiltedMacEpisodePresentationSections.displaySections(
+            model.larderSections(), grouping: .status, statusGroups: WiltedMacLarderGroup.allCases
+        )
+        XCTAssertEqual(sections.map(\.title), ["Ready", "Downloaded", "Not downloaded", "Active work"])
+        let availableAfterQueued = try XCTUnwrap(sections.first { $0.statusGroup == .available })
+        XCTAssertEqual(availableAfterQueued.items.map(\.id), ["ep-causal-2", "ep-causal-3"],
+                       "next actionable row advances under pointer immediately")
+        let activeAfterQueued = try XCTUnwrap(sections.first { $0.id == "active-work" })
+        XCTAssertEqual(activeAfterQueued.items.map(\.id), ["ep-causal-1"], "in-flight item is held in Active work below")
+
+        // 3. In-flight downloading keeps ep-causal-2 under pointer
+        model.updateEpisode("ep-causal-1") { $0.downloadState = .downloading(received: 200, expected: 500) }
+        sections = WiltedMacEpisodePresentationSections.displaySections(
+            model.larderSections(), grouping: .status, statusGroups: WiltedMacLarderGroup.allCases
+        )
+        let availableDownloading = try XCTUnwrap(sections.first { $0.statusGroup == .available })
+        XCTAssertEqual(availableDownloading.items.map(\.id), ["ep-causal-2", "ep-causal-3"])
+
+        // 4. Download failure returns episode to available list and Active work drops
+        model.updateEpisode("ep-causal-1") { $0.downloadState = .failed }
+        sections = WiltedMacEpisodePresentationSections.displaySections(
+            model.larderSections(), grouping: .status, statusGroups: WiltedMacLarderGroup.allCases
+        )
+        XCTAssertEqual(sections.map(\.title), ["Ready", "Downloaded", "Not downloaded"])
+        XCTAssertFalse(sections.contains { $0.id == "active-work" })
+        let availableFailed = try XCTUnwrap(sections.first { $0.statusGroup == .available })
+        XCTAssertEqual(availableFailed.items.map(\.id), ["ep-causal-1", "ep-causal-2", "ep-causal-3"],
+                       "failed download restores available rows")
+
+        // 5. Queued then cancelled also returns episode to available list
+        model.updateEpisode("ep-causal-1") { $0.downloadState = .queued }
+        model.updateEpisode("ep-causal-1") { $0.downloadState = .cancelled }
+        sections = WiltedMacEpisodePresentationSections.displaySections(
+            model.larderSections(), grouping: .status, statusGroups: WiltedMacLarderGroup.allCases
+        )
+        XCTAssertEqual(sections.map(\.title), ["Ready", "Downloaded", "Not downloaded"])
+        XCTAssertFalse(sections.contains { $0.id == "active-work" })
+        let availableCancelled = try XCTUnwrap(sections.first { $0.statusGroup == .available })
+        XCTAssertEqual(availableCancelled.items.map(\.id), ["ep-causal-1", "ep-causal-2", "ep-causal-3"],
+                       "cancelled download restores available rows")
+    }
 }

@@ -192,11 +192,14 @@ extension WiltedMacModel {
             }
             try self.ensureCurrentPlaybackCommand(command)
             try await playback.load(stored)
+            self.playbackCommands.trace.record(.loadCalled, token: command.token)
             try self.ensureNewestSelection(command)
             if autoplay { try self.startIfCurrent(playback, for: command) }
             self.isPlaying = playback.isPlaying
             self.refreshPlaybackReadout()
-            if let itemID { await self.loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID) }
+            if let itemID {
+                self.requestPlaybackPresentation(itemID: itemID, includesCuts: false, traceToken: command.token)
+            }
         }
 #endif
     }
@@ -261,7 +264,7 @@ extension WiltedMacModel {
     /// still in place. Feeds renders these with a Restore control, because
     /// reversing the one decision the surface owns belongs there.
     var skippedFeedEpisodes: [WiltedMacEpisode] {
-        episodes.filter { $0.removalKind == .retired }
+        logicalEpisodeRows(episodes.filter { $0.removalKind == .retired })
             .sorted { $0.releasedAt > $1.releasedAt }
     }
 
@@ -328,7 +331,11 @@ extension WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
-    private func performPlaybackStart(for episode: WiltedMacEpisode, isLarderIntent: Bool) {
+    private func performPlaybackStart(for displayEpisode: WiltedMacEpisode, isLarderIntent: Bool) {
+        guard let episode = backingEpisode(for: displayEpisode) else {
+            playbackError = "This episode's saved audio is unavailable."
+            return
+        }
         guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
         let opening = "Opening \(episode.title)…"
         playbackOperationStatus = opening
@@ -370,9 +377,11 @@ extension WiltedMacModel {
                         ?? self.currentPodcastEpisodeID.flatMap { try? ItemID(rawValue: $0) }
                     if let outgoingCurrentID, playback.itemID == outgoingCurrentID, playback.revisionID != nil {
                         try await playback.checkpoint()
+                        self.playbackCommands.trace.record(.outgoingCheckpointCalled, token: command.token)
                     }
                     try self.ensureCurrentPlaybackCommand(command)
                     try await playback.selectPodcastQueueEpisode(id, autoplay: false)
+                    self.playbackCommands.trace.record(.loadCalled, token: command.token)
                     try self.ensureNewestSelection(command)
                     // The selected row loaded, so the session now belongs to
                     // the durable queue it was selected from. A load failure
@@ -384,6 +393,7 @@ extension WiltedMacModel {
                     // The controller asks at its own start point, after the
                     // load's last await, so a Pause issued meanwhile wins.
                     try await playback.playPodcastQueueEpisodeNow(id, startsIf: { self.isCurrentPlaybackCommand(command) })
+                    self.playbackCommands.trace.record(.loadCalled, token: command.token)
                     try self.ensureNewestSelection(command)
                     self.larderSort = .custom
                     // A generic Play keeps the Larder-wide continuation
@@ -406,9 +416,8 @@ extension WiltedMacModel {
                 self.currentTranscript = .unavailable
                 self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
                 self.publishNowPlaying(force: true)
-                await self.refreshPodcastQueueState()
-                await self.loadEpisodeTranscript(itemID: id)
-                self.refreshPlaybackReadout()
+                self.requestPlaybackPresentation(itemID: id, includesCuts: true,
+                                                 refreshQueue: true, traceToken: command.token)
                 if self.isCurrentPlaybackCommand(command) { self.playbackError = nil }
             } catch {
                 if !(error is WiltedMacPlaybackSuperseded) { await self.refreshPodcastQueueState() }
@@ -423,6 +432,10 @@ extension WiltedMacModel {
 
     func removeEpisodeFromUpNext(_ episodeID: String) {
 #if canImport(WiltedProducer)
+        if let episode = episodes.first(where: { $0.id == episodeID }), !episode.isAudiobook {
+            finishEpisodes([episode])
+            return
+        }
         guard !isClosingTemporaryState,
               let playback, let id = try? ItemID(rawValue: episodeID) else { return }
         playbackOperationStatus = "Updating Larder…"

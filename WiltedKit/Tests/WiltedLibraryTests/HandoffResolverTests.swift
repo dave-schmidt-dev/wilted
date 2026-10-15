@@ -171,3 +171,99 @@ final class HandoffResolverTests: XCTestCase {
         XCTAssertEqual(kept.map(\.record.deviceID), ["mac", "c"])
     }
 }
+
+extension HandoffResolverTests {
+    func testAssociatedHandoffWithoutAnyCachedMemberRequestsObservedRawRevision() throws {
+        let f = AssociationFixture()
+        let observed = try f.observed()
+        for offer in [try f.offer(f.b, revision: f.revisionB), nil] {
+            let result = HandoffResolver.resumeTarget(observed: [observed], localDeviceID: "phone",
+                entries: try f.entries(), localRevision: { _ in nil },
+                mediaOffer: { $0 == f.b ? offer : nil }, now: f.now)
+            XCTAssertEqual(result, .needsMedia(entryID: f.b, revision: f.revisionB))
+            XCTAssertEqual(observed.record.positionSeconds, 123)
+        }
+    }
+
+    func testAssociatedHandoffWithCachedWrongSourceRevisionRemainsConflict() throws {
+        let f = AssociationFixture()
+        let sourceOffer = try f.offer(f.b, revision: f.revisionB)
+        let result = HandoffResolver.resumeTarget(observed: [try f.observed()], localDeviceID: "phone",
+            entries: try f.entries(), localRevision: { $0 == f.b ? f.revisionA : nil },
+            mediaOffer: { $0 == f.b ? sourceOffer : nil }, now: f.now)
+        XCTAssertEqual(result, .conflict(entryID: f.b, revision: f.revisionB))
+    }
+
+    func testAssociatedHandoffPrefersExactRawBOverDisplayAWithoutMediaProof() throws {
+        let f = AssociationFixture()
+        let result = HandoffResolver.resumeTarget(observed: [try f.observed()], localDeviceID: "phone",
+            entries: try f.entries(), localRevision: { $0 == f.b ? f.revisionB : f.revisionA },
+            mediaOffer: { _ in nil }, now: f.now)
+        guard case .resume(let target) = result else { return XCTFail("expected exact resume") }
+        XCTAssertEqual(target.entryID, f.b)
+        XCTAssertEqual(target.revision, f.revisionB)
+        XCTAssertEqual(target.positionSeconds, 123)
+    }
+
+    func testAssociatedHandoffUsesVerifiedIdenticalPreparedTimelineOnActualRawA() throws {
+        let f = AssociationFixture()
+        let source = try f.observed()
+        let offers = try [f.b: f.offer(f.b, revision: f.revisionB), f.a: f.offer(f.a, revision: f.revisionA)]
+        let result = HandoffResolver.resumeTarget(observed: [source], localDeviceID: "phone",
+            entries: try f.entries(), localRevision: { $0 == f.a ? f.revisionA : nil },
+            mediaOffer: { offers[$0] }, now: f.now)
+        guard case .resume(let target) = result else { return XCTFail("expected associated resume") }
+        XCTAssertEqual(target.entryID, f.a)
+        XCTAssertEqual(target.revision, f.revisionA)
+        XCTAssertEqual(target.positionSeconds, 123)
+        XCTAssertEqual(target.rate, 1.25)
+        XCTAssertFalse(target.wasPlaying)
+        XCTAssertEqual(source.record.entryID, f.b)
+        XCTAssertEqual(source.record.revision, f.revisionB)
+        XCTAssertEqual(source.record.positionSeconds, 123)
+    }
+
+    func testAssociatedHandoffRejectsHashBytesTypeDurationRevisionAndPreparationMismatch() throws {
+        let f = AssociationFixture()
+        let source = try f.observed()
+        let valid = try f.offer(f.b, revision: f.revisionB)
+        let badTargets = try [
+            f.offer(f.a, revision: f.revisionA, hash: "b"),
+            f.offer(f.a, revision: f.revisionA, bytes: 2_000),
+            f.offer(f.a, revision: f.revisionA, type: "audio/mpeg"),
+            f.offer(f.a, revision: f.revisionA, duration: 601),
+            f.offer(f.a, revision: f.revisionA, duration: nil),
+            f.offer(f.a, revision: f.revisionB),
+            f.offer(f.a, revision: f.revisionA, prepared: false),
+            f.offer(f.b, revision: f.revisionA)
+        ]
+        for targetOffer in badTargets {
+            let result = HandoffResolver.resumeTarget(observed: [source], localDeviceID: "phone",
+                entries: try f.entries(), localRevision: { $0 == f.a ? f.revisionA : nil },
+                mediaOffer: { $0 == f.b ? valid : targetOffer }, now: f.now)
+            XCTAssertEqual(result, .conflict(entryID: f.b, revision: f.revisionB))
+            XCTAssertEqual(source.record.positionSeconds, 123)
+        }
+        for badSource in [try f.offer(f.b, revision: f.revisionA),
+                          try f.offer(f.b, revision: f.revisionB, prepared: false),
+                          try f.offer(f.b, revision: f.revisionB, duration: nil), nil] {
+            let targetOffer = try f.offer(f.a, revision: f.revisionA)
+            let result = HandoffResolver.resumeTarget(observed: [source], localDeviceID: "phone",
+                entries: try f.entries(), localRevision: { $0 == f.a ? f.revisionA : nil },
+                mediaOffer: { $0 == f.b ? badSource : targetOffer }, now: f.now)
+            XCTAssertEqual(result, .conflict(entryID: f.b, revision: f.revisionB))
+        }
+    }
+
+    func testInvalidOrPartialAssociationCannotRedirectRawHandoff() throws {
+        let f = AssociationFixture()
+        for entries in [try [f.entry(f.b)], try [f.entry(f.b, association: f.association())],
+                        try [f.entry(f.a, association: f.association(version: 2)),
+                             f.entry(f.b, association: f.association(version: 2))]] {
+            let result = HandoffResolver.resumeTarget(observed: [try f.observed()], localDeviceID: "phone",
+                entries: entries, localRevision: { $0 == f.a ? f.revisionA : nil },
+                mediaOffer: { _ in nil }, now: f.now)
+            XCTAssertEqual(result, .needsMedia(entryID: f.b, revision: f.revisionB))
+        }
+    }
+}

@@ -149,16 +149,16 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
         let beta = try XCTUnwrap(model.subscriptions.first { $0.title == "Beta" })
         model.removeEpisode(alphaEpisode)
         await model.waitForPodcastOperations()
-        XCTAssertEqual(model.undoableRemoval?.id, alphaEpisode.id)
+        XCTAssertEqual(model.undoableSkip?.id, alphaEpisode.id)
 
         let flow = WiltedMacRemovalFlow()
         flow.confirm(.feed(beta), model: model)
         await model.waitForPodcastOperations()
         XCTAssertEqual(flow.phase, .saved)
-        XCTAssertEqual(model.undoableRemoval?.id, alphaEpisode.id, "Beta's unsubscribe must keep Alpha's Undo")
+        XCTAssertEqual(model.undoableSkip?.id, alphaEpisode.id, "Beta's unsubscribe must keep Alpha's Undo")
 
-        let undo = try XCTUnwrap(model.undoableRemoval)
-        model.restoreEpisode(undo)
+        let undo = try XCTUnwrap(model.undoableSkip)
+        model.undoSkipEpisode(undo)
         await model.waitForPodcastOperations()
         XCTAssertTrue(model.episodes.contains { $0.id == alphaEpisode.id }, "Undo restores offline")
 
@@ -167,7 +167,7 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
         flow.confirm(.feed(alpha), model: model)
         await model.waitForPodcastOperations()
         XCTAssertEqual(flow.phase, .saved)
-        XCTAssertNil(model.undoableRemoval, "Undo must not outlive the feed it would restore into")
+        XCTAssertNil(model.undoableSkip, "Undo must not outlive the feed it would restore into")
         XCTAssertTrue(model.subscriptions.isEmpty)
     }
 

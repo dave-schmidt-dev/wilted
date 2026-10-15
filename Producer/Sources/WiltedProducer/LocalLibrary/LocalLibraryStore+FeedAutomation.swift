@@ -6,6 +6,13 @@ private typealias FeedPolicyRecord = LocalLibrarySchemaV17Models.PodcastFeedPoli
 private typealias MatchRuleRecord = LocalLibrarySchemaV16Models.EpisodeMatchRuleRecord
 private typealias DecisionRecord = LocalLibrarySchemaV16Models.EpisodeDecisionRecord
 
+public enum AutomaticEpisodeAdmissionError: Error, Equatable {
+    case capacityUnavailable
+    case manualDecisionExists
+    case supersededManualDecision
+    case episodeUnavailable
+}
+
 extension LocalLibraryStore {
     #if DEBUG
     /// Test-only seam reached after every V16 admission write is staged and
@@ -137,8 +144,18 @@ extension LocalLibraryStore {
         return try Self.decodeDecision(record)
     }
 
-    public func save(episodeDecision value: EpisodeDecisionRecord) throws {
+    @discardableResult
+    public func save(episodeDecision value: EpisodeDecisionRecord) throws -> PodcastEpisodeDecisionWriteResult {
         let context = ModelContext(container)
+        context.autosaveEnabled = false
+        defer { if context.hasChanges { context.rollback() } }
+        let lookup = try EpisodeAssociationReadLookup(in: context)
+        let applies = try Self.shouldApplyEpisodeDecision(value, in: context, lookup: lookup)
+        try Self.stageAssociationManualTie(value, in: context, lookup: lookup)
+        guard applies else {
+            if context.hasChanges { try context.save() }
+            return .superseded
+        }
         if let record = try context.fetch(FetchDescriptor<DecisionRecord>())
             .first(where: { $0.episodeID == value.episodeID.rawValue }) {
             record.decision = value.decision.rawValue; record.source = value.source.rawValue
@@ -148,6 +165,7 @@ extension LocalLibraryStore {
                                           source: value.source.rawValue, ruleID: value.ruleID, decidedAt: value.decidedAt.date))
         }
         try context.save()
+        return .applied
     }
 
     public func decisions(forFeed feedID: ItemID) throws -> [EpisodeDecisionRecord] {
@@ -171,9 +189,16 @@ extension LocalLibraryStore {
                                         unretiring: Set<ItemID> = [],
                                         addedAt: Timestamp = Timestamp(Date())) throws {
         let context = ModelContext(container)
-        if !unretiring.isEmpty { try Self.stageUnretirement(Array(unretiring), in: context) }
+        // Automatic rollback cannot replace a newer explicit member choice.
+        let lookup = try EpisodeAssociationReadLookup(in: context)
+        let protected = Set(prior.keys.filter {
+            lookup.state(for: $0)?.manualDecision != nil
+        })
+        let permittedUnretirement = unretiring.subtracting(protected)
+        if !permittedUnretirement.isEmpty { try Self.stageUnretirement(Array(permittedUnretirement), asOwnerChoice: false, in: context) }
         let records = try context.fetch(FetchDescriptor<DecisionRecord>())
         for (episodeID, value) in prior {
+            guard !protected.contains(episodeID) else { continue }
             let existing = records.first { $0.episodeID == episodeID.rawValue }
             switch (existing, value) {
             case let (record?, nil):
@@ -192,8 +217,22 @@ extension LocalLibraryStore {
         let queueRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
         let existingDates = Dictionary(queueRecords.map { ($0.episodeID, $0.addedAt) }, uniquingKeysWith: { first, _ in first })
         for record in queueRecords { context.delete(record) }
-        for (position, episodeID) in queue.episodeIDs.enumerated() {
-            let storedPosition = position + (episodeID == queue.currentEpisodeID ? Self.podcastCurrentPositionOffset : 0)
+        // Preserve the current membership of protected members while reverting
+        // only the automatic operation's other queue changes.
+        let protectedRaw = Set(protected.map(\.rawValue))
+        var restoredIDs = queue.episodeIDs.filter { !protected.contains($0) }
+        for record in queueRecords.sorted(by: { $0.position < $1.position }) where protectedRaw.contains(record.episodeID) {
+            let id = try ItemID(rawValue: record.episodeID)
+            let position = min(record.position % Self.podcastCurrentPositionOffset, restoredIDs.count)
+            restoredIDs.insert(id, at: position)
+        }
+        let protectedCurrent = queueRecords.first {
+            protectedRaw.contains($0.episodeID) && $0.position >= Self.podcastCurrentPositionOffset
+        }?.episodeID
+        for (position, episodeID) in restoredIDs.enumerated() {
+            let current = protectedCurrent.map { $0 == episodeID.rawValue }
+                ?? (episodeID == queue.currentEpisodeID && !protected.contains(episodeID))
+            let storedPosition = position + (current ? Self.podcastCurrentPositionOffset : 0)
             context.insert(LocalLibrarySchemaV6Models.PodcastQueueRecord(
                 try PodcastQueueEntry(episodeID: episodeID, position: storedPosition,
                                       addedAt: Timestamp(existingDates[episodeID.rawValue] ?? addedAt.date))
@@ -210,10 +249,51 @@ extension LocalLibraryStore {
     /// left unchanged, matching their public one-at-a-time counterparts.
     @discardableResult
     public func admitEpisode(_ value: EpisodeDecisionRecord, enqueue: Bool = true,
-                             workTicketKinds: [WorkTicketKind] = [], requestedAt: Timestamp = Timestamp(Date())) throws -> [WorkTicket] {
+                             workTicketKinds: [WorkTicketKind] = [], requestedAt: Timestamp = Timestamp(Date()),
+                             automaticKeptLimit: Int? = nil) throws -> [WorkTicket] {
         let context = ModelContext(container)
+        context.autosaveEnabled = false
+        defer { if context.hasChanges { context.rollback() } }
         let episodeID = value.episodeID.rawValue
+        let lookup = try EpisodeAssociationReadLookup(in: context)
+        let applies = try Self.shouldApplyEpisodeDecision(value, in: context, lookup: lookup)
+        try Self.stageAssociationManualTie(value, in: context, lookup: lookup)
+        guard applies else {
+            if context.hasChanges { try context.save() }
+            // A dated manual action losing chronology is a clean per-item
+            // no-op. The caller's batch can continue with independent items.
+            if value.source == .manual { throw AutomaticEpisodeAdmissionError.supersededManualDecision }
+            throw AutomaticEpisodeAdmissionError.manualDecisionExists
+        }
         let queueRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
+        if value.source != .manual {
+            let decisions = Array(lookup.decisions.values)
+            guard decisions.first(where: { $0.episodeID == episodeID })?.source != EpisodeDecisionSource.manual.rawValue else {
+                throw AutomaticEpisodeAdmissionError.manualDecisionExists
+            }
+            if enqueue, value.decision == .keep,
+               !queueRecords.contains(where: { $0.episodeID == episodeID }) {
+                let episodes = Array(lookup.episodes.values)
+                guard let episode = episodes.first(where: { $0.id == episodeID }), episode.removalKind == nil else {
+                    throw AutomaticEpisodeAdmissionError.episodeUnavailable
+                }
+                let persistedLimit = try context.fetch(FetchDescriptor<FeedPolicyRecord>())
+                    .first(where: { $0.feedID == episode.feedID })?.keptLimit
+                if let limit = persistedLimit ?? automaticKeptLimit {
+                    let liveIDs = Set(episodes.filter { $0.feedID == episode.feedID && $0.removalKind == nil }.map(\.id))
+                    let keptDecisions = Set(decisions.filter { $0.decision == EpisodeDecision.keep.rawValue }.map(\.episodeID))
+                    let rawKept = Set(queueRecords.map(\.episodeID)).union(keptDecisions).intersection(liveIDs).subtracting([episodeID])
+                    let candidateGroup = lookup.state(for: value.episodeID)?.representativeID ?? value.episodeID
+                    let kept = try Set(rawKept.map { raw -> ItemID in
+                        let id = try ItemID(rawValue: raw)
+                        return lookup.state(for: id)?.representativeID ?? id
+                    }).subtracting([candidateGroup]).count
+                    let feedID = try ItemID(rawValue: episode.feedID)
+                    let reserved = try manualCompletionCapacityReservations(at: requestedAt.date)[feedID, default: 0]
+                    guard kept + reserved < limit else { throw AutomaticEpisodeAdmissionError.capacityUnavailable }
+                }
+            }
+        }
         if enqueue, !queueRecords.contains(where: { $0.episodeID == episodeID }) {
             let lastPosition = queueRecords.map { $0.position >= Self.podcastCurrentPositionOffset
                 ? $0.position - Self.podcastCurrentPositionOffset : $0.position }.max() ?? -1
@@ -221,7 +301,7 @@ extension LocalLibraryStore {
                 try PodcastQueueEntry(episodeID: value.episodeID, position: lastPosition + 1, addedAt: requestedAt)
             ))
         }
-        if let record = try context.fetch(FetchDescriptor<DecisionRecord>()).first(where: { $0.episodeID == episodeID }) {
+        if let record = lookup.decisions.values.first(where: { $0.episodeID == episodeID }) {
             record.decision = value.decision.rawValue; record.source = value.source.rawValue
             record.ruleID = value.ruleID; record.decidedAt = value.decidedAt.date
         } else {
@@ -266,6 +346,7 @@ extension LocalLibraryStore {
             .first(where: { $0.id == identifier }), episode.removalKind == nil else { return false }
         let existing = try context.fetch(FetchDescriptor<DecisionRecord>()).first { $0.episodeID == identifier }
         guard existing?.source != EpisodeDecisionSource.manual.rawValue else { return false }
+        guard try !Self.associationHasManualChoice(for: episodeID, in: context) else { return false }
         episode.retiredAt = decidedAt.date
         episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
         if let existing {

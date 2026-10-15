@@ -19,12 +19,20 @@ struct LibraryAccountRecovery: Sendable {
 @MainActor
 final class LibraryAppModel: ObservableObject {
     /// Every entry the Mac has queued, in its order, prepared or not. The list shows `visibleRows`.
-    @Published private(set) var queued: [LibraryRow] = []
+    @Published private(set) var queued: [LibraryRow] = [] {
+        didSet { logicalEpisodeRowsDirty = true }
+    }
     /// Entries whose media offer from the Mac says the audio is prepared: `ready` (fetchable now) or
     /// `available` (prepared on the Mac; asking for it starts the upload).
     @Published private(set) var readyOffers: Set<ItemID> = []
     private var cachedDisplayIDs: Set<ItemID> = []
     private var completedDisplayRows: [LibraryRow]?
+    private var completedDisplayContent: LibrarySnapshot? {
+        didSet {
+            completedDisplayGroupsByMember = LibraryRowBuilder.associationsByMember(in: completedDisplayContent)
+        }
+    }
+    private var completedDisplayGroupsByMember: [ItemID: LibraryEpisodeAssociation] = [:]
     private var displayContext: (generation: UInt64, admissionRevision: UInt64)?
     @Published var filter: LibraryFilter = .all
     /// Which kind the Larder shows; kept across launches. A stored value this build does not know reads as All.
@@ -33,7 +41,9 @@ final class LibraryAppModel: ObservableObject {
     }
     @Published var searchText = ""
     /// The most authoritative record per entry from any device other than this one.
-    @Published private(set) var checkpoints: [ItemID: ObservedPlayback] = [:]
+    @Published private(set) var checkpoints: [ItemID: ObservedPlayback] = [:] {
+        didSet { logicalEpisodeRowsDirty = true }
+    }
     /// In-progress episodes (position past the start, not completed) from this phone, the Mac and any
     /// other device, with when each was last played. Every listing puts these first.
     @Published private(set) var progress: [ItemID: EpisodeProgress] = [:]
@@ -62,7 +72,9 @@ final class LibraryAppModel: ObservableObject {
     @Published var handoffMessage: String?
     /// Decisions sent to the Mac and not yet settled; written by `LibraryAppModel+Decisions`.
     /// They only shape the display; the phone never writes library state.
-    @Published var decisions: [PendingDecision] = []
+    @Published var decisions: [PendingDecision] = [] {
+        didSet { episodeProjectionDirty = true }
+    }
     /// Why a decision was rolled back, per entry, in words.
     @Published var decisionNotices: [ItemID: String] = [:]
     /// Adds sent to the Mac (a podcast to follow, an article to add) and not yet cleared; written by
@@ -113,9 +125,24 @@ final class LibraryAppModel: ObservableObject {
     let handoffTiming: LibraryHandoffTiming
     let decisionTiming: LibraryDecisionTiming
     /// The mirrored content as last fetched, before any optimistic overlay.
-    var decisionContent = LibrarySnapshot()
+    var decisionContent = LibrarySnapshot() {
+        didSet { episodeAssociationsDirty = true; episodeProjectionDirty = true }
+    }
+    var episodeAssociationsDirty = true
+    var episodeProjectionDirty = true
+    var episodeAssociationGroups: [LibraryEpisodeAssociation] = []
+    var episodeGroupsByMember: [ItemID: LibraryEpisodeAssociation] = [:]
+    var projectedEpisodeGroupsByMember: [ItemID: LibraryEpisodeAssociation] = [:]
+    var projectedEpisodeContent = LibrarySnapshot()
+    var logicalEpisodeRowsDirty = true
+    var projectedLogicalEpisodeRows: [LibraryRow] = []
+    var projectedLogicalRowsByID: [ItemID: LibraryRow] = [:]
+    var episodeAssociationResolutionCount = 0
+
     /// Entries some device has started, from the last device-record fetch.
-    var startedEntries: Set<ItemID> = []
+    var startedEntries: Set<ItemID> = [] {
+        didSet { logicalEpisodeRowsDirty = true }
+    }
     /// The phone's one sync tick and what its rounds track; owned by `LibraryAppModel+SyncTick`.
     let tickState = LibraryTickState()
     /// Mutable handoff bookkeeping, owned by `LibraryAppModel+Handoff`.
@@ -131,6 +158,7 @@ final class LibraryAppModel: ObservableObject {
     /// Verified files that still need their `mediaCached` acknowledgement sent to the Mac.
     var unacknowledgedMedia: [ItemID: RevisionID] = [:]
     var mediaRevocations: Set<ItemID> = []
+    @Published var undoableCompletion: ItemID?
     /// Transcripts for audio on the phone, keyed by entry; each is for the cached revision.
     @Published var transcripts: [ItemID: LibraryTranscript] = [:]
     /// One load per entry, so a cancelled or replaced load can never write for its successor.
@@ -299,6 +327,7 @@ final class LibraryAppModel: ObservableObject {
         handoffState.ownPositions = [:]
         continuation = nil
         completedDisplayRows = nil
+        completedDisplayContent = nil
         discardDecisionsAfterAccountChange()
         discardAddsAfterAccountChange()
         await discardMediaAfterAccountChange()
@@ -371,7 +400,7 @@ final class LibraryAppModel: ObservableObject {
         guard await current() else { return }
         applyStoreMetadata(saved)
         if let context = await bindMediaOwner() {
-            guard await revokeRemovedQueueMedia(previous: priorQueue, current: Set(saved.content.queue.map(\.entryID)), context: context) else { return }
+            guard await revokeRemovedQueueMedia(previous: priorQueue, current: Set(saved.content.queue.map(\.entryID)), content: saved.content, context: context) else { return }
         }
         displayContext = (generation, saved.displayAdmissionRevision)
         entryDurations = saved.content.entries.compactMapValues(\.durationSeconds)
@@ -405,9 +434,10 @@ final class LibraryAppModel: ObservableObject {
         accountQuarantined = accountQuarantined || saved.reviewHold
         cachedDisplayIDs = saved.displayPreparedIDs ?? []
         if saved.ownerToken != nil, saved.displayRefreshPending, let content = saved.completedDisplay {
+            completedDisplayContent = content
             let ids = saved.completedDisplayPreparedIDs ?? []
             completedDisplayRows = LibraryRowBuilder.rows(content: content, checkpoints: checkpoints, clock: clockFormat, started: startedEntries).filter { ids.contains($0.id) }
-        } else { completedDisplayRows = nil }
+        } else { completedDisplayRows = nil; completedDisplayContent = nil }
         lastCacheCommittedAt = saved.cacheCommittedAt
         lastObservedPublication = saved.ownerToken == nil ? nil : saved.observedPublication
         if saved.reviewHoldPersistenceFailed {
@@ -417,7 +447,8 @@ final class LibraryAppModel: ObservableObject {
 
     /// Projects the fetched content, with unsettled decisions laid over it, into queue-ordered rows.
     func rebuildRows() {
-        let visible = LibraryDecisionOverlay.apply(decisions, to: decisionContent)
+        refreshEpisodeProjection()
+        let visible = projectedEpisodeContent
         queued = LibraryRowBuilder.rows(
             content: visible, checkpoints: checkpoints, clock: clockFormat, started: startedEntries)
         refreshProgress()
@@ -427,7 +458,8 @@ final class LibraryAppModel: ObservableObject {
     func refreshProgress() { refreshProgress(playingEntry: handoffState.player?.item?.entryID) }
 
     func refreshProgress(playingEntry: ItemID?) {
-        let completed = Set(LibraryDecisionOverlay.apply(decisions, to: decisionContent).listening.filter { $0.value.isCompleted }.keys)
+        refreshEpisodeProjection()
+        let completed = Set(projectedEpisodeContent.listening.filter { $0.value.isCompleted }.keys)
         let player = handoffState.player
         let playing = playingEntry.map { (id: $0, position: player?.position ?? 0, isPlaying: player?.isPlaying ?? false) }
         let next = InProgressOrdering.progress(
@@ -478,16 +510,24 @@ final class LibraryAppModel: ObservableObject {
     /// The Larder as listed: prepared rows only, narrowed by filter and search, ordered by `sort`.
     var visibleRows: [LibraryRow] {
         let ids = preparedIDs
-        return LibraryListing.rows(
-            completedDisplayRows ?? queued, offered: completedDisplayRows.map { Set($0.map(\.id)) } ?? ids.offered.union(cachedDisplayIDs), onPhone: ids.onPhone, filter: filter, kind: kindFilter, query: searchText,
-            progress: progress, finished: finished)
+        refreshEpisodeProjection()
+        let display = completedDisplayContent ?? projectedEpisodeContent
+        let groups = completedDisplayContent == nil ? projectedEpisodeGroupsByMember : completedDisplayGroupsByMember
+        let rows = completedDisplayRows.map {
+            LibraryRowBuilder.logicalRows($0, content: display, checkpoints: checkpoints,
+                                          clock: clockFormat, started: startedEntries, groupsByMember: groups)
+        } ?? logicalQueued
+        let offered = completedDisplayRows.map { Set($0.map(\.id)) } ?? ids.offered.union(cachedDisplayIDs)
+        return LibraryListing.rows(rows, offered: logicalIDs(offered, groupsByMember: groups),
+            onPhone: logicalIDs(ids.onPhone, groupsByMember: groups), filter: filter, kind: kindFilter, query: searchText,
+            progress: logicalProgress, finished: logicalFinished)
     }
 
     /// How many queued entries are prepared, before any filter or search; tells an empty Larder
     /// from an empty result.
     var preparedCount: Int {
         let ids = preparedIDs
-        return LibraryListing.prepared(queued, offered: ids.offered.union(cachedDisplayIDs), onPhone: ids.onPhone).count
+        return LibraryListing.prepared(logicalQueued, offered: logicalIDs(ids.offered.union(cachedDisplayIDs)), onPhone: logicalIDs(ids.onPhone)).count
     }
 
     /// The winning record per entry among every device except this one, across both

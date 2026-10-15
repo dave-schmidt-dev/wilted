@@ -35,13 +35,21 @@ final class LocalLibraryMigrationV18Tests: XCTestCase {
             XCTAssertEqual(values.first { $0.feedID == expected.feedID }, expected)
         }
         let version = await store.schemaVersion
-        XCTAssertEqual(version.rawValue, 18, "opening a frozen V17 store must migrate to V18")
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(18))
+        XCTAssertEqual(version.rawValue, LocalLibrarySchemaVersion.current.rawValue,
+                       "opening a frozen V17 store must migrate to current")
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url),
+                       .known(LocalLibrarySchemaVersion.current.rawValue))
         var expectedCounts = before
         // Opening the library initializes these two empty statistics singleton tables.
         expectedCounts["ZLIFETIMESTATISTICSSUMMARYRECORD"] = 1
         expectedCounts["ZLIFETIMESTATISTICSTRACKINGRECORD"] = 1
-        XCTAssertEqual(try LocalLibraryStore.tableRowCounts(at: url), expectedCounts)
+        let after = try LocalLibraryStore.tableRowCounts(at: url)
+        for (table, count) in expectedCounts {
+            XCTAssertEqual(after[table], count, "table \(table) keeps its expected row count")
+        }
+        for (table, count) in after where expectedCounts[table] == nil {
+            XCTAssertEqual(count, 0, "newly added table \(table) starts empty")
+        }
         XCTAssertTrue(values.allSatisfy { $0.displayName == nil })
         let retained = await store.migrationBackupURL
         let backup = try XCTUnwrap(retained)

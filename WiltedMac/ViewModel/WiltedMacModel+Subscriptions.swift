@@ -42,13 +42,21 @@ extension WiltedMacModel {
     func reloadPreparedPlayback(_ episodeID: String, itemID: ItemID) async {
         guard currentPodcastEpisodeID == episodeID, let playback else { return }
         let wasPlaying = playback.liveIsPlaying
-        do {
-            try await playback.selectPodcastQueueEpisode(itemID, autoplay: wasPlaying)
-            refreshPlaybackReadout()
-        } catch {
-            playbackError = "This episode's saved audio is unavailable."
+        issuePlaybackCommand(.select, pending: nil, target: episodeID,
+                             failureMessage: "This episode's saved audio is unavailable.") { [weak self] command in
+            guard let self else { return }
+            guard let store = self.store,
+                  let stored = try await store.readyRevision(for: itemID) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            try self.ensureCurrentPlaybackCommand(command)
+            try await playback.load(stored)
+            try self.ensureNewestSelection(command)
+            if wasPlaying { try self.startIfCurrent(playback, for: command) }
+            self.refreshPlaybackReadout()
+            self.requestPlaybackPresentation(itemID: itemID, includesCuts: true, traceToken: command.token)
         }
-        await loadEpisodeTranscript(itemID: itemID)
+        await playbackCommands.tail?.value
     }
 #endif
 
@@ -264,15 +272,15 @@ extension WiltedMacModel {
     }
 #endif
 
-    /// Removes an episode for good, not just from this view.
-    ///
-    /// The in-memory hide is the optimistic half: it takes the row off screen
-    /// on the next render, before the store round-trip returns. The durable
-    /// half is the store's dismissal, which is what stops the next refresh
-    /// parsing the same episode out of the same feed and inserting it again.
-    /// Without it a removal lasted until the next launch, because this set is
-    /// all there was.
+    /// Podcast Remove records the same retained-media finish as Mark completed.
+    /// The existing nonpodcast branch keeps its established removal behavior.
     func removeEpisode(_ episode: WiltedMacEpisode) {
+#if canImport(WiltedProducer)
+        if !episode.isAudiobook {
+            finishEpisodes([episode])
+            return
+        }
+#endif
         hideEpisode(episode)
         undoableRemoval = nil
         undoableSkip = nil
@@ -303,7 +311,13 @@ extension WiltedMacModel {
     /// widget still offering controls for it. `removeArticle` already cleared
     /// its side; this is the same care for the other kind.
     func stopPlaybackForRemovedEpisode() async {
+        let selectionToken = playbackCommands.selectionToken
+        let itemID = playback?.itemID
+        let revisionID = playback?.revisionID
         try? await playback?.pause()
+        guard selectionToken == playbackCommands.selectionToken,
+              itemID == playback?.itemID, revisionID == playback?.revisionID else { return }
+        cancelPlaybackPresentation()
         stopPlaybackCheckpointTicker()
         cancelSeamMarker()
         currentPodcastEpisodeID = nil

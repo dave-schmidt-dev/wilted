@@ -32,6 +32,10 @@ extension WiltedMacLarderView {
                 ) { model.prepareAllDownloadedLarderEpisodes() }
             }
             .buttonStyle(.bordered)
+            if let completion = model.undoableSkip {
+                Button("Undo completion") { model.undoSkipEpisode(completion) }
+                    .accessibilityIdentifier("wilted-larder-undo-completion")
+            }
             // A bulk action that covered rows the reader cannot see would be
             // the same defect as Skip deleting media: the control says what it
             // will do, and while a search is on it says it will not run.

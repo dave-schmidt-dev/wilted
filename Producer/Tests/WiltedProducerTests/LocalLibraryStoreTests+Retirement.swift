@@ -32,18 +32,16 @@ extension LocalLibraryStoreTests {
         let didUndo = try await store.undoCompletedAndRetiredEpisode(episode.itemID, updatedAt: restoredAt)
         let restoredRemovalKind = try await store.removalKind(for: episode.itemID)
         let restoredListening = try await store.listeningState(for: episode.itemID)
-        XCTAssertTrue(didUndo)
-        XCTAssertNil(restoredRemovalKind)
-        XCTAssertNil(restoredListening?.completedAt)
-        XCTAssertNil(restoredListening?.lastRevisionID)
-        XCTAssertEqual(restoredListening?.updatedAt, restoredAt)
+        XCTAssertFalse(didUndo, "Receipt-less Undo cannot erase unidentified legacy completion")
+        XCTAssertEqual(restoredRemovalKind, .retired)
+        XCTAssertEqual(restoredListening, listening, "Legacy completion evidence remains intact")
 
         let didRetireAgain = try await store.completeAndRetireEpisode(listening: listening, at: completedAt)
         let didDismiss = try await store.dismissPodcastEpisode(episode.itemID)
         let didUndoDismissal = try await store.undoCompletedAndRetiredEpisode(episode.itemID)
         let dismissedRemovalKind = try await store.removalKind(for: episode.itemID)
         let dismissedListening = try await store.listeningState(for: episode.itemID)
-        XCTAssertTrue(didRetireAgain)
+        XCTAssertFalse(didRetireAgain, "The retained retirement is already at target")
         XCTAssertTrue(didDismiss)
         XCTAssertFalse(didUndoDismissal)
         XCTAssertEqual(dismissedRemovalKind, .dismissed)
@@ -213,14 +211,9 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(laterReadyRevision?.mediaURL, laterMediaURL)
     }
 
-    /// Dismiss deletes the episode row but, since Phase 5, not the listening
-    /// row -- so a restore re-inserts a fresh row with `retiredAt == nil`
-    /// while the listening fact's `lastRevisionID` still points at the
-    /// original download. A re-download is content-addressed, so it lands on
-    /// that exact same revision ID; without clearing `lastRevisionID` on
-    /// restore, the next bootstrap sweep would see a completed listening
-    /// fact matching the current ready revision and silently re-retire the
-    /// episode the user just asked to have back.
+    /// Explicit Restore records newer owner Keep without erasing genuine
+    /// listening evidence. Repreparing the same hash after relaunch must not
+    /// re-retire it; a subsequent genuine EOF still may.
     func testRestoreSurvivesTheRetirementSweepAfterARedownloadOntoTheSameRevision() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let feedURL = URL(string: "https://podcasts.example.test/restore-sweep/feed.xml")!
@@ -237,8 +230,8 @@ extension LocalLibraryStoreTests {
             createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
         )
         let revision = try podcastRevision(itemID: episode.itemID, id: "rev-restore-sweep", hashDigit: "d")
-        let mediaURL = URL(fileURLWithPath: "/tmp/restore-sweep.m4a")
-        let store = try LocalLibraryStore(url: url)
+        let mediaURL = url.deletingLastPathComponent().appendingPathComponent("restore-sweep.m4a")
+        var store = try LocalLibraryStore(url: url)
         try await store.save(feed: feed)
         try await store.save(subscription: PodcastSubscription(
             feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
@@ -253,6 +246,7 @@ extension LocalLibraryStoreTests {
             episodeID: episode.itemID, completedAt: completedAt,
             lastRevisionID: revision.revisionID, updatedAt: completedAt
         ))
+        let genuineListening = try await store.listeningState(for: episode.itemID)
         _ = try await store.retireEpisode(episode.itemID, at: Timestamp(Date(timeIntervalSince1970: 1_700_000_600)))
 
         try await store.dismissPodcastEpisode(episode.itemID, at: Timestamp(Date(timeIntervalSince1970: 1_700_000_700)))
@@ -260,11 +254,13 @@ extension LocalLibraryStoreTests {
         XCTAssertTrue(restored)
 
         let listeningAfterRestore = try await store.listeningState(for: episode.itemID)
-        XCTAssertEqual(listeningAfterRestore?.completedAt, completedAt, "restore keeps the listening history intact")
-        XCTAssertNil(listeningAfterRestore?.lastRevisionID,
-                      "clearing this defeats the sweep's exact-match guard until a fresh completion re-sets it")
-        XCTAssertGreaterThan(try XCTUnwrap(listeningAfterRestore?.updatedAt), completedAt,
-                             "restore refreshes the listening mutation timestamp")
+        XCTAssertEqual(listeningAfterRestore, genuineListening, "Restore keeps genuine completion, revision and timestamp exact")
+        let restoredDecision = try await store.episodeDecision(for: episode.itemID)
+        XCTAssertEqual(restoredDecision?.decision, .keep)
+        XCTAssertEqual(restoredDecision?.source, .manual)
+        XCTAssertNil(restoredDecision?.ruleID)
+        let keptAt = try XCTUnwrap(restoredDecision?.decidedAt)
+        XCTAssertGreaterThan(keptAt, completedAt)
         let retiredAtAfterRestore = try await store.retiredAt(for: episode.itemID)
         XCTAssertNil(retiredAtAfterRestore, "the re-inserted row starts active again")
 
@@ -274,9 +270,19 @@ extension LocalLibraryStoreTests {
             download: try completedPodcastDownload(episodeID: episode.itemID, revision: revision, mediaURL: mediaURL)
         )
 
+        store = try LocalLibraryStore(url: url)
+        try await store.reconcilePodcastStateV10()
         try await store.retireCompletedEpisodesMissingRetirement()
+        let listeningAfterRelaunch = try await store.listeningState(for: episode.itemID)
+        XCTAssertEqual(listeningAfterRelaunch, genuineListening)
         let retiredAfterSweep = try await store.retiredAt(for: episode.itemID)
         XCTAssertNil(retiredAfterSweep, "the sweep must not silently undo a restore")
+        let laterEOF = Timestamp(keptAt.date.addingTimeInterval(1))
+        try await store.saveListening(PodcastListeningState(episodeID: episode.itemID, completedAt: laterEOF,
+            lastRevisionID: revision.revisionID, updatedAt: laterEOF))
+        try await store.retireCompletedEpisodesMissingRetirement()
+        let retiredAfterNewEOF = try await store.removalKind(for: episode.itemID)
+        XCTAssertEqual(retiredAfterNewEOF, .retired, "A newer genuine EOF supersedes the old Restore choice")
     }
 
 }

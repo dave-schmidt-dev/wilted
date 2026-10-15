@@ -155,8 +155,9 @@ extension WiltedMacModelTests {
         XCTAssertTrue(model.preparationQueue.isEmpty)
     }
 
-    func testSkippingAnEpisodeGivesUpItsPlaceInThePreparationQueue() throws {
+    func testManualCompletionPreservesPreexistingPreparationOwnership() async throws {
         let (_, model, episode) = try automationFixture("skip-leaves-queue")
+        await model.fixturePodcastInstallTask?.value
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual,
             processingPolicy: .offPeak(try offPeakWindow()),
@@ -165,11 +166,16 @@ extension WiltedMacModelTests {
         model.admitAutomaticPreparation(for: episode, at: try localDate(hour: 12))
         XCTAssertEqual(model.preparationQueue.entries.map(\.id), [episode.id])
 
+        let admitted = model.deferredAutomaticPreparations
         model.removeEpisode(episode)
+        await model.waitForPodcastOperations()
 
-        XCTAssertTrue(model.preparationQueue.isEmpty,
-                      "a removed episode kept its turn, so Prep counted one more waiting than "
-                      + "the Larder could show and the run slot went to a row nobody has")
+        XCTAssertEqual(model.preparationQueue.entries.map(\.id), [episode.id],
+                       "completion must not cancel preparation admitted by an earlier owner")
+        XCTAssertEqual(model.deferredAutomaticPreparations, admitted,
+                       "the preexisting policy snapshot and off-peak window remain owned by that request")
+        XCTAssertFalse(model.larderVisibleEpisodes.contains { $0.id == episode.id })
+        XCTAssertNotNil(model.undoableSkip?.manualCompletionOperationID)
     }
 
     func testOffPeakAdmissionKeepsItsOriginalWindowAndSnapshotUntilEligible() async throws {

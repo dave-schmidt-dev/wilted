@@ -27,7 +27,7 @@ from . import gpu_admission as _worker_gpu_admission
 from . import reporting as _worker_reporting
 from . import span_bounds as _worker_span_bounds
 from . import tail_recovery as _worker_tail_recovery
-from .ad_audit import AdAnalysis, AuditingBackend, DeclinedCommercialEvidenceSeed
+from .ad_audit import AdAnalysis, AdAnalysisAudit, AuditingBackend, DeclinedCommercialEvidenceSeed, uncertain_ad_analysis, expected_backend_unavailable
 from .ad_runtime_adaptations import install_context_aware_overlap_resolution, install_legacy_sponsor_opening_compatibility, install_produced_disclaimer_evidence, install_proportional_render_budget
 from .constants import COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
 from .cue_timing import _near_empty_nominations, build_effective_cut_map, build_keep_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
@@ -84,6 +84,8 @@ def analyze_ad_detections(
         ads_logger.setLevel(previous_level)
         discarded.summarize()
 
+    if auditing_backend.unexpected_error is not None:
+        raise auditing_backend.unexpected_error
     preliminary_audit = auditing_backend.audit(detections, segments)
     if auditing_backend.contract_errors:
         raise WorkerError("ads-audit-contract-unavailable", auditing_backend.contract_errors[0])
@@ -203,11 +205,16 @@ def analyze_ad_detections(
                     and float(ad.end_s) > float(segments[seed_ids[0]].start_s)
                     for ad in proposed_detections
                 )
-                else "review-declined"
+                else ("review-declined" if all(
+                    auditing_backend.commercial_review_states.get(segment_id) == "programme"
+                    for segment_id in seed_ids
+                ) else "review-unresolved")
             ),
         )
         for seed_ids in _worker_commercial_seeds.commercial_evidence_seed_ids(segments, detections)
     )
+    if auditing_backend.unexpected_error is not None:
+        raise auditing_backend.unexpected_error
     if auditing_backend.contract_errors:
         raise WorkerError("ads-audit-contract-unavailable", auditing_backend.contract_errors[0])
     if auditing_backend.mostly_failed:
@@ -320,8 +327,32 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                     backend.close()
                 except Exception:  # noqa: BLE001 - the load failure is the report
                     pass
-            raise WorkerError("ads-model-unavailable", f"{type(error).__name__}: {error}") from error
-        counting = AuditingBackend(backend, ads_module, len(segments))
+            if not expected_backend_unavailable(error):
+                raise
+            if not with_report:
+                raise WorkerError("ads-model-unavailable", f"{type(error).__name__}: {error}") from error
+            reason = f"ad-detection model unavailable: {type(error).__name__}: {error}"
+            warning = f"original audio includes ads: {reason}"
+            _worker_reporting.progress("ads.uncertain", warning)
+            audit = AdAnalysisAudit(model_failures=1, incomplete_error=reason, warning=warning)
+            return audio_path, [], [], [], serialize_ad_audit(audit)
+
+        try:
+            counting = AuditingBackend(backend, ads_module, len(segments))
+        except WorkerError as error:
+            if with_report and error.code == "ads-audit-contract-unavailable":
+                if backend is not None:
+                    try:
+                        backend.close()
+                    except Exception:
+                        pass
+                reason = f"archived classifier contract unavailable: {error}"
+                warning = f"original audio includes ads: {reason}"
+                _worker_reporting.progress("ads.uncertain", warning)
+                audit = AdAnalysisAudit(incomplete_error=reason, warning=warning)
+                return audio_path, [], [], [], serialize_ad_audit(audit)
+            raise
+
         try:
             _worker_reporting.progress("ads.detect.start", f"{len(segments)} segments")
             # Probed before the recovery passes, not after them. The closing
@@ -330,8 +361,35 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             # found nothing at all, so a probe conditional on detections would
             # never run for it. Both size guards then share this denominator.
             total = _worker_cue_timing.probe_duration(audio_path)
-            analysis = analyze_ad_detections(ads_module, counting, segments, total)
-            detections = list(analysis.detections)
+            try:
+                analysis = analyze_ad_detections(ads_module, counting, segments, total)
+                detections = list(analysis.detections)
+            except WorkerError as error:
+                if with_report and error.code in {
+                    "ads-classification-unresolved",
+                    "ads-classification-incomplete",
+                    "ads-recovery-audit-failed",
+                    "ads-audit-contract-unavailable",
+                    "ads-backend-failed",
+                }:
+                    analysis = uncertain_ad_analysis(counting, segments, str(error))
+                    return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
+                raise
+            unresolved_seeds = [
+                seed for seed in analysis.audit.declined_commercial_evidence_seeds
+                if seed.reason != "review-declined" and not any(
+                    held.reason == "sponsor-prefix-programme-found"
+                    and held.start_s <= seed.start_s and held.end_s >= seed.end_s
+                    for held in analysis.audit.held_spans
+                )
+            ]
+            if with_report and (any(span.reason == "total-share-ceiling" for span in analysis.audit.held_spans)
+                                or unresolved_seeds):
+                analysis = uncertain_ad_analysis(
+                    counting, segments, "ad review could not safely resolve all proposed commercial spans",
+                    held_spans=analysis.audit.held_spans, proposed_detections=detections, audit=analysis.audit,
+                )
+                return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
         finally:
             try:
                 backend.close()
@@ -355,18 +413,36 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         })
     _worker_reporting.progress("ads.detect.complete", f"{len(raw_nominations)} spans")
 
-    if with_report:
-        _, keeps = build_effective_cut_map(detections, total)
-        keep_segments = [(keep.start_s, keep.end_s) for keep in keeps]
-    else:
-        keep_segments = ads_module._compute_keep_segments(total, detections, 0.5)  # noqa: SLF001
-        keeps = build_keep_map(keep_segments)
+    try:
+        if with_report:
+            _, keeps = build_effective_cut_map(detections, total)
+            keep_segments = [(keep.start_s, keep.end_s) for keep in keeps]
+        else:
+            keep_segments = ads_module._compute_keep_segments(total, detections, 0.5)  # noqa: SLF001
+            keeps = build_keep_map(keep_segments)
+    except WorkerError as error:
+        if error.code == "cut-unsafe":
+            reason = f"ad cut unsafe: {error}"
+            warning = f"original audio includes ads: {reason}"
+            _worker_reporting.progress("ads.uncertain", warning)
+            analysis.audit.incomplete_error = reason
+            analysis.audit.warning = warning
+            if with_report:
+                return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit)
+            return audio_path, [], []
+        raise
+
     if not keeps:
         # Everything was called an ad. Refusing to cut is the only safe
         # reading: an empty file is worse than an unedited one.
         _worker_reporting.progress("ads.cut.refused", "every span was classified as an advertisement")
+        reason = "every span was classified as an advertisement; refusing unsafe cut"
+        warning = f"original audio includes ads: {reason}"
+        _worker_reporting.progress("ads.uncertain", warning)
+        analysis.audit.incomplete_error = reason
+        analysis.audit.warning = warning
         if with_report:
-            raise WorkerError("cut-unsafe", "every span was classified as an advertisement")
+            return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit)
         return audio_path, raw_nominations, []
 
     output_path = Path(request["outputPath"])

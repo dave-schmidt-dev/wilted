@@ -7,6 +7,36 @@ import WiltedProducer
 
 @MainActor
 final class WiltedMacFeedDecisionTests: XCTestCase {
+    func testLocalFeedChoicesAdvancePastFutureChoiceAndSameClockKeepWhileDatedIntentLoses() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let episode = fixture.episodes[0]
+        let id = fixture.itemIDs[0]
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let future = Timestamp(now.addingTimeInterval(1_000))
+        fixture.model.manualCompletionNow = { now }
+        try await fixture.store.save(episodeDecision: .init(episodeID: id, decision: .skip,
+            source: .manual, decidedAt: future))
+        fixture.model.decideFeedEpisodes(.keep, episodes: [episode])
+        XCTAssertTrue(fixture.model.pendingFeedDecisionIDs.contains(episode.id))
+        await drainDecisionWriters(fixture.model)
+        let keptValue = try await fixture.store.episodeDecision(for: id)
+        let kept = try XCTUnwrap(keptValue)
+        XCTAssertEqual(kept.decision, .keep)
+        XCTAssertGreaterThan(kept.decidedAt.date, future.date)
+        fixture.model.decideFeedEpisodes(.skip, episodes: [episode])
+        await drainDecisionWriters(fixture.model)
+        let skippedValue = try await fixture.store.episodeDecision(for: id)
+        let skipped = try XCTUnwrap(skippedValue)
+        XCTAssertEqual(skipped.decision, .skip)
+        XCTAssertGreaterThan(skipped.decidedAt.date, kept.decidedAt.date)
+        let old = await fixture.model.applyOwnerIntent(try LibraryIntent.keep(entryID: id,
+            deviceID: "iphone", createdAt: future.date, id: "old-feed-keep"))
+        if case .superseded? = old {} else { XCTFail("Explicit old intent must retain its original chronology") }
+        let retained = try await fixture.store.episodeDecision(for: id)
+        XCTAssertEqual(retained, skipped)
+    }
+
     func testKeepPublishesPendingBeforeCommitAndRejectsRepeatedClick() async throws {
         let gate = BootstrapGate()
         let fixture = try await makeFixture(count: 2, queueIndexes: [])
@@ -254,7 +284,11 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         await drainDecisionWriters(fixture.model)
         let restoredListening = try await fixture.store.listeningState(for: itemID)
         XCTAssertEqual(restoredListening?.completedAt, fixture.createdAt)
-        XCTAssertNil(restoredListening?.lastRevisionID)
+        XCTAssertEqual(restoredListening?.lastRevisionID, revisionID)
+        XCTAssertEqual(restoredListening?.updatedAt, fixture.createdAt)
+        let restoredDecision = try await fixture.store.episodeDecision(for: itemID)
+        XCTAssertEqual(restoredDecision?.decision, .keep)
+        XCTAssertEqual(restoredDecision?.source, .manual)
         // Restore brings the episode back as not downloaded; the audio is not
         // resurrected.
         XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path))
@@ -265,7 +299,7 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
     }
 
     func testOldQueueReadCannotReplaceCommittedKeepAndFreshReadStillPublishes() async throws {
-        let queueRead = BootstrapGate()
+        let queueRead = FirstDurableGate()
         let durable = BootstrapGate()
         let fixture = try await makeFixture(count: 2, queueIndexes: [0])
         addTeardownBlock { await fixture.model.close() }
@@ -273,9 +307,12 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         addTeardownBlock { await queueRead.release() }
         let old = fixture.episodes[0]
         let kept = fixture.episodes[1]
-        fixture.model.podcastQueueReadBarrierForTesting = { await queueRead.hold() }
+        // Hold exactly the first actor-read snapshot. Other refreshes must
+        // proceed while Keep commits, without replacing its continuation.
+        fixture.model.podcastQueueReadBarrierForTesting = { await queueRead.holdFirstOnly() }
         let staleRefresh = Task { @MainActor in await fixture.model.refreshPodcastQueueState() }
         await queueRead.waitUntilHeld()
+        await fixture.model.refreshPodcastQueueState()
         fixture.model.feedDecisionAfterDurableCommitForTesting = { await durable.hold() }
 
         fixture.model.keepEpisode(kept)
@@ -512,6 +549,7 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
+        await model.manualCompletionRecoveryTask?.value
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
         let episodes = itemIDs.compactMap { id in model.episodes.first { $0.id == id.rawValue } }
         XCTAssertEqual(episodes.count, count, "Fixture bootstrap must publish every seeded episode.")

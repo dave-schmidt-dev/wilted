@@ -2,6 +2,184 @@ import Foundation
 import WiltedDomain
 import WiltedLibrary
 
+/// One locally observed boundary in an iOS cached start.
+///
+/// Every stage is a boundary on this phone: `acknowledged` is the publication
+/// of the pending row state, `playCalled` the return of the engine's play
+/// call. None of them is rendered, scheduled or audible timing, so a derived
+/// wait must never be read as "time to sound".
+enum LibraryPlaybackTraceStage: String, CaseIterable, Sendable {
+    case acknowledged
+    case admissionBegan
+    case admissionSettled
+    case loadCalled
+    case sessionActivated
+    case playCalled
+    case settled
+}
+
+/// A wait the trace derives from two stages of one command, named for its
+/// boundaries so a report cannot be mistaken for rendered-timing evidence.
+enum LibraryPlaybackTraceWait: String, CaseIterable, Sendable {
+    case acknowledgedToAdmissionSettled = "acknowledged-to-admissionSettled"
+    case acknowledgedToPlayCalled = "acknowledged-to-playCalled"
+    case loadCalledToPlayCalled = "loadCalled-to-playCalled"
+    case acknowledgedToSettled = "acknowledged-to-settled"
+
+    fileprivate var from: LibraryPlaybackTraceStage {
+        switch self {
+        case .acknowledgedToAdmissionSettled: .acknowledged
+        case .acknowledgedToPlayCalled: .acknowledged
+        case .loadCalledToPlayCalled: .loadCalled
+        case .acknowledgedToSettled: .acknowledged
+        }
+    }
+
+    fileprivate var to: LibraryPlaybackTraceStage {
+        switch self {
+        case .acknowledgedToAdmissionSettled: .admissionSettled
+        case .acknowledgedToPlayCalled: .playCalled
+        case .loadCalledToPlayCalled: .playCalled
+        case .acknowledgedToSettled: .settled
+        }
+    }
+}
+
+/// A bounded, monotonic, owner-data-free trace of cached admissions and
+/// player effects.
+///
+/// It stores stage names, opaque command tokens and monotonic offsets only:
+/// no episode or show titles, no entry or revision identifiers, no URLs and
+/// no file paths. The event buffer is fixed-size and drops its oldest entry
+/// when full, so tracing memory never grows with library size.
+final class LibraryPlaybackTrace: @unchecked Sendable {
+    struct Event: Equatable, Sendable {
+        let sequence: UInt64
+        let stage: LibraryPlaybackTraceStage
+        let token: UInt64
+        let offsetNanos: UInt64
+    }
+
+    /// One measured wait with its sample count, in whole microseconds.
+    struct Summary: Equatable, Sendable {
+        let wait: LibraryPlaybackTraceWait
+        let sampleCount: Int
+        let medianMicros: Int
+        let p95Micros: Int
+        let maxMicros: Int
+    }
+
+    static let shared = LibraryPlaybackTrace()
+    static let capacity = 4096
+    /// Task 1.2's pre-audio gate, set from the Task 1.1 baseline: the p95 of
+    /// `acknowledged-to-playCalled` on the synthetic held-admission fixture.
+    /// It bounds dispatch work only; it says nothing about when audio becomes
+    /// audible.
+    static let preAudioTargetMilliseconds = 250
+
+    private let lock = NSLock()
+    private var origin: ContinuousClock.Instant?
+    private var nextSequence: UInt64 = 0
+    private var storedEvents: [Event] = []
+    private var oldestEventIndex = 0
+    private var enabled = false
+
+    var isEnabled: Bool {
+        get { lock.withLock { enabled } }
+        set { lock.withLock { enabled = newValue } }
+    }
+
+    func record(_ stage: LibraryPlaybackTraceStage, token: UInt64 = 0) {
+        guard token != 0 else { return }
+        lock.withLock {
+            guard enabled else { return }
+            let now = ContinuousClock.now
+            let origin = self.origin ?? now
+            self.origin = origin
+            let elapsed = origin.duration(to: now)
+            let components = elapsed.components
+            let nanos = UInt64(max(0, components.seconds)) * 1_000_000_000
+                + UInt64(max(0, components.attoseconds)) / 1_000_000_000
+            self.nextSequence &+= 1
+            let event = Event(sequence: self.nextSequence, stage: stage, token: token, offsetNanos: nanos)
+            if storedEvents.count < Self.capacity {
+                storedEvents.append(event)
+            } else {
+                storedEvents[oldestEventIndex] = event
+                oldestEventIndex = (oldestEventIndex + 1) % Self.capacity
+            }
+        }
+    }
+
+    func reset() {
+        lock.withLock {
+            storedEvents.removeAll(keepingCapacity: true)
+            origin = nil
+            nextSequence = 0
+            oldestEventIndex = 0
+        }
+    }
+
+    func events() -> [Event] {
+        lock.withLock {
+            guard oldestEventIndex != 0 else { return storedEvents }
+            return Array(storedEvents[oldestEventIndex...]) + Array(storedEvents[..<oldestEventIndex])
+        }
+    }
+
+    func offsetNanos(_ stage: LibraryPlaybackTraceStage, token: UInt64) -> UInt64? {
+        events().last { $0.token == token && $0.stage == stage }?.offsetNanos
+    }
+
+    func measuredWait(_ wait: LibraryPlaybackTraceWait, token: UInt64) -> UInt64? {
+        guard let from = offsetNanos(wait.from, token: token),
+              let to = offsetNanos(wait.to, token: token),
+              to >= from else { return nil }
+        return to - from
+    }
+
+    /// One summary per wait that has at least one complete sample pair.
+    func summaries() -> [Summary] {
+        let tokens = Set(events().map(\.token))
+        return LibraryPlaybackTraceWait.allCases.compactMap { wait in
+            let samples = tokens.compactMap { measuredWait(wait, token: $0) }.sorted()
+            guard !samples.isEmpty else { return nil }
+            return Summary(
+                wait: wait, sampleCount: samples.count,
+                medianMicros: Self.micros(Self.percentile(samples, 0.5)),
+                p95Micros: Self.micros(Self.percentile(samples, 0.95)),
+                maxMicros: Self.micros(samples[samples.count - 1])
+            )
+        }
+    }
+
+    /// The trace as bounded text. It names the call-boundary limits of its own
+    /// stages, so no reader can mistake acknowledgment or a play call for
+    /// rendered or audible timing, and it carries no owner data.
+    func report() -> String {
+        let events = events()
+        var lines = [
+            "ios-playback-stage-trace events=\(events.count) tokens=\(Set(events.map(\.token)).count) capacity=\(Self.capacity)",
+            "limits: acknowledged=dispatch-boundary playCalled=call-boundary sessionActivated=session-boundary; not rendered-or-audible timing",
+            "target: acknowledged-to-playCalled p95<=\(Self.preAudioTargetMilliseconds)ms before Task 1.2 (dispatch boundary only)"
+        ]
+        for summary in summaries() {
+            lines.append(
+                "wait \(summary.wait.rawValue) n=\(summary.sampleCount) medianUs=\(summary.medianMicros) "
+                    + "p95Us=\(summary.p95Micros) maxUs=\(summary.maxMicros)"
+            )
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func micros(_ nanos: UInt64) -> Int { Int(nanos / 1_000) }
+
+    private static func percentile(_ sorted: [UInt64], _ fraction: Double) -> UInt64 {
+        let rank = max(1, Int((Double(sorted.count) * fraction).rounded(.up)))
+        return sorted[min(sorted.count, rank) - 1]
+    }
+}
+
 /// What one start command did, so each caller reacts to its own result rather than reading the
 /// player afterwards (which another command may have changed meanwhile).
 enum LibraryStartOutcome: Equatable, Sendable {
@@ -157,13 +335,14 @@ extension LibraryAppModel {
         }
         // The primary toggle on the playing episode is a pause: nothing to look up. The player's
         // command hook cancels any start still pending.
-        if kind == .toggle, player.item?.entryID == row.id, player.isPlaying {
+        if kind == .toggle, sameLogicalEpisode(player.item?.entryID, row.id), player.isPlaying {
             player.pause()
             return .paused
         }
         state.token &+= 1
         let token = state.token
         playbackCommand = .starting(entryID: row.id, title: row.title)
+        LibraryPlaybackTrace.shared.record(.acknowledged, token: token)
         let task = Task { @MainActor in await self.runStart(row, kind: kind, token: token, onlyIf: onlyIf) }
         state.pending = .init(token: token, entryID: row.id, kind: kind, task: task)
         return await task.value
@@ -174,23 +353,32 @@ extension LibraryAppModel {
     private func runStart(
         _ row: LibraryRow, kind: LibraryStartKind, token: UInt64, onlyIf: (@MainActor (LibraryPlayer) -> Bool)?
     ) async -> LibraryStartOutcome {
-        let cached = await verifiedCachedMedia(row.id, token: token)
+        defer {
+            LibraryPlaybackTrace.shared.record(.settled, token: token)
+            if commandState.token == token {
+                commandState.pending = nil
+                if case .starting = playbackCommand { playbackCommand = nil }
+            }
+        }
+        let rawID = backingEntryID(for: row.id)
+        let cached = await verifiedCachedMedia(rawID, token: token)
         guard commandState.token == token else { return .superseded }
-        commandState.pending = nil
-        playbackCommand = nil
         guard let player = handoffState.player else { return failStart(row, .playerUnavailable, kind: kind) }
         if let onlyIf, !onlyIf(player) { return .declined }
-        guard queued.contains(where: { $0.id == row.id }), media[row.id] == .onPhone,
+        guard queued.contains(where: { $0.id == rawID }), media[rawID] == .onPhone,
+              sameLogicalEpisode(rawID, row.id),
               !accountQuarantined else { return .declined }
         guard let cached else { return failStart(row, .missingMedia, kind: kind) }
         let isManual = kind != .automatic
         let item = LibraryPlayer.Item(
-            entryID: row.id, title: row.title, showTitle: row.showTitle, fileURL: cached.url, artworkURL: row.artworkURL,
+            entryID: rawID, title: row.title, showTitle: row.showTitle, fileURL: cached.url, artworkURL: row.artworkURL,
             chapters: row.chapters)
-        guard player.item != item else {
+        guard player.item?.entryID != rawID || player.item?.fileURL != cached.url else {
             // Loaded already: playing stays playing (a start made during the lookup is not undone).
             if player.isPlaying { return .alreadyPlaying }
-            guard player.playAdmitted() else { return failStart(row, player.lastFailure ?? .engineRefused, kind: kind) }
+            commandState.pending = nil
+            playbackCommand = nil
+            guard player.playAdmitted(traceToken: token) else { return failStart(row, player.lastFailure ?? .engineRefused, kind: kind) }
             // A manual resume of the row that is already loaded adopts its forward suffix only
             // when no valid one exists (empty, or captured around another episode): a suffix
             // that already holds this row is never rebased because progress reordered the list.
@@ -200,8 +388,21 @@ extension LibraryAppModel {
             return .resumed
         }
         let forwardSequence: [ItemID] = isManual ? manualForwardSuffix(from: row.id) : []
-        let position = resumeStart(for: row.id, cachedRevision: cached.revisionID)
-        guard player.start(item, at: position) else {
+        guard let position = await associatedStartPosition(rawID, revision: cached.revisionID) else {
+            return failStart(row, .engineRefused, kind: kind)
+        }
+        guard commandState.token == token else { return .superseded }
+        guard queued.contains(where: { $0.id == rawID }), media[rawID] == .onPhone,
+              !accountQuarantined else { return .declined }
+        if episodeGroup(rawID) != nil {
+            guard let final = await verifiedCachedMedia(rawID, token: token), final == cached else { return .declined }
+            guard commandState.token == token else { return .superseded }
+            guard sameLogicalEpisode(rawID, row.id) else { return .declined }
+            if let onlyIf, !onlyIf(player) { return .declined }
+        }
+        commandState.pending = nil
+        playbackCommand = nil
+        guard player.start(item, at: position, traceToken: token) else {
             return failStart(row, player.lastFailure ?? .engineRefused, kind: kind)
         }
         if isManual { handoffState.forwardSequenceIDs = forwardSequence }
@@ -211,6 +412,8 @@ extension LibraryAppModel {
     /// One final local boundary for row starts, Continue and retained system playback.
     /// Exact owner-bound preparation remains usable offline until a semantic withdrawal is observed.
     func verifiedCachedMedia(_ entryID: ItemID, token: UInt64) async -> CachedMedia? {
+        LibraryPlaybackTrace.shared.record(.admissionBegan, token: token)
+        defer { LibraryPlaybackTrace.shared.record(.admissionSettled, token: token) }
         guard let context = await mediaContext() else { return nil }
         let identity = context.storeIdentity
         guard let entry = decisionContent.entries[entryID] else { return nil }
@@ -264,7 +467,7 @@ extension LibraryAppModel {
     /// never wraps backwards. A row the list does not show still captures itself alone.
     func manualForwardSuffix(from entryID: ItemID) -> [ItemID] {
         let order = playOrderRows
-        guard let index = order.firstIndex(where: { $0.id == entryID }) else { return [entryID] }
+        guard let index = order.firstIndex(where: { sameLogicalEpisode($0.id, entryID) }) else { return [entryID] }
         return Array(order[index...].map(\.id))
     }
 }

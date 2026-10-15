@@ -97,7 +97,7 @@ struct LibraryEpisodeDetailView: View {
 
     var body: some View {
         Group {
-            if let row = model.queued.first(where: { $0.id == entryID }) {
+            if let row = model.logicalRow(for: entryID) {
                 content(row)
             } else {
                 ContentUnavailableView {
@@ -140,7 +140,7 @@ struct LibraryEpisodeDetailView: View {
         case .download:
             LibraryEpisodeActions(
                 row: row, media: model.mediaState(for: row.id),
-                isPlaying: playingID == row.id,
+                isPlaying: model.sameLogicalEpisode(playingID, row.id),
                 onMedia: { model.performMediaAction($0, entryID: row.id) },
                 onPlay: onPlay.map { play in { play(row) } },
                 decisionActions: model.decisionActions(for: row),
@@ -155,7 +155,7 @@ struct LibraryEpisodeDetailView: View {
             notes(row)
         case .transcript:
             LibraryTranscriptSlot(entryID: row.id) {
-                LibraryTranscriptSection(model: model, entryID: row.id, player: player, height: 360)
+                LibraryTranscriptSection(model: model, entryID: model.backingEntryID(for: row.id), player: player, height: 360)
             }
         }
     }

@@ -342,13 +342,7 @@ final class WiltedMacRedesignTests: XCTestCase {
         XCTAssertEqual(query, "", "dismantled delegates cannot keep writing the model")
     }
 
-    func testEmptyArticlesShowTheToolbarAddHintInsteadOfAnotherButton() throws {
-        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("articles-hint"),
-                                   preferences: WiltedMacTestPreferences.ephemeral())
-        let view = WiltedMacLarderView(model: model, paneMode: .side).addArticleButton
-        let text = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 400, height: 90)).joined(separator: " ")
-        XCTAssertTrue(text.contains("Add articles with +"), text)
-        XCTAssertTrue(text.contains("N"), text)
+    func testLarderHasNoRedundantArticleAddButton() throws {
         let source = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
         XCTAssertFalse(source.contains("wilted-larder-add-button"))
     }

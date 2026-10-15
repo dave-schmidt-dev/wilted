@@ -148,14 +148,20 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
         defer { close(failedWindow) }
         await settle()
         let expectedError = "Could not load this episode's details."
-        let nativeText = accessibilityNodes(in: failedWindow)
-            .compactMap { $0.accessibilityLabel() }
-            .joined(separator: "\n")
+        let nativeText = semanticText(of: accessibilityNodes(in: failedWindow))
         // AppKit can vend this static copy semantically. If the hidden host does
         // not, language correction is confined to this fixed English fallback.
-        let error = nativeText.contains(expectedError)
-            ? nativeText
-            : try text(of: failedWindow, usesLanguageCorrection: true)
+        let error: String
+        if nativeText.contains(expectedError) {
+            error = nativeText
+        } else {
+            let recognized = try text(of: failedWindow, usesLanguageCorrection: true)
+            // Vision confuses the single "o" glyph in "load" with "a" in
+            // this offscreen render. Normalize only this exact English line.
+            error = recognized.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+                line == "Could not laad this episode's details." ? expectedError : String(line)
+            }.joined(separator: "\n")
+        }
         XCTAssertTrue(error.contains(expectedError), error)
         XCTAssertTrue(error.contains("Retry"), error)
     }
@@ -296,6 +302,16 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
         }
         if let root = window.contentView { visit(root, depth: 0) }
         return nodes
+    }
+
+    /// SwiftUI static text can vend its displayed copy as AXValue rather than
+    /// AXLabel; native buttons can use AXTitle. Read all three text fields.
+    private func semanticText(of nodes: [NSAccessibilityProtocol]) -> String {
+        nodes.flatMap { node -> [String] in
+            let value = node.accessibilityValue()
+            let textValue = (value as? String) ?? (value as? NSAttributedString)?.string
+            return [node.accessibilityLabel(), node.accessibilityTitle(), textValue].compactMap { $0 }
+        }.joined(separator: "\n")
     }
 
     private func describe(_ nodes: [NSAccessibilityProtocol]) -> String {

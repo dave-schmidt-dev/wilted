@@ -243,15 +243,31 @@ final class LibraryAutoContinueTests: XCTestCase {
         XCTAssertNotNil(rig.model.pendingDecision(for: id("a")), "the listener's own decision is not blocked by the silent one")
     }
 
-    func testAPendingRemoveDoesNotDropTheCompletionWhenTheEpisodePlaysOut() async throws {
+    func testManualRemoveStopsImmediatelyAndKeepsRealPositionInsteadOfSynthesizingEOF() async throws {
         let rig = try await makeRig(autoPlayNext: false)
         await start(rig, "a")
+        rig.player.seek(to: 123)
+        rig.player.setRate(1.5)
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.position, 123, "The actual loaded playhead is established before withdrawal")
+        XCTAssertEqual(rig.engine.currentTime, 123)
         await rig.model.decide(.removeFromLarder, entryID: id("a"))
-        rig.engine.finishNaturally()
-        try await eventually("the completion") { rig.model.decisions.contains { $0.isSilent && $0.entryID == self.id("a") } }
+        XCTAssertNil(rig.player.item)
+        XCTAssertFalse(rig.engine.isPlaying)
+        XCTAssertEqual(rig.model.handoffState.lastPosition, 123,
+                       "Unloading must preserve the raw paused playhead for handoff")
+        XCTAssertEqual(rig.player.rate, 1.5)
+        rig.engine.finishNaturally() // a late engine callback cannot invent EOF after withdrawal
+        await settle()
         let sent = try await mac.listIntents().map(\.action)
         XCTAssertTrue(sent.contains(.removeFromLarder(entryID: id("a"))))
-        XCTAssertTrue(sent.contains(.markDone(entryID: id("a"))))
+        XCTAssertFalse(sent.contains(.markDone(entryID: id("a"))), "Manual Remove owns the finish; a stopped callback is not natural EOF")
+        XCTAssertNil(rig.model.playedOut[id("a")])
+        await rig.model.waitForHandoff()
+        XCTAssertEqual(rig.model.handoffState.lastPosition, 123,
+                       "Settled handoff must not replace the departed playhead with unloaded zero")
+        XCTAssertEqual(rig.model.handoffState.ownPositions[id("a")]?.record.positionSeconds, 123)
+        XCTAssertFalse(rig.model.decisions.contains { $0.isSilent && $0.entryID == id("a") })
     }
 
     func testAnEpisodeTheMacAlreadyCompletedSendsNothingWhenItPlaysOut() async throws {

@@ -148,6 +148,7 @@ final class WiltedMacFeedDecisionRaceTests: XCTestCase {
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
+        await model.manualCompletionRecoveryTask?.value
         let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
         let episodes = itemIDs.compactMap { itemID in model.episodes.first { $0.id == itemID.rawValue } }
         XCTAssertEqual(episodes.count, count)

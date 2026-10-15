@@ -19,9 +19,16 @@ struct WiltedMacImportTarget: Sendable, Equatable {
 @MainActor
 protocol WiltedMacPositionImportHost: AnyObject {
     /// Ready audio by entry, leaving out entries that are retired or finished; nil when the read failed.
+    func associationImportIsCurrent(entryID: ItemID, entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) async -> Bool
+    func importAssociationContext() async -> (entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer])
     func importTargets() async -> [ItemID: WiltedMacImportTarget]?
     /// Asks the playback controller to adopt the position; nil when it could not be asked or failed.
     func applyRemotePosition(_ request: RemotePositionRequest) async -> RemotePositionOutcome?
+}
+
+extension WiltedMacPositionImportHost {
+    func associationImportIsCurrent(entryID: ItemID, entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) async -> Bool { true }
+    func importAssociationContext() async -> (entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) { ([], [:]) }
 }
 
 /// Pure choice of what to adopt: a candidate becomes a request only for an entry the Mac holds
@@ -31,15 +38,40 @@ enum WiltedMacPositionImport {
     /// Within this many seconds of the end an episode counts as finished (`RemotePositionRules`).
     static let endMargin: Double = 1
 
+    struct ResolvedRequest {
+        let source: ImportablePosition
+        let request: RemotePositionRequest
+    }
+
     static func requests(
-        candidates: [ImportablePosition], targets: [ItemID: WiltedMacImportTarget]
+        candidates: [ImportablePosition], targets: [ItemID: WiltedMacImportTarget],
+        entries: [LibraryEntry] = [], offers: [ItemID: LibraryMediaOffer] = [:]
     ) -> [RemotePositionRequest] {
-        candidates.compactMap { candidate in
-            guard let target = targets[candidate.entryID], target.revision == candidate.revision else { return nil }
-            return RemotePositionRequest(
-                itemID: candidate.entryID, revisionID: target.revision,
+        resolvedRequests(candidates: candidates, targets: targets, entries: entries, offers: offers).map(\.request)
+    }
+
+    /// Keep the selected source attached through alias translation and outcome settlement.
+    static func resolvedRequests(
+        candidates: [ImportablePosition], targets: [ItemID: WiltedMacImportTarget],
+        entries: [LibraryEntry] = [], offers: [ItemID: LibraryMediaOffer] = [:]
+    ) -> [ResolvedRequest] {
+        var seen = Set<ItemID>()
+        return candidates.sorted { ($0.epoch, $0.observedAt) > ($1.epoch, $1.observedAt) }.compactMap { candidate in
+            let group = LibraryEpisodeAssociation.group(for: candidate.entryID, in: entries)
+            let key = group?.representativeID ?? candidate.entryID
+            guard seen.insert(key).inserted,
+                  let record = try? DevicePlaybackPosition(deviceID: candidate.sourceDeviceID,
+                    entryID: candidate.entryID, revision: candidate.revision, positionSeconds: candidate.resumeSeconds,
+                    isPlaying: false, epoch: candidate.epoch) else { return nil }
+            let observed = ObservedPlayback(record: record, serverModifiedAt: candidate.observedAt)
+            let resolved = HandoffResolver.resumeTarget(observed: [observed], localDeviceID: "mac-position-import",
+                entries: entries, localRevision: { targets[$0]?.revision }, mediaOffer: { offers[$0] },
+                now: candidate.observedAt, durationSeconds: { targets[$0]?.durationSeconds })
+            guard case let .resume(resume) = resolved, let target = targets[resume.entryID] else { return nil }
+            let request = RemotePositionRequest(itemID: resume.entryID, revisionID: target.revision,
                 positionSeconds: resumeSeconds(candidate, duration: target.durationSeconds),
                 durationSeconds: target.durationSeconds, observedAt: candidate.observedAt)
+            return ResolvedRequest(source: candidate, request: request)
         }
     }
 
@@ -116,27 +148,34 @@ final class WiltedMacPositionImporter {
         let candidates = HandoffPositionImport.candidates(records: records, localDeviceID: deviceID, now: now())
         let fresh = candidates.filter { candidate in settled[candidate.entryID].map { candidate.observedAt > $0 } ?? true }
         guard !fresh.isEmpty, let targets = await host.importTargets() else { return }
-        let requests = WiltedMacPositionImport.requests(candidates: fresh, targets: targets)
-        let requested = Set(requests.map(\.itemID))
+        let association = await host.importAssociationContext()
+        let requests = WiltedMacPositionImport.resolvedRequests(candidates: fresh, targets: targets,
+            entries: association.entries, offers: association.offers)
+        let requested = Set(requests.map { $0.source.entryID })
         for candidate in fresh where !requested.contains(candidate.entryID) {
             note(candidate.entryID, targets[candidate.entryID] == nil
                  ? "not adopted: the Mac has no ready, unfinished audio for it"
                  : "not adopted: the phone's revision is not the one the Mac offers")
         }
-        for request in requests {
+        for resolved in requests {
+            let request = resolved.request
+            let source = resolved.source
+            if source.entryID != request.itemID {
+                guard await host.associationImportIsCurrent(entryID: request.itemID,
+                    entries: association.entries, offers: association.offers) else { continue }
+            }
             guard let outcome = await host.applyRemotePosition(request) else { continue }
-            let source = candidates.first { $0.entryID == request.itemID }
-            let detail = "\(Int(request.positionSeconds)) s from \(source?.sourceDeviceID ?? "another device")"
-                + " (epoch \(source?.epoch ?? 0)\(source?.isPlaying == true ? ", playing" : ""))"
+            let detail = "\(Int(request.positionSeconds)) s from \(source.sourceDeviceID)"
+                + " (epoch \(source.epoch)\(source.isPlaying ? ", playing" : ""))"
             switch outcome {
             case .applied:
                 appliedCount += 1
-                settled[request.itemID] = request.observedAt
+                settled[source.entryID] = request.observedAt
                 adopted[request.itemID] = Adoption(
                     positionSeconds: request.positionSeconds, stampedAt: min(request.observedAt, now()))
                 note(request.itemID, "adopted \(detail)", level: .default)
             case .notNewer, .completed, .unusable:
-                settled[request.itemID] = request.observedAt
+                settled[source.entryID] = request.observedAt
                 note(request.itemID, "kept the Mac's stored position (\(outcome)); phone had \(detail)")
             case .playing:
                 note(request.itemID, "deferred, the Mac is playing it; phone has \(detail)")
@@ -159,6 +198,36 @@ final class WiltedMacModelPositionImportHost: WiltedMacPositionImportHost {
     weak var model: WiltedMacModel?
 
     init(model: WiltedMacModel) { self.model = model }
+
+    func associationImportIsCurrent(entryID: ItemID, entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) async -> Bool {
+        guard let store = model?.store, let offer = offers[entryID],
+              let snapshot = try? await store.podcastLibrarySnapshot(), let stored = snapshot.readyRevisions[entryID],
+              stored.revisionID == offer.revisionID,
+              await MediaFetcher.verifies(stored.mediaURL, byteCount: offer.byteCount, contentHash: offer.contentHash),
+              model?.store === store else { return false }
+        let current = await importAssociationContext()
+        return current.entries == entries && current.offers == offers
+    }
+
+    func importAssociationContext() async -> (entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) {
+        guard let store = model?.store, let snapshot = try? await store.podcastLibrarySnapshot(),
+              let metadata = try? await WiltedMacLocalLibraryStateSource.associationMetadata(from: store),
+              let state = try? WiltedMacLocalLibraryStateSource.state(from: snapshot,
+                queue: snapshot.podcastQueue.episodeIDs, playback: nil, deviceID: "mac-position-import", associations: metadata) else { return ([], [:]) }
+        var offers: [ItemID: LibraryMediaOffer] = [:]
+        for (id, stored) in snapshot.readyRevisions {
+            guard let download = snapshot.downloads[id], download.status == .completed,
+                  download.localURL == stored.mediaURL, download.contentHash == stored.revision.contentHash,
+                  download.bytesReceived == stored.revision.byteCount,
+                  let proof = snapshot.preparationOutcomes["\(id.rawValue)|\(stored.revisionID.rawValue)"],
+                  proof.eligibility != .invalid, proof.episodeID == id, proof.revisionID == stored.revisionID else { continue }
+            offers[id] = try? LibraryMediaOffer(entryID: id, revisionID: stored.revisionID,
+                contentHash: stored.revision.contentHash, byteCount: stored.revision.byteCount,
+                mediaType: stored.revision.mediaType, durationSeconds: stored.revision.durationSeconds,
+                preparation: LibraryMediaPreparation(preparedAt: proof.producedAt))
+        }
+        return (state.episodes, offers)
+    }
 
     func importTargets() async -> [ItemID: WiltedMacImportTarget]? {
         guard let store = model?.store, let snapshot = try? await store.podcastLibrarySnapshot() else { return nil }

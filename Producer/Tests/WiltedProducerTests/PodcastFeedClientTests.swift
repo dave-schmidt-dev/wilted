@@ -385,6 +385,45 @@ struct PodcastFeedClientTests {
         #expect(!result.episodes.contains { $0.rssGUID == "undated" })
     }
 
+    /// A feed that lists one episode twice -- a stitched duplicate item, a
+    /// re-upload that keeps its GUID -- must contribute that episode once, at
+    /// its first publisher position. Two episodes for one canonical ID would
+    /// otherwise cost two admission slots, two download claims, and two places
+    /// under the episode ceiling.
+    @Test func collapsesRepeatedCanonicalItemIDsAtTheFirstPublisherPosition() async throws {
+        let items = """
+        <item><title>First spelling</title><guid>duplicate-guid</guid><enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" /></item>
+        <item><title>Second spelling</title><guid>duplicate-guid</guid><enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" /></item>
+        <item><title>Another episode</title><guid>other-guid</guid><enclosure url="https://cdn.example.test/two.mp3" type="audio/mpeg" /></item>
+        """
+        let result = try await client(xml: "<rss><channel><title>Show</title>\(items)</channel></rss>").load(sourceURL)
+        let duplicated = try ItemID.derivePodcastEpisode(
+            feedURL: sourceURL, rssGUID: "duplicate-guid",
+            enclosureURL: URL(string: "https://cdn.example.test/one.mp3")!
+        )
+        let distinct = try ItemID.derivePodcastEpisode(
+            feedURL: sourceURL, rssGUID: "other-guid",
+            enclosureURL: URL(string: "https://cdn.example.test/two.mp3")!
+        )
+        #expect(result.episodes.map(\.itemID) == [duplicated, distinct])
+        #expect(result.episodes.first?.title == "First spelling", "the first publisher position wins")
+        #expect(result.droppedEpisodeCount == 0, "a repeated source ID is not a dropped episode")
+    }
+
+    /// Distinct GUIDs keep distinct identities even when every other field
+    /// matches. Metadata is not association proof, so the parser must not fold
+    /// a re-release under a new GUID into the episode it resembles.
+    @Test func keepsDistinctGUIDTwinsAsSeparateEpisodes() async throws {
+        let items = """
+        <item><title>Same words</title><guid>twin-one</guid><pubDate>Tue, 14 Nov 2023 22:13:20 GMT</pubDate><duration>01:00:00</duration><enclosure url="https://cdn.example.test/one.mp3" type="audio/mpeg" /></item>
+        <item><title>Same words</title><guid>twin-two</guid><pubDate>Tue, 14 Nov 2023 22:13:20 GMT</pubDate><duration>01:00:00</duration><enclosure url="https://cdn.example.test/two.mp3" type="audio/mpeg" /></item>
+        """
+        let result = try await client(xml: "<rss><channel><title>Show</title>\(items)</channel></rss>").load(sourceURL)
+        #expect(result.episodes.count == 2)
+        #expect(Set(result.episodes.map(\.itemID)).count == 2)
+        #expect(result.episodes.compactMap(\.durationSeconds) == [3_600, 3_600])
+    }
+
     private static let rfc822: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

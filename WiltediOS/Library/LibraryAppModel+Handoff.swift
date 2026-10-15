@@ -197,14 +197,25 @@ extension LibraryAppModel {
         let state = handoffState
         let (status, position, item) = (player.status, player.position, player.item)
         let clock = now()
-        defer { state.lastPosition = position; state.lastPositionAt = clock; state.lastItemEntry = item?.entryID }
+        let localSaveToken = item.map { state.localSaveTokens[$0.entryID] ?? 0 }
+        defer {
+            // An unloaded player publishes zero, and an awaited takeover may
+            // finish after withdrawal saved a newer real playhead. Neither
+            // sample owns the paused position of the departed item.
+            if let item, state.localSaveTokens[item.entryID] ?? 0 == localSaveToken {
+                state.lastPosition = position
+                state.lastPositionAt = clock
+                state.lastItemEntry = item.entryID
+            }
+        }
         if status == .playing, let item {
             if !state.reportedPlaying || state.reportedEntry != item.entryID {
                 await beginPlayback(item, position: position, rate: player.rate, at: clock)
                 // A listen with no session (offline, a failed takeover) is published on the next sync.
-                if !state.reportedPlaying {
+                if !state.reportedPlaying, state.localSaveTokens[item.entryID] ?? 0 == localSaveToken {
                     state.unpublished[item.entryID] = (position, clock)
-                    await rememberOwnPosition(item.entryID, position: position)
+                    await rememberOwnPosition(item.entryID, position: position,
+                        unless: { state.localSaveTokens[item.entryID] ?? 0 != localSaveToken })
                 }
             } else if hasJumped(to: position, rate: player.rate, at: clock) {
                 try? await coordinator.seeked(to: position)
@@ -214,7 +225,9 @@ extension LibraryAppModel {
         } else if state.reportedPlaying {
             state.reportedPlaying = false
             let entryID = item?.entryID ?? state.reportedEntry
-            let paused = item == nil ? state.lastPosition : position
+            let paused = item == nil
+                ? entryID.flatMap { state.unpublished[$0]?.position } ?? state.lastPosition
+                : position
             var published = true
             do {
                 if item == nil { try await coordinator.stopped(at: paused) } else { try await coordinator.paused(at: paused) }
@@ -325,6 +338,7 @@ extension LibraryAppModel {
         if let failed = state.lastTakeoverFailure, clock.timeIntervalSince(failed) < handoffTiming.observeInterval,
            state.reportedEntry == item.entryID { return }
         state.reportedEntry = item.entryID
+        let localSaveToken = state.localSaveTokens[item.entryID] ?? 0
         guard let revision = await mediaCache.cachedEntries()[item.entryID]?.revisionID else {
             state.lastTakeoverFailure = clock
             handoffLog.error("Playing an entry with no cached revision; handoff not published")
@@ -336,7 +350,9 @@ extension LibraryAppModel {
             state.reportedPlaying = true
             state.lastTakeoverFailure = nil
             state.sessionEntry = item.entryID
-            state.unpublished[item.entryID] = nil
+            if state.localSaveTokens[item.entryID] ?? 0 == localSaveToken {
+                state.unpublished[item.entryID] = nil
+            }
             handoffMessage = nil
             handoffLog.info("Took over playback at epoch \(epoch, privacy: .public)")
             await updateSyncTick()
@@ -379,10 +395,11 @@ extension LibraryAppModel {
         if let own = records.nowPlaying.first(where: { $0.record.deviceID == deviceID }),
            let offset = HandoffResolver.clockOffset(of: own) { handoffState.clockOffset = offset }
         if handoffState.player?.isPlaying == true { continuation = nil; return }
-        let cached = await mediaCache.cachedEntries().mapValues(\.revisionID)
+        let inventory = await continuationInventory()
         var plan = LibraryContinuationPlanner.plan(
-            records: records, deviceID: deviceID, cachedRevisions: cached, durations: entryDurations,
-            now: now(), clockOffset: handoffState.clockOffset)
+            records: records, deviceID: deviceID, cachedRevisions: inventory.revisions, durations: entryDurations,
+            now: now(), clockOffset: handoffState.clockOffset,
+            entries: Array(decisionContent.entries.values), mediaOffers: inventory.offers)
         if case let .needsAudio(entryID, revision, source) = plan, handoffState.refusedRevisions[entryID] == revision {
             plan = .refused(entryID: entryID, reason: Self.offerMismatchReason, source: source)
         }
@@ -414,9 +431,16 @@ extension LibraryAppModel {
         }
         switch plan {
         case let .ready(entryID, position, rate, _, _, source):
-            guard let cached = await verifiedCachedMedia(entryID, token: token),
-                  cached.revisionID == source.record.revision else { return }
-            let entry = decisionContent.entries[entryID]
+            guard let cached = await verifiedCachedMedia(entryID, token: token) else { return }
+            let inventory = await continuationInventory()
+            let target = HandoffResolver.resumeTarget(observed: [source], localDeviceID: deviceID,
+                entries: Array(decisionContent.entries.values), localRevision: { inventory.revisions[$0] },
+                mediaOffer: { inventory.offers[$0] }, now: now(), clockOffset: handoffState.clockOffset,
+                durationSeconds: { self.entryDurations[$0] })
+            guard case let .resume(resume) = target, resume.entryID == entryID,
+                  resume.revision == cached.revisionID else { handoffMessage = Self.offerMismatchReason; return }
+            guard let final = await verifiedCachedMedia(entryID, token: token), final == cached else { return }
+            let entry = decisionContent.entries[logicalEntryID(entryID)]
             let item = LibraryPlayer.Item(
                 entryID: entryID, title: entry?.title ?? "Episode",
                 showTitle: entry.map {
@@ -447,10 +471,11 @@ extension LibraryAppModel {
             handoffMessage = "Could not read the Mac's playback. Check your connection."
             return nil
         }
-        let cached = await mediaCache.cachedEntries().mapValues(\.revisionID)
+        let inventory = await continuationInventory()
         return LibraryContinuationPlanner.plan(
-            records: records, deviceID: deviceID, cachedRevisions: cached, durations: entryDurations,
-            now: now(), clockOffset: handoffState.clockOffset)
+            records: records, deviceID: deviceID, cachedRevisions: inventory.revisions, durations: entryDurations,
+            now: now(), clockOffset: handoffState.clockOffset,
+            entries: Array(decisionContent.entries.values), mediaOffers: inventory.offers)
     }
 
     /// Requests the audio and waits for it. Returns false when it did not arrive on the phone or

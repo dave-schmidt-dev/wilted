@@ -25,8 +25,91 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v16 = 16
     case v17 = 17
     case v18 = 18
+    case v19 = 19
+    case v20 = 20
 
-    public static let current: LocalLibrarySchemaVersion = .v18
+    public static let current: LocalLibrarySchemaVersion = .v20
+}
+
+/// Positive equivalence requires the owner's confirmation of these exact two
+/// source IDs in this feed. This is a provenance assertion by an authorized
+/// caller, never a constructor for guessed publisher/title/hash evidence.
+public struct PodcastEpisodePairConfirmation: Codable, Equatable, Sendable {
+    public let confirmationID: UUID
+    public let feedID: ItemID
+    public let first: ItemID
+    public let second: ItemID
+    public let confirmedAt: Timestamp
+
+    public init(confirmationID: UUID, feedID: ItemID, first: ItemID, second: ItemID,
+                confirmedAt: Timestamp) {
+        self.confirmationID = confirmationID
+        self.feedID = feedID
+        self.first = first
+        self.second = second
+        self.confirmedAt = confirmedAt
+    }
+}
+
+public enum PodcastEpisodeAssociationError: Error, Equatable, Sendable {
+    case invalidPair
+    case crossFeed
+    case episodeUnavailable
+    case overlappingAssociation
+    case stalePreview
+    case staleVersion
+    case conflictingOwnerState
+    case confirmationAlreadyUsed
+    case corruptAssociation
+}
+
+/// The stable representative is a display identity, never a replacement media
+/// or revision key. Reversed records remain available as association history.
+public struct PodcastEpisodeAssociation: Codable, Equatable, Sendable {
+    public let associationID: UUID
+    public let feedID: ItemID
+    public let representativeID: ItemID
+    public let memberIDs: [ItemID]
+    public let confirmation: PodcastEpisodePairConfirmation
+    public let version: Int
+    public let isActive: Bool
+    public let createdAt: Timestamp
+    public let reversedAt: Timestamp?
+}
+
+/// A store-produced preview cannot be manufactured by an external caller.
+/// Captured state is checked again inside the actor immediately before save.
+public struct PodcastEpisodeAssociationPreview: Sendable {
+    public let confirmation: PodcastEpisodePairConfirmation
+    public let representativeID: ItemID
+    public let resolvedState: PodcastEpisodeLogicalState
+    let capturedMembers: Data
+    let capturedAssociations: Data
+}
+
+/// Fresh reversal leaves current raw state in place, including newer progress.
+public struct PodcastEpisodeAssociationReversalPreview: Sendable {
+    public let associationID: UUID
+    public let expectedVersion: Int
+    let capturedMembers: Data
+    let capturedAssociations: Data
+}
+
+/// Raw backing members remain independently addressable. Equal-time conflicting
+/// choices preserve Keep and expose the ambiguity for a caller to display.
+public struct PodcastEpisodeLogicalState: Equatable, Sendable {
+    public let representativeID: ItemID
+    public let memberIDs: [ItemID]
+    public let manualDecision: EpisodeDecision?
+    public let manualDecidedAt: Timestamp?
+    public let isTerminal: Bool
+    public let hasConflictingManualChoices: Bool
+}
+
+/// Callers can refuse stale intent effects before changing lifecycle or media.
+public enum PodcastEpisodeDecisionWriteResult: Equatable, Sendable {
+    case applied
+    case superseded
 }
 
 /// The local ownership state used by generation-based remote reconciliation.

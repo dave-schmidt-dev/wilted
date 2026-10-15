@@ -229,7 +229,7 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertLessThan(feedsManagement, offList)
     }
 
-    func testPresentationSectionsLiftOnlyActiveRowsAndLeaveDeferredRowsInPlace() {
+    func testStatusPresentationPlacesActionableRowsBeforeActiveWorkAndKeepsDeferredRowsInPlace() {
         var downloading = episode(id: "downloading", publishedAt: nil, sourceDuration: 60)
         downloading.downloadState = .downloading(received: 30, expected: 60)
         var deferred = episode(id: "deferred", publishedAt: nil, sourceDuration: 60)
@@ -244,9 +244,20 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         let result = WiltedMacEpisodePresentationSections.displaySections(
             source, grouping: .status, isDeferredForOffPeak: { $0 == "deferred" }
         )
-        XCTAssertEqual(result.first?.id, "active-work")
-        XCTAssertEqual(result.first?.episodes.map(\.id), ["downloading"])
-        XCTAssertEqual(result.dropFirst().flatMap(\.episodes).map(\.id), ["idle", "deferred"])
+        XCTAssertEqual(result.map(\.id), ["status-available", "active-work"])
+        XCTAssertEqual(result.last?.episodes.map(\.id), ["downloading"])
+        XCTAssertEqual(result.dropLast().flatMap(\.episodes).map(\.id), ["idle", "deferred"])
+        let numbered = WiltedMacEpisodePresentationSections.visibleNumbering(result)
+        XCTAssertEqual(numbered.positions, ["idle": 1, "deferred": 2, "downloading": 3])
+        XCTAssertEqual(numbered.count, 3)
+        for grouping in [WiltedMacLarderGrouping.feed, .date] {
+            let grouped = WiltedMacEpisodePresentationSections.displaySections(
+                source, grouping: grouping, isDeferredForOffPeak: { $0 == "deferred" }
+            )
+            XCTAssertEqual(grouped.first?.id, "active-work", "\(grouping) retains active-first presentation")
+            XCTAssertEqual(grouped.first?.episodes.map(\.id), ["downloading"])
+            XCTAssertEqual(grouped.dropFirst().flatMap(\.episodes).map(\.id), ["idle", "deferred"])
+        }
         XCTAssertEqual(source.flatMap(\.episodes).map(\.id), ["idle", "downloading", "deferred"],
                        "presentation grouping cannot rewrite the durable source order")
     }

@@ -21,6 +21,7 @@ struct WiltedMacPlaybackSample: Sendable, Equatable {
     var positionSeconds: Double
     var rate: Double
     var isPlaying: Bool
+    var revisionID: RevisionID? = nil
 }
 
 /// `LibraryStateSource` over `LocalLibraryStore`, through the existing one-read library
@@ -34,14 +35,15 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
     let playback: @Sendable () async -> WiltedMacPlaybackSample?
 
     func currentState() async throws -> LibraryStateSnapshot {
-        let snapshot = try await store.podcastLibrarySnapshot()
-        let queue = try await store.podcastQueueState()
-        return try Self.state(from: snapshot, queue: queue.episodeIDs, playback: await playback(), deviceID: deviceID)
+        let identity = try await store.podcastLibraryIdentitySnapshot(profile: .publication)
+        return try Self.state(from: identity.library, queue: identity.library.podcastQueue.episodeIDs,
+            playback: await playback(), deviceID: deviceID,
+            associations: Self.associationMetadata(associations: identity.associations, states: identity.states))
     }
 
     static func state(
         from snapshot: LocalLibraryStore.PodcastLibrarySnapshot, queue: [ItemID],
-        playback: WiltedMacPlaybackSample?, deviceID: String
+        playback: WiltedMacPlaybackSample?, deviceID: String, associations: [LibraryEpisodeAssociation] = []
     ) throws -> LibraryStateSnapshot {
         let displayNames = Dictionary(snapshot.subscriptions.compactMap { subscription in
             subscription.displayName.map { (subscription.feedID, $0) }
@@ -52,6 +54,9 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
                 locator: feed.canonicalURL.absoluteString, artworkRef: feed.artworkURL?.absoluteString
             )
         }
+        let associationByID = Dictionary(associations.flatMap { association in
+            association.memberIDs.map { ($0, association) }
+        }, uniquingKeysWith: { first, _ in first })
         var episodes: [LibraryEntry] = []
         for episode in snapshot.episodes {
             let feed = snapshot.feeds[episode.feedID]
@@ -63,6 +68,7 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
                 artworkRef: (episode.artworkURL ?? feed?.artworkURL)?.absoluteString,
                 removal: removal(of: episode.itemID, in: snapshot),
                 removedAt: snapshot.retiredAtByEpisode[episode.itemID]?.date,
+                episodeAssociation: associationByID[episode.itemID],
                 payload: try payloadBytes(PodcastEpisodePayload(
                     enclosureURL: episode.enclosureURL, feedURL: episode.feedURL, rssGUID: episode.rssGUID,
                     episodeLink: episode.episodeLink
@@ -72,7 +78,7 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
         let articles = try articleEntries(in: snapshot)
         let books = try audiobookEntries(in: snapshot)
         let published = episodes + articles + books
-        let active = Set(published.filter { $0.removal == .none }.map(\.id))
+        let active = Set(published.filter { $0.removal == .none || $0.episodeAssociation?.isTerminal == false }.map(\.id))
         let known = Set(published.map(\.id))
         let listening = snapshot.listeningStates.values.filter { known.contains($0.episodeID) }
             .sorted { $0.episodeID.rawValue < $1.episodeID.rawValue }
@@ -81,6 +87,25 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
             feeds: feeds + articleFeedSources(in: snapshot, displayNames: displayNames), episodes: published, queue: queue.filter(active.contains),
             listening: listening, currentPlayback: try position(of: playback, in: snapshot, known: known, deviceID: deviceID)
         )
+    }
+
+    static func associationMetadata(from store: LocalLibraryStore) async throws -> [LibraryEpisodeAssociation] {
+        let identity = try await store.podcastLibraryIdentitySnapshot()
+        return associationMetadata(associations: identity.associations, states: identity.states)
+    }
+
+    static func associationMetadata(associations: [PodcastEpisodeAssociation], states: [ItemID: PodcastEpisodeLogicalState]) -> [LibraryEpisodeAssociation] {
+        var result: [LibraryEpisodeAssociation] = []
+        for association in associations {
+            guard let state = states[association.representativeID] else { continue }
+            result.append(LibraryEpisodeAssociation(groupID: association.associationID,
+                representativeID: association.representativeID, memberIDs: association.memberIDs,
+                associationVersion: association.version, isTerminal: state.isTerminal,
+                latestManualChoice: state.manualDecision.map { $0 == .keep ? .keep : .skip },
+                manualDecidedAt: state.manualDecidedAt?.date,
+                hasConflictingManualChoices: state.hasConflictingManualChoices))
+        }
+        return result
     }
 
     private static func articleFeedSources(
@@ -148,7 +173,7 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
         known: Set<ItemID>, deviceID: String
     ) throws -> DevicePlaybackPosition? {
         guard let sample, known.contains(sample.episodeID),
-              let revision = snapshot.readyRevisions[sample.episodeID]?.revisionID
+              let revision = sample.revisionID ?? snapshot.readyRevisions[sample.episodeID]?.revisionID
                 ?? snapshot.listeningStates[sample.episodeID]?.lastRevisionID else { return nil }
         return try DevicePlaybackPosition(
             deviceID: deviceID, entryID: sample.episodeID, revision: revision,
@@ -286,6 +311,8 @@ final class WiltedMacLibrarySyncController {
     private var syncNowTask: Task<Void, Never>?
     private(set) var syncNowRuns = 0
     private var stopped = false
+    private var observedInputs: WiltedMacLibraryPublicationInputs?
+    private(set) var observedChangeCount = 0
     /// Injected lifecycle observation for deterministic shutdown tests.
     var onShutdownDrain: (@MainActor () async -> Void)?
 
@@ -371,14 +398,19 @@ final class WiltedMacLibrarySyncController {
 
     private func observe() {
         guard !stopped, let model else { return }
-        withObservationTracking {
-            model.librarySyncObservedInputs()
+        let previous = observedInputs
+        let current = withObservationTracking {
+            model.librarySyncPublicationInputs()
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                self?.triggers.yield()
-                self?.observe()
+                guard let self, !self.stopped else { return }
+                // Observation is one-shot even when only normalized byte counts changed.
+                self.observe()
+                self.observedChangeCount += 1
             }
         }
+        observedInputs = current
+        if let previous, previous != current { triggers.yield() }
     }
 
     /// Publishes `available` offers, one run at a time; a request that arrives during a run makes
@@ -640,22 +672,13 @@ extension WiltedMacModel {
         await waitForLibrarySyncShutdown()
     }
 
-    /// Everything whose change should republish at once: the queue and removals. Playback is
-    /// published by the handoff controller and statistics by the sync round, so neither a position
-    /// checkpoint nor the listening clock wakes the publisher.
-    func librarySyncObservedInputs() {
-        _ = podcastQueueIDs
-        _ = episodes
-        _ = articles
-        _ = dismissedEpisodes
-    }
-
     func librarySyncPlaybackSample() -> WiltedMacPlaybackSample? {
         // An article or audiobook is what the player holds when it is not a podcast.
-        let raw = isPodcastPlayback ? currentPodcastEpisodeID : playback?.itemID?.rawValue
+        let raw = isPodcastPlayback ? (playback?.itemID?.rawValue ?? currentPodcastEpisodeID) : playback?.itemID?.rawValue
         guard let raw, let id = try? ItemID(rawValue: raw) else { return nil }
         return WiltedMacPlaybackSample(
-            episodeID: id, positionSeconds: playbackPositionSeconds, rate: playbackRate, isPlaying: isPlaying
+            episodeID: id, positionSeconds: playbackPositionSeconds, rate: playbackRate, isPlaying: isPlaying,
+            revisionID: playback?.itemID == id ? playback?.revisionID : nil
         )
     }
 

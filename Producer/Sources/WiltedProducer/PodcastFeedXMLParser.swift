@@ -90,7 +90,7 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
                 createdAt: Timestamp(createdAt)
             ))
         }
-        let (kept, dropped) = Self.newestEpisodes(episodes)
+        let (kept, dropped) = Self.newestEpisodes(episodes.deduplicatedByItemID())
         return LoadedPodcastFeed(feed: feed, episodes: kept, droppedEpisodeCount: dropped)
     }
 
@@ -311,6 +311,22 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
             default: break
             }
         }
+    }
+}
+
+/// Keeps each canonical episode identity once, at its first position.
+///
+/// A feed can list one episode twice -- a stitched duplicate item, a re-upload
+/// that keeps its GUID -- and both spellings resolve to the same `ItemID`.
+/// Left in, the repeat would spend two admission slots, two download claims,
+/// and two places under the episode ceiling on one episode. Only the canonical
+/// identity collapses: two items with distinct GUIDs stay distinct even when
+/// their titles, dates, and durations all match, because metadata similarity is
+/// not association proof.
+extension Array where Element == PodcastEpisode {
+    func deduplicatedByItemID() -> [PodcastEpisode] {
+        var seen: Set<ItemID> = []
+        return filter { seen.insert($0.itemID).inserted }
     }
 }
 

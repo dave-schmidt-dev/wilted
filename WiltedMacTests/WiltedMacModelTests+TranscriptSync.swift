@@ -133,6 +133,7 @@ extension WiltedMacModelTests {
         try await settle(model)
         defer { model.togglePlayback() }
 
+        await model.waitForPlaybackPresentationForTesting()
         let transcript = try XCTUnwrap(model.currentTranscript)
         XCTAssertTrue(transcript.isSynchronized, "playing an episode has to surface its timed transcript")
         XCTAssertEqual(transcript.cues.map(\.text), ["First line.", "Second line."])
@@ -218,11 +219,14 @@ extension WiltedMacModelTests {
 
         model.markCurrentPlaybackCompleted()
         try await settle(model)
-        XCTAssertTrue(model.playbackCompleted, "the player has to stop offering to mark what it just marked")
+        XCTAssertFalse(model.isNowPlaying, "manual finish withdraws the current player")
         XCTAssertFalse(model.isPlaying, "marking an episode finished stops the audio")
 
-        XCTAssertLessThan(model.playbackPositionSeconds, model.playbackDurationSeconds,
-                          "the playhead stays where the listener left it; only the completed flag is written")
+        let readyAfter = try await model.store?.readyRevision(for: episodeID)
+        let savedRevision = try XCTUnwrap(readyAfter?.revisionID)
+        let savedPlayback = try await model.store?.playbackState(for: episodeID, revisionID: savedRevision)
+        XCTAssertLessThan(savedPlayback?.positionSeconds ?? .infinity, savedPlayback?.durationSeconds ?? 0,
+                          "manual finish preserves the actual paused checkpoint")
 
         let retired = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue },
                                     "retirement is not dismissal -- the row survives, just off the shelf")
@@ -231,9 +235,8 @@ extension WiltedMacModelTests {
                        "saying \"I am done with this\" takes it off the shelf, the same as playing it to the end")
         XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue },
                        "retirement is not a dismissal -- nothing was deleted")
-        XCTAssertEqual(model.podcastOperationMessage, "Finished \(episode.title).")
-        XCTAssertTrue(model.playbackCompletionIsSettled,
-                      "both halves are done, so the control has nothing left to offer")
+        XCTAssertEqual(model.podcastOperationMessage, "Marked \(episode.title) completed. Undo completion is available for 10 seconds.")
+        XCTAssertFalse(model.isNowPlaying, "the finished item is withdrawn")
     }
 
     /// Reported 2026-09-07: an episode marked completed on a build that wrote
@@ -335,8 +338,7 @@ extension WiltedMacModelTests {
         XCTAssertNotNil(retired.retiredAt, "pressing it a second time has to retire the row the first press never did")
         XCTAssertFalse(model.larderVisibleEpisodes.contains { $0.id == episodeID.rawValue })
         XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue })
-        XCTAssertTrue(model.playbackCompletionIsSettled,
-                      "and then stop offering, because there is nothing left to finish")
+        XCTAssertFalse(model.isNowPlaying, "the finished item is withdrawn")
     }
 
     /// Placement is the whole point: a cut is meaningless unless it sits where

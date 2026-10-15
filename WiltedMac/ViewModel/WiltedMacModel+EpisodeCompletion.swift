@@ -15,90 +15,145 @@ import CloudKit
 #endif
 
 extension WiltedMacModel {
-    /// Marks an episode the listener has started completed, deleting nothing.
-    ///
-    /// The row's Skip button used to call `removeEpisode`, which erased the
-    /// episode's records and needed a network feed check to bring anything
-    /// back. The accepted Larder mockup asks for a reversible exclusion instead:
-    /// a started episode is marked finished through the same listening record
-    /// every other completion writes, and taken off the playback queue, while
-    /// its media, preparation outcome, transcript and identity all stay on
-    /// disk. `undoSkipEpisode` therefore restores it entirely offline. An
-    /// episode never started has nothing to finish, and its state is left
-    /// exactly as it was.
-    ///
-    /// `requireStarted` is false only for the phone's Mark completed, where the listening
-    /// happened on the phone and the Mac has no saved position of its own.
-    func skipEpisode(_ episode: WiltedMacEpisode, requireStarted: Bool = true) {
+    /// Remove and Mark completed both record the owner's finish, retaining media.
+    func skipEpisode(_ episode: WiltedMacEpisode, requireStarted: Bool = false) {
 #if canImport(WiltedProducer)
-        guard !requireStarted || hasStartedEpisode(episode) else {
-            podcastOperationMessage = "\(episode.title) was not started, so nothing was marked completed."
-            return
-        }
-        // One completion per episode: a repeat tap while the write runs must
-        // not start a second writer, and Undo must not race the one in flight.
-        guard episodeCompletionProjections[episode.id] == nil else { return }
-        guard let id = try? ItemID(rawValue: episode.id) else {
-            podcastOperationMessage = "\(episode.title) could not be marked completed."
-            return
-        }
-        guard let store, !isClosingTemporaryState else { return }
-        undoableRemoval = nil
-        undoableSkip = nil
-        let projectedRetiredAt = Date()
-        episodeCompletionProjections[episode.id] = WiltedMacEpisodeCompletionProjection(
-            original: episode, projectedRetiredAt: projectedRetiredAt
-        )
-        if let index = episodes.firstIndex(where: { $0.id == episode.id }) {
-            episodes[index].isPlayed = true
-            episodes[index].retiredAt = projectedRetiredAt
-            episodes[index].removalKind = .retired
-        }
-        invalidateProjectedLibraryReads()
-        podcastOperationMessage = "Saving \(episode.title) as completed\u{2026}"
-        trackSubscriptionWrite { [weak self] in
-            guard let self else { return }
-            defer { self.episodeCompletionProjections[episode.id] = nil }
-            let skipped: Bool
-            do {
-                try await self.subscriptionWriteHookForTesting?()
-                // `lastRevisionID` stays nil on purpose: a skip is not
-                // evidence about the revision's audio. The store persists this
-                // listening shape and the retirement together, so Feeds never
-                // sees the completed row as active between two saves.
-                skipped = try await store.completeAndRetireEpisode(listening: PodcastListeningState(
-                    episodeID: id, completedAt: Timestamp(Date()),
-                    lastRevisionID: nil, updatedAt: Timestamp(Date())
-                ))
-            } catch {
-                self.rollbackEpisodeCompletionProjection(episode.id, title: episode.title)
-                return
-            }
-            guard skipped else {
-                self.rollbackEpisodeCompletionProjection(episode.id, title: episode.title)
-                return
-            }
-            // The completion is durable. Nothing past this point rolls it back
-            // or reports the write as failed, whatever a reread does.
-            self.episodeCompletionProjections[episode.id] = nil
-            self.withdrawPreparationRequest(for: episode.id)
-            // The listener's own decision: automatic admission must not reverse it.
-            let recorded = await self.recordOwnerDecision(.skip, for: episode.id, store: store)
-            self.undoableSkip = episode
-            self.podcastOperationMessage = recorded
-                ? "Marked \(episode.title) completed. Undo completion restores it."
-                : "Marked \(episode.title) completed, but the choice could not be saved. Undo completion restores it."
-            if let playback = self.playback {
-                try? await playback.removePodcastQueueEpisode(id)
-                await self.refreshPodcastQueueState()
-            }
-            // Stop only the episode this operation completed; playback that
-            // another command started while the write ran is left alone.
-            if self.currentPodcastEpisodeID == episode.id { await self.stopPlaybackForRemovedEpisode() }
-            await self.releaseWaitingEpisodesAfterRetirement(of: episode)
-        }
+        finishEpisodes([episode])
 #endif
     }
+
+#if canImport(WiltedProducer)
+    func finishEpisodes(_ requested: [WiltedMacEpisode], at: Timestamp? = nil) {
+        guard let store, !isClosingTemporaryState else { return }
+        let memberIDs = Set(requested.flatMap { logicalMemberIDs($0.id) })
+        let expanded = episodes.filter { memberIDs.contains($0.id) }
+        let candidates = expanded.filter { (try? ItemID(rawValue: $0.id)) != nil && !$0.isAudiobook && episodeCompletionProjections[$0.id] == nil && ($0.removalKind == nil || episodeAssociations[$0.id]?.isTerminal == false) }
+        guard !candidates.isEmpty else {
+            if let invalid = requested.first, (try? ItemID(rawValue: invalid.id)) == nil {
+                podcastOperationMessage = "\(invalid.title) could not be marked completed."
+            }
+            return
+        }
+        let localNow = manualCompletionNow()
+        projectEpisodeCompletions(candidates)
+        trackSubscriptionWrite { [weak self] in
+            guard let self else { return }
+            _ = await self.persistEpisodeCompletions(candidates, store: store, at: at, localNow: localNow)
+        }
+    }
+
+    func projectEpisodeCompletions(_ candidates: [WiltedMacEpisode]) {
+        undoableRemoval = nil
+        undoableSkip = nil
+        let now = Date()
+        for episode in candidates {
+            episodeCompletionProjections[episode.id] = WiltedMacEpisodeCompletionProjection(original: episode, projectedRetiredAt: now)
+            if let index = episodes.firstIndex(where: { $0.id == episode.id }) {
+                episodes[index] = Self.projectedCompletion(episodes[index], retiredAt: now)
+            }
+        }
+        invalidateProjectedLibraryReads()
+        podcastOperationMessage = candidates.count == 1 ? "Saving \(candidates[0].title) as completed…" : "Saving \(candidates.count) completions…"
+    }
+
+    /// Awaitable pane path keeps automatic advance behind durable success.
+    func finishCurrentPodcast(_ episode: WiltedMacEpisode) async -> Bool {
+        guard let store, !isClosingTemporaryState, !episode.isAudiobook else { return false }
+        if episodeCompletionProjections[episode.id] == nil { projectEpisodeCompletions([episode]) }
+        return await persistEpisodeCompletions([episode], store: store, at: nil, localNow: manualCompletionNow())
+    }
+
+    /// Store attachment rebuilds the one expiry task from durable receipts.
+    /// Re-reading rows before release makes restart admission use current state.
+    func recoverManualCompletionWindows() async {
+        guard let store, !isClosingTemporaryState else { return }
+        do {
+            _ = try await store.sealExpiredManualCompletions(at: manualCompletionNow())
+            let feeds = try await store.manualCompletionRecoveryFeedIDs()
+            if !feeds.isEmpty {
+                await reloadLibraryRows()
+                await releaseWaitingEpisodes(feedIDs: Set(feeds.map(\.rawValue)))
+            }
+            await scheduleManualCompletionExpiry(store: store)
+        } catch { podcastOperationMessage = "Completion recovery could not finish. Automatic admissions will retry." }
+    }
+
+    /// The task is separate from user writes and is cancelled/joined on close.
+    /// The injected wall clock and sleeper let tests cross the exact deadline.
+    func scheduleManualCompletionExpiry(store: LocalLibraryStore) async {
+        guard !isClosingTemporaryState else { return }
+        // A wake already owns sealing/release; its tail schedules the next window.
+        if let active = manualCompletionExpiryDeadline, active <= manualCompletionNow(), manualCompletionExpiryTask != nil { return }
+        guard let windows = try? await store.pendingManualCompletionWindows() else { return }
+        let deadline = windows.values.min()
+        guard deadline != manualCompletionExpiryDeadline else { return }
+        manualCompletionExpiryTask?.cancel()
+        manualCompletionExpiryDeadline = deadline
+        manualCompletionExpiryTask = nil
+        guard let deadline else { return }
+        let generation = UUID()
+        manualCompletionExpiryGeneration = generation
+        manualCompletionExpiryTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                while self.manualCompletionNow() < deadline {
+                    try await self.manualCompletionSleep(max(0, deadline.timeIntervalSince(self.manualCompletionNow())))
+                    try Task.checkCancellation()
+                }
+                guard !self.isClosingTemporaryState, self.manualCompletionExpiryGeneration == generation else { return }
+                // A later completion can join the same earliest-deadline task.
+                // Read its current receipt deadline rather than the task's old snapshot.
+                let currentWindows = try await store.pendingManualCompletionWindows()
+                guard self.manualCompletionExpiryGeneration == generation, !Task.isCancelled else { return }
+                _ = try await store.sealExpiredManualCompletions(at: self.manualCompletionNow())
+                if let operationID = self.undoableSkip?.manualCompletionOperationID,
+                   (currentWindows[operationID] ?? .distantPast) <= self.manualCompletionNow() { self.undoableSkip = nil }
+                await self.reloadLibraryRows()
+                await self.releaseWaitingEpisodes(feedIDs: Set(self.episodes.compactMap(\.feedID)))
+                self.manualCompletionExpiryDeadline = nil
+                self.manualCompletionExpiryTask = nil
+                await self.scheduleManualCompletionExpiry(store: store)
+            } catch is CancellationError {} catch {
+                self.podcastOperationMessage = "Completion recovery could not finish. Automatic admissions will retry."
+                self.manualCompletionExpiryDeadline = nil
+                self.manualCompletionExpiryTask = nil
+            }
+        }
+    }
+
+    private func persistEpisodeCompletions(_ candidates: [WiltedMacEpisode], store: LocalLibraryStore, at: Timestamp?, localNow: Date) async -> Bool {
+        do {
+            try await subscriptionWriteHookForTesting?()
+            let result = try await store.manuallyCompleteEpisodes(candidates.compactMap { try? ItemID(rawValue: $0.id) }, at: at, localNow: localNow)
+            let committed = Set(result.committed.map(\.rawValue))
+            for episode in candidates {
+                if committed.contains(episode.id) {
+                    episodeCompletionProjections[episode.id] = nil
+                    // Existing transfer/preparation work belongs to its own request.
+                    // Completion creates no new work and must not cancel that owner.
+                } else { rollbackEpisodeCompletionProjection(episode.id, title: episode.title) }
+            }
+            guard let committedEpisode = candidates.first(where: { committed.contains($0.id) }) else { return false }
+            do {
+                var undo = committedEpisode
+                undo.manualCompletionOperationID = result.operationID
+                undoableSkip = undo
+            }
+            await scheduleManualCompletionExpiry(store: store)
+            // Pause checkpoints real audio position; manual finish never seeks to EOF.
+            if let current = currentPodcastEpisodeID, committed.contains(current) { await stopPlaybackForRemovedEpisode() }
+            await refreshPodcastQueueState()
+            await reloadLibraryRows()
+            podcastOperationMessage = committed.count == 1
+                ? "Marked \(committedEpisode.title) completed. Undo completion is available for 10 seconds."
+                : "Marked \(committed.count) episodes completed. Undo completion is available for 10 seconds."
+            return committed.count == candidates.count
+        } catch {
+            for episode in candidates { rollbackEpisodeCompletionProjection(episode.id, title: episode.title) }
+            return false
+        }
+    }
+#endif
 
     /// The row the Larder draws while a completion is being written.
     nonisolated static func projectedCompletion(
@@ -140,37 +195,29 @@ extension WiltedMacModel {
         podcastOperationMessage = "\(title) could not be marked completed."
     }
 
-    /// Reverses `skipEpisode`'s local completion from local state alone.
-    ///
-    /// The listening record is cleared and the episode plays again from the
-    /// media already on disk; no feed is consulted, which is the acceptance
-    /// bar the owner set for a mistaken Skip.
+    /// Receipt Undo restores prior state and placement without starting audio.
     func undoSkipEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
-        // Undo is offered only after the completion is durable, but a direct
-        // call must not race the completion writer either.
         guard episodeCompletionProjections[episode.id] == nil else { return }
         undoableSkip = nil
-        podcastOperationMessage = "Restoring \(episode.title)…"
+        podcastOperationMessage = "Restoring completion…"
         trackSubscriptionWrite { [weak self] in
             guard let self, let store = self.store, let id = try? ItemID(rawValue: episode.id) else { return }
             do {
-                let restored = try await store.undoCompletedAndRetiredEpisode(id)
-                guard restored else {
-                    self.podcastOperationMessage = "\(episode.title) could not be restored."
-                    return
-                }
-                let recorded = await self.recordOwnerDecision(.keep, for: episode.id, store: store)
+                let restored: Bool
+                var hadConflicts = false
+                if let operationID = episode.manualCompletionOperationID {
+                    let result = try await store.undoManualCompletion(operationID, at: self.manualCompletionNow())
+                    restored = !result.committed.isEmpty
+                    hadConflicts = !result.unresolved.isEmpty
+                } else { restored = try await store.restoreManualCompletion(id, asOwnerChoice: false, at: self.manualCompletionNow()) ?? false }
+                await self.scheduleManualCompletionExpiry(store: store)
+                await self.refreshPodcastQueueState()
                 await self.reloadLibraryRows()
-                self.podcastOperationMessage = recorded
-                    ? "Restored \(episode.title)."
-                    : "Restored \(episode.title), but the choice could not be saved."
-                if let restored = self.episodes.first(where: { $0.id == episode.id }) {
-                    self.playEpisode(restored)
-                }
-            } catch {
-                self.podcastOperationMessage = "\(episode.title) could not be restored."
-            }
+                self.podcastOperationMessage = hadConflicts
+                    ? "Some episodes changed since completion and could not be restored."
+                    : restored ? "Restored retained episodes." : "Completion changed or Undo expired. Use Restore in Feeds."
+            } catch { self.podcastOperationMessage = "Completion could not be restored." }
         }
 #endif
     }

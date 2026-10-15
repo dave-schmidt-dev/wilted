@@ -155,15 +155,6 @@ extension LocalLibraryStore {
         try context.save()
     }
 
-    /// Read-only transcript interface consumed by platform presentation layers.
-    public func transcript(for itemID: ItemID, revisionID: RevisionID) throws -> Transcript? {
-        let context = ModelContext(container)
-        let id = "\(itemID.rawValue)|\(revisionID.rawValue)"
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
-            .first(where: { $0.id == id }) else { return nil }
-        return try decodeTranscript(record)
-    }
-
     /// Returns the transcript belonging to the newest revision for an item.
     ///
     /// Retired episodes keep their transcript records after their media
@@ -285,10 +276,21 @@ extension LocalLibraryStore {
     }
 
     public func readyRevision(for itemID: ItemID, revisionID: RevisionID? = nil) throws -> StoredAudioRevision? {
+        let trace = LocalLibraryStoreStageTrace.start()
+        defer { if let trace { LocalLibraryStoreStageTrace.record(.revisionFetch, since: trace) } }
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
-            .filter { $0.itemID == itemID.rawValue && (revisionID == nil || $0.id == revisionID?.rawValue) }
-            .sorted { $0.createdAt > $1.createdAt }
+        let rawItemID = itemID.rawValue
+        let predicate: Predicate<LocalLibrarySchemaV3Models.RevisionRecord>
+        if let rawRevisionID = revisionID?.rawValue {
+            predicate = #Predicate { $0.itemID == rawItemID && $0.id == rawRevisionID }
+        } else {
+            predicate = #Predicate { $0.itemID == rawItemID }
+        }
+        var descriptor = FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>(
+            predicate: predicate, sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        let records = try context.fetch(descriptor)
         guard let record = records.first, let mediaURLString = record.mediaURL, let mediaURL = URL(string: mediaURLString) else { return nil }
         let revision = try AudioRevision(itemID: itemID, revisionID: RevisionID(rawValue: record.id), durationSeconds: record.durationSeconds,
                                          byteCount: record.byteCount, contentHash: record.contentHash, mediaType: record.mediaType,

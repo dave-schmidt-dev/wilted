@@ -224,7 +224,11 @@ extension WiltedMacModel {
         case .manual:
             let byID = Dictionary(
                 larderEntries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            return (playlists.entryIDs[playlist.id] ?? []).compactMap { byID[$0] }
+            var seen = Set<String>()
+            return (playlists.entryIDs[playlist.id] ?? []).compactMap { raw in
+                let key = logicalRepresentativeID(raw)
+                return seen.insert(key).inserted ? byID[key] : nil
+            }
         case .automatic:
             guard playlists.ruleReadErrors[playlist.id] == nil else { return [] }
             let ordered = larderEntries.sorted { $0.date > $1.date }
@@ -340,7 +344,7 @@ extension WiltedMacModel {
     /// applies again.
     var playlistSessionIsCurrent: Bool {
         guard let session = playlists.session else { return false }
-        return playback?.itemID?.rawValue == session.currentEntryID
+        return (playback?.itemID?.rawValue).map { logicalRepresentativeID($0) == logicalRepresentativeID(session.currentEntryID) } ?? false
     }
 
     /// Plays the playlist's ready entries in order, without touching the Larder queue.
@@ -399,7 +403,8 @@ extension WiltedMacModel {
     private func startPlaylistEntry(at index: Int) {
         guard let session = playlists.session, session.entryIDs.indices.contains(index),
               let playback, let store else { return }
-        let entryID = session.entryIDs[index]
+        let displayID = session.entryIDs[index]
+        let entryID = episodes.first(where: { $0.id == displayID }).flatMap { backingEpisode(for: $0)?.id } ?? displayID
         guard let item = (episodes.map(WiltedMacLibraryItem.init(episode:)) + articles.map(WiltedMacLibraryItem.article))
             .first(where: { $0.id == entryID }),
               let itemID = try? ItemID(rawValue: entryID) else { return }
@@ -436,11 +441,13 @@ extension WiltedMacModel {
             self.isPlaying = playback.isPlaying
             self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
             self.publishNowPlaying(force: true)
+            let includesCuts: Bool
             switch item {
-            case .article: await self.loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID)
-            case .episode, .audiobook: await self.loadEpisodeTranscript(itemID: itemID)
+            case .article: includesCuts = false
+            case .episode, .audiobook: includesCuts = true
             }
-            self.refreshPlaybackReadout()
+            self.requestPlaybackPresentation(itemID: itemID, includesCuts: includesCuts,
+                                             traceToken: command.token)
             if self.isCurrentPlaybackCommand(command) { self.playbackError = nil }
         }
     }

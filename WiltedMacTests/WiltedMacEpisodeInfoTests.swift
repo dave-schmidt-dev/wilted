@@ -251,6 +251,15 @@ final class WiltedMacEpisodeInfoTests: XCTestCase {
         try await fixture.store.save(transcript: stored)
         let model = try await makeModel(fixture)
 
+        let backend = WiltedMacScriptedBackend()
+        model.installPlaybackBackendForTesting(backend)
+        let revision = try AudioRevision(
+            itemID: episode.itemID, revisionID: revisionID, durationSeconds: 60, byteCount: 1,
+            contentHash: "sha256:" + String(repeating: "c", count: 64), mediaType: "audio/mp4",
+            createdAt: Timestamp(Date()), schemaVersion: 1
+        )
+        try await model.playback?.load(StoredAudioRevision(
+            revision: revision, mediaURL: wiltedTemporaryDirectory("presentation-mapping").appendingPathComponent("synthetic.m4a")))
         await model.loadTranscript(itemID: episode.itemID, revisionID: revisionID)
 
         let loaded = try XCTUnwrap(model.currentTranscript)

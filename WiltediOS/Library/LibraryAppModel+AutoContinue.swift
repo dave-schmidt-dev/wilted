@@ -6,8 +6,8 @@ extension LibraryAppModel {
     /// The episodes on the phone in the one play order CarPlay, Siri and auto-continue share.
     var playOrderRows: [LibraryRow] {
         LibraryListing.rows(
-            queued, offered: [], onPhone: preparedIDs.onPhone, filter: .onPhone, query: "",
-            progress: progress, finished: finished)
+            logicalQueued, offered: [], onPhone: logicalIDs(preparedIDs.onPhone), filter: .onPhone, query: "",
+            progress: logicalProgress, finished: logicalFinished)
     }
 
     /// An episode played to its end: remember it as played out and saved at its end (local and unsent,
@@ -54,20 +54,20 @@ extension LibraryAppModel {
         guard let player = handoffState.player, player.owns(completion) else { return }
         refreshProgress()
         let forward = handoffState.forwardSequenceIDs
-        guard let endedIndex = forward.firstIndex(of: endedID) else { return }
+        guard let endedIndex = forward.firstIndex(where: { sameLogicalEpisode($0, endedID) }) else { return }
         let suffixIDs = forward[forward.index(after: endedIndex)...]
         guard !suffixIDs.isEmpty else { return }
 
         let cached = await mediaCache.cachedEntries()
         guard let player = handoffState.player, player.owns(completion) else { return }
 
-        let queuedByID = Dictionary(uniqueKeysWithValues: queued.map { ($0.id, $0) })
+        let queuedByID = Dictionary(uniqueKeysWithValues: logicalQueued.map { ($0.id, $0) })
         // The snapshot only prunes candidates that are already gone; a file can still disappear
         // before a candidate's own start lookup, so everyone cached here stays in the walk.
         let candidates = suffixIDs.compactMap { id -> LibraryRow? in
-            guard cached[id] != nil else { return nil }
+            guard cached[backingEntryID(for: id)] != nil else { return nil }
             return queuedByID[id]
-        }.filter { media[$0.id] == .onPhone && LibraryListing.completionDate($0, finished: finished) == nil }
+        }.filter { mediaState(for: $0.id) == .onPhone && LibraryListing.completionDate($0, finished: logicalFinished) == nil }
         let rate = completion.rate
         for candidate in candidates {
             // Re-read after every await: a command given while the previous candidate was
@@ -77,16 +77,20 @@ extension LibraryAppModel {
                 // The last look before the start itself: the candidate is still queued and
                 // still unfinished, and nothing has been commanded since the end.
                 player.owns(completion)
-                    && self.queued.contains { $0.id == candidate.id }
-                    && self.media[candidate.id] == .onPhone
-                    && LibraryListing.completionDate(candidate, finished: self.finished) == nil
+                    && self.automaticContinuationIsEligible(candidate.id)
             }
             switch outcome {
             case .started, .resumed:
                 player.setRate(rate)
                 return
-            case .superseded, .alreadyPlaying, .paused:
-                // A newer command owns playback (or nothing is left to start): the walk ends here.
+            case .superseded:
+                // Withdrawal fences this candidate's delayed start without
+                // revoking the natural completion's forward walk. A genuine
+                // transport command still invalidates completion ownership.
+                guard player.owns(completion) else { return }
+                if !automaticContinuationIsEligible(candidate.id) { continue }
+                return
+            case .alreadyPlaying, .paused:
                 return
             case .failed, .declined:
                 break
@@ -94,19 +98,26 @@ extension LibraryAppModel {
             // A command still cancels the walk. A decision can also make this candidate
             // ineligible during the start lookup; skip it even when its file remains cached.
             guard let player = handoffState.player, player.owns(completion) else { return }
-            if !queued.contains(where: { $0.id == candidate.id })
-                || media[candidate.id] != .onPhone
-                || LibraryListing.completionDate(candidate, finished: finished) != nil { continue }
+            if !automaticContinuationIsEligible(candidate.id) { continue }
 
             let remainingCache = await mediaCache.cachedEntries()
             // Recheck both playback intent and candidate eligibility after the cache await.
             guard let player = handoffState.player, player.owns(completion) else { return }
-            if !queued.contains(where: { $0.id == candidate.id })
-                || media[candidate.id] != .onPhone
-                || LibraryListing.completionDate(candidate, finished: finished) != nil { continue }
+            if !automaticContinuationIsEligible(candidate.id) { continue }
             // A missing file is a stale cache snapshot; an eligible cached candidate that failed
             // to start for another reason remains the end of this attempt.
-            guard remainingCache[candidate.id] == nil else { return }
+            guard remainingCache[backingEntryID(for: candidate.id)] == nil else { return }
         }
     }
+    /// Prepared bytes alone do not authorize automatic continuation. Read
+    /// current row/listening/removal state after every awaited admission step;
+    /// explicit replay of a completed episode remains a separate user action.
+    private func automaticContinuationIsEligible(_ entryID: ItemID) -> Bool {
+        guard let row = logicalRow(for: entryID),
+              decisionContent.entries[entryID]?.removal == LibraryRemoval.none,
+              decisionContent.listening[entryID]?.isCompleted != true,
+              mediaState(for: entryID) == .onPhone else { return false }
+        return LibraryListing.completionDate(row, finished: logicalFinished) == nil
+    }
+
 }

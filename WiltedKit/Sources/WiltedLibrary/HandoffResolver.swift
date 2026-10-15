@@ -128,6 +128,62 @@ public enum HandoffResolver {
             rate: record.rate, wasPlaying: current.isPlaying, sourceDeviceID: record.deviceID))
     }
 
+    /// Resolves associated entries without replacing the observed raw source identity.
+    /// `localRevision` must describe verified local audio; platform account, epoch,
+    /// current-offer and file checks still apply immediately before playback.
+    public static func resumeTarget(
+        observed: [ObservedPlayback], localDeviceID: String, entries: [LibraryEntry],
+        localRevision: (ItemID) -> RevisionID?, mediaOffer: (ItemID) -> LibraryMediaOffer?,
+        now: Date, clockOffset: TimeInterval = 0,
+        durationSeconds: (ItemID) -> Double? = { _ in nil }
+    ) -> HandoffAssociatedResumeTarget {
+        guard let source = winner(among: observed.filter({ $0.record.deviceID != localDeviceID })) else {
+            return .nothing
+        }
+        let record = source.record
+        // Always prefer the exact raw backing, even when the display representative differs.
+        if localRevision(record.entryID) == record.revision {
+            return .resume(associatedResume(source, targetID: record.entryID, revision: record.revision,
+                now: now, clockOffset: clockOffset, duration: durationSeconds(record.entryID)))
+        }
+        guard let group = LibraryEpisodeAssociation.group(for: record.entryID, in: entries) else {
+            return .needsMedia(entryID: record.entryID, revision: record.revision)
+        }
+        // No local backing exists yet: fetch the observed raw revision through
+        // normal certified admission rather than treating absence as a mismatch.
+        if group.memberIDs.allSatisfy({ localRevision($0) == nil }) {
+            return .needsMedia(entryID: record.entryID, revision: record.revision)
+        }
+        guard let sourceOffer = mediaOffer(record.entryID), sourceOffer.entryID == record.entryID,
+              sourceOffer.revisionID == record.revision, sourceOffer.isPrepared else {
+            return .conflict(entryID: record.entryID, revision: record.revision)
+        }
+        // Deterministic preference for the display representative, then remaining raw members.
+        let candidates = [group.representativeID] + group.memberIDs.filter { $0 != group.representativeID }
+        for id in candidates where id != record.entryID {
+            guard let revision = localRevision(id), let offer = mediaOffer(id), offer.entryID == id,
+                  offer.revisionID == revision, offer.isPrepared,
+                  sourceOffer.contentHash == offer.contentHash, sourceOffer.byteCount == offer.byteCount,
+                  sourceOffer.mediaType == offer.mediaType,
+                  let sourceDuration = sourceOffer.durationSeconds, let targetDuration = offer.durationSeconds,
+                  sourceDuration > 0, targetDuration > 0,
+                  abs(sourceDuration - targetDuration) <= 0.05 else { continue }
+            return .resume(associatedResume(source, targetID: id, revision: revision,
+                now: now, clockOffset: clockOffset, duration: targetDuration))
+        }
+        return .conflict(entryID: record.entryID, revision: record.revision)
+    }
+
+    private static func associatedResume(
+        _ source: ObservedPlayback, targetID: ItemID, revision: RevisionID,
+        now: Date, clockOffset: TimeInterval, duration: Double?
+    ) -> HandoffResume {
+        HandoffResume(entryID: targetID, revision: revision,
+            positionSeconds: resumePosition(of: source, now: now, clockOffset: clockOffset, durationSeconds: duration),
+            rate: source.record.rate, wasPlaying: effective(source, now: now, clockOffset: clockOffset).record.isPlaying,
+            sourceDeviceID: source.record.deviceID)
+    }
+
     private static func ordered(_ a: ObservedPlayback, before b: ObservedPlayback) -> Bool {
         if a.record.epoch != b.record.epoch { return a.record.epoch < b.record.epoch }
         if a.serverModifiedAt != b.serverModifiedAt { return a.serverModifiedAt < b.serverModifiedAt }
@@ -154,4 +210,13 @@ public enum HandoffResumeTarget: Sendable, Equatable {
     case resume(HandoffResume)
     /// The local audio is missing or a different revision; request the audio first.
     case needsMedia(entryID: ItemID, revision: RevisionID)
+}
+
+/// Association-aware resolution. A conflict retains the source's recorded position;
+/// callers must neither reinterpret it on a different cut nor restart it at zero.
+public enum HandoffAssociatedResumeTarget: Sendable, Equatable {
+    case nothing
+    case resume(HandoffResume)
+    case needsMedia(entryID: ItemID, revision: RevisionID)
+    case conflict(entryID: ItemID, revision: RevisionID)
 }

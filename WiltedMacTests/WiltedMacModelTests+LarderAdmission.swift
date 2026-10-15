@@ -185,13 +185,14 @@ extension WiltedMacModelTests {
         XCTAssertEqual(afterAudio?.mediaURL, beforeAudio.mediaURL)
         XCTAssertEqual(afterAudioData, beforeAudioData)
         XCTAssertEqual(afterPreparation, beforePreparation)
-        XCTAssertEqual(afterListening, beforeListening)
+        XCTAssertNotNil(afterListening?.completedAt)
+        XCTAssertEqual(afterListening?.lastRevisionID, beforeListening?.lastRevisionID)
         let retained = try XCTUnwrap(model.episodes.first { $0.id == episode.id },
-                                     "removal from the queue is not retirement; the row stays")
-        XCTAssertNil(retained.retiredAt)
-        XCTAssertFalse(retained.isPlayed)
-        XCTAssertTrue(model.feedsEpisodes.contains { $0.id == episode.id },
-                      "an un-kept row is back in Feeds, not destroyed")
+                                     "manual completion retains the episode record")
+        XCTAssertNotNil(retained.retiredAt)
+        XCTAssertTrue(retained.isPlayed)
+        XCTAssertFalse(model.feedsEpisodes.contains { $0.id == episode.id },
+                      "manual completion also leaves active Feeds")
     }
 
     /// 1.3: a durable member is not addable, wherever it sits in the queue.

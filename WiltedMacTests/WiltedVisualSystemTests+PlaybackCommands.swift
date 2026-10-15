@@ -125,14 +125,36 @@ extension WiltedVisualSystemTests {
         let (model, backend, episode) = makePlaybackCommandModel()
         await model.waitForFixturePodcastInstallForTesting()
         await loadPausedThroughOwner(model, episode)
-        let larderEpisode = WiltedMacEpisode(
-            id: "larder-pixel-control-fixture", title: "Larder Pixel Control",
-            feedTitle: "Fixture", summary: "Ready fixture row", artworkURL: nil,
-            releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 600,
-            playbackSeconds: 0, downloadState: .completed, preparationState: .prepared(summary: "Ready")
-        )
-        model.installEpisodeForTesting(larderEpisode)
-        model.podcastQueueIDs.append(larderEpisode.id)
+        await model.waitForPlaybackPresentationForTesting()
+        // This unrelated control must survive legitimate library/queue refreshes.
+        let store = try XCTUnwrap(model.store)
+        let storedEpisodes = try await store.podcastEpisodes()
+        let first = try XCTUnwrap(storedEpisodes.first { $0.itemID.rawValue == episode.id })
+        let enclosureURL = try XCTUnwrap(URL(string: "https://media.example.test/larder-pixel-control.mp3"))
+        let controlID = try ItemID.derivePodcastEpisode(
+            feedURL: first.feedURL, rssGUID: "larder-pixel-control-fixture", enclosureURL: enclosureURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        try await store.save(episode: PodcastEpisode(
+            itemID: controlID, feedID: first.feedID, feedURL: first.feedURL,
+            rssGUID: "larder-pixel-control-fixture", title: "Larder Pixel Control",
+            publishedTime: created, enclosureURL: enclosureURL,
+            enclosureMediaType: "audio/mpeg", createdAt: created))
+        let mediaURL = model.libraryURL.deletingLastPathComponent().appendingPathComponent("pixel-control.mp3")
+        try Data([8]).write(to: mediaURL)
+        let revision = try AudioRevision(
+            itemID: controlID, revisionID: RevisionID(rawValue: "larder-pixel-control-revision"),
+            durationSeconds: 600, byteCount: 1, contentHash: "sha256:" + String(repeating: "8", count: 64),
+            mediaType: "audio/mpeg", createdAt: created, schemaVersion: 1)
+        try await store.finalizePodcastDownload(revision: revision, mediaURL: mediaURL, download: PodcastDownload(
+            episodeID: controlID, status: .completed, bytesReceived: 1, expectedByteCount: 1,
+            localURL: mediaURL, contentHash: revision.contentHash, updatedAt: created))
+        try await store.savePreparationOutcome(PodcastPreparationOutcome(
+            episodeID: controlID, revisionID: revision.revisionID, policyDigest: "pixel-control",
+            pipelineFingerprint: "pixel-control", semanticVersion: "pixel-control", producedAt: created))
+        try await model.playback?.addPodcastQueueEpisode(controlID)
+        await model.reloadLibraryRows()
+        await model.refreshPodcastQueueState()
+        let larderEpisode = try XCTUnwrap(model.episodes.first { $0.id == controlID.rawValue })
         let gate = WiltedMacCommandGate()
         model.installPlaybackCommandHookForTesting { await gate.hold($0) }
         defer { gate.release() }

@@ -23,6 +23,12 @@ from . import prompts
 from .constants import CUT_TOOLS
 from .reporting import WorkerError
 
+def expected_backend_unavailable(error: Exception) -> bool:
+    """Recognize backend resource/load/inference failures, never coding defects."""
+    return (isinstance(error, (OSError, RuntimeError, ImportError, MemoryError))
+            or (isinstance(error, ValueError)
+                and str(error).startswith("Failed to load model from file:")))
+
 class CountingBackend:
     """Wrap the classifier's backend so a run that never reached the model is
     distinguishable from one that ran and found nothing.
@@ -38,6 +44,7 @@ class CountingBackend:
         self.calls = 0
         self.failures = 0
         self.last_error: Exception | None = None
+        self.unexpected_error: Exception | None = None
 
     def generate(self, system_prompt: str, user_content: str, *, response_format=None):
         self.calls += 1
@@ -46,6 +53,8 @@ class CountingBackend:
         except Exception as error:
             self.failures += 1
             self.last_error = error
+            if not expected_backend_unavailable(error):
+                self.unexpected_error = error
             raise
 
     @property
@@ -107,6 +116,7 @@ class AdAnalysisAudit:
     near_empty: str | None = None
     declined_commercial_evidence_seeds: tuple[DeclinedCommercialEvidenceSeed, ...] = ()
     held_spans: tuple[HeldAdSpan, ...] = ()
+    warning: str | None = None
 
 @dataclass(frozen=True)
 class AdAnalysis:
@@ -134,9 +144,11 @@ def _audit_ad_response(ads_module, response: str, expected_ids: tuple[int, ...])
     parser = getattr(ads_module, "_parse_ad_response", None)
     if not callable(parser):
         raise WorkerError("ads-audit-contract-unavailable", "archived ad response parser is unavailable")
+    if not isinstance(response, str):
+        raise WorkerError("ads-audit-contract-unavailable", "classifier response was not text")
     try:
         decisions = parser(response, list(expected_ids))
-    except Exception:  # noqa: BLE001 - mirrors archive malformed-response handling
+    except ValueError:  # noqa: BLE001 - mirrors archive malformed-response handling
         return None
     if (
         not isinstance(decisions, list)
@@ -173,6 +185,7 @@ class AuditingBackend(CountingBackend):
         self.lineages: list[_ClassificationLineage] = []
         self._pending: _ClassificationLineage | None = None
         self.contract_errors: list[str] = []
+        self.commercial_review_states: dict[int, str] = {}
         prompts = (
             getattr(ads_module, "_AD_DETECT_SYSTEM_PROMPT", None),
             getattr(ads_module, "_AD_DETECT_CORRECTION_PROMPT", None),
@@ -225,16 +238,43 @@ class AuditingBackend(CountingBackend):
                 self._pending = lineage
             else:
                 lineage = self._pending
+        review_ids = ()
+        if system_prompt == prompts.COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT:
+            labels_schema = (response_format or {}).get("schema", {}).get("properties", {}).get("labels", {})
+            review_ids = tuple(int(value) for value in labels_schema.get("required", ()))
+        elif system_prompt == prompts.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT:
+            match = re.match(r"Candidate ID to resolve: (\d+)\n", user_content)
+            review_ids = (int(match.group(1)),) if match else ()
         try:
             response, tokens = super().generate(system_prompt, user_content, response_format=response_format)
-        except Exception:
+        except Exception as error:
+            if not expected_backend_unavailable(error):
+                self.unexpected_error = error
+            self.commercial_review_states.update({segment_id: "unresolved" for segment_id in review_ids})
             if lineage is not None:
                 lineage.attempts.append(False)
                 if system_prompt == self._correction_prompt:
                     self._pending = None
             raise
+        if review_ids:
+            from .review_formats import _commercial_preservation_labels, _parse_commercial_conflict_response
+            try:
+                states = (_commercial_preservation_labels(response, review_ids)
+                          if system_prompt == prompts.COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT else
+                          {str(review_ids[0]): _parse_commercial_conflict_response(response)})
+            except Exception as error:
+                if not isinstance(error, ValueError):
+                    self.unexpected_error = error
+                    raise
+                states = {str(segment_id): "unresolved" for segment_id in review_ids}
+            self.commercial_review_states.update({int(segment_id): state for segment_id, state in states.items()})
         if lineage is not None:
-            decisions = _audit_ad_response(self._ads_module, response, ids)
+            try:
+                decisions = _audit_ad_response(self._ads_module, response, ids)
+            except Exception as error:
+                if not isinstance(error, WorkerError):
+                    self.unexpected_error = error
+                raise
             lineage.attempts.append(decisions is not None)
             if decisions is not None:
                 for segment_id, is_ad, label in decisions:
@@ -296,6 +336,61 @@ class AuditingBackend(CountingBackend):
             candidates=tuple(candidates),
         )
 
+def uncertain_ad_analysis(
+    auditing_backend,
+    segments,
+    reason: str,
+    *,
+    held_spans=(),
+    proposed_detections=(),
+    audit=None,
+) -> AdAnalysis:
+    """Retain genuine classifier diagnostics when the whole audio must survive."""
+    from . import commercial_seeds as _worker_commercial_seeds
+    from . import reporting as _worker_reporting
+
+    warning = f"original audio includes ads: {reason}"
+    _worker_reporting.progress("ads.uncertain", warning)
+    if audit is None:
+        audit = auditing_backend.audit((), segments)
+    if held_spans:
+        audit.held_spans = tuple(held_spans)
+    if not audit.declined_commercial_evidence_seeds:
+        audit.declined_commercial_evidence_seeds = tuple(
+            DeclinedCommercialEvidenceSeed(
+                ids=seed_ids,
+                start_s=float(segments[seed_ids[0]].start_s),
+                end_s=float(segments[seed_ids[-1]].end_s),
+                reason=(
+                    "dropped-after-proposal"
+                    if any(
+                        float(ad.start_s) < float(segments[seed_ids[-1]].end_s)
+                        and float(ad.end_s) > float(segments[seed_ids[0]].start_s)
+                        for ad in proposed_detections
+                    )
+                    else ("review-declined" if all(
+                        auditing_backend.commercial_review_states.get(segment_id) == "programme"
+                        for segment_id in seed_ids
+                    ) else "review-unresolved")
+                ),
+            )
+            for seed_ids in _worker_commercial_seeds.commercial_evidence_seed_ids(segments, ())
+        )
+    audit.incomplete_error = reason
+    audit.warning = warning
+    audit.model_requests = auditing_backend.calls
+    audit.model_failures = auditing_backend.failures
+    return AdAnalysis((), audit)
+
+def preflight_cut_tools() -> None:
+    """Fail before any work if the required audio tools are missing."""
+    missing = [tool for tool in CUT_TOOLS if shutil.which(tool) is None]
+    if missing:
+        raise WorkerError(
+            "cut-tools-missing",
+            f"{', '.join(missing)} not on PATH ({os.environ.get('PATH', '')}); install ffmpeg",
+        )
+
 def preflight_ad_removal(request: dict) -> None:
     """Fail before any work if the cut cannot possibly succeed.
 
@@ -304,14 +399,9 @@ def preflight_ad_removal(request: dict) -> None:
     content, and the missing `ffprobe` surfaced only as a skipped duration
     probe on the way out. A run that skips ad removal skips this too.
     """
+    preflight_cut_tools()
     from wilted import llm as llm_module
 
-    missing = [tool for tool in CUT_TOOLS if shutil.which(tool) is None]
-    if missing:
-        raise WorkerError(
-            "cut-tools-missing",
-            f"{', '.join(missing)} not on PATH ({os.environ.get('PATH', '')}); install ffmpeg",
-        )
     model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
     # An `hf:<repo>/<file>` spec is resolved by the previous project's cache
     # at load time; only a literal path can be checked here.

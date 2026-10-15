@@ -435,7 +435,7 @@ final class LibraryOwnerCacheTests: XCTestCase {
         XCTAssertNil(inventory[id("old")])
     }
 
-    func testCommittedQueueRemovalRevokesPreparationButEmptyOfferListDoesNot() async throws {
+    func testCommittedQueueRemovalRetainsPreparationButDeniesAdmission() async throws {
         let store = try await bound()
         let cache = try await certifiedCache()
         let transport = OwnerCacheTransport(batch: try batch(["old"], full: false))
@@ -451,7 +451,9 @@ final class LibraryOwnerCacheTests: XCTestCase {
         XCTAssertTrue(removedModel.queued.isEmpty)
         XCTAssertTrue(removedModel.visibleRows.isEmpty, "a committed queue removal removes the row")
         let inventory = await cache.cachedEntries()
-        XCTAssertNil(inventory[id("old")])
+        XCTAssertNotNil(inventory[id("old")]?.preparation, "Absence preserves exact certified proof for Restore")
+        let denied = await removedModel.verifiedCachedMedia(id("old"), token: removedModel.beginExternalStart())
+        XCTAssertNil(denied, "Retained proof cannot admit an entry absent from the current Larder")
     }
 
     func testDifferentDurableOwnerCannotUsePriorOwnersProof() async throws {

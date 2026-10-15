@@ -55,7 +55,7 @@ final class LibraryPlaybackCommandTests: XCTestCase {
     private func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
 
     /// Episodes "a" and "b" queued and both on the phone; the cache can hold its next lookup.
-    private func makeRig() async throws -> Rig {
+    private func makeRig(firstID: String = "a") async throws -> Rig {
         let suite = "wilted.command.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
@@ -66,7 +66,7 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         let files = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         let payload = Data((0..<2_000).map { UInt8($0 % 251) })
         let hash = MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        for (offset, raw) in ["a", "b"].enumerated() {
+        for (offset, raw) in [firstID, "b"].enumerated() {
             changes.append(.entry(try LibraryEntry(
                 id: id(raw), kind: .podcastEpisode, sourceID: show.id, title: "Episode \(raw.uppercased())", summary: "",
                 publishedAt: Date(timeIntervalSince1970: 1_600_000_000 + Double(offset) * 86_400), durationSeconds: 600)))
@@ -79,7 +79,7 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         let phone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
         let mirror = FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json"))
         try await PreparedMediaFixture.bootstrap(mirror, transport: phone)
-        for raw in ["a", "b"] {
+        for raw in [firstID, "b"] {
             let file = scratch.appendingPathComponent(UUID().uuidString)
             try payload.write(to: file)
             _ = try await PreparedMediaFixture.adopt(into: files, verifiedFile: file, for: try PreparedMediaFixture.certified(LibraryMediaOffer(
@@ -297,12 +297,12 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         let start = try await heldStart(rig) { await rig.model.playCachedWithoutToggling(row) }
         try await removeSlot("a", in: rig)
         let cached = await rig.cache.cachedEntries()
-        XCTAssertNil(cached[id("a")], "queue removal revokes admitted inventory")
+        XCTAssertNotNil(cached[id("a")]?.preparation, "Queue removal retains proof while denying playback")
         XCTAssertTrue(FileManager.default.fileExists(atPath: originalFile.path))
         XCTAssertEqual(try Data(contentsOf: originalFile), originalBytes, "retained bytes do not grant playback permission")
         await rig.cache.release()
         let outcome = await start.value
-        XCTAssertEqual(outcome, .declined)
+        XCTAssertEqual(outcome, .superseded, "Queue withdrawal invalidates the pending start token")
         XCTAssertNil(rig.player.item)
         XCTAssertFalse(rig.engine.isPlaying)
         XCTAssertEqual(rig.engine.loads, 0)
@@ -329,7 +329,7 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         XCTAssertEqual(rig.engine.loads, 1)
         XCTAssertEqual(rig.model.handoffState.forwardSequenceIDs, suffix)
         let cached = await rig.cache.cachedEntries()
-        XCTAssertNil(cached[id("a")])
+        XCTAssertNotNil(cached[id("a")]?.preparation)
         XCTAssertTrue(FileManager.default.fileExists(atPath: originalFile.path))
         XCTAssertEqual(try Data(contentsOf: originalFile), originalBytes)
     }
@@ -358,9 +358,11 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         XCTAssertTrue(result.failures.isEmpty)
         await rig.model.refresh()
         XCTAssertFalse(rig.model.queued.contains { $0.id == entryID })
-        XCTAssertEqual(rig.model.media[entryID], .notPrepared)
+        XCTAssertNotEqual(rig.model.mediaState(for: entryID), .onPhone)
         let inventory = await rig.cache.cachedEntries()
-        XCTAssertNil(inventory[entryID], "removed media cannot retain admitted inventory")
+        XCTAssertNotNil(inventory[entryID]?.preparation, "Queue-only removal preserves proof for Restore")
+        let admitted = await rig.model.verifiedCachedMedia(entryID, token: rig.model.beginExternalStart())
+        XCTAssertNil(admitted, "Current queue membership is required independently of retained proof")
     }
 
     // MARK: Primary toggle stays separate
@@ -409,5 +411,66 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         XCTAssertEqual(rig.model.playbackCommand?.text, "Audio missing. Download it before playing.")
         XCTAssertNil(rig.player.item)
         XCTAssertEqual(rig.engine.loads, 0)
+    }
+
+    func testStageTraceRequiresOptInAndKnownTokenAndRetainsNewestEventsInOrder() {
+        let trace = LibraryPlaybackTrace()
+        trace.record(.acknowledged, token: 1)
+        XCTAssertTrue(trace.events().isEmpty)
+        trace.isEnabled = true
+        trace.record(.playCalled, token: 0)
+        XCTAssertTrue(trace.events().isEmpty, "untraced starts cannot create a bogus token-zero sample")
+        for token in 1...UInt64(LibraryPlaybackTrace.capacity + 7) {
+            trace.record(.acknowledged, token: token)
+        }
+        let events = trace.events()
+        XCTAssertEqual(events.count, LibraryPlaybackTrace.capacity)
+        XCTAssertEqual(events.first?.token, 8)
+        XCTAssertEqual(events.last?.token, UInt64(LibraryPlaybackTrace.capacity + 7))
+        XCTAssertEqual(events.map(\.sequence), events.map(\.sequence).sorted())
+        trace.reset()
+        XCTAssertTrue(trace.events().isEmpty)
+        trace.record(.acknowledged, token: 20)
+        XCTAssertEqual(trace.events().first?.sequence, 1)
+    }
+
+    // TRACE 1.1: the held cached-admission fixture causes a measured wait, and
+    // the trace names its acknowledgment/play-call limits without owner data.
+    func testStageTraceMeasuresHeldAdmissionAndNamesAcknowledgmentAndPlayCallLimits() async throws {
+        let sentinel = "private-trace-episode-sentinel"
+        let rig = try await makeRig(firstID: sentinel)
+        let row = try rig.row(sentinel)
+        let trace = LibraryPlaybackTrace.shared
+        trace.isEnabled = true
+        trace.reset()
+        defer { trace.isEnabled = false; trace.reset() }
+
+        let start = try await heldStart(rig) { await rig.model.startCached(row, kind: .select) }
+        XCTAssertEqual(rig.model.playbackCommand, .starting(entryID: row.id, title: row.title))
+        await rig.cache.release()
+        let outcome = await start.value
+        XCTAssertEqual(outcome, .started)
+
+        let token = rig.model.commandState.token
+        let stages = trace.events().filter { $0.token == token }.map(\.stage)
+        XCTAssertEqual(stages.first, .acknowledged, "\(stages)")
+        XCTAssertTrue(stages.contains(.admissionBegan), "\(stages)")
+        XCTAssertTrue(stages.contains(.admissionSettled), "\(stages)")
+        XCTAssertTrue(stages.contains(.loadCalled), "\(stages)")
+        XCTAssertTrue(stages.contains(.sessionActivated), "\(stages)")
+        XCTAssertTrue(stages.contains(.playCalled), "\(stages)")
+        XCTAssertEqual(stages.last, .settled, "\(stages)")
+
+        let admission = try XCTUnwrap(trace.measuredWait(.acknowledgedToAdmissionSettled, token: token))
+        XCTAssertGreaterThan(admission, 0, "the lookup was held mid-admission")
+        XCTAssertNotNil(trace.measuredWait(.acknowledgedToPlayCalled, token: token))
+        XCTAssertNotNil(trace.measuredWait(.loadCalledToPlayCalled, token: token))
+
+        let report = trace.report()
+        print(report)
+        XCTAssertTrue(report.contains("acknowledged=dispatch-boundary"), report)
+        XCTAssertTrue(report.contains("playCalled=call-boundary"), report)
+        XCTAssertFalse(report.contains(row.title), report)
+        XCTAssertFalse(report.contains(row.id.rawValue), report)
     }
 }

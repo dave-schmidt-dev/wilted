@@ -42,10 +42,10 @@ final class WiltedMacOwnerFeedbackJourneyTests: XCTestCase {
         let kept = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
         XCTAssertEqual(kept.presentation.accessibilityFactsLabel, facts,
                        "LARDER-001: Keep preserves show, publication, and source facts")
-        XCTAssertEqual(kept.downloadState, .completed)
-        guard case .prepared = kept.preparationState else {
-            return XCTFail("LARDER-001: only the ready fixture receives Play")
-        }
+        XCTAssertEqual(kept.downloadState, .notDownloaded,
+                       "Legacy Feed Skip reclaimed media; Restore and Keep do not invent a download")
+        XCTAssertEqual(kept.preparationState, .notPrepared)
+        XCTAssertFalse(model.canPlayEpisode(kept), "LARDER-001: Play still requires actual prepared media")
     }
 
     /// The rendered half of the journey above: Feeds draws, and the rows share one metadata view with

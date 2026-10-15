@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreFoundation
 import Foundation
 import WiltedDomain
 
@@ -17,6 +18,8 @@ extension PodcastPreparationPipeline {
         var removedSeconds: Double
         var keepIntervals: [PodcastKeepInterval]
         var adRemovalOutcome: String
+        var warning: String? = nil
+        var adAuditDiagnostics: [String: String] = [:]
         var timeline: PreparationStatus.PreparationTimeline
     }
 
@@ -33,7 +36,7 @@ extension PodcastPreparationPipeline {
         }
         guard let report = object["report"] as? [String: Any],
               let outcome = report["outcome"] as? String,
-              ["disabled", "noAds", "cut"].contains(outcome),
+              ["disabled", "noAds", "cut", "uncertain"].contains(outcome),
               let nominations = report["rawNominations"] as? [[String: Any]],
               nominations.allSatisfy(isWellFormedNomination) else {
             throw PodcastPreparationError.malformedWorkerResponse("missing or invalid ad-removal report")
@@ -46,13 +49,32 @@ extension PodcastPreparationPipeline {
             guard !(report["audit"] is [String: Any]) else {
                 throw PodcastPreparationError.malformedWorkerResponse("disabled ad removal reported detector evidence")
             }
+        } else if outcome == "uncertain" {
+            guard let audit = report["audit"] as? [String: Any],
+                  isDiagnosticAudit(audit),
+                  let warning = report["warning"] as? String,
+                  warning.hasPrefix("original audio includes ads:"),
+                  !warning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  warning == audit["warning"] as? String,
+                  let changed = object["audioChanged"] as? NSNumber,
+                  CFGetTypeID(changed) == CFBooleanGetTypeID(), !changed.boolValue,
+                  let removed = object["removedSeconds"] as? NSNumber,
+                  CFGetTypeID(removed) != CFBooleanGetTypeID(), removed.doubleValue == 0,
+                  let ads = object["adSegments"] as? [[String: Any]], ads.isEmpty,
+                  let keeps = object["keepIntervals"] as? [[String: Any]], keeps.isEmpty,
+                  let duration = object["durationSeconds"] as? NSNumber,
+                  CFGetTypeID(duration) != CFBooleanGetTypeID(),
+                  duration.doubleValue.isFinite, duration.doubleValue > 0 else {
+                throw PodcastPreparationError.malformedWorkerResponse("invalid uncertain ad-removal evidence")
+            }
         } else {
             guard let audit = report["audit"] as? [String: Any],
                   let modelRequests = audit["modelRequests"] as? Int, modelRequests > 0,
                   let modelFailures = audit["modelFailures"] as? Int, modelFailures >= 0,
                   let experimentalRequests = audit["experimentalRequests"] as? Int, experimentalRequests == 0,
                   let unresolvedIdentifiers = audit["unresolvedIds"] as? [Int], unresolvedIdentifiers.isEmpty,
-                  !(audit["incompleteError"] is String) else {
+                  audit["incompleteError"] == nil || audit["incompleteError"] is NSNull,
+                  audit["warning"] == nil || audit["warning"] is NSNull else {
                 throw PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")
             }
         }
@@ -138,6 +160,7 @@ extension PodcastPreparationPipeline {
         guard timelineMatchesMap,
               (outcome == "disabled" && !changed && removed.isEmpty && kept.isEmpty)
                 || (outcome == "noAds" && !changed && removed.isEmpty && kept.isEmpty)
+                || (outcome == "uncertain" && !changed && removedSeconds == 0 && removed.isEmpty && kept.isEmpty)
                 || (outcome == "cut" && changed && !removed.isEmpty && !kept.isEmpty) else {
             throw PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")
         }
@@ -158,8 +181,61 @@ extension PodcastPreparationPipeline {
             keepIntervals: kept.map { PodcastKeepInterval(startSeconds: $0.originalStartSeconds, endSeconds: $0.originalEndSeconds,
                                                           outputStartSeconds: $0.outputStartSeconds) },
             adRemovalOutcome: outcome,
+            warning: outcome == "uncertain" ? (report["warning"] as? String).map { String($0.prefix(768)) } : nil,
+            adAuditDiagnostics: outcome == "uncertain" ? diagnosticFields(report["audit"] as? [String: Any] ?? [:]) : [:],
             timeline: timeline
         )
+    }
+
+    private static func diagnosticFields(_ audit: [String: Any]) -> [String: String] {
+        var fields: [String: String] = [:]
+        for key in ["modelRequests", "modelFailures", "classifierValidRequests", "classifierInvalidRequests"] {
+            if let count = audit[key] as? Int { fields[key] = String(count) }
+        }
+        if let ids = audit["unresolvedIds"] as? [Int] {
+            let value = ids.map(String.init).joined(separator: ",")
+            fields["unresolvedIds"] = value.count > 256 ? String(value.prefix(253)) + "..." : value
+        }
+        if let reason = audit["incompleteError"] as? String {
+            fields["incompleteError"] = String(reason.prefix(256))
+        }
+        return fields
+    }
+
+    /// Diagnostic evidence may describe no model work, but cannot claim clean coverage.
+    private static func isDiagnosticAudit(_ audit: [String: Any]) -> Bool {
+        func count(_ key: String) -> Int? {
+            guard let number = audit[key] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  let value = audit[key] as? Int, value >= 0 else { return nil }
+            return value
+        }
+        let countKeys = ["classifierRequests", "classifierValidRequests", "classifierInvalidRequests",
+                         "exhaustedSingletonLineages", "modelRequests", "modelFailures", "experimentalRequests"]
+        guard countKeys.allSatisfy({ count($0) != nil }), count("experimentalRequests") == 0,
+              let ids = audit["unresolvedIds"] as? [Int], ids.allSatisfy({ $0 >= 0 }),
+              Set(ids).count == ids.count,
+              let reason = audit["incompleteError"] as? String,
+              !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let candidates = audit["candidates"] as? [[String: Any]],
+              let declined = audit["declinedCommercialEvidenceSeeds"] as? [[String: Any]],
+              let held = audit["heldSpans"] as? [[String: Any]] else { return false }
+        guard count("classifierValidRequests")! + count("classifierInvalidRequests")! <= count("classifierRequests")! else {
+            return false
+        }
+        guard candidates.allSatisfy({ candidate in
+            guard let kind = candidate["kind"] as? String, !kind.isEmpty,
+                  candidate["detail"] is String, let ids = candidate["ids"] as? [Int] else { return false }
+            return ids.allSatisfy { $0 >= 0 }
+        }) else { return false }
+        return (declined + held).allSatisfy { span in
+            guard let reason = span["reason"] as? String, !reason.isEmpty,
+                  let start = span["startSeconds"] as? Double, let end = span["endSeconds"] as? Double else { return false }
+            return start.isFinite && end.isFinite && start >= 0 && end > start
+        } && declined.allSatisfy { span in
+            guard span["status"] as? String == "declined", let ids = span["ids"] as? [Int], !ids.isEmpty else { return false }
+            return ids.allSatisfy { $0 >= 0 }
+        }
     }
 
     /// A nomination is review material, so it is type-checked rather than

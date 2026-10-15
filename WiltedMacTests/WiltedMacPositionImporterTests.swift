@@ -13,6 +13,18 @@ private final class ScriptedImportHost: WiltedMacPositionImportHost {
     var outcome: RemotePositionOutcome? = .applied
     private(set) var requests: [RemotePositionRequest] = []
     private(set) var targetReads = 0
+    var associationEntries: [LibraryEntry] = []
+    var associationOffers: [ItemID: LibraryMediaOffer] = [:]
+    private(set) var associationChecks: [ItemID] = []
+
+    func importAssociationContext() async -> (entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) {
+        (associationEntries, associationOffers)
+    }
+
+    func associationImportIsCurrent(entryID: ItemID, entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) async -> Bool {
+        associationChecks.append(entryID)
+        return true
+    }
 
     func importTargets() async -> [ItemID: WiltedMacImportTarget]? {
         targetReads += 1
@@ -288,5 +300,98 @@ final class WiltedMacPositionImporterTests: XCTestCase {
         let winner = try XCTUnwrap(HandoffResolver.winner(among: candidates))
         XCTAssertEqual(winner.record.positionSeconds, 900)
         XCTAssertEqual(winner.record.deviceID, macID)
+    }
+}
+
+
+extension WiltedMacPositionImporterTests {
+    func testNewestAssociatedOriginSettlesItsOwnCandidateAcrossRepeatedPolls() async throws {
+        let first = try ItemID(rawValue: "alias-A"), second = try ItemID(rawValue: "alias-B")
+        let feed = try ItemID(rawValue: "alias-feed")
+        let association = LibraryEpisodeAssociation(groupID: UUID(), representativeID: first,
+            memberIDs: [first, second], associationVersion: 1, isTerminal: false)
+        let host = ScriptedImportHost()
+        host.associationEntries = try [first, second].map { id in
+            try LibraryEntry(id: id, kind: .podcastEpisode, sourceID: feed, title: "Alias", summary: "",
+                publishedAt: base, episodeAssociation: association)
+        }
+        host.targets = [first: WiltedMacImportTarget(revision: revisionA, durationSeconds: 600)]
+        for (id, revision) in [(first, revisionA), (second, revisionB)] {
+            host.associationOffers[id] = try LibraryMediaOffer(entryID: id, revisionID: revision,
+                contentHash: "sha256:" + String(repeating: "a", count: 64), byteCount: 512,
+                mediaType: "audio/mp4", durationSeconds: 600,
+                preparation: LibraryMediaPreparation(preparedAt: Timestamp(base)))
+        }
+        func observed(_ id: ItemID, revision: RevisionID, position: Double, at: Date, device: String) throws -> ObservedPlayback {
+            ObservedPlayback(record: try DevicePlaybackPosition(deviceID: device, entryID: id, revision: revision,
+                positionSeconds: position, isPlaying: false, epoch: 4), serverModifiedAt: at)
+        }
+        // Entry-ID order puts old A first; epoch/date order must choose newer B.
+        let old = try observed(first, revision: revisionA, position: 40, at: base, device: "old-phone")
+        let recent = try observed(second, revision: revisionB, position: 123,
+            at: base.addingTimeInterval(60), device: "new-phone")
+        let records = LibraryDeviceRecords(nowPlaying: [old, recent], progress: [old, recent])
+        let candidates = HandoffPositionImport.candidates(records: records, localDeviceID: macID)
+        let resolved = WiltedMacPositionImport.resolvedRequests(candidates: candidates, targets: host.targets!,
+            entries: host.associationEntries, offers: host.associationOffers)
+        XCTAssertEqual(resolved.count, 1)
+        XCTAssertEqual(resolved.first?.source.entryID, second)
+        XCTAssertEqual(resolved.first?.source.sourceDeviceID, "new-phone")
+        let importer = WiltedMacPositionImporter(host: host, deviceID: macID)
+        await importer.handle(records)
+        XCTAssertEqual(host.requests.map(\.positionSeconds), [123])
+        XCTAssertEqual(host.associationChecks, [first], "The selected B-to-A translation still requires the current-proof fence")
+        XCTAssertEqual(importer.adopted[first]?.stampedAt, recent.serverModifiedAt)
+        // A's older record remains independently eligible; the writer correctly
+        // rejects it as not newer, and the importer then settles that origin too.
+        host.outcome = .notNewer
+        await importer.handle(records)
+        await importer.handle(records)
+        XCTAssertEqual(host.requests.map(\.positionSeconds), [123, 40], "Settled newer B must not be imported repeatedly")
+        XCTAssertEqual(host.targetReads, 2, "Once both actual origins settle, repeat polling needs no store read")
+        XCTAssertEqual(importer.appliedCount, 1)
+        XCTAssertEqual(importer.adopted[first]?.positionSeconds, 123)
+    }
+
+    func testAssociatedPositionPrefersExactRawBThenCompatibleAAndRefusesConflictingProof() throws {
+        let first = try ItemID(rawValue: "alias-A"), second = try ItemID(rawValue: "alias-B")
+        let feed = try ItemID(rawValue: "alias-feed")
+        let association = LibraryEpisodeAssociation(groupID: UUID(), representativeID: first,
+            memberIDs: [first, second], associationVersion: 1, isTerminal: false)
+        let entries = try [first, second].map { id in
+            try LibraryEntry(id: id, kind: .podcastEpisode, sourceID: feed, title: "Alias", summary: "",
+                publishedAt: base, episodeAssociation: association)
+        }
+        let hash = "sha256:" + String(repeating: "a", count: 64)
+        func offer(_ id: ItemID, _ revision: RevisionID, hash value: String? = nil,
+                   count: Int64 = 512, duration: Double = 120, mediaType: String = "audio/mp4") throws -> LibraryMediaOffer {
+            try LibraryMediaOffer(entryID: id, revisionID: revision, contentHash: value ?? hash,
+                byteCount: count, mediaType: mediaType, durationSeconds: duration,
+                preparation: LibraryMediaPreparation(preparedAt: Timestamp(base)))
+        }
+        let source = ImportablePosition(entryID: second, revision: revisionB, positionSeconds: 73,
+            observedAt: base, sourceDeviceID: phoneID, epoch: 4)
+        let targets = [first: WiltedMacImportTarget(revision: revisionA, durationSeconds: 120),
+                       second: WiltedMacImportTarget(revision: revisionB, durationSeconds: 120)]
+        let offers = try [first: offer(first, revisionA), second: offer(second, revisionB)]
+        let exact = WiltedMacPositionImport.requests(candidates: [source], targets: targets, entries: entries, offers: offers)
+        XCTAssertEqual(exact.first?.itemID, second)
+        XCTAssertEqual(exact.first?.revisionID, revisionB)
+        XCTAssertEqual(exact.first?.positionSeconds, 73)
+        let onlyA = [first: targets[first]!]
+        let translated = WiltedMacPositionImport.requests(candidates: [source], targets: onlyA, entries: entries, offers: offers)
+        XCTAssertEqual(translated.first?.itemID, first)
+        XCTAssertEqual(translated.first?.revisionID, revisionA)
+        XCTAssertEqual(translated.first?.positionSeconds, 73)
+        let negatives = try [offer(first, revisionA, hash: "sha256:" + String(repeating: "b", count: 64)),
+            offer(first, revisionA, count: 513), offer(first, revisionA, duration: 119),
+            offer(first, revisionA, mediaType: "audio/mpeg"), offer(first, revisionB)]
+        for negative in negatives {
+            var changed = offers; changed[first] = negative
+            XCTAssertTrue(WiltedMacPositionImport.requests(candidates: [source], targets: onlyA,
+                entries: entries, offers: changed).isEmpty, "Incompatible media cannot translate the source position")
+        }
+        XCTAssertTrue(WiltedMacPositionImport.requests(candidates: [source], targets: onlyA,
+            entries: entries, offers: [first: offers[first]!]).isEmpty, "Missing source proof cannot resume at zero")
     }
 }

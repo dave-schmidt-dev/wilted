@@ -33,19 +33,27 @@ extension WiltedMacLarderView {
                     source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)
                 )
                     .frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 0) {
-                    Text(episode.presentation.showLabel).lineLimit(1)
-                    Text(" - \(WiltedMacEpisodePresentation.durationLabel(episode.durationSeconds))")
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
-                Text(episode.presentation.publicationLabel)
+                if isActiveEpisode(episode) {
+                    Text(activeStatusLabel(for: episode))
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .lineLimit(2)
+                        .accessibilityIdentifier("wilted-larder-active-status-\(episode.id)")
+                } else {
+                    HStack(spacing: 0) {
+                        Text(episode.presentation.showLabel).lineLimit(1)
+                        Text(" - \(WiltedMacEpisodePresentation.durationLabel(episode.durationSeconds))")
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .lineLimit(1)
-                    .accessibilityIdentifier("wilted-larder-date-\(episode.id)")
+                    .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
+                    Text(episode.presentation.publicationLabel)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .lineLimit(1)
+                        .accessibilityIdentifier("wilted-larder-date-\(episode.id)")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // `circle.grid.2x3.fill` is not in the system symbol set -- the
@@ -71,9 +79,7 @@ extension WiltedMacLarderView {
             // Visible, not only in the context menu: a row can reach the
             // reader's playlists without discovering a right-click.
             WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id, style: .rowAction)
-            // Completion is available only after listening has started and
-            // before its durable completion record exists. Unstarted and
-            // already completed rows keep this slot empty.
+            // Manual completion declares finished without inventing listening time.
             let canMarkCompleted = model.hasStartedEpisode(episode) && !episode.isPlayed
             HStack(spacing: 2) {
                 if canMarkCompleted {
@@ -114,6 +120,28 @@ extension WiltedMacLarderView {
         .accessibilityValue("\(position) of \(count)")
         .accessibilityIdentifier("wilted-larder-row-\(episode.id)")
         .contextMenu { WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id) }
+    }
+
+    /// Whether an episode has in-flight work and is presented in the Active Work section.
+    func isActiveEpisode(_ episode: WiltedMacEpisode) -> Bool {
+        episode.downloadState.isInFlight || (episode.preparationState.isRunning && !model.isDeferredForOffPeak(episode.id))
+    }
+
+    /// The live narrative status shown in place of idle metadata while work is in flight.
+    func activeStatusLabel(for episode: WiltedMacEpisode) -> String {
+        let lifecycle = episode.lifecyclePresentation.primaryLabel
+        if let run = model.processorRuns.first(where: { $0.itemID == episode.id && $0.outcome == .running }),
+           !run.narrative.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let narrative = run.narrative.trimmingCharacters(in: .whitespacesAndNewlines)
+            if narrative.caseInsensitiveCompare(lifecycle) == .orderedSame || narrative.lowercased().hasPrefix(lifecycle.lowercased()) {
+                return narrative
+            }
+            if lifecycle.isEmpty {
+                return narrative
+            }
+            return "\(lifecycle) · \(narrative)"
+        }
+        return episode.lifecyclePresentation.label
     }
 
     /// The show's artwork at row size, or the produce tile when the feed
@@ -218,14 +246,6 @@ extension WiltedMacLarderView {
                     .accessibilityLabel("Download \(episode.title)")
                     .accessibilityIdentifier("wilted-larder-download-\(episode.id)")
             }
-        }
-    }
-
-    @ViewBuilder var addArticleButton: some View {
-        if model.larderSearchArticleResults.isEmpty {
-            Text("Add articles with + or ⌘N")
-                .wiltedFont(.utility)
-                .accessibilityIdentifier("wilted-larder-add-hint")
         }
     }
 }

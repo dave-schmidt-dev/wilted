@@ -399,6 +399,163 @@ final class LibraryMediaAdmissionTests: XCTestCase {
         XCTAssertNil(token)
     }
 
+    func testQueueRetirementKeepsProofAndOfflineRestoreReusesExactAdmission() async throws {
+        let (cache, offer, file) = try await fixture()
+        let model = try await admissionModel(cache: cache, transport: AdmissionTransport())
+        let player = LibraryPlayer(engine: RuntimeFakeEngine(), session: RuntimeFakeSession(),
+            nowPlaying: RuntimeFakeNowPlaying(), remoteCommands: RuntimeFakeRemote(), sessionEvents: RuntimeFakeEvents())
+        model.attachPlayer(player)
+        await model.refreshMediaFromCache()
+        let row = try XCTUnwrap(model.queued.first)
+        let start = await model.playCachedWithoutToggling(row)
+        XCTAssertTrue(start.opensNowPlaying)
+        let before = try await cacheAdmission(cache)
+        let proofBefore = await cache.cachedEntries()[entry]?.preparation
+        let candidateContext = await model.mediaContext()
+        let context = try XCTUnwrap(candidateContext)
+        var retired = model.decisionContent
+        retired.entries[entry] = try retired.entries[entry]?.with(removal: .retired, removedAt: Date())
+        retired.slots[entry] = nil
+        let withdrawn = await model.revokeRemovedQueueMedia(previous: [entry], current: [], content: retired, context: context)
+        XCTAssertTrue(withdrawn); XCTAssertNil(player.item); XCTAssertFalse(player.isPlaying)
+        model.decisionContent = retired; model.rebuildRows()
+        let denied = await model.playCachedWithoutToggling(row)
+        XCTAssertFalse(denied.opensNowPlaying)
+        let after = try await cacheAdmission(cache)
+        let retained = await cache.cachedEntries()[entry]
+        XCTAssertEqual(after.entryRevocationEpoch, before.entryRevocationEpoch)
+        XCTAssertEqual(retained?.preparation, proofBefore)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        let originalState = await model.mediaStoreState()
+        model.decisionContent = originalState.content
+        model.rebuildRows(); await model.refreshMediaFromCache()
+        let restored = await model.playCachedWithoutToggling(row)
+        XCTAssertTrue(restored.opensNowPlaying, "Offline Restore still runs exact owner/generation/hash/revision/bytes checks")
+        let admitted = await cache.permits(after, for: offer)
+        XCTAssertTrue(admitted)
+    }
+
+    func testQueueDepartureFencesHeldPlaybackEvenAfterRapidRestoreWithoutRevokingProof() async throws {
+        let (cache, _, _) = try await fixture()
+        let held = AdmissionCache(cache)
+        let model = try await admissionModel(cache: held, transport: AdmissionTransport())
+        let player = LibraryPlayer(engine: RuntimeFakeEngine(), session: RuntimeFakeSession(),
+            nowPlaying: RuntimeFakeNowPlaying(), remoteCommands: RuntimeFakeRemote(), sessionEvents: RuntimeFakeEvents())
+        model.attachPlayer(player); model.media[entry] = .onPhone
+        let row = try XCTUnwrap(model.queued.first)
+        let original = model.decisionContent
+        let pending = Task { await model.playCachedWithoutToggling(row) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !(await held.isHeld), ContinuousClock.now < deadline { await Task.yield() }
+        let isHeld = await held.isHeld
+        XCTAssertTrue(isHeld)
+        let candidateContext = await model.mediaContext()
+        let context = try XCTUnwrap(candidateContext)
+        var retired = original
+        retired.entries[entry] = try retired.entries[entry]?.with(removal: .retired, removedAt: Date())
+        retired.slots[entry] = nil
+        let withdrawn = await model.revokeRemovedQueueMedia(previous: [entry], current: [], content: retired, context: context)
+        XCTAssertTrue(withdrawn)
+        model.decisionContent = original; model.rebuildRows(); model.media[entry] = .onPhone
+        await held.release()
+        let outcome = await pending.value
+        XCTAssertEqual(outcome, .superseded)
+        XCTAssertNil(player.item)
+        let retained = await cache.cachedEntries()
+        XCTAssertNotNil(retained[entry]?.preparation)
+    }
+
+    func testQueueDepartureRevokesExplicitDismissalButNotMissingMetadata() async throws {
+        let (cache, _, _) = try await fixture()
+        let model = try await admissionModel(cache: cache, transport: AdmissionTransport())
+        let candidateContext = await model.mediaContext()
+        let context = try XCTUnwrap(candidateContext)
+        let absent = await model.revokeRemovedQueueMedia(previous: [entry], current: [], content: LibrarySnapshot(), context: context)
+        XCTAssertTrue(absent)
+        let retained = await cache.cachedEntries()
+        XCTAssertNotNil(retained[entry]?.preparation)
+        var dismissed = model.decisionContent
+        dismissed.entries[entry] = try dismissed.entries[entry]?.with(removal: .dismissed, removedAt: Date())
+        dismissed.slots[entry] = nil
+        let withdrawn = await model.revokeRemovedQueueMedia(previous: [entry], current: [], content: dismissed, context: context)
+        XCTAssertTrue(withdrawn)
+        let revoked = await cache.cachedEntries()
+        XCTAssertNil(revoked[entry])
+    }
+
+    func testRepeatedDismissedSnapshotsDoNotRevokeLifetimeRowsAgain() async throws {
+        let (files, _, _) = try await fixture()
+        let cache = AdmissionCache(files)
+        let model = try await admissionModel(cache: cache, transport: AdmissionTransport())
+        let candidateContext = await model.mediaContext()
+        let context = try XCTUnwrap(candidateContext)
+        let historical = try ItemID(rawValue: "historical-dismissal")
+        var dismissed = model.decisionContent
+        dismissed.entries[entry] = try dismissed.entries[entry]?.with(removal: .dismissed, removedAt: Date())
+        dismissed.slots[entry] = nil
+        dismissed.entries[historical] = try LibraryEntry(id: historical, kind: .podcastEpisode,
+            sourceID: historical, title: "Old dismissal", summary: "", publishedAt: Date(),
+            removal: .dismissed, removedAt: Date())
+        model.decisionContent.entries[historical] = dismissed.entries[historical]
+        let first = await model.revokeRemovedQueueMedia(previous: [entry], current: [], content: dismissed, context: context)
+        XCTAssertTrue(first)
+        let firstRevocations = await cache.revocations
+        XCTAssertEqual(firstRevocations, [entry], "Only the newly dismissed cached episode needs revocation")
+        model.decisionContent = dismissed; model.rebuildRows()
+        for _ in 0..<3 {
+            let repeated = await model.revokeRemovedQueueMedia(previous: [], current: [], content: dismissed, context: context)
+            XCTAssertTrue(repeated)
+        }
+        let repeatedRevocations = await cache.revocations
+        XCTAssertEqual(repeatedRevocations, firstRevocations)
+    }
+
+    func testAlreadyDismissedOffQueueCertificateStillRevokes() async throws {
+        let (files, _, _) = try await fixture()
+        let cache = AdmissionCache(files)
+        let model = try await admissionModel(cache: cache, transport: AdmissionTransport())
+        let candidateContext = await model.mediaContext()
+        let context = try XCTUnwrap(candidateContext)
+        var dismissed = model.decisionContent
+        dismissed.entries[entry] = try dismissed.entries[entry]?.with(removal: .dismissed, removedAt: Date())
+        dismissed.slots[entry] = nil
+        model.decisionContent = dismissed; model.rebuildRows()
+        let withdrawn = await model.revokeRemovedQueueMedia(previous: [], current: [], content: dismissed, context: context)
+        XCTAssertTrue(withdrawn)
+        let revocations = await cache.revocations
+        XCTAssertEqual(revocations, [entry])
+        let inventory = await cache.cachedEntries()
+        XCTAssertNil(inventory[entry])
+    }
+
+    func testDismissalFencesHeldPlaybackBeforeRevocationInventory() async throws {
+        let (files, _, _) = try await fixture()
+        let cache = AdmissionCache(files)
+        let model = try await admissionModel(cache: cache, transport: AdmissionTransport())
+        let player = LibraryPlayer(engine: RuntimeFakeEngine(), session: RuntimeFakeSession(),
+            nowPlaying: RuntimeFakeNowPlaying(), remoteCommands: RuntimeFakeRemote(), sessionEvents: RuntimeFakeEvents())
+        model.attachPlayer(player); model.media[entry] = .onPhone
+        let row = try XCTUnwrap(model.queued.first)
+        let pending = Task { await model.playCachedWithoutToggling(row) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !(await cache.isHeld), ContinuousClock.now < deadline { await Task.yield() }
+        let held = await cache.isHeld
+        XCTAssertTrue(held)
+        let candidateContext = await model.mediaContext()
+        let context = try XCTUnwrap(candidateContext)
+        var dismissed = model.decisionContent
+        dismissed.entries[entry] = try dismissed.entries[entry]?.with(removal: .dismissed, removedAt: Date())
+        dismissed.slots[entry] = nil
+        let withdrawn = await model.revokeRemovedQueueMedia(previous: [entry], current: [], content: dismissed, context: context)
+        XCTAssertTrue(withdrawn)
+        await cache.release()
+        let outcome = await pending.value
+        XCTAssertFalse(outcome.opensNowPlaying)
+        XCTAssertNil(player.item)
+        let inventory = await cache.cachedEntries()
+        XCTAssertNil(inventory[entry])
+    }
+
     func testVerifiedOfflineInventoryNeedsNoCurrentOffer() async throws {
         let (cache, _, file) = try await fixture()
         let entries = await cache.cachedEntries()
@@ -410,6 +567,7 @@ private actor AdmissionCache: LibraryMediaCache {
     let files: FileMediaCache
     private var waiter: CheckedContinuation<Void, Never>?
     private(set) var isHeld = false
+    private(set) var revocations: [ItemID] = []
     init(_ files: FileMediaCache) { self.files = files }
     func storedAudioByteCounts() async -> [ItemID: Int64] { await files.storedAudioByteCounts() }
     func cachedEntries() async -> [ItemID: CachedMedia] { await files.cachedEntries() }
@@ -419,7 +577,10 @@ private actor AdmissionCache: LibraryMediaCache {
     func admission(entryID: ItemID, ownerToken: String, libraryScope: String, transportGeneration: UInt64) async -> MediaCacheAdmission? {
         await files.admission(entryID: entryID, ownerToken: ownerToken, libraryScope: libraryScope, transportGeneration: transportGeneration)
     }
-    func revokePreparation(entryID: ItemID) async throws { try await files.revokePreparation(entryID: entryID) }
+    func revokePreparation(entryID: ItemID) async throws {
+        revocations.append(entryID)
+        try await files.revokePreparation(entryID: entryID)
+    }
     func permits(_ admission: MediaCacheAdmission, for offer: LibraryMediaOffer) async -> Bool { await files.permits(admission, for: offer) }
 
     func verifies(_ cached: CachedMedia) async -> Bool {
@@ -440,6 +601,8 @@ private actor AdmissionTransport: LibraryTransport {
     private var generation: UInt64 = 0
     func operationGeneration() -> UInt64 { generation }
     func advanceGeneration() { generation &+= 1 }
+    // Positive retention fixtures use the already verified synthetic owner.
+    func verifiedOwnerToken() async -> String? { "owner" }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
         throw LibraryTransportError.transport("offline")
     }

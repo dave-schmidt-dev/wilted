@@ -62,9 +62,7 @@ extension WiltedMacModel {
                     self.currentTranscript = .unavailable
                     self.logAutomaticAdvanceDecision(chosenID: candidate.id, reason: "first_ready_row")
                     self.podcastOperationMessage = note
-                    await self.refreshPodcastQueueState()
-                    await self.loadEpisodeTranscript(itemID: id)
-                    self.refreshPlaybackReadout()
+                    self.requestPlaybackPresentation(itemID: id, includesCuts: true, refreshQueue: true)
                     return
                 } catch PlaybackControllerError.podcastMediaUnavailable {
                     // A removed or missing candidate does not end the Ready walk or flash an error.

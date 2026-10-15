@@ -21,6 +21,13 @@ extension PodcastPreparationPipeline {
             kind: .audioProcessed,
             seconds: downloadedRevision.durationSeconds
         )
+        if payload.adRemovalOutcome == "uncertain" {
+            guard URL(fileURLWithPath: payload.audioPath).resolvingSymlinksInPath().standardizedFileURL
+                    == audioURL.resolvingSymlinksInPath().standardizedFileURL,
+                  try Self.contentHash(of: audioURL) == downloadedRevision.contentHash else {
+                throw PodcastPreparationError.malformedWorkerResponse("uncertain result changed the original audio path")
+            }
+        }
         guard payload.audioChanged else {
             let transcript = try Self.transcript(from: payload, itemID: episode.itemID,
                                                  revisionID: downloadedRevision.revisionID,
@@ -161,23 +168,27 @@ extension PodcastPreparationPipeline {
     ) -> PodcastPreparationResult {
         onStatus(PodcastPreparationProgress(
             stage: "pipeline.complete",
-            detail: "\(payload.adSegments.count) advertisements, \(payload.cues.count) cues",
+            detail: payload.warning ?? "\(payload.adSegments.count) advertisements, \(payload.cues.count) cues",
             fraction: 1
         ))
         return PodcastPreparationResult(revision: revision, mediaURL: mediaURL, transcript: transcript,
                                         adSegments: payload.adSegments, removedSeconds: payload.removedSeconds,
-                                        adRemovalOutcome: payload.adRemovalOutcome)
+                                        adRemovalOutcome: payload.adRemovalOutcome, warning: payload.warning)
     }
 
     static func resultProgress(_ payload: WorkerPayload) -> PodcastPreparationProgress {
-        let evidence = try? PreparationEvidence(kind: "worker-result", fields: [
+        var fields = [
             "audioChanged": payload.audioChanged ? "true" : "false",
             "advertisements": String(payload.adSegments.count),
             "removedSeconds": String(format: "%.3f", payload.removedSeconds),
             "cues": String(payload.cues.count), "timing": payload.timing.rawValue
-        ])
+        ]
+        fields.merge(payload.adAuditDiagnostics) { _, diagnostic in diagnostic }
+        fields["adRemovalOutcome"] = payload.adRemovalOutcome
+        if let warning = payload.warning { fields["warning"] = String(warning.prefix(256)) }
+        let evidence = try? PreparationEvidence(kind: "worker-result", fields: fields)
         return PodcastPreparationProgress(stage: "pipeline.result",
-                                          detail: "audio \(payload.audioChanged ? "changed" : "unchanged") · \(payload.adSegments.count) ads · \(payload.cues.count) cues",
+                                          detail: payload.warning ?? "audio \(payload.audioChanged ? "changed" : "unchanged") · \(payload.adSegments.count) ads · \(payload.cues.count) cues",
                                           evidence: evidence)
     }
 

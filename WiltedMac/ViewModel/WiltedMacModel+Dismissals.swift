@@ -82,15 +82,15 @@ extension WiltedMacModel {
     /// the old design, restoring needs no re-fetched feed to prove identity --
     /// it is the same store operation `restoreSkippedFeedEpisode` uses.
     func restoreEpisode(
-        _ dismissal: WiltedMacDismissedEpisode, episodeID: ItemID, store: LocalLibraryStore
+        _ dismissal: WiltedMacDismissedEpisode, episodeID: ItemID, store: LocalLibraryStore, at: Date? = nil
     ) async {
         do {
-            let restored = try await store.restoreEpisode(episodeID)
+            let restored = try await store.restoreEpisode(episodeID, at: at)
             if !restored, try await store.podcastEpisode(for: episodeID) == nil {
                 podcastOperationMessage = "\(dismissal.title) could not be restored because it is no longer in the library."
                 return
             }
-            let recorded = await recordOwnerDecision(.keep, for: dismissal.id, store: store)
+            let recorded = await recordOwnerDecision(.keep, for: dismissal.id, store: store, at: Timestamp(at ?? manualCompletionNow()))
             hiddenEpisodeIDs.remove(dismissal.id)
             let values = try await loadLibrary(from: store)
             articles = values.articles
@@ -111,9 +111,9 @@ extension WiltedMacModel {
     /// has committed. Follow-up work still runs on failure; callers must not
     /// confirm success until this returns true, including an already-at-target retry.
     @discardableResult
-    func recordOwnerDecision(_ decision: EpisodeDecision, for episodeID: String, store: LocalLibraryStore) async -> Bool {
+    func recordOwnerDecision(_ decision: EpisodeDecision, for episodeID: String, store: LocalLibraryStore, at: Timestamp = Timestamp(Date())) async -> Bool {
         do {
-            try await recordManualDecisions(decision, for: [episodeID], at: Timestamp(Date()), store: store)
+            try await recordManualDecisions(decision, for: [episodeID], at: at, store: store)
             guard let id = try? ItemID(rawValue: episodeID),
                   let recorded = try await store.episodeDecision(for: id),
                   recorded.decision == decision, recorded.source == .manual, recorded.ruleID == nil else {

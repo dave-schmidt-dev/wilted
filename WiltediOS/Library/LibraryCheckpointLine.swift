@@ -31,7 +31,7 @@ struct LibraryCheckpointLine: View {
         }
 
         static func text(row: LibraryRow, player: LibraryPlayer) -> String? {
-            guard player.item?.entryID == row.id, player.status != .idle else { return row.checkpointText }
+            guard let loaded = player.item?.entryID, (loaded == row.id || row.memberIDs.contains(loaded)), player.status != .idle else { return row.checkpointText }
             return LibraryCheckpointLine.localText(isPlaying: player.isPlaying, position: player.position)
         }
     }

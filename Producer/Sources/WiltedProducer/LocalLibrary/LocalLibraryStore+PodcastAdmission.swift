@@ -89,6 +89,9 @@ extension LocalLibraryStore {
     /// Automation must not restate download truth the store already owns, and a
     /// separate claim row is one more thing that can disagree with it.
     ///
+    /// Repeated canonical IDs are admitted and claimed once, at their first
+    /// publisher position; distinct IDs are never merged on metadata.
+    ///
     /// A `limit` of zero admits and claims nothing, which is what a manual
     /// download policy asks for, and `.backfill` claims nothing whatever the
     /// limit: subscribing is not a request to download a back catalogue.
@@ -99,7 +102,12 @@ extension LocalLibraryStore {
         claimedAt: Timestamp = Timestamp(Date()),
         initialMetadataLimit: Int? = nil
     ) throws -> PodcastAutomationAdmissionResult {
-        guard !episodes.isEmpty else {
+        // Repeated canonical IDs -- one episode listed twice -- collapse to
+        // their first publisher position before any admitted list or download
+        // claim is built, so one episode can never consume two rows, two
+        // "newly admitted" entries, or two claims.
+        let uniqueEpisodes = episodes.deduplicatedByItemID()
+        guard !uniqueEpisodes.isEmpty else {
             return PodcastAutomationAdmissionResult(
                 admission: PodcastEpisodeAdmissionResult(saved: [], newlyAdmitted: [], skipped: 0),
                 claimed: []
@@ -110,7 +118,7 @@ extension LocalLibraryStore {
             try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>()).map(\.id)
         )
         let admitted = try admittedPodcastEpisodes(
-            episodes,
+            uniqueEpisodes,
             admission: admission,
             initialMetadataLimit: initialMetadataLimit,
             in: context
@@ -140,7 +148,7 @@ extension LocalLibraryStore {
             admission: PodcastEpisodeAdmissionResult(
                 saved: admitted.map(\.itemID),
                 newlyAdmitted: newlyAdmitted.map(\.itemID),
-                skipped: episodes.count - admitted.count
+                skipped: uniqueEpisodes.count - admitted.count
             ),
             claimed: claimed
         )
@@ -185,6 +193,9 @@ extension LocalLibraryStore {
         let existing = records.first(where: { $0.episodeID == episodeID.rawValue })
         switch scope {
         case .untouched:
+            let lookup = try EpisodeAssociationReadLookup(in: context)
+            let state = lookup.state(for: episodeID)
+            guard (state?.memberIDs.count ?? 0) <= 1 || state?.isTerminal != true else { return false }
             guard existing == nil else { return false }
         case .notInFlight:
             let inFlight = existing.flatMap { PodcastDownloadStatus(rawValue: $0.status) }
@@ -252,7 +263,10 @@ extension LocalLibraryStore {
                 .filter { $0.removalKind == PodcastEpisodeRemovalKind.dismissed.rawValue }
                 .map(\.id)
         )
-        let candidates = episodes.filter { !dismissed.contains($0.itemID.rawValue) }
+        let terminalAliases = try Self.terminalAssociatedEpisodeIDs(in: context)
+        let candidates = episodes.filter {
+            !dismissed.contains($0.itemID.rawValue) && !terminalAliases.contains($0.itemID.rawValue)
+        }
         guard !candidates.isEmpty else { return [] }
         let subscriptions = try context.fetch(FetchDescriptor<LocalLibraryCurrentSubscriptionRecord>())
         let horizons = Dictionary(

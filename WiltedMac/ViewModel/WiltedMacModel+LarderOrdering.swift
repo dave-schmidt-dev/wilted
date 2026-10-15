@@ -32,29 +32,34 @@ extension WiltedMacModel {
     /// else: every row's download, prepared cut and transcript stay where they
     /// are.
     ///
-    /// This is queue removal, not Skip or Completed. The whole group leaves
-    /// Larder on the next render, then the durable queue is brought in line.
+    /// Podcasts use one receipt-backed completion; books keep queue-only
+    /// removal. Each affected row leaves the Larder with immediate feedback.
     func clearLarderGroup(_ group: WiltedMacLarderGroup) {
 #if canImport(WiltedProducer)
         let episodes = larderUnfilteredEpisodes(in: group)
         guard !episodes.isEmpty else { return }
-        let ids = Set(episodes.map(\.id))
+        let podcasts = episodes.filter { !$0.isAudiobook }
+        if !podcasts.isEmpty { finishEpisodes(podcasts) }
+        let books = episodes.filter(\.isAudiobook)
+        guard !books.isEmpty else { return }
+        let ids = Set(books.map(\.id))
         let wasPlaying = currentPodcastEpisodeID.map(ids.contains) ?? false
         // The optimistic half: the whole group leaves the Larder on the next
         // render, exactly as one row's removal does.
         podcastQueueIDs.removeAll { ids.contains($0) }
         // A bulk clear is not one episode's Skip, so nothing single is left
         // for Undo Skip to restore.
-        undoableSkip = nil
-        podcastOperationMessage = "Removed all \(episodes.count) in \(group.displayName) from Larder. No download, prepared cut, transcript, or listening history was touched."
+        if podcasts.isEmpty {
+            podcastOperationMessage = "Removed all \(books.count) in \(group.displayName) from Larder. No download, prepared cut, transcript, or listening history was touched."
+        }
         Task { [weak self] in
             guard let self else { return }
-            for episode in episodes {
+            for episode in books {
                 if let playback = self.playback, let id = try? ItemID(rawValue: episode.id) {
                     try? await playback.removePodcastQueueEpisode(id)
                 }
             }
-            if wasPlaying { await self.stopPlaybackForRemovedEpisode() }
+            if wasPlaying, let current = self.currentPodcastEpisodeID, ids.contains(current) { await self.stopPlaybackForRemovedEpisode() }
             await self.refreshPodcastQueueState()
             await self.reloadLibraryRows()
         }
@@ -387,52 +392,21 @@ extension WiltedMacModel {
 
 #if canImport(WiltedProducer)
     func loadTranscript(itemID: ItemID, revisionID: RevisionID) async {
-        guard let store else { return }
-        guard let stored = try? await store.transcript(for: itemID, revisionID: revisionID) else {
-            currentTranscript = WiltedMacTranscript(availability: .absent, text: nil)
-            return
-        }
-        currentTranscript = WiltedMacTranscript(stored: stored)
+        guard playback?.itemID == itemID, playback?.revisionID == revisionID else { return }
+        cancelPlaybackPresentation()
+        guard let owner = playbackPresentationOwner(itemID: itemID, revisionID: revisionID) else { return }
+        await readPlaybackPresentation(owner, includesCuts: false)
     }
 #endif
 
 #if canImport(WiltedProducer)
-    /// Loads the transcript for whichever revision of an episode is ready now.
-    ///
-    /// The revision cannot be remembered from when the episode was downloaded:
-    /// preparation cuts the audio, which changes its bytes and therefore its
-    /// identity, so the current one has to be read back from the library.
+    /// Uses the revision already loaded into the transport, never a newer catalog revision.
     func loadEpisodeTranscript(itemID: ItemID) async {
-        guard let store, let stored = try? await store.readyRevision(for: itemID) else {
-            currentTranscript = .unavailable
-            // Spans loaded earlier in the session describe a revision that can
-            // no longer be resolved. Leaving them would list cuts under
-            // "Transcript unavailable" against audio nothing can vouch for.
-            removedSpansByEpisode[itemID.rawValue] = []
-            rescheduleSeamMarker()
-            return
-        }
-        await loadTranscript(itemID: itemID, revisionID: stored.revision.revisionID)
-        await loadRemovedSpans(itemID: itemID, revisionID: stored.revision.revisionID)
-    }
-
-    /// Reads the cuts from the preparation journal rather than from the
-    /// transcript.
-    ///
-    /// A marker written into the transcript itself would have to be re-based
-    /// every time the audio was cut again, and would drift from the numbers
-    /// Prep reports for the same run. The journal already holds both clocks.
-    private func loadRemovedSpans(itemID: ItemID, revisionID: RevisionID) async {
-        guard let store else { return }
-        guard let timeline = try? await store.latestPreparationTimeline(
-            for: itemID, revisionID: revisionID
-        ) else {
-            removedSpansByEpisode[itemID.rawValue] = []
-            rescheduleSeamMarker()
-            return
-        }
-        removedSpansByEpisode[itemID.rawValue] = Self.removedSpans(in: timeline)
-        rescheduleSeamMarker()
+        guard playback?.itemID == itemID else { return }
+        cancelPlaybackPresentation()
+        guard let revisionID = playback?.revisionID,
+              let owner = playbackPresentationOwner(itemID: itemID, revisionID: revisionID) else { return }
+        await readPlaybackPresentation(owner, includesCuts: true)
     }
 
     /// The removed intervals placed on the prepared clock, in the order a

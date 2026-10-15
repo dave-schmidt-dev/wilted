@@ -133,8 +133,8 @@ final class LibraryVoiceTargetTests: XCTestCase {
         let outcome = await spoken.value
         XCTAssertEqual(outcome, .failed, "declined removed entry must not succeed through same-ID playing fallback")
         let cached = await rig.cache.cachedEntries()
-        XCTAssertNil(cached[id("a")], "confirmed removal revokes admitted inventory")
-        XCTAssertEqual(rig.model.media[id("a")], .notPrepared)
+        XCTAssertNotNil(cached[id("a")]?.preparation, "Queue removal preserves exact proof for Restore")
+        XCTAssertNotEqual(rig.model.mediaState(for: id("a")), .onPhone, "Removed entries are not admitted for playback")
         XCTAssertTrue(FileManager.default.fileExists(atPath: originalFile.path))
         XCTAssertEqual(try Data(contentsOf: originalFile), payload)
         XCTAssertNil(rig.player.item)
@@ -353,9 +353,9 @@ final class LibraryVoiceTargetTests: XCTestCase {
         let snapshot = await rig.target.voiceSnapshot()
         XCTAssertTrue(snapshot.downloaded.isEmpty)
         XCTAssertNil(snapshot.nowPlaying)
-        XCTAssertEqual(rig.model.media[id("a")], .notPrepared)
+        XCTAssertNotEqual(rig.model.mediaState(for: id("a")), .onPhone, "Removed entries are not admitted for playback")
         let cached = await rig.cache.cachedEntries()
-        XCTAssertNil(cached[id("a")], "confirmed removal revokes admitted inventory")
+        XCTAssertNotNil(cached[id("a")]?.preparation, "Queue removal preserves exact proof for Restore")
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
         XCTAssertEqual(try Data(contentsOf: file), payload, "verified cached bytes remain despite list absence")
         XCTAssertNil(rig.player.item)
@@ -447,7 +447,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
             "the decision travels as a markDone intent from this phone")
     }
 
-    func testMarkCompletedForAnUnstartedEpisodeNotOnThePhoneSendsNothing() async throws {
+    func testMarkCompletedForAnUnstartedQueuedEpisodeSendsTheOwnerFinish() async throws {
         try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
             EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
             EpisodeSpec(raw: "b", title: "Episode B", show: "show", sortKey: 1),
@@ -458,8 +458,8 @@ final class LibraryVoiceTargetTests: XCTestCase {
         await rig.target.perform(.markCompleted(id("b")))
 
         let intents = try await mac.listIntents()
-        XCTAssertFalse(intents.contains { if case .markDone = $0.action { true } else { false } })
-        XCTAssertTrue(rig.model.decisions.isEmpty, "a row that offers no Mark completed starts no decision")
+        XCTAssertEqual(intents.filter { $0.action == .markDone(entryID: id("b")) }.count, 1)
+        XCTAssertNotNil(rig.model.pendingDecision(for: id("b")), "Unstarted queue membership supports a manual finish")
     }
 
     func testMarkCompletedSaysDoneOnlyOnceTheMacHasBeenSentTheIntent() async throws {
@@ -525,8 +525,8 @@ final class LibraryVoiceTargetTests: XCTestCase {
         try await macPush([.slotRemoved(entryID: id("a"))])
         await rig.model.refresh()
         let cached = await rig.cache.cachedEntries()
-        XCTAssertNil(cached[id("a")], "confirmed removal revokes admitted inventory")
-        XCTAssertEqual(rig.model.media[id("a")], .notPrepared)
+        XCTAssertNotNil(cached[id("a")]?.preparation, "Queue removal preserves exact proof for Restore")
+        XCTAssertNotEqual(rig.model.mediaState(for: id("a")), .onPhone, "Removed entries are not admitted for playback")
         XCTAssertTrue(FileManager.default.fileExists(atPath: originalFile.path))
         XCTAssertEqual(try Data(contentsOf: originalFile), payload)
         XCTAssertNil(rig.player.item)
@@ -594,7 +594,9 @@ final class LibraryVoiceTargetTests: XCTestCase {
         let played = await rig.target.perform(.play(id("missing")))
         XCTAssertEqual(played, .failed)
         let marked = await rig.target.perform(.markCompleted(id("a")))
-        XCTAssertEqual(marked, .failed, "an unstarted row that is not on the phone offers no Mark completed, so nothing was accepted")
+        XCTAssertEqual(marked, .done, "A queued podcast can be manually finished without a local download")
+        let missingMark = await rig.target.perform(.markCompleted(id("missing")))
+        XCTAssertEqual(missingMark, .failed, "Unknown/unqueued episodes remain ineligible")
     }
 
     // MARK: perform: none

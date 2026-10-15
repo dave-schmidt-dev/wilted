@@ -164,6 +164,7 @@ def serialize_ad_audit(audit) -> dict:
         ],
         "incompleteError": audit.incomplete_error,
         "nearEmpty": audit.near_empty,
+        "warning": getattr(audit, "warning", None),
     }
 
 def _near_empty_nominations(detections, total_seconds) -> str | None:

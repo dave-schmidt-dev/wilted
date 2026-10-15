@@ -38,10 +38,9 @@ extension WiltedMacModelTests {
         model.installEpisodeForTesting(retired)
         model.installEpisodeForTesting(hidden)
         model.installEpisodeForTesting(otherFeed)
-        // The production route that populates the optimistic hide set. Its
-        // store round-trip has nothing to talk to here and is irrelevant to
-        // the count; the hide itself lands synchronously.
-        model.removeEpisode(hidden)
+        // Count projections are independent of the completion transaction.
+        // This synthetic hidden row represents an already-authoritative dismissal.
+        model.hiddenEpisodeIDs.insert(hidden.id)
 
         let rendered = Set(model.larderVisibleEpisodes.filter { $0.feedID == feedID }.map(\.id))
         XCTAssertEqual(rendered, Set([visible.id]))

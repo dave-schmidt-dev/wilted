@@ -37,6 +37,8 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     var kind: LibraryKind = .podcastEpisode
     /// An audiobook volume's chapters in start order; empty for every other kind.
     var chapters: [AudiobookChapter] = []
+    /// Raw backing identities for a coherent logical display row; never cache keys.
+    var memberIDs: [ItemID] = []
 }
 
 extension LibraryRow {
@@ -101,6 +103,30 @@ enum LibraryRowBuilder {
     ) -> [LibraryRow] {
         content.queue.compactMap { content.entries[$0.entryID] }.map {
             makeRow($0, content: content, checkpoints: checkpoints, clock: clock, started: started)
+        }
+    }
+
+    static func associationsByMember(in content: LibrarySnapshot?) -> [ItemID: LibraryEpisodeAssociation] {
+        guard let content else { return [:] }
+        return Dictionary(LibraryEpisodeAssociation.coherentGroups(in: Array(content.entries.values)).flatMap { group in
+            group.memberIDs.map { ($0, group) }
+        }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Folds presentation only. Raw slots, entries, preparation and checkpoints stay intact.
+    static func logicalRows(_ rows: [LibraryRow], content: LibrarySnapshot, checkpoints: [ItemID: ObservedPlayback],
+                            clock: LibraryClockFormat, started: Set<ItemID>,
+                            groupsByMember: [ItemID: LibraryEpisodeAssociation]) -> [LibraryRow] {
+        let startedIDs = Set(rows.filter(\.isStarted).map(\.id))
+        var seen = Set<UUID>()
+        return rows.compactMap { row in
+            guard let group = groupsByMember[row.id] else { return row }
+            guard !group.isTerminal, seen.insert(group.groupID).inserted,
+                  let entry = content.entries[group.representativeID] else { return nil }
+            var representative = makeRow(entry, content: content, checkpoints: checkpoints, clock: clock, started: started)
+            representative.memberIDs = group.memberIDs
+            representative.isStarted = group.memberIDs.contains { startedIDs.contains($0) }
+            return representative
         }
     }
 

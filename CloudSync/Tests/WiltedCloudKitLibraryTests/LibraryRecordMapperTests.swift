@@ -414,3 +414,27 @@ func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async throws -> 
                                   file: StaticString = #filePath, line: UInt = #line) async {
     do { _ = try await expression(); XCTFail("expected an error", file: file, line: line) } catch { check(error) }
 }
+
+extension LibraryRecordMapperTests {
+    func testOptionalEpisodeAssociationUsesExistingRawRecordWithoutChangingRawSlotIdentity() throws {
+        let a = try item("ep-a")
+        let b = try item("ep-b")
+        let metadata = LibraryEpisodeAssociation(groupID: UUID(), representativeID: a, memberIDs: [a, b],
+            associationVersion: 2, isTerminal: false, latestManualChoice: .keep,
+            manualDecidedAt: Date(timeIntervalSince1970: 1_700_000_000), hasConflictingManualChoices: true)
+        let entry = try LibraryEntry(id: b, kind: .podcastEpisode, sourceID: item("feed-1"), title: "B",
+            summary: "", publishedAt: Date(timeIntervalSince1970: 1_700_000_000), episodeAssociation: metadata)
+        let record = try saved(.entry(entry))
+        assertShape(record, type: .entry)
+        XCTAssertEqual(try mapper.decode(record), .library(.entry(entry)))
+        let slot = try QueueSlot(entryID: b, sortKey: 3)
+        XCTAssertEqual(try mapper.decode(saved(.slot(slot))), .library(.slot(slot)))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: record[LibraryRecordMapper.payloadField] as! Data) as? [String: Any])
+        object["episodeAssociation"] = ["schemaVersion": 1, "groupID": "invalid"]
+        record[LibraryRecordMapper.payloadField] = try JSONSerialization.data(withJSONObject: object) as NSData
+        guard case .library(.entry(let decoded)) = try mapper.decode(record) else { return XCTFail("entry missing") }
+        XCTAssertEqual(decoded.id, b)
+        XCTAssertEqual(decoded.sourceID, try item("feed-1"))
+        XCTAssertNil(decoded.episodeAssociation)
+    }
+}

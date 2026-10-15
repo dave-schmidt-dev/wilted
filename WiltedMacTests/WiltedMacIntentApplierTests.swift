@@ -160,13 +160,13 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         try await r.applier.apply(first)
         try await r.applier.apply(intent(.removeFromLarder(entryID: ids[1]), id: "l-b"))
         try await r.applier.apply(intent(.removeFromLarder(entryID: ids[2]), id: "l-c"))
-        XCTAssertEqual(r.host.calls, ["removeFromLarder item-a", "removeFromLarder item-b"],
-                       "a replay is not re-applied; already-off Remove still records provenance")
+        XCTAssertEqual(r.host.calls, ["removeFromLarder item-a", "removeFromLarder item-b", "removeFromLarder item-c"],
+                       "a replay is not re-applied; terminal Remove is verified by the host")
         let published = Dictionary(uniqueKeysWithValues: try await outcomes(r).map { ($0.intentID, $0) })
         XCTAssertEqual(published["l-a"]?.disposition, .applied)
         XCTAssertEqual(published["l-b"]?.disposition, .applied)
-        XCTAssertEqual(published["l-c"]?.reason, IntentOutcome.reasonNotApplicable)
-        XCTAssertEqual(r.appliedCount.value, 2)
+        XCTAssertEqual(published["l-c"]?.disposition, .applied)
+        XCTAssertEqual(r.appliedCount.value, 3)
     }
 
     func testRestoreBringsBackRetiredAndDismissedEntries() async throws {

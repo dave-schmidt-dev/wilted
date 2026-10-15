@@ -69,10 +69,9 @@ extension WiltedMacEpisodePresentationSections {
             id: "active-work", title: "Active work", detail: "download or preparation in progress",
             statusGroup: nil, items: active
         )
-        // Status keeps its lifecycle order: Ready, then work in progress, then what still needs a step.
+        // Status appends Active work after the lifecycle sections so the available-download list collapses immediately.
         guard grouping == .status else { return [activeSection] + content }
-        let readyEnd = content.firstIndex { $0.statusGroup == .playable }.map { $0 + 1 } ?? 0
-        return Array(content[..<readyEnd]) + [activeSection] + Array(content[readyEnd...])
+        return content + [activeSection]
     }
 
     /// Every admitted lifecycle group in its fixed order, with an empty section for a group the

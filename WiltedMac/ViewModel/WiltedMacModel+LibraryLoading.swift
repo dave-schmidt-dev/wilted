@@ -91,12 +91,17 @@ extension WiltedMacModel {
         guard let store else { return }
         podcastQueueRefreshGeneration &+= 1
         let generation = podcastQueueRefreshGeneration
+        let selectionToken = playbackCommands.selectionToken
+        let loadedItemID = playback?.itemID
+        let loadedRevisionID = playback?.revisionID
         guard let state = try? await store.podcastQueueState() else { return }
         // The test barrier holds a real actor-read state while a later Keep
         // commits and advances the generation, proving that old queue bytes
         // cannot publish after the decision.
         await podcastQueueReadBarrierForTesting?()
-        guard generation == podcastQueueRefreshGeneration else { return }
+        guard generation == podcastQueueRefreshGeneration, !Task.isCancelled,
+              selectionToken == playbackCommands.selectionToken,
+              loadedItemID == playback?.itemID, loadedRevisionID == playback?.revisionID else { return }
         podcastQueueIDs = state.episodeIDs.map(\.rawValue)
         applyLarderSortIfNeeded()
         // A playlist entry plays outside the queue: the queue's current item is not what is loaded.
@@ -105,7 +110,7 @@ extension WiltedMacModel {
             let activeEpisodeID = loadedEpisodeID.flatMap { id in
                 episodes.contains(where: { $0.id == id }) ? id : nil
             }
-            currentPodcastEpisodeID = state.currentEpisodeID?.rawValue ?? activeEpisodeID
+            currentPodcastEpisodeID = activeEpisodeID ?? state.currentEpisodeID?.rawValue
             persistPodcastPlaybackOrigin(for: state)
         }
     }
@@ -144,15 +149,8 @@ extension WiltedMacModel {
         // stay on screen against the new audio.
         if movedToAnotherEpisode, let itemID {
             currentTranscript = .unavailable
-            Task { [weak self] in
-                guard let self else { return }
-                await self.loadEpisodeTranscript(itemID: itemID)
-                // The episode just left behind may be the one that finished
-                // and pushed the queue into this one; its Played badge is
-                // otherwise stale until something else happens to reload it.
-                await self.reloadLibraryRows()
-                await self.refreshPodcastQueueState()
-            }
+            requestPlaybackPresentation(itemID: itemID, includesCuts: true,
+                                        refreshQueue: true, reloadRows: true)
         }
     }
 
@@ -187,8 +185,15 @@ extension WiltedMacModel {
         -> (articles: [WiltedMacArticle], episodes: LibraryEpisodeRows, subscriptions: [WiltedMacSubscription]) {
         libraryReadEpoch &+= 1
         let readEpoch = libraryReadEpoch
-        let snapshot = try await store.podcastLibrarySnapshot()
+        let identity = try await store.podcastLibraryIdentitySnapshot()
+        let snapshot = identity.library
         await librarySnapshotReadBarrierForTesting?()
+        let associations = WiltedMacLocalLibraryStateSource.associationMetadata(associations: identity.associations, states: identity.states)
+        if readEpoch == libraryReadEpoch {
+            episodeAssociations = Dictionary(associations.flatMap { association in
+                association.memberIDs.map { ($0.rawValue, association) }
+            }, uniquingKeysWith: { first, _ in first })
+        }
 
         var articleValues: [WiltedMacArticle] = []
         for article in snapshot.articles where !article.isDeleted {

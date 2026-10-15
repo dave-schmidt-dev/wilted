@@ -383,3 +383,34 @@ final class HandoffCoordinatorTests: XCTestCase {
         XCTAssertEqual(publishedAt.count, 4, "takeover at 0 s, then 30, 60 and 90 s")
     }
 }
+
+extension HandoffCoordinatorTests {
+    func testAssociatedResolutionAndCheckpointsKeepActualRawTargetAndAuditableSource() async throws {
+        let f = AssociationFixture()
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        await server.setClock(f.now)
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let phone = InMemoryLibraryTransport(deviceID: "phone", server: server)
+        let source = try f.observed().record
+        try await mac.publish(source, as: .nowPlaying)
+        let coordinator = HandoffCoordinator(transport: phone, deviceID: "phone", clock: { f.now })
+        let offers = try [f.b: f.offer(f.b, revision: f.revisionB), f.a: f.offer(f.a, revision: f.revisionA)]
+        let result = try await coordinator.resumeTarget(entries: f.entries(),
+            localRevision: { $0 == f.a ? f.revisionA : nil }, mediaOffer: { offers[$0] })
+        guard case .resume(let target) = result else { return XCTFail("expected associated resume") }
+        XCTAssertEqual(target.entryID, f.a)
+        try await coordinator.takeover(entryID: target.entryID, revision: target.revision,
+            positionSeconds: target.positionSeconds, rate: target.rate)
+        try await coordinator.checkpoint(130)
+        let records = try await phone.fetchDeviceRecords()
+        let original = try XCTUnwrap(records.nowPlaying.first { $0.record.deviceID == "mac" })
+        XCTAssertEqual(original.record, source)
+        for channel in [records.nowPlaying, records.progress] {
+            let published = try XCTUnwrap(channel.first { $0.record.deviceID == "phone" })
+            XCTAssertEqual(published.record.entryID, f.a)
+            XCTAssertEqual(published.record.revision, f.revisionA)
+            XCTAssertEqual(published.record.positionSeconds, 130)
+            XCTAssertEqual(published.record.epoch, 5)
+        }
+    }
+}

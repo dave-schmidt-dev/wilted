@@ -73,15 +73,8 @@ extension WiltedMacModelTests {
         XCTAssertNil(removalKind)
     }
 
-    /// The reported bug (2026-09-05): skipping the Waveform episode, then
-    /// restoring it in the same session, left the store saying "Restored X to
-    /// Larder." while the row stayed off screen until relaunch. `removeEpisode`
-    /// hides the row through `hiddenEpisodeIDs` immediately, ahead of the
-    /// store round-trip that `restoreEpisode` waits on, and nothing cleared
-    /// that id when the store confirmed the restore. The fixture above
-    /// dismisses with `store.dismissPodcastEpisode` directly, which never
-    /// populates the set and so never reproduces this; this one dismisses
-    /// through the model, the way Skip actually does.
+    /// Manual finish removes the active row this session. Receipt Undo restores
+    /// its prior Larder placement without changing earlier owner provenance.
     func testRestoringAnEpisodeSkippedThisSessionReturnsItToTheLarder() async throws {
         let directory = temporaryDirectory("restore-same-session")
         let libraryURL = directory.appendingPathComponent("library.sqlite")
@@ -122,18 +115,24 @@ extension WiltedMacModelTests {
         let episode = try XCTUnwrap(model.episodes.first { $0.id == targetID.rawValue })
         XCTAssertTrue(model.larderVisibleEpisodes.contains { $0.id == episode.id })
 
+        let priorQueue = try await store.podcastQueueState()
         model.removeEpisode(episode)
         try await settle(model)
         XCTAssertFalse(model.larderVisibleEpisodes.contains { $0.id == episode.id },
-                        "Skip must hide the row this session, not just once the store round-trip lands")
+                        "Manual finish must withdraw the active row this session")
 
-        let dismissal = try XCTUnwrap(model.dismissedEpisodes.first { $0.id == episode.id })
-        model.restoreEpisode(dismissal)
+        let completion = try XCTUnwrap(model.undoableSkip)
+        XCTAssertEqual(completion.id, episode.id)
+        XCTAssertNotNil(completion.manualCompletionOperationID)
+        XCTAssertTrue(model.dismissedEpisodes.isEmpty)
+        model.undoSkipEpisode(completion)
         await model.waitForPodcastOperations()
 
+        let restoredQueue = try await store.podcastQueueState()
+        XCTAssertEqual(restoredQueue, priorQueue)
         XCTAssertTrue(model.dismissedEpisodes.isEmpty)
         XCTAssertTrue(model.larderVisibleEpisodes.contains { $0.id == episode.id },
-                       "Restoring a same-session dismissal must clear the in-memory hide, not just the store record")
+                       "Receipt Undo restores the same-session active row")
     }
 
     /// The reported bug (2026-09-05): an episode that had been prepared (ads
@@ -223,8 +222,9 @@ extension WiltedMacModelTests {
         XCTAssertEqual(prepared.downloadState, .completed)
         XCTAssertEqual(prepared.preparationState, .prepared(summary: "Ready · 3 ads removed (4:38) · transcript synced"))
 
-        model.removeEpisode(prepared)
-        try await settle(model)
+        _ = try await store.dismissPodcastEpisode(targetID)
+        await model.reloadLibraryRows()
+        model.dismissedEpisodes = try await model.loadDismissedEpisodes(from: store)
         let dismissal = try XCTUnwrap(model.dismissedEpisodes.first { $0.id == prepared.id })
         XCTAssertTrue(dismissal.hasPreparationHistory, "the journal must survive so the Removed list can still say a preparation happened")
 
@@ -237,8 +237,7 @@ extension WiltedMacModelTests {
         XCTAssertNil(restored.preparationState.label)
     }
 
-    /// The Undo button beside the removal message calls
-    /// `restoreEpisode(model.undoableRemoval!)`. Undo must clear the record it
+    /// Receipt Undo beside a manual completion clears the record it
     /// used, so the button does not linger offering to restore an episode a
     /// second time, and must actually bring the episode back to the Larder.
     func testUndoingARemovalClearsTheRecordAndRestoresTheEpisode() async throws {
@@ -279,16 +278,20 @@ extension WiltedMacModelTests {
         await model.waitForStoreBootstrap()
 
         let episode = try XCTUnwrap(model.episodes.first { $0.id == targetID.rawValue })
+        let priorQueue = try await store.podcastQueueState()
         model.removeEpisode(episode)
         try await settle(model)
 
-        let undoable = try XCTUnwrap(model.undoableRemoval)
+        let undoable = try XCTUnwrap(model.undoableSkip)
         XCTAssertEqual(undoable.id, episode.id)
+        XCTAssertNotNil(undoable.manualCompletionOperationID)
 
-        model.restoreEpisode(undoable)
-        XCTAssertNil(model.undoableRemoval, "Undo must clear the record it just used")
+        model.undoSkipEpisode(undoable)
+        XCTAssertNil(model.undoableSkip, "Undo must clear the record it just used")
         await model.waitForPodcastOperations()
 
+        let restoredQueue = try await store.podcastQueueState()
+        XCTAssertEqual(restoredQueue, priorQueue)
         XCTAssertTrue(model.larderVisibleEpisodes.contains { $0.id == episode.id },
                        "Undo must actually bring the episode back to the Larder")
     }

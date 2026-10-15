@@ -19,7 +19,7 @@ extension WiltedVisualSystemTests {
         let source = try WiltedMacSource.views(root: root)
         let rowStart = try XCTUnwrap(source.range(of: "func larderRow")?.lowerBound)
         let start = try XCTUnwrap(source.range(of: "func nextStepControl")?.lowerBound)
-        let end = try XCTUnwrap(source.range(of: "var addArticleButton", range: start..<source.endIndex)?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "struct WiltedMacReportTile", range: start..<source.endIndex)?.lowerBound)
         let row = source[rowStart..<start]
         let control = source[start..<end]
         let metadata = try String(contentsOf: root.appendingPathComponent(
@@ -54,7 +54,7 @@ extension WiltedVisualSystemTests {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try WiltedMacSource.views(root: root)
         let start = try XCTUnwrap(source.range(of: "func larderRow")?.lowerBound)
-        let end = try XCTUnwrap(source.range(of: "var addArticleButton", range: start..<source.endIndex)?.lowerBound)
+        let end = try XCTUnwrap(source.range(of: "struct WiltedMacReportTile", range: start..<source.endIndex)?.lowerBound)
         let larderRows = source[start..<end]
 
         for symbol in [
@@ -90,7 +90,7 @@ extension WiltedVisualSystemTests {
         XCTAssertFalse(larderRows.contains("model.currentPodcastEpisodeID"))
         let modelRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let modelSource = try WiltedMacSource.model(root: modelRoot)
-        XCTAssertTrue(modelSource.contains("Undo completion restores it."))
+        XCTAssertTrue(modelSource.contains("Undo completion is available for 10 seconds."))
         XCTAssertTrue(modelSource.contains("var larderPresentationEpisodes"))
         XCTAssertTrue(modelSource.contains("guard isPodcastPlayback, let currentPodcastEpisodeID"))
 
@@ -269,7 +269,7 @@ extension WiltedVisualSystemTests {
         XCTAssertTrue(row.contains("nextStepControl(episode, group: group)"))
         XCTAssertFalse(row.contains("wilted-larder-progress-"))
 
-        let control = try section("func nextStepControl", before: "var addArticleButton")
+        let control = try section("func nextStepControl", before: "struct WiltedMacReportTile")
         XCTAssertTrue(control.contains("ProgressView(value:"))
         XCTAssertTrue(control.contains("wilted-larder-stop-\\(episode.id)"))
         XCTAssertTrue(control.contains("wilted-larder-retry-\\(episode.id)"))

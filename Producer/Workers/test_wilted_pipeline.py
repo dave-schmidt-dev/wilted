@@ -292,6 +292,37 @@ class OutcomeContractTests(unittest.TestCase):
         self.assertEqual(audit["experimentalRequests"], 0)
         self.assertIsNone(audit["incompleteError"])
 
+    def test_missing_model_after_valid_audio_returns_uncertain_without_remapping(self):
+        segments = [FakeSegment(0, 1, "programme")]
+        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
+        install_fake_ads(FakeLLM())
+        with mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), \
+                mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
+                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock") as lock, \
+                redirect_stderr(io.StringIO()) as progress:
+            result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
+                             "outputPath": "/tmp/not-written.mp3", "removeAds": True,
+                             "llmModel": "/nonexistent/synthetic.gguf", "readableTranscript": False})
+        self.assertEqual(result["report"]["outcome"], "uncertain")
+        self.assertEqual(result["audioPath"], str(self.audio))
+        self.assertFalse(result["audioChanged"])
+        self.assertEqual((result["adSegments"], result["keepIntervals"], result["removedSeconds"]), ([], [], 0.0))
+        self.assertEqual(result["report"]["audit"]["modelRequests"], 0)
+        self.assertIn("original audio includes ads", result["warning"])
+        self.assertEqual(result["cues"][0]["startSeconds"], 0)
+        lock.assert_not_called()
+        self.assertNotIn("transcript.remap", progress.getvalue())
+
+    def test_invalid_audio_is_fatal_before_missing_model_fallback(self):
+        install_fake_wilted()
+        install_fake_ads(FakeLLM())
+        with mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=RuntimeError("decode failed")), \
+                redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
+            wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
+                    "outputPath": "/tmp/not-written.mp3", "removeAds": True})
+        self.assertEqual(raised.exception.code, "aligned-stt-unavailable")
+
     def test_aligned_timing_allows_only_the_declared_short_tail(self):
         accepted = wp.validate_aligned_segments([FakeSegment(0, 12.5, "cached")], 10.0)
         self.assertEqual(len(accepted), 1)
@@ -446,7 +477,7 @@ class CommercialEvidenceAuditTests(unittest.TestCase):
         with contextlib.ExitStack() as stack, redirect_stderr(io.StringIO()):
             for patcher in patches:
                 stack.enter_context(patcher)
-            analysis = wp.analyze_ad_detections(ads, llm, segments, 40.0)
+            analysis = wp.analyze_ad_detections(ads, llm, segments, 400.0)
         self.assertEqual(analysis.detections, ())
         self.assertEqual(
             _worker_cue_timing.serialize_ad_audit(analysis.audit)["declinedCommercialEvidenceSeeds"],
@@ -510,6 +541,40 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertFalse(json.loads(completed.stdout)["ok"])
 
+def uncertain_contract_payloads():
+    """Emit real worker results from synthetic missing-model and review failures."""
+    audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
+    segments = [FakeSegment(0, 10, "programme before"),
+                FakeSegment(10, 20, "visit acme dot"),
+                FakeSegment(20, 30, "com to get started today"),
+                FakeSegment(30, 40, "programme after")]
+    scenarios = [
+        ("missing-model", FakeLLM(), [], 500.0),
+        ("share-ceiling", FakeLLM(), [FakeAd(0, 180), FakeAd(190, 350), FakeAd(360, 490)], 600.0),
+        ("declined-unresolved", FakeLLM(commercial_ad_ids=[1, 2], commercial_preservation_answer="invalid JSON"), [], 500.0),
+    ]
+    results = []
+    for name, llm, detections, duration in scenarios:
+        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
+        install_fake_ads(llm, detections=detections)
+        request = {"protocolVersion": 2, "audioPath": str(audio),
+                   "outputPath": "/tmp/synthetic-never-rendered.mp3", "removeAds": True,
+                   "readableTranscript": False}
+        with contextlib.ExitStack() as stack, redirect_stderr(io.StringIO()):
+            stack.enter_context(mock.patch.object(_worker_cue_timing, "probe_duration", return_value=duration))
+            stack.enter_context(mock.patch.object(_worker_ad_audit, "preflight_cut_tools"))
+            stack.enter_context(mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()))
+            if name == "share-ceiling":
+                stack.enter_context(mock.patch.object(_worker_span_bounds, "resize_oversized_ad_spans",
+                                                     side_effect=lambda _ads, _backend, _segments, spans, *_args, **_kwargs:
+                                                     (spans, frozenset((ad.start_s, ad.end_s) for ad in spans))))
+            if name != "missing-model":
+                stack.enter_context(mock.patch.object(_worker_ad_audit, "preflight_ad_removal"))
+            else:
+                request["llmModel"] = "/nonexistent/synthetic.gguf"
+            results.append({"scenario": name, "payload": wp.run(request)})
+    return results
+
 class CrossLanguageContractTests(unittest.TestCase):
     """The worker and the Swift domain must agree on which types carry timing.
 
@@ -518,9 +583,126 @@ class CrossLanguageContractTests(unittest.TestCase):
     divergence loses published timing for a whole media type.
     """
 
+    def test_real_uncertain_contract_payloads_have_diagnostic_evidence(self):
+        results = uncertain_contract_payloads()
+        self.assertEqual(len(results), 3)
+        for entry in results:
+            payload = entry["payload"]
+            self.assertEqual(payload["report"]["outcome"], "uncertain", entry["scenario"])
+            self.assertFalse(payload["audioChanged"])
+            self.assertEqual((payload["adSegments"], payload["keepIntervals"]), ([], []))
+        self.assertTrue(results[1]["payload"]["report"]["audit"]["heldSpans"])
+        self.assertEqual(results[2]["payload"]["report"]["audit"]["declinedCommercialEvidenceSeeds"][0]["reason"], "review-unresolved")
+
     def test_timed_media_types_match_the_swift_domain(self):
         source = (REPO_ROOT / "WiltedKit" / "Sources" / "WiltedDomain" / "Models.swift").read_text()
         block = re.search(r"timedMediaTypes:\s*Set<String>\s*=\s*\[(.*?)\]", source, re.S)
         self.assertIsNotNone(block, "timedMediaTypes is no longer where this test looks for it")
         swift_types = set(re.findall(r'"([^"]+)"', block.group(1)))
         self.assertEqual(swift_types, set(wp.TIMED_MEDIA_TYPES))
+
+
+class ActualParserUncertaintyTests(unittest.TestCase):
+    """Qualify real archive parsing and conservative production fallback boundaries."""
+
+    @staticmethod
+    def actual_parser():
+        namespace = {"json": json}
+        runtime = REPO_ROOT / "Producer" / "Runtime" / "src" / "wilted"
+        for filename, names in (("llm.py", {"parse_json_response"}), ("ads.py", {"_parse_ad_response"})):
+            tree = ast.parse((runtime / filename).read_text())
+            nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+            if filename == "ads.py":
+                nodes += [node for node in tree.body if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "_VALID_LABELS" for target in node.targets)]
+            if len(nodes) != (2 if filename == "ads.py" else 1):
+                raise AssertionError("actual parser extraction no longer matches the runtime source")
+            exec(compile(ast.Module(body=nodes, type_ignores=[]), str(runtime / filename), "exec"), namespace)
+        return namespace["_parse_ad_response"]
+
+    def test_actual_parser_wrong_shapes_produce_audited_uncertainty_and_original_bytes(self):
+        parser = self.actual_parser()
+        malformed = ["[]", "null", "{}", '{"ads":{}}', '{"ads":[null]}',
+                     '{"ads":[[true,"sponsor_read"]]}', '{"ads":[[0,{}]]}']
+        audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
+        original = audio.read_bytes()
+        segments = [FakeSegment(0, 2, "programme"), FakeSegment(2, 4, "more programme")]
+        for response in malformed:
+            with self.subTest(response=response):
+                with self.assertRaises(ValueError):
+                    parser(response, [0, 1])
+                install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
+                llm = FakeLLM(classifier_answer=response)
+                ads = install_fake_ads(llm)
+                ads._parse_ad_response = parser
+                def detector(_segments, backend):
+                    for prompt in (ads._AD_DETECT_SYSTEM_PROMPT, ads._AD_DETECT_CORRECTION_PROMPT):
+                        backend.generate(prompt, "[ID 0] programme", response_format=ads._AD_DETECT_RESPONSE_FORMAT)
+                    return [FakeAd(100, 120)]
+                ads.detect_ads = detector
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=500.0), \
+                        mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()), \
+                        mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
+                    result = wp.run({"protocolVersion": 2, "audioPath": str(audio),
+                                     "outputPath": "/tmp/not-rendered-parser.mp3", "removeAds": True,
+                                     "readableTranscript": False})
+                self.assertEqual(result["report"]["outcome"], "uncertain")
+                self.assertEqual(result["audioPath"], str(audio))
+                self.assertFalse(result["audioChanged"])
+                self.assertEqual(result["report"]["audit"]["unresolvedIds"], [0])
+                self.assertEqual(result["report"]["audit"]["classifierValidRequests"], 0)
+                self.assertIn("original audio includes ads", result["warning"])
+                self.assertEqual(audio.read_bytes(), original)
+                render.assert_not_called()
+
+    def test_parser_coding_type_error_remains_fatal_even_if_archive_retries_it(self):
+        llm = FakeLLM()
+        ads = install_fake_ads(llm)
+        def broken_parser(_response, _ids):
+            raise TypeError("intentional parser implementation defect")
+        ads._parse_ad_response = broken_parser
+        audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=500.0), \
+                self.assertRaisesRegex(TypeError, "intentional parser implementation defect"):
+            wp.detect_and_cut({"outputPath": "/tmp/not-rendered-defect.mp3"}, audio, [],
+                              [FakeSegment(0, 2, "programme")], with_report=True)
+        self.assertTrue(llm.closed)
+
+    def test_unresolved_seed_or_share_refusal_keeps_whole_original_despite_independent_confirmed_ad(self):
+        audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
+        original = audio.read_bytes()
+        segments = [FakeSegment(0, 10, "programme before"), FakeSegment(10, 20, "visit acme dot"),
+                    FakeSegment(20, 30, "com to get started today"), FakeSegment(30, 40, "programme after")]
+        scenarios = [("unresolved-seed", FakeLLM(commercial_ad_ids=[1, 2], commercial_preservation_answer="invalid JSON"),
+                      [FakeAd(400, 420)]),
+                     ("share-refusal", FakeLLM(), [FakeAd(0, 370), FakeAd(400, 420)])]
+        for name, llm, detections in scenarios:
+            with self.subTest(scenario=name):
+                install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
+                install_fake_ads(llm, detections=detections)
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=600.0), \
+                        mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()), \
+                        mock.patch.object(_worker_span_bounds, "resize_oversized_ad_spans", side_effect=lambda _ads, _backend, _segments, spans, *_args, **_kwargs: (spans, frozenset((ad.start_s, ad.end_s) for ad in spans))), \
+                        mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
+                    result = wp.run({"protocolVersion": 2, "audioPath": str(audio),
+                                     "outputPath": "/tmp/not-rendered-independent.mp3", "removeAds": True,
+                                     "readableTranscript": False})
+                self.assertEqual(result["report"]["outcome"], "uncertain")
+                self.assertEqual((result["adSegments"], result["keepIntervals"], result["removedSeconds"]), ([], [], 0.0))
+                self.assertFalse(result["audioChanged"])
+                self.assertEqual(result["audioPath"], str(audio))
+                self.assertEqual(audio.read_bytes(), original)
+                self.assertIn("original audio includes ads", result["warning"])
+                audit = result["report"]["audit"]
+                self.assertEqual(audit["unresolvedIds"], [])  # Archive coverage resolved; review uncertainty is separate.
+                if name == "unresolved-seed":
+                    self.assertEqual(audit["declinedCommercialEvidenceSeeds"][0]["ids"], [1, 2])
+                    self.assertEqual(audit["declinedCommercialEvidenceSeeds"][0]["reason"], "review-unresolved")
+                else:
+                    self.assertTrue(any(span["reason"] == "total-share-ceiling" for span in audit["heldSpans"]))
+                render.assert_not_called()

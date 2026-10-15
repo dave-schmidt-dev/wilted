@@ -96,10 +96,11 @@ extension LocalLibraryStoreTests {
             updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
         ))
         let completedAt = Timestamp(Date(timeIntervalSince1970: 1_700_000_500))
-        try await fixture.store.saveListening(PodcastListeningState(
+        let genuineListening = PodcastListeningState(
             episodeID: episode.itemID, completedAt: completedAt,
             lastRevisionID: try RevisionID(rawValue: "rev-retire-restore"), updatedAt: completedAt
-        ))
+        )
+        try await fixture.store.saveListening(genuineListening)
         let downloadBeforeRetire = try await fixture.store.download(for: episode.itemID)
         XCTAssertNotNil(downloadBeforeRetire)
 
@@ -118,10 +119,14 @@ extension LocalLibraryStoreTests {
                      "a restored episode has no download record and reads as not downloaded")
         XCTAssertNil(revisionAfterRestore,
                      "the retired ready revision went with the records that named it")
-        XCTAssertEqual(restoredListening?.completedAt, completedAt,
-                       "restore keeps the listening history intact")
-        XCTAssertNil(restoredListening?.lastRevisionID,
-                     "restore clears the revision binding so the bootstrap sweep cannot re-retire")
+        XCTAssertEqual(restoredListening, genuineListening,
+                       "Restore preserves genuine completion, revision binding and listening timestamp exactly")
+        let restoredDecision = try await fixture.store.episodeDecision(for: episode.itemID)
+        XCTAssertEqual(restoredDecision?.decision, .keep)
+        XCTAssertEqual(restoredDecision?.source, .manual)
+        XCTAssertNil(restoredDecision?.ruleID)
+        XCTAssertGreaterThan(try XCTUnwrap(restoredDecision?.decidedAt), completedAt,
+                             "The newer owner Keep fences bootstrap retirement without altering history")
 
         let redownloaded = try immutableRevisionFixture(
             itemID: episode.itemID, id: "rev-retire-restore-again", hashCharacter: "d",
@@ -139,6 +144,17 @@ extension LocalLibraryStoreTests {
         let revisionAfterRedownload = try await fixture.store.readyRevision(for: episode.itemID)
         XCTAssertNotNil(downloadAfterRedownload, "a re-download commits a fresh record after a restore")
         XCTAssertEqual(revisionAfterRedownload?.mediaURL, redownloaded.mediaURL)
+        let reopened = try LocalLibraryStore(url: fixture.root.appendingPathComponent("library.sqlite"))
+        try await reopened.reconcilePodcastStateV10()
+        try await reopened.retireCompletedEpisodesMissingRetirement()
+        let listeningAfterReopen = try await reopened.listeningState(for: episode.itemID)
+        let decisionAfterReopen = try await reopened.episodeDecision(for: episode.itemID)
+        let removalAfterReopen = try await reopened.removalKind(for: episode.itemID)
+        let downloadAfterReopen = try await reopened.download(for: episode.itemID)
+        XCTAssertEqual(listeningAfterReopen, genuineListening)
+        XCTAssertEqual(decisionAfterReopen, restoredDecision)
+        XCTAssertNil(removalAfterReopen, "Relaunch does not undo the explicit Restore")
+        XCTAssertNotNil(downloadAfterReopen, "The successfully downloaded revision survives relaunch")
     }
 
     func testBatchRetireDeletesAudioForEveryNewlyRetiredEpisodeAndNoOthers() async throws {

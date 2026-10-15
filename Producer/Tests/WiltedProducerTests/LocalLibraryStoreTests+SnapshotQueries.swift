@@ -38,6 +38,56 @@ extension LocalLibraryStoreTests {
         XCTAssertNil(before.retiredAtByEpisode[ids[1]])
     }
 
+    func testPublicationProfileOmitsOnlyTranscriptAndPreparationHistory() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (feed, values) = try episodes(feedURL: URL(string: "https://example.test/profile.xml")!,
+            origin: Date(timeIntervalSince1970: 1_700_000_000), daysAgo: [1, 2, 3])
+        try await store.save(feed: feed)
+        for value in values { try await store.save(episode: value) }
+        let id = values[0].itemID
+        let rev = try revision(for: article(), id: "publication-profile", at: 1_700_000_001)
+        let audio = try AudioRevision(itemID: id, revisionID: rev.revisionID, durationSeconds: 20,
+            byteCount: 1, contentHash: rev.contentHash, mediaType: "audio/mp4", createdAt: rev.createdAt, schemaVersion: 1)
+        let transcript = try Transcript(itemID: id, revisionID: audio.revisionID, availability: .available,
+            text: "Timed words", timing: .aligned,
+            cues: [TranscriptCue(startSeconds: 0, endSeconds: 2, text: "Timed words")], updatedAt: audio.createdAt)
+        try await store.saveReadyRevision(audio, mediaURL: url.appendingPathExtension("m4a"), transcript: transcript)
+        try await store.record(preparation: succeededPreparationEntry(itemID: id, revisionID: audio.revisionID,
+            requestID: "profile-run", fingerprint: "profile-fingerprint", at: 1_700_000_002))
+        try await store.savePreparationOutcome(PodcastPreparationOutcome(episodeID: id, revisionID: audio.revisionID,
+            policyDigest: "profile-policy", pipelineFingerprint: "profile-fingerprint", semanticVersion: "1.0.0",
+            producedAt: audio.createdAt, eligibility: .current))
+        try await store.saveListening(PodcastListeningState(episodeID: id, completedAt: nil,
+            lastRevisionID: audio.revisionID, updatedAt: audio.createdAt))
+        _ = try await store.save(episodeDecision: EpisodeDecisionRecord(episodeID: id, decision: .keep,
+            source: .manual, decidedAt: audio.createdAt))
+        try await store.replacePodcastQueue(try PodcastQueueState(episodeIDs: values.map(\.itemID), currentEpisodeID: id))
+        _ = try await store.retireEpisode(values[2].itemID)
+        let before = await store.podcastLibrarySnapshotFetchCount
+        let full = try await store.podcastLibrarySnapshot()
+        let fullCost = await store.podcastLibrarySnapshotFetchCount - before
+        let publication = try await store.podcastLibrarySnapshot(profile: .publication)
+        let totalCost = await store.podcastLibrarySnapshotFetchCount - before
+        XCTAssertEqual(totalCost - fullCost, fullCost - 2)
+        XCTAssertEqual(full.transcripts.values.first?.cues, transcript.cues)
+        XCTAssertEqual(full.preparationRuns.count, 1)
+        XCTAssertTrue(publication.transcripts.isEmpty); XCTAssertTrue(publication.preparationRuns.isEmpty)
+        XCTAssertEqual(publication.episodes, full.episodes); XCTAssertEqual(publication.articles, full.articles)
+        XCTAssertEqual(publication.feeds, full.feeds); XCTAssertEqual(publication.subscriptions, full.subscriptions)
+        XCTAssertEqual(publication.podcastQueue, full.podcastQueue); XCTAssertEqual(publication.downloads, full.downloads)
+        XCTAssertEqual(publication.readyRevisions.mapValues(\.revision), full.readyRevisions.mapValues(\.revision))
+        XCTAssertEqual(publication.readyRevisions.mapValues(\.mediaURL), full.readyRevisions.mapValues(\.mediaURL))
+        XCTAssertEqual(publication.playbackStates, full.playbackStates)
+        XCTAssertEqual(publication.preparationOutcomes, full.preparationOutcomes)
+        XCTAssertEqual(publication.listeningStates, full.listeningStates)
+        XCTAssertEqual(publication.episodeDecisions, full.episodeDecisions)
+        XCTAssertEqual(publication.retiredAtByEpisode, full.retiredAtByEpisode)
+        XCTAssertEqual(publication.removalKindByEpisode, full.removalKindByEpisode)
+        XCTAssertEqual(publication.articleFeeds, full.articleFeeds); XCTAssertEqual(publication.feedIDByArticle, full.feedIDByArticle)
+        XCTAssertEqual(publication.audiobooks, full.audiobooks)
+    }
+
     func save(revision id: String, of itemID: ItemID, at second: TimeInterval,
                       saying text: String, into store: LocalLibraryStore, near url: URL) async throws {
         let revisionID = try RevisionID(rawValue: id)

@@ -1,13 +1,13 @@
 import Foundation
-import SQLite3
+import SwiftData
 import XCTest
 import WiltedDomain
 import WiltedLibrary
-import WiltedProducer
+@testable import WiltedProducer
 @testable import WiltedMac
 
-/// Every owner decision, on the Mac or the phone, must leave a manual decision
-/// record, and the automatic paths must then leave that episode alone.
+/// Explicit owner decisions leave manual provenance that automation respects.
+/// Receipt Undo restores the exact prior provenance instead of making a new choice.
 ///
 /// Episode titles are chosen so the feed's rules contradict the owner: a
 /// "Bonus" episode matches a Keep rule and is the one the owner skips, a
@@ -56,13 +56,18 @@ final class ManualDecisionProvenanceTests: XCTestCase {
         try await assertAutomationLeavesUnchanged(rig)
     }
 
-    func testUndoSkipEpisodeWritesManualKeep() async throws {
-        let rig = try await makeRig(.completedRetired, title: Self.sponsored)
-        try await assertNoRecord(rig)
-        rig.model.undoSkipEpisode(try rig.episode())
+    func testUndoSkipRestoresExactPriorPolicyDecisionWithoutPlaying() async throws {
+        let rig = try await makeRig(.policyKept, title: Self.sponsored)
+        let prior = try await rig.record()
+        rig.model.skipEpisode(try rig.episode())
         await rig.drain()
-        try await assertManual(.keep, rig)
-        try await assertAutomationLeavesUnchanged(rig)
+        try await assertManual(.skip, rig)
+        rig.model.undoSkipEpisode(try XCTUnwrap(rig.model.undoableSkip))
+        await rig.drain()
+        let restored = try await rig.record()
+        XCTAssertEqual(restored, prior, "Undo restores provenance; it is not a new owner Keep choice")
+        XCTAssertTrue(rig.model.podcastQueueIDs.contains(rig.itemID.rawValue))
+        XCTAssertFalse(rig.model.isPlaying)
     }
 
     func testRestoreEpisodeFromDismissalWritesManualKeep() async throws {
@@ -177,19 +182,30 @@ final class ManualDecisionProvenanceTests: XCTestCase {
         try await assertAutomationLeavesUnchanged(rig)
     }
 
-    func testProvenanceWriteFailureRejectsRestoreAndNewIntentCanRetry() async throws {
-        let rig = try await makeRig(.live, title: Self.sponsored)
-        let storeURL = await rig.store.url
-        try rejectDecisionWrites(storeURL)
-        let intent = try LibraryIntent.restore(entryID: rig.itemID, deviceID: Self.phone)
+    // These are optimistic UI rollback tests, not physical save-failure
+    // tests. Unsupported direct SQLite-trigger diagnostics are retained in
+    // .logs/playback-lag/implementation/atomic-completion-advisor-result.txt
+    // and atomicity-crash-cleanup.json. Producer qualifies actual failed saves
+    // through a documented read-only ModelConfiguration after full staging.
+    func testUIFailureRejectsManualFinishAndANewPhoneIntentCanRetry() async throws {
+        let rig = try await makeRig(.live, title: Self.bonus)
+        await rig.drain()
+        let before = try await completionState(rig)
+        rig.model.subscriptionWriteHookForTesting = { throw UICompletionFailure() }
+        let intent = try LibraryIntent.markDone(entryID: rig.itemID, deviceID: Self.phone)
         try await rig.phone(intent)
         let outcome = await rig.book.entry(for: intent.id)?.outcome
         XCTAssertEqual(outcome?.isApplied, false)
         XCTAssertEqual(outcome?.reason, IntentOutcome.reasonFailed)
-        try await assertNoRecord(rig)
-        try executeFixtureSQL("DROP TRIGGER reject_manual_insert; DROP TRIGGER reject_manual_update;", at: storeURL)
-        try await rig.phone(.restore(entryID: rig.itemID, deviceID: Self.phone))
-        try await assertManual(.keep, rig)
+        let failed = try await completionState(rig)
+        XCTAssertEqual(failed, before, "UI failure must leave every durable completion field unchanged")
+        XCTAssertEqual(failed.receiptCount, 0)
+        XCTAssertTrue(failed.reservations.isEmpty)
+        XCTAssertEqual(rig.model.podcastOperationMessage, "\(Self.bonus) could not be marked completed.")
+        XCTAssertNil(rig.model.undoableSkip)
+        rig.model.subscriptionWriteHookForTesting = nil
+        try await rig.phone(.markDone(entryID: rig.itemID, deviceID: Self.phone))
+        try await assertManual(.skip, rig)
         try await assertAutomationLeavesUnchanged(rig)
     }
 
@@ -226,7 +242,7 @@ final class ManualDecisionProvenanceTests: XCTestCase {
         XCTAssertEqual(replay, outcome, "a rejected intent is not silently re-applied on replay")
     }
 
-    func testDismissCommittedWithoutManualRecordKeepsUndoAndReleasesWaitingEpisode() async throws {
+    func testRemoveUIFailureRollsBackAndKeepsWaitingEpisodeUnadmitted() async throws {
         let rig = try await makeRig(.kept, title: Self.bonus)
         try await rig.store.save(feedAutomationPolicy: FeedAutomationPolicy(
             autoKeep: .on, autoDownload: .off, autoPrepare: .off, keptLimit: .explicit(1)
@@ -234,65 +250,76 @@ final class ManualDecisionProvenanceTests: XCTestCase {
         _ = try await rig.model.automaticRefresh(rig.feedURL, claimingNewest: 0)
         await rig.drain()
         let waitingBefore = try await rig.store.episodeDecision(for: rig.freshID)
-        XCTAssertNil(waitingBefore, "the kept target fills the only slot")
-        XCTAssertEqual(rig.model.podcastQueueIDs, [rig.itemID.rawValue])
-        try rejectDecisionWrites(await rig.store.url)
+        XCTAssertNil(waitingBefore)
+        let before = try await completionState(rig)
+        rig.model.subscriptionWriteHookForTesting = { throw UICompletionFailure() }
         rig.model.removeEpisode(try rig.episode())
         await rig.drain()
-        let removal = try await rig.store.removalKind(for: rig.itemID)
-        XCTAssertEqual(removal, .dismissed)
-        XCTAssertEqual(try rig.dismissal().id, rig.itemID.rawValue)
-        XCTAssertEqual(rig.model.undoableRemoval?.id, rig.itemID.rawValue)
-        XCTAssertEqual(rig.model.podcastOperationMessage,
-                       "Removed \(Self.bonus), but the choice could not be saved.")
-        try await assertNoRecord(rig)
-        let released = try await rig.store.episodeDecision(for: rig.freshID)
-        XCTAssertEqual(released?.source, .policy, "the manual-only fault must allow actual automatic admission")
-        XCTAssertEqual(released?.decision, .keep)
-        XCTAssertEqual(rig.model.podcastQueueIDs, [rig.freshID.rawValue])
+        let after = try await completionState(rig)
+        let waitingAfter = try await rig.store.episodeDecision(for: rig.freshID)
+        XCTAssertEqual(after, before)
+        XCTAssertEqual(after.receiptCount, 0)
+        XCTAssertTrue(after.reservations.isEmpty)
+        XCTAssertTrue(rig.model.episodeCompletionProjections.isEmpty)
+        XCTAssertNil(rig.model.undoableSkip)
+        XCTAssertNil(rig.model.undoableRemoval)
+        XCTAssertEqual(rig.model.podcastQueueIDs, [rig.itemID.rawValue])
+        XCTAssertNil(waitingAfter, "Failed UI removal frees no automatic slot")
+        XCTAssertEqual(rig.model.podcastOperationMessage, "\(Self.bonus) could not be marked completed.")
     }
 
-    func testSkipCommittedWithoutManualRecordKeepsUndoAndReportsChoiceFailure() async throws {
+    func testSkipUIFailureRollsBackAbsentDecisionAndEveryDurableCompletionField() async throws {
         let rig = try await makeRig(.kept, title: Self.bonus)
-        try rejectDecisionWrites(await rig.store.url)
+        await rig.drain()
+        let before = try await completionState(rig)
+        rig.model.subscriptionWriteHookForTesting = { throw UICompletionFailure() }
         rig.model.skipEpisode(try rig.episode(), requireStarted: false)
         await rig.drain()
-        let removal = try await rig.store.removalKind(for: rig.itemID)
-        XCTAssertEqual(removal, .retired)
-        XCTAssertEqual(rig.model.undoableSkip?.id, rig.itemID.rawValue)
-        XCTAssertFalse(rig.model.podcastQueueIDs.contains(rig.itemID.rawValue))
-        XCTAssertEqual(rig.model.podcastOperationMessage,
-                       "Marked \(Self.bonus) completed, but the choice could not be saved. Undo completion restores it.")
+        let after = try await completionState(rig)
+        XCTAssertEqual(after, before)
+        XCTAssertEqual(after.receiptCount, 0)
+        XCTAssertTrue(after.reservations.isEmpty)
+        XCTAssertTrue(rig.model.episodeCompletionProjections.isEmpty)
+        XCTAssertNil(rig.model.undoableSkip)
+        XCTAssertTrue(rig.model.podcastQueueIDs.contains(rig.itemID.rawValue))
+        XCTAssertEqual(rig.model.podcastOperationMessage, "\(Self.bonus) could not be marked completed.")
         try await assertNoRecord(rig)
     }
 
-    func testUndoSkipCommittedWithoutManualRecordReportsChoiceFailure() async throws {
+    func testUnknownLegacyCompletionUndoRefusesWithoutRewritingHistory() async throws {
         let rig = try await makeRig(.completedRetired, title: Self.sponsored)
-        try rejectDecisionWrites(await rig.store.url)
+        let before = try await rig.store.listeningState(for: rig.itemID)
         rig.model.undoSkipEpisode(try rig.episode())
         await rig.drain()
         let removal = try await rig.store.removalKind(for: rig.itemID)
-        XCTAssertNil(removal)
+        let after = try await rig.store.listeningState(for: rig.itemID)
+        XCTAssertEqual(removal, .retired)
+        XCTAssertEqual(after, before, "No receipt identifies a completion the Undo can safely clear")
         XCTAssertNil(rig.model.undoableSkip)
-        XCTAssertEqual(rig.model.podcastOperationMessage,
-                       "Restored \(Self.sponsored), but the choice could not be saved.")
         try await assertNoRecord(rig)
     }
 
-    func testRestoreCommittedWithoutManualRecordLeavesDismissedUIAndReportsChoiceFailure() async throws {
-        let rig = try await makeRig(.dismissed, title: Self.sponsored)
-        let dismissal = try rig.dismissal()
-        try rejectDecisionWrites(await rig.store.url)
-        await rig.model.restoreEpisode(dismissal, episodeID: rig.itemID, store: rig.store)
-        let removal = try await rig.store.removalKind(for: rig.itemID)
-        let restored = try await rig.store.podcastEpisode(for: rig.itemID)
-        let message = try XCTUnwrap(rig.model.podcastOperationMessage)
-        XCTAssertNil(removal)
-        XCTAssertNotNil(restored)
-        XCTAssertNil(rig.model.dismissedEpisodes.first { $0.id == rig.itemID.rawValue })
-        XCTAssertEqual(message, "Restored \(Self.sponsored), but the choice could not be saved.")
-        XCTAssertFalse(message.contains("Retry"))
-        try await assertNoRecord(rig)
+    func testSkipUIFailureKeepsPriorPolicyHistoryPositionAndTotalsExact() async throws {
+        let rig = try await makeRig(.policyKept, title: Self.sponsored)
+        let stamp = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        try await rig.store.saveListening(PodcastListeningState(episodeID: rig.itemID,
+            completedAt: stamp, lastRevisionID: Self.rollbackRevisionID, updatedAt: stamp))
+        try await rig.store.save(playback: PlaybackState(itemID: rig.itemID, revisionID: Self.rollbackRevisionID,
+            sessionID: "prior-progress", sequence: 1, positionSeconds: 123, durationSeconds: 600,
+            completed: false, intent: .progress, deviceID: "fixture-mac", updatedAt: stamp))
+        await rig.model.reloadLibraryRows()
+        await rig.drain()
+        let before = try await completionState(rig)
+        rig.model.subscriptionWriteHookForTesting = { throw UICompletionFailure() }
+        rig.model.skipEpisode(try rig.episode())
+        await rig.drain()
+        let after = try await completionState(rig)
+        XCTAssertEqual(after, before, "The UI hook leaves genuine history, playhead, provenance and totals exact")
+        XCTAssertEqual(after.receiptCount, 0)
+        XCTAssertTrue(after.reservations.isEmpty)
+        XCTAssertTrue(rig.model.episodeCompletionProjections.isEmpty)
+        XCTAssertNil(rig.model.undoableSkip)
+        XCTAssertEqual(rig.model.podcastOperationMessage, "\(Self.sponsored) could not be marked completed.")
     }
 
     func testRestoreAfterUnsubscribeCannotCreateAnOrphanManualKeep() async throws {
@@ -305,6 +332,106 @@ final class ManualDecisionProvenanceTests: XCTestCase {
         try await assertNoRecord(rig)
         XCTAssertEqual(rig.model.podcastOperationMessage,
                        "\(Self.sponsored) could not be restored because it is no longer in the library.")
+    }
+
+    func testExplicitRestoreConflictsPreserveEveryNewerDurableField() async throws {
+        for changedDecision in [false, true] {
+            let rig = try await makeRig(.policyKept, title: Self.sponsored)
+            let stamp = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+            let mediaURL = wiltedTemporaryDirectory("restore-conflict-media").appendingPathComponent("retained.m4a")
+            let bytes = Data("retained synthetic audio".utf8)
+            try bytes.write(to: mediaURL)
+            let revision = try AudioRevision(itemID: rig.itemID, revisionID: Self.rollbackRevisionID,
+                durationSeconds: 600, byteCount: Int64(bytes.count),
+                contentHash: "sha256:" + String(repeating: "a", count: 64), mediaType: "audio/mp4",
+                createdAt: stamp, schemaVersion: 1)
+            try await rig.store.finalizePodcastDownload(revision: revision, mediaURL: mediaURL,
+                download: PodcastDownload(episodeID: rig.itemID, status: .completed,
+                    bytesReceived: revision.byteCount, expectedByteCount: revision.byteCount,
+                    localURL: mediaURL, contentHash: revision.contentHash, updatedAt: stamp))
+            try await rig.store.save(playback: PlaybackState(itemID: rig.itemID, revisionID: Self.rollbackRevisionID,
+                sessionID: "retained-progress", sequence: 1, positionSeconds: 123, durationSeconds: 600,
+                completed: false, intent: .progress, deviceID: "fixture-mac", updatedAt: stamp))
+            rig.model.removeEpisode(try rig.episode())
+            await rig.drain()
+            XCTAssertNotNil(rig.model.undoableSkip?.manualCompletionOperationID)
+            let newer = Timestamp(Date().addingTimeInterval(10))
+            if changedDecision {
+                try await rig.store.save(episodeDecision: EpisodeDecisionRecord(episodeID: rig.itemID,
+                    decision: .keep, source: .manual, decidedAt: newer))
+            } else {
+                try await rig.store.saveListening(PodcastListeningState(episodeID: rig.itemID,
+                    completedAt: newer, lastRevisionID: Self.rollbackRevisionID, updatedAt: newer))
+            }
+            let before = try await completionState(rig)
+            let restored = await rig.model.restoreEntry(rig.itemID)
+            XCTAssertFalse(restored)
+            let after = try await completionState(rig)
+            XCTAssertEqual(after, before, "A real newer choice or listening fact cannot fall back to legacy unretirement")
+            XCTAssertEqual(try Data(contentsOf: mediaURL), bytes)
+            XCTAssertEqual(after.playback?.positionSeconds, 123)
+            XCTAssertEqual(after.removal, .retired)
+        }
+    }
+
+    func testOrderedReceiptRestoreRejectsHeldOldRowsAndRestoresQueueAndPlayedState() async throws {
+        let rig = try await makeRig(.kept, title: Self.sponsored)
+        let priorQueue = try await rig.store.podcastQueueState()
+        rig.model.removeEpisode(try rig.episode())
+        await rig.drain()
+        XCTAssertTrue(try rig.episode().isPlayed)
+        let retired = try rig.episode()
+        let oldRead = BootstrapGate()
+        addTeardownBlock { await oldRead.release() }
+        rig.model.librarySnapshotReadBarrierForTesting = { await oldRead.hold() }
+        let staleReload = Task { @MainActor in await rig.model.reloadLibraryRows() }
+        await oldRead.waitUntilHeld()
+        // The held read already captured terminal rows. Restore's fresh read
+        // must run independently, and the old snapshot must never republish.
+        rig.model.librarySnapshotReadBarrierForTesting = nil
+        rig.model.restoreSkippedFeedEpisode(retired)
+        await rig.drain()
+        let restored = try rig.episode()
+        XCTAssertNil(restored.removalKind)
+        XCTAssertFalse(restored.isPlayed)
+        XCTAssertEqual(rig.model.podcastQueueIDs, priorQueue.episodeIDs.map(\.rawValue))
+        await oldRead.release()
+        await staleReload.value
+        XCTAssertNil(try rig.episode().removalKind)
+        XCTAssertFalse(try rig.episode().isPlayed)
+        XCTAssertEqual(rig.model.podcastQueueIDs, priorQueue.episodeIDs.map(\.rawValue))
+        let queue = try await rig.store.podcastQueueState()
+        XCTAssertEqual(queue, priorQueue)
+        try await assertManual(.keep, rig)
+        XCTAssertFalse(rig.model.isPlaying)
+    }
+
+    func testClosingBeforeOrderedRestoreCommitPreservesReceiptAndEveryDurableField() async throws {
+        let rig = try await makeRig(.kept, title: Self.sponsored)
+        rig.model.removeEpisode(try rig.episode())
+        await rig.drain()
+        let before = try await completionState(rig)
+        let beforeCommit = BootstrapGate()
+        addTeardownBlock { await beforeCommit.release() }
+        rig.model.feedDecisionBeforeCommitForTesting = { await beforeCommit.hold() }
+        rig.model.restoreSkippedFeedEpisode(try rig.episode())
+        await beforeCommit.waitUntilHeld()
+        let closing = Task { @MainActor in await rig.model.close() }
+        for _ in 0..<50 where !rig.model.isClosingTemporaryState { await Task.yield() }
+        XCTAssertTrue(rig.model.isClosingTemporaryState)
+        await beforeCommit.release()
+        await closing.value
+        let after = try await completionState(rig)
+        XCTAssertEqual(after, before)
+    }
+
+    func testRestoreAlreadyAtTargetReportsNoNewRestoration() async throws {
+        let rig = try await makeRig(.live, title: Self.sponsored)
+        rig.model.restoreSkippedFeedEpisode(try rig.episode())
+        await rig.drain()
+        XCTAssertEqual(rig.model.podcastOperationMessage, "Those episodes were already restored.")
+        XCTAssertNil(try rig.episode().removalKind)
+        try await assertNoRecord(rig)
     }
 
     // MARK: Assertions
@@ -358,30 +485,42 @@ final class ManualDecisionProvenanceTests: XCTestCase {
         XCTAssertEqual(fresh?.source, .policy, "the refresh did run and admit the fresh episode", file: file, line: line)
     }
 
-    /// Fault only the fixture's decision table; queue/removal writes keep their real behavior.
-    private func rejectDecisionWrites(_ url: URL) throws {
-        try executeFixtureSQL("""
-            CREATE TRIGGER reject_manual_insert BEFORE INSERT ON ZEPISODEDECISIONRECORD
-            WHEN NEW.ZSOURCE = 'manual'
-            BEGIN SELECT RAISE(ABORT, 'fixture decision write failure'); END;
-            CREATE TRIGGER reject_manual_update BEFORE UPDATE ON ZEPISODEDECISIONRECORD
-            WHEN NEW.ZSOURCE = 'manual'
-            BEGIN SELECT RAISE(ABORT, 'fixture decision write failure'); END;
-            """, at: url)
+    private struct UICompletionFailure: Error {}
+    private static let rollbackRevisionID = try! RevisionID(rawValue: "prior-rollback-revision")
+
+    private struct CompletionState: Equatable {
+        let episode: PodcastEpisode?
+        let removal: PodcastEpisodeRemovalKind?
+        let retiredAt: Timestamp?
+        let listening: PodcastListeningState?
+        let decision: EpisodeDecisionRecord?
+        let queue: PodcastQueueState
+        let placements: [PodcastQueueEntry]
+        let playback: PlaybackState?
+        let download: PodcastDownload?
+        let readyRevision: AudioRevision?
+        let readyURL: URL?
+        let totals: LifetimeStatistics
+        let receiptCount: Int
+        let reservations: [ItemID: Int]
     }
 
-    private func executeFixtureSQL(_ sql: String, at url: URL) throws {
-        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-        var database: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
-            if let database { sqlite3_close(database) }
-            throw NSError(domain: "ProvenanceFixture", code: 1)
-        }
-        defer { sqlite3_close(database) }
-        guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
-            throw NSError(domain: "ProvenanceFixture", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(database))])
-        }
+    private func completionState(_ rig: Rig) async throws -> CompletionState {
+        let ready = try await rig.store.readyRevision(for: rig.itemID)
+        let context = ModelContext(rig.store.container)
+        let receipts = try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV19Models.ManualCompletionReceiptRecord>())
+        return CompletionState(
+            episode: try await rig.store.podcastEpisode(for: rig.itemID),
+            removal: try await rig.store.removalKind(for: rig.itemID),
+            retiredAt: try await rig.store.retiredAt(for: rig.itemID),
+            listening: try await rig.store.listeningState(for: rig.itemID),
+            decision: try await rig.store.episodeDecision(for: rig.itemID),
+            queue: try await rig.store.podcastQueueState(), placements: try await rig.store.queue(),
+            playback: try await rig.store.playbackState(for: rig.itemID, revisionID: Self.rollbackRevisionID),
+            download: try await rig.store.download(for: rig.itemID),
+            readyRevision: ready?.revision, readyURL: ready?.mediaURL,
+            totals: try await rig.store.lifetimeStatistics(), receiptCount: receipts,
+            reservations: try await rig.store.manualCompletionCapacityReservations())
     }
 
     private static func candidate(title: String, id: String) -> EpisodeAdmissionService.Candidate {
@@ -527,6 +666,7 @@ private extension ManualDecisionProvenanceTests {
         )
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
+        await model.manualCompletionRecoveryTask?.value
         addTeardownBlock { await MainActor.run { model.stopLibrarySync() }; await model.close() }
         let book = WiltedMacIntentOutcomeBook(fileURL: nil)
         let applier = WiltedMacIntentApplier(

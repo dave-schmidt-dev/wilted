@@ -24,6 +24,7 @@ struct EpisodeAdmissionService {
         let source: EpisodeDecisionSource
         let ruleID: UUID?
         let workTicketKinds: [WorkTicketKind]
+        var automaticKeptLimit: Int? = nil
     }
 
     /// Plans one feed's admissions. Rules run whatever the feed's Auto keep:
@@ -35,7 +36,8 @@ struct EpisodeAdmissionService {
         keptEpisodeIDs: Set<String>,
         manualDecisions: [String: FeedManualDecision],
         rules: EpisodeMatchRules,
-        policy: EffectiveFeedAutomationPolicy
+        policy: EffectiveFeedAutomationPolicy,
+        reservedCapacity: Int = 0
     ) -> [Admission] {
         var ruleAdmissions: [Admission] = []
         var plannerCandidates: [FeedAdmissionCandidate] = []
@@ -71,9 +73,15 @@ struct EpisodeAdmissionService {
         // FIFO release order is the request order: the oldest episode takes the
         // first place in the download and preparation lines.
         let releasedAt = Dictionary(candidates.map { ($0.id, $0.releasedAt) }, uniquingKeysWith: { first, _ in first })
+        var remaining = policy.keptLimit.map { max(0, $0 - keptEpisodeIDs.count - max(0, reservedCapacity)) } ?? Int.max
         return (ruleAdmissions + planned).sorted { lhs, rhs in
             let (left, right) = (releasedAt[lhs.episodeID] ?? .distantFuture, releasedAt[rhs.episodeID] ?? .distantFuture)
             return left == right ? lhs.episodeID < rhs.episodeID : left < right
+        }.filter { admission in
+            guard admission.decision == .keep else { return true }
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            return true
         }
     }
 
@@ -109,7 +117,7 @@ struct EpisodeAdmissionService {
         _ id: String, source: EpisodeDecisionSource, ruleID: UUID?, policy: EffectiveFeedAutomationPolicy
     ) -> Admission {
         .init(episodeID: id, decision: .keep, source: source, ruleID: ruleID,
-              workTicketKinds: keepWorkTicketKinds(for: policy))
+              workTicketKinds: keepWorkTicketKinds(for: policy), automaticKeptLimit: policy.keptLimit)
     }
 
     /// The work an automatic Keep issues under this policy. Preparation follows
@@ -169,6 +177,10 @@ extension WiltedMacModel {
     func admitAutomatically(
         feedID: ItemID, feedEpisodes: [WiltedMacEpisode], newlySaved: Set<String>, store: LocalLibraryStore
     ) async throws -> AutomaticAdmissionOutcome {
+        // An overdue receipt remains reserved until this durable seal succeeds.
+        _ = try await store.sealExpiredManualCompletions(at: manualCompletionNow())
+        await scheduleManualCompletionExpiry(store: store)
+        let reserved = try await store.manualCompletionCapacityReservations(at: manualCompletionNow())[feedID, default: 0]
         let policy = try await store.feedAutomationPolicy(for: feedID)
             .resolved(using: EpisodeAdmissionService.globalDefaults(automationSettings))
         guard policy.autoKeep || !newlySaved.isEmpty else { return .init() }
@@ -182,15 +194,20 @@ extension WiltedMacModel {
         })
         let live = feedEpisodes.filter { $0.removalKind == nil && $0.feedID == feedID.rawValue }
         let queued = Set(try await store.podcastQueueState().episodeIDs.map(\.rawValue))
-        let kept = queued.intersection(live.map(\.id))
+        let keptDecisions = Set(decisions.filter { $0.decision == .keep }.map(\.episodeID.rawValue))
+        let keptRaw = queued.union(keptDecisions).intersection(live.map(\.id))
+        let kept = Set(try await store.logicalEpisodeRepresentatives(keptRaw.compactMap { try? ItemID(rawValue: $0) }).map(\.rawValue))
+        var plannedGroups = Set<String>()
         let candidates = live.filter {
             !decided.contains($0.id) && !queued.contains($0.id) && !$0.isPlayed
                 && (newlySaved.contains($0.id) || (policy.autoKeep && policy.keptLimit != nil))
+                && !kept.contains(logicalRepresentativeID($0.id))
+                && plannedGroups.insert(logicalRepresentativeID($0.id)).inserted
         }.map {
             EpisodeAdmissionService.Candidate(id: $0.id, title: $0.title, notes: $0.notes, releasedAt: $0.releasedAt)
         }
         let admissions = EpisodeAdmissionService.plan(
-            candidates: candidates, keptEpisodeIDs: kept, manualDecisions: manual, rules: rules, policy: policy
+            candidates: candidates, keptEpisodeIDs: kept, manualDecisions: manual, rules: rules, policy: policy, reservedCapacity: reserved
         )
         var outcome = AutomaticAdmissionOutcome()
         for admission in admissions {
@@ -258,10 +275,13 @@ extension WiltedMacModel {
     func commitAdmission(
         _ admission: EpisodeAdmissionService.Admission, as id: ItemID, decidedAt: Timestamp, store: LocalLibraryStore
     ) async throws -> Bool {
-        let tickets = try await store.admitEpisode(.init(
+        let tickets: [WorkTicket]
+        do { tickets = try await store.admitEpisode(.init(
             episodeID: id, decision: admission.decision, source: admission.source,
             ruleID: admission.ruleID, decidedAt: decidedAt
-        ), enqueue: admission.decision == .keep, workTicketKinds: admission.workTicketKinds)
+        ), enqueue: admission.decision == .keep, workTicketKinds: admission.workTicketKinds,
+            requestedAt: Timestamp(manualCompletionNow()), automaticKeptLimit: admission.automaticKeptLimit)
+        } catch is AutomaticEpisodeAdmissionError { return false }
         for ticket in tickets where ticket.kind == .podcastPreparation {
             adoptAdmittedPreparation(sequence: ticket.requestSequence, for: admission.episodeID)
         }
@@ -316,7 +336,7 @@ extension WiltedMacModel {
     /// Commits a manual Keep: the queue entry, a manual decision record, and a
     /// download ticket only when the feed's Auto download (or, on Use global,
     /// the global override) asks for the download and the episode needs one.
-    func commitManualKeep(_ captured: [WiltedMacEpisode], store: LocalLibraryStore) async throws -> ManualKeepOutcome {
+    func commitManualKeep(_ captured: [WiltedMacEpisode], store: LocalLibraryStore, at: Timestamp = Timestamp(Date())) async throws -> ManualKeepOutcome {
         var outcome = ManualKeepOutcome()
         for episode in captured {
             guard episode.removalKind == nil, let id = try? ItemID(rawValue: episode.id),
@@ -333,9 +353,14 @@ extension WiltedMacModel {
                 && EpisodeAdmissionService.shouldDownloadAfterManualKeep(
                     feedPolicy: feedPolicy, globalDownloadEverything: automationSettings.downloadEverythingOnLarder
                 )
-            try await store.admitEpisode(.init(
-                episodeID: id, decision: .keep, source: .manual, decidedAt: Timestamp(Date())
-            ), workTicketKinds: download ? [.podcastDownload] : [])
+            do {
+                try await store.admitEpisode(.init(
+                    episodeID: id, decision: .keep, source: .manual, decidedAt: at
+                ), workTicketKinds: download ? [.podcastDownload] : [])
+            } catch AutomaticEpisodeAdmissionError.supersededManualDecision {
+                outcome.unresolved.insert(episode.id)
+                continue
+            }
             outcome.accepted.insert(episode.id)
             if !wasKept { outcome.changed.insert(episode.id) }
             if download { outcome.downloads.append(episode) }

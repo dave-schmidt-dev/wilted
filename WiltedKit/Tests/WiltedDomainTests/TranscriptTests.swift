@@ -235,6 +235,63 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(try TranscriptCueCodec.decode(encoded).count, cues.count)
     }
 
+    func testCuesCarryOptionalRawTextAndWords() throws {
+        let words = [
+            try TranscriptWord(startSeconds: 0.0, endSeconds: 0.5, text: "Hello", rawText: "hello"),
+            try TranscriptWord(startSeconds: 0.5, endSeconds: 1.0, text: "world", rawText: "world")
+        ]
+        let cue = try TranscriptCue(
+            startSeconds: 0.0,
+            endSeconds: 1.0,
+            text: "Hello world",
+            speaker: "Narrator",
+            rawText: "hello world",
+            words: words
+        )
+        XCTAssertEqual(cue.rawText, "hello world")
+        XCTAssertEqual(cue.words?.count, 2)
+        XCTAssertEqual(cue.words?[0].text, "Hello")
+
+        let encoded = try JSONEncoder().encode(cue)
+        let decoded = try JSONDecoder().decode(TranscriptCue.self, from: encoded)
+        XCTAssertEqual(decoded, cue)
+        XCTAssertEqual(decoded.rawText, "hello world")
+        XCTAssertEqual(decoded.words, words)
+    }
+
+    func testCueRejectsWordsOutsideCueBoundsOrOutOfOrder() throws {
+        let earlyWord = try TranscriptWord(startSeconds: 0.5, endSeconds: 1.0, text: "Early")
+        XCTAssertThrowsError(try TranscriptCue(
+            startSeconds: 1.0, endSeconds: 2.0, text: "Early", words: [earlyWord]
+        ))
+
+        let lateWord = try TranscriptWord(startSeconds: 1.5, endSeconds: 2.5, text: "Late")
+        XCTAssertThrowsError(try TranscriptCue(
+            startSeconds: 1.0, endSeconds: 2.0, text: "Late", words: [lateWord]
+        ))
+
+        let outOfOrder = [
+            try TranscriptWord(startSeconds: 1.5, endSeconds: 1.8, text: "Second"),
+            try TranscriptWord(startSeconds: 1.1, endSeconds: 1.4, text: "First")
+        ]
+        XCTAssertThrowsError(try TranscriptCue(
+            startSeconds: 1.0, endSeconds: 2.0, text: "Second First", words: outOfOrder
+        ))
+    }
+
+    func testLegacyCueDecodeWithoutRawTextOrWords() throws {
+        let json = #"{"startSeconds":0,"endSeconds":2,"text":"Legacy line","speaker":"Ann"}"#
+        let decoded = try JSONDecoder().decode(TranscriptCue.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.rawText)
+        XCTAssertNil(decoded.words)
+        XCTAssertEqual(decoded.text, "Legacy line")
+
+        let encoded = try JSONEncoder().encode(decoded)
+        let dict = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        XCTAssertNil(dict?["rawText"])
+        XCTAssertNil(dict?["words"])
+    }
+
     private static func cues(_ spans: [(Double, Double, String)]) throws -> [TranscriptCue] {
         try spans.map { try TranscriptCue(startSeconds: $0.0, endSeconds: $0.1, text: $0.2) }
     }

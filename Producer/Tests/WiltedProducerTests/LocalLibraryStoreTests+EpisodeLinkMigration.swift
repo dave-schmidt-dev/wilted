@@ -70,7 +70,8 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
         }
         XCTAssertEqual(try LocalLibraryStoreCompatibilityTests.sha256(of: backupURL), Self.v14FixtureSHA256,
                        "the backup is the untouched V14 store")
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(18))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied),
+                       .known(LocalLibrarySchemaVersion.current.rawValue))
 
         var after = try LocalLibraryStore.tableRowCounts(at: copied)
         XCTAssertEqual(after.removeValue(forKey: "ZPODCASTEPISODELINKRECORD"), 0, "the new table starts empty")
@@ -80,7 +81,12 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
         for table in ["ZAUDIOBOOKRECORD", "ZPLAYLISTRECORD", "ZPLAYLISTENTRYRECORD", "ZPLAYLISTRULERECORD"] {
             XCTAssertEqual(after.removeValue(forKey: table), 0, "the V17 table \(table) starts empty")
         }
-        XCTAssertEqual(after, before, "every pre-existing table keeps its exact row count")
+        for (table, count) in before {
+            XCTAssertEqual(after[table], count, "pre-existing table \(table) keeps its exact row count")
+        }
+        for (table, count) in after where before[table] == nil {
+            XCTAssertEqual(count, 0, "added table \(table) starts empty")
+        }
 
         let reopened = try LocalLibraryStore(url: copied)
         let secondBackup = await reopened.migrationBackupURL
@@ -93,7 +99,8 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
     func testFailureAfterV14MigrationRestoresTheV14Original() throws {
         let copied = try copiedV14Fixture()
         let hooks = LocalLibraryOpenHooks(afterMigration: {
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(18))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied),
+                           .known(LocalLibrarySchemaVersion.current.rawValue))
             throw InjectedMigrationFailure()
         })
         XCTAssertThrowsError(try LocalLibraryStore(url: copied, migrate: true, hooks: hooks)) { error in

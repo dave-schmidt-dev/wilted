@@ -113,14 +113,14 @@ final class LibraryDecisionModelTests: XCTestCase {
         let model = makeModel()
         await model.refresh()
         XCTAssertEqual(model.decisionActions(for: model.queued[0]), [.removeFromLarder, .markDone])
-        XCTAssertEqual(model.decisionActions(for: model.queued[1]), [.removeFromLarder])
+        XCTAssertEqual(model.decisionActions(for: model.queued[1]), [.removeFromLarder, .markDone])
     }
 
     func testAnIneligibleDecisionSendsNothing() async throws {
         try await seed()
         let model = makeModel()
         await model.refresh()
-        await model.decide(.markDone, entryID: id("b"))  // not started and not on the phone
+        await model.decide(.markDone, entryID: id("fresh"))  // not a queued episode
         await model.decide(.removeFromLarder, entryID: id("fresh"))  // not on the phone's list
         await model.decide(.removeFromLarder, entryID: id("gone"))   // dismissed on the Mac
         let sent = try await intents()
@@ -202,7 +202,7 @@ final class LibraryDecisionModelTests: XCTestCase {
         await model.refresh() // outcome seen, publish not yet
         XCTAssertEqual(model.decisionStatus(for: id("b")), .confirming)
         XCTAssertEqual(ids(model.queued), ["a", "c"])
-        try await macPush([.slotRemoved(entryID: id("b"))])
+        try await macPush([.entry(try entry("b", removal: .retired)), .slotRemoved(entryID: id("b"))])
         await model.refresh() // publish confirms
         XCTAssertNil(model.decisionStatus(for: id("b")))
         XCTAssertTrue(model.decisions.isEmpty)
@@ -214,7 +214,7 @@ final class LibraryDecisionModelTests: XCTestCase {
         let model = makeModel()
         await model.refresh()
         await model.decide(.removeFromLarder, entryID: id("b"))
-        try await macPush([.slotRemoved(entryID: id("b"))])
+        try await macPush([.entry(try entry("b", removal: .retired)), .slotRemoved(entryID: id("b"))])
         await model.refresh()
         XCTAssertTrue(model.decisions.isEmpty)
         XCTAssertEqual(ids(model.queued), ["a", "c"])
@@ -230,6 +230,7 @@ final class LibraryDecisionModelTests: XCTestCase {
         XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
         XCTAssertTrue(model.decisions.isEmpty)
         XCTAssertEqual(model.decisionStatus(for: id("b")), .failed(LibraryAppModel.rejectionText(IntentOutcome.reasonNotApplicable)))
+        XCTAssertNil(model.undoableCompletion, "A rejected completion must not retain a dead Restore action")
         // The next decision clears the notice.
         await model.decide(.removeFromLarder, entryID: id("b"))
         XCTAssertEqual(model.decisionStatus(for: id("b")), .waiting)
@@ -307,6 +308,39 @@ final class LibraryDecisionModelTests: XCTestCase {
         XCTAssertEqual(model.decisionStatus(for: id("b")), .pendingOnMac)
         model.cancelDecision(entryID: id("b"))
         XCTAssertTrue(model.decisions.isEmpty)
+        XCTAssertNil(model.undoableCompletion)
+        XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
+    }
+
+    func testConfirmedCompletionRestoreRemainsDurableUntilMacRestoresEpisode() async throws {
+        try await seed()
+        let model = makeModel()
+        await model.refresh()
+        await model.decide(.removeFromLarder, entryID: id("b"))
+        XCTAssertEqual(model.undoableCompletion, id("b"))
+        try await macPush([.entry(try entry("b", removal: .retired)), .slotRemoved(entryID: id("b"))])
+        await model.refresh()
+        XCTAssertTrue(model.decisions.isEmpty)
+        clock.advance(120)
+        await model.refresh()
+        XCTAssertEqual(model.undoableCompletion, id("b"), "Phone Restore has no invented ten-second deadline")
+        try await macPush([.entry(try entry("b")), .slot(try QueueSlot(entryID: id("b"), sortKey: 1))])
+        await model.refresh()
+        XCTAssertNil(model.undoableCompletion, "Even with no pending decisions, a newer Restore removes the affordance")
+    }
+
+    func testCompletionConfirmationTimeoutClearsRolledBackRestoreAffordance() async throws {
+        try await seed()
+        let model = makeModel()
+        await model.refresh()
+        await model.decide(.removeFromLarder, entryID: id("b"))
+        try await macAnswers(try await firstIntent(), applied: true)
+        await model.refresh()
+        XCTAssertEqual(model.undoableCompletion, id("b"))
+        clock.advance(61)
+        await model.refresh()
+        XCTAssertTrue(model.decisions.isEmpty)
+        XCTAssertNil(model.undoableCompletion)
         XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
     }
 

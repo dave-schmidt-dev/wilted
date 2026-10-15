@@ -115,6 +115,8 @@ extension LocalLibraryStore {
     public func unsubscribeFromPodcast(feedID: ItemID) throws -> Int {
         try Self.performRemoval(.unsubscribe, startingAt: .subscription) { stage in
             let context = ModelContext(container)
+            context.autosaveEnabled = false
+            defer { if context.hasChanges { context.rollback() } }
             let feed = feedID.rawValue
             var staged = 0
             func remove(_ record: some PersistentModel) { context.delete(record); staged += 1 }
@@ -129,6 +131,10 @@ extension LocalLibraryStore {
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.PodcastFeedPolicyRecord>())
             where record.feedID == feed { remove(record) }
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeMatchRuleRecord>())
+            where record.feedID == feed { remove(record) }
+            // Resubscription creates new source generations. Association proof
+            // belongs to the removed feed generation and cannot bind those rows.
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV20Models.EpisodeAssociationRecord>())
             where record.feedID == feed { remove(record) }
             try Self.reachRemovalStage(.feed)
 

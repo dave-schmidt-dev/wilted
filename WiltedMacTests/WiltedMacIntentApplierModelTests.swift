@@ -55,6 +55,28 @@ extension WiltedMacIntentApplierTests {
         return ModelRig(model: model, store: try XCTUnwrap(model.store), episodes: episodeIDs)
     }
 
+    func testDatedLegacySkipSeparatesFeedsRetirementFromQueuedCompletion() async throws {
+        let rig = try await modelRig("applier-feed-versus-queued-skip")
+        let at = Date(timeIntervalSince1970: 1_700_002_000)
+        let feedID = rig.episodes[2], queuedID = rig.episodes[1]
+        let feedResult = await rig.model.applyOwnerIntent(try LibraryIntent.skip(entryID: feedID,
+            deviceID: "iphone", createdAt: at, id: "feed-skip"))
+        if case .applied? = feedResult {} else { XCTFail("Feed Skip must apply") }
+        let feedListening = try await rig.store.listeningState(for: feedID)
+        XCTAssertNil(feedListening, "A Feed Skip is not listening completion")
+        let feedReceipt = try await rig.store.restoreManualCompletion(feedID, at: at.addingTimeInterval(1))
+        XCTAssertNil(feedReceipt, "Feed Skip must not fabricate a completion receipt")
+        let queuedResult = await rig.model.applyOwnerIntent(try LibraryIntent.skip(entryID: queuedID,
+            deviceID: "iphone", createdAt: at, id: "queued-skip"))
+        if case .applied? = queuedResult {} else { XCTFail("Legacy queued Skip must finish") }
+        let queuedListening = try await rig.store.listeningState(for: queuedID)
+        XCTAssertEqual(queuedListening?.completedAt?.date, at)
+        let queue = try await rig.store.podcastQueueState()
+        XCTAssertFalse(queue.episodeIDs.contains(queuedID))
+        let receiptRestore = try await rig.store.restoreManualCompletion(queuedID, at: at.addingTimeInterval(1))
+        XCTAssertEqual(receiptRestore, true)
+    }
+
     func testModelHostKeepsSkipsAndRestoresThroughTheExistingMethods() async throws {
         let rig = try await modelRig("applier-model-decisions")
         let model = rig.model
@@ -87,9 +109,9 @@ extension WiltedMacIntentApplierTests {
     func testModelHostRestoresADismissedEntry() async throws {
         let rig = try await modelRig("applier-model-dismissed")
         let target = rig.episodes[3]
-        let episode = try XCTUnwrap(rig.model.episodes.first { $0.id == target.rawValue })
-        rig.model.removeEpisode(episode)
-        await rig.model.waitForPodcastOperations()
+        _ = try await rig.store.dismissPodcastEpisode(target)
+        await rig.model.reloadLibraryRows()
+        rig.model.dismissedEpisodes = try await rig.model.loadDismissedEpisodes(from: rig.store)
         XCTAssertEqual(rig.model.decisionState(of: target), .dismissed)
 
         let restored = await rig.model.restoreEntry(target)
@@ -133,7 +155,7 @@ extension WiltedMacIntentApplierTests {
         XCTAssertFalse(queue.contains(rig.episodes[1]))
     }
 
-    func testModelHostRemovesAQueuedEntryFromTheLarderAndKeepsItLive() async throws {
+    func testModelHostRemoveCompletesAndRetiresAQueuedPodcast() async throws {
         let rig = try await modelRig("applier-model-remove")
         let target = rig.episodes[1]
         XCTAssertEqual(rig.model.decisionState(of: target), .live(queued: true, started: false))
@@ -141,11 +163,118 @@ extension WiltedMacIntentApplierTests {
         let removed = await rig.model.removeEntryFromLarder(target)
 
         XCTAssertTrue(removed)
-        XCTAssertEqual(rig.model.decisionState(of: target), .live(queued: false, started: false))
+        XCTAssertEqual(rig.model.decisionState(of: target), .retired)
         let queue = try await rig.store.podcastQueueState().episodeIDs
         XCTAssertEqual(queue, [rig.episodes[0]])
         let kind = try await rig.store.removalKind(for: target)
-        XCTAssertNil(kind, "Remove from Larder does not retire the episode")
+        XCTAssertEqual(kind, .retired, "Remove and Mark completed share manual retirement")
+    }
+
+    func testDuplicateFinishPreservesReceiptDecisionForUndoAndExplicitRestore() async throws {
+        let rig = try await modelRig("applier-duplicate-finish")
+        let target = rig.episodes[1]
+        let stamp = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let mediaURL = wiltedTemporaryDirectory("duplicate-finish-media").appendingPathComponent("retained.m4a")
+        let bytes = Data("retained duplicate finish audio".utf8)
+        try bytes.write(to: mediaURL)
+        let revisionID = try RevisionID(rawValue: "duplicate-finish-revision")
+        let revision = try AudioRevision(itemID: target, revisionID: revisionID,
+            durationSeconds: 600, byteCount: Int64(bytes.count),
+            contentHash: "sha256:" + String(repeating: "b", count: 64), mediaType: "audio/mp4",
+            createdAt: stamp, schemaVersion: 1)
+        try await rig.store.finalizePodcastDownload(revision: revision, mediaURL: mediaURL,
+            download: PodcastDownload(episodeID: target, status: .completed,
+                bytesReceived: revision.byteCount, expectedByteCount: revision.byteCount,
+                localURL: mediaURL, contentHash: revision.contentHash, updatedAt: stamp))
+        let committedRevision = try await rig.store.readyRevision(for: target)
+        let priorRevision = try XCTUnwrap(committedRevision?.revision)
+        try await rig.store.saveListening(PodcastListeningState(episodeID: target,
+            completedAt: stamp, lastRevisionID: revisionID, updatedAt: stamp))
+        let progress = try PlaybackState(itemID: target, revisionID: revisionID,
+            sessionID: "prior-listen", sequence: 1, positionSeconds: 123, durationSeconds: 600,
+            completed: false, intent: .progress, deviceID: "fixture-mac", updatedAt: stamp)
+        try await rig.store.save(playback: progress)
+        let priorDownload = try await rig.store.download(for: target)
+        let priorQueue = try await rig.store.podcastQueueState()
+        let priorListening = try await rig.store.listeningState(for: target)
+        for explicitRestore in [false, true] {
+            let removed = await rig.model.removeEntryFromLarder(target)
+            XCTAssertTrue(removed)
+            let undo = try XCTUnwrap(rig.model.undoableSkip)
+            let decision = try await rig.store.episodeDecision(for: target)
+            let listening = try await rig.store.listeningState(for: target)
+            let duplicateDone = await rig.model.markEntryDone(target)
+            let duplicateRemove = await rig.model.removeEntryFromLarder(target)
+            XCTAssertTrue(duplicateDone)
+            XCTAssertTrue(duplicateRemove)
+            let afterDecision = try await rig.store.episodeDecision(for: target)
+            let afterListening = try await rig.store.listeningState(for: target)
+            XCTAssertEqual(afterDecision, decision)
+            XCTAssertEqual(afterListening, listening)
+            XCTAssertEqual(rig.model.undoableSkip?.manualCompletionOperationID, undo.manualCompletionOperationID)
+            if explicitRestore {
+                let restored = await rig.model.restoreEntry(target)
+                XCTAssertTrue(restored)
+                let keep = try await rig.store.episodeDecision(for: target)
+                XCTAssertEqual(keep?.decision, .keep)
+                XCTAssertEqual(keep?.source, .manual)
+            } else {
+                rig.model.undoSkipEpisode(undo)
+                await rig.model.waitForPodcastOperations()
+                let restoredDecision = try await rig.store.episodeDecision(for: target)
+                XCTAssertNil(restoredDecision)
+            }
+            let restoredListening = try await rig.store.listeningState(for: target)
+            let restoredQueue = try await rig.store.podcastQueueState()
+            XCTAssertEqual(restoredListening, priorListening)
+            XCTAssertEqual(restoredQueue, priorQueue)
+            let restoredDownload = try await rig.store.download(for: target)
+            let restoredProgress = try await rig.store.playbackState(for: target, revisionID: revisionID)
+            let retained = try await rig.store.readyRevision(for: target)
+            XCTAssertEqual(restoredDownload, priorDownload)
+            XCTAssertEqual(restoredProgress, progress)
+            XCTAssertEqual(retained?.revision, priorRevision)
+            XCTAssertEqual(try Data(contentsOf: mediaURL), bytes)
+            XCTAssertFalse(rig.model.isPlaying)
+        }
+    }
+
+    func testMissingLiveRemoveRecordsManualSkipAndPreservesItOnReplay() async throws {
+        let rig = try await modelRig("applier-missing-live-remove")
+        for dismissed in [false, true] {
+            let target = rig.episodes[dismissed ? 3 : 2]
+            if dismissed { _ = try await rig.store.dismissPodcastEpisode(target) }
+            else {
+                _ = try await rig.store.retireEpisode(target)
+                try await rig.store.save(episodeDecision: EpisodeDecisionRecord(episodeID: target,
+                    decision: .keep, source: .policy,
+                    decidedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))))
+            }
+            rig.model.episodes.removeAll { $0.id == target.rawValue }
+            let priorListening = try await rig.store.listeningState(for: target)
+            let priorRetiredAt = try await rig.store.retiredAt(for: target)
+            let priorQueue = try await rig.store.podcastQueueState()
+            let removed = await rig.model.removeEntryFromLarder(target)
+            XCTAssertTrue(removed)
+            let decision = try await rig.store.episodeDecision(for: target)
+            XCTAssertEqual(decision?.source, .manual)
+            XCTAssertEqual(decision?.decision, .skip)
+            let repeated = await rig.model.removeEntryFromLarder(target)
+            XCTAssertTrue(repeated)
+            let after = try await rig.store.episodeDecision(for: target)
+            let afterListening = try await rig.store.listeningState(for: target)
+            let afterRetiredAt = try await rig.store.retiredAt(for: target)
+            let afterQueue = try await rig.store.podcastQueueState()
+            XCTAssertEqual(after, decision, "Duplicate Remove preserves the exact owner timestamp")
+            XCTAssertEqual(afterListening, priorListening)
+            XCTAssertEqual(afterRetiredAt, priorRetiredAt)
+            XCTAssertEqual(afterQueue, priorQueue)
+        }
+        let unknown = try ItemID(rawValue: "unknown-remove")
+        let removed = await rig.model.removeEntryFromLarder(unknown)
+        XCTAssertFalse(removed)
+        let unknownDecision = try await rig.store.episodeDecision(for: unknown)
+        XCTAssertNil(unknownDecision)
     }
 
     func testModelHostMovesTheQueueByIndex() async throws {
@@ -158,6 +287,86 @@ extension WiltedMacIntentApplierTests {
         XCTAssertTrue(moved)
         let queue = try await rig.store.podcastQueueState().episodeIDs
         XCTAssertEqual(queue, [e[1], e[0]])
+    }
+
+    func testTransportRemoveAcknowledgesMissingLiveTerminalRowsAndRejectsUnknown() async throws {
+        let rig = try await modelRig("applier-terminal-remove-e2e")
+        let retired = rig.episodes[2]
+        let dismissed = rig.episodes[3]
+        let knownDismissed = rig.episodes[1]
+        _ = try await rig.store.retireEpisode(retired)
+        _ = try await rig.store.dismissPodcastEpisode(dismissed)
+        _ = try await rig.store.dismissPodcastEpisode(knownDismissed)
+        await rig.model.reloadLibraryRows()
+        rig.model.episodes.removeAll { $0.id == retired.rawValue || $0.id == dismissed.rawValue }
+        rig.model.dismissedEpisodes = try await rig.model.loadDismissedEpisodes(from: rig.store)
+        rig.model.dismissedEpisodes.removeAll { $0.id == dismissed.rawValue }
+        XCTAssertEqual(rig.model.decisionState(of: retired), .unknown)
+        XCTAssertEqual(rig.model.decisionState(of: dismissed), .unknown)
+        XCTAssertEqual(rig.model.decisionState(of: knownDismissed), .dismissed)
+        let unknown = try ItemID(rawValue: "terminal-remove-unknown")
+        let server = InMemoryLibraryServer(writerDeviceID: "mac-test")
+        let phone = InMemoryLibraryTransport(deviceID: "iphone", server: server)
+        let entries = [retired, dismissed, knownDismissed, unknown]
+        let beforeTerminalIntents = try await rig.store.podcastLibrarySnapshot()
+        var originatingTimes: [ItemID: Date] = [:]
+        for (index, entry) in entries.enumerated() {
+            let createdAt = Date().addingTimeInterval(-2 + Double(index) / 100)
+            originatingTimes[entry] = createdAt
+            try await phone.send(intent: LibraryIntent.removeFromLarder(
+                entryID: entry, deviceID: "iphone", createdAt: createdAt, id: "terminal-remove-\(index)"))
+        }
+        XCTAssertTrue(rig.model.startLibrarySyncIfEnabled(
+            environment: ["WILTED_LIBRARY_SYNC": "1"],
+            transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
+            debounce: .milliseconds(20)))
+        var outcomes: [String: IntentOutcome] = [:]
+        for _ in 0..<200 where outcomes.count < entries.count {
+            try await Task.sleep(for: .milliseconds(50))
+            outcomes = Dictionary(uniqueKeysWithValues: try await phone.intentOutcomes().map { ($0.intentID, $0) })
+        }
+        XCTAssertEqual(outcomes.count, entries.count)
+        for index in 0..<3 { XCTAssertEqual(outcomes["terminal-remove-\(index)"]?.disposition, .applied) }
+        XCTAssertEqual(outcomes["terminal-remove-3"]?.reason, IntentOutcome.reasonUnknownEntry)
+        var decisions: [ItemID: EpisodeDecisionRecord] = [:]
+        for entry in entries.prefix(3) {
+            let decision = try await rig.store.episodeDecision(for: entry)
+            XCTAssertEqual(decision?.source, .manual)
+            XCTAssertEqual(decision?.decision, .skip)
+            decisions[entry] = try XCTUnwrap(decision)
+            XCTAssertEqual(decision?.decidedAt.date, originatingTimes[entry], "Durable terminal proof retains original intent time")
+        }
+        let afterTerminalIntents = try await rig.store.podcastLibrarySnapshot()
+        XCTAssertEqual(afterTerminalIntents.retiredAtByEpisode, beforeTerminalIntents.retiredAtByEpisode)
+        XCTAssertEqual(afterTerminalIntents.removalKindByEpisode, beforeTerminalIntents.removalKindByEpisode)
+        XCTAssertEqual(afterTerminalIntents.readyRevisions, beforeTerminalIntents.readyRevisions)
+        XCTAssertEqual(afterTerminalIntents.downloads, beforeTerminalIntents.downloads)
+        XCTAssertEqual(afterTerminalIntents.playbackStates, beforeTerminalIntents.playbackStates)
+        let unknownDecision = try await rig.store.episodeDecision(for: unknown)
+        XCTAssertNil(unknownDecision)
+        for (index, entry) in entries.prefix(3).enumerated() {
+            try await phone.send(intent: LibraryIntent.removeFromLarder(
+                entryID: entry, deviceID: "iphone", id: "terminal-replay-\(index)"))
+        }
+        // The incoming poll runs every 30 seconds. Explicit Sync now drives
+        // the real poller instead of making replay depend on that timer.
+        let controller = try XCTUnwrap(rig.model.librarySyncController)
+        await controller.syncNow().value
+        for _ in 0..<200 where outcomes.count < 7 {
+            try await Task.sleep(for: .milliseconds(50))
+            outcomes = Dictionary(uniqueKeysWithValues: try await phone.intentOutcomes().map { ($0.intentID, $0) })
+        }
+        for (index, entry) in entries.prefix(3).enumerated() {
+            XCTAssertEqual(outcomes["terminal-replay-\(index)"]?.disposition, .applied)
+            let after = try await rig.store.episodeDecision(for: entry)
+            XCTAssertEqual(after, decisions[entry], "A new duplicate intent preserves receipt-compatible provenance")
+        }
+        let retiredKind = try await rig.store.removalKind(for: retired)
+        let dismissedKind = try await rig.store.removalKind(for: dismissed)
+        let knownKind = try await rig.store.removalKind(for: knownDismissed)
+        XCTAssertEqual(retiredKind, .retired)
+        XCTAssertEqual(dismissedKind, .dismissed)
+        XCTAssertEqual(knownKind, .dismissed)
     }
 
     /// Phone intents arrive over the transport, reach the applier through the sink, and are answered.

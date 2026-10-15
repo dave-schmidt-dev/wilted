@@ -107,6 +107,19 @@ extension WiltedMacModel {
     func markCurrentPlaybackCompleted() {
 #if canImport(WiltedProducer)
         guard let playback else { return }
+        if isPodcastPlayback, let episode = currentEpisode, !episode.isAudiobook {
+            guard episodeCompletionProjections[episode.id] == nil else { return }
+            projectEpisodeCompletions([episode])
+            let advance = beginAutomaticAdvance()
+            trackSubscriptionWrite { [weak self] in
+                guard let self, await self.finishCurrentPodcast(episode),
+                      self.claimAutomaticAdvance(advance) == .owns else { return }
+                // Finishing withdrew the current podcast selection. Use the
+                // shared Ready selector after durable success and ownership.
+                if let next = self.nextLarderEpisodeToPlay() { self.playEpisode(next) }
+            }
+            return
+        }
         // A command issued while this runs (a selection, Pause, seek) owns
         // what plays next, so the advance below only runs if none was.
         let advance = beginAutomaticAdvance()

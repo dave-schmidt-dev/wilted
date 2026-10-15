@@ -9,6 +9,8 @@ import WiltedProducer
 
 private let applierLog = Logger(subsystem: "com.zerodelta.wilted", category: "MacIntentApplier")
 
+enum WiltedMacDatedDecisionResult { case applied, superseded, failed, notApplicable }
+
 // MARK: - Host
 
 /// What the Mac knows about one entry, as far as a phone decision is concerned.
@@ -26,6 +28,7 @@ enum WiltedMacDecisionEntryState: Equatable, Sendable {
 /// requested state. Nothing here writes producer state directly (W-INV-005).
 @MainActor
 protocol WiltedMacDecisionHost: AnyObject {
+    func applyOwnerIntent(_ intent: LibraryIntent) async -> WiltedMacDatedDecisionResult?
     func decisionState(of entryID: ItemID) -> WiltedMacDecisionEntryState
     /// The full Larder order, including entries the phone does not see.
     var decisionQueue: [ItemID] { get }
@@ -44,6 +47,10 @@ protocol WiltedMacDecisionHost: AnyObject {
     /// Classifies `url` and, when it is not a feed, starts the single-article path; answers what
     /// became of it. `.added` means the Mac accepted the article and began preparing it.
     func addArticleLink(_ url: URL) async -> WiltedMacAddResult
+}
+
+extension WiltedMacDecisionHost {
+    func applyOwnerIntent(_ intent: LibraryIntent) async -> WiltedMacDatedDecisionResult? { nil }
 }
 
 /// What the Mac's add path concluded for one phone `subscribe` or `addArticle` request.
@@ -223,8 +230,23 @@ final class WiltedMacIntentApplier {
         default: break
         }
         let entryID = intent.action.entryID
+        if let dated = await host.applyOwnerIntent(intent) {
+            switch dated {
+            case .applied: return try applied()
+            case .superseded: return try rejected("superseded")
+            case .failed: return try rejected(IntentOutcome.reasonFailed)
+            case .notApplicable: return try rejected(IntentOutcome.reasonNotApplicable)
+            }
+        }
         let state = host.decisionState(of: entryID)
-        if state == .unknown { return try rejected(IntentOutcome.reasonUnknownEntry) }
+        if state == .unknown {
+            // Only Remove can be satisfied by a terminal durable row that
+            // has already left the live projection. Other unknown actions fail.
+            if case .removeFromLarder = intent.action, await host.removeEntryFromLarder(entryID) {
+                return try applied()
+            }
+            return try rejected(IntentOutcome.reasonUnknownEntry)
+        }
         let notApplicable = IntentOutcome.reasonNotApplicable
 
         switch intent.action {
@@ -254,7 +276,7 @@ final class WiltedMacIntentApplier {
             switch state {
             case .live(queued: true, _): return try result(await host.removeEntryFromLarder(entryID))
             // Already off the Larder, retired or not: the phone's aim is met.
-            case .live(queued: false, _), .retired: return try result(await host.removeEntryFromLarder(entryID))
+            case .live(queued: false, _), .retired, .dismissed: return try result(await host.removeEntryFromLarder(entryID))
             default: return try rejected(notApplicable)
             }
         case .restore:
@@ -317,8 +339,87 @@ extension WiltedMacModel: WiltedMacDecisionHost {
     private static let subscribeSlotWaitLimit = 40
     private static let decisionMovePoll: Duration = .milliseconds(50)
 
+    /// Carry the phone's original owner-choice time through the store's atomic guards.
+    func applyOwnerIntent(_ intent: LibraryIntent) async -> WiltedMacDatedDecisionResult? {
+        let id = intent.action.entryID
+        if case let .reorder(_, after) = intent.action, episodeAssociations[id.rawValue] != nil {
+            let members = logicalMemberIDs(id.rawValue)
+            let queue = decisionQueue
+            let moving = queue.filter { members.contains($0.rawValue) }
+            guard !moving.isEmpty else { return .notApplicable }
+            var rest = queue.filter { !members.contains($0.rawValue) }
+            let insertion: Int
+            if let after {
+                let anchors = logicalMemberIDs(after.rawValue)
+                guard anchors.isDisjoint(with: members), let index = rest.lastIndex(where: { anchors.contains($0.rawValue) }) else { return .notApplicable }
+                insertion = index + 1
+            } else { insertion = 0 }
+            rest.insert(contentsOf: moving, at: insertion)
+            // The model's queue replacement retains all raw slots and current selection.
+            guard let playback, let state = try? PodcastQueueState(episodeIDs: rest,
+                currentEpisodeID: currentPodcastEpisodeID.flatMap { try? ItemID(rawValue: $0) }) else { return .failed }
+            do { try await playback.replacePodcastQueue(state); await refreshPodcastQueueState(); return .applied }
+            catch { return .failed }
+        }
+        let choice: EpisodeDecision
+        switch intent.action {
+        case .keep, .restore: choice = .keep
+        case .skip, .markDone, .removeFromLarder: choice = .skip
+        default: return nil
+        }
+        guard let store else { return .failed }
+        do {
+            let value = EpisodeDecisionRecord(episodeID: id, decision: choice, source: .manual,
+                                             decidedAt: Timestamp(intent.createdAt))
+            guard try await store.episodeDecisionWouldApply(value) else { return .superseded }
+            if case .removeFromLarder = intent.action,
+               let removal = try await store.removalKind(for: id), removal == .retired || removal == .dismissed {
+                let acknowledged = await recordTerminalRemove(id, at: value.decidedAt)
+                return acknowledged ? .applied : .failed
+            }
+            // Durable terminal proof does not require a decodable live/feed row.
+            guard try await store.podcastEpisode(for: id) != nil else { return nil }
+            let state = decisionState(of: id)
+            if state == .unknown { return nil }
+            switch intent.action {
+            case .keep:
+                guard case .live = state, let display = episodes.first(where: { $0.id == id.rawValue }),
+                      let row = backingEpisode(for: display) else { return .notApplicable }
+                await awaitingDecisionWriters { decideFeedEpisodes(.keep, episodes: [row], at: value.decidedAt) }
+            case .restore:
+                _ = try await store.restoreEpisode(id, at: intent.createdAt, recordLiveOwnerChoice: true)
+                hiddenEpisodeIDs.subtract(logicalMemberIDs(id.rawValue))
+                await refreshPodcastQueueState()
+                await reloadLibraryRows()
+            case .skip, .markDone, .removeFromLarder:
+                if case .dismissed = state { return .notApplicable }
+                if case .retired = state {
+                    let result = try await store.save(episodeDecision: value)
+                    return result == .superseded ? .superseded : .applied
+                }
+                guard let row = episodes.first(where: { $0.id == id.rawValue }) else { return .failed }
+                if case .skip = intent.action, case .live(queued: false, _) = state {
+                    await awaitingDecisionWriters { decideFeedEpisodes(.skip, episodes: [row], at: value.decidedAt) }
+                } else {
+                    await awaitingDecisionWriters { finishEpisodes([row], at: value.decidedAt) }
+                }
+            default: return nil
+            }
+            if !(try await store.episodeDecisionWouldApply(value)) { return .superseded }
+            let saved = try await store.podcastEpisodeLogicalState(for: id)
+            guard saved?.manualDecidedAt == value.decidedAt, saved?.manualDecision == choice else { return .failed }
+            return .applied
+        } catch { return .failed }
+    }
+
     func decisionState(of entryID: ItemID) -> WiltedMacDecisionEntryState {
         let raw = entryID.rawValue
+        if let association = episodeAssociations[raw], association.isSupported {
+            if association.isTerminal { return .retired }
+            let members = logicalMemberIDs(raw)
+            return .live(queued: !members.isDisjoint(with: podcastQueueIDs),
+                         started: episodes.contains { members.contains($0.id) && hasStartedEpisode($0) })
+        }
         if let episode = episodes.first(where: { $0.id == raw }) {
             switch episode.removalKind {
             case .retired?: return .retired
@@ -339,30 +440,63 @@ extension WiltedMacModel: WiltedMacDecisionHost {
     }
 
     func skipEntry(_ entryID: ItemID) async -> Bool {
-        guard let episode = episodes.first(where: { $0.id == entryID.rawValue }) else { return false }
-        if decisionState(of: entryID) != .retired {
+        if case .live(queued: false, _) = decisionState(of: entryID),
+           let episode = episodes.first(where: { $0.id == entryID.rawValue }), !episode.isAudiobook {
             await awaitingDecisionWriters { skipFeedEpisode(episode) }
+            return decisionState(of: entryID) == .retired
         }
-        guard decisionState(of: entryID) == .retired, let store else { return false }
-        return await recordOwnerDecision(.skip, for: entryID.rawValue, store: store)
+        return await markEntryDone(entryID)
     }
 
     func markEntryDone(_ entryID: ItemID) async -> Bool {
-        guard let episode = episodes.first(where: { $0.id == entryID.rawValue }) else { return false }
-        if decisionState(of: entryID) != .retired {
-            await awaitingDecisionWriters { skipEpisode(episode, requireStarted: false) }
+        guard let episode = episodes.first(where: { $0.id == entryID.rawValue }), !episode.isAudiobook else { return false }
+        if decisionState(of: entryID) == .retired {
+            guard let store else { return false }
+            // Duplicate finish commands must preserve the receipt's exact
+            // post-decision. New intent chronology is handled separately.
+            do {
+                let decision = try await store.episodeDecision(for: entryID)
+                guard try await store.removalKind(for: entryID) == .retired else { return false }
+                if decision?.source == .manual, decision?.decision == .skip { return true }
+            } catch { return false }
+            return await recordOwnerDecision(.skip, for: episode.id, store: store)
         }
-        guard decisionState(of: entryID) == .retired, let store else { return false }
-        return await recordOwnerDecision(.skip, for: entryID.rawValue, store: store)
+        await awaitingDecisionWriters { skipEpisode(episode) }
+        return decisionState(of: entryID) == .retired
     }
 
     func removeEntryFromLarder(_ entryID: ItemID) async -> Bool {
-        // Keep the existing removal behavior; an already-off entry only needs provenance.
+        guard let episode = episodes.first(where: { $0.id == entryID.rawValue }) else {
+            // A late Remove can outlive the live-row projection. A durable
+            // terminal record is already off the Larder; unknown IDs are not.
+            return await recordTerminalRemove(entryID)
+        }
+        if !episode.isAudiobook {
+            guard let store else { return false }
+            do {
+                if let removal = try await store.removalKind(for: entryID),
+                   removal == .retired || removal == .dismissed { return await recordTerminalRemove(entryID) }
+            } catch { return false }
+            return await markEntryDone(entryID)
+        }
         if podcastQueueIDs.contains(entryID.rawValue) {
             await awaitingDecisionWriters { removeEpisodeFromUpNext(entryID.rawValue) }
         }
         guard !podcastQueueIDs.contains(entryID.rawValue), let store else { return false }
         return await recordOwnerDecision(.skip, for: entryID.rawValue, store: store)
+    }
+
+    private func recordTerminalRemove(_ entryID: ItemID, at: Timestamp = Timestamp(Date())) async -> Bool {
+        guard let store else { return false }
+        do {
+            let decision = try await store.episodeDecision(for: entryID)
+            guard let removal = try await store.removalKind(for: entryID),
+                  removal == .retired || removal == .dismissed else { return false }
+            // Repeated finish preserves receipt post-state and its timestamp.
+            // A policy exclusion or legacy terminal fact still needs owner provenance.
+            if decision?.source == .manual, decision?.decision == .skip { return true }
+            return await recordOwnerDecision(.skip, for: entryID.rawValue, store: store, at: at)
+        } catch { return false }
     }
 
     func restoreEntry(_ entryID: ItemID) async -> Bool {
@@ -371,6 +505,8 @@ extension WiltedMacModel: WiltedMacDecisionHost {
         case .retired:
             guard let episode = episodes.first(where: { $0.id == raw }) else { return false }
             await awaitingDecisionWriters { restoreSkippedFeedEpisode(episode) }
+            if case .live = decisionState(of: entryID) { return true }
+            return false
         case .dismissed:
             guard let dismissal = dismissedEpisodes.first(where: { $0.id == raw }) else { return false }
             restoreEpisode(dismissal)

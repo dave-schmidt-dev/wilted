@@ -92,11 +92,15 @@ extension WiltedPixelSnapshotTests {
         }
         guard expectedBitmap.pixelsWide == actualBitmap.pixelsWide,
               expectedBitmap.pixelsHigh == actualBitmap.pixelsHigh else {
+            attachSnapshotFailure(actualPNG: png, expectedPNG: expectedData, name: baseline.lastPathComponent)
             XCTFail("Snapshot dimensions changed for \(baseline.lastPathComponent)", file: file, line: line)
             return
         }
 
         let precision = pixelPrecision(expected: expectedBitmap, actual: actualBitmap)
+        if !(precision >= 0.99) {
+            attachSnapshotFailure(actualPNG: png, expectedPNG: expectedData, name: baseline.lastPathComponent)
+        }
         XCTAssertGreaterThanOrEqual(
             precision,
             0.99,
@@ -104,6 +108,16 @@ extension WiltedPixelSnapshotTests {
             file: file,
             line: line
         )
+    }
+
+    /// Retains both real images before reporting a comparison failure.
+    private func attachSnapshotFailure(actualPNG: Data, expectedPNG: Data, name: String) {
+        for (kind, data) in [("actual", actualPNG), ("expected", expectedPNG)] {
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+            attachment.name = "snapshot-\(name)-\(kind)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 
     enum SnapshotBaselineReplacementAction {

@@ -7,8 +7,14 @@ import WiltedSync
 extension LocalLibraryStore {
     public func record(preparation entry: PreparationJournalEntry) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
-        if let existing = records.first(where: { $0.id == entry.id }) {
+        let recordID = entry.id
+        var descriptor = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+            predicate: #Predicate { $0.id == recordID }
+        )
+        descriptor.fetchLimit = 1
+        let records = try context.fetch(descriptor)
+        preparationJournalLookupRowsRead += records.count
+        if let existing = records.first {
             existing.itemID = entry.itemID.rawValue; existing.requestID = entry.requestID
             existing.statusData = try JSONEncoder().encode(entry.status); existing.emittedAt = entry.status.emittedAt.date
         } else { context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(entry)) }

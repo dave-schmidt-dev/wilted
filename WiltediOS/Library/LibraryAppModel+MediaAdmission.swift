@@ -114,8 +114,49 @@ extension LibraryAppModel {
         return true
     }
 
-    func revokeRemovedQueueMedia(previous: Set<ItemID>, current: Set<ItemID>, context: LibraryMediaContext) async -> Bool {
-        for entryID in previous.subtracting(current) {
+    /// Playback withdrawal is independent of durable certificate revocation.
+    /// Run IDs fence late downloads/transcripts; the command token fences a
+    /// retained cache lookup even after rapid Remove/Undo of the same entry.
+    func withdrawQueuePlayback(_ entryID: ItemID) {
+        cancelMediaRequest(entryID: entryID)
+        cancelTranscript(entryID: entryID)
+        unacknowledgedMedia[entryID] = nil
+        if commandState.pending?.entryID == entryID { _ = beginExternalStart() }
+        if let player = handoffState.player, player.item?.entryID == entryID {
+            player.refreshPosition()
+            // Capture the real position before unloading publishes zero. The
+            // local record remains durable even if its cache lookup is held.
+            let stoppedAt = now()
+            handoffState.lastPosition = player.position
+            handoffState.lastPositionAt = stoppedAt
+            handoffState.lastItemEntry = entryID
+            handoffState.unpublished[entryID] = (player.position, stoppedAt)
+            saveLoadedPositionLocally(player.position)
+            player.invalidateLoadedItem()
+        }
+        media[entryID] = nil
+    }
+
+    func revokeRemovedQueueMedia(
+        previous: Set<ItemID>, current: Set<ItemID>, content: LibrarySnapshot,
+        context: LibraryMediaContext
+    ) async -> Bool {
+        // Membership withdrawal cannot wait behind an inventory lookup: a
+        // held download/start must not stall publication of its own removal.
+        let departed = previous.subtracting(current)
+        let dismissed = Set(content.entries.values.filter { $0.removal == .dismissed }.map(\.id))
+        let newlyDismissed = dismissed.filter { decisionContent.entries[$0]?.removal != .dismissed }
+        let immediate = departed.union(dismissed.intersection(previous.union(current))).union(newlyDismissed)
+        for entryID in immediate { withdrawQueuePlayback(entryID) }
+        guard await mediaContextIsCurrent(context, live: true) else { return false }
+        guard !dismissed.isEmpty else { return true }
+        let cached = await mediaCache.cachedEntries()
+        guard await mediaContextIsCurrent(context, live: true) else { return false }
+        // An unchanged lifetime dismissal with no certificate has nothing left
+        // to revoke. A cached certificate is still withdrawn even off queue.
+        let relevant = dismissed.intersection(immediate.union(cached.keys))
+        for entryID in relevant {
+            if !immediate.contains(entryID) { withdrawQueuePlayback(entryID) }
             guard await revokeMediaPreparation(entryID, context: context) else { return false }
         }
         return true

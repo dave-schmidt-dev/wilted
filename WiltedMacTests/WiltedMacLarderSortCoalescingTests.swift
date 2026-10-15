@@ -316,7 +316,7 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
             id: "status-\(group.rawValue)", title: group.displayName, detail: nil, statusGroup: group, items: items)
     }
 
-    func testStatusGroupsKeepTheFixedOrderReadyActiveDownloadedNotDownloaded() {
+    func testStatusGroupsKeepTheFixedOrderReadyDownloadedNotDownloadedActiveWork() {
         var downloading = episodeRow("downloading", seconds: 60)
         downloading.downloadState = .downloading(received: 1, expected: 2)
         let synthesizing = article("synth", ready: false)
@@ -329,11 +329,11 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
                                    items: [.article(synthesizing)]),
         ]
         let result = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .status)
-        XCTAssertEqual(result.map(\.title), ["Ready", "Active work", "Downloaded", "Not downloaded"])
+        XCTAssertEqual(result.map(\.title), ["Ready", "Downloaded", "Not downloaded", "Active work"])
         XCTAssertEqual(result[0].items.map(\.id), ["ready", "prepared"], "a prepared article is Ready")
-        XCTAssertEqual(Set(result[1].items.map(\.id)), ["synth", "downloading"], "in-flight work is Active work")
-        XCTAssertEqual(result[2].items.map(\.id), ["near"])
-        XCTAssertEqual(result[3].items.map(\.id), ["far"])
+        XCTAssertEqual(result[1].items.map(\.id), ["near"])
+        XCTAssertEqual(result[2].items.map(\.id), ["far"])
+        XCTAssertEqual(Set(result[3].items.map(\.id)), ["synth", "downloading"], "in-flight work is Active work")
     }
 
     func testAnArticleAndAnEpisodeInReadySortTogetherUnderAll() {
@@ -421,9 +421,74 @@ final class WiltedMacLarderSortCoalescingTests: XCTestCase {
         ]
         let result = WiltedMacEpisodePresentationSections.displaySections(
             source, grouping: .status, statusGroups: WiltedMacLarderGroup.allCases)
-        XCTAssertEqual(result.map(\.title), ["Ready", "Active work", "Downloaded", "Not downloaded"])
-        XCTAssertEqual(Set(result[1].items.map(\.id)), ["downloading", "synth"])
-        XCTAssertTrue(result[3].items.isEmpty, "Not downloaded keeps its heading once its row is in flight")
+        XCTAssertEqual(result.map(\.title), ["Ready", "Downloaded", "Not downloaded", "Active work"])
+        XCTAssertTrue(result[0].items.isEmpty)
+        XCTAssertTrue(result[1].items.isEmpty)
+        XCTAssertTrue(result[2].items.isEmpty, "Not downloaded keeps its heading once its row is in flight")
+        XCTAssertEqual(Set(result[3].items.map(\.id)), ["downloading", "synth"])
         XCTAssertFalse(result.contains { $0.id == "status-synthesizing" }, "a groupless section is never kept empty")
+    }
+
+    func testNextActionableRowAdvancesAsFirstRowBecomesQueuedOrDownloadingAndFailureOrCancelRestoresAvailable() {
+        var ep1 = episodeRow("ep-1", seconds: 100)
+        let ep2 = episodeRow("ep-2", seconds: 200)
+        let ep3 = episodeRow("ep-3", seconds: 300)
+
+        // 1. Initial state: all three episodes are not downloaded (.available)
+        ep1.downloadState = .notDownloaded
+        var source = [section(.available, [.episode(ep1), .episode(ep2), .episode(ep3)])]
+        var displayed = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .status)
+        XCTAssertEqual(displayed.map(\.title), ["Not downloaded"])
+        XCTAssertEqual(displayed[0].items.map(\.id), ["ep-1", "ep-2", "ep-3"])
+
+        // 2. ep1 is queued: moves to Active work (appended after Not downloaded), ep2 advances under pointer
+        ep1.downloadState = .queued
+        source = [section(.available, [.episode(ep1), .episode(ep2), .episode(ep3)])]
+        displayed = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .status)
+        XCTAssertEqual(displayed.map(\.title), ["Not downloaded", "Active work"])
+        XCTAssertEqual(displayed[0].items.map(\.id), ["ep-2", "ep-3"], "next actionable row advances under pointer")
+        XCTAssertEqual(displayed[1].items.map(\.id), ["ep-1"], "in-flight download sits in Active work below")
+
+        // 3. ep1 transitions to downloading: ep2 remains at the top of Not downloaded
+        ep1.downloadState = .downloading(received: 50, expected: 100)
+        source = [section(.available, [.episode(ep1), .episode(ep2), .episode(ep3)])]
+        displayed = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .status)
+        XCTAssertEqual(displayed.map(\.title), ["Not downloaded", "Active work"])
+        XCTAssertEqual(displayed[0].items.map(\.id), ["ep-2", "ep-3"])
+        XCTAssertEqual(displayed[1].items.map(\.id), ["ep-1"])
+
+        // 4. ep1 fails: Active work vanishes, ep1 returns to available list
+        ep1.downloadState = .failed
+        source = [section(.available, [.episode(ep1), .episode(ep2), .episode(ep3)])]
+        displayed = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .status)
+        XCTAssertEqual(displayed.map(\.title), ["Not downloaded"], "Active work vanishes when nothing is in flight")
+        XCTAssertEqual(displayed[0].items.map(\.id), ["ep-1", "ep-2", "ep-3"], "failed download returns to available list")
+
+        // 5. ep1 is queued again, then cancelled: cancellation also restores ep1 to available list
+        ep1.downloadState = .queued
+        source = [section(.available, [.episode(ep1), .episode(ep2), .episode(ep3)])]
+        displayed = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .status)
+        XCTAssertEqual(displayed.map(\.title), ["Not downloaded", "Active work"])
+        XCTAssertEqual(displayed[0].items.map(\.id), ["ep-2", "ep-3"])
+
+        ep1.downloadState = .cancelled
+        source = [section(.available, [.episode(ep1), .episode(ep2), .episode(ep3)])]
+        displayed = WiltedMacEpisodePresentationSections.displaySections(source, grouping: .status)
+        XCTAssertEqual(displayed.map(\.title), ["Not downloaded"])
+        XCTAssertEqual(displayed[0].items.map(\.id), ["ep-1", "ep-2", "ep-3"], "cancelled download returns to available list")
+    }
+
+    func testFeedAndDateGroupingPreserveActiveWorkAtTopAndRelativeOrder() {
+        var downloading = episodeRow("ep-active", seconds: 120)
+        downloading.downloadState = .downloading(received: 10, expected: 100)
+        let quiet = episodeRow("ep-quiet", seconds: 120)
+        let feeds = [
+            WiltedMacLarderSection(id: "feed-1", title: "Feed 1", detail: nil, statusGroup: nil,
+                                   items: [.episode(downloading), .episode(quiet)])
+        ]
+        let byFeed = WiltedMacEpisodePresentationSections.displaySections(feeds, grouping: .feed)
+        XCTAssertEqual(byFeed.map(\.id), ["active-work", "feed-1"], "Feed grouping keeps Active work at the top")
+        XCTAssertEqual(byFeed[0].items.map(\.id), ["ep-active"])
+        XCTAssertEqual(byFeed[1].items.map(\.id), ["ep-quiet"])
     }
 }

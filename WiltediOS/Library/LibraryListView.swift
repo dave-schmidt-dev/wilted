@@ -130,8 +130,17 @@ struct LibraryListView: View {
 
     var body: some View {
         let rows = model.visibleRows
+        let progress = model.logicalProgress
+        let finished = model.logicalFinished
         let sections = LibraryListing.organize(rows, sort: sort, group: group)
         List {
+            if let completion = model.undoableCompletion {
+                Section {
+                    Button("Restore completion") { model.performDecision(.restore, entryID: completion) }
+                        .disabled(model.pendingDecision(for: completion) != nil)
+                        .accessibilityIdentifier("wilted-library-undo-completion")
+                }
+            }
             if let banner = model.syncBanner {
                 Section {
                     LibrarySyncBannerView(banner: banner, publicationSummary: model.publicationSummary,
@@ -151,7 +160,7 @@ struct LibraryListView: View {
                 }
                 ForEach(sections) { section in
                     Section {
-                        ForEach(section.rows) { row in episodeRow(row, showsShowName: section.namesShowInRows) }
+                        ForEach(section.rows) { row in episodeRow(row, showsShowName: section.namesShowInRows, progress: progress[row.id], finished: finished) }
                     } header: {
                         sectionHeader(section, total: rows.count)
                     }
@@ -198,19 +207,19 @@ struct LibraryListView: View {
     /// One Larder row, its swipes and its VoiceOver actions. A row under a feed section header is
     /// told so, and leaves the show out of its detail line. Kept out of `body` so the list type-checks quickly.
     @ViewBuilder
-    private func episodeRow(_ row: LibraryRow, showsShowName: Bool) -> some View {
+    private func episodeRow(_ row: LibraryRow, showsShowName: Bool, progress: EpisodeProgress?, finished: [ItemID: Date]) -> some View {
         // A tap on the row opens the episode. Not a NavigationLink: while the drag
         // handles show, the list is in edit mode and a link would stop navigating.
         LibraryRowView(
             row: row, media: model.mediaState(for: row.id),
-            isPlaying: playingID == row.id,
+            isPlaying: model.sameLogicalEpisode(playingID, row.id),
             onMedia: { model.performMediaAction($0, entryID: row.id) },
             onPlay: onPlay.map { play in { play(row) } },
             decisionStatus: model.decisionStatus(for: row.id),
             onDecision: { model.performDecision($0, entryID: row.id) },
             onCancelDecision: { model.cancelDecision(entryID: row.id) },
-            player: player, progress: model.progress[row.id],
-            isCompleted: LibraryListing.completionDate(row, finished: model.finished) != nil,
+            player: player, progress: progress,
+            isCompleted: LibraryListing.completionDate(row, finished: finished) != nil,
             voiceOverActions: voiceOverActions(for: row),
             showsShowName: showsShowName)
         .contentShape(Rectangle())
@@ -220,7 +229,7 @@ struct LibraryListView: View {
         .swipeActions(edge: .leading, allowsFullSwipe: true) { swipeButtons(leading(for: row), row: row) }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) { swipeButtons(trailing(for: row), row: row) }
         .listRowBackground(WiltedTheme.color(.card, scheme: colorScheme))
-        .disabled(!model.queued.contains { $0.id == row.id })
+        .disabled(model.logicalRow(for: row.id) == nil)
     }
 
     private var isConfirming: Binding<Bool> {
@@ -234,7 +243,7 @@ struct LibraryListView: View {
     }
 
     private func trailing(for row: LibraryRow) -> [LibrarySwipe] {
-        LibrarySwipe.trailing(media: model.mediaState(for: row.id), isPlaying: playingID == row.id)
+        LibrarySwipe.trailing(media: model.mediaState(for: row.id), isPlaying: model.sameLogicalEpisode(playingID, row.id))
     }
 
     /// What VoiceOver can do to a row by name: open it, plus every swipe action, through the same

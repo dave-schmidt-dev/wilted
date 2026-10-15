@@ -271,6 +271,9 @@ extension WiltedMacModel {
 
     func cancelPendingTemporaryStateWork() {
         stopLibrarySync()
+#if canImport(WiltedProducer)
+        cancelPlaybackPresentation()
+#endif
         startupTask?.cancel()
         preparationTask?.cancel()
         syncReconciliationTask?.cancel()
@@ -282,11 +285,14 @@ extension WiltedMacModel {
         fixturePodcastInstallTask?.cancel()
         fixtureInstallTask?.cancel()
         playbackOperationTask?.cancel()
+        manualCompletionRecoveryTask?.cancel()
+        manualCompletionExpiryTask?.cancel()
         larderAdditionTask?.cancel()
         for task in podcastDownloadTasks.values { task.cancel() }
         for task in podcastPreparationTasks.values { task.cancel() }
         for task in podcastRestoreTasks.values { task.cancel() }
         for task in subscriptionWriteTasks.values { task.cancel() }
+        for task in playbackPresentationTasks.values { task.cancel() }
         cancelAutomationForTemporaryState()
         syncLifecycle?.cancel()
     }
@@ -308,11 +314,14 @@ extension WiltedMacModel {
             let fixtureInstall = fixturePodcastInstallTask
             let articleFixtureInstall = fixtureInstallTask
             let playbackOperation = playbackOperationTask
+            let completionRecovery = manualCompletionRecoveryTask
+            let completionExpiry = manualCompletionExpiryTask
             let larderAddition = larderAdditionTask
             let downloads = Array(podcastDownloadTasks.values)
             let preparations = Array(podcastPreparationTasks.values)
             let restores = Array(podcastRestoreTasks.values)
             let subscriptionWrites = Array(subscriptionWriteTasks.values)
+            let presentations = Array(playbackPresentationTasks.values)
             await preparation?.value
             await reconciliation?.value
             await refresh?.value
@@ -323,11 +332,14 @@ extension WiltedMacModel {
             await fixtureInstall?.value
             await articleFixtureInstall?.value
             await playbackOperation?.value
+            await completionRecovery?.value
+            await completionExpiry?.value
             await larderAddition?.value
             for task in downloads { _ = try? await task.value }
             for task in preparations { await task.value }
             for task in restores { await task.value }
             for task in subscriptionWrites { await task.value }
+            for task in presentations { await task.value }
         }
         await waitForAutomationForTemporaryState()
         await syncLifecycle?.close()

@@ -290,13 +290,13 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertEqual(ids(model.visibleRows), ["18", "19", "20", "21"], "the model's own list stays in the play order")
     }
 
-    func testRemoveFromLarderIsTheOnlyDecisionOnAnUnstartedRow() async throws {
+    func testUnstartedQueuedPodcastOffersBothManualFinishActions() async throws {
         try await seed(["a", "b"])
         try await offer("a")
         try await offer("b")
         let model = makeModel()
         await model.refresh()
-        XCTAssertEqual(model.decisionActions(for: model.visibleRows[0]), [.removeFromLarder])
+        XCTAssertEqual(model.decisionActions(for: model.visibleRows[0]), [.removeFromLarder, .markDone])
     }
 
     func testCheckpointLineSpeaksForThisPhoneOnceItHasTheEpisode() {

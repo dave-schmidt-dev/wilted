@@ -140,6 +140,7 @@ public struct PodcastPreparationResult: Sendable {
     public let adSegments: [PodcastAdSegment]
     public let removedSeconds: Double
     public let adRemovalOutcome: String
+    public var warning: String? = nil
     public var audioWasCut: Bool { removedSeconds > 0 }
 
     /// What the run did, for the row: "Ready · 5 ads removed (7:22) ·
@@ -150,16 +151,18 @@ public struct PodcastPreparationResult: Sendable {
     /// outlives the process that knew it.
     public var summary: String {
         Self.summary(advertisements: adSegments.count, secondsRemoved: removedSeconds, timing: transcript.timing,
-                     adRemovalOutcome: adRemovalOutcome)
+                     adRemovalOutcome: adRemovalOutcome, warning: warning)
     }
 
     public static let readyLabel = "Ready"
 
     public static func summary(advertisements: Int, secondsRemoved: Double, timing: TranscriptTiming,
-                               adRemovalOutcome: String? = nil) -> String {
+                               adRemovalOutcome: String? = nil, warning: String? = nil) -> String {
         var parts: [String] = [readyLabel]
         if adRemovalOutcome == "disabled" {
             parts.append("ad removal disabled")
+        } else if adRemovalOutcome == "uncertain" {
+            parts.append(warning ?? "original audio includes ads; ad removal could not be verified")
         } else if advertisements > 0, secondsRemoved > 0 {
             let removed = clock(secondsRemoved)
             parts.append(advertisements == 1 ? "1 ad removed (\(removed))" : "\(advertisements) ads removed (\(removed))")

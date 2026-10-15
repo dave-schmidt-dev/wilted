@@ -163,6 +163,32 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
 
     // MARK: Manual decisions
 
+    func testMixedDatedManualKeepContinuesAfterSupersededItemWithoutOfferingItsDownload() async throws {
+        let fixture = try await makeFixture(
+            policy: FeedAutomationPolicy(autoDownload: .on),
+            storedEpisodes: [.init("first", day: 1), .init("stale", day: 2), .init("last", day: 3)]
+        )
+        let staleID = try ItemID(rawValue: fixture.id("stale"))
+        let at = Timestamp(Date(timeIntervalSince1970: 1_704_000_000))
+        let newer = Timestamp(at.date.addingTimeInterval(100))
+        try await fixture.store.save(episodeDecision: .init(
+            episodeID: staleID, decision: .skip, source: .manual, decidedAt: newer
+        ))
+        let captured = try ["first", "stale", "last"].map { try XCTUnwrap(fixture.episode($0)) }
+        let outcome = try await fixture.model.commitManualKeep(captured, store: fixture.store, at: at)
+        let expected = Set([fixture.id("first"), fixture.id("last")])
+        XCTAssertEqual(outcome.accepted, expected)
+        XCTAssertEqual(outcome.changed, expected)
+        XCTAssertEqual(outcome.unresolved, [fixture.id("stale")])
+        XCTAssertEqual(Set(outcome.downloads.map(\.id)), expected)
+        XCTAssertEqual(outcome.queueIDs, [fixture.id("first"), fixture.id("last")])
+        let downloads = try await fixture.tickets(.podcastDownload)
+        XCTAssertEqual(Set(downloads.map(\.subjectID)), expected)
+        let decision = try await fixture.store.episodeDecision(for: staleID)
+        XCTAssertEqual(decision?.decision, .skip)
+        XCTAssertEqual(decision?.decidedAt, newer)
+    }
+
     func testManualKeepOnDownloadOffFeedIssuesNoDownloadTicketDespiteGlobalDownloadEverything() async throws {
         let fixture = try await makeFixture(
             policy: FeedAutomationPolicy(autoDownload: .off), storedEpisodes: [.init("a", day: 1)],
@@ -294,8 +320,16 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
             storedEpisodes: [.init("a", day: 1), .init("b", day: 2), .init("c", day: 3)],
             keptStored: ["a"]
         )
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        fixture.model.manualCompletionNow = { now }
 
         fixture.model.skipEpisode(try XCTUnwrap(fixture.episode("a")), requireStarted: false)
+        await fixture.drain()
+        let beforeSeal = try await fixture.store.episodeDecision(for: ItemID(rawValue: fixture.id("b")))
+        XCTAssertNil(beforeSeal,
+                     "Undo holds the automatic slot")
+        now = now.addingTimeInterval(10)
+        await fixture.model.recoverManualCompletionWindows()
         await fixture.drain()
 
         XCTAssertEqual(fixture.model.podcastQueueIDs.last, fixture.id("b"), "b is the oldest waiting episode")
@@ -309,8 +343,16 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
             storedEpisodes: [.init("a", day: 1), .init("b", day: 2), .init("c", day: 3)],
             keptStored: ["a"]
         )
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        fixture.model.manualCompletionNow = { now }
 
         fixture.model.removeEpisode(try XCTUnwrap(fixture.episode("a")))
+        await fixture.drain()
+        let beforeSeal = try await fixture.store.episodeDecision(for: ItemID(rawValue: fixture.id("b")))
+        XCTAssertNil(beforeSeal,
+                     "Undo holds the automatic slot")
+        now = now.addingTimeInterval(10)
+        await fixture.model.recoverManualCompletionWindows()
         await fixture.drain()
 
         XCTAssertEqual(fixture.model.podcastQueueIDs, [fixture.id("b")], "removing a frees the slot for b")
@@ -341,6 +383,22 @@ final class EpisodeAdmissionServiceTests: XCTestCase {
 
         XCTAssertEqual(result.map(\.episodeID), ["old", "new"])
         XCTAssertEqual(result.first?.workTicketKinds, [.podcastDownload, .podcastPreparation])
+    }
+
+    func testRuleAndPolicyKeepsShareTheCeilingAndUndoReservation() throws {
+        let rules = EpisodeMatchRules(rules: [.init(field: .title, includePattern: "Episode", action: .keep)])
+        let policy = EffectiveFeedAutomationPolicy(autoKeep: true, autoDownload: true, autoPrepare: true, keptLimit: 1)
+        for evaluatedRules in [rules, EpisodeMatchRules()] {
+            let blocked = EpisodeAdmissionService.plan(candidates: [candidate("old", 1), candidate("new", 2)],
+                keptEpisodeIDs: [], manualDecisions: [:], rules: evaluatedRules, policy: policy, reservedCapacity: 1)
+            XCTAssertTrue(blocked.isEmpty)
+            let released = EpisodeAdmissionService.plan(candidates: [candidate("new", 2), candidate("old", 1)],
+                keptEpisodeIDs: [], manualDecisions: [:], rules: evaluatedRules, policy: policy)
+            XCTAssertEqual(released.map(\.episodeID), ["old"])
+            let over = EpisodeAdmissionService.plan(candidates: [candidate("new", 2)],
+                keptEpisodeIDs: ["kept", "restored"], manualDecisions: [:], rules: evaluatedRules, policy: policy)
+            XCTAssertTrue(over.isEmpty)
+        }
     }
 
     func testFeedOffAndGlobalDefaultsResolveIndependently() {

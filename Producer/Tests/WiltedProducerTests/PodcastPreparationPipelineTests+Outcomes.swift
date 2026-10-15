@@ -199,6 +199,142 @@ extension PodcastPreparationPipelineTests {
         }
     }
 
+    @Test func realPythonUncertainResponsesDecodeUnderTheSwiftContract() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        let python = ProcessInfo.processInfo.environment["WILTED_PIPELINE_PYTHON"]
+            ?? "/opt/homebrew/opt/python@3.15/bin/python3.15"
+        process.arguments = ["-u", "PYTHONPATH", python, "-B", "-c",
+                             "import json; from test_wilted_pipeline import uncertain_contract_payloads; print(json.dumps(uncertain_contract_payloads()))"]
+        process.currentDirectoryURL = root.appendingPathComponent("Producer/Workers")
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+        let bytes = output.fileHandleForReading.readDataToEndOfFile()
+        let errorBytes = errors.fileHandleForReading.readDataToEndOfFile()
+        #expect(process.terminationStatus == 0, "synthetic Python worker contract failed: \(String(decoding: errorBytes, as: UTF8.self))")
+        let entries = try #require(JSONSerialization.jsonObject(with: bytes) as? [[String: Any]])
+        #expect(entries.compactMap { $0["scenario"] as? String } == ["missing-model", "share-ceiling", "declined-unresolved"])
+        for entry in entries {
+            let response = try #require(entry["payload"] as? [String: Any])
+            let payload = try Self.decodeResponse(response)
+            #expect(payload.adRemovalOutcome == "uncertain")
+            #expect(!payload.audioChanged && payload.adSegments.isEmpty && payload.keepIntervals.isEmpty)
+            #expect(payload.warning?.contains("original audio includes ads") == true)
+            #expect(payload.adAuditDiagnostics["incompleteError"]?.isEmpty == false)
+        }
+    }
+
+    private func uncertainResponse(audioPath: String = "/tmp/original.mp3") -> [String: Any] {
+        let warning = "original audio includes ads: classifier could not resolve IDs 0, 1"
+        var audit = WorkerStub.cleanAudit()
+        audit["unresolvedIds"] = [0, 1]
+        audit["incompleteError"] = "classifier could not resolve IDs 0, 1"
+        audit["warning"] = warning
+        audit["heldSpans"] = [[String: Any]]()
+        audit["declinedCommercialEvidenceSeeds"] = [[String: Any]]()
+        return ["ok": true, "protocolVersion": 2, "timing": "none", "audioPath": audioPath,
+                "audioChanged": false, "durationSeconds": 12.0, "removedSeconds": 0.0,
+                "adSegments": [[String: Any]](), "keepIntervals": [[String: Any]](),
+                "report": ["outcome": "uncertain", "rawNominations": [[String: Any]](),
+                           "warning": warning, "audit": audit]]
+    }
+
+    @Test func acceptsUncertaintyWithHonestDiagnosticsAndNoCuts() throws {
+        var response = uncertainResponse()
+        let payload = try Self.decodeResponse(response)
+        #expect(payload.adRemovalOutcome == "uncertain")
+        #expect(payload.warning?.contains("original audio includes ads") == true)
+        #expect(!payload.audioChanged && payload.keepIntervals.isEmpty && payload.adSegments.isEmpty)
+        var report = response["report"] as! [String: Any]
+        var audit = report["audit"] as! [String: Any]
+        audit["modelRequests"] = 0
+        audit["modelFailures"] = 0
+        audit["classifierRequests"] = 0
+        audit["classifierValidRequests"] = 0
+        report["audit"] = audit
+        response["report"] = report
+        #expect(try Self.decodeResponse(response).adRemovalOutcome == "uncertain")
+    }
+
+    private static func decodeResponse(_ response: [String: Any]) throws -> PodcastPreparationPipeline.WorkerPayload {
+        try PodcastPreparationPipeline.decode(JSONSerialization.data(withJSONObject: response))
+    }
+
+    @Test func rejectsDishonestOrMalformedUncertainEvidence() throws {
+        let changes: [(String, Any)] = [
+            ("audioChanged", true), ("removedSeconds", 1.0), ("durationSeconds", 0.0),
+            ("adSegments", [["startSeconds": 1.0, "endSeconds": 2.0, "label": "ad", "confidence": 0.9]]),
+            ("keepIntervals", [["startSeconds": 0.0, "endSeconds": 12.0, "outputStartSeconds": 0.0]])
+        ]
+        for (key, value) in changes {
+            var response = uncertainResponse()
+            response[key] = value
+            #expect(throws: PodcastPreparationError.self) { _ = try Self.decodeResponse(response) }
+        }
+        for (key, value) in [("modelRequests", -1 as Any), ("modelFailures", "bad" as Any),
+                             ("experimentalRequests", 1 as Any), ("unresolvedIds", [-1] as Any),
+                             ("incompleteError", NSNull() as Any), ("heldSpans", "bad" as Any)] {
+            var response = uncertainResponse()
+            var report = response["report"] as! [String: Any]
+            var audit = report["audit"] as! [String: Any]
+            audit[key] = value
+            report["audit"] = audit
+            response["report"] = report
+            #expect(throws: PodcastPreparationError.self) { _ = try Self.decodeResponse(response) }
+        }
+        for outcome in ["noAds", "cut"] {
+            var response = uncertainResponse()
+            var report = response["report"] as! [String: Any]
+            report["outcome"] = outcome
+            response["report"] = report
+            #expect(throws: PodcastPreparationError.self) { _ = try Self.decodeResponse(response) }
+        }
+        var response = uncertainResponse()
+        var report = response["report"] as! [String: Any]
+        report["warning"] = ""
+        response["report"] = report
+        #expect(throws: PodcastPreparationError.self) { _ = try Self.decodeResponse(response) }
+    }
+
+    @Test func uncertaintyCompletesWithOriginalAudioAndDurableJournalWarning() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let result = try await fixture.pipeline(WorkerStub(response: uncertainResponse(audioPath: fixture.audioURL.path)))
+            .prepare(episodeID: fixture.episodeID)
+        #expect(result.revision.revisionID == fixture.revisionID)
+        #expect(result.mediaURL == fixture.audioURL)
+        #expect(try Data(contentsOf: result.mediaURL) == Data("original-audio-bytes".utf8))
+        #expect(result.summary.contains("original audio includes ads"))
+        #expect(!result.summary.contains("no ads found"))
+        let reopened = try LocalLibraryStore(url: fixture.root.appendingPathComponent("library.sqlite"))
+        let entries = try await reopened.preparationJournal(for: PodcastPreparationPipeline.requestID(for: fixture.episodeID))
+        let terminal = try #require(entries.last { $0.status.terminal })
+        #expect(terminal.status.terminalResult?.outcome == .succeeded)
+        #expect(terminal.status.detail.contains("original audio includes ads"))
+        let evidence = try #require(entries.first { $0.id.contains("|pipeline.result#") })
+        #expect(evidence.status.detail.contains("original audio includes ads"))
+        #expect(evidence.status.evidence?.fields["warning"]?.contains("original audio includes ads") == true)
+        #expect(evidence.status.evidence?.fields["unresolvedIds"] == "0,1")
+        #expect(evidence.status.evidence?.fields["modelRequests"] == "3")
+    }
+
+    @Test func rejectsUncertaintyThatNamesDifferentAudioBeforeCommit() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        await #expect(throws: PodcastPreparationError.self) {
+            _ = try await fixture.pipeline(WorkerStub(response: uncertainResponse(audioPath: "/tmp/changed.mp3")))
+                .prepare(episodeID: fixture.episodeID)
+        }
+        #expect(try Data(contentsOf: fixture.audioURL) == Data("original-audio-bytes".utf8))
+    }
+
     private var cleanAuditJSON: String {
         #"{"modelRequests":3,"modelFailures":0,"experimentalRequests":0,"unresolvedIds":[],"incompleteError":null}"#
     }

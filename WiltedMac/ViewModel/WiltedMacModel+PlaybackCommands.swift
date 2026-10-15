@@ -100,10 +100,15 @@ struct WiltedMacPlaybackCommandState {
     /// Speed saves that have finished, current or stale; lets a caller
     /// await a stale save without a timer.
     var settledSpeedSaves = 0
+    /// Bounded local stage tracing for Task 1.1: in-memory only, no output.
+    var trace = WiltedMacPlaybackTrace()
     /// Test seam: runs after a command is admitted and before its effect.
     var beforeEffectForTesting: (@MainActor (WiltedMacPlaybackCommand) async -> Void)?
     /// Test seam: suspends publication independently of the audio backend.
     var beforeCheckpointForTesting: (@MainActor () async -> Void)?
+    /// Test seam: suspends the post-play transcript tail so the wait a later
+    /// command inherits can be caused rather than raced.
+    var beforeTranscriptTailForTesting: (@MainActor () async -> Void)?
     var checkpointCapturedForTesting: (@MainActor (PlaybackState) async -> Void)?
     /// Test seam: replaces the durable speed write.
     var speedSaveForTesting: (@MainActor (Double) async throws -> Void)?
@@ -160,19 +165,25 @@ extension WiltedMacModel {
         )
         if kind == .select { playbackCommands.selectionToken = command.token }
         playbackCommands.pending = message.map { WiltedMacPlaybackPending(command: command, message: $0) }
+        playbackCommands.trace.record(.acknowledged, token: command.token)
         // The newer intent replaces the older answer, including the error
         // line it wrote, but never an error something else wrote.
         if let failure = playbackCommands.failure, playbackError == failure.message { playbackError = nil }
         playbackCommands.failure = nil
         enqueuePlaybackEffect { [weak self] in
             guard let self else { return }
-            defer { self.settlePlaybackCommand(command) }
+            self.playbackCommands.trace.record(.inheritedWaitEnded, token: command.token)
+            defer {
+                self.playbackCommands.trace.record(.settled, token: command.token)
+                self.settlePlaybackCommand(command)
+            }
             guard self.isCurrentPlaybackCommand(command) else { return }
             do {
                 if let hook = self.playbackCommands.beforeEffectForTesting {
                     await hook(command)
                     try self.ensureCurrentPlaybackCommand(command)
                 }
+                self.playbackCommands.trace.record(.effectAdmitted, token: command.token)
                 try await effect(command)
             } catch is WiltedMacPlaybackSuperseded {
             } catch is CancellationError {
@@ -257,8 +268,8 @@ extension WiltedMacModel {
     func startPlayback() {
         guard let playback, playbackCommands.pending == nil,
               !(playback.liveIsPlaying || isPlaying) else { return }
-        issuePlaybackCommand(.start, pending: WiltedMacPlaybackCopy.starting) { [weak self] _ in
-            try await self?.startLoadedPlayback(playback)
+        issuePlaybackCommand(.start, pending: WiltedMacPlaybackCopy.starting) { [weak self] command in
+            try await self?.startLoadedPlayback(playback, token: command.token)
         }
     }
 
@@ -275,13 +286,14 @@ extension WiltedMacModel {
         let startPending = playbackCommands.pending?.command.kind.startsAudio == true
         guard startPending || playback.liveIsPlaying || isPlaying else { return }
         issuePlaybackCommand(.pause, pending: nil,
-                             failureMessage: WiltedMacPlaybackCopy.pauseNotSaved) { [weak self] _ in
+                             failureMessage: WiltedMacPlaybackCopy.pauseNotSaved) { [weak self] command in
             guard let self else { return }
             defer { self.isPlaying = playback.liveIsPlaying }
             guard playback.revisionID != nil else { return }
             try await playback.checkpoint()
             self.refreshPlaybackReadout()
             self.enqueueCurrentPlaybackCheckpoint()
+            self.playbackCommands.trace.record(.checkpointEnqueued, token: command.token)
         }
         // Nothing loaded yet means nothing is audible; the superseded
         // selection will not start it.
@@ -330,16 +342,19 @@ extension WiltedMacModel {
     func startIfCurrent(_ playback: PlaybackController, for command: WiltedMacPlaybackCommand) throws {
         guard isCurrentPlaybackCommand(command) else { return }
         _ = try playback.start()
+        playbackCommands.trace.record(.playCalled, token: command.token)
         isPlaying = playback.isPlaying
         if playbackCommands.pending?.command.token == command.token { playbackCommands.pending = nil }
     }
 
     /// Starts the loaded media and mirrors only what the backend reports.
-    func startLoadedPlayback(_ playback: PlaybackController) async throws {
+    func startLoadedPlayback(_ playback: PlaybackController, token: UInt64? = nil) async throws {
         _ = try playback.start()
+        if let token { playbackCommands.trace.record(.playCalled, token: token) }
         isPlaying = playback.isPlaying
         refreshPlaybackReadout()
         enqueueCurrentPlaybackCheckpoint()
+        if let token { playbackCommands.trace.record(.checkpointEnqueued, token: token) }
     }
 
     /// A seek or scrub. Superseding a pending start cancels that start, so
@@ -348,7 +363,7 @@ extension WiltedMacModel {
                       _ move: @escaping @MainActor (PlaybackController) async throws -> Void) {
         guard let playback else { return }
         let cancelsStart = playbackCommands.pending?.command.kind.startsAudio == true
-        issuePlaybackCommand(.seek, pending: nil) { [weak self] _ in
+        issuePlaybackCommand(.seek, pending: nil) { [weak self] command in
             guard let self else { return }
             if cancelsStart, playback.liveIsPlaying { try await playback.pause() }
             try await move(playback)
@@ -356,6 +371,7 @@ extension WiltedMacModel {
             self.refreshPlaybackReadout()
             if publishesJump { self.publishNowPlaying(force: true) }
             self.enqueueCurrentPlaybackCheckpoint()
+            self.playbackCommands.trace.record(.checkpointEnqueued, token: command.token)
         }
     }
 
@@ -363,12 +379,13 @@ extension WiltedMacModel {
     func restartPlayback() {
         guard let playback else { return }
         issuePlaybackCommand(.restart, pending: nil,
-                             failureMessage: "Playback restart is unavailable.") { [weak self] _ in
+                             failureMessage: "Playback restart is unavailable.") { [weak self] command in
             guard let self else { return }
             try await playback.restart()
             self.isPlaying = playback.isPlaying
             self.refreshPlaybackReadout()
             self.enqueueCurrentPlaybackCheckpoint()
+            self.playbackCommands.trace.record(.checkpointEnqueued, token: command.token)
         }
     }
 
