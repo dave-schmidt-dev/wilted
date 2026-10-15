@@ -91,6 +91,11 @@ extension WiltedMacModel {
     func previousPlayback() { navigatePodcastQueue(previous: true) }
     func nextPlayback() { navigatePodcastQueue(previous: false) }
 
+    /// Whether an automatic advance is actively loading the next item.
+    var isAutomaticAdvancing: Bool {
+        playbackCommands.automaticAdvance != nil && playbackCommands.pending == nil
+    }
+
     /// Retires the loaded episode without playing the rest of it.
     ///
     /// The listener who is finished at 91% has no other way to close an
@@ -112,8 +117,21 @@ extension WiltedMacModel {
             projectEpisodeCompletions([episode])
             let advance = beginAutomaticAdvance()
             trackSubscriptionWrite { [weak self] in
-                guard let self, await self.finishCurrentPodcast(episode),
-                      self.claimAutomaticAdvance(advance) == .owns else { return }
+                guard let self else { return }
+                let finished = await self.finishCurrentPodcast(episode)
+                guard finished else {
+                    if self.playbackCommands.automaticAdvance == advance.serial {
+                        self.playbackCommands.automaticAdvance = nil
+                    }
+                    return
+                }
+                let claim = self.claimAutomaticAdvance(advance)
+                guard claim == .owns else {
+                    if self.playbackCommands.automaticAdvance == advance.serial {
+                        self.playbackCommands.automaticAdvance = nil
+                    }
+                    return
+                }
                 // Finishing withdrew the current podcast selection. Use the
                 // shared Ready selector after durable success and ownership.
                 if let next = self.nextLarderEpisodeToPlay() { self.playEpisode(next) }
@@ -141,9 +159,20 @@ extension WiltedMacModel {
                     await self.reloadLibraryRows()
                 }
                 await self.retireFinishedEpisode()
-                guard self.claimAutomaticAdvance(advance) == .owns else { return }
+                let claim = self.claimAutomaticAdvance(advance)
+                guard claim == .owns else {
+                    if self.playbackCommands.automaticAdvance == advance.serial {
+                        self.playbackCommands.automaticAdvance = nil
+                    }
+                    return
+                }
                 self.advanceToNextLarderEpisode()
-            } catch { self.playbackError = "This episode could not be marked completed." }
+            } catch {
+                if self.playbackCommands.automaticAdvance == advance.serial {
+                    self.playbackCommands.automaticAdvance = nil
+                }
+                self.playbackError = "This episode could not be marked completed."
+            }
         }
 #endif
     }

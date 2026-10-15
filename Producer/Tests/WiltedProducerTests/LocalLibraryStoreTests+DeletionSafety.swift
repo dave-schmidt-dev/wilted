@@ -187,6 +187,87 @@ extension LocalLibraryStoreTests {
         XCTAssertNil(listening, "nor its listening fact")
     }
 
+    func testUnsubscribeFeedArtworkReclaimedOnlyAfterCommitAndRollbackSafe() async throws {
+        let url = makeURL("unsubscribeFeedArtCommit"); defer { removeStore(url) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let store = try LocalLibraryStore(url: url)
+        let feedURL = URL(string: "https://podcasts.example.test/art-show/feed.xml")!
+        let (feed, all) = try episodes(feedURL: feedURL, origin: origin, daysAgo: [1])
+        try await store.save(feed: feed)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all, admission: .backfill)
+
+        let artURL = url.deletingLastPathComponent().appendingPathComponent("feed-art.png")
+        try Data("feed-art-data".utf8).write(to: artURL)
+        let artwork = try PodcastArtwork(
+            id: "art-feed-\(feed.itemID.rawValue)", ownerID: feed.itemID,
+            localURL: artURL, updatedAt: Timestamp(origin)
+        )
+        try await store.save(artwork: artwork)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artURL.path))
+
+        // Rollback safety: failure at a removal stage preserves the file and record.
+        do {
+            _ = try await RemovalStageRecorder(failingAt: .artwork).observing {
+                try await store.unsubscribeFromPodcast(feedID: feed.itemID)
+            }
+            XCTFail("injected failure at .artwork must throw")
+        } catch is LocalLibraryRemovalError {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artURL.path), "rollback preserves feed artwork file")
+        let storedGroomValue1 = try await store.artwork(for: artwork.id)
+        XCTAssertNotNil(storedGroomValue1, "rollback preserves feed artwork record")
+
+        // Successful commit: artwork file is reclaimed and record is deleted.
+        let removed = try await store.unsubscribeFromPodcast(feedID: feed.itemID)
+        XCTAssertEqual(removed, all.count)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artURL.path), "feed artwork reclaimed after commit")
+        let storedGroomValue2 = try await store.artwork(for: artwork.id)
+        XCTAssertNil(storedGroomValue2, "feed artwork record removed")
+    }
+
+    func testUnsubscribeFeedArtworkSharedReferencePreservesFile() async throws {
+        let url = makeURL("unsubscribeFeedArtShared"); defer { removeStore(url) }
+        let origin = Date(timeIntervalSince1970: 1_700_000_000)
+        let store = try LocalLibraryStore(url: url)
+        let feedURL1 = URL(string: "https://podcasts.example.test/show1/feed.xml")!
+        let feedURL2 = URL(string: "https://podcasts.example.test/show2/feed.xml")!
+        let (feed1, all1) = try episodes(feedURL: feedURL1, origin: origin, daysAgo: [1])
+        let (feed2, all2) = try episodes(feedURL: feedURL2, origin: origin, daysAgo: [1])
+        try await store.save(feed: feed1)
+        try await store.save(subscription: PodcastSubscription(feedID: feed1.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all1, admission: .backfill)
+        try await store.save(feed: feed2)
+        try await store.save(subscription: PodcastSubscription(feedID: feed2.itemID, subscribedAt: Timestamp(origin)))
+        try await store.savePodcastEpisodes(all2, admission: .backfill)
+
+        let sharedArtURL = url.deletingLastPathComponent().appendingPathComponent("shared-art.png")
+        try Data("shared-feed-art-data".utf8).write(to: sharedArtURL)
+        let art1 = try PodcastArtwork(
+            id: "art-feed-1", ownerID: feed1.itemID,
+            localURL: sharedArtURL, updatedAt: Timestamp(origin)
+        )
+        let art2 = try PodcastArtwork(
+            id: "art-feed-2", ownerID: feed2.itemID,
+            localURL: sharedArtURL, updatedAt: Timestamp(origin)
+        )
+        try await store.save(artwork: art1)
+        try await store.save(artwork: art2)
+
+        // Unsubscribe from feed1: shared file must survive because feed2 still references it.
+        try await store.unsubscribeFromPodcast(feedID: feed1.itemID)
+        let storedGroomValue3 = try await store.artwork(for: "art-feed-1")
+        XCTAssertNil(storedGroomValue3)
+        let storedGroomValue4 = try await store.artwork(for: "art-feed-2")
+        XCTAssertNotNil(storedGroomValue4)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sharedArtURL.path), "shared artwork file preserved")
+
+        // Unsubscribe from feed2: last referencing record deleted, shared file is now reclaimed.
+        try await store.unsubscribeFromPodcast(feedID: feed2.itemID)
+        let storedGroomValue5 = try await store.artwork(for: "art-feed-2")
+        XCTAssertNil(storedGroomValue5)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sharedArtURL.path), "shared artwork file deleted")
+    }
+
     // MARK: - Fixture
 
     /// Tables a cascade must leave whole: history, articles and their tombstones.

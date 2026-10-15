@@ -300,6 +300,7 @@ extension WiltedMacModel {
     /// in every player, so a press is answered before any audio is.
     var playbackStatusMessage: String {
         if let pending = playbackCommands.pending { return pending.message }
+        if isAutomaticAdvancing { return "Loading next episode…" }
         if let failure = playbackCommands.failure { return failure.message }
         if !hasCurrentPlayback { return "Nothing is playing" }
         if let playbackError { return playbackError }
@@ -309,7 +310,7 @@ extension WiltedMacModel {
     }
 
     var playbackStatusTone: WiltedStatusTone {
-        if playbackCommands.pending != nil { return .caution }
+        if playbackCommands.pending != nil || isAutomaticAdvancing { return .caution }
         if playbackCommands.failure != nil || playbackError != nil { return .failure }
         if isPlaying { return .active }
         return .neutral

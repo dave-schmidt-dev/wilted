@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- The feed settings popover explains inline when Auto prepare On is suppressed by global Processing Manual while Prepare everything downloaded is Off.
 - Reports (off by default): spoken news headlines and National Weather Service alerts interrupt playback at the next pause in speech, then resume where you were, on the Mac and the iPhone; each device uses its own approximate location, never your IP address. The Mac can build a morning report with the forecast and headlines, and Settings shows its status with Build now.
 - Article feeds: follow a feed without audio, refresh it for new posts, and add the ones you want from the Feeds inbox; a News switch in the feed popover marks news feeds.
 - Audiobooks and books on the Mac: Import book in the Add sheet (or drop files) imports audio files or a folder as one audiobook with chapters, and turns EPUB or PDF text into a spoken book; progress shows with Cancel, and refused files say why. Importing the same files again finds the same book.
@@ -14,7 +15,7 @@ All notable changes to this project are documented in this file.
 - One Add sheet on the Mac (toolbar Add or ⌘N) replaces the Feeds Subscribe popover and the Larder article field: paste a podcast or article link, or search Apple Podcasts by name, and shows you already follow are marked.
 - The Mac answers subscribe and add-article requests sent from a phone, and rejects requests it cannot read instead of silently dropping them.
 - An Apple Watch remote for the iPhone (Development builds): Now Playing with play, pause, skip, speed and sleep, and Up Next; it always shows the phone's last update and its age, and disables its controls with a note while the phone is out of reach.
-- Per-feed automation on the Mac: each feed in Feeds has a settings popover for Auto keep, Auto download, Auto prepare (On, Off or Use global) and a Kept limit, with resolved values shown inline beside Use global. Settings holds the global defaults (Auto keep Off, download Off, prepare On, no limit), so nothing changes until you turn something on.
+- Per-feed automation on the Mac: each feed in Feeds has a settings popover for Auto keep, Auto download, Auto prepare (On, Off or Use global) and a Kept limit, with resolved values shown inline beside Use global. Settings holds the global defaults (Auto keep Off, download Off, prepare Off, no limit), so nothing changes until you turn something on.
 - A full feed makes new episodes wait for space instead of removing anything: an existing, playing or part-heard episode is never removed to make room, and finishing, completing or removing a kept episode lets the oldest waiting one in.
 - Per-feed match rules: ordered patterns on title or notes that Keep or Skip new episodes, with inline errors, a preview of every episode's verdict, and "Apply to existing", which changes only undecided and automatically decided episodes, never your own choices or anything you have started, and can be undone.
 - Your own Keep, Skip and Restore, on the Mac or the iPhone, are recorded as yours, and automation never reverses them.
@@ -109,6 +110,10 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Marking the playing episode completed now shows the existing Wilted animated feedback, “Loading next episode…”, while the next episode opens; it honors Reduce Motion and clears if the advance is cancelled or fails.
+- Feed-owned unreferenced artwork is reclaimed after an unsubscribe commit finishes, with existing shared-file guards preserved.
+- AudioAssembler atomic temporary output retains `.m4a` to prevent AVURLAsset inspection and playback regression.
+- An older failed News save cannot overwrite a newer optimistic choice in feed settings.
 - Larder sort preferences (such as Age, oldest first) persist across playback, natural continuation, and app relaunch without resetting to Custom; explicit manual drag and reorder operations continue to select Custom.
 - Ready-media reconciliation and export use the existing publication snapshot to skip unrelated transcript and preparation-history decoding while retaining exact prepared-media proof.
 - The Mac transcript panel shows when the selected saved transcript is loading, distinguishes read failure from confirmed absence, and offers Retry after a failed read.

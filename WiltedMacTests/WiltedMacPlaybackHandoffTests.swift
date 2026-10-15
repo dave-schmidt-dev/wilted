@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import WiltedDomain
 @testable import WiltedMac
 import WiltedProducer
@@ -108,14 +109,167 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
             "B was not queued: \(model.playbackOperationStatus ?? "no status")"
         )
 
+        let queueGate = QueueBarrierGate()
+        addTeardownBlock { await queueGate.release() }
+        model.podcastQueueReadBarrierForTesting = { await queueGate.holdUntilReleased() }
+        defer { model.podcastQueueReadBarrierForTesting = nil }
+
+        model.playbackError = "Previous operation failed"
         model.markCurrentPlaybackCompleted()
-        // Completion runs outside the playback operation and only then starts
-        // the next episode, so wait for the switch rather than a fixed delay.
+        try await waitUntilHeld(queueGate)
+        try await waitUntil { model.currentPodcastEpisodeID == nil }
+
+        // Deterministically assert old row removed and loading feedback active while held.
+        XCTAssertNil(model.currentPodcastEpisodeID)
+        XCTAssertFalse(model.hasCurrentPlayback)
+        let firstEpisode = model.episodes.first(where: { $0.id == first.id })
+        XCTAssertTrue(try XCTUnwrap(firstEpisode).isPlayed)
+        XCTAssertTrue(model.isAutomaticAdvancing)
+        XCTAssertEqual(model.playbackStatusMessage, "Loading next episode…")
+        XCTAssertEqual(model.playbackStatusTone, .caution)
+
+        let pane = WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))
+        let paneLines = try WiltedMacHeadless.recognizedText(pane)
+        let paneText = paneLines.joined(separator: " ").replacingOccurrences(of: "...", with: "…")
+        XCTAssertTrue(paneText.contains("Loading next episode…"), paneText)
+        let paneBitmap = try WiltedMacHeadless.render(pane)
+        let paneColors = WiltedMacHeadless.distinctColorCount(in: paneBitmap)
+        XCTAssertGreaterThan(paneColors, 1)
+        let attachment = XCTAttachment(data: try XCTUnwrap(paneBitmap.representation(using: .png, properties: [:])),
+                                       uniformTypeIdentifier: "public.png")
+        attachment.name = "next-episode-loading-pane"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        let rail = WiltedMacPlayerContent(
+            model: model, presentation: .constant(nil), layout: .rail,
+            focusRequest: nil, onCollapse: { _ in }
+        )
+        let railLines = try WiltedMacHeadless.recognizedText(rail)
+        let railText = railLines.joined(separator: " ").replacingOccurrences(of: "...", with: "…")
+        XCTAssertTrue(railText.contains("Loading next episode…"), railText)
+
+        // Release queue barrier: next starts and loading clears.
+        await queueGate.release()
         try await waitUntil { model.currentPodcastEpisodeID == second.id }
         await model.waitForPlaybackOperationForTesting()
 
+        XCTAssertEqual(model.currentPodcastEpisodeID, second.id)
+        XCTAssertFalse(model.isAutomaticAdvancing)
+        XCTAssertEqual(model.playbackStatusMessage, "Playing")
         XCTAssertEqual(sink.published.last?.episodeID, second.id)
-        XCTAssertTrue(sink.published.last?.isPlaying ?? false)
+        let isSinkPlaying = sink.published.last?.isPlaying ?? false
+        XCTAssertTrue(isSinkPlaying)
+    }
+
+    func testPauseDuringAutomaticAdvanceCancelsLoaderAndBlocksRestart() async throws {
+        let (model, sink, directory) = makeModel()
+        let fixture = try XCTUnwrap(model.episodes.first)
+        let first = try await addReadyEpisode(
+            after: fixture, to: model, in: directory,
+            suffix: "pause-first", durationSeconds: 10
+        )
+        let second = try await addReadyEpisode(
+            after: first, to: model, in: directory,
+            suffix: "pause-second", durationSeconds: 10
+        )
+        model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(model.currentPodcastEpisodeID, first.id)
+        model.addEpisodeToUpNext(second)
+        try await waitUntil { model.podcastQueueIDs.contains(second.id) }
+
+        let queueGate = QueueBarrierGate()
+        addTeardownBlock { await queueGate.release() }
+        model.podcastQueueReadBarrierForTesting = { await queueGate.holdUntilReleased() }
+        defer { model.podcastQueueReadBarrierForTesting = nil }
+
+        model.markCurrentPlaybackCompleted()
+        try await waitUntilHeld(queueGate)
+        try await waitUntil { model.currentPodcastEpisodeID == nil }
+
+        XCTAssertTrue(model.isAutomaticAdvancing)
+        XCTAssertEqual(model.playbackStatusMessage, "Loading next episode…")
+
+        // Pause supersedes advance and cancels loader immediately.
+        model.pausePlayback()
+        XCTAssertFalse(model.isAutomaticAdvancing)
+        XCTAssertNil(model.playbackCommands.automaticAdvance)
+        XCTAssertEqual(model.playbackStatusMessage, "Nothing is playing")
+
+        await queueGate.release()
+        await WiltedMacHeadless.drainDecisions(model)
+        await model.waitForPlaybackOperationForTesting()
+
+        // Restart is blocked, settling idle with nothing playing.
+        XCTAssertNil(model.currentPodcastEpisodeID)
+        XCTAssertFalse(model.hasCurrentPlayback)
+        XCTAssertFalse(model.isAutomaticAdvancing)
+        XCTAssertEqual(model.playbackStatusMessage, "Nothing is playing")
+        XCTAssertNotEqual(sink.published.last?.episodeID, second.id)
+    }
+
+    func testCompletionFailureClearsOwnedAdvanceAndRestoresState() async throws {
+        let (model, _, directory) = makeModel()
+        let fixture = try XCTUnwrap(model.episodes.first)
+        let first = try await addReadyEpisode(
+            after: fixture, to: model, in: directory,
+            suffix: "fail-first", durationSeconds: 10
+        )
+        model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(model.currentPodcastEpisodeID, first.id)
+
+        struct InjectedFailure: Error {}
+        model.subscriptionWriteHookForTesting = { throw InjectedFailure() }
+        defer { model.subscriptionWriteHookForTesting = nil }
+
+        model.markCurrentPlaybackCompleted()
+        await WiltedMacHeadless.drainDecisions(model)
+        await model.waitForPlaybackOperationForTesting()
+
+        // Failed completion cleared the owned advance without leaving marker.
+        XCTAssertFalse(model.isAutomaticAdvancing)
+        XCTAssertNil(model.playbackCommands.automaticAdvance)
+        XCTAssertNotEqual(model.playbackStatusMessage, "Loading next episode…")
+        let operation = model.podcastOperationMessage ?? ""
+        XCTAssertTrue(operation.contains("could not be marked completed"), operation)
+    }
+
+    func testMarkingCompleteAtEndOfQueueSettlesIdleWithoutStartingAudio() async throws {
+        let (model, _, directory) = makeModel()
+        let fixture = try XCTUnwrap(model.episodes.first)
+        let only = try await addReadyEpisode(
+            after: fixture, to: model, in: directory,
+            suffix: "endqueue", durationSeconds: 10
+        )
+        model.playEpisode(only)
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(model.currentPodcastEpisodeID, only.id)
+
+        let queueGate = QueueBarrierGate()
+        addTeardownBlock { await queueGate.release() }
+        model.podcastQueueReadBarrierForTesting = { await queueGate.holdUntilReleased() }
+        defer { model.podcastQueueReadBarrierForTesting = nil }
+
+        model.markCurrentPlaybackCompleted()
+        try await waitUntilHeld(queueGate)
+        try await waitUntil { model.currentPodcastEpisodeID == nil }
+
+        XCTAssertNil(model.currentPodcastEpisodeID)
+        XCTAssertTrue(model.isAutomaticAdvancing)
+        XCTAssertEqual(model.playbackStatusMessage, "Loading next episode…")
+
+        await queueGate.release()
+        await WiltedMacHeadless.drainDecisions(model)
+        await model.waitForPlaybackOperationForTesting()
+
+        // Settles idle because there are no more episodes in queue.
+        XCTAssertNil(model.currentPodcastEpisodeID)
+        XCTAssertFalse(model.hasCurrentPlayback)
+        XCTAssertFalse(model.isAutomaticAdvancing)
+        XCTAssertNil(model.playbackCommands.automaticAdvance)
+        XCTAssertEqual(model.playbackStatusMessage, "Nothing is playing")
     }
 
     private func makeModel() -> (WiltedMacModel, RecordingNowPlayingSink, URL) {
@@ -267,14 +421,26 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         }
     }
 
+    private func waitUntilHeld(_ gate: QueueBarrierGate) async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !(await gate.isHeld()) {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("Completion never reached the held queue refresh")
+                throw HandoffWaitTimeout()
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     /// Polls until a background task has produced the state under test.
     private func waitUntil(
-        timeout: Duration = .seconds(10), _ condition: () -> Bool
+        timeout: Duration = .seconds(10), file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool
     ) async throws {
         let deadline = ContinuousClock.now + timeout
         while !condition() {
             guard ContinuousClock.now < deadline else {
-                return XCTFail("condition not met within \(timeout)")
+                XCTFail("condition not met within \(timeout)", file: file, line: line)
+                throw HandoffWaitTimeout()
             }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -286,4 +452,26 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         add(attachment)
     }
 
+}
+
+private struct HandoffWaitTimeout: Error {}
+
+private actor QueueBarrierGate {
+    private var held = false
+    private var released = false
+    private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func holdUntilReleased() async {
+        guard !released else { return }
+        held = true
+        await withCheckedContinuation { releaseContinuations.append($0) }
+    }
+
+    func isHeld() -> Bool { held }
+
+    func release() {
+        released = true
+        releaseContinuations.forEach { $0.resume() }
+        releaseContinuations.removeAll()
+    }
 }

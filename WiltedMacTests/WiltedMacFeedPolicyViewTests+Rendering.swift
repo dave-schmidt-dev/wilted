@@ -171,6 +171,7 @@ extension WiltedMacFeedPolicyViewTests {
             let bitmap = try WiltedMacHeadless.render(content, size: size)
             if !dark {
                 let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
+                request.usesCPUOnly = true // Keep headless OCR off the shared neural-engine service.
                 request.usesLanguageCorrection = true; request.recognitionLanguages = ["en-US"]
                 request.customWords = ["Larder", "Processing"]; request.minimumTextHeight = 0.001
                 try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
@@ -186,6 +187,7 @@ extension WiltedMacFeedPolicyViewTests {
                             height: box.height * bounds.height).insetBy(dx: -4, dy: -4).intersection(bounds).integral
                         let crop = try XCTUnwrap(image.cropping(to: pixels))
                         let line = VNRecognizeTextRequest(); line.recognitionLevel = .accurate
+                        line.usesCPUOnly = true
                         line.usesLanguageCorrection = true; line.recognitionLanguages = ["en-US"]
                         try VNImageRequestHandler(cgImage: crop).perform([line])
                         text += " " + (line.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
@@ -198,8 +200,122 @@ extension WiltedMacFeedPolicyViewTests {
         return text
     }
 
+    func testAutoPrepareBlockedExplanationRendersOnlyWhenSuppressedByGlobalManual() async throws {
+        let model = await WiltedMacHeadless.model(
+            self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "auto-prepare-blocked"
+        )
+        addTeardownBlock { await model.close() }
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
 
+        // 1. Initial / unblocked: default processing is immediate, feed is Use global (resolves to On)
+        XCTAssertEqual(model.automationSettings.processingPolicy, .immediate)
+        XCTAssertFalse(model.automationSettings.prepareEverythingDownloaded)
+        XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .useGlobal)
+        XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, true)
 
+        let initialContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
+        XCTAssertFalse(initialContent.isAutoPrepareBlocked)
+        let initialText = try capture(initialContent, "prepare-initial", width: 460, height: 700)
+        XCTAssertFalse(initialText.contains("Processing is set to Manual"), initialText)
+        XCTAssertFalse(initialText.contains("will not prepare automatically"), initialText)
+
+        // 2. Explicit Auto prepare On under default immediate processing is not blocked
+        XCTAssertTrue(board.update(subscription.id, autoPrepare: .on))
+        await board.settle()
+        XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .on)
+        XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, true)
+
+        let immediateContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
+        XCTAssertFalse(immediateContent.isAutoPrepareBlocked)
+        let immediateText = try capture(immediateContent, "prepare-immediate-on", width: 460, height: 700)
+        XCTAssertFalse(immediateText.contains("Processing is set to Manual"), immediateText)
+        XCTAssertFalse(immediateText.contains("will not prepare automatically"), immediateText)
+
+        // 3. Blocked: Processing is Manual, prepareEverythingDownloaded is Off, feed Auto prepare is On
+        model.updateAutomationSettings { settings in
+            WiltedAutomationSettings(
+                refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
+                processingPolicy: .manual, transcriptPolicy: settings.transcriptPolicy,
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: settings.downloadEverythingOnLarder,
+                prepareEverythingDownloaded: false,
+                initialEpisodeMetadataCount: settings.initialEpisodeMetadataCount,
+                autoKeepNewEpisodes: settings.autoKeepNewEpisodes,
+                keptLimitPerFeed: settings.keptLimitPerFeed
+            )
+        }
+        XCTAssertEqual(model.automationSettings.processingPolicy, .manual)
+        XCTAssertFalse(model.automationSettings.prepareEverythingDownloaded)
+        XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .on)
+        XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, true)
+
+        let blockedContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
+        XCTAssertTrue(blockedContent.isAutoPrepareBlocked)
+        XCTAssertEqual(WiltedAutomationCoordinator.preparationPlan(
+            processingPolicy: model.automationSettings.processingPolicy, at: Date()
+        ), .skip)
+        let blockedText = try capture(blockedContent, "prepare-manual-blocked", width: 460, height: 700)
+        XCTAssertTrue(blockedText.contains("Processing is set to Manual"), blockedText)
+        XCTAssertTrue(blockedText.contains("will not prepare automatically"), blockedText)
+        XCTAssertTrue(blockedText.contains("Prepare everything downloaded"), blockedText)
+
+        // 4. Non-blocked: Processing is Manual, but prepareEverythingDownloaded is On
+        model.updateAutomationSettings { settings in
+            WiltedAutomationSettings(
+                refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
+                processingPolicy: .manual, transcriptPolicy: settings.transcriptPolicy,
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: settings.downloadEverythingOnLarder,
+                prepareEverythingDownloaded: true,
+                initialEpisodeMetadataCount: settings.initialEpisodeMetadataCount,
+                autoKeepNewEpisodes: settings.autoKeepNewEpisodes,
+                keptLimitPerFeed: settings.keptLimitPerFeed
+            )
+        }
+        XCTAssertTrue(model.automationSettings.prepareEverythingDownloaded)
+        XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, true)
+
+        let manualPreparedContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
+        XCTAssertFalse(manualPreparedContent.isAutoPrepareBlocked)
+        let manualPreparedText = try capture(manualPreparedContent, "prepare-manual-prepare-everything", width: 460, height: 700)
+        XCTAssertFalse(manualPreparedText.contains("Processing is set to Manual"), manualPreparedText)
+
+        // 5. Non-blocked: Processing is Manual and prepareEverythingDownloaded is Off, but feed Auto prepare is Off
+        model.updateAutomationSettings { settings in
+            WiltedAutomationSettings(
+                refreshPolicy: settings.refreshPolicy, downloadPolicy: settings.downloadPolicy,
+                processingPolicy: .manual, transcriptPolicy: settings.transcriptPolicy,
+                removeAds: settings.removeAds, autoAddPreparedToLarder: settings.autoAddPreparedToLarder,
+                downloadEverythingOnLarder: settings.downloadEverythingOnLarder,
+                prepareEverythingDownloaded: false,
+                initialEpisodeMetadataCount: settings.initialEpisodeMetadataCount,
+                autoKeepNewEpisodes: settings.autoKeepNewEpisodes,
+                keptLimitPerFeed: settings.keptLimitPerFeed
+            )
+        }
+        XCTAssertTrue(board.update(subscription.id, autoPrepare: .off))
+        await board.settle()
+        XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .off)
+        XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, false)
+
+        let explicitOffContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
+        XCTAssertFalse(explicitOffContent.isAutoPrepareBlocked)
+        let explicitOffText = try capture(explicitOffContent, "prepare-manual-explicit-off", width: 460, height: 700)
+        XCTAssertFalse(explicitOffText.contains("Processing is set to Manual"), explicitOffText)
+
+        // 6. Non-blocked: Processing is Manual and prepareEverythingDownloaded is Off, feed Auto prepare is Use global (resolves to Off)
+        XCTAssertTrue(board.update(subscription.id, autoPrepare: .useGlobal))
+        await board.settle()
+        XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .useGlobal)
+        XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, false)
+
+        let useGlobalContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
+        XCTAssertFalse(useGlobalContent.isAutoPrepareBlocked)
+        let useGlobalText = try capture(useGlobalContent, "prepare-manual-use-global-off", width: 460, height: 700)
+        XCTAssertFalse(useGlobalText.contains("Processing is set to Manual"), useGlobalText)
+    }
 }
 
 private actor FeedPolicyReloadGate {

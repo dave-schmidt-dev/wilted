@@ -218,6 +218,129 @@ final class WiltedMacFeedPolicyWorkTests: XCTestCase {
         XCTAssertEqual(f.board.rules(for: f.feedA), second, "the board shows what is stored")
         XCTAssertTrue(f.board.failedFeedIDs.contains(f.feedA))
     }
+
+    // MARK: News flag
+
+    func testHeldFailingNewsSavePreservesNewerQueuedChoiceAndLatestFailureRollsBack() async throws {
+        let f = try await makeArticleFixture()
+        let feedID = f.feedID
+        let store = f.store
+        let board = f.board
+
+        XCTAssertFalse(board.isNews(feedID))
+        let storedGroomValue6 = try await store.isNews(feedID: ItemID(rawValue: feedID))
+        XCTAssertFalse(storedGroomValue6)
+
+        let gate = NewsSaveGate()
+        var saveAttempts = 0
+        board.beforeNewsSaveHookForTesting = { id in
+            guard id == feedID else { return }
+            saveAttempts += 1
+            if saveAttempts == 1 {
+                await gate.pause()
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+
+        // 1. Queue first edit (true). The save task starts and pauses in the gate.
+        XCTAssertTrue(board.setNews(true, for: feedID))
+        XCTAssertTrue(board.isNews(feedID))
+        guard await WiltedMacHeadless.eventually("News save reaches its gate", { saveAttempts == 1 }) else {
+            await gate.release()
+            return
+        }
+
+        // 2. While the first save is held, queue a newer edit (false).
+        XCTAssertTrue(board.setNews(false, for: feedID))
+        XCTAssertFalse(board.isNews(feedID))
+
+        // A third user toggle differs from the still-stored false value, so an old
+        // failure rollback would visibly clobber this latest optimistic choice.
+        XCTAssertTrue(board.setNews(true, for: feedID))
+        XCTAssertTrue(board.isNews(feedID))
+
+        // 3. Release first save to fail.
+        await gate.release()
+        await board.settle()
+
+        // Both newer saves succeed; the final true choice survives the older failure.
+        XCTAssertTrue(board.isNews(feedID))
+        let storedGroomValue7 = try await store.isNews(feedID: ItemID(rawValue: feedID))
+        XCTAssertTrue(storedGroomValue7)
+        XCTAssertFalse(board.failedFeedIDs.contains(feedID))
+        XCTAssertEqual(saveAttempts, 3)
+
+        // 5. Genuine latest failure: an edit with no newer edit queued.
+        board.beforeNewsSaveHookForTesting = { id in
+            guard id == feedID else { return }
+            throw CocoaError(.fileWriteUnknown)
+        }
+        XCTAssertTrue(board.setNews(false, for: feedID))
+        XCTAssertFalse(board.isNews(feedID)) // optimistic UI
+        await board.settle()
+
+        // Genuine latest failure visibly rolls back to stored value and marks the feed failed.
+        XCTAssertTrue(board.isNews(feedID))
+        let storedGroomValue8 = try await store.isNews(feedID: ItemID(rawValue: feedID))
+        XCTAssertTrue(storedGroomValue8)
+        XCTAssertTrue(board.failedFeedIDs.contains(feedID))
+    }
+
+    private func makeArticleFixture(
+        suffix: String = "article-news-work"
+    ) async throws -> (model: WiltedMacModel, board: WiltedMacFeedPolicyBoard, store: LocalLibraryStore, feedID: String) {
+        let directory = wiltedTemporaryDirectory(suffix)
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/\(suffix).xml"))
+        let createdAt = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let articleFeed = try ArticleFeed(canonicalURL: feedURL, title: "Article News Feed", createdAt: createdAt)
+        let feedID = articleFeed.itemID
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(articleFeed: articleFeed)
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: createdAt))
+                try await store.save(feedAutomationPolicy: FeedAutomationPolicy(), for: feedID)
+                return store
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        addTeardownBlock { await model.close() }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        let store = try XCTUnwrap(model.store)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        await board.reload()
+        XCTAssertTrue(board.isLoaded(feedID.rawValue))
+        XCTAssertTrue(board.isArticleFeed(feedID.rawValue))
+        return (model, board, store, feedID.rawValue)
+    }
+}
+
+private actor NewsSaveGate {
+    private var hasEntered = false
+    private var isReleased = false
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func pause() async {
+        hasEntered = true
+        arrivalWaiters.forEach { $0.resume() }
+        arrivalWaiters = []
+        guard !isReleased else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        if hasEntered { return }
+        await withCheckedContinuation { arrivalWaiters.append($0) }
+    }
+
+    func release() {
+        isReleased = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters = []
+    }
 }
 
 // MARK: - Fixture

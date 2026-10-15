@@ -125,7 +125,7 @@ public struct AudioAssembler: Sendable {
         let parent = destinationURL.deletingLastPathComponent()
         try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
         let temporaryURL = parent.appendingPathComponent(
-            ".\(destinationURL.lastPathComponent).tmp-\(UUID().uuidString)"
+            ".\(destinationURL.lastPathComponent).tmp-\(UUID().uuidString).m4a"
         )
         inFlightMedia?.begin(temporaryURL)
         var published = false

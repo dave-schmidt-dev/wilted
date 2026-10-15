@@ -28,15 +28,17 @@ final class WiltedMacFeedPolicyBoard {
     @ObservationIgnored private var writeChain: Task<Void, Never>?
     @ObservationIgnored private var activeReloadID: UUID?
     @ObservationIgnored private var mutationRevision: UInt64 = 0
-    /// Each feed's latest policy and rules edit. A failed save restores what is
+    /// Each feed's latest policy, rules, and news edit. A failed save restores what is
     /// stored only while its edit is the latest: an edit queued behind it keeps
     /// its value on the board, and its own save decides.
     @ObservationIgnored private var policyEdits: [String: UInt64] = [:]
     @ObservationIgnored private var ruleEdits: [String: UInt64] = [:]
+    @ObservationIgnored private var newsEdits: [String: UInt64] = [:]
     @ObservationIgnored var reloadReadHookForTesting: (@MainActor () async -> Void)?
     @ObservationIgnored var afterFeedPolicyReadHookForTesting: (@MainActor (String) async throws -> Void)?
     @ObservationIgnored var beforeFeedPolicySaveHookForTesting: (@MainActor (String) async throws -> Void)?
     @ObservationIgnored var beforeRulesSaveHookForTesting: (@MainActor (String) async throws -> Void)?
+    @ObservationIgnored var beforeNewsSaveHookForTesting: (@MainActor (String) async throws -> Void)?
 
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
@@ -227,24 +229,31 @@ final class WiltedMacFeedPolicyBoard {
     func setNews(_ value: Bool, for feedID: String) -> Bool {
         guard isLoaded(feedID), isArticleFeed(feedID) else { return false }
         mutationRevision &+= 1
+        newsEdits[feedID, default: 0] &+= 1
+        let edit = newsEdits[feedID, default: 0]
         if value { newsFeedIDs.insert(feedID) } else { newsFeedIDs.remove(feedID) }
         failedFeedIDs.remove(feedID)
         let previous = writeChain
         writeChain = Task { [weak self] in
             await previous?.value
-            await self?.persist(isNews: value, feedID)
+            await self?.persist(isNews: value, feedID, edit: edit)
         }
         return true
     }
 
-    private func persist(isNews value: Bool, _ feedID: String) async {
+    private func persist(isNews value: Bool, _ feedID: String, edit: UInt64) async {
         guard let store = model.store, !model.isClosingTemporaryState,
               let id = try? ItemID(rawValue: feedID) else { return }
         do {
+            try await beforeNewsSaveHookForTesting?(feedID)
             try await store.save(isNews: value, feedID: id)
         } catch {
+            guard newsEdits[feedID] == edit else { return }
             failedFeedIDs.insert(feedID)
-            if (try? await store.isNews(feedID: id)) == true { newsFeedIDs.insert(feedID) } else { newsFeedIDs.remove(feedID) }
+            let stored = try? await store.isNews(feedID: id)
+            if newsEdits[feedID] == edit {
+                if stored == true { newsFeedIDs.insert(feedID) } else { newsFeedIDs.remove(feedID) }
+            }
         }
     }
 

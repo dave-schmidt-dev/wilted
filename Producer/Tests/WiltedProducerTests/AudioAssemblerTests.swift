@@ -7,7 +7,7 @@ import WiltedDomain
 
 @Suite("Audio assembly")
 struct AudioAssemblerTests {
-    @Test func publishesPlayableHashedReadyRevision() throws {
+    @Test func publishesPlayableHashedReadyRevision() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let destination = directory.appendingPathComponent("revision.m4a")
@@ -36,6 +36,33 @@ struct AudioAssemblerTests {
         let digest = SHA256.hash(data: try Data(contentsOf: destination))
             .map { String(format: "%02x", $0) }.joined()
         #expect(result.revision.contentHash == "sha256:\(digest)")
+
+        let asset = AVURLAsset(url: destination)
+        let isPlayable = try await asset.load(.isPlayable)
+        #expect(isPlayable)
+        let duration = try await asset.load(.duration).seconds
+        #expect(duration.isFinite && duration > 0)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        #expect(!audioTracks.isEmpty)
+    }
+
+    @Test func assembledM4AIsLoadableAndPlayableByAVURLAsset() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("avurlasset-compat.m4a")
+        _ = try AudioAssembler().assemble(
+            pcm: samples,
+            itemID: try ItemID(rawValue: "item-test"),
+            destinationURL: destination
+        )
+
+        let asset = AVURLAsset(url: destination)
+        let isPlayable = try await asset.load(.isPlayable)
+        #expect(isPlayable)
+        let duration = try await asset.load(.duration).seconds
+        #expect(duration.isFinite && duration > 0)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        #expect(!tracks.isEmpty)
     }
 
     @Test func cancellationAndFailureRemoveTempOnly() throws {

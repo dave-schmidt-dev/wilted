@@ -74,7 +74,9 @@ struct WiltedMacNowPlayingPane: View {
 
     private var idle: some View {
         VStack(spacing: WiltedTheme.Spacing.medium) {
-            if model.playbackCommands.pending == nil || model.playbackCommands.pending?.usesInitiatingButtonFeedback == true {
+            if model.isAutomaticAdvancing {
+                loading
+            } else if model.playbackCommands.pending == nil || model.playbackCommands.pending?.usesInitiatingButtonFeedback == true {
                 VStack(spacing: WiltedTheme.Spacing.medium) {
                     WiltedProduceTile(symbol: .lettuce, size: 96)
                         .accessibilityHidden(true)
@@ -91,6 +93,19 @@ struct WiltedMacNowPlayingPane: View {
             // First-start progress stays in the initiating Larder button.
             WiltedMacPlaybackStartResult(model: model)
         }
+    }
+
+    private var loading: some View {
+        VStack(spacing: WiltedTheme.Spacing.medium) {
+            WiltedLoadingMotif()
+                .accessibilityHidden(true)
+            Text(model.playbackStatusMessage)
+                .wiltedFont(.title)
+                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .accessibilityIdentifier("wilted-player-status")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-player-loading")
     }
 
     private var playing: some View {

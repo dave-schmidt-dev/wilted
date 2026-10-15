@@ -142,7 +142,7 @@ extension LocalLibraryStore {
             let episodes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
                 .filter { $0.feedID == feed }
             let episodeIDs = Set(episodes.map(\.id))
-            let doomedMedia = try mediaURLs(forEpisodesWithIDs: episodeIDs, in: context)
+            let doomedMedia = try mediaURLs(forEpisodesWithIDs: episodeIDs, feedID: feed, in: context)
             for record in episodes { remove(record) }
             staged += try stageEpisodeLinkRemoval(for: episodeIDs, in: context)
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeDecisionRecord>())
@@ -200,10 +200,12 @@ extension LocalLibraryStore {
     }
 
     /// The media files the given episodes' revision, download, and artwork
-    /// records name: the set `deleteMediaRecords` collects, read without
-    /// deleting because unsubscribe deletes those records in separate stages.
+    /// records and the feed's artwork records name: the set `deleteMediaRecords`
+    /// collects, read without deleting because unsubscribe deletes those
+    /// records in separate stages.
     private func mediaURLs(
         forEpisodesWithIDs episodeIDs: Set<String>,
+        feedID: String? = nil,
         in context: ModelContext
     ) throws -> [URL] {
         var urls: [URL] = []
@@ -216,7 +218,7 @@ extension LocalLibraryStore {
             if let value = record.localURL, let mediaURL = URL(string: value) { urls.append(mediaURL) }
         }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>())
-        where episodeIDs.contains(record.ownerID) {
+        where episodeIDs.contains(record.ownerID) || (feedID != nil && record.ownerID == feedID) {
             if let value = record.localURL, let mediaURL = URL(string: value) { urls.append(mediaURL) }
         }
         return urls

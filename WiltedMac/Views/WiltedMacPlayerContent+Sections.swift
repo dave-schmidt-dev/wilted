@@ -33,14 +33,21 @@ extension WiltedMacPlayerContent {
 
     private var minimizedIdleSummary: some View {
         HStack(spacing: WiltedTheme.Spacing.small) {
-            Image(systemName: "play.circle")
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .accessibilityHidden(true)
+            if model.isAutomaticAdvancing {
+                WiltedLoadingMotif()
+                    .scaleEffect(0.24)
+                    .frame(width: 24, height: 24)
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: "play.circle")
+                    .wiltedFont(.title)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityHidden(true)
+            }
             VStack(alignment: .leading, spacing: 2) {
-                Text("Nothing is playing")
+                Text(model.isAutomaticAdvancing ? model.playbackStatusMessage : "Nothing is playing")
                     .wiltedFont(.body)
-                Text("Choose an episode or article from Larder to start playback.")
+                Text(model.isAutomaticAdvancing ? "Opening the next eligible episode from Larder." : "Choose an episode or article from Larder to start playback.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
@@ -50,7 +57,7 @@ extension WiltedMacPlayerContent {
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Nothing is playing")
+        .accessibilityLabel(model.isAutomaticAdvancing ? model.playbackStatusMessage : "Nothing is playing")
         .accessibilityValue("Minimized")
         .accessibilityIdentifier("wilted-player-idle")
     }

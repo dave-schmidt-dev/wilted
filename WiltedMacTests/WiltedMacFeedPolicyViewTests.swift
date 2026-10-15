@@ -111,8 +111,10 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         let board = WiltedMacFeedPolicyBoard(model: fixture.model)
         await board.reload()
         let subscription = try XCTUnwrap(fixture.model.subscriptions.first { $0.id == fixture.feed })
+        let content = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
+        XCTAssertFalse(content.isAutoPrepareBlocked)
         let shown = try WiltedMacHeadless.recognizedText(
-            WiltedMacFeedPolicyContent(board: board, subscription: subscription),
+            content,
             size: CGSize(width: 520, height: 700)
         ).joined(separator: "\n")
 
@@ -122,6 +124,7 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         let resolved = board.resolved(for: fixture.feed)
         XCTAssertEqual(resolved, .init(autoKeep: true, autoDownload: true, autoPrepare: false, keptLimit: 4))
         XCTAssertFalse(shown.contains("Resolved now"), shown)
+        XCTAssertFalse(shown.contains("Processing is set to Manual"), shown)
         XCTAssertTrue(shown.split { $0.isWhitespace }.contains("4"), shown)
         XCTAssertTrue(shown.contains("episodes"), shown)
         XCTAssertTrue(shown.contains("Use global") || shown.contains("On"), shown)

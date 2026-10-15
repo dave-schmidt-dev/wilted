@@ -61,6 +61,11 @@ struct WiltedMacFeedPolicyContent: View {
 
     private var feedID: String { subscription.id }
     private var policy: FeedAutomationPolicy { board.policy(for: feedID) }
+    var isAutoPrepareBlocked: Bool {
+        policy.autoPrepare == .on
+            && board.model.automationSettings.processingPolicy == .manual
+            && !board.model.automationSettings.prepareEverythingDownloaded
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
@@ -91,6 +96,16 @@ struct WiltedMacFeedPolicyContent: View {
                 if board.isArticleFeed(feedID) { newsRow }
             }
             .disabled(!board.isLoaded(feedID))
+            if isAutoPrepareBlocked {
+                Text(
+                    "Processing is set to Manual in Settings, so episodes will not prepare automatically. "
+                    + "Choose Immediately or Off-peak in Settings, or turn on Prepare everything downloaded."
+                )
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-feed-policy-auto-prepare-blocked")
+            }
             if board.isArticleFeed(feedID) {
                 Text("Marks the articles from this feed as news.")
                     .wiltedFont(.utility)
