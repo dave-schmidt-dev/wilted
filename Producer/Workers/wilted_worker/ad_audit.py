@@ -23,9 +23,19 @@ from . import prompts
 from .constants import CUT_TOOLS
 from .reporting import WorkerError
 
+def is_context_capacity_error(error: Exception) -> bool:
+    """Match the backend's explicit request-over-context diagnostic only."""
+    if not isinstance(error, ValueError):
+        return False
+    match = re.fullmatch(
+        r"Requested tokens \(([1-9]\d{0,9})\) exceed context window of ([1-9]\d{0,9})", str(error)
+    )
+    return match is not None and int(match.group(1)) > int(match.group(2))
+
 def expected_backend_unavailable(error: Exception) -> bool:
     """Recognize backend resource/load/inference failures, never coding defects."""
-    return (isinstance(error, (OSError, RuntimeError, ImportError, MemoryError))
+    return (is_context_capacity_error(error)
+            or isinstance(error, (OSError, RuntimeError, ImportError, MemoryError))
             or (isinstance(error, ValueError)
                 and str(error).startswith("Failed to load model from file:")))
 
@@ -45,6 +55,7 @@ class CountingBackend:
         self.failures = 0
         self.last_error: Exception | None = None
         self.unexpected_error: Exception | None = None
+        self.context_capacity_error: ValueError | None = None
 
     def generate(self, system_prompt: str, user_content: str, *, response_format=None):
         self.calls += 1
@@ -53,6 +64,8 @@ class CountingBackend:
         except Exception as error:
             self.failures += 1
             self.last_error = error
+            if is_context_capacity_error(error):
+                self.context_capacity_error = error
             if not expected_backend_unavailable(error):
                 self.unexpected_error = error
             raise

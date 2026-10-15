@@ -107,13 +107,60 @@ final class LibraryDecisionModelTests: XCTestCase {
         XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
     }
 
-    func testRemoveFromLarderIsOfferedOnEveryRowAndMarkDoneOnlyOnAStartedOne() async throws {
+    func testRemoveAndMarkDoneAreOfferedOnStartedAndUnstartedPodcasts() async throws {
         try await seed()
         try await startedOnMac("a")
         let model = makeModel()
         await model.refresh()
         XCTAssertEqual(model.decisionActions(for: model.queued[0]), [.removeFromLarder, .markDone])
         XCTAssertEqual(model.decisionActions(for: model.queued[1]), [.removeFromLarder, .markDone])
+    }
+
+    func testNonPodcastCompletionActionsRetainStartedAndDownloadedEligibility() {
+        // Explicit legacy cases include started+completed: the old rule admitted
+        // every started row, independently of its completed date or local audio.
+        let cases: [(started: Bool, onPhone: Bool, completed: Bool, offersCompletion: Bool)] = [
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, true, false, true),
+            (false, true, true, false),
+            (true, false, false, true),
+            (true, false, true, true),
+            (true, true, false, true),
+            (true, true, true, true),
+        ]
+        for kind in [LibraryKind.audiobook, .report, .article] {
+            for scenario in cases {
+                var row = LibraryRow(
+                    id: id("legacy-completion"), title: "Legacy item", showTitle: "Fixture",
+                    durationText: nil, removal: .none, publishedAt: clock.now,
+                    removalText: nil, checkpointText: nil)
+                row.kind = kind
+                row.isStarted = scenario.started
+                row.completedAt = scenario.completed ? clock.now : nil
+                let expected: [LibraryDecisionAction] = scenario.offersCompletion
+                    ? [.removeFromLarder, .markDone] : [.removeFromLarder]
+                XCTAssertEqual(LibraryRowActions.actions(for: row, onPhone: scenario.onPhone), expected,
+                               "kind=\(kind) started=\(scenario.started) onPhone=\(scenario.onPhone) completed=\(scenario.completed)")
+            }
+        }
+    }
+
+    func testPodcastCompletionActionsDependOnCompletionRatherThanStartedOrDownloadedState() {
+        for started in [false, true] {
+            for onPhone in [false, true] {
+                var row = LibraryRow(
+                    id: id("podcast-completion"), title: "Podcast", showTitle: "Fixture",
+                    durationText: nil, removal: .none, publishedAt: clock.now,
+                    removalText: nil, checkpointText: nil)
+                row.isStarted = started
+                XCTAssertEqual(LibraryRowActions.actions(for: row, onPhone: onPhone), [.removeFromLarder, .markDone],
+                               "unfinished podcasts offer completion even before playback or download")
+                row.completedAt = clock.now
+                XCTAssertEqual(LibraryRowActions.actions(for: row, onPhone: onPhone), [.removeFromLarder],
+                               "a completed podcast cannot be completed again")
+            }
+        }
     }
 
     func testAnIneligibleDecisionSendsNothing() async throws {

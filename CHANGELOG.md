@@ -109,6 +109,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- An ad-review call that hits the model context limit preserves original audio and reports a warning instead of failing preparation, even when other review calls succeed.
 - Quit-interrupted downloads resume on relaunch with a three-attempt automatic bound, while an explicit Cancel stays cancelled and a new explicit request resets its own attempt count.
 - A playlist read that settles after a newer edit no longer reverts the edit, and a settling read no longer resurrects a playlist row a delete removed.
 - Playback checkpoints remain ordered without delaying audio controls; a newer selection or Pause supersedes natural continuation, and a removed Ready candidate is skipped.

@@ -86,6 +86,8 @@ def analyze_ad_detections(
 
     if auditing_backend.unexpected_error is not None:
         raise auditing_backend.unexpected_error
+    if auditing_backend.context_capacity_error is not None:
+        raise WorkerError("ads-context-capacity-unavailable", str(auditing_backend.context_capacity_error))
     preliminary_audit = auditing_backend.audit(detections, segments)
     if auditing_backend.contract_errors:
         raise WorkerError("ads-audit-contract-unavailable", auditing_backend.contract_errors[0])
@@ -215,6 +217,8 @@ def analyze_ad_detections(
     )
     if auditing_backend.unexpected_error is not None:
         raise auditing_backend.unexpected_error
+    if auditing_backend.context_capacity_error is not None:
+        raise WorkerError("ads-context-capacity-unavailable", str(auditing_backend.context_capacity_error))
     if auditing_backend.contract_errors:
         raise WorkerError("ads-audit-contract-unavailable", auditing_backend.contract_errors[0])
     if auditing_backend.mostly_failed:
@@ -371,6 +375,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                     "ads-recovery-audit-failed",
                     "ads-audit-contract-unavailable",
                     "ads-backend-failed",
+                    "ads-context-capacity-unavailable",
                 }:
                     analysis = uncertain_ad_analysis(counting, segments, str(error))
                     return audio_path, [], [], [], serialize_ad_audit(analysis.audit)

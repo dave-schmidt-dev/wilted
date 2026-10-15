@@ -50,12 +50,15 @@ enum LibraryDecisionAction: Equatable, Sendable {
 
 /// The buttons a Larder row offers. The phone decides nothing about New or removed episodes;
 /// those stay on the Mac, and a Larder row never repeats Feeds' Keep or Skip. Remove from Larder is
-/// always available; Mark done needs a started, unfinished episode, or one whose audio is on the phone
-/// and not yet completed (W-INV-010: the phone is where a downloaded episode is finished or abandoned).
+/// always available. Every unfinished podcast offers Mark completed. Other kinds retain their
+/// existing started-or-downloaded eligibility; podcast retirement does not change their actions.
 enum LibraryRowActions {
     static func actions(for row: LibraryRow, onPhone: Bool = false) -> [LibraryDecisionAction] {
-        guard row.kind == .podcastEpisode else { return [.removeFromLarder] }
-        return row.completedAt == nil ? [.removeFromLarder, .markDone] : [.removeFromLarder]
+        if row.kind == .podcastEpisode {
+            return row.completedAt == nil ? [.removeFromLarder, .markDone] : [.removeFromLarder]
+        }
+        return row.isStarted || (onPhone && row.completedAt == nil)
+            ? [.removeFromLarder, .markDone] : [.removeFromLarder]
     }
 }
 

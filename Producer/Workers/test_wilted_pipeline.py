@@ -706,3 +706,70 @@ class ActualParserUncertaintyTests(unittest.TestCase):
                 else:
                     self.assertTrue(any(span["reason"] == "total-share-ceiling" for span in audit["heldSpans"]))
                 render.assert_not_called()
+
+
+class ContextCapacityFallbackTests(unittest.TestCase):
+    def test_exact_capacity_failure_in_classifier_or_one_sparse_verifier_keeps_original(self):
+        message = "Requested tokens (4199) exceed context window of 4096"
+        audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
+        original = audio.read_bytes()
+        segments = [FakeSegment(0, 5, "programme intro"), FakeSegment(10, 20, "commercial setup"),
+                    FakeSegment(20, 30, "product details"),
+                    FakeSegment(30, 40, "visit acme dot com to get started today"),
+                    FakeSegment(50, 60, "programme resumes"), FakeSegment(90, 100, "programme ending")]
+        for stage in ("classifier", "sparse"):
+            with self.subTest(stage=stage):
+                install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
+                llm = FakeLLM(preroll_program_id=-1, postroll_advertising_start_id=-1)
+                ads = install_fake_ads(llm)
+                original_generate = llm.generate
+                failed = []
+                def generate(prompt, content, *, response_format=None):
+                    if ((stage == "classifier" and prompt == ads._AD_DETECT_SYSTEM_PROMPT)
+                            or (stage == "sparse" and prompt == _worker_ad_audit.prompts.COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT)) and not failed:
+                        failed.append(prompt)
+                        raise ValueError(message)
+                    return original_generate(prompt, content, response_format=response_format)
+                llm.generate = generate
+                def detector(_segments, backend):
+                    rendered = "\n".join(f"[ID {index}] {segment.text}" for index, segment in enumerate(segments))
+                    for _ in range(5):
+                        backend.generate(ads._AD_DETECT_SYSTEM_PROMPT, rendered, response_format=ads._AD_DETECT_RESPONSE_FORMAT)
+                    return [FakeAd(30, 40)]
+                ads.detect_ads = detector
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=500.0), \
+                        mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()), \
+                        mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
+                    result = wp.run({"protocolVersion": 2, "audioPath": str(audio),
+                                     "outputPath": "/tmp/not-rendered-capacity.mp3", "removeAds": True,
+                                     "readableTranscript": False})
+                self.assertEqual(len(failed), 1)
+                self.assertEqual(result["report"]["outcome"], "uncertain")
+                self.assertEqual(result["audioPath"], str(audio))
+                self.assertFalse(result["audioChanged"])
+                self.assertEqual((result["adSegments"], result["keepIntervals"], result["removedSeconds"]), ([], [], 0.0))
+                self.assertIn(message, result["warning"])
+                self.assertEqual(audio.read_bytes(), original)
+                audit = result["report"]["audit"]
+                self.assertEqual(audit["modelFailures"], 1)
+                self.assertGreaterEqual(audit["modelRequests"], 7)
+                self.assertLess(audit["modelFailures"] * 2, audit["modelRequests"])
+                self.assertTrue(llm.closed)
+                render.assert_not_called()
+
+    def test_capacity_recognition_does_not_accept_other_value_or_coding_errors(self):
+        errors = [ValueError("coding defect"), ValueError("Requested tokens (4096) exceed context window of 4096"),
+                  ValueError("Requested tokens (10) exceed context window of 4096"),
+                  ValueError("Requested tokens (4199) exceed context window of 0"),
+                  ValueError("Requested tokens (4199) exceed context window of 4096 and unrelated defect"),
+                  TypeError("Requested tokens (4199) exceed context window of 4096"),
+                  AttributeError("Requested tokens (4199) exceed context window of 4096")]
+        for error in errors:
+            with self.subTest(error=repr(error)):
+                backend = _worker_ad_audit.CountingBackend(FakeLLM(loaded=True, fail_generate=error))
+                with self.assertRaises(type(error)):
+                    backend.generate("test", "synthetic")
+                self.assertIs(backend.unexpected_error, error)
+                self.assertIsNone(backend.context_capacity_error)
