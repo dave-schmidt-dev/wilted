@@ -145,9 +145,7 @@ struct WiltedMacEpisodeIdentityReviewLayout: View {
     /// sign that something is happening.
     @ViewBuilder private func activityStatus(_ activity: WiltedMacEpisodeIdentityReviewModel.Activity) -> some View {
         HStack(spacing: WiltedTheme.Spacing.small) {
-            WiltedLoadingMotif()
-                .scaleEffect(0.28)
-                .frame(width: 28, height: 28)
+            WiltedLoadingMotif(size: .compact)
                 .accessibilityHidden(true)
             Text(activity.statusText)
                 .wiltedFont(.utility)

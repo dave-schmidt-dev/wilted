@@ -34,9 +34,7 @@ extension WiltedMacPlayerContent {
     private var minimizedIdleSummary: some View {
         HStack(spacing: WiltedTheme.Spacing.small) {
             if model.isAutomaticAdvancing {
-                WiltedLoadingMotif()
-                    .scaleEffect(0.24)
-                    .frame(width: 24, height: 24)
+                WiltedLoadingMotif(size: .compact)
                     .accessibilityHidden(true)
             } else {
                 Image(systemName: "play.circle")

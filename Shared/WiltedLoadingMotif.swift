@@ -1,46 +1,84 @@
 import SwiftUI
 
-/// The accepted 100-unit W, shared by both native startup surfaces.
-enum WiltedLoadingMotifGeometry {
-    static let cycle: TimeInterval = 1.45
-    static let strokeWidth: CGFloat = 10
-    static let dashFraction: CGFloat = 0.24
-    static let start = CGPoint(x: 13, y: 26)
-    // Each tuple is (first control, second control, end), in SVG viewBox units.
-    static let curves: [(CGPoint, CGPoint, CGPoint)] = [
-        (.init(x: 13, y: 19), .init(x: 21, y: 19), .init(x: 21, y: 27)),
-        (.init(x: 23, y: 40), .init(x: 28, y: 63), .init(x: 34, y: 63)),
-        (.init(x: 39, y: 63), .init(x: 44, y: 34), .init(x: 50, y: 34)),
-        (.init(x: 56, y: 34), .init(x: 61, y: 63), .init(x: 66, y: 63)),
-        (.init(x: 72, y: 63), .init(x: 77, y: 40), .init(x: 79, y: 27)),
-        (.init(x: 79, y: 19), .init(x: 87, y: 19), .init(x: 87, y: 26))
-    ]
-    static var path: Path {
-        var path = Path(); path.move(to: start)
-        for (first, second, end) in curves { path.addCurve(to: end, control1: first, control2: second) }
+/// Each approved size uses its own stroke geometry, drawn directly at native size.
+enum WiltedLoadingMotifSize: CGFloat, CaseIterable {
+    case compact = 20
+    case regular = 64
+}
+
+/// The owner-approved 2026-10-12 larder serpentine (SVG viewBox 0 0 64 64).
+struct WiltedLoadingMotifGeometry {
+    let size: WiltedLoadingMotifSize
+    static let cycle: TimeInterval = 1.6
+    static let dashFraction: CGFloat = 0.18
+    static let shelfOpacity = 0.58
+    static let traceOpacity = 0.98
+    var unit: CGFloat { size.rawValue / 64 }
+    var shelfStrokeWidth: CGFloat { (size == .compact ? 3 : 2.3) * unit }
+    var traceStrokeWidth: CGFloat { 2.8 * unit }
+
+    /// Construct the two native geometries directly; never shrink a rendered 64pt mark.
+    var frame: Path {
+        Path(roundedRect: CGRect(x: 14 * unit, y: 8 * unit, width: 36 * unit, height: 48 * unit),
+             cornerSize: CGSize(width: 3 * unit, height: 3 * unit))
+    }
+
+    var shelves: Path {
+        var path = Path()
+        let lines: [[CGFloat]] = [
+            [14,27,50,27], [14,41,50,41], [32,8,32,56], [27,17,27,22], [37,17,37,22],
+            [21,33,28,33], [36,33,44,33], [21,47,28,47], [36,47,44,47]
+        ]
+        for line in lines {
+            path.move(to: point(line[0], line[1]))
+            path.addLine(to: point(line[2], line[3]))
+        }
         return path
     }
-    /// SVG pathLength=100 normalizes dash units. Approximate the cubic arc lengths
-    /// once, so the native stroke uses the same 24/76 proportions at any size.
-    static let length: CGFloat = {
-        var length: CGFloat = 0, start = Self.start
-        for (first, second, end) in curves {
-            var previous = start
-            for sample in 1...256 {
-                let t = CGFloat(sample) / 256, u = 1 - t
-                let point = CGPoint(x: u*u*u*start.x + 3*u*u*t*first.x + 3*u*t*t*second.x + t*t*t*end.x,
-                                    y: u*u*u*start.y + 3*u*u*t*first.y + 3*u*t*t*second.y + t*t*t*end.y)
-                length += hypot(point.x - previous.x, point.y - previous.y); previous = point
-            }
-            start = end
-        }
-        return length
-    }()
-    static func phase(at elapsed: TimeInterval) -> CGFloat {
-        CGFloat(max(0, elapsed).truncatingRemainder(dividingBy: cycle) / cycle)
+
+    var outline: Path {
+        var path = Path()
+        path.move(to: point(17, 8))
+        path.addLine(to: point(47, 8))
+        path.addQuadCurve(to: point(50, 11), control: point(50, 8))
+        path.addLine(to: point(50, 24))
+        path.addQuadCurve(to: point(47, 27), control: point(50, 27))
+        path.addLine(to: point(17, 27))
+        path.addQuadCurve(to: point(14, 30), control: point(14, 27))
+        path.addLine(to: point(14, 38))
+        path.addQuadCurve(to: point(17, 41), control: point(14, 41))
+        path.addLine(to: point(47, 41))
+        path.addQuadCurve(to: point(50, 44), control: point(50, 41))
+        path.addLine(to: point(50, 53))
+        path.addQuadCurve(to: point(47, 56), control: point(50, 56))
+        path.addLine(to: point(17, 56))
+        path.addQuadCurve(to: point(14, 53), control: point(14, 56))
+        path.addLine(to: point(14, 11))
+        path.addQuadCurve(to: point(17, 8), control: point(14, 8))
+        path.closeSubpath()
+        return path
     }
-    static func fraction(_ progress: Double) -> CGFloat {
-        CGFloat(progress.isFinite ? min(1, max(0, progress)) : 0)
+
+    private func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x * unit, y: y * unit) }
+
+    // Eight identical quadratic corners, plus the straight SVG segments. A fixed
+    // quadrature normalizes SVG pathLength=100 into native StrokeStyle units.
+    private static let viewBoxLength: CGFloat = {
+        var corner: CGFloat = 0
+        var previous = CGPoint.zero
+        for sample in 1...256 {
+            let t = CGFloat(sample) / 256
+            let next = CGPoint(x: 6 * t - 3 * t * t, y: 3 * t * t)
+            corner += hypot(next.x - previous.x, next.y - previous.y)
+            previous = next
+        }
+        return 30 * 4 + 13 + 8 + 9 + 42 + corner * 8
+    }()
+    var length: CGFloat { Self.viewBoxLength * unit }
+
+    static func phase(at elapsed: TimeInterval) -> CGFloat {
+        guard elapsed.isFinite else { return 0 }
+        return CGFloat(max(0, elapsed).truncatingRemainder(dividingBy: cycle) / cycle)
     }
     static func ink(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color(red: 127/255, green: 212/255, blue: 140/255)
@@ -52,53 +90,48 @@ enum WiltedLoadingMotifGeometry {
     }
 }
 
-/// Deterministic drawing used by the live timeline and native render tests.
+/// Deterministic native drawing shared by the live timeline and render tests.
 struct WiltedLoadingMotifMark: View {
-    var progress: Double?
+    var size: WiltedLoadingMotifSize = .regular
     var elapsed: TimeInterval
     var reduceMotion: Bool
     var scheme: ColorScheme
 
     var body: some View {
-        let geometry = WiltedLoadingMotifGeometry.self
-        ZStack {
-            if progress == nil && !reduceMotion {
-                geometry.path.stroke(geometry.ink(scheme).opacity(0.22),
-                                     style: StrokeStyle(lineWidth: geometry.strokeWidth, lineCap: .round, lineJoin: .round))
+        let geometry = WiltedLoadingMotifGeometry(size: size)
+        let ink = WiltedLoadingMotifGeometry.ink(scheme)
+        ZStack(alignment: .topLeading) {
+            ZStack(alignment: .topLeading) {
+                geometry.frame.stroke(ink, style: StrokeStyle(
+                    lineWidth: geometry.shelfStrokeWidth, lineCap: .round, lineJoin: .round))
+                geometry.shelves.stroke(ink, style: StrokeStyle(
+                    lineWidth: geometry.shelfStrokeWidth, lineCap: .round, lineJoin: .round))
             }
-            if reduceMotion {
-                geometry.path.stroke(geometry.ink(scheme),
-                                     style: StrokeStyle(lineWidth: geometry.strokeWidth, lineCap: .round, lineJoin: .round))
-            } else if let progress {
-                geometry.path.trimmedPath(from: 0, to: geometry.fraction(progress))
-                    .stroke(geometry.ink(scheme), style: StrokeStyle(lineWidth: geometry.strokeWidth, lineCap: .round, lineJoin: .round))
-            } else {
-                geometry.path.stroke(geometry.ink(scheme), style: StrokeStyle(
-                    lineWidth: geometry.strokeWidth, lineCap: .round, lineJoin: .round,
-                    dash: [geometry.length * geometry.dashFraction, geometry.length * (1 - geometry.dashFraction)],
-                    dashPhase: -geometry.phase(at: elapsed) * geometry.length))
-            }
+            .compositingGroup()
+            .opacity(WiltedLoadingMotifGeometry.shelfOpacity)
+            geometry.outline.stroke(ink.opacity(WiltedLoadingMotifGeometry.traceOpacity), style: StrokeStyle(
+                lineWidth: geometry.traceStrokeWidth, lineCap: .round, lineJoin: .round,
+                dash: [geometry.length * WiltedLoadingMotifGeometry.dashFraction,
+                       geometry.length * (1 - WiltedLoadingMotifGeometry.dashFraction)],
+                dashPhase: -WiltedLoadingMotifGeometry.phase(at: reduceMotion ? 0 : elapsed) * geometry.length))
         }
-        .frame(width: 100, height: 100)
+        .frame(width: size.rawValue, height: size.rawValue)
         .accessibilityHidden(true)
     }
 }
 
+/// Decorative indeterminate art; adjacent status text supplies the accessible wait.
 struct WiltedLoadingMotif: View {
-    /// Actual fraction of a counted operation; nil means indeterminate waiting.
-    var progress: Double? = nil
+    var size: WiltedLoadingMotifSize = .regular
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var started = Date()
 
     var body: some View {
-        TimelineView(.animation(paused: reduceMotion || progress != nil)) { context in
-            WiltedLoadingMotifMark(progress: progress, elapsed: context.date.timeIntervalSince(started),
+        TimelineView(.animation(paused: reduceMotion)) { context in
+            WiltedLoadingMotifMark(size: size, elapsed: context.date.timeIntervalSince(started),
                                    reduceMotion: reduceMotion, scheme: scheme)
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Opening your larder")
-        .accessibilityValue(progress.map { "\(Int(WiltedLoadingMotifGeometry.fraction($0) * 100))%" } ?? "Waiting")
-        .accessibilityIdentifier("wilted-loading-motif")
+        .accessibilityHidden(true)
     }
 }

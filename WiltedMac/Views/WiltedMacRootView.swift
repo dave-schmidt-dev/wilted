@@ -193,19 +193,11 @@ struct WiltedMacRootView: View {
         .accessibilityIdentifier("wilted-mac-root")
     }
 
-    /// Only counted recovery work has a fraction; other bootstrap phases wait.
-    private var startupMotifProgress: Double? {
-        guard let step = model.startupState.loadingStep,
-              case let .recoveringWork(_, done, total, _) = step,
-              total > 0 else { return nil }
-        return Double(done) / Double(total)
-    }
-
     private var startupLoading: some View {
         VStack(spacing: WiltedTheme.Spacing.medium) {
             // The current bootstrap phase, not one fixed sentence: a store
             // migration that takes a while should say which wait this is.
-            WiltedLoadingMotif(progress: startupMotifProgress)
+            WiltedLoadingMotif()
             Text(model.startupStepLabel)
                 .wiltedFont(.body)
                 .accessibilityLabel(model.startupStepLabel)

@@ -17,6 +17,45 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         try WiltedMacHeadless.recognizedLines(WiltedMacFeedsView(model: model), size: tall)
     }
 
+    private func refreshHeaderSource() throws -> String {
+        let source = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
+        let start = try XCTUnwrap(source.range(of: "private var refreshHeader: some View"))
+        let end = try XCTUnwrap(source.range(of: "var refreshHelp: WiltedMacHelpContent",
+                                             range: start.upperBound..<source.endIndex))
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    func testRefreshUsesApprovedNativeTemplateBesideOneVisibleTitle() async throws {
+        let image = try XCTUnwrap(NSImage(named: "feed-refresh-circular-arrow"))
+        XCTAssertTrue(image.isTemplate)
+        XCTAssertEqual(image.size, CGSize(width: 20, height: 20))
+        let header = try refreshHeaderSource()
+        let iconStart = try XCTUnwrap(header.range(of: "Image(\"feed-refresh-circular-arrow\")"))
+        let titleStart = try XCTUnwrap(header.range(of: "Text(\"Refresh\")"))
+        let icon = String(header[iconStart.lowerBound..<titleStart.lowerBound])
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Image(\"feed-refresh-circular-arrow\")", in: header), 1)
+        XCTAssertTrue(icon.contains(".frame(width: 20, height: 20)"))
+        XCTAssertTrue(icon.contains(".accessibilityHidden(true)"))
+        XCTAssertTrue(icon.contains("WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)"))
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Text(\"Refresh\")", in: header), 1)
+        let model = await WiltedMacHeadless.model(self, arguments)
+        let shown = try lines(model).map(\.text)
+        XCTAssertTrue(shown.contains { $0.contains("Refresh") }, "\(shown)")
+        XCTAssertFalse(shown.contains { $0.contains("Refreshing") }, "\(shown)")
+    }
+
+    func testManualRefreshRetainsNativeBusyStatusAndCancel() async throws {
+        let model = await WiltedMacHeadless.model(self, arguments)
+        model.isRefreshingPodcasts = true
+        let shown = try lines(model).map(\.text)
+        XCTAssertTrue(shown.contains { $0.contains("Refreshing") }, "\(shown)")
+        XCTAssertTrue(shown.contains { $0.contains("Cancel") }, "\(shown)")
+        XCTAssertFalse(shown.contains { $0.contains("Last refreshed") }, "\(shown)")
+        let header = try refreshHeaderSource()
+        XCTAssertTrue(header.contains("ProgressView().controlSize(.small)"))
+        XCTAssertTrue(header.contains("Button(\"Cancel\") { model.cancelPodcastRefresh() }"))
+    }
+
     func testRefreshKeepExplanationIsHelpRatherThanRepeatedInlineCopy() async throws {
         let model = await WiltedMacHeadless.model(self, arguments)
         let view = WiltedMacFeedsView(model: model)

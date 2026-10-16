@@ -36,10 +36,25 @@ final class WiltedMacStartupProgressTests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         XCTAssertTrue(source.contains("case .loading:\n                startupLoading"))
         XCTAssertTrue(source.contains("case .ready:\n                readyRoot"))
-        XCTAssertTrue(source.contains("WiltedLoadingMotif(progress: startupMotifProgress)"))
-        XCTAssertTrue(source.contains("Double(done) / Double(total)"))
+        XCTAssertTrue(source.contains("WiltedLoadingMotif()"))
+        XCTAssertFalse(source.contains("startupMotifProgress"), "counts never drive an indeterminate dash")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Text(model.startupStepLabel)", in: source), 1,
+                       "the phase/count text supplies one accessible status")
         XCTAssertTrue(source.contains("startupRecovery(failure)"))
         XCTAssertTrue(source.contains("model.retryStoreBootstrap()"))
+    }
+
+    func testCountedRecoveryRendersActualCountsBesideIndeterminateArt() async throws {
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("motif-counts"),
+                                   storeBootstrap: { try LocalLibraryStore(url: $0) },
+                                   preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await model.close() }
+        model.startupState = .loading(attempt: 1, step: .recoveringWork(
+            action: "closing interrupted requests", done: 2, total: 5))
+        XCTAssertEqual(model.startupStepLabel, "Recovering 2 of 5 requests: closing interrupted requests.")
+        let text = try WiltedMacHeadless.recognizedText(WiltedMacRootView(model: model),
+                                                       size: CGSize(width: 760, height: 420)).joined(separator: " ")
+        XCTAssertTrue(text.contains("2 of 5 requests"), text)
     }
 
     func testSeededRecoveryEmitsCountedProgressForEveryRepairKind() async throws {

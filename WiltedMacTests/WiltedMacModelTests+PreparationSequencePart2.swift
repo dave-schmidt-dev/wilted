@@ -165,6 +165,7 @@ extension WiltedMacModelTests {
     /// run start rather than before either.
     func testTheAdmittedPolicyEqualsTheSnapshotCapturedAtRequest() async throws {
         let directory = temporaryDirectory("ticket-admitted-policy")
+        let runner = AdmittedPolicySpyRunner()
 
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/ticket-policy.xml"))
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -189,8 +190,10 @@ extension WiltedMacModelTests {
                 )
                 return store
             },
+            podcastPipelineRunnerFactory: { runner },
             preferences: WiltedMacTestPreferences.ephemeral()
         )
+        addTeardownBlock { await model.close() }
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
         XCTAssertEqual(model.startupState, .ready)
@@ -198,7 +201,10 @@ extension WiltedMacModelTests {
         // Holds the gate closed so `prepareEpisode` below admits, is issued
         // a ticket, and then sits queued rather than starting immediately.
         let gate = model.preparationGateForTesting
+        var ownsManualGate = false
+        defer { if ownsManualGate { gate.release() } }
         try await gate.admit(sequence: 1)
+        ownsManualGate = true
 
         model.setAutomationSettings(WiltedAutomationSettings(
             refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
@@ -229,6 +235,7 @@ extension WiltedMacModelTests {
             transcriptPolicy: .bestAvailable, removeAds: true
         ))
 
+        XCTAssertTrue(model.automationSettings.removeAds, "the current setting differs before the runner starts")
         let ticketAfterMutation = try await admittedTicket()
         let snapshotAfterMutation = try XCTUnwrap(ticketAfterMutation?.policySnapshot)
         let decodedAfterMutation = try JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: snapshotAfterMutation)
@@ -236,8 +243,16 @@ extension WiltedMacModelTests {
                        "the ticket's policy is immutable once admitted -- a later settings change must not reach it")
 
         // Unstick the run so the task does not outlive the test.
+        ownsManualGate = false
         gate.release()
         await model.waitForPodcastPreparationOperationsForTesting()
+        let requests = await runner.requests
+        XCTAssertEqual(requests.count, 1, "the admitted run reaches only the injected runner")
+        let request = try XCTUnwrap(requests.first)
+        let decodedRequest = try XCTUnwrap(JSONSerialization.jsonObject(with: request) as? [String: Any])
+        XCTAssertEqual(decodedRequest["removeAds"] as? Bool, false,
+                       "the runner receives the admitted policy, not the later Remove ads setting")
+        XCTAssertEqual(decodedRequest["transcriptPolicy"] as? String, decodedAtAdmission.transcriptPolicy.rawValue)
     }
 
     /// A Retry is a fresh admission, not a forbidden terminal-to-running
@@ -438,4 +453,14 @@ extension WiltedMacModelTests {
         )
     }
 
+}
+
+/// Captures the pipeline boundary without spawning Python, speech models or media tools.
+private actor AdmittedPolicySpyRunner: PodcastPipelineRunning {
+    private(set) var requests: [Data] = []
+
+    func run(request: Data, onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void) async throws -> Data {
+        requests.append(request)
+        throw CancellationError()
+    }
 }

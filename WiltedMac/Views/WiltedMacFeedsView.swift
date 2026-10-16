@@ -254,7 +254,17 @@ struct WiltedMacFeedsView: View {
                 }
             } else {
                 WiltedMacLastRefreshedLabel(model: model, identifier: "wilted-podcast-last-updated")
-                Button("Refresh") { model.refreshPodcastFeeds() }
+                Button { model.refreshPodcastFeeds() } label: {
+                    HStack(spacing: WiltedTheme.Spacing.small) {
+                        Image("feed-refresh-circular-arrow")
+                            .renderingMode(.template)
+                            .resizable()
+                            .frame(width: 20, height: 20)
+                            .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                            .accessibilityHidden(true)
+                        Text("Refresh")
+                    }
+                }
                     .accessibilityIdentifier("wilted-podcast-refresh")
             }
         }

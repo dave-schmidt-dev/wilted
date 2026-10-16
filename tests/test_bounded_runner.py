@@ -522,18 +522,30 @@ class BoundedRunnerTests(unittest.TestCase):
         spec.loader.exec_module(module)
         original = module.process_table
         calls = 0
+        release = self.path / "inspection-resumed.release"
+        waiting_child = (
+            "import sys, time; from pathlib import Path\n"
+            "while not Path(sys.argv[1]).exists(): time.sleep(.01)\n"
+        )
 
         def slow_twice():
             nonlocal calls
             calls += 1
             if calls in (2, 3):
                 raise subprocess.TimeoutExpired(module.PROCESS_TABLE_COMMAND, 5)
-            return original()
+            table = original()
+            if calls == 4:
+                # Keep the child alive through both injected failures, then
+                # release only after a real post-timeout inspection succeeds.
+                release.touch()
+            return table
 
         with mock.patch.object(module, "process_table", side_effect=slow_twice), \
              mock.patch.object(module, "INSPECTION_INTERVAL_SECONDS", 0.01):
-            result = module.run(5, [PYTHON, "-c", "import time; time.sleep(.3)"])
+            result = module.run(5, [PYTHON, "-c", waiting_child, str(release)])
         self.assertEqual(result, 0)
+        self.assertGreaterEqual(calls, 4)
+        self.assertTrue(release.exists())
 
         def always_slow():
             raise subprocess.TimeoutExpired(module.PROCESS_TABLE_COMMAND, 5)

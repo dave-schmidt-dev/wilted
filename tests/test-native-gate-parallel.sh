@@ -37,7 +37,8 @@ run_leg() {
   local name="$1"
   printf 'start %s\\n' "$name" >>"$tmp_root/events"
   : >"$tmp_root/$name.started"
-  (exec sh -c 'echo "$PPID"') >"$tmp_root/$name.pid"
+  (exec sh -c 'echo "$PPID"') >"$tmp_root/$name.pid.tmp"
+  mv "$tmp_root/$name.pid.tmp" "$tmp_root/$name.pid"
   # All selected independent workers rendezvous before any can finish. Host
   # scheduling jitter cannot make the overlap assertion depend on sleep margins.
   case "$name" in

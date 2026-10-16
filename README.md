@@ -56,7 +56,7 @@ On 2026-08-18 an attended Development run published and reconciled the producer-
 - Now Playing keeps Mark completed visible beside the transport, followed by a labelled native More menu (Restart, and Recover audio on a route fault). Share sits beside the episode title and Speed at the end of the Transcript/Notes row.
 - Automatic playlists are built in a rule editor: stable numbered leaves combine with case-insensitive AND, OR and NOT and parentheses, for example `(1 OR 2 OR 3 OR 4 OR 5) AND 6 AND 7` over feed, Unplayed and Ready leaves, with a live matching count and titles as the formula changes and an inline validation problem that disables Save. Add to Playlist stays visible on Larder rows, the playlist's title actions sit beside its title, and Share is a labelled options panel. Those edits show immediately while their save runs and roll back only the playlist that failed.
 - Per-feed match rules are case-insensitive regular expressions, and their preview names the rule that decided each episode.
-- Mac and iOS startup use the native Wilted W motif until actual local readiness. Progress reflects actual work, reduced motion shows settled art, and initialization failures remain actionable.
+- Mac and iOS startup use the approved larder shelf serpentine until actual local readiness. Its native 20/64-point forms run an indeterminate 1.6-second trace; counted recovery stays in the phase text, and Reduce Motion shows the phase-zero settled art. Compact player/review activity uses the native 20-point form. Feeds Refresh uses the approved 20-point circular arrow beside its title; active refresh retains native progress and Cancel.
 
 ## Priorities (in order)
 

@@ -276,4 +276,61 @@ assert_nonzero_exit "$static_forced_status" "forced static admission leg"
 assert_contains "phase0.failed count=1" "$static_forced_output"
 assert_contains "phase0.leg.complete name=test-runtime-static-admission status=1 reason=self-test-forced-failure" "$static_forced_output"
 
+
+# validate-inner's synthetic tests must not inherit the caller's real native
+# gate selection or output destination. Only its final native gate uses them.
+# Fake executables record the actual Makefile recipe environment; no gate runs.
+validate_fixture="$tmp_dir/validate-environment"
+mkdir -p "$validate_fixture/bin" "$validate_fixture/scratch"
+real_python="$(python3 -c 'import sys; print(sys.executable)')"
+real_make="$(command -v make)"
+"$real_python" - "$repo_root/Makefile" "$validate_fixture" "$real_make" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+makefile, root, make = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+records = root / "recipes.jsonl"
+recorder = "#!" + sys.executable + "\n" + '''import json
+import os
+from pathlib import Path
+import sys
+entry = {"executable": Path(sys.argv[0]).name, "args": sys.argv[1:],
+         "environment": {key: os.environ.get(key) for key in (
+             "WILTED_GATE_LEGS", "WILTED_NATIVE_RESULTS_DIR", "WILTED_MAC_UI")}}
+with open(os.environ["WILTED_VALIDATE_ENV_RECORDS"], "a", encoding="utf-8") as output:
+    output.write(json.dumps(entry) + "\\n")
+'''
+for name in ("bash", "python3"):
+    executable = root / "bin" / name
+    executable.write_text(recorder, encoding="utf-8")
+    executable.chmod(0o755)
+selection = "wiltedkit-tests,cloudsync-tests,playback-tests,wiltedproducer-tests,macos-unit-tests,ios-unit-tests"
+destination = str(root / "native results")
+environment = dict(os.environ, PATH=str(root / "bin") + os.pathsep + os.environ["PATH"],
+                   TMPDIR=str(root / "scratch"), WILTED_GATE_LEGS=selection,
+                   WILTED_NATIVE_RESULTS_DIR=destination, WILTED_MAC_UI="0",
+                   WILTED_VALIDATE_ENV_RECORDS=str(records))
+result = subprocess.run([make, "-f", str(makefile), "validate-inner"], cwd=makefile.parent,
+                        env=environment, text=True, capture_output=True, timeout=30)
+assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+entries = [json.loads(line) for line in records.read_text(encoding="utf-8").splitlines()]
+print(json.dumps({"validate_inner_recipes": entries}, sort_keys=True), flush=True)
+meta = ["tests/test-phase0-aggregate.sh", "scripts/test-phase0.sh", "tests/test-native-gate.sh",
+        "tests/test-native-gate-watch.sh", "tests/test-carplay-config.sh"]
+shell = [entry for entry in entries if entry["executable"] == "bash"]
+assert [entry["args"] for entry in shell] == [[name] for name in meta + ["scripts/test-gate.sh"]], entries
+assert len(entries) == 8, entries
+assert entries[-1] == shell[-1], "the real native gate must remain the last recipe"
+for entry in shell[:-1]:
+    assert entry["environment"]["WILTED_GATE_LEGS"] is None, ("meta selection leaked", entry)
+    assert entry["environment"]["WILTED_NATIVE_RESULTS_DIR"] is None, ("meta results leaked", entry)
+assert shell[-1]["environment"]["WILTED_GATE_LEGS"] == selection, shell[-1]
+assert shell[-1]["environment"]["WILTED_NATIVE_RESULTS_DIR"] == destination, shell[-1]
+assert all(entry["environment"]["WILTED_MAC_UI"] == "0" for entry in entries), entries
+print("validate-inner environment isolation passed: meta=5 native=1 recipes=8")
+PY
+
 printf '%s\n' "phase0 aggregate meta-test passed (self-test count=${expected_count})"

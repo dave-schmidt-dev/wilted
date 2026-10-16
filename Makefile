@@ -21,11 +21,11 @@ validate:
 validate-inner:
 	@python3 scripts/check-no-global-tmp.py
 	@python3 scripts/check_file_size.py --all
-	@bash tests/test-phase0-aggregate.sh
-	@bash scripts/test-phase0.sh
-	@bash tests/test-native-gate.sh
-	@bash tests/test-native-gate-watch.sh
-	@bash tests/test-carplay-config.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash tests/test-phase0-aggregate.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash scripts/test-phase0.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash tests/test-native-gate.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash tests/test-native-gate-watch.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash tests/test-carplay-config.sh
 	@bash scripts/test-gate.sh
 
 native-meta:
