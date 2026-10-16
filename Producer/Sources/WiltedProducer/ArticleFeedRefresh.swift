@@ -61,12 +61,13 @@ public enum ArticleFeedParser {
     public static let maximumItemCount = 200
 
     public static func parse(_ data: Data, feedURL: URL) throws -> ArticleFeedDocument {
-        guard !UntrustedXML.declaresEntitiesOrSubset(data) else { throw ArticleFeedParseError.externalEntity }
+        if let refusal = UntrustedXML.refusal(in: data, doctype: .allowBare) {
+            throw refusal.isDeclarationRefusal ? ArticleFeedParseError.externalEntity : ArticleFeedParseError.malformedXML
+        }
         let reader = Reader(feedURL: feedURL)
-        let parser = XMLParser(data: data)
+        let parser = UntrustedXML.makeParser(data)
         parser.delegate = reader
         parser.shouldProcessNamespaces = true
-        parser.shouldResolveExternalEntities = false
         guard parser.parse(), reader.failure == nil else { throw reader.failure ?? .malformedXML }
         guard let title = reader.channelTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
             throw ArticleFeedParseError.missingTitle

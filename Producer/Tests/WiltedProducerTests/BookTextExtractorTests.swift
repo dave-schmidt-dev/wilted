@@ -309,9 +309,9 @@ struct BookTextExtractorTests {
     }
 
     @Test func aDoctypeWithOnlyAnInternalSubsetBracketIsRefusedButABareDoctypeIsNot() throws {
-        #expect(UntrustedXML.declaresEntitiesOrSubset(Data("<!DOCTYPE x [ ]><x/>".utf8)))
-        #expect(!UntrustedXML.declaresEntitiesOrSubset(Data("<!DOCTYPE html PUBLIC \"-//W3C//DTD\" \"x.dtd\"><html/>".utf8)))
-        #expect(!UntrustedXML.declaresEntitiesOrSubset(Data("<rss/>".utf8)))
+        #expect((UntrustedXML.refusal(in: Data("<!DOCTYPE x [ ]><x/>".utf8), doctype: .allowBare) != nil))
+        #expect(!(UntrustedXML.refusal(in: Data("<!DOCTYPE html PUBLIC \"-//W3C//DTD\" \"x.dtd\"><html/>".utf8), doctype: .allowBare) != nil))
+        #expect(!(UntrustedXML.refusal(in: Data("<rss/>".utf8), doctype: .allowBare) != nil))
     }
 
     @Test func anOversizedXMLFileIsRefusedWithAReason() throws {

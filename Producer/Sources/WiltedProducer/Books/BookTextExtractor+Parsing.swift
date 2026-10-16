@@ -130,12 +130,11 @@ final class XMLNode {
 
     /// External entities and DTD loading are off; the node count is bounded.
     static func parse(_ data: Data, name: String) throws -> XMLNode {
-        guard !UntrustedXML.declaresEntitiesOrSubset(data) else {
-            throw BookExtractionError.refused("\(name) declares XML entities, which Wilted does not read.")
+        if let refusal = UntrustedXML.refusal(in: data, doctype: .allowBare) {
+            throw refusal.bookExtractionError(name: name)
         }
         let builder = Builder()
-        let parser = XMLParser(data: data)
-        parser.shouldResolveExternalEntities = false
+        let parser = UntrustedXML.makeParser(data)
         parser.shouldProcessNamespaces = false
         parser.delegate = builder
         guard parser.parse(), let root = builder.root else {
@@ -182,6 +181,27 @@ final class XMLNode {
         }
 
         func parser(_ parser: XMLParser, foundCharacters string: String) { stack.last?.ownText += string }
+    }
+}
+
+private extension UntrustedXML.Refusal {
+    /// Maps the shared classifier's typed refusal to the book vocabulary:
+    /// declarations and unsupported or contradictory encodings are policy
+    /// refusals, and bytes that are not valid in the encoding they claim are
+    /// unreadable like any other malformed XML.
+    func bookExtractionError(name: String) -> BookExtractionError {
+        switch self {
+        case .entityDeclaration, .internalSubset:
+            return .refused("\(name) declares XML entities, which Wilted does not read.")
+        case .doctype:
+            return .refused("\(name) declares an XML document type, which Wilted does not read.")
+        case let .unsupportedEncoding(encoding):
+            return .refused("\(name) declares the \(encoding) XML encoding, which Wilted does not read.")
+        case let .encodingDisagreement(encoding):
+            return .refused("\(name) declares the \(encoding) XML encoding, which contradicts its bytes.")
+        case let .malformedEncoding(encoding):
+            return .unreadable("\(name) is not valid XML in its \(encoding) encoding.")
+        }
     }
 }
 

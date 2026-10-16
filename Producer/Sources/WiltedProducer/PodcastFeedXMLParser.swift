@@ -44,12 +44,13 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
     }
 
     func parse(_ data: Data) throws -> LoadedPodcastFeed {
-        guard !declaresExternalEntity(data) else { throw PodcastFeedClientError.externalEntity }
-        let parser = XMLParser(data: data)
+        if let refusal = UntrustedXML.refusal(in: data, doctype: .refuseAll) {
+            throw refusal.isDeclarationRefusal ? PodcastFeedClientError.externalEntity : PodcastFeedClientError.malformedXML
+        }
+        let parser = UntrustedXML.makeParser(data)
         parser.delegate = self
         parser.shouldProcessNamespaces = true
         parser.shouldReportNamespacePrefixes = true
-        parser.shouldResolveExternalEntities = false
         guard parser.parse() else { throw parseFailure ?? PodcastFeedClientError.malformedXML }
         if let parseFailure { throw parseFailure }
         guard let title = bounded(channelTitle, maximum: 1_024) else {
@@ -166,6 +167,15 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
         publicID: String?,
         systemID: String?
     ) {
+        parseFailure = .externalEntity
+        parser.abortParsing()
+    }
+
+    /// The classifier refuses every internal entity declaration before the
+    /// parser runs; this callback is the belt to that suspenders, so an
+    /// encoding or lexical path that somehow reaches the parser still refuses
+    /// instead of expanding.
+    func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName name: String, value: String?) {
         parseFailure = .externalEntity
         parser.abortParsing()
     }
@@ -334,41 +344,6 @@ private let supportedAudioTypes: Set<String> = [
     "audio/aac", "audio/flac", "audio/m4a", "audio/mp3", "audio/mp4", "audio/mpeg",
     "audio/ogg", "audio/opus", "audio/wav", "audio/x-flac", "audio/x-m4a", "audio/x-wav",
 ]
-
-private func declaresExternalEntity(_ data: Data) -> Bool {
-    let document = decodeXMLDocument(data)
-    let pattern = #"(?is)<!--.*?-->|<!\[CDATA\[.*?\]\]>|<!\s*(?:doctype|entity)\b"#
-    let tokenPattern = #"(?is)^<!\s*(?:doctype|entity)\b"#
-    guard let expression = try? NSRegularExpression(pattern: pattern) else { return false }
-    let range = NSRange(document.startIndex..<document.endIndex, in: document)
-    return expression.matches(in: document, range: range).contains { match in
-        guard let range = Range(match.range, in: document) else { return false }
-        return document[range].range(of: tokenPattern, options: .regularExpression) != nil
-    }
-}
-
-private func decodeXMLDocument(_ data: Data) -> String {
-    let prefix = Array(data.prefix(4))
-    if prefix.starts(with: [0x00, 0x00, 0xFE, 0xFF]) || prefix.starts(with: [0xFF, 0xFE, 0x00, 0x00]) {
-        return String(data: data, encoding: .utf32) ?? ""
-    }
-    if prefix.starts(with: [0xFE, 0xFF]) || prefix.starts(with: [0xFF, 0xFE]) {
-        return String(data: data, encoding: .utf16) ?? ""
-    }
-    if prefix.starts(with: [0x00, 0x00, 0x00, 0x3C]) {
-        return String(data: data, encoding: .utf32BigEndian) ?? ""
-    }
-    if prefix.starts(with: [0x3C, 0x00, 0x00, 0x00]) {
-        return String(data: data, encoding: .utf32LittleEndian) ?? ""
-    }
-    if prefix.starts(with: [0x00, 0x3C]) {
-        return String(data: data, encoding: .utf16BigEndian) ?? ""
-    }
-    if prefix.count >= 2, prefix[0] == 0x3C, prefix[1] == 0x00 {
-        return String(data: data, encoding: .utf16LittleEndian) ?? ""
-    }
-    return String(decoding: data, as: UTF8.self)
-}
 
 /// Show notes as readable text: block tags become line breaks, list items
 /// become dashes, links keep their address after the text (the address is
