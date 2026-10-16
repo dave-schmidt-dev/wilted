@@ -32,6 +32,52 @@ public enum PlaybackStartOutcome: Equatable, Sendable {
 /// and speed accounting stay in `PlaybackController.swift`.
 @MainActor
 extension PlaybackController {
+    /// A seek owns its deferred resume independently of the speech checkpoint it cancels.
+    struct SeekOwnership {
+        let generation: UInt64
+        let holdSerial: UInt64
+        let item: ItemID?
+        let revision: RevisionID?
+        let wasPlaying: Bool
+        let engine: PlaybackInterruptions?
+        let route: MacAudioRoute?
+        let routeInvalidations: UInt64
+    }
+
+    func ownsSeek(_ owner: SeekOwnership, generation: UInt64) -> Bool {
+        commandGeneration == generation && explicitHoldSerial == owner.holdSerial
+            && itemID == owner.item && revisionID == owner.revision
+    }
+
+    func endSeek(_ owner: SeekOwnership) {
+        guard let engine = owner.engine, engine.seekOwner == owner.generation else { return }
+        engine.seekRoute = nil
+        engine.seekOwner = nil
+        engine.seekIntent = nil
+    }
+
+    func resumeSeek(_ owner: SeekOwnership, generation: UInt64) {
+        guard owner.wasPlaying, ownsSeek(owner, generation: generation) else { return }
+        if let engine = owner.engine {
+            guard interruptions === engine, engine.seekOwner == owner.generation, engine.seekRouteInvalidations == owner.routeInvalidations else { return }
+            if let source = engine.routeSource {
+                guard let route = owner.route, route.isAvailable,
+                      source.monitoringAvailable, source.currentRoute() == route else { return }
+            }
+            // A route read can invoke a newer command synchronously.
+            guard ownsSeek(owner, generation: generation), interruptions === engine,
+                  engine.seekRouteInvalidations == owner.routeInvalidations else { return }
+        }
+        if !backend.isPlaying { isPlaying = backend.play() }
+        meterListening()
+    }
+
+    func updateSeekIntent(_ owner: SeekOwnership, generation: UInt64) {
+        guard let engine = owner.engine, engine.seekOwner == owner.generation else { return }
+        engine.seekIntent = (generation, owner.holdSerial, owner.wasPlaying,
+                             owner.item, owner.revision, owner.routeInvalidations)
+    }
+
     /// Loads one immutable revision and only resumes a persisted state with
     /// the exact same item and revision identifiers.
     public func load(_ storedRevision: StoredAudioRevision) async throws {
@@ -164,20 +210,37 @@ extension PlaybackController {
         guard value.isFinite else { throw PlaybackControllerError.invalidSeek(value) }
         let current = livePositionSeconds
         let target = clamp(value)
+        let owner = beginSeek()
+        var generation = owner.generation
+        var targetApplied = false
+        defer {
+            // A failed save must still preserve transport intent at the applied target.
+            if targetApplied, owner.engine != nil { resumeSeek(owner, generation: generation) }
+            endSeek(owner)
+        }
+        guard ownsSeek(owner, generation: generation) else { return }
         stageSpeedInterval(endingAt: current)
-        if target < current {
-            try await beginNewSession(intent: .rewind, position: target, reloadBackend: true)
-        } else {
-            backend.currentTime = target
-            positionSeconds = target
-            speedSavingsBaselineSeconds = target
-            completed = target >= durationSeconds
-            intent = .progress
-            // Every caller is an explicit listener seek (scrub, transcript
-            // cue, skip-forward). The jump is clamped to the item, so it never
-            // exceeds the remaining duration.
-            recordManualSkip(seconds: target - current)
+        do {
+            if target < current {
+                generation = try await beginNewSession(
+                    intent: .rewind, position: target, reloadBackend: true, seekOwner: owner)
+            } else {
+                backend.currentTime = target
+                guard ownsSeek(owner, generation: generation) else { return }
+                positionSeconds = target
+                speedSavingsBaselineSeconds = target
+                completed = target >= durationSeconds
+                intent = .progress
+                // Explicit listener forward movement is skipped audio, never listening.
+                recordManualSkip(seconds: target - current)
+                generation = commandGeneration
+            }
+            targetApplied = true
+            updateSeekIntent(owner, generation: generation)
             try await checkpoint()
+        } catch is CancellationError where !ownsSeek(owner, generation: generation) {
+            // A newer transport command supersedes forward and backward seeks alike.
+            return
         }
     }
 
@@ -189,7 +252,7 @@ extension PlaybackController {
     /// session even when the playhead is already at zero.
     public func restart() async throws {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
-        try await beginNewSession(intent: .restart, position: 0, reloadBackend: true)
+        _ = try await beginNewSession(intent: .restart, position: 0, reloadBackend: true)
     }
 
     public func manualCheckpoint() async throws { try await checkpoint() }
@@ -221,15 +284,26 @@ extension PlaybackController {
     private func beginNewSession(
         intent: PlaybackIntent,
         position: TimeInterval,
-        reloadBackend: Bool = false
-    ) async throws {
+        reloadBackend: Bool = false,
+        seekOwner: SeekOwnership? = nil
+    ) async throws -> UInt64 {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         stageSpeedInterval(endingAt: livePositionSeconds)
         let wasPlaying = backend.isPlaying || isPlaying
         if reloadBackend {
             guard let mediaURL, let loadedItemID = itemID else { throw PlaybackControllerError.noLoadedRevision }
+            let generation = commandGeneration
             backend.stop()
-            try self.reloadBackend(from: mediaURL, itemID: loadedItemID)
+            if let seekOwner, !ownsSeek(seekOwner, generation: generation) { throw CancellationError() }
+            do {
+                try self.reloadBackend(from: mediaURL, itemID: loadedItemID)
+            } catch {
+                isPlaying = backend.isPlaying
+                meterListening()
+                throw error
+            }
+            // loadedBackendGeneration.didSet advances commandGeneration exactly once per reload.
+            if let seekOwner, !ownsSeek(seekOwner, generation: generation &+ 1) { throw CancellationError() }
             completionHandledGeneration = nil
         }
         sessionID = Self.newSessionID()
@@ -238,12 +312,15 @@ extension PlaybackController {
         completed = false
         recoverableFault = nil
         let target = clamp(position)
+        let generation = commandGeneration
         backend.currentTime = target
+        if let seekOwner, !ownsSeek(seekOwner, generation: generation) { throw CancellationError() }
         positionSeconds = target
         speedSavingsBaselineSeconds = target
-        isPlaying = wasPlaying && backend.play()
+        isPlaying = seekOwner?.engine == nil && wasPlaying && backend.play()
         meterListening()
-        try await checkpoint()
+        if seekOwner == nil { try await checkpoint() }
+        return generation
     }
 
     /// Rebuilds the backend for the loaded media. Any failure here is the

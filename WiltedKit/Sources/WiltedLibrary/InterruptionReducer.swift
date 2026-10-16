@@ -65,6 +65,8 @@ public enum InterruptionEvent: Equatable, Sendable {
     case pausePointReached(PlaybackSnapshot)
     case speechFinished(PlaybackSnapshot)
     case skip(PlaybackSnapshot)
+    /// Mac seek cancellation restores the hold without resuming; iOS seeking is unchanged.
+    case seekStarted(PlaybackSnapshot)
     case userPaused(PlaybackSnapshot)
     case playbackStopped(PlaybackSnapshot)
     case routeLost(PlaybackSnapshot)
@@ -108,7 +110,7 @@ public struct InterruptionReducer: Sendable {
         case let .pausePointReached(snapshot): return reachPausePoint(snapshot)
         case let .speechFinished(snapshot): return finish(snapshot, stopSpeech: false)
         case let .skip(snapshot): return finish(snapshot, stopSpeech: true)
-        case let .userPaused(snapshot), let .playbackStopped(snapshot), let .routeLost(snapshot):
+        case let .seekStarted(snapshot), let .userPaused(snapshot), let .playbackStopped(snapshot), let .routeLost(snapshot):
             return halt(snapshot, resume: false)
         case let .systemInterruption(shouldResume, snapshot): return halt(snapshot, resume: shouldResume)
         case .itemChanged: return changeItem()

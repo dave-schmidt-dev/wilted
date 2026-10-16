@@ -78,6 +78,11 @@ final class PlaybackInterruptions {
     var heldRoute: MacAudioRoute?
     var heldCheckpoint: SpeechCheckpoint?
     var speechToken = 0
+    var seekRoute: MacAudioRoute?
+    var seekOwner: UInt64?
+    var seekRouteInvalidations: UInt64 = 0
+    var seekIntent: (generation: UInt64, holdSerial: UInt64, wasPlaying: Bool,
+                     item: ItemID?, revision: RevisionID?, routeInvalidations: UInt64)?
     /// Where program audio stood when the hold began; a playhead that moved since was a seek.
     var holdPosition: Double?
     var pausePoint: (bulletinID: String, revisionID: RevisionID, seconds: Double)?
@@ -229,6 +234,30 @@ extension PlaybackController {
         process(.itemChanged)
     }
 
+    func beginSeek() -> SeekOwnership {
+        let pending = interruptions?.seekIntent
+        let inherits = pending.map {
+            $0.generation == commandGeneration && $0.holdSerial == explicitHoldSerial
+                && $0.item == itemID && $0.revision == revisionID
+        } ?? false
+        commandGeneration &+= 1
+        let engine = (speechHeld || inherits) ? interruptions : nil
+        let owner = SeekOwnership(
+            generation: commandGeneration, holdSerial: explicitHoldSerial, item: itemID, revision: revisionID,
+            wasPlaying: inherits ? pending!.wasPlaying : backend.isPlaying || isPlaying || speechHeld,
+            engine: engine, route: inherits ? engine?.seekRoute : engine?.heldRoute,
+            routeInvalidations: inherits ? pending!.routeInvalidations : engine?.seekRouteInvalidations ?? 0)
+        if let engine {
+            engine.seekRoute = owner.route
+            engine.seekOwner = owner.generation
+            updateSeekIntent(owner, generation: owner.generation)
+            // Invalidate before stop(), which may synchronously deliver an old completion.
+            engine.speechToken &+= 1
+            if let snapshot = interruptionSnapshot() { process(.seekStarted(snapshot)) }
+        }
+        return owner
+    }
+
     // MARK: Events and effects
 
     /// The reducer's view of the player now, or nil with nothing loaded.
@@ -313,10 +342,15 @@ extension PlaybackController {
     private func speechEnded(_ token: Int, engine: PlaybackInterruptions, timedOut: Bool = false) {
         guard interruptions === engine, token == engine.speechToken,
               let snapshot = interruptionSnapshot() else { return }
+        let generation = commandGeneration
         guard routeIsSafe(engine) else { cancelForRouteLoss(engine); return }
+        guard interruptions === engine, commandGeneration == generation, token == engine.speechToken else { return }
         engine.watchdog?.cancel()
         engine.speechToken &+= 1
+        let endingToken = engine.speechToken
         if timedOut { engine.speaker.stop() }
+        guard interruptions === engine, commandGeneration == generation,
+              engine.speechToken == endingToken else { return }
         process(.speechFinished(snapshot))
     }
 
@@ -339,6 +373,9 @@ extension PlaybackController {
     }
 
     private func routeChanged(_ engine: PlaybackInterruptions) {
+        if let route = engine.seekRoute, engine.routeSource?.currentRoute() != route {
+            engine.seekRouteInvalidations &+= 1
+        }
         if engine.heldCheckpoint != nil, !routeIsSafe(engine) { cancelForRouteLoss(engine) }
         if engine.routeSource?.monitoringAvailable == false {
             let reportFailure = engine.protectionFailed
