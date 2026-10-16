@@ -119,7 +119,16 @@ extension WiltedMacLarderView {
         .accessibilityLabel("\(episode.title), number \(position) in Larder")
         .accessibilityValue("\(position) of \(count)")
         .accessibilityIdentifier("wilted-larder-row-\(episode.id)")
-        .contextMenu { WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id) }
+        .contextMenu {
+            WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id)
+            if WiltedMacEpisodeIdentityReviewRequest.isAvailable(for: episode) {
+                Divider()
+                Button("Review Possible Duplicate\u{2026}") {
+                    reviewTarget = WiltedMacEpisodeIdentityReviewRequest(anchorID: episode.id)
+                }
+                .accessibilityIdentifier("wilted-larder-review-duplicate-\(episode.id)")
+            }
+        }
     }
 
     /// Whether an episode has in-flight work and is presented in the Active Work section.

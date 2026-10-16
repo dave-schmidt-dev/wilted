@@ -32,14 +32,15 @@ extension LocalLibraryStore {
         let ids = try Self.validateAssociationPair(confirmation, representativeID: representativeID)
         let records = try context.fetch(FetchDescriptor<AssociationRecord>())
         try Self.refuseAssociationOverlap(ids, confirmationID: confirmation.confirmationID, records: records)
-        let members = try captureAssociationMembers(ids, feedID: confirmation.feedID)
+        let states = try associationMemberStates(ids, feedID: confirmation.feedID)
         // Resolve both as a proposed group, before any association exists.
         let resolved = try Self.resolveLogicalState(
             ids: ids, representativeID: representativeID, in: context
         )
         return PodcastEpisodeAssociationPreview(
             confirmation: confirmation, representativeID: representativeID, resolvedState: resolved,
-            capturedMembers: members,
+            approvalConsequences: Self.approvalConsequences(for: states, resolved: resolved),
+            capturedMembers: try Self.associationEncoder().encode(states),
             capturedAssociations: try Self.encodeAssociationState(records)
         )
     }
@@ -84,9 +85,11 @@ extension LocalLibraryStore {
             throw PodcastEpisodeAssociationError.staleVersion
         }
         let association = try Self.decodeAssociation(record)
+        let states = try associationMemberStates(association.memberIDs, feedID: association.feedID)
         return PodcastEpisodeAssociationReversalPreview(
             associationID: associationID, expectedVersion: expectedVersion,
-            capturedMembers: try captureAssociationMembers(association.memberIDs, feedID: association.feedID),
+            consequences: Self.reversalConsequences(associationID: associationID, for: states),
+            capturedMembers: try Self.associationEncoder().encode(states),
             capturedAssociations: try Self.encodeAssociationState(records)
         )
     }
@@ -132,6 +135,65 @@ extension LocalLibraryStore {
 
     public func podcastEpisodeLogicalState(for episodeID: ItemID) throws -> PodcastEpisodeLogicalState? {
         try Self.logicalEpisodeState(for: episodeID, in: ModelContext(container))
+    }
+
+    /// Side-effect-free comparison evidence for one explicitly named same-feed
+    /// pair. It writes nothing, creates no confirmation, opens no media, and
+    /// refuses same-ID, unavailable, or cross-feed pairs. Other metadata
+    /// candidates and existing associations are reported as ambiguity for the
+    /// owner to read; they never decide anything on their own.
+    public func podcastEpisodeAssociationComparison(
+        first firstID: ItemID, second secondID: ItemID
+    ) throws -> PodcastEpisodeAssociationComparison {
+        guard firstID != secondID else { throw PodcastEpisodeAssociationError.invalidPair }
+        let snapshot = try podcastLibrarySnapshot(profile: .publication)
+        guard let firstEpisode = snapshot.episodes.first(where: { $0.itemID == firstID }),
+              let secondEpisode = snapshot.episodes.first(where: { $0.itemID == secondID }) else {
+            throw PodcastEpisodeAssociationError.episodeUnavailable
+        }
+        guard firstEpisode.feedID == secondEpisode.feedID else {
+            throw PodcastEpisodeAssociationError.crossFeed
+        }
+        let pairIDs: Set<ItemID> = [firstID, secondID]
+        let existing = try episodeAssociations().filter { !Set($0.memberIDs).isDisjoint(with: pairIDs) }
+        let sharesMetadata = Self.comparisonMetadataMatches(firstEpisode, secondEpisode)
+        let otherCandidates = snapshot.episodes
+            .filter { candidate in
+                candidate.feedID == firstEpisode.feedID && !pairIDs.contains(candidate.itemID)
+                    && (Self.comparisonMetadataMatches(candidate, firstEpisode)
+                        || Self.comparisonMetadataMatches(candidate, secondEpisode))
+            }
+            .map(\.itemID)
+            .sorted { $0.rawValue < $1.rawValue }
+        let pairGUIDs = Set([firstEpisode.rssGUID, secondEpisode.rssGUID].compactMap { $0 })
+        let crossFeedCandidates = pairGUIDs.isEmpty ? [] : snapshot.episodes
+            .filter { candidate in
+                candidate.feedID != firstEpisode.feedID && !pairIDs.contains(candidate.itemID)
+                    && candidate.rssGUID.map { pairGUIDs.contains($0) } == true
+            }
+            .map(\.itemID)
+            .sorted { $0.rawValue < $1.rawValue }
+        let lookup = try EpisodeAssociationReadLookup(in: ModelContext(container))
+        let resolved = lookup.resolve(
+            ids: [firstID, secondID].sorted { $0.rawValue < $1.rawValue }, representativeID: firstID
+        )
+        var ambiguities: [PodcastEpisodeAssociationComparison.Ambiguity] = []
+        if !sharesMetadata { ambiguities.append(.metadataDiffers) }
+        if !otherCandidates.isEmpty { ambiguities.append(.otherMetadataCandidates) }
+        if !crossFeedCandidates.isEmpty { ambiguities.append(.crossFeedGUIDCandidate) }
+        if !existing.isEmpty { ambiguities.append(.existingAssociation) }
+        if resolved.hasConflictingManualChoices { ambiguities.append(.conflictingManualChoices) }
+        return PodcastEpisodeAssociationComparison(
+            feedID: firstEpisode.feedID,
+            first: Self.comparisonMember(for: firstEpisode, in: snapshot),
+            second: Self.comparisonMember(for: secondEpisode, in: snapshot),
+            sharesMetadata: sharesMetadata,
+            otherCandidateIDs: otherCandidates,
+            crossFeedSameGUIDCandidateIDs: crossFeedCandidates,
+            existingAssociationIDs: existing.map(\.associationID).sorted { $0.uuidString < $1.uuidString },
+            ambiguities: ambiguities,
+            resolvedState: resolved
+        )
     }
 
     /// Shared admission guard, with one lookup for all active groups.
@@ -202,8 +264,12 @@ extension LocalLibraryStore {
     }
 
     private func captureAssociationMembers(_ ids: [ItemID], feedID: ItemID) throws -> Data {
+        try Self.associationEncoder().encode(try associationMemberStates(ids, feedID: feedID))
+    }
+
+    private func associationMemberStates(_ ids: [ItemID], feedID: ItemID) throws -> [AssociationMemberState] {
         let snapshot = try podcastLibrarySnapshot(profile: .publication)
-        let members = try ids.map { id -> AssociationMemberState in
+        return try ids.map { id -> AssociationMemberState in
             guard let episode = snapshot.episodes.first(where: { $0.itemID == id }) else {
                 throw PodcastEpisodeAssociationError.episodeUnavailable
             }
@@ -218,7 +284,118 @@ extension LocalLibraryStore {
                 isCurrent: snapshot.podcastQueue.currentEpisodeID == id
             )
         }
-        return try Self.associationEncoder().encode(members)
+    }
+
+    /// The pair matches only when title, publication date and duration all
+    /// agree -- the audit's own discovery rule. Similar metadata is a hint for
+    /// the owner, never proof of identity.
+    static func comparisonMetadataMatches(_ left: PodcastEpisode, _ right: PodcastEpisode) -> Bool {
+        left.title == right.title
+            && left.publishedTime != nil && left.publishedTime == right.publishedTime
+            && left.durationSeconds != nil && left.durationSeconds == right.durationSeconds
+    }
+
+    static func comparisonMember(
+        for episode: PodcastEpisode, in snapshot: PodcastLibrarySnapshot
+    ) -> PodcastEpisodeAssociationComparisonMember {
+        let download = snapshot.downloads[episode.itemID]
+        let revision = snapshot.readyRevisions[episode.itemID]
+        let decision = snapshot.episodeDecisions[episode.itemID]
+        let playback = snapshot.playbackStates.values
+            .filter { $0.itemID == episode.itemID }
+            .max { $0.updatedAt < $1.updatedAt }
+        return PodcastEpisodeAssociationComparisonMember(
+            episodeID: episode.itemID,
+            feedID: episode.feedID,
+            rssGUID: episode.rssGUID,
+            title: episode.title,
+            publishedAt: episode.publishedTime,
+            durationSeconds: episode.durationSeconds,
+            originalMediaContentHash: download?.status == .completed ? download?.contentHash : nil,
+            preparedRevisionID: revision?.revisionID,
+            playbackPositionSeconds: playback?.positionSeconds,
+            playbackCompleted: playback?.completed ?? false,
+            listeningCompletedAt: snapshot.listeningStates[episode.itemID]?.completedAt,
+            decision: decision?.decision,
+            decisionSource: decision?.source,
+            decidedAt: decision?.decidedAt,
+            queuePosition: snapshot.podcastQueue.episodeIDs.firstIndex(of: episode.itemID),
+            isQueueCurrent: snapshot.podcastQueue.currentEpisodeID == episode.itemID,
+            isRemoved: snapshot.removalKindByEpisode[episode.itemID] != nil
+        )
+    }
+
+    static func approvalConsequences(
+        for members: [AssociationMemberState], resolved: PodcastEpisodeLogicalState
+    ) -> PodcastEpisodeAssociationApprovalConsequences {
+        // The same guard `claimPodcastDownload(scope: .untouched)` applies to a
+        // terminal group: a multi-member terminal group refuses the claim.
+        let isDownloadEligible = members.count <= 1 || !resolved.isTerminal
+        let values = members.map { member in
+            let hasDownload = member.download != nil
+            return PodcastEpisodeAssociationApprovalConsequences.Member(
+                episodeID: member.episode.itemID,
+                retainsRawRow: member.removal == nil,
+                hasDownloadRecord: hasDownload,
+                canClaimDownload: isDownloadEligible && !hasDownload,
+                queuePosition: member.queuePosition,
+                isQueueCurrent: member.isCurrent
+            )
+        }
+        // The Larder's own projection: retained raw rows fold into one row at
+        // the representative, and a terminal group is hidden whole. A member's
+        // raw removal alone does not hide an active group row.
+        let hasRetainedMember = members.contains { $0.removal == nil }
+        return PodcastEpisodeAssociationApprovalConsequences(
+            representativeID: resolved.representativeID,
+            memberIDs: resolved.memberIDs,
+            members: values,
+            winningDecision: resolved.manualDecision,
+            manualDecidedAt: resolved.manualDecidedAt,
+            hasConflictingManualChoices: resolved.hasConflictingManualChoices,
+            isTerminal: resolved.isTerminal,
+            isLarderRowVisible: !resolved.isTerminal && hasRetainedMember,
+            isAdmissionEligible: !resolved.isTerminal,
+            isDownloadEligible: isDownloadEligible,
+            hasQueueSlot: values.contains { $0.queuePosition != nil }
+        )
+    }
+
+    static func reversalConsequences(
+        associationID: UUID, for members: [AssociationMemberState]
+    ) -> PodcastEpisodeAssociationReversalConsequences {
+        let manual = members.compactMap { member -> EpisodeDecisionRecord? in
+            guard let decision = member.decision, decision.source == .manual else { return nil }
+            return decision
+        }
+        let latest = manual.map(\.decidedAt).max()
+        let newest = manual.filter { $0.decidedAt == latest }
+        let keep = newest.contains { $0.decision == .keep }
+        let skip = newest.contains { $0.decision == .skip }
+        let resolved: EpisodeDecision? = keep ? .keep : (skip ? .skip : nil)
+        let values = members.map { member in
+            let own = member.decision.flatMap { record -> EpisodeDecision? in
+                guard record.source == .manual else { return nil }
+                return record.decision
+            }
+            let hasOwn = own != nil
+            return PodcastEpisodeAssociationReversalConsequences.Member(
+                episodeID: member.episode.itemID,
+                ownManualDecision: own,
+                resolvedManualDecision: resolved,
+                losesNewerResolvedOverride: hasOwn && resolved != nil && resolved != own,
+                losesInheritedProtection: !hasOwn && resolved == .keep,
+                losesInheritedSuppression: !hasOwn && resolved == .skip,
+                hasDownloadRecord: member.download != nil,
+                isRemoved: member.removal != nil
+            )
+        }
+        return PodcastEpisodeAssociationReversalConsequences(
+            associationID: associationID,
+            memberIDs: members.map { $0.episode.itemID },
+            members: values,
+            warnsAutomationMayRetire: values.contains { $0.losesInheritedProtection }
+        )
     }
 
     private static func validateAssociationPair(

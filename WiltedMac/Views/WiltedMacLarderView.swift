@@ -27,6 +27,8 @@ struct WiltedMacLarderView: View {
     }
     @Environment(\.colorScheme) var colorScheme
     @State var dropTargetID: String?
+    /// The row whose possible duplicate review sheet is open.
+    @State var reviewTarget: WiltedMacEpisodeIdentityReviewRequest?
     @State private var searchFocusAction: (() -> Void)?
 
     var body: some View {
@@ -48,6 +50,9 @@ struct WiltedMacLarderView: View {
             }
         }
         .focusedSceneValue(\.wiltedLarderSearchFocus, searchFocusAction)
+        .sheet(item: $reviewTarget) { request in
+            WiltedMacEpisodeIdentityReview(model: model, anchorID: request.anchorID)
+        }
     }
 
     var playbackHelp: WiltedMacHelpContent {

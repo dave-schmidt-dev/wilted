@@ -77,12 +77,164 @@ public struct PodcastEpisodeAssociation: Codable, Equatable, Sendable {
     public let reversedAt: Timestamp?
 }
 
+/// Side-effect-free evidence about one member of an unconfirmed candidate pair.
+///
+/// Comparison is discovery, never consent: the evidence carries identities,
+/// content hashes and prepared revision identities so an owner can judge the
+/// pair, and deliberately carries no media path.
+public struct PodcastEpisodeAssociationComparisonMember: Equatable, Sendable {
+    public let episodeID: ItemID
+    public let feedID: ItemID
+    public let rssGUID: String?
+    public let title: String
+    public let publishedAt: Timestamp?
+    public let durationSeconds: Double?
+    /// The completed original download's verified content hash, when one exists.
+    public let originalMediaContentHash: String?
+    /// The newest ready revision, when preparation produced one.
+    public let preparedRevisionID: RevisionID?
+    public let playbackPositionSeconds: Double?
+    public let playbackCompleted: Bool
+    public let listeningCompletedAt: Timestamp?
+    public let decision: EpisodeDecision?
+    public let decisionSource: EpisodeDecisionSource?
+    public let decidedAt: Timestamp?
+    /// The raw queue slot this member holds, if any; association never moves it.
+    public let queuePosition: Int?
+    public let isQueueCurrent: Bool
+    public let isRemoved: Bool
+}
+
+/// One explicitly named same-feed pair's unconfirmed comparison evidence.
+///
+/// The store produces this read-only: it writes nothing, creates no
+/// `PodcastEpisodePairConfirmation`, and refuses unavailable or cross-feed
+/// IDs. Hints about other candidates and existing associations are for the
+/// owner to see, never to apply: only an explicit pair and representative,
+/// then the owner's confirmation, proceed.
+public struct PodcastEpisodeAssociationComparison: Equatable, Sendable {
+    public enum Ambiguity: String, Equatable, Hashable, Sendable {
+        /// Title, publication date and duration do not all match.
+        case metadataDiffers
+        /// Other same-feed episodes share the pair's metadata.
+        case otherMetadataCandidates
+        /// Episodes in other feeds share a member's publisher GUID.
+        case crossFeedGUIDCandidate
+        /// A member already belongs to an active association.
+        case existingAssociation
+        /// Newest manual choices on the two IDs conflict.
+        case conflictingManualChoices
+    }
+
+    public let feedID: ItemID
+    public let first: PodcastEpisodeAssociationComparisonMember
+    public let second: PodcastEpisodeAssociationComparisonMember
+    /// Whether the pair matches on title, publication date and duration.
+    public let sharesMetadata: Bool
+    /// Same-feed episodes besides the pair that match either member's metadata.
+    public let otherCandidateIDs: [ItemID]
+    /// Episodes in other feeds sharing a member's publisher GUID. Never a
+    /// same-feed pair: only an exact same-feed pair can be confirmed.
+    public let crossFeedSameGUIDCandidateIDs: [ItemID]
+    /// Active associations already naming a member; preview and apply refuse these.
+    public let existingAssociationIDs: [UUID]
+    public let ambiguities: [Ambiguity]
+    /// The pair's logical state as if associated; read-only evidence only.
+    public let resolvedState: PodcastEpisodeLogicalState
+}
+
+/// What applying the captured preview means, derived from the same member
+/// state `applyEpisodeAssociation` validates.
+///
+/// Preserved raw facts and the logical Larder projection are deliberately
+/// separate: members keep their stored rows and queue slots, while the Larder
+/// folds the members into one row under the representative and hides the
+/// group entirely once it is terminal. The eligibility fields cover only the
+/// association guards evaluated here, never every admission or download
+/// prerequisite.
+public struct PodcastEpisodeAssociationApprovalConsequences: Equatable, Sendable {
+    public struct Member: Equatable, Sendable {
+        public let episodeID: ItemID
+        /// Raw fact: the stored row is still on the shelf (neither retired
+        /// nor dismissed). It does not by itself decide the Larder row.
+        public let retainsRawRow: Bool
+        public let hasDownloadRecord: Bool
+        /// Whether an untouched download claim would pass the group's
+        /// terminal guard. An existing download record is reported separately
+        /// and is not part of this evaluation.
+        public let canClaimDownload: Bool
+        /// The raw queue slot retained for this member, if any.
+        public let queuePosition: Int?
+        public let isQueueCurrent: Bool
+    }
+
+    public let representativeID: ItemID
+    public let memberIDs: [ItemID]
+    public let members: [Member]
+    /// The newest manual choice the group would show, Keep winning equal ties.
+    public let winningDecision: EpisodeDecision?
+    public let manualDecidedAt: Timestamp?
+    public let hasConflictingManualChoices: Bool
+    public let isTerminal: Bool
+    /// The logical Larder projection: one row under the representative while
+    /// the group is not terminal and at least one stored member remains.
+    /// Terminal groups are hidden from the Larder entirely.
+    public let isLarderRowVisible: Bool
+    /// Covers only the terminal-association admission guard; every other
+    /// admission prerequisite stays authoritative and unevaluated here.
+    public let isAdmissionEligible: Bool
+    /// Covers only the terminal-association guard on an untouched claim.
+    public let isDownloadEligible: Bool
+    public let hasQueueSlot: Bool
+}
+
+/// What reversing the captured association means per member. Reversal never
+/// copies a manual choice onto a member and never changes automation
+/// semantics: a member without a manual choice of its own simply stops
+/// inheriting the group's, and a member whose own choice is overridden by a
+/// newer group choice keeps only its raw choice.
+public struct PodcastEpisodeAssociationReversalConsequences: Equatable, Sendable {
+    public struct Member: Equatable, Sendable {
+        public let episodeID: ItemID
+        /// This member's own raw manual choice, when it made one.
+        public let ownManualDecision: EpisodeDecision?
+        /// The captured group's newest manual choice, whoever made it: the
+        /// value a member shows today when it has no own choice, or when the
+        /// group's choice is newer than its own opposing one.
+        public let resolvedManualDecision: EpisodeDecision?
+        /// A newer (or equal-time, Keep-winning) group choice overrides this
+        /// member's own opposing manual choice: reversal keeps the raw choice
+        /// and drops the resolved override. The raw choice still protects the
+        /// member from automatic decisions.
+        public let losesNewerResolvedOverride: Bool
+        /// A group Keep this member does not itself hold: reversal leaves it
+        /// exposed to later feed automation, which may retire it and delete
+        /// unprotected media.
+        public let losesInheritedProtection: Bool
+        /// A group Skip this member does not itself hold: reversal lifts the
+        /// inherited suppression.
+        public let losesInheritedSuppression: Bool
+        public let hasDownloadRecord: Bool
+        public let isRemoved: Bool
+    }
+
+    public let associationID: UUID
+    public let memberIDs: [ItemID]
+    public let members: [Member]
+    /// True when any member loses inherited protection and the owner must be
+    /// warned before confirming.
+    public let warnsAutomationMayRetire: Bool
+}
+
 /// A store-produced preview cannot be manufactured by an external caller.
 /// Captured state is checked again inside the actor immediately before save.
 public struct PodcastEpisodeAssociationPreview: Sendable {
     public let confirmation: PodcastEpisodePairConfirmation
     public let representativeID: ItemID
     public let resolvedState: PodcastEpisodeLogicalState
+    /// Derived from the same captured member state `applyEpisodeAssociation`
+    /// validates, so the reviewed consequences cannot drift from what applies.
+    public let approvalConsequences: PodcastEpisodeAssociationApprovalConsequences
     let capturedMembers: Data
     let capturedAssociations: Data
 }
@@ -91,6 +243,9 @@ public struct PodcastEpisodeAssociationPreview: Sendable {
 public struct PodcastEpisodeAssociationReversalPreview: Sendable {
     public let associationID: UUID
     public let expectedVersion: Int
+    /// Per-member inherited-protection loss, derived from the same captured
+    /// member state `reverseEpisodeAssociation` validates.
+    public let consequences: PodcastEpisodeAssociationReversalConsequences
     let capturedMembers: Data
     let capturedAssociations: Data
 }

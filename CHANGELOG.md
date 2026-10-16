@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- A Larder row's context menu offers Review Possible Duplicate for podcast copies: an exact same-show pair is shown with read-only evidence (raw episode IDs and publisher GUIDs, original-download and prepared-revision proof, progress, decisions, queue slots and ambiguity hints), nothing changes until you compare the pair, confirm it, and review the prepared consequences before Apply. Changing the pair or representative voids the old comparison and confirmation. Stale previews are refused, and reversal is equally explicit, naming each member that loses inherited Keep or suppression before later feed automation can retire it and delete unprotected media.
 - The feed settings popover explains inline when Auto prepare On is suppressed by global Processing Manual while Prepare everything downloaded is Off.
 - Reports (off by default): spoken news headlines and National Weather Service alerts interrupt playback at the next pause in speech, then resume where you were, on the Mac and the iPhone; each device uses its own approximate location, never your IP address. The Mac can build a morning report with the forecast and headlines, and Settings shows its status with Build now.
 - Article feeds: follow a feed without audio, refresh it for new posts, and add the ones you want from the Feeds inbox; a News switch in the feed popover marks news feeds.
