@@ -73,6 +73,10 @@ final class PlaybackInterruptions {
     let cues: @MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming)
     var tickTask: Task<Void, Never>?
     var watchdog: Task<Void, Never>?
+    var routeSource: (any MacAudioRouteSource)?
+    var protectionFailed: (@MainActor () -> Void)?
+    var heldRoute: MacAudioRoute?
+    var heldCheckpoint: SpeechCheckpoint?
     var speechToken = 0
     /// Where program audio stood when the hold began; a playhead that moved since was a seek.
     var holdPosition: Double?
@@ -80,11 +84,21 @@ final class PlaybackInterruptions {
     var pausePointTask: Task<Void, Never>?
 
     init(reducer: InterruptionReducer, speaker: any BulletinSpeaking, clock: PlaybackInterruptionClock,
+         routeSource: (any MacAudioRouteSource)?,
          cues: @escaping @MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming)) {
+        self.routeSource = routeSource
         self.reducer = reducer
         self.speaker = speaker
         self.clock = clock
         self.cues = cues
+    }
+
+    deinit {
+        tickTask?.cancel()
+        watchdog?.cancel()
+        pausePointTask?.cancel()
+        let source = routeSource
+        Task { @MainActor in source?.stop() }
     }
 
     var needsTicks: Bool {
@@ -125,31 +139,54 @@ extension PlaybackController {
     public var interruptionsEnabled: Bool { interruptions != nil }
 
     /// Turns interruptions on. `waitLimit` is how long a non-extreme bulletin waits for a pause point.
-    public func enableInterruptions(speaker: any BulletinSpeaking = SystemBulletinSpeaker(), waitLimit: TimeInterval = 60) {
-        enableInterruptions(speaker: speaker, waitLimit: waitLimit, clock: PlaybackInterruptionClock(), cues: nil)
+    @discardableResult
+    public func enableInterruptions(
+        speaker: any BulletinSpeaking = SystemBulletinSpeaker(), waitLimit: TimeInterval = 60,
+        routeSource: any MacAudioRouteSource = MacAudioRouteLossObserver(),
+        protectionFailed: (@MainActor () -> Void)? = nil
+    ) -> Bool {
+        let enabled = enableInterruptions(speaker: speaker, waitLimit: waitLimit, clock: PlaybackInterruptionClock(),
+                                          cues: nil, routeSource: routeSource)
+        interruptions?.protectionFailed = protectionFailed
+        return enabled
     }
 
+    @discardableResult
     func enableInterruptions(
         speaker: any BulletinSpeaking, waitLimit: TimeInterval, clock: PlaybackInterruptionClock,
-        cues: (@MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming))?
-    ) {
+        cues: (@MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming))?,
+        routeSource: (any MacAudioRouteSource)? = nil
+    ) -> Bool {
         disableInterruptions()
         let store = store
         interruptions = PlaybackInterruptions(
-            reducer: InterruptionReducer(waitLimit: waitLimit), speaker: speaker, clock: clock,
+            reducer: InterruptionReducer(waitLimit: waitLimit), speaker: speaker, clock: clock, routeSource: routeSource,
             cues: cues ?? { itemID, revisionID in
                 let transcript = try? await store.transcript(for: itemID, revisionID: revisionID)
                 return (transcript?.cues, transcript?.timing ?? TranscriptTiming.none)
             })
+        guard let engine = interruptions else { return false }
+        if let routeSource, !routeSource.start(changed: { [weak self, weak engine] in
+            guard let self, let engine, self.interruptions === engine else { return }
+            self.routeChanged(engine)
+        }) {
+            disableInterruptions(resuming: false)
+            return false
+        }
+        return true
     }
 
     /// Turns interruptions off. A bulletin being spoken is cut and program audio resumes.
-    public func disableInterruptions() {
+    public func disableInterruptions(resuming: Bool = true) {
         guard let engine = interruptions else { return }
+        engine.cancelTasks()
         if case .speaking = engine.reducer.state, let snapshot = interruptionSnapshot() {
-            process(.skip(snapshot))
+            process(resuming ? .skip(snapshot) : .routeLost(snapshot))
         }
+        engine.routeSource?.stop()
+        engine.routeSource = nil
         engine.speaker.stop()
+        // Processing a hold's end can schedule pending work. Teardown owns that work too.
         engine.cancelTasks()
         releaseHold()
         interruptions = nil
@@ -207,34 +244,49 @@ extension PlaybackController {
     private func process(_ event: InterruptionEvent) {
         guard let engine = interruptions else { return }
         var speechFailedToStart = false
+        let effectGeneration = commandGeneration
         for effect in engine.reducer.handle(event) {
+            guard interruptions === engine, commandGeneration == effectGeneration else { return }
             switch effect {
             case .awaitPausePoint:
                 break
             case let .speak(bulletin, checkpoint):
                 if !hold(for: bulletin, at: checkpoint, engine: engine) { speechFailedToStart = true }
             case .stopSpeech:
-                engine.speaker.stop()
-                engine.watchdog?.cancel()
                 engine.speechToken &+= 1
+                engine.watchdog?.cancel()
+                engine.speaker.stop()
             case let .restore(checkpoint):
                 backend.currentTime = checkpoint.positionSeconds
             case .resume:
+                guard routeIsSafe(engine) else {
+                    cancelForRouteLoss(engine)
+                    return
+                }
                 speechHeld = false
                 if !backend.play() { isPlaying = false }
                 meterListening()
             }
         }
+        guard interruptions === engine, commandGeneration == effectGeneration else { return }
         if case .speaking = engine.reducer.state {} else { releaseHold() }
-        if speechFailedToStart, let snapshot = interruptionSnapshot() {
-            // Fail safe: nothing to listen to, so drop the bulletin, restore and keep playing.
-            process(.speechFinished(snapshot))
+        if speechFailedToStart {
+            // Drop an unspoken bulletin, with the same current-route checks as a completion.
+            speechEnded(engine.speechToken, engine: engine)
         }
         ensureTicker()
     }
 
     /// Stops program audio and starts the speaker. False when speech cannot start.
     private func hold(for bulletin: Bulletin, at checkpoint: SpeechCheckpoint, engine: PlaybackInterruptions) -> Bool {
+        if engine.heldCheckpoint == nil {
+            engine.heldCheckpoint = checkpoint
+            engine.heldRoute = engine.routeSource?.currentRoute()
+        }
+        guard routeIsSafe(engine) else {
+            cancelForRouteLoss(engine)
+            return true // Cancellation already settled the reducer; do not finish speech again.
+        }
         meterListening()
         speechHeld = true
         engine.holdPosition = checkpoint.positionSeconds
@@ -243,33 +295,80 @@ extension PlaybackController {
         speakingBulletin = bulletin
         engine.speechToken &+= 1
         let token = engine.speechToken
-        guard engine.speaker.speak(bulletin.text, finished: { [weak self] in self?.speechEnded(token) }) else {
-            return false
-        }
+        guard engine.speaker.speak(bulletin.text, finished: { [weak self, weak engine] in
+            guard let engine else { return }
+            self?.speechEnded(token, engine: engine)
+        }) else { return false }
         let timeout = Self.speechTimeout(forCharacters: bulletin.text.count)
         engine.watchdog?.cancel()
         let clock = engine.clock
-        engine.watchdog = Task { @MainActor [weak self] in
+        engine.watchdog = Task { @MainActor [weak self, weak engine] in
             do { try await clock.sleep(timeout) } catch { return }
-            self?.speechEnded(token, timedOut: true)
+            guard let engine else { return }
+            self?.speechEnded(token, engine: engine, timedOut: true)
         }
         return true
     }
 
-    private func speechEnded(_ token: Int, timedOut: Bool = false) {
-        guard let engine = interruptions, token == engine.speechToken, let snapshot = interruptionSnapshot() else { return }
+    private func speechEnded(_ token: Int, engine: PlaybackInterruptions, timedOut: Bool = false) {
+        guard interruptions === engine, token == engine.speechToken,
+              let snapshot = interruptionSnapshot() else { return }
+        guard routeIsSafe(engine) else { cancelForRouteLoss(engine); return }
         engine.watchdog?.cancel()
+        engine.speechToken &+= 1
         if timedOut { engine.speaker.stop() }
         process(.speechFinished(snapshot))
     }
 
     /// Leaves the hold without resuming audio: the banner goes and the published state follows the backend.
     private func releaseHold() {
+        interruptions?.heldRoute = nil
+        interruptions?.heldCheckpoint = nil
         guard speechHeld || speakingBulletin != nil else { return }
         speechHeld = false
         speakingBulletin = nil
         interruptions?.holdPosition = nil
         if !backend.isPlaying, isPlaying { isPlaying = false }
+    }
+
+    private func routeIsSafe(_ engine: PlaybackInterruptions) -> Bool {
+        guard let source = engine.routeSource else { return true }
+        guard let current = source.currentRoute(), current.isAvailable,
+              let baseline = engine.heldRoute, baseline.isAvailable else { return false }
+        return current == baseline
+    }
+
+    private func routeChanged(_ engine: PlaybackInterruptions) {
+        if engine.heldCheckpoint != nil, !routeIsSafe(engine) { cancelForRouteLoss(engine) }
+        if engine.routeSource?.monitoringAvailable == false {
+            let reportFailure = engine.protectionFailed
+            disableInterruptions(resuming: false)
+            reportFailure?()
+        }
+    }
+
+    /// Also covers a failed read after restore, when the reducer has already become idle.
+    private func cancelForRouteLoss(_ engine: PlaybackInterruptions) {
+        let checkpoint = engine.heldCheckpoint
+        let generation = commandGeneration
+        engine.speechToken &+= 1
+        engine.watchdog?.cancel()
+        isPlaying = false
+        backend.pause()
+        guard interruptions === engine, commandGeneration == generation else { return }
+        if case .speaking = engine.reducer.state, let snapshot = interruptionSnapshot() {
+            process(.routeLost(snapshot))
+        } else {
+            engine.speaker.stop()
+        }
+        guard interruptions === engine, commandGeneration == generation else { return }
+        if let checkpoint, checkpoint.entryID == itemID, checkpoint.revisionID == revisionID,
+           checkpoint.commandGeneration == generation {
+            backend.currentTime = checkpoint.positionSeconds
+        }
+        guard interruptions === engine, commandGeneration == generation else { return }
+        releaseHold()
+        meterListening()
     }
 
     // MARK: Ticks and pause points

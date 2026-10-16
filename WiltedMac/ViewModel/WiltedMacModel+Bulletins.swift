@@ -31,10 +31,12 @@ final class WiltedMacBulletinHub {
 
     /// The latest poll result, for Settings.
     private(set) var status = BulletinProducerStatus()
+    private(set) var routeProtectionStatus: String?
 
     @ObservationIgnored private weak var model: WiltedMacModel?
     @ObservationIgnored private var ownedLocation: WiltedLocationProvider?
     @ObservationIgnored private var producer: BulletinProducer?
+    @ObservationIgnored private let makeRouteSource: @MainActor () -> any MacAudioRouteSource
     @ObservationIgnored private let makeSpeaker: @MainActor () -> any BulletinSpeaking
     @ObservationIgnored private let makeAlertSource: @MainActor (String?) -> any NWSAlertSource
     @ObservationIgnored private weak var attachedController: PlaybackController?
@@ -48,9 +50,11 @@ final class WiltedMacBulletinHub {
 
     init(model: WiltedMacModel, location: WiltedLocationProvider? = nil,
          makeSpeaker: @escaping @MainActor () -> any BulletinSpeaking = { SystemBulletinSpeaker() },
+         makeRouteSource: @escaping @MainActor () -> any MacAudioRouteSource = { MacAudioRouteLossObserver() },
          makeAlertSource: @escaping @MainActor (String?) -> any NWSAlertSource = WiltedMacBulletinHub.nwsClient) {
         self.model = model
         ownedLocation = location
+        self.makeRouteSource = makeRouteSource
         self.makeSpeaker = makeSpeaker
         self.makeAlertSource = makeAlertSource
     }
@@ -188,22 +192,46 @@ final class WiltedMacBulletinHub {
         let controller = wantsSpeech ? model?.playback : nil
         let waitLimit = settings.waitLimitSeconds
         if let attached = attachedController, attached !== controller || attachedWaitLimit != waitLimit {
-            attached.disableInterruptions()
+            attached.disableInterruptions(resuming: canRun)
             attachedController = nil
         }
-        if let controller, attachedController == nil {
-            controller.enableInterruptions(speaker: makeSpeaker(), waitLimit: TimeInterval(waitLimit))
-            attachedController = controller
-            attachedWaitLimit = waitLimit
-            syncPlayer()
+        if let controller, attachedController == nil, routeProtectionStatus == nil {
+            if controller.enableInterruptions(speaker: makeSpeaker(), waitLimit: TimeInterval(waitLimit),
+                                              routeSource: makeRouteSource(), protectionFailed: { [weak self] in
+                    self?.routeProtectionStatus = Self.unavailableRouteMessage
+                    self?.attachedController = nil
+                    self?.stopAlerts()
+                }) {
+                routeProtectionStatus = nil
+                attachedController = controller
+                attachedWaitLimit = waitLimit
+                syncPlayer()
+            } else {
+                routeProtectionStatus = Self.unavailableRouteMessage
+            }
         }
         let playing = model?.isPlaying == true
-        if wantsSpeech, settings.alertsEnabled, controller != nil, playing {
+        if !wantsSpeech { routeProtectionStatus = nil }
+        if wantsSpeech, settings.alertsEnabled, attachedController != nil, playing {
             startAlerts(contact: settings.nwsContact)
         } else {
             stopAlerts()
         }
         if wantsSpeech { observeChanges() }
+    }
+
+    static let unavailableRouteMessage = "Bulletins are paused because audio output monitoring is unavailable. Turn Read bulletins off and on to retry."
+
+    /// Close and quit cut held speech without the settings toggle's resume behavior.
+    func shutdown() {
+        routeProtectionStatus = nil
+        attachedController?.disableInterruptions(resuming: false)
+        attachedController = nil
+        stopAlerts()
+        if let producer {
+            self.producer = nil
+            Task { await producer.stop() }
+        }
     }
 
     /// Re-reconciles when playback starts or stops, the player is replaced, or the location moves.
@@ -329,6 +357,11 @@ extension WiltedMacModel {
 
     func installBulletinHubForTesting(_ hub: WiltedMacBulletinHub) {
         objc_setAssociatedObject(self, &bulletinHubKey, hub, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    func stopBulletinsWithoutResuming() {
+        (objc_getAssociatedObject(self, &bulletinHubKey) as? WiltedMacBulletinHub)?.shutdown()
+        playback?.disableInterruptions(resuming: false)
     }
 
     func bulletinLifecycleChanged() {

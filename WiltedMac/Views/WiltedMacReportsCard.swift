@@ -30,6 +30,15 @@ struct WiltedMacReportsCard: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Toggle("Read bulletins while playing", isOn: reportsBinding(\.interruptionsEnabled))
                     .accessibilityIdentifier("wilted-reports-interruptions")
+                #if canImport(WiltedProducer)
+                if let status = model.bulletinHub.routeProtectionStatus {
+                    Text(status)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-reports-route-status")
+                }
+                #endif
                 DisclosureGroup(isExpanded: $showsDetails) {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                         Toggle("Weather alerts", isOn: reportsBinding(\.alertsEnabled))

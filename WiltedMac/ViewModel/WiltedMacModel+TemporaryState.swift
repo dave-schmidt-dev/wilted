@@ -272,6 +272,7 @@ extension WiltedMacModel {
     func cancelPendingTemporaryStateWork() {
         stopLibrarySync()
 #if canImport(WiltedProducer)
+        stopBulletinsWithoutResuming()
         cancelPlaybackPresentation()
 #endif
         startupTask?.cancel()
@@ -357,6 +358,9 @@ extension WiltedMacModel {
             librarySyncWasRunning: librarySyncController != nil
         )
         isClosingTemporaryState = true
+#if canImport(WiltedProducer)
+        stopBulletinsWithoutResuming()
+#endif
     }
 
     /// Cancels in-flight podcast downloads and waits for each to finish. A

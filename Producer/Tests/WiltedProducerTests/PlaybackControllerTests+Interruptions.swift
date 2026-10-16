@@ -6,8 +6,11 @@ import WiltedLibrary
 
 /// A speaker that never makes a sound: it records what it was asked to say and finishes on demand.
 @MainActor
-private final class StubSpeaker: BulletinSpeaking {
+final class StubSpeaker: BulletinSpeaking {
     var canStart = true
+    var reentrantStop = false
+    var onStop: (@MainActor () -> Void)?
+    var completions: [@MainActor () -> Void] = []
     private(set) var spoken: [String] = []
     private(set) var stopCount = 0
     private var finished: (@MainActor () -> Void)?
@@ -16,12 +19,16 @@ private final class StubSpeaker: BulletinSpeaking {
         guard canStart else { return false }
         spoken.append(text)
         self.finished = finished
+        completions.append(finished)
         return true
     }
 
     func stop() {
         stopCount += 1
+        let done = finished
         finished = nil
+        if reentrantStop { done?() }
+        onStop?()
     }
 
     /// The speech ends by itself.
@@ -32,9 +39,49 @@ private final class StubSpeaker: BulletinSpeaking {
     }
 }
 
+@MainActor
+final class InterruptionRoute: MacAudioRouteSource {
+    var route: MacAudioRoute? = MacAudioRoute(device: 10, source: 1, jackConnected: true)
+    var changed: (@MainActor () -> Void)?
+    var starts = 0
+    var stops = 0
+    var reads = 0
+    var beforeRead: (@MainActor () -> Void)?
+    var canRegister = true
+    var monitoringAvailable = true
+    func start(changed: @escaping @MainActor () -> Void) -> Bool {
+        starts += 1
+        self.changed = changed
+        return canRegister
+    }
+    func currentRoute() -> MacAudioRoute? {
+        reads += 1
+        beforeRead?()
+        return monitoringAvailable ? route : nil
+    }
+    func stop() { stops += 1; changed = nil }
+}
+
+@MainActor
+final class InterruptionBackend: PlaybackBackend {
+    var duration: TimeInterval = 42
+    var currentTime: TimeInterval = 0 { didSet { afterRestore?() } }
+    var afterRestore: (@MainActor () -> Void)?
+    var isPlaying = false
+    var rate: Float = 1
+    var volume: Float = 1
+    var loadedGeneration: UInt64 = 0
+    var completionHandler: (@MainActor @Sendable (UInt64, Bool) -> Void)?
+    var playCount = 0
+    func load(url: URL) throws { loadedGeneration += 1; currentTime = 0; isPlaying = false }
+    func play() -> Bool { playCount += 1; isPlaying = true; return true }
+    func pause() { isPlaying = false }
+    func stop() { isPlaying = false }
+}
+
 /// The wall clock the interruption engine reads, moved by hand. Sleeps never return unless the
 /// test lets a long one (the speech watchdog) through.
-private final class TestWallClock: @unchecked Sendable {
+final class TestWallClock: @unchecked Sendable {
     private let lock = NSLock()
     private var current = Date(timeIntervalSince1970: 1_800_000_000)
     var firesWatchdog = false
@@ -59,33 +106,35 @@ private final class MeterClock { var now: TimeInterval = 1_000 }
 
 @MainActor
 extension PlaybackControllerTests {
-    private struct InterruptionRig {
+    struct InterruptionRig {
         let controller: PlaybackController
-        let backend: FakeBackend
+        let backend: InterruptionBackend
+        let route: InterruptionRoute
         let speaker: StubSpeaker
         let wall: TestWallClock
         let root: URL
     }
 
-    private func interruptionRig(
+    func interruptionRig(
         cues: (@MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming))? = nil,
         firesWatchdog: Bool = false, name: String = #function
     ) async throws -> InterruptionRig {
         let path = storeURL(name)
         let store = try LocalLibraryStore(url: path)
         let (_, revision) = try fixture()
-        let backend = FakeBackend()
+        let backend = InterruptionBackend()
         let controller = PlaybackController(store: store, backend: backend)
         try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
         let speaker = StubSpeaker()
         let wall = TestWallClock()
         wall.firesWatchdog = firesWatchdog
-        controller.enableInterruptions(speaker: speaker, waitLimit: 60, clock: wall.clock, cues: cues)
-        return InterruptionRig(controller: controller, backend: backend, speaker: speaker, wall: wall,
+        let route = InterruptionRoute()
+        controller.enableInterruptions(speaker: speaker, waitLimit: 60, clock: wall.clock, cues: cues, routeSource: route)
+        return InterruptionRig(controller: controller, backend: backend, route: route, speaker: speaker, wall: wall,
                                root: path.deletingLastPathComponent())
     }
 
-    private func bulletin(
+    func bulletin(
         _ id: String, _ kind: BulletinKind = .alert, _ severity: BulletinSeverity = .extreme, at now: Date
     ) throws -> Bulletin {
         try Bulletin(id: id, kind: kind, text: "Bulletin \(id).", severity: severity,
