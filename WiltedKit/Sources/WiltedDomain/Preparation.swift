@@ -95,6 +95,29 @@ public struct PreparationTerminalResult: Codable, Equatable, Sendable {
     }
 }
 
+/// The persisted ticket generation, independent of request and media identities.
+public struct PreparationAttemptIdentity: Codable, Equatable, Hashable, Sendable {
+    public let requestSequence: Int
+    public let attemptCount: Int
+
+    public init(requestSequence: Int, attemptCount: Int) throws {
+        guard requestSequence >= 0, attemptCount >= 1 else {
+            throw DomainError.invalidValue(field: "preparation attempt", reason: "requires an acknowledged running generation")
+        }
+        self.requestSequence = requestSequence
+        self.attemptCount = attemptCount
+    }
+
+    public var key: String { "generation-\(requestSequence)-\(attemptCount)" }
+
+    private enum CodingKeys: CodingKey { case requestSequence, attemptCount }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(requestSequence: c.decode(Int.self, forKey: .requestSequence),
+                      attemptCount: c.decode(Int.self, forKey: .attemptCount))
+    }
+}
+
 public struct PreparationStatus: Codable, Equatable, Sendable {
     /// The normalized bridge between an episode's original clock and the
     /// prepared file's clock. It belongs to the terminal status because it is
@@ -216,6 +239,8 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         }
     }
 
+    public let attempt: PreparationAttemptIdentity?
+    public let step: String?
     public let stage: PreparationStage
     public let detail: String
     public let fraction: Double?
@@ -235,7 +260,9 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         terminalResult: PreparationTerminalResult? = nil,
         emittedAt: Timestamp,
         evidence: PreparationEvidence? = nil,
-        timeline: PreparationTimeline? = nil
+        timeline: PreparationTimeline? = nil,
+        attempt: PreparationAttemptIdentity? = nil,
+        step: String? = nil
     ) throws {
         guard !detail.isEmpty, detail.count <= 1_024 else {
             throw DomainError.invalidValue(field: "preparation detail", reason: "must contain 1...1024 characters")
@@ -250,6 +277,8 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         guard timeline == nil || terminalResult?.outcome == .succeeded else {
             throw DomainError.invalidValue(field: "preparation timeline", reason: "belongs only to a successful terminal status")
         }
+        self.step = step.flatMap { $0.utf8.count <= 64 ? $0 : nil }
+        self.attempt = attempt
         self.stage = stage
         self.detail = detail
         self.fraction = fraction
@@ -261,7 +290,7 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
         self.timeline = timeline
     }
 
-    private enum CodingKeys: CodingKey { case stage, detail, fraction, cancellable, terminal, terminalResult, emittedAt, evidence, timeline }
+    private enum CodingKeys: CodingKey { case stage, detail, fraction, cancellable, terminal, terminalResult, emittedAt, evidence, timeline, attempt, step }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -278,7 +307,9 @@ public struct PreparationStatus: Codable, Equatable, Sendable {
             terminalResult: result,
             emittedAt: container.decode(Timestamp.self, forKey: .emittedAt),
             evidence: try container.decodeIfPresent(PreparationEvidence.self, forKey: .evidence),
-            timeline: try container.decodeIfPresent(PreparationTimeline.self, forKey: .timeline)
+            timeline: try container.decodeIfPresent(PreparationTimeline.self, forKey: .timeline),
+            attempt: try container.decodeIfPresent(PreparationAttemptIdentity.self, forKey: .attempt),
+            step: try container.decodeIfPresent(String.self, forKey: .step)
         )
     }
 }

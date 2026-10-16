@@ -282,6 +282,9 @@ extension WiltedMacModel {
     private func closeInterruptedPreparationRuns(in store: LocalLibraryStore) async {
         guard let runs = try? await store.preparationRuns() else { return }
         for run in runs where !run.isTerminal {
+            if run.entries.first?.status.attempt != nil,
+               (try? await store.closeInactivePreparationRun(run, at: Timestamp(Date()),
+                    detail: Self.preparationInterruptedMessage)) == true { continue }
             // An outcome durable for this episode's ready revision and dated
             // at or after this run's own start is proof this run itself
             // finished and saved before the process died -- only the
@@ -313,10 +316,13 @@ extension WiltedMacModel {
                                              retryable: true, stage: "interrupted"),
               let terminal = try? PreparationTerminalResult(outcome: .failed, error: error),
               let status = try? PreparationStatus(stage: .failed, detail: preparationInterruptedMessage,
-                                                  cancellable: false, terminalResult: terminal, emittedAt: emittedAt)
+                                                  cancellable: false, terminalResult: terminal,
+                                                  emittedAt: max(emittedAt, run.entries.last?.status.emittedAt ?? run.updatedAt),
+                                                  attempt: run.entries.first?.status.attempt)
         else { return nil }
+        let generation = status.attempt.map { $0.key + "|" } ?? ""
         return PreparationJournalEntry(
-            id: run.requestID + "|interrupted", itemID: run.itemID, requestID: run.requestID, status: status
+            id: run.requestID + "|" + generation + "interrupted", itemID: run.itemID, requestID: run.requestID, status: status
         )
     }
 

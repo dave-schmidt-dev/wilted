@@ -112,7 +112,7 @@ public struct PreparationRunSummary: Equatable, Sendable, Identifiable {
     /// above describe where the run is; this is how it got there.
     public let entries: [PreparationJournalEntry]
 
-    public var id: String { requestID }
+    public var id: String { entries.first?.status.attempt.map { requestID + "|" + $0.key } ?? requestID }
 
     public init(
         requestID: String,

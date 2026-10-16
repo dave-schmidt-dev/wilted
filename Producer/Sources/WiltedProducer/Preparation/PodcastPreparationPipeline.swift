@@ -57,7 +57,7 @@ public actor PodcastPreparationPipeline {
     /// This file's own source hash is computed with this value normalized out;
     /// it makes a semantic edit fail the coverage test until this fingerprint
     /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:5596c095d2d8645af9be168c7b56f048d8ecfcdd825c6ba5590e2c01284c51f3"
+    public static let pipelineSourceHash = "sha256:d8f8a2329514652dfca986ef8c82008634596cf755dfe69c658400e0de9a9a05"
 
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
@@ -234,14 +234,16 @@ public actor PodcastPreparationPipeline {
     public func prepare(
         episodeID: ItemID,
         policy: PodcastPreparationPolicySnapshot? = nil,
-        onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void = { _ in }
+        attempt: PreparationAttemptIdentity? = nil,
+        onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void = { _ in },
+        onJournaled: @escaping @Sendable () async -> Void = {}
     ) async throws -> PodcastPreparationResult {
         let policy = policy ?? defaultPolicy
         let requestID = Self.requestID(for: episodeID)
         // The journal is one attempt deep. Left in place, the previous
         // attempt's terminal row would report this one as finished before it
         // had started, and its stale stage rows would read as this run's.
-        try? await store.clearPreparationJournal(for: requestID)
+        if attempt == nil { try? await store.clearPreparationJournal(for: requestID) }
         let writes = JournalWrites()
         // Every status is journalled as well as reported, so a run that failed
         // while the window was closed still leaves evidence a reader can find.
@@ -256,7 +258,7 @@ public actor PodcastPreparationPipeline {
             // terminal record it preceded.
             let emittedAt = Timestamp(clock())
             let eventID = writes.eventID(for: progress.stage)
-            writes.track(Task { await self.journal(progress, eventID: eventID, at: emittedAt, for: episodeID, requestID: requestID) })
+            writes.track(Task { await self.journal(progress, eventID: eventID, at: emittedAt, for: episodeID, requestID: requestID, attempt: attempt); await onJournaled() })
         }
 
         guard let episode = try await store.podcastEpisode(for: episodeID),
@@ -264,9 +266,10 @@ public actor PodcastPreparationPipeline {
               let audioURL = download.localURL,
               FileManager.default.fileExists(atPath: audioURL.path),
               let stored = try await store.readyRevision(for: episodeID) else {
-            await journalTerminal(episodeID: episodeID, requestID: requestID,
+            await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt,
                                   error: PodcastPreparationError.episodeNotDownloaded, revisionID: nil,
                                   fingerprint: Self.semanticFingerprintResolution)
+            await onJournaled()
             throw PodcastPreparationError.episodeNotDownloaded
         }
 
@@ -326,21 +329,23 @@ public actor PodcastPreparationPipeline {
                                           downloadedRevision: stored.revision, audioURL: audioURL,
                                           policy: policy, onStatus: report)
             await writes.drain()
-            await journalTerminal(episodeID: episodeID, requestID: requestID, error: nil,
+            await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: nil,
                                   revisionID: result.revision.revisionID, summary: result.summary,
                                   fingerprint: Self.semanticFingerprintResolution,
                                   sourceRevisionID: stored.revision.revisionID,
                                   sourceHash: stored.revision.contentHash,
                                   sourceURL: audioURL,
                                   timeline: payload.timeline)
+            await onJournaled()
             return result
         } catch {
             await writes.drain()
-            await journalTerminal(episodeID: episodeID, requestID: requestID, error: error, revisionID: nil,
+            await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: error, revisionID: nil,
                                   fingerprint: Self.semanticFingerprintResolution,
                                   sourceRevisionID: stored.revision.revisionID,
                                   sourceHash: stored.revision.contentHash,
                                   sourceURL: audioURL)
+            await onJournaled()
             throw error
         }
     }
@@ -349,20 +354,20 @@ public actor PodcastPreparationPipeline {
 
     private func journal(
         _ progress: PodcastPreparationProgress, eventID: String, at emittedAt: Timestamp,
-        for episodeID: ItemID, requestID: String
+        for episodeID: ItemID, requestID: String, attempt: PreparationAttemptIdentity?
     ) async {
         let detail = progress.detail.isEmpty ? progress.stage : progress.detail
         guard let status = try? PreparationStatus(
             stage: progress.journalStage, detail: String(detail.prefix(1_024)),
-            fraction: progress.fraction, cancellable: true, emittedAt: emittedAt, evidence: progress.evidence
+            fraction: progress.fraction, cancellable: true, emittedAt: emittedAt, evidence: progress.evidence, attempt: attempt, step: progress.stage
         ) else { return }
         try? await store.record(preparation: PreparationJournalEntry(
-            id: requestID + "|" + eventID, itemID: episodeID, requestID: requestID, status: status
+            id: requestID + "|" + (attempt.map { $0.key + "|" } ?? "") + eventID, itemID: episodeID, requestID: requestID, status: status
         ))
     }
 
     private func journalTerminal(
-        episodeID: ItemID, requestID: String, error: (any Error)?, revisionID: RevisionID?,
+        episodeID: ItemID, requestID: String, attempt: PreparationAttemptIdentity?, error: (any Error)?, revisionID: RevisionID?,
         summary: String? = nil, fingerprint: String? = nil,
         sourceRevisionID: RevisionID? = nil, sourceHash: String? = nil, sourceURL: URL? = nil,
         timeline: PreparationStatus.PreparationTimeline? = nil
@@ -401,10 +406,10 @@ public actor PodcastPreparationPipeline {
                 detail: producerError?.message ?? (outcome == .succeeded ? (summary ?? "Prepared.") : "Cancelled."),
                 cancellable: false, terminalResult: terminal, emittedAt: Timestamp(now()),
                 evidence: evidence,
-                timeline: outcome == .succeeded ? timeline : nil
+                timeline: outcome == .succeeded ? timeline : nil, attempt: attempt
               ) else { return }
         try? await store.record(preparation: PreparationJournalEntry(
-            id: requestID + "|terminal", itemID: episodeID, requestID: requestID, status: status
+            id: requestID + "|" + (attempt.map { $0.key + "|" } ?? "") + "terminal", itemID: episodeID, requestID: requestID, status: status
         ))
     }
 

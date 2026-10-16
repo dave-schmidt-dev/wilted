@@ -241,11 +241,13 @@ extension WiltedMacModel {
         // Larder projects every subscribed episode, so its preparation
         // evidence cannot use Prep's display-oriented 200-run default --
         // `snapshot.preparationRuns` is already uncapped.
-        let runs = Dictionary(
-            uniqueKeysWithValues: snapshot.preparationRuns
-                .filter { $0.requestID.hasPrefix(Self.podcastRequestPrefix) }
-                .map { ($0.itemID, $0) }
-        )
+        // Retained attempt history has several summaries per raw item. Project
+        // one current generation without discarding the underlying history.
+        var runs: [ItemID: PreparationRunSummary] = [:]
+        for run in snapshot.preparationRuns where run.requestID.hasPrefix(Self.podcastRequestPrefix) {
+            if let previous = runs[run.itemID], !Self.preparationRunIsNewer(run, than: previous) { continue }
+            runs[run.itemID] = run
+        }
         // A dismissed episode keeps its row in the store (that is the whole
         // point of the unified removal column), but `episodes` is still the
         // "in the library" projection: `dismissedEpisodes` is the separate
@@ -415,6 +417,22 @@ extension WiltedMacModel {
             .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }?
             .trimmingCharacters(in: .whitespaces)
         return String((opening ?? fallback).prefix(180))
+    }
+
+    /// Projects retained history by persisted generation before observation time.
+    nonisolated private static func preparationRunIsNewer(
+        _ candidate: PreparationRunSummary, than previous: PreparationRunSummary
+    ) -> Bool {
+        let candidateAttempt = candidate.entries.first?.status.attempt
+        let previousAttempt = previous.entries.first?.status.attempt
+        let candidateSequence = candidateAttempt?.requestSequence ?? -1
+        let previousSequence = previousAttempt?.requestSequence ?? -1
+        if candidateSequence != previousSequence { return candidateSequence > previousSequence }
+        let candidateCount = candidateAttempt?.attemptCount ?? -1
+        let previousCount = previousAttempt?.attemptCount ?? -1
+        if candidateCount != previousCount { return candidateCount > previousCount }
+        if candidate.updatedAt != previous.updatedAt { return candidate.updatedAt > previous.updatedAt }
+        return candidate.id > previous.id
     }
 
     /// What the library already knows about an episode's preparation.

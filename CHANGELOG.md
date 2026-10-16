@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- The Mac publishes current preparation progress for kept episodes through the existing debounced library sync, with exact retry identity, curated stage/count text and automatic success/withdrawal clearing. Older attempts cannot replace current status or invalidate a newer Ready revision.
 - Library entries carry an optional, versioned, display-only preparation status (attempt ID, state, stage, detail, fraction, update time, optional revision) bounded to 128/64/240 UTF-8 bytes; a missing, unsupported or malformed value is ignored so the entry remains fully usable, and the field never changes media admission, playback or phone authority.
 - A Larder row's context menu offers Review Possible Duplicate for podcast copies: an exact same-show pair is shown with read-only evidence (raw episode IDs and publisher GUIDs, original-download and prepared-revision proof, progress, decisions, queue slots and ambiguity hints), nothing changes until you compare the pair, confirm it, and review the prepared consequences before Apply. Changing the pair or representative voids the old comparison and confirmation. Stale previews are refused, and reversal is equally explicit, naming each member that loses inherited Keep or suppression before later feed automation can retire it and delete unprotected media.
 - The feed settings popover explains inline when Auto prepare On is suppressed by global Processing Manual while Prepare everything downloaded is Off.
@@ -113,6 +114,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Applied duplicate-episode associations remain readable after capture/reopen when source creation dates contain fractional seconds. Generation checks compare canonical captured instants at the existing timestamp precision while retaining exact raw identity, feed and membership guards.
 - Marking the playing episode completed now shows the existing Wilted animated feedback, “Loading next episode…”, while the next episode opens; it honors Reduce Motion and clears if the advance is cancelled or fails.
 - Feed-owned unreferenced artwork is reclaimed after an unsubscribe commit finishes, with existing shared-file guards preserved.
 - AudioAssembler atomic temporary output retains `.m4a` to prevent AVURLAsset inspection and playback regression.

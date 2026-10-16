@@ -40,7 +40,7 @@ struct EpisodeAssociationReadLookup {
                           guard let episode = episodes[member.episode.itemID.rawValue] else { return false }
                           return member.episode.feedID == association.feedID
                               && episode.feedID == association.feedID.rawValue
-                              && episode.createdAt == member.episode.createdAt.date
+                              && Self.sameRecordedCreationInstant(episode.createdAt, member.episode.createdAt.date)
                       }) else { throw PodcastEpisodeAssociationError.episodeUnavailable }
                 valid.append((record, association))
             } catch {
@@ -65,6 +65,16 @@ struct EpisodeAssociationReadLookup {
         groupsByMember = Dictionary(uniqueKeysWithValues: valid.flatMap { _, association in
             association.memberIDs.map { ($0, association) }
         })
+    }
+
+    /// Captured members use Timestamp's existing ISO8601 precision. Compare
+    /// decoded recorded instants, including equivalent Z and .000Z forms.
+    /// Submillisecond differences absent from that capture cannot prove a new
+    /// source generation; raw ID, feed and membership checks remain exact.
+    static func sameRecordedCreationInstant(_ source: Date, _ captured: Date) -> Bool {
+        guard let sourceInstant = try? Timestamp(iso8601: Timestamp(source).description),
+              let capturedInstant = try? Timestamp(iso8601: Timestamp(captured).description) else { return false }
+        return sourceInstant.date == capturedInstant.date
     }
 
     static func reportInvalid(_ id: UUID) {

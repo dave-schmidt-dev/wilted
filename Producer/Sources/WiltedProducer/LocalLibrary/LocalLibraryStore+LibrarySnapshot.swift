@@ -34,17 +34,17 @@ extension LocalLibraryStore {
                   !record.requestID.hasPrefix(Self.resetPreparationRequestPrefix) else { continue }
             guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
                   let itemID = try? ItemID(rawValue: record.itemID) else { continue }
-            byRequest[record.requestID, default: []].append(
+            byRequest[record.requestID + (status.attempt.map { "|" + $0.key } ?? ""), default: []].append(
                 PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
             )
         }
-        return byRequest.compactMap { requestID, entries -> PreparationRunSummary? in
+        return byRequest.compactMap { _, entries -> PreparationRunSummary? in
             let ordered = entries.sorted(by: preparationEntryPrecedes)
             guard let first = ordered.first, let last = ordered.last else { return nil }
             let terminal = ordered.last(where: { $0.status.terminal })?.status
             let representative = terminal ?? last.status
             return PreparationRunSummary(
-                requestID: requestID,
+                requestID: last.requestID,
                 itemID: last.itemID,
                 startedAt: first.status.emittedAt,
                 updatedAt: last.status.emittedAt,

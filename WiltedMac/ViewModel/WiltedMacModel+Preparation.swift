@@ -59,6 +59,7 @@ extension WiltedMacModel {
     /// rejected ticket write has to be observable somewhere, given the
     /// store's own measured behavior that a conflicting unique-constraint
     /// insert already throws on neither side.
+    @discardableResult
     func recordWorkTicketTransition(
         kind: WorkTicketKind,
         subjectID: String,
@@ -69,29 +70,80 @@ extension WiltedMacModel {
         processingPolicy: Data? = nil,
         failureKind: String? = nil,
         lastFailureMessage: String? = nil,
-        admitting: Bool = false
-    ) async {
-        guard let store else { return }
+        admitting: Bool = false,
+        expectedAttempt: PreparationAttemptIdentity? = nil,
+        requiresAttempt: Bool = false
+    ) async -> WorkTicket? {
+        if requiresAttempt && expectedAttempt == nil {
+            Self.workTicketLog.warning(
+                "terminal ticket write skipped: subject=\(subjectID, privacy: .public) state=\(state.rawValue, privacy: .public) reconciliationRequired=true; no acknowledged generation"
+            )
+            if kind == .podcastPreparation,
+               let requestSequence,
+               preparationPublicationRequests[subjectID]?.attempt == nil,
+               (preparationPublicationRequests[subjectID]?.requestSequence ?? requestSequence) == requestSequence {
+                var request = preparationPublicationRequests[subjectID]
+                    ?? WiltedMacPreparationPublication.Request(requestSequence: requestSequence)
+                request.acknowledged = false
+                request.needsReconciliation = true
+                preparationPublicationRequests[subjectID] = request
+                podcastOperationMessage = "Preparation status needs reconciliation. Restart Wilted before retrying."
+                librarySyncController?.requestPublish()
+            }
+            return nil
+        }
+        var publicationOperation: UUID?
+        if kind == .podcastPreparation {
+            let current = preparationPublicationRequests[subjectID]
+            let old = current?.requestSequence ?? -1
+            if let expectedAttempt {
+                // A stale terminal cannot clear or acknowledge a newer local generation.
+                if current?.attempt == expectedAttempt { publicationOperation = current?.operationID }
+            } else if requestSequence == nil || requestSequence! > old || current == nil
+                        || (state == .running && admitting) {
+                if requestSequence == nil || requestSequence! >= old {
+                    let request = WiltedMacPreparationPublication.Request(
+                        requestSequence: requestSequence, withdrawn: requestSequence == nil && state == .cancelled)
+                    preparationPublicationRequests[subjectID] = request
+                    publicationOperation = request.operationID
+                    librarySyncController?.requestPublish()
+                }
+            } else {
+                publicationOperation = current?.operationID
+            }
+        }
+        guard let store else { return nil }
         let now = Timestamp(Date())
         do {
-            if admitting, let requestSequence {
-                _ = try await store.readmitWorkTicket(
+            let ticket: WorkTicket?
+            if let expectedAttempt, kind == .podcastPreparation {
+                ticket = try await store.finishPreparationAttempt(subjectID: subjectID, attempt: expectedAttempt,
+                    state: state, failureKind: failureKind, lastFailureMessage: lastFailureMessage, at: now)
+            } else if admitting, let requestSequence {
+                ticket = try await store.readmitWorkTicket(
                     kind: kind, subjectID: subjectID, requestSequence: requestSequence,
                     resolvedItemID: resolvedItemID, policySnapshot: policySnapshot,
                     processingPolicy: processingPolicy, to: state, at: now
                 )
             } else {
-                _ = try await store.applyWorkTicketTransition(
+                ticket = try await store.applyWorkTicketTransition(
                     kind: kind, subjectID: subjectID, requestSequence: requestSequence,
                     resolvedItemID: resolvedItemID, policySnapshot: policySnapshot,
                     processingPolicy: processingPolicy, to: state,
                     failureKind: failureKind, lastFailureMessage: lastFailureMessage, at: now
                 )
             }
+            if kind == .podcastPreparation, let ticket, let publicationOperation,
+               let current = preparationPublicationRequests[subjectID] {
+                preparationPublicationRequests[subjectID] = current.acknowledging(ticket, operationID: publicationOperation)
+            }
+            librarySyncController?.requestPublish()
+            return ticket
         } catch {
             Self.workTicketLog.warning(
                 "work ticket transition failed: kind=\(kind.rawValue, privacy: .public) subject=\(subjectID, privacy: .public) attemptedState=\(state.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
             )
+            return nil
         }
     }
 
@@ -210,30 +262,46 @@ extension WiltedMacModel {
             // Admission is also dispatched when the request is consumed, but
             // that task can race this run after an immediately available gate.
             // Await the same idempotent write before reading its policy.
-            await self?.recordWorkTicketTransition(
+            let runningTicket = await self?.recordWorkTicketTransition(
                 kind: .podcastPreparation, subjectID: episode.id,
                 requestSequence: requestSequence, state: .running,
                 policySnapshot: admittedPolicyData, admitting: true
             )
-            // Decoded verbatim from the ticket written at admission, never
-            // re-derived from live settings at run start. Falls back to the
-            // locally-captured snapshot only when there is no store (fixture
-            // mode, or a store-less test) to have written the ticket at all.
-            var runPolicySnapshot = policySnapshot
-            if let self, let store = self.store,
-               let ticket = try? await store.workTicket(kind: .podcastPreparation, subjectID: episode.id),
-               let data = ticket.policySnapshot,
-               let decoded = try? JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: data) {
-                runPolicySnapshot = decoded
+            // Capture only the actual returned persisted running generation;
+            // a missing acknowledgement stops admission before pipeline work.
+            let attempt: PreparationAttemptIdentity?
+            if let runningTicket, runningTicket.state == .running,
+               runningTicket.requestSequence == requestSequence {
+                attempt = try? PreparationAttemptIdentity(requestSequence: runningTicket.requestSequence,
+                                                         attemptCount: runningTicket.attemptCount)
+            } else { attempt = nil }
+            guard let attempt else {
+                // No pipeline work may start without the exact persisted running
+                // acknowledgement. Preserve the ticket for reconciliation and
+                // leave a truthful local retry state instead of completing work
+                // behind an unacknowledged durable running claim.
+                await self?.recordWorkTicketTransition(kind: .podcastPreparation, subjectID: episode.id,
+                    requestSequence: requestSequence, state: .failed, requiresAttempt: true)
+                self?.updateEpisode(episode.id) {
+                    $0.preparationState = .failed("Preparation could not start. Retry from Larder.")
+                }
+                self?.podcastOperationMessage = "Preparation could not start because its request was not saved. Retry from Larder."
+                return
             }
+            let runPolicySnapshot = runningTicket?.policySnapshot.flatMap {
+                try? JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: $0)
+            } ?? policySnapshot
             do {
-                let result = try await pipeline.prepare(episodeID: itemID, policy: runPolicySnapshot)
+                let result = try await pipeline.prepare(episodeID: itemID, policy: runPolicySnapshot, attempt: attempt,
+                    onJournaled: { [weak self] in
+                        await MainActor.run { self?.librarySyncController?.requestPublish() }
+                    })
                 guard let self else { return }
                 let summary = result.summary
                 self.podcastOperationMessage = "\(episode.title): \(summary)"
                 await self.recordWorkTicketTransition(
                     kind: .podcastPreparation, subjectID: episode.id,
-                    requestSequence: requestSequence, state: .succeeded
+                    requestSequence: requestSequence, state: .succeeded, expectedAttempt: attempt, requiresAttempt: true
                 )
                 if let store = self.store {
                     let values = try await self.loadLibrary(from: store)
@@ -261,7 +329,7 @@ extension WiltedMacModel {
                 self?.podcastOperationMessage = "Preparation cancelled."
                 await self?.recordWorkTicketTransition(
                     kind: .podcastPreparation, subjectID: episode.id,
-                    requestSequence: requestSequence, state: .cancelled
+                    requestSequence: requestSequence, state: .cancelled, expectedAttempt: attempt, requiresAttempt: true
                 )
             } catch {
                 // The reason is on Prep, with the log that led to it.
@@ -277,7 +345,7 @@ extension WiltedMacModel {
                 await self?.recordWorkTicketTransition(
                     kind: .podcastPreparation, subjectID: episode.id,
                     requestSequence: requestSequence, state: .failed,
-                    failureKind: failureKind.rawValue, lastFailureMessage: String(describing: error)
+                    failureKind: failureKind.rawValue, lastFailureMessage: String(describing: error), expectedAttempt: attempt, requiresAttempt: true
                 )
             }
         }

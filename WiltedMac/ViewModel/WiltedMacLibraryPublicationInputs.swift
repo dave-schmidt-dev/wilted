@@ -5,6 +5,8 @@ import WiltedLibrary
 /// Compare all observed values, excluding only the transport's download byte counters.
 /// Raw queue slots and association versions stay intact for publication and media reconciliation.
 struct WiltedMacLibraryPublicationInputs: Equatable {
+    let preparationRequests: [String: WiltedMacPreparationPublication.Request]
+    let requestSequences: [String: Int]
     let queue: [String]
     struct Episode: Equatable {
         let row: WiltedMacEpisode
@@ -22,6 +24,8 @@ extension WiltedMacModel {
     @MainActor
     func librarySyncPublicationInputs() -> WiltedMacLibraryPublicationInputs {
         WiltedMacLibraryPublicationInputs(
+            preparationRequests: preparationPublicationRequests,
+            requestSequences: preparationRequestSequences,
             queue: podcastQueueIDs,
             episodes: episodes.map { episode in
                 var value = episode

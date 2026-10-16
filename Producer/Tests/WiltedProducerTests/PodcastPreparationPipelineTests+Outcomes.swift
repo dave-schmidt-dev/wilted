@@ -477,3 +477,18 @@ extension PodcastPreparationPipelineTests {
     }
 
 }
+
+extension PodcastPreparationPipelineTests {
+    @Test func persistedRunningTicketGenerationIsAttachedToEveryPipelineEvent() async throws {
+        let fixture = try await Fixture(); defer { fixture.remove() }
+        let ticket = try await fixture.store.readmitWorkTicket(kind: .podcastPreparation,
+            subjectID: fixture.episodeID.rawValue, requestSequence: 51, to: .running, at: Timestamp(Date()))
+        let attempt = try PreparationAttemptIdentity(requestSequence: ticket.requestSequence, attemptCount: ticket.attemptCount)
+        _ = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID, attempt: attempt)
+        let entries = try await fixture.store.preparationJournal(
+            for: PodcastPreparationPipeline.requestID(for: fixture.episodeID), attempt: attempt)
+        #expect(!entries.isEmpty)
+        #expect(entries.allSatisfy { $0.status.attempt == attempt && $0.id.contains("|" + attempt.key + "|") })
+        #expect(entries.last?.status.terminalResult?.outcome == .succeeded)
+    }
+}

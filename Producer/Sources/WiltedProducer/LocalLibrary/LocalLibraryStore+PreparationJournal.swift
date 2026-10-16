@@ -7,6 +7,19 @@ import WiltedSync
 extension LocalLibraryStore {
     public func record(preparation entry: PreparationJournalEntry) throws {
         let context = ModelContext(container)
+        // Delayed callbacks cannot append to, or overwrite, another generation.
+        if let attempt = entry.status.attempt {
+            guard entry.id.hasPrefix(entry.requestID + "|" + attempt.key + "|") else { return }
+            let ticketID = WorkTicketKind.podcastPreparation.rawValue + "|" + entry.itemID.rawValue
+            var ticketQuery = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+                predicate: #Predicate { $0.id == ticketID }
+            )
+            ticketQuery.fetchLimit = 1
+            guard let ticket = try context.fetch(ticketQuery).first,
+                  ticket.requestSequence == attempt.requestSequence,
+                  ticket.attemptCount == attempt.attemptCount,
+                  ticket.state == WorkTicketState.running.rawValue else { return }
+        }
         let recordID = entry.id
         var descriptor = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
             predicate: #Predicate { $0.id == recordID }
@@ -21,22 +34,30 @@ extension LocalLibraryStore {
         try context.save()
     }
 
-    /// Forgets one request's journal. A request identifier names an item, not
-    /// an attempt, so a second attempt writes over the first's rows; without
-    /// this the first attempt's terminal row would outlive it and report the
-    /// second as finished while it was still running.
+    /// Clears legacy unbound rows for compatibility callers. Bound generations
+    /// retain their revision provenance and cannot be erased by failed admission.
     public func clearPreparationJournal(for requestID: String) throws {
         let context = ModelContext(container)
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
-        where record.requestID == requestID {
-            context.delete(record)
+        let query = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+            predicate: #Predicate { $0.requestID == requestID }
+        )
+        for record in try context.fetch(query) {
+            // Legacy callers cannot erase revision provenance retained by bound attempts.
+            if (try? JSONDecoder().decode(PreparationStatus.self, from: record.statusData))?.attempt == nil {
+                context.delete(record)
+            }
         }
         try context.save()
     }
 
     public func preparationJournal(for requestID: String) throws -> [PreparationJournalEntry] {
         let context = ModelContext(container)
-        let entries: [PreparationJournalEntry] = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()).filter { $0.requestID == requestID }.compactMap { record in
+        var query = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+            predicate: #Predicate { $0.requestID == requestID },
+            sortBy: [SortDescriptor(\.emittedAt, order: .reverse)]
+        )
+        query.fetchLimit = 256
+        let entries: [PreparationJournalEntry] = try context.fetch(query).compactMap { record in
             guard let status = try? JSONDecoder().decode(PreparationStatus.self, from: record.statusData), let itemID = try? ItemID(rawValue: record.itemID) else { return nil }
             return PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
         }
@@ -120,36 +141,116 @@ extension LocalLibraryStore {
         let context = ModelContext(container)
         let decoder = JSONDecoder()
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
-        let podcastRecords = records.filter { $0.requestID.hasPrefix("podcast-prepare|") }
-        let grouped = Dictionary(grouping: podcastRecords, by: \.requestID)
+        // Historical bodies are never decoded wholesale. If an older Ready generation
+        // falls outside the bounded request window, pass 2 conservatively redownloads.
+        let requestIDs = Set(records.lazy.filter { $0.requestID.hasPrefix("podcast-prepare|") }.map(\.requestID))
+        var podcastRecords: [LocalLibrarySchemaV3Models.PreparationRecord] = []
+        for requestID in requestIDs {
+            var query = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+                predicate: #Predicate { $0.requestID == requestID },
+                sortBy: [SortDescriptor(\.emittedAt, order: .reverse)]
+            )
+            query.fetchLimit = 256
+            podcastRecords += try context.fetch(query)
+        }
+        let grouped = Dictionary(grouping: podcastRecords) { row in
+            let attempt = (try? decoder.decode(PreparationStatus.self, from: row.statusData))?.attempt
+            return row.requestID + (attempt.map { "|" + $0.key } ?? "|legacy")
+        }
         let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         let downloadByEpisode = Dictionary(uniqueKeysWithValues: downloads.map { ($0.episodeID, $0) })
         let outcomes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
         let readyRevisions = try newestReadyRevisionsByItemID(in: context)
+        // Selection closures capture value-only identity, never SwiftData rows.
+        var currentOutcomeKeys = Set<String>()
+        for outcome in outcomes where outcome.eligibility == PodcastPreparationEligibility.current.rawValue {
+            currentOutcomeKeys.insert(outcome.episodeID + "|" + outcome.revisionID)
+        }
         var resetIDs = Set<ItemID>()
         var forcedIDs = Set<ItemID>()
         var currentIDs = Set<ItemID>()
         var reconciledIDs = Set<ItemID>()
         var mutated = false
 
-        for (_, rows) in grouped {
-            let entries = rows.compactMap { record -> PreparationJournalEntry? in
+        typealias Generation = (rows: [LocalLibrarySchemaV3Models.PreparationRecord], entries: [PreparationJournalEntry], itemID: ItemID)
+        var generationsByItemID: [ItemID: [Generation]] = [:]
+        for rows in grouped.values {
+            var entries: [PreparationJournalEntry] = []
+            for record in rows {
                 guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
-                      let itemID = try? ItemID(rawValue: record.itemID) else { return nil }
-                return PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
-            }.sorted(by: preparationEntryPrecedes)
+                      let itemID = try? ItemID(rawValue: record.itemID) else { continue }
+                entries.append(PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status))
+            }
+            entries.sort(by: preparationEntryPrecedes)
             guard let itemID = entries.last?.itemID else { continue }
+            generationsByItemID[itemID, default: []].append((rows, entries, itemID))
+        }
+        func newerGeneration(_ lhs: Generation, _ rhs: Generation) -> Bool {
+            let left = lhs.entries.first?.status.attempt
+            let right = rhs.entries.first?.status.attempt
+            if left?.requestSequence != right?.requestSequence {
+                return (left?.requestSequence ?? -1) > (right?.requestSequence ?? -1)
+            }
+            if left?.attemptCount != right?.attemptCount {
+                return (left?.attemptCount ?? -1) > (right?.attemptCount ?? -1)
+            }
+            guard let leftLast = lhs.entries.last, let rightLast = rhs.entries.last else { return false }
+            return preparationEntryPrecedes(rightLast, leftLast)
+        }
+        // Select once before evaluating any rule. Dictionary order must never
+        // let an old failure condemn a newer in-flight source generation.
+        var selected: [Generation] = []
+        for (itemID, candidates) in generationsByItemID {
+            let readyID = readyRevisions[itemID.rawValue]?.revisionID.rawValue
+            let hasCurrentOutcome: Bool
+            if let readyID {
+                hasCurrentOutcome = currentOutcomeKeys.contains(itemID.rawValue + "|" + readyID)
+            } else { hasCurrentOutcome = false }
+            var chosen: Generation?
+            for candidate in candidates {
+                if hasCurrentOutcome {
+                    let terminal = candidate.entries.last(where: { $0.status.terminal })?.status.terminalResult
+                    guard terminal?.outcome == .succeeded, terminal?.revisionID?.rawValue == readyID else { continue }
+                }
+                if let previous = chosen {
+                    if newerGeneration(candidate, previous) { chosen = candidate }
+                } else { chosen = candidate }
+            }
+            if let chosen { selected.append(chosen) }
+        }
+
+        for generation in selected {
+            let rows = generation.rows
+            let entries = generation.entries
+            let itemID = generation.itemID
+            let readyRevisionID = readyRevisions[itemID.rawValue]?.revisionID.rawValue
+            let terminal = entries.last(where: { $0.status.terminal })?.status.terminalResult
+            let outcomeRecord = readyRevisionID.flatMap { revisionID in
+                outcomes.first { $0.episodeID == itemID.rawValue && $0.revisionID == revisionID }
+            }
+            // Only the generation that proved this Ready revision can describe its source.
+            // Newer failures/running work must not replace that generation's provenance.
+            if outcomeRecord != nil {
+                guard terminal?.outcome == .succeeded,
+                      terminal?.revisionID?.rawValue == readyRevisionID else { continue }
+            }
             let provenance = entries.lazy.compactMap(\.status.evidence)
                 .first(where: { $0.kind == Self.pipelineProvenanceEvidenceKind })
-            guard provenance?.fields["fingerprint"] != currentFingerprint else {
+            // Matching legacy failure/progress with no output has nothing to
+            // invalidate. It remains diagnostic history, but cannot clear a
+            // recovery marker without generation/revision proof.
+            if provenance?.fields["fingerprint"] == currentFingerprint,
+               readyRevisionID == nil, outcomeRecord == nil, terminal?.outcome != .succeeded {
+                continue
+            }
+            if provenance?.fields["fingerprint"] == currentFingerprint,
+               (terminal?.outcome == .succeeded && terminal?.revisionID?.rawValue == readyRevisionID)
+                || (outcomeRecord == nil && entries.first?.status.attempt != nil
+                    && provenance?.fields["sourceRevisionID"] == readyRevisionID) {
                 currentIDs.insert(itemID)
                 continue
             }
 
-            let readyRevisionID = readyRevisions[itemID.rawValue]?.revisionID.rawValue
-            let outcomeRecord = readyRevisionID.flatMap { revisionID in
-                outcomes.first { $0.episodeID == itemID.rawValue && $0.revisionID == revisionID }
-            }
             let subject = PodcastPreparationInvalidationSubject(
                 episodeID: itemID,
                 semanticVersion: outcomeRecord?.semanticVersion,
@@ -163,12 +264,24 @@ extension LocalLibraryStore {
                 continue
             }
 
-            let terminal = entries.last(where: { $0.status.terminal })?.status.terminalResult
-            let sourceHash = provenance?.fields["sourceHash"].flatMap { $0.isEmpty ? nil : $0 }
-            let sourceRevisionID = provenance?.fields["sourceRevisionID"].flatMap { $0.isEmpty ? nil : $0 }
+            let terminalEvidence = entries.last(where: { $0.status.terminal })?.status.evidence
+            var hasPreparedOutcome = false
+            for outcome in outcomes where outcome.episodeID == itemID.rawValue { hasPreparedOutcome = true; break }
+            // A legacy failed terminal may prove the untouched original source
+            // directly. Never pair its source identity with another legacy row,
+            // or apply this exception to an episode with prepared-output history.
+            let legacyFailure = entries.first?.status.attempt == nil && terminal?.outcome == .failed
+                && !hasPreparedOutcome && terminalEvidence?.kind == Self.pipelineProvenanceEvidenceKind
+            let sourceEvidence = legacyFailure ? terminalEvidence : provenance
+            let sourceHash = sourceEvidence?.fields["sourceHash"].flatMap { $0.isEmpty ? nil : $0 }
+            let sourceRevisionID = sourceEvidence?.fields["sourceRevisionID"].flatMap { $0.isEmpty ? nil : $0 }
+            let exactLegacySource = legacyFailure && readyRevisionID != nil && sourceRevisionID == readyRevisionID
             let download = downloadByEpisode[itemID.rawValue]
             let sourceIntact: Bool
-            if download?.status == PodcastDownloadStatus.completed.rawValue,
+            if (entries.first?.status.attempt != nil || exactLegacySource),
+               (terminal?.outcome == .succeeded && terminal?.revisionID?.rawValue == readyRevisionID)
+                || (outcomeRecord == nil && sourceRevisionID == readyRevisionID),
+               download?.status == PodcastDownloadStatus.completed.rawValue,
                let sourceHash,
                download?.contentHash == sourceHash,
                let sourceURL = download?.localURL.flatMap(URL.init) {

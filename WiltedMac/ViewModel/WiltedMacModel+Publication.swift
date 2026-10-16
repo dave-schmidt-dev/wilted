@@ -440,7 +440,7 @@ extension WiltedMacModel {
                 let detail = run.failure?.message ?? run.detail
                 let timeline = run.entries.last(where: { $0.status.terminal })?.status.timeline
                 return WiltedMacProcessorRun(
-                    id: run.requestID,
+                    id: run.id,
                     itemID: run.itemID.rawValue,
                     isPodcast: isPodcast,
                     // A run that failed before extraction never learned a
@@ -477,7 +477,10 @@ extension WiltedMacModel {
             }
             for projected in self.projectedProcessorRuns.values
                 where trackedItemIDs.contains(projected.itemID)
-                    && !mergedRuns.contains(where: { $0.id == projected.id }) {
+                    && !mergedRuns.contains(where: {
+                        $0.isPodcast == projected.isPodcast && $0.itemID == projected.itemID
+                            && $0.updatedAt >= projected.updatedAt
+                    }) {
                 mergedRuns.insert(projected, at: 0)
             }
             self.processorRuns = mergedRuns

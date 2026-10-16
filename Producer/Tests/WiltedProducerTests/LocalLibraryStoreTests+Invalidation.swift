@@ -61,16 +61,19 @@ extension LocalLibraryStoreTests {
             "fingerprint": "old", "sourceRevisionID": revision.revisionID.rawValue,
             "sourceHash": hash, "sourceURL": sourceURL.absoluteString
         ])
+        let ticket = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: episode.itemID.rawValue,
+            requestSequence: 1, to: .running, at: Timestamp(Date()))
+        let attempt = try PreparationAttemptIdentity(requestSequence: ticket.requestSequence, attemptCount: ticket.attemptCount)
         let failure = try PreparationStatus(
             stage: .failed, detail: "old failure", cancellable: false,
             terminalResult: try PreparationTerminalResult(
                 outcome: .failed,
                 error: try ProducerError(code: .failed, message: "old failure", retryable: true)
-            ), emittedAt: Timestamp(Date()), evidence: evidence
+            ), emittedAt: Timestamp(Date()), evidence: evidence, attempt: attempt
         )
         let requestID = PodcastPreparationPipeline.requestID(for: episode.itemID)
         try await store.record(preparation: PreparationJournalEntry(
-            id: requestID + "|terminal", itemID: episode.itemID, requestID: requestID, status: failure
+            id: requestID + "|" + attempt.key + "|terminal", itemID: episode.itemID, requestID: requestID, status: failure
         ))
 
         let first = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
@@ -93,10 +96,10 @@ extension LocalLibraryStoreTests {
             fields: ["fingerprint": "new", "sourceRevisionID": revision.revisionID.rawValue, "sourceHash": hash]
         )
         try await store.record(preparation: PreparationJournalEntry(
-            id: requestID + "|current", itemID: episode.itemID, requestID: requestID,
+            id: requestID + "|" + attempt.key + "|current", itemID: episode.itemID, requestID: requestID,
             status: try PreparationStatus(
                 stage: .preparing, detail: "current attempt", cancellable: true,
-                emittedAt: Timestamp(Date()), evidence: currentEvidence
+                emittedAt: Timestamp(Date()), evidence: currentEvidence, attempt: attempt
             )
         ))
         let admitted = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
@@ -202,6 +205,19 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(conflictingMarkers.resetEpisodeIDs, [])
         XCTAssertEqual(conflictingMarkers.forcedRedownloadEpisodeIDs, [episode.itemID],
                        "forced redownload wins when two upgrades left both marker generations")
+        // Complete a real synthetic redownload before claiming that its durable
+        // pending marker can be replaced by acknowledged current preparation.
+        let freshURL = url.deletingLastPathComponent().appendingPathComponent("fresh-source.mp3")
+        let freshBytes = Data("fresh source bytes".utf8)
+        try freshBytes.write(to: freshURL)
+        let freshHash = "sha256:" + SHA256.hash(data: freshBytes).map { String(format: "%02x", $0) }.joined()
+        let freshRevision = try AudioRevision(itemID: episode.itemID, revisionID: RevisionID(rawValue: "fresh-source"),
+            durationSeconds: 12, byteCount: Int64(freshBytes.count), contentHash: freshHash,
+            mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 3)
+        try await store.finalizePodcastDownload(revision: freshRevision, mediaURL: freshURL,
+            download: PodcastDownload(episodeID: episode.itemID, status: .completed,
+                bytesReceived: Int64(freshBytes.count), expectedByteCount: Int64(freshBytes.count),
+                localURL: freshURL, contentHash: freshHash, updatedAt: Timestamp(Date())))
         try await store.markForcedRedownloadCompleted(
             for: episode.itemID, currentFingerprint: "new"
         )
@@ -212,14 +228,17 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(afterFreshDownload.resetEpisodeIDs, [episode.itemID],
                        "a successful redownload becomes durable pending preparation")
         let currentEvidence = try PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
-            "fingerprint": "new", "sourceRevisionID": "fresh-source",
-            "sourceHash": "sha256:" + String(repeating: "e", count: 64)
+            "fingerprint": "new", "sourceRevisionID": freshRevision.revisionID.rawValue,
+            "sourceHash": freshHash
         ])
+        let ticket = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: episode.itemID.rawValue,
+            requestSequence: 1, to: .running, at: Timestamp(Date()))
+        let attempt = try PreparationAttemptIdentity(requestSequence: ticket.requestSequence, attemptCount: ticket.attemptCount)
         try await store.record(preparation: PreparationJournalEntry(
-            id: requestID + "|current", itemID: episode.itemID, requestID: requestID,
+            id: requestID + "|" + attempt.key + "|current", itemID: episode.itemID, requestID: requestID,
             status: try PreparationStatus(
                 stage: .preparing, detail: "current attempt", cancellable: true,
-                emittedAt: Timestamp(Date()), evidence: currentEvidence
+                emittedAt: Timestamp(Date()), evidence: currentEvidence, attempt: attempt
             )
         ))
         let admitted = try await store.invalidateStalePodcastPreparations(currentFingerprint: "new", rules: [Self.blanketDriftRule])
