@@ -42,6 +42,9 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
     public let removedAt: Date?
     /// Optional producer-owned logical group; raw identity and queue membership remain unchanged.
     public let episodeAssociation: LibraryEpisodeAssociation?
+    /// Optional display-only preparation progress from the Mac. Absent or malformed values
+    /// leave the entry fully usable; this field never grants playback, media or command authority.
+    public let preparationStatus: LibraryPreparationStatus?
     /// Kind-specific JSON, strictly smaller than `payloadLimitBytes`.
     public let payload: Data
 
@@ -57,6 +60,7 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         removal: LibraryRemoval = .none,
         removedAt: Date? = nil,
         episodeAssociation: LibraryEpisodeAssociation? = nil,
+        preparationStatus: LibraryPreparationStatus? = nil,
         payload: Data = Data("{}".utf8)
     ) throws {
         guard payload.count < Self.payloadLimitBytes else {
@@ -81,11 +85,12 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         self.removal = removal
         self.removedAt = removedAt
         self.episodeAssociation = episodeAssociation
+        self.preparationStatus = preparationStatus
         self.payload = payload
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, sourceID, title, summary, publishedAt, durationSeconds, artworkRef, removal, removedAt, episodeAssociation, payload
+        case id, kind, sourceID, title, summary, publishedAt, durationSeconds, artworkRef, removal, removedAt, episodeAssociation, preparationStatus, payload
     }
 
     public init(from decoder: Decoder) throws {
@@ -102,6 +107,7 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
             removal: c.decode(LibraryRemoval.self, forKey: .removal),
             removedAt: c.decodeIfPresent(Date.self, forKey: .removedAt),
             episodeAssociation: try? c.decode(LibraryEpisodeAssociation.self, forKey: .episodeAssociation),
+            preparationStatus: try? c.decode(LibraryPreparationStatus.self, forKey: .preparationStatus),
             payload: c.decode(Data.self, forKey: .payload)
         )
     }
@@ -111,7 +117,8 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         try LibraryEntry(
             id: id, kind: kind, sourceID: sourceID, title: title, summary: summary,
             publishedAt: publishedAt, durationSeconds: durationSeconds, artworkRef: artworkRef,
-            removal: removal, removedAt: removedAt, episodeAssociation: episodeAssociation, payload: payload
+            removal: removal, removedAt: removedAt, episodeAssociation: episodeAssociation,
+            preparationStatus: preparationStatus, payload: payload
         )
     }
 
@@ -136,12 +143,14 @@ public struct LibraryEntry: Codable, Sendable, Equatable, Identifiable {
         removal: LibraryRemoval = .none,
         removedAt: Date? = nil,
         episodeAssociation: LibraryEpisodeAssociation? = nil,
+        preparationStatus: LibraryPreparationStatus? = nil,
         payload: PodcastEpisodePayload
     ) throws -> LibraryEntry {
         try LibraryEntry(
             id: id, kind: .podcastEpisode, sourceID: sourceID, title: title, summary: summary,
             publishedAt: publishedAt, durationSeconds: durationSeconds, artworkRef: artworkRef,
             removal: removal, removedAt: removedAt, episodeAssociation: episodeAssociation,
+            preparationStatus: preparationStatus,
             payload: PodcastEpisodePayload.encoder.encode(payload)
         )
     }

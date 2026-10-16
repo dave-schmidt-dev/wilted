@@ -6,10 +6,19 @@ import XCTest
 final class LibraryStateDifferTests: XCTestCase {
     private func id(_ name: String) -> ItemID { try! ItemID(rawValue: "item-\(name)") }
 
-    private func entry(_ name: String, removal: LibraryRemoval = .none, title: String? = nil) -> LibraryEntry {
+    private func entry(_ name: String, removal: LibraryRemoval = .none, title: String? = nil,
+                       status: LibraryPreparationStatus? = nil) -> LibraryEntry {
         try! LibraryEntry(
             id: id(name), kind: .podcastEpisode, sourceID: id("feed"), title: title ?? "Episode \(name)",
-            summary: "", publishedAt: Date(timeIntervalSince1970: 1_000), removal: removal
+            summary: "", publishedAt: Date(timeIntervalSince1970: 1_000), removal: removal,
+            preparationStatus: status
+        )
+    }
+
+    private func status(_ fraction: Double?) throws -> LibraryPreparationStatus {
+        try LibraryPreparationStatus(
+            attemptID: "attempt-1", state: .active, stage: "cutting", detail: "Removing ads",
+            fraction: fraction, updatedAt: Date(timeIntervalSince1970: 1_500)
         )
     }
 
@@ -117,5 +126,32 @@ final class LibraryStateDifferTests: XCTestCase {
                 []
             )
         }
+    }
+
+    /// Regression (preparation display contract): a display-only status update or clear is a
+    /// whole-entry change and must never be mistaken for a removal-only transition.
+    func testPreparationStatusUpdateAndClearSendWholeEntryDiffs() throws {
+        let before = LibrarySnapshot(entries: [entry("a")])
+        var active = before
+        let activeEntry = entry("a", status: try status(0.5))
+        active.entries[id("a")] = activeEntry
+        XCTAssertEqual(LibraryStateDiffer.diff(from: before, to: active), [.entry(activeEntry)])
+
+        let zeroProgress = LibrarySnapshot(entries: [entry("a", status: try status(0))])
+        XCTAssertEqual(LibraryStateDiffer.diff(from: active, to: zeroProgress), [.entry(entry("a", status: try status(0)))])
+
+        let cleared = LibrarySnapshot(entries: [entry("a")])
+        XCTAssertEqual(LibraryStateDiffer.diff(from: active, to: cleared), [.entry(entry("a"))])
+        XCTAssertEqual(LibraryStateDiffer.diff(from: cleared, to: cleared), [])
+    }
+
+    func testRetirementCarryingPreparationStatusStillSendsWholeEntry() throws {
+        let before = LibrarySnapshot(entries: [entry("a")])
+        var retired = before
+        retired.entries[id("a")] = entry("a", removal: .retired, status: try status(0.25))
+        XCTAssertEqual(
+            LibraryStateDiffer.diff(from: before, to: retired),
+            [.entry(entry("a", removal: .retired, status: try status(0.25)))]
+        )
     }
 }
