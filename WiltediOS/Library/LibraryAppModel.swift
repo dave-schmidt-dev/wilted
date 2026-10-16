@@ -25,14 +25,14 @@ final class LibraryAppModel: ObservableObject {
     /// Entries whose media offer from the Mac says the audio is prepared: `ready` (fetchable now) or
     /// `available` (prepared on the Mac; asking for it starts the upload).
     @Published private(set) var readyOffers: Set<ItemID> = []
-    private var cachedDisplayIDs: Set<ItemID> = []
-    private var completedDisplayRows: [LibraryRow]?
-    private var completedDisplayContent: LibrarySnapshot? {
+    private(set) var cachedDisplayIDs: Set<ItemID> = []
+    var completedDisplayRows: [LibraryRow]?
+    var completedDisplayContent: LibrarySnapshot? {
         didSet {
             completedDisplayGroupsByMember = LibraryRowBuilder.associationsByMember(in: completedDisplayContent)
         }
     }
-    private var completedDisplayGroupsByMember: [ItemID: LibraryEpisodeAssociation] = [:]
+    private(set) var completedDisplayGroupsByMember: [ItemID: LibraryEpisodeAssociation] = [:]
     private var displayContext: (generation: UInt64, admissionRevision: UInt64)?
     @Published var filter: LibraryFilter = .all
     /// Which kind the Larder shows; kept across launches. A stored value this build does not know reads as All.
@@ -497,37 +497,6 @@ final class LibraryAppModel: ObservableObject {
                 self.errorMessage = Self.message(for: error)
             }
         }
-    }
-
-    /// Queued entries the phone can play or fetch: a ready or available offer, a transfer under way, or audio
-    /// already cached.
-    var preparedIDs: (offered: Set<ItemID>, onPhone: Set<ItemID>) {
-        let inFlight = Set(media.filter { $0.value.isInFlight }.keys)
-        let onPhone = Set(media.filter { $0.value == .onPhone }.keys)
-        return (readyOffers.union(inFlight), onPhone)
-    }
-
-    /// The Larder as listed: prepared rows only, narrowed by filter and search, ordered by `sort`.
-    var visibleRows: [LibraryRow] {
-        let ids = preparedIDs
-        refreshEpisodeProjection()
-        let display = completedDisplayContent ?? projectedEpisodeContent
-        let groups = completedDisplayContent == nil ? projectedEpisodeGroupsByMember : completedDisplayGroupsByMember
-        let rows = completedDisplayRows.map {
-            LibraryRowBuilder.logicalRows($0, content: display, checkpoints: checkpoints,
-                                          clock: clockFormat, started: startedEntries, groupsByMember: groups)
-        } ?? logicalQueued
-        let offered = completedDisplayRows.map { Set($0.map(\.id)) } ?? ids.offered.union(cachedDisplayIDs)
-        return LibraryListing.rows(rows, offered: logicalIDs(offered, groupsByMember: groups),
-            onPhone: logicalIDs(ids.onPhone, groupsByMember: groups), filter: filter, kind: kindFilter, query: searchText,
-            progress: logicalProgress, finished: logicalFinished)
-    }
-
-    /// How many queued entries are prepared, before any filter or search; tells an empty Larder
-    /// from an empty result.
-    var preparedCount: Int {
-        let ids = preparedIDs
-        return LibraryListing.prepared(logicalQueued, offered: logicalIDs(ids.offered.union(cachedDisplayIDs)), onPhone: logicalIDs(ids.onPhone)).count
     }
 
     /// The winning record per entry among every device except this one, across both

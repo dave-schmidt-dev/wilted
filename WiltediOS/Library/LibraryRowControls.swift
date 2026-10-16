@@ -96,12 +96,16 @@ struct LibraryStatusLine: View {
     let entryID: ItemID
     let media: LibraryMediaState?
     let decision: LibraryDecisionStatus?
+    var preparation: [LibraryPreparationAnnotation] = []
     let cancelDecision: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             if let media, showsMedia(media) { mediaLine(media) }
+            ForEach(preparation) { annotation in
+                LibraryPreparationStatusLine(annotation: annotation)
+            }
             if let decision { decisionLine(decision) }
         }
     }

@@ -39,9 +39,21 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     var chapters: [AudiobookChapter] = []
     /// Raw backing identities for a coherent logical display row; never cache keys.
     var memberIDs: [ItemID] = []
+    /// Raw-member display reports, independent of the selected media backing.
+    var preparationAnnotations: [LibraryPreparationAnnotation] = []
+    /// Set only by an existing offer/cache projection, never by a preparation report.
+    var hasPreparedMedia = false
+    var isPreparationOnly: Bool { !preparationAnnotations.isEmpty && !hasPreparedMedia }
 }
 
 extension LibraryRow {
+    /// Raw reports default to read-only; every media-backed presentation uses this projection.
+    func withMediaAvailability(offered: Set<ItemID>, onPhone: Set<ItemID>) -> LibraryRow {
+        var row = self
+        row.hasPreparedMedia = !preparationAnnotations.isEmpty && (offered.contains(id) || onPhone.contains(id))
+        return row
+    }
+
     /// The row's one-line metadata, "Show - duration - date". `namesShow` is false for a row under a
     /// feed section header, which already names the show, so the line keeps only duration and date.
     func detailText(namesShow: Bool = true) -> String {
@@ -125,6 +137,9 @@ enum LibraryRowBuilder {
                   let entry = content.entries[group.representativeID] else { return nil }
             var representative = makeRow(entry, content: content, checkpoints: checkpoints, clock: clock, started: started)
             representative.memberIDs = group.memberIDs
+            representative.preparationAnnotations = group.memberIDs.sorted { $0.rawValue < $1.rawValue }.compactMap { id in
+                content.entries[id].flatMap { preparationAnnotation($0, content: content, representativeID: group.representativeID) }
+            }
             representative.isStarted = group.memberIDs.contains { startedIDs.contains($0) }
             return representative
         }
@@ -153,8 +168,19 @@ enum LibraryRowBuilder {
             episodeLink: (try? entry.podcastEpisodePayload().episodeLink)
                 .flatMap { PodcastEpisode.isValidEpisodeLink($0) ? $0 : nil },
             kind: entry.kind,
-            chapters: chapters(entry)
+            chapters: chapters(entry),
+            preparationAnnotations: preparationAnnotation(entry, content: content, representativeID: entry.id).map { [$0] } ?? []
         )
+    }
+
+    /// Queue withdrawal, removal and terminal association win over any retained report.
+    private static func preparationAnnotation(
+        _ entry: LibraryEntry, content: LibrarySnapshot, representativeID: ItemID
+    ) -> LibraryPreparationAnnotation? {
+        guard entry.removal == .none, entry.episodeAssociation?.isTerminal != true,
+              content.slots[entry.id] != nil, let status = entry.preparationStatus else { return nil }
+        return LibraryPreparationAnnotation(memberID: entry.id, status: status,
+            isOtherCopy: entry.id != representativeID)
     }
 
     /// The line a row and the player put under the title: the feed's name, or a book's author (a

@@ -237,13 +237,15 @@ struct LibraryListView: View {
     }
 
     private func leading(for row: LibraryRow) -> [LibrarySwipe] {
-        LibrarySwipe.leading(
+        guard !row.isPreparationOnly else { return [] }
+        return LibrarySwipe.leading(
             media: model.mediaState(for: row.id),
             canMarkCompleted: model.decisionActions(for: row).contains(.markDone))
     }
 
     private func trailing(for row: LibraryRow) -> [LibrarySwipe] {
-        LibrarySwipe.trailing(media: model.mediaState(for: row.id), isPlaying: model.sameLogicalEpisode(playingID, row.id))
+        guard !row.isPreparationOnly else { return [] }
+        return LibrarySwipe.trailing(media: model.mediaState(for: row.id), isPlaying: model.sameLogicalEpisode(playingID, row.id))
     }
 
     /// What VoiceOver can do to a row by name: open it, plus every swipe action, through the same

@@ -50,7 +50,9 @@ extension LibraryAppModel {
 
     func logicalRow(for id: ItemID) -> LibraryRow? {
         _ = logicalQueued
-        return projectedLogicalRowsByID[logicalEntryID(id)]
+        guard let row = projectedLogicalRowsByID[logicalEntryID(id)] else { return nil }
+        let ids = effectiveLarderMediaIDs(prepared: preparedIDs)
+        return row.withMediaAvailability(offered: ids.offered, onPhone: ids.onPhone)
     }
 
     func logicalIDs(_ ids: Set<ItemID>, groupsByMember: [ItemID: LibraryEpisodeAssociation]? = nil) -> Set<ItemID> {

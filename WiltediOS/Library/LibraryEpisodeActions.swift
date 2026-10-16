@@ -26,7 +26,7 @@ struct LibraryEpisodeActions: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: WiltedTheme.Spacing.small) {
-                if let media {
+                if let media, !row.isPreparationOnly {
                     LibraryDownloadControl(
                         entryID: row.id, state: media, perform: onMedia, isConfirmingDelete: $isConfirmingDelete)
                     if media == .onPhone, let onPlay {
@@ -35,12 +35,12 @@ struct LibraryEpisodeActions: View {
                             identifier: "wilted-library-play-\(row.id.rawValue)", action: onPlay)
                     }
                 }
-                if decisionActions.contains(.markDone) {
+                if !row.isPreparationOnly, decisionActions.contains(.markDone) {
                     LibraryIconButton(
                         symbol: LibraryDecisionAction.markDone.systemImage, label: LibraryDecisionAction.markDone.title,
                         identifier: "wilted-library-action-done-\(row.id.rawValue)") { isConfirmingCompletion = true }
                 }
-                if decisionActions.contains(.removeFromLarder) {
+                if !row.isPreparationOnly, decisionActions.contains(.removeFromLarder) {
                     LibraryIconButton(
                         symbol: LibraryDecisionAction.removeFromLarder.systemImage,
                         label: LibraryDecisionAction.removeFromLarder.title,
@@ -48,7 +48,8 @@ struct LibraryEpisodeActions: View {
                 }
                 Spacer(minLength: 0)
             }
-            LibraryStatusLine(entryID: row.id, media: media, decision: decisionStatus, cancelDecision: onCancelDecision)
+            LibraryStatusLine(entryID: row.id, media: row.isPreparationOnly ? nil : media,
+                              decision: decisionStatus, preparation: row.preparationAnnotations, cancelDecision: onCancelDecision)
         }
         .confirmationDialog("Delete the download?", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
             Button("Delete download", role: .destructive) { onMedia(.removeFromPhone) }

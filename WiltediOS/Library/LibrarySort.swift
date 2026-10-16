@@ -209,29 +209,28 @@ enum LibraryListing {
     static func rows(
         _ rows: [LibraryRow], offered: Set<ItemID>, onPhone: Set<ItemID>,
         filter: LibraryFilter, kind: LibraryKindFilter = .all, query: String,
-        progress: [ItemID: EpisodeProgress] = [:], finished: [ItemID: Date] = [:]
+        progress: [ItemID: EpisodeProgress] = [:], finished: [ItemID: Date] = [:],
+        preparationIDs: Set<ItemID> = []
     ) -> [LibraryRow] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let kept = prepared(rows, offered: offered, onPhone: onPhone).filter { row in
+        let kept = rows.filter { row in
+            offered.contains(row.id) || onPhone.contains(row.id) || (filter == .all && preparationIDs.contains(row.id))
+        }.filter { row in
             switch filter {
             case .all: true
             case .onPhone: onPhone.contains(row.id)
             case .available: !onPhone.contains(row.id)
             }
         }.filter { kind.includes($0.kind) }.filter { matches($0, query: needle) }
+        let projected = kept.map { $0.withMediaAvailability(offered: offered, onPhone: onPhone) }
         return InProgressOrdering.playOrder(
-            kept, progress: progress, id: \.id, publishedAt: \.publishedAt,
+            projected, progress: progress, id: \.id, publishedAt: \.publishedAt,
             completedAt: { completionDate($0, finished: finished) })
     }
 
     /// When a row was completed: marked on a device, else played to its end.
     static func completionDate(_ row: LibraryRow, finished: [ItemID: Date]) -> Date? {
         row.completedAt ?? finished[row.id]
-    }
-
-    /// The rows worth listing at all, in queue order.
-    static func prepared(_ rows: [LibraryRow], offered: Set<ItemID>, onPhone: Set<ItemID>) -> [LibraryRow] {
-        rows.filter { offered.contains($0.id) || onPhone.contains($0.id) }
     }
 
     /// Title, show and notes, like the Mac's search field; an empty query matches everything.
