@@ -40,6 +40,16 @@ final class WiltedMacFeedHistoryTests: XCTestCase {
         XCTAssertTrue(source.contains(".accessibilityIdentifier(restoreIdentifier)"))
         XCTAssertTrue(source.contains("Button(\"Restore\") { restore(record) }"))
         XCTAssertTrue(source.contains("loader.restore(record, model: model)"))
+        XCTAssertTrue(source.contains("WiltedMacEpisodeListSortControls("))
+        XCTAssertTrue(source.contains("identifierPrefix: \"wilted-feed-history\""))
+        XCTAssertTrue(source.contains("isLarder: true"), "History shares Larder's factual episode metadata")
+        XCTAssertTrue(source.contains("WiltedMacEpisodeArtwork(artworkURL: record.artworkURL, size: 40)"))
+        XCTAssertTrue(source.contains("position: loader.shownOffset + index + 1"),
+                      "row ordinals continue across pages")
+        XCTAssertTrue(source.contains("count: loader.total"), "row ordinals use the filtered result count")
+        XCTAssertTrue(source.contains(".accessibilityValue(\"\\(position) of \\(count)\")"))
+        XCTAssertTrue(source.contains("number \\(position) in History"))
+        XCTAssertTrue(source.contains("wilted-feed-history-row-\\(record.id)"))
         for retired in ["model.skippedFeedEpisodes", "history(retired:", "WiltedMacFeedHistoryQuery"] {
             XCTAssertFalse(source.contains(retired), "History renders the store page, not \(retired)")
         }
@@ -141,6 +151,9 @@ final class WiltedMacFeedHistoryTests: XCTestCase {
         XCTAssertTrue(text.contains("Skipped"), text)
         XCTAssertTrue(text.contains("Skipped by rule"), text)
         XCTAssertFalse(text.contains("Removed"), text)
+        for ordinal in ["01", "02", "03", "04"] {
+            XCTAssertTrue(drawn.contains(ordinal), "History visibly numbers its rows: \(ordinal). Drawn: \(drawn)")
+        }
         XCTAssertEqual(drawn.filter { $0 == "Restore" }.count, 4, text)
         let details = try WiltedMacHeadless.viewSource("WiltedMacFeedDetailsView.swift")
         XCTAssertTrue(details.contains("WiltedMacFeedHistoryView(model: model, feedID: subscription.id)"))
@@ -167,7 +180,7 @@ final class WiltedMacFeedHistoryTests: XCTestCase {
         try await fixture.seedRuleSkip(try XCTUnwrap(byName["rule"]).itemID, at: 40)
         _ = try await fixture.store.dismissPodcastEpisode(try XCTUnwrap(byName["legacy"]).itemID, at: fixture.at(10))
 
-        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch)
+        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch, preferences: WiltedMacTestPreferences.ephemeral())
         await loader.start(feedID: feed.id.rawValue)
         let ids = byName.mapValues(\.itemID.rawValue)
         let nameByID = Dictionary(uniqueKeysWithValues: ids.map { ($1, $0) })

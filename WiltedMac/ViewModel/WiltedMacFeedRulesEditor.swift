@@ -66,6 +66,10 @@ final class WiltedMacFeedRulesEditor {
     /// The number of rules, from the draft once it is loaded.
     var ruleCount: Int { hasLoaded ? drafts.count : board.rules(for: feedID).rules.count }
 
+    /// The model's active preference store, including the isolated suite used
+    /// by hosted test fixtures.
+    var preferences: UserDefaults { board.model.preferences }
+
     /// One preview row's info source. A row holds only the episode identity
     /// the plan carries, so its title's popover resolves notes and transcript
     /// through the board's model as it opens, with the show title this feed is

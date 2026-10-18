@@ -113,6 +113,57 @@ final class WiltedMacFeedRulesHistoryPreviewTests: XCTestCase {
         XCTAssertEqual(few, [14, 13, 12, 11, 10, 9, 8, 7, 6, 2].map { "e\($0)" })
     }
 
+    func testCalculatedSortsRankAllCandidatesBeforeCapAndLeaveRuleResultsAlone() async throws {
+        let rules = EpisodeMatchRules(rules: [
+            .init(field: .title, includePattern: "Episode", action: .skip)
+        ])
+        let published = (0..<34).map { Date(timeIntervalSince1970: 1_700_000_000 + Double($0)) }
+        let episodes = (0..<35).map { index in
+            let title = String(format: "Episode %02d", index)
+            let presentation = WiltedMacEpisodePresentation(
+                title: title, showTitle: "Order Test",
+                publishedAt: index == 34 ? nil : published[index],
+                sourceDurationSeconds: Double(10_000 - index * 100), playableDurationSeconds: nil)
+            return FeedRulesEpisode(
+                id: "sorted-\(index)", title: title, notes: "Episode notes",
+                releasedAt: Date(timeIntervalSince1970: Double(index)), presentation: presentation,
+                isStarted: false)
+        }
+        let input = FeedRulesInput(
+            rules: rules,
+            policy: EffectiveFeedAutomationPolicy(
+                autoKeep: true, autoDownload: false, autoPrepare: false, keptLimit: nil),
+            episodes: episodes, records: [:], keptIDs: [])
+        let plan = try await FeedRulesPlan.make(input)
+        let originalAdmissions = plan.admissions
+        let originalCounts = plan.counts
+
+        XCTAssertEqual(plan.rows.map(\.id), (10..<35).reversed().map { "sorted-\($0)" })
+        XCTAssertEqual(
+            plan.presentationRows(sort: .alphabetical, direction: .ascending).map(\.id),
+            (0..<25).map { "sorted-\($0)" },
+            "Alphabetical selects the first 25 across all matches, including rows beyond the newest cap")
+        XCTAssertEqual(
+            plan.presentationRows(sort: .length, direction: .ascending).map(\.id),
+            (10..<35).reversed().map { "sorted-\($0)" })
+        XCTAssertEqual(
+            plan.presentationRows(sort: .length, direction: .descending).map(\.id),
+            (0..<25).map { "sorted-\($0)" })
+        let ageRows = plan.presentationRows(sort: .age, direction: .ascending)
+        XCTAssertEqual(ageRows.map(\.id), (9..<34).reversed().map { "sorted-\($0)" })
+        XCTAssertFalse(ageRows.contains { $0.id == "sorted-34" },
+                       "an unknown publication date stays last even though intake time is newest")
+        XCTAssertEqual(plan.presentationRows(sort: .custom, direction: .ascending), plan.rows)
+
+        let metadata = try XCTUnwrap(plan.presentationRows(sort: .alphabetical, direction: .ascending).first)
+        XCTAssertEqual(metadata.presentation?.showTitle, "Order Test")
+        XCTAssertEqual(metadata.presentation?.sourceDurationSeconds, 10_000)
+        XCTAssertEqual(metadata.presentation?.publishedAt, published[0])
+        XCTAssertEqual(plan.admissions, originalAdmissions)
+        XCTAssertEqual(plan.counts, originalCounts)
+        XCTAssertEqual(plan.counts.skips, 35)
+    }
+
     // MARK: Live preview
 
     func testThreeEditsWithinTheDelayRunOneEvaluationOfTheLastRules() async throws {

@@ -39,10 +39,13 @@ extension WiltedMacLarderView {
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .lineLimit(2)
                         .accessibilityIdentifier("wilted-larder-active-status-\(episode.id)")
+                    WiltedMacEpisodeMetadata(
+                        episode: episode, identifier: "wilted-larder-metadata-\(episode.id)", isLarder: true
+                    )
                 } else {
                     HStack(spacing: 0) {
                         Text(episode.presentation.showLabel).lineLimit(1)
-                        Text(" - \(WiltedMacEpisodePresentation.durationLabel(episode.durationSeconds))")
+                        Text(" - \(WiltedMacEpisodePresentation.durationLabel(episode.presentation.sourceDurationSeconds))")
                             .fixedSize(horizontal: true, vertical: false)
                     }
                     .wiltedFont(.utility)
@@ -156,22 +159,7 @@ extension WiltedMacLarderView {
     /// The show's artwork at row size, or the produce tile when the feed
     /// published none or it has not arrived. A report has its own tile: it has no show.
     @ViewBuilder private func rowArtwork(_ episode: WiltedMacEpisode) -> some View {
-        if episode.isReport {
-            WiltedMacReportTile(size: 40)
-                .accessibilityHidden(true)
-        } else if let url = episode.artworkURL {
-            AsyncImage(url: url) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                WiltedProduceTile(symbol: .cabbage, size: 40)
-            }
-            .wiltedSquare(40)
-            .clipShape(RoundedRectangle(cornerRadius: WiltedTheme.Radius.control))
-            .accessibilityHidden(true)
-        } else {
-            WiltedProduceTile(symbol: .cabbage, size: 40)
-                .accessibilityHidden(true)
-        }
+        WiltedMacEpisodeArtwork(episode: episode, size: 40)
     }
 
     /// This installed view resolves appearance and keeps every lifecycle action in one slot.

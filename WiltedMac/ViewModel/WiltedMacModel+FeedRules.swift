@@ -54,6 +54,7 @@ extension WiltedMacModel {
             episodes: stored.map {
                 FeedRulesEpisode(
                     id: $0.id, title: $0.title, notes: $0.notes ?? "", releasedAt: $0.releasedAt,
+                    presentation: $0.presentation, artworkURL: $0.artworkURL, isReport: $0.isReport,
                     isStarted: playing.contains($0.id) || hasStartedEpisode($0), isHistory: isHistory($0),
                     hasDownloadedAudio: $0.downloadState == .completed || $0.preparationState.isPrepared
                 )

@@ -170,11 +170,21 @@ struct WiltedMacSidebarRow: View {
     let destination: WiltedMacNavigation
     /// The row's name when it is not the destination's own (a playlist carries its own).
     var title: String?
+    /// An icon override for rows whose destination type is not enough to identify them.
+    var symbolName: String? = nil
+    /// A short subtitle shown beneath the name in the labelled sidebar.
+    var detail: String? = nil
     let mode: WiltedMacSidebarMode
     let isSelected: Bool
     let textScale: WiltedTheme.TextScale
     let onSelect: () -> Void
     @Environment(\.colorScheme) private var colorScheme
+
+    private var accessibilityDescription: String {
+        let name = title ?? destination.title
+        guard let detail else { return name }
+        return "\(name), \(detail) playlist"
+    }
 
     var body: some View {
         Button {
@@ -186,18 +196,35 @@ struct WiltedMacSidebarRow: View {
             // style the Label carries, which is the blue the
             // owner saw. Both halves name their colour here.
             HStack(spacing: WiltedTheme.Spacing.small) {
-                Image(symbol: destination.symbolName)
+                Image(symbol: symbolName ?? destination.symbolName)
                     .foregroundStyle(
                         WiltedMacSidebarStyle.iconColor(isSelected: isSelected, scheme: colorScheme)
                     )
                     .frame(width: WiltedTheme.scaled(20, scale: textScale))
                     .accessibilityHidden(true)
                 if mode == .full {
-                    Text(title ?? destination.title)
-                        .lineLimit(1)
-                        .foregroundStyle(
-                            WiltedMacSidebarStyle.titleColor(isSelected: isSelected, scheme: colorScheme)
-                        )
+                    if let detail {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(title ?? destination.title)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .foregroundStyle(
+                                    WiltedMacSidebarStyle.titleColor(isSelected: isSelected, scheme: colorScheme)
+                                )
+                            Text(detail)
+                                .wiltedFont(.caption)
+                                .lineLimit(1)
+                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        }
+                        .layoutPriority(1)
+                    } else {
+                        Text(title ?? destination.title)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .foregroundStyle(
+                                WiltedMacSidebarStyle.titleColor(isSelected: isSelected, scheme: colorScheme)
+                            )
+                    }
                 }
             }
             .wiltedFont(.body)
@@ -210,8 +237,8 @@ struct WiltedMacSidebarRow: View {
                 ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)
                 : Color.clear
         )
-        .help(title ?? destination.title)
-        .accessibilityLabel(title ?? destination.title)
+        .help(accessibilityDescription)
+        .accessibilityLabel(accessibilityDescription)
         .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }

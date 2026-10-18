@@ -52,6 +52,10 @@ struct WiltedMacFeedRenameInteraction {
 struct WiltedMacFeedsView: View {
     @Bindable private var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("wilted.mac.episode-list.feeds.sort")
+    private var inboxSortRawValue: String = WiltedMacLarderSort.age.rawValue
+    @AppStorage("wilted.mac.episode-list.feeds.direction")
+    private var inboxDirectionRawValue: String = WiltedMacLarderSortDirection.ascending.rawValue
     private var selectedFeedEpisodeIDs: Set<String> {
         get { model.navigationState.selectedFeedEpisodeIDs }
         nonmutating set { model.navigationState.selectedFeedEpisodeIDs = newValue }
@@ -74,11 +78,38 @@ struct WiltedMacFeedsView: View {
         }
     }
 
+    private var inboxSort: Binding<WiltedMacLarderSort> {
+        Binding(
+            get: { WiltedMacEpisodeListOrder.restoredSort(from: inboxSortRawValue) },
+            set: { inboxSortRawValue = $0.canonical.rawValue }
+        )
+    }
+
+    private var inboxDirection: Binding<WiltedMacLarderSortDirection> {
+        Binding(
+            get: {
+                WiltedMacEpisodeListOrder.restoredDirection(from: inboxSortRawValue, direction: inboxDirectionRawValue)
+            },
+            set: { inboxDirectionRawValue = $0.rawValue }
+        )
+    }
+
     /// The root passes its window-long board, which the details sheet and rules editor share.
     /// A board built here serves only headless tests that render Feeds on its own.
     init(model: WiltedMacModel, policyBoard: WiltedMacFeedPolicyBoard? = nil) {
         _model = Bindable(model)
         _policyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
+        let legacy = WiltedMacEpisodeListOrder.legacyFeedsOrdering(model.feedsSort)
+        _inboxSortRawValue = AppStorage(
+            wrappedValue: legacy.sort.rawValue,
+            "wilted.mac.episode-list.feeds.sort",
+            store: model.preferences
+        )
+        _inboxDirectionRawValue = AppStorage(
+            wrappedValue: legacy.direction.rawValue,
+            "wilted.mac.episode-list.feeds.direction",
+            store: model.preferences
+        )
     }
 
     var body: some View {
@@ -148,7 +179,12 @@ struct WiltedMacFeedsView: View {
     /// Skip -- and nothing else. The download, the preparation and the play
     /// all belong to the Larder, where the episode waits once kept.
     @ViewBuilder private var inbox: some View {
-        let visible = model.feedsEpisodes
+        let visible = WiltedMacEpisodeListOrder.ordered(
+            model.feedsEpisodeCandidates,
+            key: { WiltedMacEpisodeListOrder.key(for: $0) },
+            sort: inboxSort.wrappedValue,
+            direction: inboxDirection.wrappedValue
+        )
         let visibleIDs = Set(visible.map(\.id))
         let selected = visible.filter { selectedFeedEpisodeIDs.contains($0.id) }
         let waitingIDs = policyBoard.waitingEpisodeIDs.intersection(visibleIDs)
@@ -164,6 +200,10 @@ struct WiltedMacFeedsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-count")
             }
+            WiltedMacEpisodeListSortControls(
+                label: "Feeds", identifierPrefix: "wilted-feeds",
+                sort: inboxSort, direction: inboxDirection
+            )
             if visible.isEmpty && articles.isEmpty {
                 Text("No new episodes.")
                     .wiltedFont(.body)
@@ -204,6 +244,7 @@ struct WiltedMacFeedsView: View {
                             model: model, episode: episode,
                             isSelected: selectedFeedEpisodeIDs.contains(episode.id),
                             isWaitingForSpace: waitingIDs.contains(episode.id),
+                            position: index + 1, count: visible.count,
                             setSelected: { selected in
                                 if selected { selectedFeedEpisodeIDs.insert(episode.id) }
                                 else { selectedFeedEpisodeIDs.remove(episode.id) }

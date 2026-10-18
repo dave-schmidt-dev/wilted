@@ -12,23 +12,26 @@ struct WiltedMacFeedHistoryRequest: Equatable, Sendable {
     var feedID: String?
     var search: String
     var status: LocalLibraryStore.HistoryStatusFilter?
+    var sort: WiltedMacLarderSort = .custom
+    var direction: WiltedMacLarderSortDirection = .ascending
     var offset: Int
     var limit: Int
 }
 
 /// Pages History out of the library store for one History view, which holds
-/// it in `@State`.
-///
-/// Only the page on screen is ever in memory: every change asks the store for
-/// one page and its filtered total, so History stays as fast with thousands of
-/// retired episodes as with ten. The store is an actor, so the page is read off
-/// the main actor. Search waits for typing to pause (`searchDebounce`, each
-/// keystroke cancels and restarts the wait); a filter or page change loads at
-/// once. Every load takes a new generation, and a response is published only
-/// while its generation is still the newest, so a slow stale page can never
-/// replace a newer one.
+/// the displayed page in `@State`. Calculated ordering scans scalar keys across
+/// the matching set and hydrates complete rows only for the requested page;
+/// the default Custom order remains a bounded store page. The store is an
+/// actor, so each page is read off the main actor. Search waits for typing to
+/// pause (`searchDebounce`, each keystroke cancels and restarts the wait); a
+/// filter, sort, or page change loads at once. Every load takes a new
+/// generation, and a response is published only while its generation is still
+/// the newest, so a slow stale page can never replace a newer one.
 @MainActor @Observable
 final class WiltedMacFeedHistoryLoader {
+    static let sortPreferenceKey = "wilted.history.sort"
+    static let sortDirectionPreferenceKey = "wilted.history.sort-direction"
+
     /// Reads one page. Production reads the model's library store; tests may
     /// inject their own to count queries.
     typealias Fetch = @MainActor @Sendable (WiltedMacFeedHistoryRequest) async throws -> LocalLibraryStore.HistoryPage
@@ -58,6 +61,9 @@ final class WiltedMacFeedHistoryLoader {
     /// The all-feeds feed picker. Ignored while the view is scoped to one feed.
     private(set) var feedFilter: String?
     private(set) var statusFilter: StatusFilter = .all
+    /// History ordering is independent from the Larder's saved queue order.
+    private(set) var sort: WiltedMacLarderSort = .custom
+    private(set) var direction: WiltedMacLarderSortDirection = .ascending
     /// The requested page, which leads `shownOffset` while that page loads.
     private(set) var pageIndex = 0
     /// The rows on screen and where they start; both change only when a page arrives.
@@ -74,12 +80,31 @@ final class WiltedMacFeedHistoryLoader {
     @ObservationIgnored private var scopeFeedID: String?
     @ObservationIgnored private var hasScope = false
     @ObservationIgnored private var fetch: Fetch?
+    @ObservationIgnored private var preferences: UserDefaults
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var restoreTasks: [String: Task<Void, Never>] = [:]
 
-    init(fetch: Fetch? = nil) {
+    init(fetch: Fetch? = nil, preferences: UserDefaults = .standard) {
         self.fetch = fetch
+        self.preferences = preferences
+        restoreOrdering(from: preferences)
+    }
+
+    private func restoreOrdering(from preferences: UserDefaults) {
+        let storedSort = preferences.string(forKey: Self.sortPreferenceKey)
+        let restored = storedSort.flatMap(WiltedMacLarderSort.restored)
+        sort = restored?.0.canonical ?? .custom
+        let storedDirection = preferences.string(forKey: Self.sortDirectionPreferenceKey)
+            .flatMap(WiltedMacLarderSortDirection.init(rawValue:))
+        direction = storedDirection ?? restored?.1 ?? .ascending
+
+        if let restored, let storedSort, restored.0.canonical.rawValue != storedSort {
+            preferences.set(restored.0.canonical.rawValue, forKey: Self.sortPreferenceKey)
+        }
+        if storedDirection == nil, let migratedDirection = restored?.1 {
+            preferences.set(migratedDirection.rawValue, forKey: Self.sortDirectionPreferenceKey)
+        }
     }
 
     var pageCount: Int { max(1, (total + Self.pageSize - 1) / Self.pageSize) }
@@ -93,12 +118,16 @@ final class WiltedMacFeedHistoryLoader {
     /// Reads pages from `model`'s library store, unless a fetch was injected.
     func useStore(of model: WiltedMacModel) {
         guard fetch == nil else { return }
+        preferences = model.preferences
+        restoreOrdering(from: preferences)
         // The model outlives every History view and never holds this loader.
         fetch = { request in
             guard let store = model.store else { throw LoadError.storeUnavailable }
             let feedID = try request.feedID.map { try ItemID(rawValue: $0) }
             return try await store.historyPage(
                 feedID: feedID, search: request.search, status: request.status,
+                sort: WiltedMacEpisodeListOrder.librarySort(request.sort),
+                direction: WiltedMacEpisodeListOrder.libraryDirection(request.direction),
                 offset: request.offset, limit: request.limit
             )
         }
@@ -132,6 +161,26 @@ final class WiltedMacFeedHistoryLoader {
     func setFeedFilter(_ feedID: String?) {
         guard feedID != feedFilter else { return }
         feedFilter = feedID
+        pageIndex = 0
+        schedule(after: nil)
+    }
+
+    func setSort(_ newSort: WiltedMacLarderSort) {
+        let canonical = newSort.canonical
+        let newDirection = newSort.legacyDirection ?? direction
+        guard canonical != sort || newDirection != direction else { return }
+        sort = canonical
+        direction = newDirection
+        preferences.set(canonical.rawValue, forKey: Self.sortPreferenceKey)
+        preferences.set(newDirection.rawValue, forKey: Self.sortDirectionPreferenceKey)
+        pageIndex = 0
+        schedule(after: nil)
+    }
+
+    func setDirection(_ newDirection: WiltedMacLarderSortDirection) {
+        guard newDirection != direction else { return }
+        direction = newDirection
+        preferences.set(newDirection.rawValue, forKey: Self.sortDirectionPreferenceKey)
         pageIndex = 0
         schedule(after: nil)
     }
@@ -183,6 +232,8 @@ final class WiltedMacFeedHistoryLoader {
             feedID: scopeFeedID ?? feedFilter,
             search: searchText.trimmingCharacters(in: .whitespacesAndNewlines),
             status: statusFilter.storeFilter,
+            sort: sort,
+            direction: direction,
             offset: pageIndex * Self.pageSize,
             limit: Self.pageSize
         )

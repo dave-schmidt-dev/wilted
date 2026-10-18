@@ -8,18 +8,61 @@ import WiltedProducer
 struct WiltedMacPlaylistView: View {
     @Bindable var model: WiltedMacModel
     let playlistID: String
+    @AppStorage("wilted.mac.episode-list.playlists.sort")
+    private var playlistSortRawValue: String = WiltedMacLarderSort.custom.rawValue
+    @AppStorage("wilted.mac.episode-list.playlists.direction")
+    private var playlistDirectionRawValue: String = WiltedMacLarderSortDirection.ascending.rawValue
     @State private var isEditingRules = false
     @State private var dropTargetID: String?
     @Environment(\.colorScheme) private var colorScheme
 
+    init(model: WiltedMacModel, playlistID: String) {
+        _model = Bindable(model)
+        self.playlistID = playlistID
+        _playlistSortRawValue = AppStorage(
+            wrappedValue: WiltedMacLarderSort.custom.rawValue,
+            "wilted.mac.episode-list.playlists.sort",
+            store: model.preferences
+        )
+        _playlistDirectionRawValue = AppStorage(
+            wrappedValue: WiltedMacLarderSortDirection.ascending.rawValue,
+            "wilted.mac.episode-list.playlists.direction",
+            store: model.preferences
+        )
+    }
+
+    private var playlistSort: Binding<WiltedMacLarderSort> {
+        Binding(
+            get: { WiltedMacEpisodeListOrder.restoredSort(from: playlistSortRawValue) },
+            set: { playlistSortRawValue = $0.canonical.rawValue }
+        )
+    }
+
+    private var playlistDirection: Binding<WiltedMacLarderSortDirection> {
+        Binding(
+            get: {
+                WiltedMacEpisodeListOrder.restoredDirection(
+                    from: playlistSortRawValue, direction: playlistDirectionRawValue
+                )
+            },
+            set: { playlistDirectionRawValue = $0.rawValue }
+        )
+    }
+
     var body: some View {
         if let playlist = model.playlist(playlistID) {
-            let items = model.playlistItems(playlist)
+            let items = model.playlistItems(
+                playlist, sort: playlistSort.wrappedValue, direction: playlistDirection.wrappedValue
+            )
             WiltedMacDestination(
                 title: playlist.name, identifier: "wilted-playlist-\(playlist.id)",
                 titleAccessory: { titleActions(playlist) }
             ) {
                 header(playlist, items: items)
+                WiltedMacEpisodeListSortControls(
+                    label: "Playlist", identifierPrefix: "wilted-playlist",
+                    sort: playlistSort, direction: playlistDirection
+                )
                 if let message = model.playlists.ruleReadErrors[playlist.id]
                     ?? model.playlists.failures[playlist.id] ?? model.playlists.message {
                     Text(message)
@@ -43,7 +86,7 @@ struct WiltedMacPlaylistView: View {
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            row(item, index: index, count: items.count, playlist: playlist)
+                            row(item, index: index, count: items.count, playlist: playlist, items: items)
                             Divider()
                         }
                     }
@@ -61,7 +104,9 @@ struct WiltedMacPlaylistView: View {
     private func header(_ playlist: Playlist, items: [WiltedMacLibraryItem]) -> some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
             Button {
-                model.playPlaylist(playlist)
+                model.playPlaylist(
+                    playlist, sort: playlistSort.wrappedValue, direction: playlistDirection.wrappedValue
+                )
             } label: {
                 Label("Play", systemImage: "play.fill")
             }
@@ -121,7 +166,10 @@ struct WiltedMacPlaylistView: View {
             .accessibilityIdentifier("wilted-playlist-empty")
     }
 
-    private func row(_ item: WiltedMacLibraryItem, index: Int, count: Int, playlist: Playlist) -> some View {
+    private func row(
+        _ item: WiltedMacLibraryItem, index: Int, count: Int,
+        playlist: Playlist, items: [WiltedMacLibraryItem]
+    ) -> some View {
         let manual = playlist.kind == .manual
         let ready = model.canPlayPlaylistItem(item)
         return VStack(spacing: 0) {
@@ -136,12 +184,10 @@ struct WiltedMacPlaylistView: View {
                     .monospacedDigit()
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityHidden(true)
+                itemArtwork(item)
                 VStack(alignment: .leading, spacing: 2) {
                     WiltedMacPlaylistItemTitle(model: model, item: item)
-                    Text(subtitle(item, ready: ready))
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .lineLimit(1)
+                    itemMetadata(item, ready: ready)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if manual {
@@ -152,11 +198,20 @@ struct WiltedMacPlaylistView: View {
                         .draggable(item.id)
                         .help("Drag to reorder")
                         .accessibilityLabel("Reorder \(item.title)")
+                        .disabled(model.playlistOperation(playlist.id) != nil)
                         .accessibilityAction(named: Text("Move earlier")) {
-                            Task { await model.movePlaylistEntry(playlist.id, entryID: item.id, to: max(index - 1, 0)) }
+                            guard index > 0 else { return }
+                            reorderManualEntries(
+                                playlist, visibleItems: items, movingID: item.id,
+                                beforeID: itemAt(index - 1, in: items)?.id
+                            )
                         }
                         .accessibilityAction(named: Text("Move later")) {
-                            Task { await model.movePlaylistEntry(playlist.id, entryID: item.id, to: min(index + 1, count - 1)) }
+                            guard index + 1 < count else { return }
+                            reorderManualEntries(
+                                playlist, visibleItems: items, movingID: item.id,
+                                beforeID: itemAt(index + 2, in: items)?.id
+                            )
                         }
                     Button {
                         Task { await model.removeFromPlaylist(playlist.id, entryID: item.id) }
@@ -172,8 +227,9 @@ struct WiltedMacPlaylistView: View {
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .dropDestination(for: String.self) { ids, _ in
-            guard manual, let dragged = ids.first, dragged != item.id else { return false }
-            Task { await model.movePlaylistEntry(playlist.id, entryID: dragged, to: index) }
+            guard manual, model.playlistOperation(playlist.id) == nil,
+                  let dragged = ids.first, dragged != item.id else { return false }
+            reorderManualEntries(playlist, visibleItems: items, movingID: dragged, beforeID: item.id)
             return true
         } isTargeted: { targeted in
             dropTargetID = targeted ? item.id : nil
@@ -183,6 +239,23 @@ struct WiltedMacPlaylistView: View {
         .accessibilityIdentifier("wilted-playlist-row-\(item.id)")
     }
 
+    @ViewBuilder private func itemMetadata(_ item: WiltedMacLibraryItem, ready: Bool) -> some View {
+        switch item {
+        case .article:
+            Text(subtitle(item, ready: ready))
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .lineLimit(1)
+        case .episode(let episode), .audiobook(let episode):
+            WiltedMacEpisodeMetadata(
+                episode: episode,
+                lifecycleLabel: episode.lifecyclePresentation.primaryLabel,
+                identifier: "wilted-playlist-metadata-\(episode.id)",
+                isLarder: true
+            )
+        }
+    }
+
     private func subtitle(_ item: WiltedMacLibraryItem, ready: Bool) -> String {
         var parts = [item.source]
         if let seconds = Self.durationSeconds(item), seconds > 0 {
@@ -190,6 +263,42 @@ struct WiltedMacPlaylistView: View {
         }
         if !ready { parts.append("Not ready") }
         return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder private func itemArtwork(_ item: WiltedMacLibraryItem) -> some View {
+        switch item {
+        case .article:
+            EmptyView()
+        case .episode(let episode), .audiobook(let episode):
+            WiltedMacEpisodeArtwork(episode: episode, size: 40)
+        }
+    }
+
+    private func reorderManualEntries(
+        _ playlist: Playlist,
+        visibleItems: [WiltedMacLibraryItem],
+        movingID: String,
+        beforeID: String?
+    ) {
+        guard playlist.kind == .manual, model.playlistOperation(playlist.id) == nil,
+              let reordered = Self.reorderedIDs(visibleItems.map(\.id), movingID: movingID, beforeID: beforeID),
+              reordered != visibleItems.map(\.id) else { return }
+        // A direct reorder is an explicit request for a durable custom order.
+        playlistSort.wrappedValue = .custom
+        Task { await model.reorderPlaylistEntries(playlist.id, orderedVisibleEntryIDs: reordered) }
+    }
+
+    private func itemAt(_ index: Int, in items: [WiltedMacLibraryItem]) -> WiltedMacLibraryItem? {
+        items.indices.contains(index) ? items[index] : nil
+    }
+
+    static func reorderedIDs(_ ids: [String], movingID: String, beforeID: String?) -> [String]? {
+        guard let source = ids.firstIndex(of: movingID), beforeID.map(ids.contains) ?? true else { return nil }
+        var reordered = ids
+        reordered.remove(at: source)
+        let target = beforeID.flatMap { id in reordered.firstIndex(of: id) } ?? reordered.endIndex
+        reordered.insert(movingID, at: target)
+        return reordered
     }
 
     private static func durationSeconds(_ item: WiltedMacLibraryItem) -> TimeInterval? {

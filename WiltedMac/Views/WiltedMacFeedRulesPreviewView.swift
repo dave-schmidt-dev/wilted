@@ -4,6 +4,23 @@ import WiltedProducer
 
 // MARK: - Live preview and Apply
 
+struct WiltedMacFeedRulesPreviewSections {
+    let undecided: [FeedRulesPreviewRow]
+    let automatic: [FeedRulesPreviewRow]
+    let unchanged: [FeedRulesPreviewRow]
+    let positions: [String: Int]
+    let total: Int
+
+    init(rows: [FeedRulesPreviewRow]) {
+        undecided = rows.filter { $0.outcome == .keep || $0.outcome == .skip }
+        automatic = rows.filter { $0.outcome == .keepToSkip || $0.outcome == .skipToKeep }
+        unchanged = rows.filter { !$0.outcome.isChange }
+        let rendered = undecided + automatic + unchanged
+        total = rendered.count
+        positions = Dictionary(uniqueKeysWithValues: rendered.enumerated().map { ($0.element.id, $0.offset + 1) })
+    }
+}
+
 /// What the rules decide for the feed's episodes, beside the editor. It
 /// previews again whenever the rules change; only Apply to existing and Undo
 /// write anything.
@@ -11,10 +28,24 @@ struct WiltedMacFeedRulesPreview: View {
     let editor: WiltedMacFeedRulesEditor
     let subscription: WiltedMacSubscription
     @Environment(\.colorScheme) private var colorScheme
+    @State private var previewSort: WiltedMacLarderSort
+    @State private var previewDirection: WiltedMacLarderSortDirection
+    @State private var displayedRows: [FeedRulesPreviewRow] = []
     /// The last plan, shown dimmed while an edit's preview is on its way so
     /// the rows do not vanish at every keystroke. Apply never uses it.
     @State private var lastPlan: FeedRulesPlan?
     @State private var isConfirmingApply = false
+
+    private static let previewSortPreferencePrefix = WiltedMacRulePreviewSortPreferences.feedRulesPrefix
+
+    init(editor: WiltedMacFeedRulesEditor, subscription: WiltedMacSubscription) {
+        self.editor = editor
+        self.subscription = subscription
+        let settings = WiltedMacRulePreviewSortPreferences.restore(
+            from: editor.preferences, prefix: Self.previewSortPreferencePrefix)
+        _previewSort = State(initialValue: settings.sort)
+        _previewDirection = State(initialValue: settings.direction)
+    }
 
     /// How many episodes' downloaded audio Apply would delete, counting every
     /// episode Apply commits, not only the rows shown. Undo brings the episodes
@@ -31,18 +62,42 @@ struct WiltedMacFeedRulesPreview: View {
             actions
             status
             if let plan = editor.plan ?? (isUpdating ? lastPlan : nil) {
-                ScrollView { results(plan).padding(.trailing, WiltedTheme.Spacing.small) }
+                ScrollView { results(plan, rows: displayedRows).padding(.trailing, WiltedTheme.Spacing.small) }
                     .opacity(editor.plan == nil ? 0.5 : 1)
             }
         }
         .onChange(of: editor.plan, initial: true) { _, plan in
             if let plan { lastPlan = plan }
+            refreshDisplayedRows()
+        }
+        .onChange(of: previewSort) { _, sort in
+            WiltedMacRulePreviewSortPreferences.store(
+                .init(sort: sort, direction: previewDirection),
+                in: editor.preferences, prefix: Self.previewSortPreferencePrefix)
+            refreshDisplayedRows()
+        }
+        .onChange(of: previewDirection) { _, direction in
+            WiltedMacRulePreviewSortPreferences.store(
+                .init(sort: previewSort, direction: direction),
+                in: editor.preferences, prefix: Self.previewSortPreferencePrefix)
+            refreshDisplayedRows()
         }
         .onChange(of: editor.message) { _, message in
-            if message != nil { lastPlan = nil }
+            if message != nil {
+                lastPlan = nil
+                displayedRows = []
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-feed-rules-preview-section")
+    }
+
+    private func refreshDisplayedRows() {
+        guard let plan = editor.plan ?? (isUpdating ? lastPlan : nil) else {
+            displayedRows = []
+            return
+        }
+        displayedRows = plan.presentationRows(sort: previewSort, direction: previewDirection)
     }
 
     private var actions: some View {
@@ -118,33 +173,44 @@ struct WiltedMacFeedRulesPreview: View {
         .frame(minHeight: 22, alignment: .leading)
     }
 
-    private func results(_ plan: FeedRulesPlan) -> some View {
+    private func results(_ plan: FeedRulesPlan, rows: [FeedRulesPreviewRow]) -> some View {
         let counts = plan.counts
+        let sections = WiltedMacFeedRulesPreviewSections(rows: rows)
         return VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            if plan.rows.isEmpty {
+            WiltedMacEpisodeListSortControls(
+                label: "Feed rule preview", identifierPrefix: "wilted-feed-rules-preview",
+                sort: $previewSort, direction: $previewDirection
+            )
+            if rows.isEmpty {
                 Text("This feed has no current episodes to check.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
             group(
                 "Undecided episodes", "\(counts.keeps) to keep, \(counts.skips) to skip",
-                rows: plan.rows.filter { $0.outcome == .keep || $0.outcome == .skip }, identifier: "undecided"
+                rows: sections.undecided, positions: sections.positions, total: sections.total,
+                identifier: "undecided"
             )
             group(
                 "Automatic decisions", "\(counts.keepToSkip) Keep to Skip, \(counts.skipToKeep) Skip to Keep",
-                rows: plan.rows.filter { $0.outcome == .keepToSkip || $0.outcome == .skipToKeep }, identifier: "automatic"
+                rows: sections.automatic, positions: sections.positions, total: sections.total,
+                identifier: "automatic"
             )
             group(
                 "Left as they are",
                 "\(counts.protectedManual) yours, \(counts.heldStarted) started, \(counts.waiting) held by the kept limit",
-                rows: plan.rows.filter { !$0.outcome.isChange }, identifier: "unchanged"
+                rows: sections.unchanged, positions: sections.positions, total: sections.total,
+                identifier: "unchanged"
             )
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-feed-rules-results")
     }
 
-    private func group(_ title: String, _ summary: String, rows: [FeedRulesPreviewRow], identifier: String) -> some View {
+    private func group(
+        _ title: String, _ summary: String, rows: [FeedRulesPreviewRow],
+        positions: [String: Int], total: Int, identifier: String
+    ) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             Text("\(title): \(summary)")
                 .wiltedFont(.utility)
@@ -157,7 +223,8 @@ struct WiltedMacFeedRulesPreview: View {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         if index > 0 { Divider() }
                         WiltedMacFeedRulesPreviewRow(
-                            row: row, source: editor.episodeInfoSource(forRowID: row.episodeID))
+                            row: row, position: positions[row.id, default: index + 1], total: total,
+                            source: editor.episodeInfoSource(forRowID: row.episodeID))
                     }
                 }
                 .wiltedCard(colorScheme, padding: WiltedTheme.Spacing.medium)
@@ -173,8 +240,10 @@ struct WiltedMacFeedRulesPreview: View {
 /// because its verdict is shown but never acted on. The title itself is the
 /// button: it opens the same episode info popover every other episode-name
 /// surface uses, while the row keeps its verdict and its identity.
-private struct WiltedMacFeedRulesPreviewRow: View {
+struct WiltedMacFeedRulesPreviewRow: View {
     let row: FeedRulesPreviewRow
+    let position: Int
+    let total: Int
     let source: WiltedMacEpisodeInfoSource
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingNotes = false
@@ -185,7 +254,14 @@ private struct WiltedMacFeedRulesPreviewRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
+        HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+            Text(String(format: "%02d", position))
+                .wiltedFont(.utility)
+                .monospacedDigit()
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .frame(width: 28, alignment: .trailing)
+                .accessibilityHidden(true)
+            WiltedMacEpisodeArtwork(artworkURL: row.artworkURL, isReport: row.isReport, size: 40)
             Image(systemName: symbol)
                 .foregroundStyle(WiltedTheme.color(row.outcome.isChange ? .progress : .secondaryText, scheme: colorScheme))
                 .frame(width: 16)
@@ -203,6 +279,12 @@ private struct WiltedMacFeedRulesPreviewRow: View {
                 Text("\(row.verdict) · \(row.outcome.explanation)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                WiltedMacEpisodeMetadata(
+                    presentation: row.presentation ?? WiltedMacEpisodePresentation(
+                        title: row.title, showTitle: nil, publishedAt: nil,
+                        sourceDurationSeconds: nil, playableDurationSeconds: nil),
+                    identifier: "wilted-feed-rules-metadata-\(row.id)", isLarder: true
+                )
                 if let notes = row.highlight?.notes {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Match in notes")
@@ -228,6 +310,7 @@ private struct WiltedMacFeedRulesPreviewRow: View {
         .padding(.vertical, WiltedTheme.Spacing.xSmall)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(row.title): \(row.verdict) · \(row.outcome.explanation)")
+        .accessibilityValue("\(position) of \(total)")
         .accessibilityIdentifier("wilted-feed-rules-row-\(row.episodeID)")
     }
 

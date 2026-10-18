@@ -10,6 +10,11 @@ struct FeedRulesEpisode: Sendable, Equatable {
     let title: String
     let notes: String
     let releasedAt: Date
+    /// Factual source metadata for list presentation. `releasedAt` remains the
+    /// legacy intake-order fallback; it is never presented as publication.
+    var presentation: WiltedMacEpisodePresentation? = nil
+    var artworkURL: URL? = nil
+    var isReport = false
     /// Playing now or part-heard. A started episode is never changed.
     let isStarted: Bool
     /// Retired or finished. Its verdict is shown, but it is never changed.
@@ -89,8 +94,46 @@ struct FeedRulesPreviewRow: Identifiable, Sendable, Equatable {
     /// plan so the preview never runs a pattern. Nil when there is nothing to
     /// draw; `make` fills it, and its default keeps callers that predate it.
     var highlight: WiltedMacRuleMatchHighlight? = nil
+    var presentation: WiltedMacEpisodePresentation? = nil
+    var artworkURL: URL? = nil
+    var isReport = false
 
     var id: String { episodeID }
+}
+
+/// Facts for ranking one row. Notes remain available for selected rows, while
+/// match highlighting is only built after the display cap is applied.
+struct FeedRulesPlanCandidate: Sendable, Equatable {
+    let id: String
+    let title: String
+    let notesForHighlight: String?
+    let presentation: WiltedMacEpisodePresentation?
+    let artworkURL: URL?
+    let isReport: Bool
+    let result: EpisodeMatchResult
+    let ruleNumber: Int?
+    let current: FeedRulesCurrent
+    let isKept: Bool
+    let outcome: FeedRulesOutcome
+    let deletesDownloadedAudio: Bool
+
+    func previewRow(using rules: EpisodeMatchRules) -> FeedRulesPreviewRow {
+        FeedRulesPreviewRow(
+            episodeID: id,
+            title: title,
+            result: result,
+            ruleNumber: ruleNumber,
+            current: current,
+            isKept: isKept,
+            outcome: outcome,
+            deletesDownloadedAudio: deletesDownloadedAudio,
+            highlight: WiltedMacRuleMatchHighlight.make(
+                result: result, title: title, notes: notesForHighlight ?? "", rules: rules),
+            presentation: presentation,
+            artworkURL: artworkURL,
+            isReport: isReport
+        )
+    }
 }
 
 /// A decision Apply will write. `expected` is the record the plan was built
@@ -121,8 +164,12 @@ struct FeedRulesCounts: Sendable, Equatable {
 }
 
 struct FeedRulesPlan: Sendable, Equatable {
-    /// The episodes the preview shows, newest first: see `previewRows`.
+    /// The default preview rows in their established newest-first intake order.
     var rows: [FeedRulesPreviewRow]
+    /// Lightweight facts for every candidate before the display cap.
+    var candidates: [FeedRulesPlanCandidate]
+    /// The rules snapshot used to build highlights for newly selected rows.
+    var rules: EpisodeMatchRules
     /// Every change Apply makes, including episodes the preview does not show.
     var admissions: [FeedRulesAdmission]
     /// Every episode's outcome counted, including those the preview does not show.
@@ -135,6 +182,48 @@ struct FeedRulesPlan: Sendable, Equatable {
     static let shownMatchLimit = 25
     /// Fewer matches than this are padded with the newest non-matching episodes.
     static let shownRowMinimum = 10
+
+    /// The rows shown for a selected presentation order. Custom keeps the
+    /// established newest-first order; calculated sorts rank every candidate
+    /// before applying the 25-match/10-row cap.
+    func presentationRows(
+        sort: WiltedMacLarderSort,
+        direction: WiltedMacLarderSortDirection
+    ) -> [FeedRulesPreviewRow] {
+        guard sort.canonical != .custom else { return rows }
+        let keyed = candidates.map { candidate in
+            let presentation = candidate.presentation ?? WiltedMacEpisodePresentation(
+                title: candidate.title, showTitle: nil, publishedAt: nil,
+                sourceDurationSeconds: nil, playableDurationSeconds: nil)
+            return (
+                candidate: candidate,
+                key: WiltedMacEpisodeListOrder.key(for: presentation, id: candidate.id)
+            )
+        }
+        let ranked = WiltedMacEpisodeListOrder.ordered(
+            keyed, key: { $0.key },
+            sort: sort,
+            direction: direction
+        ).map { $0.candidate }
+        return Self.selectedCandidates(from: ranked).map { $0.previewRow(using: rules) }
+    }
+
+    private static func selectedCandidates(from ordered: [FeedRulesPlanCandidate]) -> [FeedRulesPlanCandidate] {
+        func isMatch(_ candidate: FeedRulesPlanCandidate) -> Bool {
+            switch candidate.result {
+            case .keep, .skip: true
+            case .noMatch, .timedOut: false
+            }
+        }
+        let matches = ordered.filter(isMatch)
+        var selected = Set(matches.prefix(shownMatchLimit).map(\.id))
+        if selected.count < shownRowMinimum {
+            let padding = ordered.filter { !isMatch($0) }
+                .prefix(max(0, shownRowMinimum - selected.count))
+            selected.formUnion(padding.map(\.id))
+        }
+        return ordered.filter { selected.contains($0.id) }
+    }
 
     fileprivate static func counts(of outcomes: some Sequence<FeedRulesOutcome>) -> FeedRulesCounts {
         var counts = FeedRulesCounts()
@@ -256,44 +345,41 @@ extension FeedRulesPlan {
             return episode.hasDownloadedAudio && (outcome == .skip || outcome == .keepToSkip)
         }
         let order = Dictionary(ordered.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let rows = previewRows(ordered, results: results).map { episode in
+        let orderedCandidates = Array(ordered.reversed()).map { episode in
             let record = input.records[episode.id]
             let result = results[episode.id] ?? .noMatch
-            return FeedRulesPreviewRow(
-                episodeID: episode.id, title: episode.title, result: result,
+            let notesForHighlight: String?
+            switch result {
+            case let .keep(ruleID), let .skip(ruleID):
+                let field = input.rules.rules.first(where: { $0.id == ruleID })?.field
+                notesForHighlight = field == .title ? nil : episode.notes
+            case .noMatch, .timedOut:
+                notesForHighlight = nil
+            }
+            return FeedRulesPlanCandidate(
+                id: episode.id,
+                title: episode.title,
+                notesForHighlight: notesForHighlight,
+                presentation: episode.presentation,
+                artworkURL: episode.artworkURL,
+                isReport: episode.isReport,
+                result: result,
                 ruleNumber: ruleNumber(of: result, in: input.rules),
                 current: record.map { .decided($0.decision, $0.source) } ?? .undecided,
-                isKept: input.keptIDs.contains(episode.id), outcome: outcomes[episode.id] ?? .unchanged,
-                deletesDownloadedAudio: deletesAudio(episode),
-                highlight: WiltedMacRuleMatchHighlight.make(
-                    result: result, title: episode.title, notes: episode.notes, rules: input.rules)
+                isKept: input.keptIDs.contains(episode.id),
+                outcome: outcomes[episode.id] ?? .unchanged,
+                deletesDownloadedAudio: deletesAudio(episode)
             )
         }
+        let rows = Self.selectedCandidates(from: orderedCandidates).map {
+            $0.previewRow(using: input.rules)
+        }
         return FeedRulesPlan(
-            rows: rows, admissions: admissions.sorted { (order[$0.episodeID] ?? 0) < (order[$1.episodeID] ?? 0) },
+            rows: rows, candidates: orderedCandidates, rules: input.rules,
+            admissions: admissions.sorted { (order[$0.episodeID] ?? 0) < (order[$1.episodeID] ?? 0) },
             counts: counts(of: ordered.map { outcomes[$0.id] ?? .unchanged }),
             audioDeletions: ordered.filter(deletesAudio).count
         )
-    }
-
-    /// The rows worth showing, newest first: up to `shownMatchLimit` rule
-    /// matches, padded with the newest episodes no rule matched (a timed-out
-    /// rule is not a match) to `shownRowMinimum`, so a rule can be tested
-    /// against a feed whose episodes are mostly decided.
-    private static func previewRows(
-        _ ordered: [FeedRulesEpisode], results: [String: EpisodeMatchResult]
-    ) -> [FeedRulesEpisode] {
-        let newestFirst = Array(ordered.reversed())
-        func matches(_ episode: FeedRulesEpisode) -> Bool {
-            switch results[episode.id] ?? .noMatch {
-            case .keep, .skip: true
-            default: false
-            }
-        }
-        var shown = Set(newestFirst.filter(matches).prefix(shownMatchLimit).map(\.id))
-        let padding = newestFirst.filter { !matches($0) }.prefix(max(0, shownRowMinimum - shown.count))
-        shown.formUnion(padding.map(\.id))
-        return newestFirst.filter { shown.contains($0.id) }
     }
 
     private static func ruleNumber(of result: EpisodeMatchResult, in rules: EpisodeMatchRules) -> Int? {

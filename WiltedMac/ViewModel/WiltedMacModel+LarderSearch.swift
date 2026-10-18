@@ -78,14 +78,17 @@ extension WiltedMacModel {
     /// Feeds asks one question, and this is its data: the episodes that
     /// arrived and are not waiting on the Larder yet. An episode already on the
     /// Larder is not in Feeds.
-    var feedsEpisodes: [WiltedMacEpisode] {
+    var feedsEpisodeCandidates: [WiltedMacEpisode] {
         let waiting = Set(podcastQueueIDs)
-        return Self.sortedLarderEpisodes(
-            larderVisibleEpisodes.filter {
-                logicalMemberIDs($0.id).isDisjoint(with: waiting) && !$0.isAudiobook && !pendingFeedDecisionIDs.contains($0.id)
-            },
-            by: feedsSort
-        )
+        return larderVisibleEpisodes.filter {
+            logicalMemberIDs($0.id).isDisjoint(with: waiting) && !$0.isAudiobook && !pendingFeedDecisionIDs.contains($0.id)
+        }
+    }
+
+    /// Compatibility ordering for model callers that need the established Feeds default.
+    /// The page applies its independently remembered list order to `feedsEpisodeCandidates`.
+    var feedsEpisodes: [WiltedMacEpisode] {
+        Self.sortedLarderEpisodes(feedsEpisodeCandidates, by: feedsSort)
     }
 
     func sortedLarderEpisodeIDs(
@@ -112,25 +115,15 @@ extension WiltedMacModel {
     private func larderSortPrecedes(_ lhsID: String, _ rhsID: String, by sort: WiltedMacLarderSort) -> Bool {
         let lhs = episodes.first(where: { $0.id == lhsID })
         let rhs = episodes.first(where: { $0.id == rhsID })
-        let ascending = (sort.legacyDirection ?? larderSortDirection) == .ascending
-        switch sort.canonical {
-        case .length, .age:
-            let left: Double? = sort.canonical == .length ? lhs?.durationSeconds : lhs?.publishedAt?.timeIntervalSince1970
-            let right: Double? = sort.canonical == .length ? rhs?.durationSeconds : rhs?.publishedAt?.timeIntervalSince1970
-            switch (left, right) {
-            case let (left?, right?) where left != right:
-                // Age ascending means younger first; length ascending means shortest first.
-                return sort.canonical == .age ? (ascending ? left > right : left < right) : (ascending ? left < right : left > right)
-            case (nil, .some): return false
-            case (.some, nil): return true
-            default: break
-            }
-        case .alphabetical:
-            let comparison = LibrarySortKey.title(lhs?.title ?? "").localizedStandardCompare(LibrarySortKey.title(rhs?.title ?? ""))
-            if comparison != .orderedSame { return comparison == (ascending ? .orderedAscending : .orderedDescending) }
-        default: break
-        }
-        return lhsID < rhsID
+        let leftKey = lhs.map(WiltedMacEpisodeListOrder.key(for:))
+            ?? LibraryEpisodeOrdering.Key(id: lhsID, title: "", durationSeconds: nil, publishedAt: nil)
+        let rightKey = rhs.map(WiltedMacEpisodeListOrder.key(for:))
+            ?? LibraryEpisodeOrdering.Key(id: rhsID, title: "", durationSeconds: nil, publishedAt: nil)
+        return LibraryEpisodeOrdering.precedes(
+            leftKey, rightKey,
+            sort: WiltedMacEpisodeListOrder.librarySort(sort),
+            direction: WiltedMacEpisodeListOrder.libraryDirection(sort.legacyDirection ?? larderSortDirection)
+        )
     }
 
     /// Applies a non-custom Larder sort to the durable queue without moving the

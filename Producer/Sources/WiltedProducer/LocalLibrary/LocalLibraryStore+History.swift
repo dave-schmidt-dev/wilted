@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import WiltedDomain
+import WiltedLibrary
 
 private typealias HistoryEpisodeRecord = LocalLibrarySchemaV13Models.PodcastEpisodeRecord
 private typealias HistoryListeningRecord = LocalLibrarySchemaV10Models.PodcastListeningRecord
@@ -48,6 +49,8 @@ extension LocalLibraryStore {
         /// When the feed published the episode; nil when the feed did not say,
         /// and always nil for a legacy dismissal placeholder.
         public let publishedTime: Timestamp?
+        /// Episode artwork published with the feed, when present.
+        public let artworkURL: URL?
         /// The duration the feed published for the enclosure, if any.
         public let durationSeconds: Double?
         /// When the removal was recorded, whichever kind wrote it.
@@ -58,11 +61,37 @@ extension LocalLibraryStore {
         public let status: HistoryStatus
         /// The skipping rule, present only when `status` is `.skippedByRule`.
         public let ruleID: UUID?
+
+        /// Creates a History row. `artworkURL` defaults to nil for callers
+        /// constructing rows from older data sources.
+        public init(
+            episodeID: ItemID,
+            title: String,
+            feedID: ItemID,
+            publishedTime: Timestamp?,
+            durationSeconds: Double?,
+            retiredAt: Timestamp?,
+            removalKind: PodcastEpisodeRemovalKind,
+            status: HistoryStatus,
+            ruleID: UUID?,
+            artworkURL: URL? = nil
+        ) {
+            self.episodeID = episodeID
+            self.title = title
+            self.feedID = feedID
+            self.publishedTime = publishedTime
+            self.durationSeconds = durationSeconds
+            self.retiredAt = retiredAt
+            self.removalKind = removalKind
+            self.status = status
+            self.ruleID = ruleID
+            self.artworkURL = artworkURL
+        }
     }
 
     /// One page of History plus the size of the whole filtered set.
     public struct HistoryPage: Equatable, Sendable {
-        /// At most `limit` rows, newest removal first.
+        /// At most `limit` rows in the requested order; Custom defaults to newest removal first.
         public let rows: [HistoryRow]
         /// How many rows match the feed, search, and status filter in total.
         public let total: Int
@@ -70,14 +99,16 @@ extension LocalLibraryStore {
         public let offset: Int
     }
 
-    /// Returns one page of removed episodes, newest removal first.
+    /// Returns one page of removed episodes, newest removal first by default.
     ///
     /// A row is an episode of `feedID` (of any feed when `feedID` is nil)
     /// whose `removalKind` is `retired` or `dismissed`; an episode still on
     /// the shelf never appears. Rows are
     /// ordered by `retiredAt` descending, ties broken by episode identifier
-    /// in ascending lexical order, so consecutive pages neither overlap nor
-    /// skip a row while the library is unchanged.
+    /// in ascending lexical order when `sort` is `.custom`, so consecutive
+    /// pages neither overlap nor skip a row while the library is unchanged.
+    /// Calculated sorts scan scalar metadata in stable batches before slicing
+    /// a page; full History rows are hydrated only for that page.
     ///
     /// The feed, removal, and search conditions are one SwiftData predicate:
     /// `total` comes from `fetchCount` and the rows from `fetchOffset` /
@@ -106,6 +137,10 @@ extension LocalLibraryStore {
     ///   - feedID: The feed whose History is read, or nil for every feed's.
     ///   - search: Optional title text to match; `nil` or blank matches every title.
     ///   - status: `.played`, `.skipped` (rule skips included), or `nil` for every row.
+    ///   - sort: Shared episode sort. `.custom` preserves History's existing
+    ///     newest-removal-first order.
+    ///   - direction: Direction for calculated sorts; `.custom` preserves its
+    ///     existing order regardless of direction.
     ///   - offset: Rows to skip before the page; negative values read as zero.
     ///   - limit: Maximum rows on the page; zero or negative returns no rows
     ///     but still reports `total`.
@@ -115,6 +150,8 @@ extension LocalLibraryStore {
         feedID: ItemID?,
         search: String? = nil,
         status: HistoryStatusFilter? = nil,
+        sort: LibraryEpisodeOrdering.Sort = .custom,
+        direction: LibraryEpisodeOrdering.Direction = .ascending,
         offset: Int = 0,
         limit: Int
     ) throws -> HistoryPage {
@@ -142,16 +179,36 @@ extension LocalLibraryStore {
         // non-positive limit must return before it reaches the descriptor.
         guard limit > 0, start < total else { return HistoryPage(rows: [], total: total, offset: start) }
 
-        var descriptor = FetchDescriptor<HistoryEpisodeRecord>(
-            predicate: predicate,
-            sortBy: [
-                SortDescriptor(\.retiredAt, order: .reverse),
-                SortDescriptor(\.id, comparator: .lexical),
-            ]
-        )
-        descriptor.fetchOffset = start
-        descriptor.fetchLimit = limit
-        let records = try context.fetch(descriptor)
+        let records: [HistoryEpisodeRecord]
+        if sort == .custom {
+            var descriptor = FetchDescriptor<HistoryEpisodeRecord>(
+                predicate: predicate,
+                sortBy: [
+                    SortDescriptor(\.retiredAt, order: .reverse),
+                    SortDescriptor(\.id, comparator: .lexical),
+                ]
+            )
+            descriptor.fetchOffset = start
+            descriptor.fetchLimit = limit
+            records = try context.fetch(descriptor)
+        } else {
+            let pageIDs = try historyOrderedPageIDs(
+                matching: predicate,
+                total: total,
+                offset: start,
+                limit: limit,
+                sort: sort,
+                direction: direction,
+                in: context
+            )
+            guard !pageIDs.isEmpty else { return HistoryPage(rows: [], total: total, offset: start) }
+            let selectedIDs = pageIDs
+            let selected = try context.fetch(FetchDescriptor<HistoryEpisodeRecord>(
+                predicate: #Predicate { selectedIDs.contains($0.id) }
+            ))
+            let byID = Dictionary(uniqueKeysWithValues: selected.map { ($0.id, $0) })
+            records = pageIDs.compactMap { byID[$0] }
+        }
         let rows = try Self.historyRows(for: records, in: context)
         return HistoryPage(rows: rows, total: total, offset: start)
     }
@@ -193,7 +250,8 @@ extension LocalLibraryStore {
                 episodeID: episodeID, title: record.title, feedID: feedID,
                 publishedTime: record.publishedTime.map(Timestamp.init), durationSeconds: record.durationSeconds,
                 retiredAt: record.retiredAt.map(Timestamp.init), removalKind: kind,
-                status: status, ruleID: ruleID
+                status: status, ruleID: ruleID,
+                artworkURL: record.artworkURL.flatMap(URL.init(string:))
             )
         }
     }

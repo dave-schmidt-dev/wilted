@@ -1,4 +1,3 @@
-import WiltedLibrary
 import AppKit
 import SwiftUI
 import WiltedDomain
@@ -120,35 +119,12 @@ extension WiltedMacEpisodePresentationSections {
             let articles = items.filter { if case .article = $0 { true } else { false } }
             return queued + articles.sorted { $0.date > $1.date }
         }
-        return items.sorted { precedes($0, $1, sort: sort, direction: direction) }
-    }
-
-    /// The model's calculated-sort comparator, applied to any row kind. Unknown lengths and dates sort
-    /// last in either direction.
-    private static func precedes(
-        _ lhs: WiltedMacLibraryItem, _ rhs: WiltedMacLibraryItem,
-        sort: WiltedMacLarderSort, direction: WiltedMacLarderSortDirection
-    ) -> Bool {
-        let ascending = (sort.legacyDirection ?? direction) == .ascending
-        switch sort.canonical {
-        case .length, .age:
-            let isLength = sort.canonical == .length
-            let left = isLength ? lhs.progress.duration : knownDate(lhs)?.timeIntervalSince1970
-            let right = isLength ? rhs.progress.duration : knownDate(rhs)?.timeIntervalSince1970
-            switch (left, right) {
-            case let (left?, right?) where left != right:
-                // Age ascending means younger first; length ascending means shortest first.
-                return isLength ? (ascending ? left < right : left > right) : (ascending ? left > right : left < right)
-            case (nil, .some): return false
-            case (.some, nil): return true
-            default: break
-            }
-        case .alphabetical:
-            let comparison = LibrarySortKey.title(lhs.title).localizedStandardCompare(LibrarySortKey.title(rhs.title))
-            if comparison != .orderedSame { return comparison == (ascending ? .orderedAscending : .orderedDescending) }
-        default: break
-        }
-        return lhs.id < rhs.id
+        return WiltedMacEpisodeListOrder.ordered(
+            items,
+            key: { WiltedMacEpisodeListOrder.key(for: $0) },
+            sort: sort,
+            direction: direction
+        )
     }
 
     /// The factual date of a row: a feed's publication date, or when an article was saved.

@@ -35,17 +35,27 @@ struct WiltedMacFeedsEpisodeRow: View {
     let episode: WiltedMacEpisode
     let isSelected: Bool
     var isWaitingForSpace = false
+    var position: Int? = nil
+    var count: Int? = nil
     let setSelected: (Bool) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingNotes = false
 
     var body: some View {
         HStack(spacing: WiltedTheme.Spacing.medium) {
+            if let position {
+                Text(String(format: "%02d", position))
+                    .wiltedFont(.utility)
+                    .monospacedDigit()
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityHidden(true)
+            }
             Toggle("Select \(episode.title)", isOn: Binding(get: { isSelected }, set: setSelected))
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .disabled(model.pendingFeedDecisionIDs.contains(episode.id))
                 .accessibilityIdentifier("wilted-feeds-select-\(episode.id)")
+            WiltedMacEpisodeArtwork(episode: episode, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 WiltedMacEpisodeNotesTitle(
                     episode: episode, prefix: "wilted-feeds", isPresented: $isShowingNotes
@@ -89,6 +99,8 @@ struct WiltedMacFeedsEpisodeRow: View {
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .accessibilityElement(children: .contain)
+        .accessibilityLabel(position.map { "\(episode.title), number \($0) in Feeds" } ?? episode.title)
+        .accessibilityValue(position.flatMap { value in count.map { "\(value) of \($0)" } } ?? "")
         .accessibilityIdentifier("wilted-feeds-row-\(episode.id)")
     }
 

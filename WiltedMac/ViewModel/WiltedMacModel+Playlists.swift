@@ -219,13 +219,19 @@ extension WiltedMacModel {
     /// The library items a playlist shows now, in play order. A manual playlist keeps its own order
     /// and skips entries that left the library; an automatic one evaluates its rules over the
     /// Larder, newest first.
-    func playlistItems(_ playlist: Playlist, now: Date = Date()) -> [WiltedMacLibraryItem] {
+    func playlistItems(
+        _ playlist: Playlist,
+        sort: WiltedMacLarderSort = .custom,
+        direction: WiltedMacLarderSortDirection = .ascending,
+        now: Date = Date()
+    ) -> [WiltedMacLibraryItem] {
+        let naturalOrder: [WiltedMacLibraryItem]
         switch playlist.kind {
         case .manual:
             let byID = Dictionary(
                 larderEntries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             var seen = Set<String>()
-            return (playlists.entryIDs[playlist.id] ?? []).compactMap { raw in
+            naturalOrder = (playlists.entryIDs[playlist.id] ?? []).compactMap { raw in
                 let key = logicalRepresentativeID(raw)
                 return seen.insert(key).inserted ? byID[key] : nil
             }
@@ -237,8 +243,14 @@ extension WiltedMacModel {
                 playlists.rules[playlist.id] ?? [], matchAll: playlist.matchAll,
                 candidates: ordered.map { Self.playlistCandidate($0, ready: canPlayPlaylistItem($0)) },
                 now: now)
-            return matched.compactMap { byID[$0.entryID] }
+            naturalOrder = matched.compactMap { byID[$0.entryID] }
         }
+        return WiltedMacEpisodeListOrder.ordered(
+            naturalOrder,
+            key: { WiltedMacEpisodeListOrder.key(for: $0) },
+            sort: sort,
+            direction: direction
+        )
     }
 
     /// Every candidate an automatic playlist evaluates today, newest first, carrying the same
@@ -348,8 +360,13 @@ extension WiltedMacModel {
     }
 
     /// Plays the playlist's ready entries in order, without touching the Larder queue.
-    func playPlaylist(_ playlist: Playlist) {
-        let playable = playlistItems(playlist).filter(canPlayPlaylistItem).map(\.id)
+    func playPlaylist(
+        _ playlist: Playlist,
+        sort: WiltedMacLarderSort = .custom,
+        direction: WiltedMacLarderSortDirection = .ascending
+    ) {
+        let playable = playlistItems(playlist, sort: sort, direction: direction)
+            .filter(canPlayPlaylistItem).map(\.id)
         guard !playable.isEmpty else {
             playlists.message = "Nothing in this playlist is ready to play."
             return

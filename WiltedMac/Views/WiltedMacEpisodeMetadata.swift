@@ -1,6 +1,45 @@
 import Foundation
 import SwiftUI
 
+/// The available source artwork at list size, with the same empty and report
+/// tiles wherever an episode row appears.
+struct WiltedMacEpisodeArtwork: View {
+    let artworkURL: URL?
+    let isReport: Bool
+    let size: CGFloat
+
+    init(episode: WiltedMacEpisode, size: CGFloat) {
+        artworkURL = episode.artworkURL
+        isReport = episode.isReport
+        self.size = size
+    }
+
+    init(artworkURL: URL?, isReport: Bool = false, size: CGFloat) {
+        self.artworkURL = artworkURL
+        self.isReport = isReport
+        self.size = size
+    }
+
+    @ViewBuilder var body: some View {
+        if isReport {
+            WiltedMacReportTile(size: size)
+                .accessibilityHidden(true)
+        } else if let artworkURL {
+            AsyncImage(url: artworkURL) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                WiltedProduceTile(symbol: .cabbage, size: size)
+            }
+            .wiltedSquare(size)
+            .clipShape(RoundedRectangle(cornerRadius: WiltedTheme.Radius.control))
+            .accessibilityHidden(true)
+        } else {
+            WiltedProduceTile(symbol: .cabbage, size: size)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 /// The factual episode details every list surface shares. Lifecycle state and
 /// actions remain with the screen that owns them; this value never infers a
 /// publication date from intake, dismissal, or download activity.

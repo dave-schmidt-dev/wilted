@@ -25,6 +25,7 @@ struct WiltedMacFeedHistoryRecord: Identifiable, Equatable {
     let feedID: String?
     let feedTitle: String?
     let presentation: WiltedMacEpisodePresentation
+    let artworkURL: URL?
     let kind: Kind
     let status: WiltedMacFeedHistoryStatus
     let changedAt: Date?
@@ -48,6 +49,7 @@ extension WiltedMacFeedHistoryRecord {
                 title: row.title, showTitle: feedTitle, publishedAt: row.publishedTime?.date,
                 sourceDurationSeconds: row.durationSeconds, playableDurationSeconds: nil
             ),
+            artworkURL: row.artworkURL,
             kind: row.removalKind == .retired ? .retired : .dismissed,
             status: status,
             changedAt: row.retiredAt?.date
@@ -104,7 +106,7 @@ struct WiltedMacFeedHistoryView: View {
     init(model: WiltedMacModel, feedID: String? = nil, loader: WiltedMacFeedHistoryLoader? = nil) {
         self.model = model
         self.feedID = feedID
-        _loader = State(initialValue: loader ?? WiltedMacFeedHistoryLoader())
+        _loader = State(initialValue: loader ?? WiltedMacFeedHistoryLoader(preferences: model.preferences))
     }
 
     /// Restarts the load when the scope changes or the store becomes available.
@@ -164,7 +166,11 @@ struct WiltedMacFeedHistoryView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
                         if index > 0 { Divider() }
-                        historyRow(record)
+                        historyRow(
+                            record,
+                            position: loader.shownOffset + index + 1,
+                            count: loader.total
+                        )
                     }
                 }
                 .wiltedCard(colorScheme)
@@ -208,6 +214,12 @@ struct WiltedMacFeedHistoryView: View {
                 .pickerStyle(.menu)
                 .accessibilityLabel("Filter history by status")
                 .accessibilityIdentifier("wilted-feed-history-status-filter")
+                WiltedMacEpisodeListSortControls(
+                    label: "History",
+                    identifierPrefix: "wilted-feed-history",
+                    sort: Binding(get: { loader.sort }, set: { loader.setSort($0) }),
+                    direction: Binding(get: { loader.direction }, set: { loader.setDirection($0) })
+                )
                 Spacer()
                 if loader.isLoading {
                     ProgressView()
@@ -219,14 +231,16 @@ struct WiltedMacFeedHistoryView: View {
         }
     }
 
-    private func historyRow(_ record: WiltedMacFeedHistoryRecord) -> some View {
+    private func historyRow(_ record: WiltedMacFeedHistoryRecord, position: Int, count: Int) -> some View {
         let isPending = model.pendingFeedDecisionIDs.contains(record.id) || model.podcastRestoreTasks[record.id] != nil
             || loader.restoringIDs.contains(record.id)
         let failed = model.failedFeedDecisionIDs.contains(record.id)
         let restoreIdentifier = record.kind == .retired
             ? WiltedMacFeedHistoryAccessibilityID.restoreSkipped(record.id)
             : WiltedMacFeedHistoryAccessibilityID.restoreRemoved(record.id)
-        return HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
+        return HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+            historyOrdinal(position: position, count: count)
+            historyArtwork(record)
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 HStack {
                     WiltedMacFeedHistoryTitle(model: model, record: record)
@@ -238,8 +252,8 @@ struct WiltedMacFeedHistoryView: View {
                 }
                 WiltedMacEpisodeMetadata(
                     presentation: record.presentation,
-                    lifecycleLabel: record.status.rawValue,
-                    identifier: "wilted-feed-history-metadata-\(record.id)"
+                    identifier: "wilted-feed-history-metadata-\(record.id)",
+                    isLarder: true
                 )
                 Text(record.changedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Date not recorded")
                     .wiltedFont(.utility)
@@ -263,6 +277,28 @@ struct WiltedMacFeedHistoryView: View {
                 .accessibilityIdentifier(restoreIdentifier)
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(record.presentation.title), number \(position) in History")
+        .accessibilityValue("\(position) of \(count)")
+        .accessibilityIdentifier("wilted-feed-history-row-\(record.id)")
+    }
+
+    private func historyArtwork(_ record: WiltedMacFeedHistoryRecord) -> some View {
+        WiltedMacEpisodeArtwork(artworkURL: record.artworkURL, size: 40)
+    }
+
+    /// Reserves the width of the full result count so ordinals stay aligned
+    /// across pages, including lists with more than 99 or 999 rows.
+    private func historyOrdinal(position: Int, count: Int) -> some View {
+        ZStack(alignment: .trailing) {
+            Text(String(format: "%02d", count)).hidden()
+            Text(String(format: "%02d", position))
+        }
+        .wiltedFont(.utility)
+        .monospacedDigit()
+        .fixedSize(horizontal: true, vertical: false)
+        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+        .accessibilityHidden(true)
     }
 
     /// Restores through the model, then reloads the page once the write commits.

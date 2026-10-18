@@ -25,17 +25,24 @@ extension WiltedMacSidebar {
     /// One playlist row: the shared sidebar row, named for the playlist. A write in flight shows
     /// its spinner, and the last failure stays visible until that playlist's next operation.
     func playlistRow(_ playlist: Playlist) -> some View {
-        WiltedMacSidebarRow(
-            destination: .playlist(playlist.id), title: playlist.name, mode: mode,
+        let isPending = model.playlists.pending[playlist.id] != nil
+        let hasFailed = model.playlists.failures[playlist.id] != nil
+        let statusSlotWidth = mode == .full && (isPending || hasFailed)
+            ? WiltedTheme.scaled(20, scale: model.textScale) : 0
+        return WiltedMacSidebarRow(
+            destination: .playlist(playlist.id), title: playlist.name,
+            symbolName: playlist.kind == .manual ? "list.bullet" : "sparkles",
+            detail: playlist.kind == .manual ? "Manual" : "Smart", mode: mode,
             isSelected: model.selectedNavigation == .playlist(playlist.id), textScale: model.textScale
         ) { onSelect(.playlist(playlist.id)) }
+        .padding(.trailing, statusSlotWidth)
         .overlay(alignment: .trailing) {
-            if model.playlists.pending[playlist.id] != nil {
+            if isPending {
                 ProgressView()
                     .controlSize(.mini)
                     .accessibilityLabel("Saving \(playlist.name)")
                     .accessibilityIdentifier("wilted-sidebar-playlist-saving-\(playlist.id)")
-            } else if model.playlists.failures[playlist.id] != nil {
+            } else if hasFailed {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
                     .help(model.playlists.failures[playlist.id] ?? "")

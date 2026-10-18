@@ -231,6 +231,62 @@ extension WiltedMacModel {
         }
     }
 
+    /// Saves a manual playlist's visible order as its new Custom order. The
+    /// store verifies the exact snapshot and applies all sort keys in one save;
+    /// this operation never changes which entries belong to the playlist.
+    func reorderPlaylistEntries(_ playlistID: String, orderedVisibleEntryIDs: [String]) async {
+        guard let store, let playlist = playlists.playlists.first(where: { $0.id == playlistID }),
+              playlist.kind == .manual else { return }
+        let previous = playlists.entryIDs[playlistID] ?? []
+        var rawEntriesByRepresentative: [String: [String]] = [:]
+        for rawID in previous {
+            let representative = logicalRepresentativeID(rawID)
+            rawEntriesByRepresentative[representative, default: []].append(rawID)
+        }
+        let visibleRepresentatives = playlistItems(playlist, sort: .custom).map(\.id)
+        guard orderedVisibleEntryIDs.count == visibleRepresentatives.count,
+              Set(orderedVisibleEntryIDs).count == orderedVisibleEntryIDs.count,
+              Set(orderedVisibleEntryIDs) == Set(visibleRepresentatives) else {
+            return
+        }
+        let visibleSet = Set(visibleRepresentatives)
+        var consumedVisible = Set<String>()
+        var nextVisibleIndex = 0
+        var reordered: [String] = []
+        for rawID in previous {
+            let representative = logicalRepresentativeID(rawID)
+            guard visibleSet.contains(representative) else {
+                // Keep entries no longer shown by the Larder, in their exact
+                // relative order, rather than dropping them from membership.
+                reordered.append(rawID)
+                continue
+            }
+            guard consumedVisible.insert(representative).inserted else { continue }
+            let nextRepresentative = orderedVisibleEntryIDs[nextVisibleIndex]
+            reordered.append(contentsOf: rawEntriesByRepresentative[nextRepresentative] ?? [])
+            nextVisibleIndex += 1
+        }
+        guard reordered.count == previous.count else {
+            return
+        }
+        guard reordered != previous else { return }
+        guard let token = beginPlaylistOperation(playlistID, .playlist) else { return }
+        playlists.entryIDs[playlistID] = reordered
+        do {
+            try await Self.playlistWriteHookForTesting?()
+            try await store.reorderPlaylistEntries(
+                playlistID: playlistID,
+                expectedEntryIDs: previous,
+                orderedEntryIDs: reordered
+            )
+            finishPlaylistOperation(playlistID, token: token)
+        } catch {
+            if playlists.entryIDs[playlistID] == reordered { playlists.entryIDs[playlistID] = previous }
+            failPlaylistOperation(playlistID, message: "The playlist could not be reordered.")
+            finishPlaylistOperation(playlistID, token: token)
+        }
+    }
+
     /// Saves an automatic playlist's rules and its all-of or any-of choice. The projection is
     /// visible before the first await; a failure restores only this playlist's rules and mode.
     func savePlaylistRules(_ playlistID: String, rules: [PlaylistRule], matchAll: Bool) async -> Bool {

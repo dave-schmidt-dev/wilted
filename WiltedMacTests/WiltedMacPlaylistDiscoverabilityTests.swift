@@ -151,6 +151,116 @@ final class WiltedMacPlaylistDiscoverabilityTests: XCTestCase {
         await model.close()
     }
 
+    // MARK: - Playlist kind in the sidebar
+
+    func testSidebarShowsPlaylistKindsAndUniqueNamesAtItsActualWidth() async throws {
+        let model = sidebarKindFixture()
+        let width = WiltedTheme.scaled(WiltedMacShellLayout.sidebarIdealWidth, scale: model.textScale)
+        let size = CGSize(width: width, height: 520)
+        XCTAssertEqual(width, 168)
+
+        for scheme in [ColorScheme.light, .dark] {
+            let bitmap = try renderSidebar(model, mode: .full, scheme: scheme, size: size)
+            XCTAssertEqual(bitmap.pixelsWide, Int(width * 2), "the sidebar receives its actual point width")
+            let attachment = XCTAttachment(
+                data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+                uniformTypeIdentifier: "public.png")
+            attachment.name = "playlist-kinds-full-\(scheme == .dark ? "dark" : "light")"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+
+            let text = try recognizedText(in: bitmap).joined(separator: " ")
+            for expected in ["Kitchen", "Unplayed", "Manual", "Smart"] {
+                XCTAssertTrue(text.localizedCaseInsensitiveContains(expected),
+                              "The full sidebar keeps \(expected) visible at width \(width): \(text)")
+            }
+        }
+        await model.close()
+    }
+
+    func testSidebarPlaylistShortNamesStayReadableAtItsActualWidth() async throws {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        model.setTextScale(.standard)
+        model.playlists.playlists = [
+            Playlist(id: "manual-short", name: "Morning Walk", kind: .manual, matchAll: true, sortIndex: 0),
+            Playlist(id: "smart-short", name: "Unplayed Shorts", kind: .automatic, matchAll: true, sortIndex: 1),
+        ]
+        let width = WiltedTheme.scaled(WiltedMacShellLayout.sidebarIdealWidth, scale: model.textScale)
+        let size = CGSize(width: width, height: 520)
+
+        for scheme in [ColorScheme.light, .dark] {
+            let bitmap = try renderSidebar(model, mode: .full, scheme: scheme, size: size)
+            let text = try recognizedText(in: bitmap).joined(separator: " ")
+            for expected in ["Morning Walk", "Unplayed Shorts"] {
+                XCTAssertTrue(text.localizedCaseInsensitiveContains(expected),
+                              "The playlist name stays readable at width \(width): \(text)")
+            }
+        }
+        await model.close()
+    }
+
+    func testPlaylistRailIsIconOnlyAtItsActualWidth() async throws {
+        let model = sidebarKindFixture()
+        let width = WiltedMacShellLayout.railWidth
+        let size = CGSize(width: width, height: 520)
+
+        for scheme in [ColorScheme.light, .dark] {
+            let bitmap = try renderSidebar(model, mode: .rail, scheme: scheme, size: size)
+            let attachment = XCTAttachment(
+                data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
+                uniformTypeIdentifier: "public.png")
+            attachment.name = "playlist-kinds-rail-\(scheme == .dark ? "dark" : "light")"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+
+            let text = try recognizedText(in: bitmap).joined(separator: " ")
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("Manual"), "rail kind stays icon-only: \(text)")
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("Smart"), "rail kind stays icon-only: \(text)")
+        }
+        await model.close()
+    }
+
+    func testPlaylistRailAnnouncesKindsThroughNativeAccessibility() async throws {
+        let model = sidebarKindFixture()
+        let railWidth = WiltedMacShellLayout.railWidth
+        let railHeight: CGFloat = 520
+        let content = VStack(alignment: .leading, spacing: 0) {
+            Button("Known SwiftUI accessibility control") {}
+                .accessibilityIdentifier("wilted-sidebar-swiftui-ax-probe")
+            WiltedMacSidebar(model: model, mode: .rail, onSelect: { _ in })
+                .frame(width: railWidth, height: railHeight)
+        }
+        .frame(width: 240, height: 580, alignment: .topLeading)
+        let window = hostedWindowWithAppKitControl(content, size: CGSize(width: 240, height: 620))
+        defer { close(window) }
+        let nodes = accessibilityNodes(in: window)
+
+        let appKitControl = try XCTUnwrap(
+            nodes.first { $0.identifier == "wilted-sidebar-appkit-ax-probe" },
+            "The known AppKit NSButton control must be available in the native accessibility traversal. AX: \(nodes)")
+        XCTAssertTrue(appKitControl.text.contains("Known AppKit accessibility control"), "\(appKitControl)")
+
+        guard nodes.contains(where: { $0.identifier == "wilted-sidebar-swiftui-ax-probe" }) else {
+            await model.close()
+            throw XCTSkip(
+                "The hidden-window harness exposes the known AppKit NSButton to native accessibility, "
+                    + "but not the installed SwiftUI Button or List. This offscreen NSAccessibility traversal "
+                    + "cannot qualify SwiftUI row labels; installed SwiftUI accessibility qualification remains pending.")
+        }
+
+        for (identifier, expected) in [
+            ("wilted-navigation-playlist:manual-long",
+             "Kitchen Garden Collection With An Exceptionally Long Name, Manual playlist"),
+            ("wilted-navigation-playlist:smart-long",
+             "Unplayed Stories Collection With An Exceptionally Long Name, Smart playlist"),
+        ] {
+            let row = try XCTUnwrap(nodes.first { $0.identifier == identifier },
+                                    "The installed rail keeps the playlist identifier. AX: \(nodes)")
+            XCTAssertTrue(row.text.contains(expected), "The icon-only row announces its kind: \(row)")
+        }
+        await model.close()
+    }
+
     // MARK: - Share options
 
     func testShareComposerNamesItselfShareOptionsInThePlayerContext() throws {
@@ -173,6 +283,110 @@ final class WiltedMacPlaylistDiscoverabilityTests: XCTestCase {
             artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000), durationSeconds: 60,
             playbackSeconds: 0, downloadState: .completed, isReadyMediaAvailable: true,
             feedURL: URL(string: "https://example.test/feed")!, episodeLink: URL(string: "https://example.test/episode"))
+    }
+
+    private func sidebarKindFixture() -> WiltedMacModel {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        model.setTextScale(.standard)
+        let playlists = [
+            Playlist(id: "manual-long", name: "Kitchen Garden Collection With An Exceptionally Long Name",
+                     kind: .manual, matchAll: true, sortIndex: 0),
+            Playlist(id: "smart-long", name: "Unplayed Stories Collection With An Exceptionally Long Name",
+                     kind: .automatic, matchAll: true, sortIndex: 1),
+        ]
+        model.playlists.playlists = playlists
+        model.playlists.pending["manual-long"] = WiltedMacPlaylistPending(token: UUID(), operation: .playlist)
+        model.playlists.failures["smart-long"] = "The playlist could not be saved."
+        return model
+    }
+
+    /// Draws the shipping sidebar at its point size with no OCR padding that would narrow its column.
+    private func renderSidebar(
+        _ model: WiltedMacModel, mode: WiltedMacSidebarMode, scheme: ColorScheme, size: CGSize
+    ) throws -> NSBitmapImageRep {
+        let content = WiltedMacSidebar(model: model, mode: mode, onSelect: { _ in })
+            .environment(\.colorScheme, scheme)
+            .frame(width: size.width, height: size.height)
+        let window = hostedWindow(content, size: size)
+        defer { close(window) }
+        let host = try XCTUnwrap(window.contentView as? NSHostingView<AnyView>)
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        let scale = 2
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width) * scale, pixelsHigh: Int(size.height) * scale,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0))
+        bitmap.size = size
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        return bitmap
+    }
+
+    private func hostedWindow<V: View>(_ view: V, size: CGSize) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: AnyView(view))
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        return window
+    }
+
+    private func hostedWindowWithAppKitControl<V: View>(_ view: V, size: CGSize) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: NSRect(origin: .zero, size: size))
+        let host = NSHostingView(rootView: AnyView(view))
+        host.frame = NSRect(x: 0, y: 40, width: size.width, height: size.height - 40)
+        container.addSubview(host)
+        let control = NSButton(title: "Known AppKit accessibility control", target: nil, action: nil)
+        control.frame = NSRect(x: 0, y: 0, width: 240, height: 32)
+        control.setAccessibilityIdentifier("wilted-sidebar-appkit-ax-probe")
+        control.setAccessibilityLabel("Known AppKit accessibility control")
+        container.addSubview(control)
+        window.contentView = container
+        container.layoutSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        return window
+    }
+
+    private func close(_ window: NSWindow) {
+        window.contentView = nil
+        window.close()
+    }
+
+    private func recognizedText(in bitmap: NSBitmapImageRep) throws -> [String] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.recognitionLanguages = ["en-US"]
+        request.minimumTextHeight = 0.004
+        try VNImageRequestHandler(cgImage: try XCTUnwrap(bitmap.cgImage)).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+    }
+
+    private func accessibilityNodes(in window: NSWindow) -> [(identifier: String, text: String)] {
+        var seen = Set<ObjectIdentifier>()
+        var result: [(identifier: String, text: String)] = []
+        func visit(_ value: Any, depth: Int) {
+            guard depth < 32, let node = value as? NSAccessibilityProtocol,
+                  seen.insert(ObjectIdentifier(node as AnyObject)).inserted else { return }
+            let rawValue = node.accessibilityValue()
+            let valueText = (rawValue as? String) ?? (rawValue as? NSAttributedString)?.string
+            let text = [node.accessibilityLabel(), node.accessibilityTitle(), valueText]
+                .compactMap { $0 }.joined(separator: " ")
+            result.append((node.accessibilityIdentifier() ?? "", text))
+            for child in node.accessibilityChildren() ?? [] { visit(child, depth: depth + 1) }
+            if let view = value as? NSView {
+                for child in view.subviews { visit(child, depth: depth + 1) }
+            }
+        }
+        if let root = window.contentView { visit(root, depth: 0) }
+        return result
     }
 
     private func textObservations(in bitmap: NSBitmapImageRep) throws -> [(text: String, box: CGRect)] {

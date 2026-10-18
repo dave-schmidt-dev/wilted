@@ -11,14 +11,22 @@ struct WiltedMacPlaylistRulesSheet: View {
     @State private var editor: WiltedMacPlaylistRulesEditor
     @State private var preview: WiltedMacPlaylistRulePreview?
     @State private var previewGeneration: UInt64 = 0
+    @State private var previewSort: WiltedMacLarderSort
+    @State private var previewDirection: WiltedMacLarderSortDirection
     @State private var isSaving = false
     @State private var errorText: String?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
 
+    private static let previewSortPreferencePrefix = WiltedMacRulePreviewSortPreferences.playlistRulesPrefix
+
     init(model: WiltedMacModel, playlist: Playlist) {
         self.model = model
         self.playlist = playlist
+        let settings = WiltedMacRulePreviewSortPreferences.restore(
+            from: model.preferences, prefix: Self.previewSortPreferencePrefix)
+        _previewSort = State(initialValue: settings.sort)
+        _previewDirection = State(initialValue: settings.direction)
         _editor = State(initialValue: WiltedMacPlaylistRulesEditor(
             playlist: playlist, storedRules: model.playlists.rules[playlist.id] ?? []))
     }
@@ -93,6 +101,16 @@ struct WiltedMacPlaylistRulesSheet: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-playlist-rules-sheet")
         .task(id: previewKey) { await refreshPreview() }
+        .onChange(of: previewSort) { _, sort in
+            WiltedMacRulePreviewSortPreferences.store(
+                .init(sort: sort, direction: previewDirection),
+                in: model.preferences, prefix: Self.previewSortPreferencePrefix)
+        }
+        .onChange(of: previewDirection) { _, direction in
+            WiltedMacRulePreviewSortPreferences.store(
+                .init(sort: previewSort, direction: direction),
+                in: model.preferences, prefix: Self.previewSortPreferencePrefix)
+        }
         .onDisappear {
             isSaving = false
             previewGeneration &+= 1
@@ -161,17 +179,23 @@ struct WiltedMacPlaylistRulesSheet: View {
                         .accessibilityIdentifier("wilted-playlist-rule-preview-count")
                 }
             }
+            WiltedMacEpisodeListSortControls(
+                label: "Playlist preview", identifierPrefix: "wilted-playlist-preview",
+                sort: $previewSort, direction: $previewDirection
+            )
             if let preview {
+                let entries = orderedPreviewEntries(preview)
                 ScrollView {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                        if preview.entries.isEmpty {
+                        if entries.isEmpty {
                             Text("Nothing matches these rules.")
                                 .wiltedFont(.body)
                                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                                 .accessibilityIdentifier("wilted-playlist-rule-preview-empty")
                         }
-                        ForEach(preview.entries) { entry in
-                            WiltedMacPlaylistPreviewRow(model: model, entryID: entry.id)
+                        ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                            WiltedMacPlaylistPreviewRow(
+                                model: model, entryID: entry.id, position: index + 1, total: entries.count)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -185,6 +209,14 @@ struct WiltedMacPlaylistRulesSheet: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-playlist-rule-preview")
+    }
+
+    private func orderedPreviewEntries(
+        _ preview: WiltedMacPlaylistRulePreview
+    ) -> [WiltedMacPlaylistRulePreview.Entry] {
+        WiltedMacPlaylistRulePreviewOrdering.orderedEntries(
+            preview.entries, model: model, sort: previewSort, direction: previewDirection
+        )
     }
 
     private func draftBinding(_ id: UUID) -> Binding<WiltedMacPlaylistRuleDraft> {
@@ -355,32 +387,85 @@ struct WiltedMacPlaylistRulesSheet: View {
 /// One preview row: the same title and popover the playlist page uses, under the preview prefix so
 /// a hosted test can tell preview surfaces apart. Opening it reads notes only; playback and the
 /// current transcript are untouched.
-private struct WiltedMacPlaylistPreviewRow: View {
+struct WiltedMacPlaylistPreviewRow: View {
     let model: WiltedMacModel
     let entryID: String
+    let position: Int
+    let total: Int
     @State private var isPresented = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         if let item = model.playlistLibraryItem(entryID) {
-            switch item {
-            case .article(let article):
-                Text(article.title)
-                    .wiltedFont(.body)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    .lineLimit(1)
-            case .episode(let episode), .audiobook(let episode):
-                WiltedMacEpisodeNotesTitle(
-                    episode: episode, prefix: "wilted-playlist-preview", isPresented: $isPresented,
-                    titleLineLimit: 1
-                ) {
-                    WiltedMacEpisodeNotes(
-                        episode: episode, prefix: "wilted-playlist-preview",
-                        source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)
-                    ) { EmptyView() }
+            HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+                Text(String(format: "%02d", position))
+                    .wiltedFont(.utility)
+                    .monospacedDigit()
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .frame(width: 28, alignment: .trailing)
+                    .accessibilityHidden(true)
+                switch item {
+                case .article(let article):
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(article.title)
+                            .wiltedFont(.body)
+                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(article.title)
+                        Text(subtitle(for: item))
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                case .episode(let episode), .audiobook(let episode):
+                    WiltedMacEpisodeArtwork(episode: episode, size: 40)
+                    VStack(alignment: .leading, spacing: 2) {
+                        WiltedMacEpisodeNotesTitle(
+                            episode: episode, prefix: "wilted-playlist-preview", isPresented: $isPresented,
+                            titleLineLimit: 2
+                        ) {
+                            WiltedMacEpisodeNotes(
+                                episode: episode, prefix: "wilted-playlist-preview",
+                                source: model.episodeInfoSource(id: episode.id, showTitle: episode.feedTitle)
+                            ) { EmptyView() }
+                        }
+                        WiltedMacEpisodeMetadata(
+                            presentation: episode.presentation,
+                            identifier: "wilted-playlist-preview-metadata-\(episode.id)", isLarder: true
+                        )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id(episode.id)
                 }
-                .id(episode.id)
             }
+            .padding(.vertical, WiltedTheme.Spacing.xSmall)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("\(title(for: item)), number \(position) in playlist preview")
+            .accessibilityValue("\(position) of \(total)")
+            .accessibilityIdentifier("wilted-playlist-preview-row-\(entryID)")
+        }
+    }
+
+    private func title(for item: WiltedMacLibraryItem) -> String {
+        switch item {
+        case .article(let article): article.title
+        case .episode(let episode), .audiobook(let episode): episode.title
+        }
+    }
+
+    private func subtitle(for item: WiltedMacLibraryItem) -> String {
+        switch item {
+        case .article(let article):
+            var parts = [article.source]
+            if let seconds = article.durationSeconds, seconds > 0 {
+                parts.append(Duration.seconds(seconds).formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
+            }
+            if !model.canPlayPlaylistItem(item) { parts.append("Not ready") }
+            return parts.joined(separator: " · ")
+        case .episode(let episode), .audiobook(let episode):
+            return episode.presentation.larderPresentationLabel
         }
     }
 }

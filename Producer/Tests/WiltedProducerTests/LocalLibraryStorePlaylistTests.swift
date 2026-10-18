@@ -39,6 +39,58 @@ final class LocalLibraryStorePlaylistTests: XCTestCase {
         XCTAssertEqual(queueAfter.episodeIDs.map(\.rawValue), ["e1", "e2", "e3"])
     }
 
+    func testVisiblePlaylistOrderCommitsAtomicallyWithoutChangingMembershipOrQueue() async throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for id in ["e1", "e2", "e3"] { try await store.addPodcastQueueEpisode(ItemID(rawValue: id)) }
+        let queueBefore = try await store.podcastQueueState()
+        let playlist = try await store.createPlaylist(name: "Visible", kind: .manual)
+        for id in ["e1", "e2", "e3"] { try await store.addPlaylistEntry(playlistID: playlist.id, entryID: id) }
+
+        try await store.reorderPlaylistEntries(
+            playlistID: playlist.id,
+            expectedEntryIDs: ["e1", "e2", "e3"],
+            orderedEntryIDs: ["e3", "e1", "e2"]
+        )
+
+        let reordered = try await store.playlistEntryIDs(playlistID: playlist.id)
+        let queueAfter = try await store.podcastQueueState()
+        XCTAssertEqual(reordered, ["e3", "e1", "e2"])
+        XCTAssertEqual(queueAfter, queueBefore)
+    }
+
+    func testVisiblePlaylistOrderRejectsStaleOrChangedMembershipWithoutWriting() async throws {
+        let (store, directory) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let playlist = try await store.createPlaylist(name: "Guarded", kind: .manual)
+        for id in ["a", "b", "c"] { try await store.addPlaylistEntry(playlistID: playlist.id, entryID: id) }
+
+        await assertThrows {
+            try await store.reorderPlaylistEntries(
+                playlistID: playlist.id,
+                expectedEntryIDs: ["b", "a", "c"],
+                orderedEntryIDs: ["c", "b", "a"]
+            )
+        }
+        await assertThrows {
+            try await store.reorderPlaylistEntries(
+                playlistID: playlist.id,
+                expectedEntryIDs: ["a", "b", "c"],
+                orderedEntryIDs: ["a", "c"]
+            )
+        }
+        await assertThrows {
+            try await store.reorderPlaylistEntries(
+                playlistID: playlist.id,
+                expectedEntryIDs: ["a", "b", "c"],
+                orderedEntryIDs: ["a", "b", "b"]
+            )
+        }
+
+        let afterRejectedOrders = try await store.playlistEntryIDs(playlistID: playlist.id)
+        XCTAssertEqual(afterRejectedOrders, ["a", "b", "c"])
+    }
+
     func testRepeatedMovesRebalanceKeysAndKeepOrder() async throws {
         let (store, directory) = try makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }

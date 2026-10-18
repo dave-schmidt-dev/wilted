@@ -127,46 +127,11 @@ struct WiltedMacLarderView: View {
                 .controlSize(.regular)
                 .accessibilityLabel("Group Larder by: \(model.larderGrouping.rawValue)")
                 .accessibilityIdentifier("wilted-larder-grouping")
-                Menu {
-                    // A Picker nested inside this Larder creates a second
-                    // submenu on macOS. Direct menu buttons keep every order
-                    // in one click target while
-                    // retaining the same persisted model binding.
-                    ForEach(WiltedMacLarderSort.presentationOptions, id: \.id) { option in
-                        Button {
-                            model.larderSort = option
-                        } label: {
-                            if model.larderSort.canonical == option {
-                                Label(option.displayName, systemImage: "checkmark")
-                            } else {
-                                Text(option.displayName)
-                            }
-                        }
-                    }
-                } label: {
-                    Label("Sort by: \(model.larderSort.displayName)", systemImage: "arrow.up.arrow.down")
-                        .wiltedFont(.utility)
-                }
-                .menuStyle(.button)
-                .controlSize(.regular)
-                .accessibilityLabel("Sort Larder: \(model.larderSort.displayName)")
-                .accessibilityIdentifier("wilted-larder-sort")
+                WiltedMacEpisodeListSortControls(
+                    label: "Larder", identifierPrefix: "wilted-larder",
+                    sort: $model.larderSort, direction: $model.larderSortDirection
+                )
                 kindMenu
-                if model.larderSort != .custom {
-                    Button {
-                        let direction = model.larderSortDirection.reversed
-                        model.larderSort = model.larderSort.canonical
-                        model.larderSortDirection = direction
-                    } label: {
-                        Image(systemName: model.larderSortDirection == .ascending ? "arrow.up" : "arrow.down")
-                            .wiltedFont(.utility)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .help("Sort direction: \(model.larderSortDirection.displayName)")
-                    .accessibilityLabel("Larder sort direction: \(model.larderSortDirection.displayName)")
-                    .accessibilityIdentifier("wilted-larder-sort-direction")
-                }
             }
         }
 

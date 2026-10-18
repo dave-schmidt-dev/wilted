@@ -1,5 +1,6 @@
 import Foundation
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 import WiltedSync
 import XCTest
@@ -124,6 +125,105 @@ final class WiltedMacPlaylistTests: XCTestCase {
         XCTAssertEqual(model.podcastQueueIDs, queueBefore.episodeIDs.map(\.rawValue))
         let finished = try XCTUnwrap(model.episodes.first { $0.id == ids[2].rawValue })
         XCTAssertNil(finished.retiredAt, "a finished playlist entry is not retired from the Larder")
+    }
+
+    func testCalculatedDisplayOrderAlsoSnapshotsPlayWithoutWritingPlaylistOrLarderOrder() async throws {
+        let f = try await fixture("calculated-play-order", count: 3)
+        let model = f.model
+        let store = try XCTUnwrap(model.store)
+        let queueBefore = try await store.podcastQueueState()
+        let playlist = try await created(model, .manual, "Calculated")
+        for id in f.ids { await model.addToPlaylist(playlist.id, entryID: id.rawValue) }
+        let storedBefore = try XCTUnwrap(model.playlists.entryIDs[playlist.id])
+
+        let displayed = model.playlistItems(playlist, sort: .age, direction: .ascending).map(\.id)
+        XCTAssertEqual(displayed, f.ids.reversed().map(\.rawValue), "Age ascending presents the newest first")
+        XCTAssertEqual(model.playlistItems(playlist).map(\.id), storedBefore, "Custom preserves stored playlist order")
+
+        model.playPlaylist(playlist, sort: .age, direction: .ascending)
+        XCTAssertEqual(model.playlists.session?.entryIDs, displayed, "Play snapshots the exact visible calculation")
+        XCTAssertEqual(model.playlists.entryIDs[playlist.id], storedBefore, "calculated display order is not persisted")
+        let queueAfter = try await store.podcastQueueState()
+        XCTAssertEqual(queueAfter, queueBefore, "playlist order never writes the Larder queue")
+    }
+
+    func testSmartPlaylistCustomKeepsNaturalMatchesWhileCalculatedOrderIsReadOnly() async throws {
+        let f = try await fixture("smart-order-parity", count: 3)
+        let model = f.model
+        let playlist = try await created(model, .automatic, "Natural")
+        let unplayed = try PlaylistRule(field: .played, comparator: .is, value: PlaylistPlayedState.unplayed.rawValue)
+        let saved = await model.savePlaylistRules(playlist.id, rules: [unplayed], matchAll: true)
+        XCTAssertTrue(saved)
+
+        let natural = model.playlistItems(try XCTUnwrap(model.playlist(playlist.id))).map(\.id)
+        let calculated = model.playlistItems(
+            try XCTUnwrap(model.playlist(playlist.id)), sort: .alphabetical, direction: .descending
+        )
+        XCTAssertEqual(natural, f.ids.reversed().map(\.rawValue), "Custom keeps the current newest-first match order")
+        XCTAssertEqual(Set(calculated.map(\.id)), Set(natural), "calculated order only presents the same membership")
+        XCTAssertEqual(model.playlistItems(try XCTUnwrap(model.playlist(playlist.id))).map(\.id), natural)
+    }
+
+    func testVisibleManualReorderUsesBeforeTargetIndexAndRollsBackOnWriteFailure() async throws {
+        let f = try await fixture("visible-reorder", count: 3)
+        let model = f.model
+        let store = try XCTUnwrap(model.store)
+        let playlist = try await created(model, .manual, "Visible")
+        for id in f.ids { await model.addToPlaylist(playlist.id, entryID: id.rawValue) }
+        let visible = model.playlistItems(playlist, sort: .age, direction: .ascending).map(\.id)
+        let reordered = try XCTUnwrap(WiltedMacPlaylistView.reorderedIDs(
+            visible, movingID: f.ids[0].rawValue, beforeID: f.ids[1].rawValue
+        ))
+        XCTAssertEqual(reordered, [f.ids[2].rawValue, f.ids[0].rawValue, f.ids[1].rawValue])
+
+        await model.reorderPlaylistEntries(playlist.id, orderedVisibleEntryIDs: reordered)
+        XCTAssertEqual(model.playlists.entryIDs[playlist.id], reordered)
+        let storedAfterReorder = try await store.playlistEntryIDs(playlistID: playlist.id)
+        XCTAssertEqual(storedAfterReorder, reordered)
+
+        WiltedMacModel.playlistWriteHookForTesting = { throw NSError(domain: "Playlist reorder test", code: 1) }
+        defer { WiltedMacModel.playlistWriteHookForTesting = nil }
+        let failedTarget = Array(reordered.reversed())
+        await model.reorderPlaylistEntries(playlist.id, orderedVisibleEntryIDs: failedTarget)
+        XCTAssertEqual(model.playlists.entryIDs[playlist.id], reordered, "a failed write restores the visible snapshot")
+        let storedAfterFailure = try await store.playlistEntryIDs(playlistID: playlist.id)
+        XCTAssertEqual(storedAfterFailure, reordered, "the store remains unchanged")
+        XCTAssertEqual(model.playlists.failures[playlist.id], "The playlist could not be reordered.")
+        XCTAssertNil(model.playlists.pending[playlist.id], "the pending token settles after failure")
+    }
+
+    func testVisibleReorderRetainsHiddenEntriesAndAssociatedRawMembership() async throws {
+        let f = try await fixture("hidden-reorder-membership", count: 3)
+        let model = f.model
+        let store = try XCTUnwrap(model.store)
+        let playlist = try await created(model, .manual, "Hidden")
+        for id in f.ids { await model.addToPlaylist(playlist.id, entryID: id.rawValue) }
+        let alias = try ItemID(rawValue: "hidden-alias-member")
+        let missing = "episode-no-longer-in-larder"
+        await model.addToPlaylist(playlist.id, entryID: alias.rawValue)
+        await model.addToPlaylist(playlist.id, entryID: missing)
+        await model.loadPlaylists()
+
+        let representative = f.ids[0]
+        let association = LibraryEpisodeAssociation(
+            groupID: UUID(), representativeID: representative,
+            memberIDs: [representative, alias], associationVersion: 1, isTerminal: false
+        )
+        model.episodeAssociations[representative.rawValue] = association
+        model.episodeAssociations[alias.rawValue] = association
+        let initialRawOrder = try XCTUnwrap(model.playlists.entryIDs[playlist.id])
+        XCTAssertEqual(model.playlistItems(playlist).map(\.id), f.ids.map(\.rawValue))
+
+        let visibleOrder = [f.ids[2].rawValue, f.ids[1].rawValue, f.ids[0].rawValue]
+        await model.reorderPlaylistEntries(playlist.id, orderedVisibleEntryIDs: visibleOrder)
+
+        let finalRawOrder = try XCTUnwrap(model.playlists.entryIDs[playlist.id])
+        let persistedRawOrder = try await store.playlistEntryIDs(playlistID: playlist.id)
+        XCTAssertEqual(finalRawOrder, persistedRawOrder)
+        XCTAssertEqual(Set(finalRawOrder), Set(initialRawOrder), "reorder changes neither membership nor duplicate aliases")
+        XCTAssertEqual(finalRawOrder.filter { $0 == alias.rawValue }.count, 1)
+        XCTAssertEqual(finalRawOrder.filter { $0 == missing }.count, 1)
+        XCTAssertEqual(model.playlistItems(playlist).map(\.id), visibleOrder)
     }
 
     func testARemoteDeletionOfTheSelectedPlaylistReturnsTheSelectionToTheLarder() async throws {

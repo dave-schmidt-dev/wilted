@@ -81,8 +81,14 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
     }
 
     private func index(of prefix: String, in lines: [(text: String, top: CGFloat)]) -> Int? {
-        // Vision can prepend a glyph from the button's icon to its visible label.
-        lines.firstIndex { $0.text.localizedCaseInsensitiveContains(prefix) }
+        let needle = searchableText(prefix)
+        // Vision can prepend icon glyphs and omit spaces in otherwise visible labels.
+        return lines.firstIndex { searchableText($0.text).contains(needle) }
+    }
+
+    private func searchableText(_ text: String) -> String {
+        String(text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .filter { $0.isLetter || $0.isNumber })
     }
 
     func testFeedsDrawsOneHeadingAndOneMessageWithOneUndoPerOperation() async throws {
@@ -128,7 +134,7 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         XCTAssertLessThan(shown[heading].top, shown[refreshed].top)
         XCTAssertLessThan(shown[refreshed].top, shown[subscriptions].top)
         XCTAssertLessThan(shown[subscriptions].top, shown[offList].top, "History entry renders below subscriptions")
-        XCTAssertEqual(shown.map(\.text).filter { $0.localizedCaseInsensitiveContains("Off the list") }.count, 1)
+        XCTAssertEqual(shown.map(\.text).filter { searchableText($0).contains(searchableText("Off the list")) }.count, 1)
     }
 
     func testPerFeedCountsExcludeRetiredAndHiddenEpisodes() async throws {

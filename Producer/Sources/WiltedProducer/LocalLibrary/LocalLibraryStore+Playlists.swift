@@ -112,6 +112,35 @@ extension LocalLibraryStore {
             .filter { $0.playlistID == playlistID }).map(\.entryID)
     }
 
+    /// Replaces only the order of a manual playlist's existing entries in one
+    /// save. The exact expected order prevents a stale Mac view from
+    /// overwriting an intervening edit; the new order must be a permutation,
+    /// so this operation cannot add or remove membership.
+    public func reorderPlaylistEntries(
+        playlistID: String, expectedEntryIDs: [String], orderedEntryIDs: [String]
+    ) throws {
+        let context = ModelContext(container)
+        guard try context.fetch(FetchDescriptor<PlaylistModels.PlaylistRecord>())
+            .contains(where: { $0.id == playlistID && $0.kind == PlaylistKind.manual.rawValue }) else {
+            throw LocalLibraryStoreError.invalidPodcastState("manual playlist order")
+        }
+        let rows = Self.orderedEntries(try context.fetch(FetchDescriptor<PlaylistModels.PlaylistEntryRecord>())
+            .filter { $0.playlistID == playlistID })
+        let current = rows.map(\.entryID)
+        guard current == expectedEntryIDs,
+              orderedEntryIDs.count == current.count,
+              Set(orderedEntryIDs).count == orderedEntryIDs.count,
+              Set(orderedEntryIDs) == Set(current) else {
+            throw LocalLibraryStoreError.invalidPodcastState("stale playlist order")
+        }
+        guard orderedEntryIDs != current else { return }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.entryID, $0) })
+        for (index, entryID) in orderedEntryIDs.enumerated() {
+            byID[entryID]?.sortKey = Double(index)
+        }
+        try context.save()
+    }
+
     private static func orderedEntries(
         _ records: [PlaylistModels.PlaylistEntryRecord]
     ) -> [PlaylistModels.PlaylistEntryRecord] {

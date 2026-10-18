@@ -19,7 +19,7 @@ final class WiltedMacFeedHistoryPagingTests: XCTestCase {
         }
         let newestFirst = episodes.reversed().map(\.itemID.rawValue)
 
-        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch)
+        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch, preferences: WiltedMacTestPreferences.ephemeral())
         await loader.start(feedID: nil)
         XCTAssertEqual(loader.total, 120)
         XCTAssertEqual(loader.pageCount, 5)
@@ -49,7 +49,7 @@ final class WiltedMacFeedHistoryPagingTests: XCTestCase {
         try await fixture.store.savePodcastEpisodes([fight, news], admission: .backfill)
         _ = try await fixture.store.retireEpisodes([fight.itemID, news.itemID], at: fixture.at(1))
         let recorder = WiltedMacHistoryFetchRecorder(store: fixture.store)
-        let loader = WiltedMacFeedHistoryLoader(fetch: recorder.fetch)
+        let loader = WiltedMacFeedHistoryLoader(fetch: recorder.fetch, preferences: WiltedMacTestPreferences.ephemeral())
         await loader.start(feedID: nil)
         XCTAssertEqual(recorder.requests.count, 1)
 
@@ -90,7 +90,7 @@ final class WiltedMacFeedHistoryPagingTests: XCTestCase {
         ), at: fixture.at(2))
         _ = try await fixture.store.retireEpisode(passed.itemID, at: fixture.at(3))
         let recorder = WiltedMacHistoryFetchRecorder(store: fixture.store)
-        let loader = WiltedMacFeedHistoryLoader(fetch: recorder.fetch)
+        let loader = WiltedMacFeedHistoryLoader(fetch: recorder.fetch, preferences: WiltedMacTestPreferences.ephemeral())
         await loader.start(feedID: nil)
 
         recorder.holdStatus = .played
@@ -122,7 +122,7 @@ final class WiltedMacFeedHistoryPagingTests: XCTestCase {
             episodeID: weighIn.itemID, completedAt: fixture.at(9), lastRevisionID: nil, updatedAt: fixture.at(9)
         ), at: fixture.at(10))
 
-        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch)
+        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch, preferences: WiltedMacTestPreferences.ephemeral())
         await loader.start(feedID: feed.id.rawValue)
         let records = loader.rows.map { WiltedMacFeedHistoryRecord(row: $0, feedTitle: "Fight Night") }
         XCTAssertEqual(records.map(\.id), [companion, mainCard, weighIn].map(\.itemID.rawValue))
@@ -141,6 +141,51 @@ final class WiltedMacFeedHistoryPagingTests: XCTestCase {
         XCTAssertEqual(loader.rows.map(\.episodeID), [weighIn.itemID])
     }
 
+    func testHistorySortPersistsSeparatelyAndPagesInGlobalOrder() async throws {
+        let fixture = try WiltedMacHistoryStoreFixture(self)
+        let feed = try WiltedMacHistoryStoreFixture.Feed("sort-persistence")
+        let episodes = try (0..<61).map { index in
+            try feed.episode(
+                "episode-\(index)", title: "Episode \(index)",
+                duration: Double(index + 1), publishedAt: fixture.at(Double(index)).date
+            )
+        }
+        try await fixture.store.savePodcastEpisodes(episodes, admission: .backfill)
+        _ = try await fixture.store.retireEpisodes(episodes.map(\.itemID), at: fixture.at(100))
+
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        preferences.set(WiltedMacLarderSort.age.rawValue, forKey: "wilted.queue.larder.sort")
+        let loader = WiltedMacFeedHistoryLoader(fetch: fixture.fetch, preferences: preferences)
+        await loader.start(feedID: nil)
+        XCTAssertEqual(loader.sort, .custom)
+        XCTAssertEqual(loader.rows.map { $0.episodeID.rawValue }, Array(episodes.map(\.itemID.rawValue).sorted().prefix(25)),
+                       "Custom keeps the existing History ID tie order")
+
+        loader.setSort(.length)
+        await loader.settle()
+        XCTAssertEqual(loader.pageIndex, 0)
+        XCTAssertEqual(loader.rows.map(\.episodeID), episodes.prefix(25).map(\.itemID),
+                       "ascending Length is global before the first page is selected")
+        loader.showPage(1)
+        await loader.settle()
+        XCTAssertEqual(loader.rows.map(\.episodeID), episodes[25..<50].map(\.itemID))
+
+        loader.setDirection(.descending)
+        await loader.settle()
+        XCTAssertEqual(loader.pageIndex, 0, "changing order returns to the first page")
+        XCTAssertEqual(loader.rows.map(\.episodeID), episodes.reversed().prefix(25).map(\.itemID))
+        XCTAssertEqual(preferences.string(forKey: WiltedMacFeedHistoryLoader.sortPreferenceKey), "Length")
+        XCTAssertEqual(preferences.string(forKey: WiltedMacFeedHistoryLoader.sortDirectionPreferenceKey), "descending")
+        XCTAssertEqual(preferences.string(forKey: "wilted.queue.larder.sort"), WiltedMacLarderSort.age.rawValue,
+                       "History ordering has its own preference scope")
+
+        let relaunched = WiltedMacFeedHistoryLoader(fetch: fixture.fetch, preferences: preferences)
+        await relaunched.start(feedID: nil)
+        XCTAssertEqual(relaunched.sort, .length)
+        XCTAssertEqual(relaunched.direction, .descending)
+        XCTAssertEqual(relaunched.rows.map(\.episodeID), episodes.reversed().prefix(25).map(\.itemID))
+    }
+
     func testRestoreRemovesTheRowFromTheReloadedPage() async throws {
         let model = await WiltedMacHeadless.model(self, [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared",
@@ -150,7 +195,7 @@ final class WiltedMacFeedHistoryPagingTests: XCTestCase {
         model.decideFeedEpisodes(.skip, episodes: [episode])
         await WiltedMacHeadless.drainDecisions(model)
 
-        let loader = WiltedMacFeedHistoryLoader()
+        let loader = WiltedMacFeedHistoryLoader(preferences: model.preferences)
         loader.useStore(of: model)
         await loader.start(feedID: nil)
         XCTAssertFalse(loader.loadFailed)
@@ -183,7 +228,7 @@ final class WiltedMacFeedHistoryPagingTests: XCTestCase {
         _ = try await store.retireEpisode(orphan.itemID, at: Timestamp(Date()))
         XCTAssertFalse(model.episodes.contains { $0.id == orphan.itemID.rawValue })
 
-        let loader = WiltedMacFeedHistoryLoader()
+        let loader = WiltedMacFeedHistoryLoader(preferences: model.preferences)
         loader.useStore(of: model)
         await loader.start(feedID: nil)
         let row = try XCTUnwrap(loader.rows.first { $0.episodeID == orphan.itemID })
@@ -216,7 +261,10 @@ struct WiltedMacHistoryStoreFixture {
     ) async throws -> LocalLibraryStore.HistoryPage {
         try await store.historyPage(
             feedID: request.feedID.map { try ItemID(rawValue: $0) }, search: request.search,
-            status: request.status, offset: request.offset, limit: request.limit
+            status: request.status,
+            sort: WiltedMacEpisodeListOrder.librarySort(request.sort),
+            direction: WiltedMacEpisodeListOrder.libraryDirection(request.direction),
+            offset: request.offset, limit: request.limit
         )
     }
 
@@ -241,14 +289,19 @@ struct WiltedMacHistoryStoreFixture {
             id = try ItemID.derivePodcastFeed(from: url)
         }
 
-        func episode(_ guid: String, title: String) throws -> PodcastEpisode {
+        func episode(
+            _ guid: String,
+            title: String,
+            duration: Double = 1_800,
+            publishedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
+        ) throws -> PodcastEpisode {
             let enclosure = URL(string: "https://cdn.example.test/history-\(guid).mp3")!
             return try PodcastEpisode(
                 itemID: ItemID.derivePodcastEpisode(feedURL: url, rssGUID: guid, enclosureURL: enclosure),
                 feedID: id, feedURL: url, rssGUID: guid, title: title,
-                publishedTime: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)),
-                enclosureURL: enclosure, enclosureMediaType: "audio/mpeg", durationSeconds: 1_800,
-                createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+                publishedTime: Timestamp(publishedAt),
+                enclosureURL: enclosure, enclosureMediaType: "audio/mpeg", durationSeconds: duration,
+                createdAt: Timestamp(publishedAt)
             )
         }
     }
