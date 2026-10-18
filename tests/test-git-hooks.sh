@@ -48,10 +48,10 @@ run_hook() {
   local hook="$1" expected_target="$2" expected_status="$3"
   : >"$make_log"
   set +e
-  PATH="$fake_bin:$PATH" \
+  (cd "$repo_root" && PATH="$fake_bin:$PATH" \
     WILTED_FAKE_MAKE_LOG="$make_log" \
     WILTED_FAKE_MAKE_STATUS="$expected_status" \
-    bash "$repo_root/.githooks/$hook"
+    bash "$repo_root/.githooks/$hook")
   local status=$?
   set -e
   [[ "$status" -eq "$expected_status" ]] || {
@@ -193,6 +193,20 @@ set -e
 [[ "$push_status" -ne 0 ]] || exit 1
 PATH="$fake_bin:$PATH" WILTED_FAKE_MAKE_LOG="$make_log" WILTED_FAKE_MAKE_STATUS=0 \
   git -C "$temp_repo" push -u origin main -q
+
+# A linked worktree whose hooksPath still names the main checkout's hooks (as
+# `git worktree add` leaves it) must gate itself, not the main checkout.
+git -C "$linked_checkout" config --worktree core.hooksPath "$temp_repo/.githooks"
+printf '%s\n' linked >>"$linked_checkout/linked.txt"
+git -C "$linked_checkout" add linked.txt
+: >"$make_log"
+PATH="$fake_bin:$PATH" WILTED_FAKE_MAKE_LOG="$make_log" WILTED_FAKE_MAKE_STATUS=0 \
+  git -C "$linked_checkout" commit -m 'linked commit' -q
+assert_contains "-C $linked_checkout check-fast" "$make_log"
+: >"$make_log"
+PATH="$fake_bin:$PATH" WILTED_FAKE_MAKE_LOG="$make_log" WILTED_FAKE_MAKE_STATUS=0 \
+  git -C "$linked_checkout" push -u origin linked -q
+assert_contains "-C $linked_checkout validate" "$make_log"
 
 after_live_common_hooks_path="$(git config --file "$live_common_config" --get-all core.hooksPath 2>/dev/null || true)"
 after_live_worktree_hooks_path="$(git -C "$repo_root" config --worktree --get core.hooksPath 2>/dev/null || true)"

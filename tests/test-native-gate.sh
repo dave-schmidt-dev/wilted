@@ -495,7 +495,7 @@ fi
 # returned $? let an edit made during a run turn a failed leg into a pass.
 truncated_gate_status() {
   local source="$1" stop="$2" fixture="$3" helper copy
-  mkdir -p "$fixture/scripts" "$fixture/tmp"
+  mkdir -p "$fixture/scripts" "$fixture/scratch"
   ln -s "$repo_root/scripts/lib" "$fixture/scripts/lib"
   for helper in run-bounded.py check-temp-leaks.py build-with-cache.py; do
     ln -s "$repo_root/scripts/$helper" "$fixture/scripts/$helper"
@@ -505,7 +505,7 @@ truncated_gate_status() {
   grep -Fxq -- "$stop" "$copy" || { printf 'truncation line missing: %s\n' "$stop" >&2; exit 1; }
   printf '%s\n' 'echo "unterminated' >>"$copy"
   set +e
-  env TMPDIR="$fixture/tmp" bash "$copy" >"$fixture/output.log" 2>&1
+  env TMPDIR="$fixture/scratch" bash "$copy" >"$fixture/output.log" 2>&1
   local result=$?
   set -e
   printf '%s\n' "$result"

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Gate the checkout being committed or pushed, not the one holding this file:
+# `git worktree add` copies config.worktree, so a linked worktree can point
+# core.hooksPath at the main checkout's .githooks.
+repo_root="$(git rev-parse --show-toplevel)"
 # Git exports GIT_DIR and friends to hooks; the tests below create their own
 # repositories and would otherwise write into this one (it set core.bare once).
 unset $(git rev-parse --local-env-vars)
