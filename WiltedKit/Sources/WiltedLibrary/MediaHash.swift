@@ -25,6 +25,11 @@ public enum MediaHash {
         return prefix + hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The same digest as bare lowercase hex, for records that store it unprefixed.
+    public static func sha256Hex(fileAt url: URL, chunkSize: Int = defaultChunkSize) throws -> String {
+        String(try sha256(fileAt: url, chunkSize: chunkSize).dropFirst(prefix.count))
+    }
+
     /// True for `sha256:` followed by exactly 64 lowercase hex digits.
     public static func isWellFormed(_ value: String) -> Bool {
         guard value.hasPrefix(prefix) else { return false }
