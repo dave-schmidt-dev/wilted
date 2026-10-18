@@ -178,8 +178,10 @@ if (( ${#running[@]} > 0 )); then
   fi
 fi
 
-rm -rf "$target"
-ditto "$app" "$target"
+wilted_replace_bundle "$app" "$target" || {
+  status "install.error copy to $target failed; the previously installed app is unchanged"
+  exit 1
+}
 codesign --verify --strict "$target" || { status 'install.error installed app failed signature verification'; exit 1; }
 
 # Stale products under the repo's legacy build roots are deleted, not merely
