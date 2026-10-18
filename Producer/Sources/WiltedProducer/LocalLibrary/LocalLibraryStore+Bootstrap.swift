@@ -37,6 +37,16 @@ extension LocalLibraryStore {
     nonisolated static func openContainer(
         at url: URL, migrate: Bool, hooks: LocalLibraryOpenHooks
     ) throws -> (container: ModelContainer, backupURL: URL?) {
+        let markerURL = restoreInProgressMarkerURL(for: url)
+        if FileManager.default.fileExists(atPath: markerURL.path) {
+            let markerText = try? String(contentsOf: markerURL, encoding: .utf8)
+            let markedBackupPath = markerText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw LocalLibraryStoreError.migrationRestoreFailed(
+                backupURL: markedBackupPath.isEmpty ? markerURL : URL(fileURLWithPath: markedBackupPath),
+                reason: "a previous restore did not finish; the library was not opened. "
+                    + "Restore the backup by hand, then remove \(markerURL.path)."
+            )
+        }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let current = LocalLibrarySchemaVersion.current.rawValue
         var backupURL: URL?
