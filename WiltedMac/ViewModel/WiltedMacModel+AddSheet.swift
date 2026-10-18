@@ -107,7 +107,7 @@ final class WiltedMacAddSession {
     /// Words for the sheet's current state; nil when the result list speaks for itself.
     var statusMessage: String? {
         if let articleStatusMessage { return articleStatusMessage }
-        switch query.state {
+        return switch query.state {
         case .idle: "Search for a podcast, or paste a link to a feed, a show or an article."
         case .classifying: "Checking that address\u{2026}"
         case .searching: "Searching\u{2026}"

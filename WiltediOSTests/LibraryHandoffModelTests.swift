@@ -777,7 +777,8 @@ final class LibraryHandoffModelTests: XCTestCase {
             mediaType: "audio/mp4", durationSeconds: 3_600))
         _ = try await PreparedMediaFixture.adopt(into: rig.cache, verifiedFile: fileB, for: offerB, owner: "fixture-owner")
         await rig.model.refresh()
-        let cachedB = try XCTUnwrap(await rig.cache.cachedEntries()[idB])
+        let cachedEntries = await rig.cache.cachedEntries()
+        let cachedB = try XCTUnwrap(cachedEntries[idB])
         let itemB = LibraryPlayer.Item(entryID: idB, title: "B", showTitle: "Show", fileURL: cachedB.url)
 
         rig.player.start(itemA)
