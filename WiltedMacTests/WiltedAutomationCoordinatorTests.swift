@@ -16,6 +16,10 @@ private actor AutomationSpy {
     var unfinished: [String] = []
     /// Feeds that fail before succeeding, so backoff has something to retry.
     var transientFailures: [String: Int] = [:]
+    /// Feeds that always fail with a `WiltedAutomationNonRetryable` error, the
+    /// shape an unrecoverable per-feed failure takes. `withRetries` must never
+    /// retry these, and the pass must count them instead of reporting success.
+    var nonRetryableRefreshFailures: Set<String> = []
     var downloadFailures: Set<String> = []
     /// Downloads that fail a bounded number of times before succeeding, so a
     /// test can distinguish "retried and recovered" from "retried forever."
@@ -34,13 +38,15 @@ private actor AutomationSpy {
 
     init(claimsByFeed: [String: [String]] = [:], unfinished: [String] = [],
          transientFailures: [String: Int] = [:], downloadFailures: Set<String> = [],
-         transientDownloadFailures: [String: Int] = [:], nonRetryableDownloadFailures: Set<String> = []) {
+         transientDownloadFailures: [String: Int] = [:], nonRetryableDownloadFailures: Set<String> = [],
+         nonRetryableRefreshFailures: Set<String> = []) {
         self.claimsByFeed = claimsByFeed
         self.unfinished = unfinished
         self.transientFailures = transientFailures
         self.downloadFailures = downloadFailures
         self.transientDownloadFailures = transientDownloadFailures
         self.nonRetryableDownloadFailures = nonRetryableDownloadFailures
+        self.nonRetryableRefreshFailures = nonRetryableRefreshFailures
     }
 
     struct Transient: Error {}
@@ -52,6 +58,7 @@ private actor AutomationSpy {
     func refreshFeed(_ url: URL, limit: Int) throws -> [String] {
         activeDuringRefresh.append(refreshActive)
         let host = url.host ?? url.absoluteString
+        if nonRetryableRefreshFailures.contains(host) { throw NonRetryable() }
         if let remaining = transientFailures[host], remaining > 0 {
             transientFailures[host] = remaining - 1
             throw Transient()
@@ -315,7 +322,7 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         let statuses = await spy.statuses
         XCTAssertEqual(statuses.first, .refreshing(feedsRemaining: 3))
         XCTAssertFalse(statuses.contains(.downloading(episode: "a", remaining: 1)))
-        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0))
+        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0, failed: 0))
     }
 
     /// A transient failure is retried with growing waits and a hard ceiling. An
@@ -393,7 +400,7 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         let sleeps = await spy.sleeps
         XCTAssertTrue(sleeps.isEmpty, "no backoff for a non-retryable failure")
         let statuses = await spy.statuses
-        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0))
+        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0, failed: 0))
     }
 
     /// One feed being unreachable is not a reason to abandon the others, and a
@@ -429,7 +436,39 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         let started = await spy.startedDownloads
         XCTAssertTrue(started.isEmpty)
         let statuses = await spy.statuses
-        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0))
+        XCTAssertEqual(statuses.last, .finished(refreshed: 3, downloaded: 0, failed: 0))
+    }
+
+    /// A refresh where every feed fails must not read as "Finished: 0 refreshed,
+    /// 0 downloaded": the terminal status counts the failures. A non-retryable
+    /// per-feed error is never retried, so no backoff is spent on it.
+    func testARefreshWhereEveryFeedFailsReportsTheFailureCount() async {
+        let spy = AutomationSpy(nonRetryableRefreshFailures: [
+            "one.example.test", "two.example.test", "three.example.test"
+        ])
+        let subject = coordinator(spy: spy, settings: settings(refresh: .onLaunch))
+        await subject.run(trigger: .launch)
+
+        let statuses = await spy.statuses
+        XCTAssertEqual(statuses.last, .finished(refreshed: 0, downloaded: 0, failed: 3))
+        let sleeps = await spy.sleeps
+        XCTAssertTrue(sleeps.isEmpty, "a non-retryable feed failure does not back off")
+        let successes = await spy.recordedSuccesses
+        XCTAssertTrue(successes.isEmpty, "nothing succeeded, so the timestamp must not move")
+    }
+
+    /// A claimed download that fails to start counts as one failure while its
+    /// sibling still downloads in the same pass.
+    func testOneOfTwoClaimedDownloadsFailingCountsThatOne() async {
+        let spy = AutomationSpy(unfinished: ["fails", "succeeds"],
+                                nonRetryableDownloadFailures: ["fails"])
+        let subject = coordinator(spy: spy, settings: settings(refresh: .manual))
+        await subject.reconcile()
+
+        let statuses = await spy.statuses
+        XCTAssertEqual(statuses.last, .finished(refreshed: 0, downloaded: 1, failed: 1))
+        let started = await spy.startedDownloads
+        XCTAssertEqual(started, ["succeeds"])
     }
 
     // MARK: - Launch order and refresh visibility
@@ -454,7 +493,7 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         releaseDownload.yield()
         await launch.value
         let statuses = await spy.statuses
-        XCTAssertEqual(statuses.last, .finished(refreshed: 0, downloaded: 1),
+        XCTAssertEqual(statuses.last, .finished(refreshed: 0, downloaded: 1, failed: 0),
                        "resuming ends on a terminal status, not a stale Downloading")
     }
 

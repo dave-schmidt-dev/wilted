@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// An error `withRetries` must never retry and `drain` must not treat as the
 /// whole automation pass stopping -- only this one claim is done, for reasons
@@ -53,7 +54,9 @@ enum WiltedAutomationStatus: Equatable, Sendable {
     case retrying(afterSeconds: TimeInterval, attempt: Int)
     case failed(String)
     case cancelled
-    case finished(refreshed: Int, downloaded: Int)
+    /// `failed` counts feeds whose refresh failed plus claimed episodes whose
+    /// download failed to start. Both stay eligible for a later pass.
+    case finished(refreshed: Int, downloaded: Int, failed: Int)
 }
 
 /// A fault automation raises rather than reporting work it did not do.
@@ -110,6 +113,7 @@ actor WiltedAutomationCoordinator {
     static let maximumRetries = 3
     static let baseRetryDelay: TimeInterval = 2
 
+    private let automationLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Automation")
     private let operations: Operations
     private let now: @Sendable () -> Date
     private let settings: @Sendable () async -> WiltedAutomationSettings
@@ -282,16 +286,18 @@ actor WiltedAutomationCoordinator {
             return
         }
         guard !claims.isEmpty else { return }
-        let downloaded = await drain(claims)
+        let outcome = await drain(claims)
         // Terminal, because the launch pass now runs before this rather than
         // after it, and nothing else would replace the last `.downloading`.
-        await report(Task.isCancelled ? .cancelled : .finished(refreshed: 0, downloaded: downloaded))
+        await report(Task.isCancelled
+            ? .cancelled
+            : .finished(refreshed: 0, downloaded: outcome.downloaded, failed: outcome.failed))
     }
 
     private enum RefreshOutcome {
         /// Failed or cancelled; the status is already reported.
         case stopped
-        case refreshed(Int, claimed: [String])
+        case refreshed(Int, claimed: [String], failed: Int)
     }
 
     private func performPass(trigger: WiltedAutomationTrigger) async {
@@ -311,12 +317,13 @@ actor WiltedAutomationCoordinator {
         // One exit for every outcome, and before any download, so Feeds shows
         // the feed loop and nothing else.
         await refreshActivity.end()
-        guard case let .refreshed(refreshed, claimed) = outcome else { return }
-        let downloaded = await drain(claimed)
+        guard case let .refreshed(refreshed, claimed, feedsFailed) = outcome else { return }
+        let downloads = await drain(claimed)
         if Task.isCancelled {
             await report(.cancelled)
         } else {
-            await report(.finished(refreshed: refreshed, downloaded: downloaded))
+            await report(.finished(refreshed: refreshed, downloaded: downloads.downloaded,
+                                   failed: feedsFailed + downloads.failed))
         }
     }
 
@@ -332,6 +339,8 @@ actor WiltedAutomationCoordinator {
             return .stopped
         } catch {
             lastRefreshFailed = true
+            automationLog.error(
+                "Enabled feed list failed: \(Self.loggableFailure(error), privacy: .public)")
             await report(.failed(Self.failureLabel))
             return .stopped
         }
@@ -339,6 +348,7 @@ actor WiltedAutomationCoordinator {
         var remaining = plan.refreshDownloadBudget
         var claimed: [String] = []
         var refreshed = 0
+        var failed = 0
         for (index, feed) in feeds.enumerated() {
             if Task.isCancelled {
                 await report(.cancelled)
@@ -358,11 +368,14 @@ actor WiltedAutomationCoordinator {
                 // One unreachable feed is not a reason to abandon the others.
                 // The refresh timestamp below still moves only if something
                 // succeeded, so a total outage stays eligible next time.
+                failed += 1
+                automationLog.error(
+                    "Feed refresh failed for \(feed.host ?? "unknown", privacy: .public): \(Self.loggableFailure(error), privacy: .public)")
                 continue
             }
         }
         if refreshed > 0 { await recordRefreshSuccess(now()) }
-        return .refreshed(refreshed, claimed: claimed)
+        return .refreshed(refreshed, claimed: claimed, failed: failed)
     }
 
     /// Starts each claimed episode in turn.
@@ -371,23 +384,35 @@ actor WiltedAutomationCoordinator {
     /// taking them one at a time, and a listener on a domestic connection would
     /// rather have one episode finish than six crawl.
     @discardableResult
-    private func drain(_ claims: [String]) async -> Int {
+    private func drain(_ claims: [String]) async -> (downloaded: Int, failed: Int) {
         var completed = 0
+        var failed = 0
         for (index, episodeID) in claims.enumerated() {
-            if Task.isCancelled { return completed }
+            if Task.isCancelled { return (completed, failed) }
             await report(.downloading(episode: episodeID, remaining: claims.count - index))
             do {
                 try await withRetries { try await self.operations.startDownload(episodeID) }
                 completed += 1
             } catch is CancellationError {
-                return completed
+                return (completed, failed)
             } catch {
                 // The claim stays. A later launch reconciles it rather than
                 // this pass blocking on one episode.
+                failed += 1
+                automationLog.error(
+                    "Download failed to start for \(episodeID, privacy: .public): \(Self.loggableFailure(error), privacy: .public)")
                 continue
             }
         }
-        return completed
+        return (completed, failed)
+    }
+
+    /// The error text a log line may carry. A description that spells out a URL
+    /// is reduced to its type name rather than logged, because a feed URL may
+    /// carry a token in its query; the caller decides the surrounding context.
+    private static func loggableFailure(_ error: Error) -> String {
+        let description = String(describing: error)
+        return description.contains("://") ? String(describing: type(of: error)) : description
     }
 
     /// Bounded exponential backoff.

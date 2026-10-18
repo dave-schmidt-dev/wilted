@@ -290,7 +290,7 @@ extension WiltedMacModelTests {
         XCTAssertFalse(WiltedAutomationStatus.idle.isCancellable)
         XCTAssertFalse(WiltedAutomationStatus.failed("Network unavailable").isCancellable)
         XCTAssertFalse(WiltedAutomationStatus.cancelled.isCancellable)
-        XCTAssertFalse(WiltedAutomationStatus.finished(refreshed: 2, downloaded: 1).isCancellable)
+        XCTAssertFalse(WiltedAutomationStatus.finished(refreshed: 2, downloaded: 1, failed: 0).isCancellable)
         XCTAssertTrue(WiltedAutomationStatus.refreshing(feedsRemaining: 2).isCancellable)
         XCTAssertTrue(WiltedAutomationStatus.downloading(episode: "Daily Brief", remaining: 1).isCancellable)
         XCTAssertTrue(WiltedAutomationStatus.retrying(afterSeconds: 30, attempt: 2).isCancellable)
@@ -301,8 +301,26 @@ extension WiltedMacModelTests {
         XCTAssertEqual(WiltedAutomationStatus.failed("Network unavailable").settingsStatusText,
                        "Failed: Network unavailable")
         XCTAssertEqual(WiltedAutomationStatus.cancelled.settingsStatusText, "Stopped")
-        XCTAssertEqual(WiltedAutomationStatus.finished(refreshed: 2, downloaded: 1).settingsStatusText,
+        XCTAssertEqual(WiltedAutomationStatus.finished(refreshed: 2, downloaded: 1, failed: 0).settingsStatusText,
                        "Finished: 2 refreshed, 1 downloaded")
+    }
+
+    /// A pass that failed must say so rather than reading as a success that did
+    /// nothing; a fully failed pass replaces "Finished: 0 refreshed, 0
+    /// downloaded" with an explanation, and a partial failure is appended.
+    func testAutomationFinishedStatusTextDistinguishesFailures() {
+        XCTAssertEqual(
+            WiltedAutomationStatus.finished(refreshed: 0, downloaded: 0, failed: 3).settingsStatusText,
+            "Could not finish: 3 failed. Will try again."
+        )
+        XCTAssertEqual(
+            WiltedAutomationStatus.finished(refreshed: 2, downloaded: 1, failed: 1).settingsStatusText,
+            "Finished: 2 refreshed, 1 downloaded, 1 failed"
+        )
+        XCTAssertEqual(
+            WiltedAutomationStatus.finished(refreshed: 2, downloaded: 1, failed: 0).settingsStatusText,
+            "Finished: 2 refreshed, 1 downloaded"
+        )
     }
 
     func testAutomationSettingsSurviveRelaunch() throws {

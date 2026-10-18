@@ -260,9 +260,15 @@ extension WiltedAutomationStatus {
         case .idle: "Idle"
         case let .failed(message): "Failed: \(message)"
         case .cancelled: "Stopped"
-        case let .finished(refreshed, downloaded):
-            "Finished: \(refreshed) refreshed, \(downloaded) downloaded"
+        case let .finished(refreshed, downloaded, failed):
+            Self.finishedStatusText(refreshed: refreshed, downloaded: downloaded, failed: failed)
         }
+    }
+
+    private static func finishedStatusText(refreshed: Int, downloaded: Int, failed: Int) -> String {
+        if failed == 0 { return "Finished: \(refreshed) refreshed, \(downloaded) downloaded" }
+        if refreshed + downloaded == 0 { return "Could not finish: \(failed) failed. Will try again." }
+        return "Finished: \(refreshed) refreshed, \(downloaded) downloaded, \(failed) failed"
     }
 }
 
