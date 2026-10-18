@@ -293,7 +293,14 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         XCTAssertTrue(offers.isEmpty, "no notReady and no new offer state: the phone's timeout speaks")
         let lastFailure = await service.lastFailure
         let failure = try XCTUnwrap(lastFailure)
-        XCTAssertTrue(failure.hasPrefix("URLError."), failure)
+        XCTAssertEqual(failure, "NSURLErrorDomain(-1005)")
+    }
+
+    func testTypedCauseNamesFoundationErrorsByDomainAndSwiftErrorsByTypeAndValue() {
+        XCTAssertEqual(WiltedMacMediaService.typedCause(URLError(.networkConnectionLost)), "NSURLErrorDomain(-1005)")
+        XCTAssertEqual(
+            WiltedMacMediaService.typedCause(NSError(domain: "CKErrorDomain", code: 4)), "CKErrorDomain(4)")
+        XCTAssertEqual(WiltedMacMediaService.typedCause(CancellationError()), "CancellationError.CancellationError()")
     }
 
     // MARK: Ledger

@@ -317,9 +317,15 @@ actor WiltedMacMediaService {
         try await transport.publishMedia(offer: offer, fileURL: fileURL)
     }
 
-    /// The error's type and value, e.g. `CloudKitSyncError.cloudKit(code: 4, message: "…")`.
-    private static func typedCause(_ error: Error) -> String {
-        "\(type(of: error)).\(String(describing: error))"
+    /// The error's type and value, e.g. `CloudKitSyncError.cloudKit(code: 4, message: "…")`. A
+    /// Foundation error arrives bridged as `NSError`, so it is named by domain and code instead,
+    /// e.g. `NSURLErrorDomain(-1005)`.
+    static func typedCause(_ error: Error) -> String {
+        if error is URLError || type(of: error) is NSError.Type {
+            let bridged = error as NSError
+            return "\(bridged.domain)(\(bridged.code))"
+        }
+        return "\(type(of: error)).\(String(describing: error))"
     }
 
     /// Tells followers there is nothing to fetch and drops any asset the books still hold for the entry.
