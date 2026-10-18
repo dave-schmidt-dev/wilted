@@ -295,6 +295,7 @@ public actor PodcastPreparationPipeline {
             throw PodcastPreparationError.episodeNotDownloaded
         }
 
+        let codeRevision = await runner.codeRevision()
         var provenanceFields = [
             "sourceRevisionID": stored.revision.revisionID.rawValue,
             "sourceHash": stored.revision.contentHash,
@@ -302,6 +303,9 @@ public actor PodcastPreparationPipeline {
         ]
         if let appVersion {
             provenanceFields["appVersion"] = appVersion
+        }
+        if let codeRevision {
+            provenanceFields["codeRevision"] = codeRevision
         }
         // Omitted rather than stamped with the sentinel: an absent fingerprint
         // reads as "not recorded", which is true, where `-unresolved` would
@@ -368,7 +372,8 @@ public actor PodcastPreparationPipeline {
                                   sourceRevisionID: stored.revision.revisionID,
                                   sourceHash: stored.revision.contentHash,
                                   sourceURL: audioURL,
-                                  timeline: payload.timeline)
+                                  timeline: payload.timeline,
+                                  codeRevision: codeRevision)
             await onJournaled()
             return result
         } catch {
@@ -377,7 +382,8 @@ public actor PodcastPreparationPipeline {
                                   fingerprint: Self.semanticFingerprintResolution,
                                   sourceRevisionID: stored.revision.revisionID,
                                   sourceHash: stored.revision.contentHash,
-                                  sourceURL: audioURL)
+                                  sourceURL: audioURL,
+                                  codeRevision: codeRevision)
             await onJournaled()
             throw error
         }
@@ -407,7 +413,8 @@ public actor PodcastPreparationPipeline {
         episodeID: ItemID, requestID: String, attempt: PreparationAttemptIdentity?, error: (any Error)?, revisionID: RevisionID?,
         summary: String? = nil, fingerprint: String? = nil,
         sourceRevisionID: RevisionID? = nil, sourceHash: String? = nil, sourceURL: URL? = nil,
-        timeline: PreparationStatus.PreparationTimeline? = nil
+        timeline: PreparationStatus.PreparationTimeline? = nil,
+        codeRevision: String? = nil
     ) async {
         let outcome: PreparationOutcome
         let producerError: ProducerError?
@@ -433,6 +440,9 @@ public actor PodcastPreparationPipeline {
             ]
             if let appVersion {
                 fields["appVersion"] = appVersion
+            }
+            if let codeRevision {
+                fields["codeRevision"] = codeRevision
             }
             if let sourceURL, sourceURL.absoluteString.count <= 256 {
                 fields["sourceURL"] = sourceURL.absoluteString

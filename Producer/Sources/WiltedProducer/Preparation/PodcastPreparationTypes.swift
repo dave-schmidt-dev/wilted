@@ -225,7 +225,16 @@ public protocol PodcastPipelineRunning: Sendable {
         request: Data,
         onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> Data
+
+    func codeRevision() async -> String?
 }
+
+extension PodcastPipelineRunning {
+    public func codeRevision() async -> String? {
+        nil
+    }
+}
+
 public enum PodcastTranscriptPolicy: String, Codable, Equatable, Sendable {
     case bestAvailable
     case alwaysTranscribe

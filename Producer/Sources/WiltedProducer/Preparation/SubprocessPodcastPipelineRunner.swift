@@ -81,6 +81,13 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         self.configuration = configuration
     }
 
+    /// The checkout revision of the worker and runtime source this runner
+    /// executes: the app runs them from the owner's checkout, not its bundle.
+    public func codeRevision() async -> String? {
+        let directories = [configuration.workerURL.deletingLastPathComponent()] + [configuration.pythonPath].compactMap { $0 }
+        return await PodcastPreparationBuildStamp.checkoutRevision(of: directories)
+    }
+
     public func run(
         request: Data,
         onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void

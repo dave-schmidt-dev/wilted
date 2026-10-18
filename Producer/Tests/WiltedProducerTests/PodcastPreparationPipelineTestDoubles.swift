@@ -42,13 +42,18 @@ actor WorkerStub: PodcastPipelineRunning {
     private let writesCutAudio: Data?
     private let progress: [PodcastPreparationProgress]
     private var request: Data?
+    private let codeRevisionValue: String?
 
     init(response: [String: Any], writesCutAudio: Data? = nil,
-         progress: [PodcastPreparationProgress] = [PodcastPreparationProgress(stage: "worker.start")]) {
+         progress: [PodcastPreparationProgress] = [PodcastPreparationProgress(stage: "worker.start")],
+         codeRevision: String? = nil) {
         self.response = response
         self.writesCutAudio = writesCutAudio
         self.progress = progress
+        self.codeRevisionValue = codeRevision
     }
+
+    func codeRevision() async -> String? { codeRevisionValue }
 
     /// A function, not a stored property: `[String: Any]` is not `Sendable`,
     /// so a static constant of it is a concurrency error.
@@ -193,8 +198,8 @@ struct Fixture {
     }
 
     /// A worker that removes 3.0-7.5 from a twelve second episode.
-    static func cuttingStub() -> some PodcastPipelineRunning {
-        WorkerStub(response: cuttingStubResponse(), writesCutAudio: cuttingAudio)
+    static func cuttingStub(codeRevision: String? = nil) -> some PodcastPipelineRunning {
+        WorkerStub(response: cuttingStubResponse(), writesCutAudio: cuttingAudio, codeRevision: codeRevision)
     }
 
     static let cuttingAudio = Data("shorter-audio-bytes".utf8)
