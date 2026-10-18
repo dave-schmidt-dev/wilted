@@ -4,17 +4,42 @@ import SwiftData
 import WiltedDomain
 import WiltedSync
 
-/// What one media sweep did: files removed, bytes reclaimed, and records
-/// cleared because the file they named was already gone.
+/// Why a media sweep stopped before deleting anything: the store and the disk
+/// disagreed about where media lives, and resolving that by deleting is how a
+/// whole library disappears.
+public enum MediaSweepSkip: Equatable, Sendable {
+    /// At least one stored media path is a file URL outside the library
+    /// directory, so the store describes a different location than this disk
+    /// and nothing under the walked directories is safe to reclaim.
+    case storedPathOutsideLibrary(count: Int)
+    /// The walk found regular files and not one of them is named by any
+    /// record. An empty or half-restored store would otherwise call the whole
+    /// library an orphan.
+    case noReferencedFileFound
+}
+
+/// What one media sweep did: files removed, bytes reclaimed, records cleared
+/// because the file they named was already gone, the guard that stopped the
+/// sweep early if any, and removals that were attempted but failed.
 public struct MediaSweepReport: Equatable, Sendable {
     public let files: Int
     public let bytes: Int64
     public let clearedRecords: Int
+    public let skipped: MediaSweepSkip?
+    public let failedRemovals: Int
 
-    public init(files: Int, bytes: Int64, clearedRecords: Int) {
+    public init(
+        files: Int,
+        bytes: Int64,
+        clearedRecords: Int,
+        skipped: MediaSweepSkip? = nil,
+        failedRemovals: Int = 0
+    ) {
         self.files = files
         self.bytes = bytes
         self.clearedRecords = clearedRecords
+        self.skipped = skipped
+        self.failedRemovals = failedRemovals
     }
 }
 
@@ -185,37 +210,51 @@ extension LocalLibraryStore {
         try context.save()
     }
 
+    /// Every media path the store's records name -- revisions, downloads, and
+    /// artwork -- and how many of them are file URLs outside the library
+    /// directory. A stored path outside means the store and this disk describe
+    /// different locations, which is the disagreement a sweep must not settle
+    /// by deleting.
+    private func storedMediaPaths() throws -> (reachable: Set<String>, outsideLibrary: Int) {
+        let context = ModelContext(container)
+        var reachable: Set<String> = []
+        var outsideLibrary = 0
+        func collect(_ value: String?) {
+            guard let value, let url = URL(string: value) else { return }
+            reachable.insert(url.standardizedFileURL.path)
+            if url.isFileURL, !isInsideLibraryDirectory(url) { outsideLibrary += 1 }
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()) {
+            collect(record.mediaURL)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>()) {
+            collect(record.localURL)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>()) {
+            collect(record.localURL)
+        }
+        return (reachable, outsideLibrary)
+    }
+
     /// The paths any reachable record still names: revisions, downloads, and
     /// artwork. A file not in this set and not in flight is an orphan.
     private func reachableMediaPaths() throws -> Set<String> {
-        let context = ModelContext(container)
-        var paths: Set<String> = []
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()) {
-            if let value = record.mediaURL, let url = URL(string: value) {
-                paths.insert(url.standardizedFileURL.path)
-            }
-        }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>()) {
-            if let value = record.localURL, let url = URL(string: value) {
-                paths.insert(url.standardizedFileURL.path)
-            }
-        }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastArtworkRecord>()) {
-            if let value = record.localURL, let url = URL(string: value) {
-                paths.insert(url.standardizedFileURL.path)
-            }
-        }
-        return paths
+        try storedMediaPaths().reachable
     }
 
-    /// The media files under `directories` that no reachable record names, no
-    /// in-flight writer holds, and the caller did not exclude. Read-only: the
-    /// audit deletes nothing, and it is what every sweep starts from.
-    public func unreferencedMediaFiles(in directories: [URL], excluding: Set<URL> = []) throws -> [URL] {
-        let reachable = try reachableMediaPaths()
+    /// One walk of `directories`: every regular file it saw, and the subset no
+    /// reachable record names, no in-flight writer holds, and the caller did
+    /// not exclude. The sweep needs the full found set to tell "some orphans
+    /// in a healthy library" from "an empty store facing a full disk".
+    private func walkMedia(
+        in directories: [URL],
+        excluding: Set<URL>,
+        reachable: Set<String>
+    ) -> (found: [URL], unreferenced: [URL]) {
         let inFlight = inFlightMedia.inFlightPaths
         let excluded = Set(excluding.map { $0.standardizedFileURL.path })
         let manager = FileManager.default
+        var found: [URL] = []
         var unreferenced: [URL] = []
         for directory in directories {
             guard let walker = manager.enumerator(
@@ -228,12 +267,22 @@ extension LocalLibraryStore {
                 guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
                     continue
                 }
+                found.append(url)
                 let path = url.standardizedFileURL.path
                 guard !reachable.contains(path), !inFlight.contains(path), !excluded.contains(path) else { continue }
                 unreferenced.append(url)
             }
         }
-        return unreferenced.sorted { $0.path < $1.path }
+        return (found, unreferenced.sorted { $0.path < $1.path })
+    }
+
+    /// The media files under `directories` that no reachable record names, no
+    /// in-flight writer holds, and the caller did not exclude. Read-only: the
+    /// audit deletes nothing, and the sweep reaches the same answer from one
+    /// walk of the same directories.
+    public func unreferencedMediaFiles(in directories: [URL], excluding: Set<URL> = []) throws -> [URL] {
+        let reachable = try storedMediaPaths().reachable
+        return walkMedia(in: directories, excluding: excluding, reachable: reachable).unreferenced
     }
 
     /// Deletes each listed file the current store no longer names.
@@ -243,7 +292,8 @@ extension LocalLibraryStore {
     /// "unreferenced" means. A path outside the library directory is never
     /// removed, a surviving record naming the path keeps it, and the in-flight
     /// registry is consulted immediately before each removal. A file that is
-    /// missing or cannot be removed is skipped rather than failing the caller.
+    /// missing is skipped, and a removal that fails is skipped and counted in
+    /// the report's `failedRemovals` rather than failing the caller.
     @discardableResult
     public func deleteMediaIfUnreferenced(_ urls: [URL]) -> MediaSweepReport {
         guard let reachable = try? reachableMediaPaths() else {
@@ -252,6 +302,7 @@ extension LocalLibraryStore {
         let manager = FileManager.default
         var files = 0
         var bytes: Int64 = 0
+        var failedRemovals = 0
         for url in urls {
             let path = url.standardizedFileURL.path
             guard isInsideLibraryDirectory(url), !reachable.contains(path), !inFlightMedia.isInFlight(url) else {
@@ -262,9 +313,11 @@ extension LocalLibraryStore {
                 try manager.removeItem(at: url)
                 files += 1
                 bytes += size
-            } catch {}
+            } catch {
+                failedRemovals += 1
+            }
         }
-        return MediaSweepReport(files: files, bytes: bytes, clearedRecords: 0)
+        return MediaSweepReport(files: files, bytes: bytes, clearedRecords: 0, failedRemovals: failedRemovals)
     }
 
     /// Deletes the unreferenced media under `directories` and reconciles the
@@ -276,7 +329,17 @@ extension LocalLibraryStore {
     /// consulted again immediately before each removal so a writer that
     /// registered in between keeps its file. Only the directories the caller
     /// names are walked, and only files inside the library directory are
-    /// removed.
+    /// removed. A removal that fails is skipped and counted in the report's
+    /// `failedRemovals` instead of stopping the sweep.
+    ///
+    /// Two guards win over any deletion or clearing, because an empty or
+    /// relocated store would otherwise describe the whole library as orphaned.
+    /// When a record names a stored media path outside the library directory,
+    /// nothing is touched and the report carries
+    /// `.storedPathOutsideLibrary(count:)`. When the walk finds regular files
+    /// but not one of them is in the reachable set, nothing is touched and the
+    /// report carries `.noReferencedFileFound`. With some found files
+    /// referenced, ordinary orphan cleanup runs as before.
     ///
     /// The other direction is reconciled too: a completed download record or a
     /// revision record whose file is missing is cleared, because a record
@@ -287,21 +350,38 @@ extension LocalLibraryStore {
         in directories: [URL],
         excluding: Set<URL> = []
     ) async throws -> MediaSweepReport {
-        let unreferenced = try unreferencedMediaFiles(in: directories, excluding: excluding)
+        let stored = try storedMediaPaths()
+        guard stored.outsideLibrary == 0 else {
+            return MediaSweepReport(
+                files: 0, bytes: 0, clearedRecords: 0,
+                skipped: .storedPathOutsideLibrary(count: stored.outsideLibrary)
+            )
+        }
+        let walk = walkMedia(in: directories, excluding: excluding, reachable: stored.reachable)
+        let foundReferencedFile = walk.found.contains(where: {
+            stored.reachable.contains($0.standardizedFileURL.path)
+        })
+        guard walk.found.isEmpty || foundReferencedFile else {
+            return MediaSweepReport(files: 0, bytes: 0, clearedRecords: 0, skipped: .noReferencedFileFound)
+        }
         let manager = FileManager.default
         var files = 0
         var bytes: Int64 = 0
-        for url in unreferenced {
+        var failedRemovals = 0
+        for url in walk.unreferenced {
             guard isInsideLibraryDirectory(url), !inFlightMedia.isInFlight(url) else { continue }
             guard let size = Self.regularFileSize(at: url) else { continue }
             do {
                 try manager.removeItem(at: url)
                 files += 1
                 bytes += size
-            } catch {}
+            } catch {
+                failedRemovals += 1
+            }
         }
         return MediaSweepReport(
-            files: files, bytes: bytes, clearedRecords: try clearRecordsForMissingMedia()
+            files: files, bytes: bytes, clearedRecords: try clearRecordsForMissingMedia(),
+            failedRemovals: failedRemovals
         )
     }
 

@@ -100,6 +100,13 @@ extension LocalLibraryStoreTests {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let audio = fixture.media.appendingPathComponent("PodcastAudio", isDirectory: true)
         try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+        let itemID = try immutableRevisionItemID("sweep-bytes")
+        let named = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-sweep-bytes", hashCharacter: "0",
+            path: audio.appendingPathComponent("named.m4a").path
+        )
+        try Data("named".utf8).write(to: named.mediaURL)
+        try await fixture.store.saveReadyRevision(named.revision, mediaURL: named.mediaURL)
         let orphan = audio.appendingPathComponent("orphan.m4a")
         let payload = Data("orphan".utf8)
         try payload.write(to: orphan)
@@ -109,8 +116,12 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(report.files, 1)
         XCTAssertEqual(report.bytes, Int64(payload.count))
         XCTAssertEqual(report.clearedRecords, 0)
+        XCTAssertNil(report.skipped, "a library that still names a found file sweeps ordinarily")
+        XCTAssertEqual(report.failedRemovals, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path),
                        "unreferenced episode audio is deleted directly")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: named.mediaURL.path),
+                      "the record naming the other file keeps it")
     }
 
     func testSweepKeepsReferencedInFlightAndExcludedFiles() async throws {
@@ -139,6 +150,7 @@ extension LocalLibraryStoreTests {
         )
 
         XCTAssertEqual(report.files, 1, "only the unguarded orphan is swept")
+        XCTAssertNil(report.skipped)
         for survivor in [named.mediaURL, inFlight, excluded] {
             XCTAssertTrue(
                 FileManager.default.fileExists(atPath: survivor.path),
@@ -177,6 +189,13 @@ extension LocalLibraryStoreTests {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let audio = fixture.media.appendingPathComponent("PodcastAudio", isDirectory: true)
         try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+        let itemID = try immutableRevisionItemID("sweep-published")
+        let named = try immutableRevisionFixture(
+            itemID: itemID, id: "rev-sweep-published", hashCharacter: "2",
+            path: audio.appendingPathComponent("named.m4a").path
+        )
+        try Data("named".utf8).write(to: named.mediaURL)
+        try await fixture.store.saveReadyRevision(named.revision, mediaURL: named.mediaURL)
         let finalURL = audio.appendingPathComponent("rev-published.m4a")
         try Data("prepared".utf8).write(to: finalURL)
 
@@ -189,6 +208,7 @@ extension LocalLibraryStoreTests {
         fixture.store.inFlightMedia.end(finalURL)
         let afterCommit = try await fixture.store.sweepUnreferencedMedia(in: [audio], excluding: [])
         XCTAssertEqual(afterCommit.files, 1)
+        XCTAssertNil(afterCommit.skipped)
         XCTAssertFalse(FileManager.default.fileExists(atPath: finalURL.path))
     }
 
@@ -361,6 +381,7 @@ extension LocalLibraryStoreTests {
 
         let report = try await fixture.store.sweepUnreferencedMedia(in: [fixture.media], excluding: [])
         XCTAssertEqual(report.files, 1, "the superseded source is the one file nothing names")
+        XCTAssertNil(report.skipped)
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.mediaURL.path),
                        "a re-download/replacement still reclaims the superseded source")
         XCTAssertTrue(FileManager.default.fileExists(atPath: prepared.mediaURL.path))
@@ -472,7 +493,64 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(survivors.map(\.revision.revisionID), [second.revision.revisionID])
         let report = try await fixture.store.sweepUnreferencedMedia(in: [fixture.media], excluding: [])
         XCTAssertEqual(report.files, 1)
+        XCTAssertNil(report.skipped)
         XCTAssertFalse(FileManager.default.fileExists(atPath: first.mediaURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: second.mediaURL.path))
+    }
+
+    // MARK: Sweep guards (audit-20261018-WA2)
+
+    func testSweepSkipsEverythingWhenAnEmptyStoreFacesFilesOnDisk() async throws {
+        let fixture = try mediaSweepRoot("sweep-empty-store")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let audio = fixture.media.appendingPathComponent("PodcastAudio", isDirectory: true)
+        try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+        let first = audio.appendingPathComponent("first.m4a")
+        let second = audio.appendingPathComponent("second.m4a")
+        try Data("first".utf8).write(to: first)
+        try Data("second".utf8).write(to: second)
+
+        let report = try await fixture.store.sweepUnreferencedMedia(in: [audio], excluding: [])
+
+        XCTAssertEqual(report.skipped, .noReferencedFileFound,
+                       "an empty store must not describe a full disk as orphaned")
+        XCTAssertEqual(report.files, 0)
+        XCTAssertEqual(report.bytes, 0)
+        XCTAssertEqual(report.clearedRecords, 0)
+        XCTAssertEqual(report.failedRemovals, 0)
+        for survivor in [first, second] {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: survivor.path),
+                          "\(survivor.lastPathComponent) must survive a store with no records")
+        }
+    }
+
+    func testSweepSkipsEverythingWhenAStoredPathLivesOutsideTheLibrary() async throws {
+        let fixture = try mediaSweepRoot("sweep-outside")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let outsideDirectory = fixture.root.deletingLastPathComponent()
+            .appendingPathComponent("wilted-media-outside-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outsideDirectory) }
+        try FileManager.default.createDirectory(at: outsideDirectory, withIntermediateDirectories: true)
+        let outside = outsideDirectory.appendingPathComponent("elsewhere.mp3")
+        try Data("elsewhere".utf8).write(to: outside)
+        let itemID = try immutableRevisionItemID("sweep-outside")
+        try await fixture.store.save(download: try PodcastDownload(
+            episodeID: itemID, status: .completed, bytesReceived: 9, expectedByteCount: 9,
+            localURL: outside, contentHash: "sha256:" + String(repeating: "a", count: 64),
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+        let orphan = fixture.media.appendingPathComponent("orphan.m4a")
+        try Data("orphan".utf8).write(to: orphan)
+
+        let report = try await fixture.store.sweepUnreferencedMedia(in: [fixture.media], excluding: [])
+
+        XCTAssertEqual(report.skipped, .storedPathOutsideLibrary(count: 1),
+                       "a stored path outside the library freezes every removal")
+        XCTAssertEqual(report.files, 0)
+        XCTAssertEqual(report.clearedRecords, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+        let kept = try await fixture.store.download(for: itemID)
+        XCTAssertNotNil(kept, "the record naming the outside path is not cleared")
     }
 }
