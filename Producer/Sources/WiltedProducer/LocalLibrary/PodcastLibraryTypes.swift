@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 public enum PodcastDownloadStatus: String, Codable, Equatable, Sendable {
     case queued

@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 /// Actor-isolated SwiftData adapter for the producer's local library.
 public actor LocalLibraryStore {

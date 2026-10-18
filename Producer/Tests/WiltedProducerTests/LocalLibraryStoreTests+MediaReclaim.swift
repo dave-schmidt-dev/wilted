@@ -3,7 +3,6 @@ import Foundation
 import SwiftData
 import XCTest
 import WiltedDomain
-import WiltedSync
 @testable import WiltedProducer
 
 extension LocalLibraryStoreTests {

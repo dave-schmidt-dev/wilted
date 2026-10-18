@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 extension LocalLibraryStore {
     /// Checkpoints the source WAL, migrates a disposable clone to the current

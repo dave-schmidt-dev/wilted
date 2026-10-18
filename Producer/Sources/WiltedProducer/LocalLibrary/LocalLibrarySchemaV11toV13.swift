@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 enum LocalLibrarySchemaV11Models {
     /// One immutable contribution to a device-local lifetime total. Duplicate

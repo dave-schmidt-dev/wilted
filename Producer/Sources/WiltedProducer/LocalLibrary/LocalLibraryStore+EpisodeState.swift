@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 public struct PodcastQueueAppendResult: Sendable {
     public let state: PodcastQueueState

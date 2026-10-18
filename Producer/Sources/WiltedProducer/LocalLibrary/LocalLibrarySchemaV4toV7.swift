@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 enum LocalLibrarySchemaV4Models {
     @Model final class TranscriptRecord {

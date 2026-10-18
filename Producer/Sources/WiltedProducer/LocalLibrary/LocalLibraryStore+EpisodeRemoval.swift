@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 extension LocalLibraryStore {
     /// One episode the listener removed, and when.

@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 // Keep model names and property names stable: SwiftData's lightweight migration
 // uses them as the persistent identity across schema versions.
