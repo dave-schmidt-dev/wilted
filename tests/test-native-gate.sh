@@ -329,6 +329,9 @@ assert_snapshot_contract() {
   assert_contains 'trap cleanup EXIT' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS:-600' "$gate"
+  # One xcodebuild test both builds and tests, so it gets both budgets (cold-cache kills at 600 s).
+  assert_contains 'WILTED_XCODE_BUILD_AND_TEST_TIMEOUT_SECONDS:-1200' "$gate"
+  assert_contains 'WILTED_TEST_TIMEOUT_SECONDS="${xcode_build_and_test_timeout_seconds:-$xcode_test_timeout_seconds}"' "$native_gate_xcode"
   assert_contains 'WILTED_NATIVE_LEG_TIMEOUT_SECONDS' "$gate"
   assert_contains 'scripts/run-bounded.py' "$gate"
   assert_contains 'WILTED_TEST_TIMEOUT_SECONDS="$timeout_seconds"' "$gate"

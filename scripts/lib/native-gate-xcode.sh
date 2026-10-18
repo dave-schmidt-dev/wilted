@@ -83,7 +83,8 @@ xcode_test_leg() {
     trap 'xcode_signal_status=143; wilted_stop_active_ui_lock; wilted_stop_active_supervisor 300' TERM
     trap 'xcode_signal_status=129; wilted_stop_active_ui_lock; wilted_stop_active_supervisor 300' HUP
   fi
-  local test_command=(env WILTED_TEST_TIMEOUT_SECONDS="$xcode_test_timeout_seconds" WILTED_WORK_PHASE=build-and-test \
+  local test_command=(env WILTED_TEST_TIMEOUT_SECONDS="${xcode_build_and_test_timeout_seconds:-$xcode_test_timeout_seconds}" \
+    WILTED_WORK_PHASE=build-and-test \
     python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test \
     "${common[@]}" -collect-test-diagnostics never -resultBundlePath "$tmp_root/$label.xcresult")
   if [[ "$destination" == *'id='* ]]; then

@@ -651,6 +651,7 @@ set -Eeuo pipefail
 repo_root="$1"; tmp_root="$repo_root"; native_project="$repo_root/generated/Project.xcodeproj"
 build_with_cache="$repo_root/scripts/build-with-cache.py"
 xcode_test_timeout_seconds=3; WILTED_TEMP_LEG_WORK="$repo_root"; integration_root="$repo_root"
+xcode_build_and_test_timeout_seconds="${FIXTURE_BUILD_AND_TEST_BUDGET:-}"
 source "$repo_root/scripts/lib/test-runner.sh"
 source "$repo_root/scripts/lib/mac-test-parent.sh"
 source "$repo_root/scripts/lib/native-gate-simulator.sh"
@@ -677,6 +678,12 @@ xcode_test_leg ios-unit-tests "$repo_root" WiltediOS "platform=iOS Simulator,id=
         self.assertEqual(timed.returncode,124,timed.stderr)
         self.assertIn('phase=build-and-test',timed.stderr)
         self.assertIn('simctl shutdown',self.events.read_text())
+        # A build longer than the test budget passes under the combined build-and-test budget.
+        self.events.write_text('')
+        slow=self.invoke('bash',str(script),str(self.root),env=dict(self.env,FAKE_BUILD_DELAY='5',FAKE_TEST_DELAY='.1',
+                         FAKE_READY_DELAY='1',FIXTURE_BUILD_AND_TEST_BUDGET='20'))
+        self.assertEqual(slow.returncode,0,slow.stderr)
+        self.assertIn('test end',self.events.read_text().splitlines())
 
     def test_clone_reaper_removes_only_proven_project_clone(self):
         clone_set=self.root / 'clones'; clone_set.mkdir()

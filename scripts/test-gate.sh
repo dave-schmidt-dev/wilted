@@ -25,10 +25,15 @@ forced_missing_ios_mvp_journey="${NATIVE_FORCE_MISSING_IOS_MVP_JOURNEY:-0}"
 forced_screen_locked="${NATIVE_FORCE_SCREEN_LOCKED:-0}"
 wilted_development_team="${WILTED_DEVELOPMENT_TEAM:-4CJ49V6QHW}"
 wilted_mac_ui="${WILTED_MAC_UI:-0}"
-# Build and test work have separate budgets; queue waits consume neither.
+# Separate build and test steps have separate budgets. A leg whose one
+# `xcodebuild test` both builds and tests (kept whole so queued peers cannot
+# replace the shared-bundle-ID Mac host) gets its own combined budget: a cold
+# Mac build plus tests outlived 600 s, and 1200 s carried the d83140b push.
+# Queue waits consume none of them.
 xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-600}"
 native_leg_timeout_seconds="${WILTED_NATIVE_LEG_TIMEOUT_SECONDS:-600}"
 xcode_build_timeout_seconds="${WILTED_XCODE_BUILD_TIMEOUT_SECONDS:-1800}"
+xcode_build_and_test_timeout_seconds="${WILTED_XCODE_BUILD_AND_TEST_TIMEOUT_SECONDS:-1200}"
 # The iOS pixel baselines were recorded on iPhone 17 Pro. Selecting it by name
 # keeps the UI leg from silently using a different first-listed iPhone model.
 ios_ui_device_name='iPhone 17 Pro'
@@ -105,6 +110,10 @@ source "$repo_root/scripts/lib/simctl_gate_lib.sh"
 }
 [[ "$native_leg_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
   printf '%s\n' 'native.error WILTED_NATIVE_LEG_TIMEOUT_SECONDS must be a positive integer' >&2
+  exit 2
+}
+[[ "$xcode_build_and_test_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
+  printf '%s\n' 'native.error WILTED_XCODE_BUILD_AND_TEST_TIMEOUT_SECONDS must be a positive integer' >&2
   exit 2
 }
 leg_names=(
