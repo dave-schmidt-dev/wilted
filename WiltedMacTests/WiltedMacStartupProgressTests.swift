@@ -22,7 +22,7 @@ final class WiltedMacStartupProgressTests: XCTestCase {
         let ready = try WiltedMacHeadless.render(WiltedMacRootView(model: model), size: CGSize(width: 760, height: 420))
         XCTAssertNotEqual(loading.representation(using: .png, properties: [:]), ready.representation(using: .png, properties: [:]))
         model.startupState = .failed(WiltedMacStartupFailure(message: "Fixture library needs recovery", detail: nil,
-                                                           retainedV5StoreURL: nil, canRetry: true))
+                                                           recoveryCopyURL: nil, canRetry: true))
         let recovery = try WiltedMacHeadless.render(WiltedMacRootView(model: model), size: CGSize(width: 760, height: 420))
         XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: recovery), 8)
         XCTAssertNotEqual(loading.representation(using: .png, properties: [:]), recovery.representation(using: .png, properties: [:]))

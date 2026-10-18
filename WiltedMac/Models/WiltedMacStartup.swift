@@ -129,7 +129,10 @@ extension FileManager: WiltedMacMediaAvailabilityChecking {}
 struct WiltedMacStartupFailure: Equatable, Sendable {
     let message: String
     let detail: String?
-    let retainedV5StoreURL: URL?
+    /// The retained copy of the library this attempt left on disk: the typed
+    /// backup of a failed migration, else the newest retained store directory
+    /// the attempt created. Nil when there is none to offer.
+    let recoveryCopyURL: URL?
     let canRetry: Bool
 }
 

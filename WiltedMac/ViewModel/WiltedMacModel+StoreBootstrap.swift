@@ -51,7 +51,7 @@ extension WiltedMacModel {
 
     func performStoreBootstrap() async {
         let retainedPathsBeforeAttempt = await Task.detached { [libraryURL] in
-            Set(Self.retainedV5StoreURLs(for: libraryURL).map(\.path))
+            Set(Self.recoveryCopyURLs(for: libraryURL).map(\.path))
         }.value
         do {
             let configuredStore = try await storeBootstrap(libraryURL)
@@ -115,6 +115,12 @@ extension WiltedMacModel {
             // rather than assumed. A throwing sweep never blocks launch: the
             // library is intact and the next launch sweeps again.
             announceStartupStep(.reclaimingStorage)
+            // No download is in flight this early, so any `<UUID>.<ext>` left in
+            // the staging directory belongs to a process that died mid-transfer.
+            let staging = await Task.detached { [mediaDirectory] in
+                Self.removeAbandonedDownloadStaging(in: mediaDirectory)
+            }.value
+            Self.logStagingCleanup(staging)
             var storageSweepErrors: [String] = []
             do {
                 let report = try await reclaimStorage(
@@ -122,9 +128,7 @@ extension WiltedMacModel {
                     [mediaDirectory.appendingPathComponent("PodcastAudio", isDirectory: true)],
                     await currentPlaybackMediaExclusions(in: configuredStore)
                 )
-                Self.reclaimLog.info(
-                    "storage sweep removed files=\(report.files) bytes=\(report.bytes) clearedRecords=\(report.clearedRecords)"
-                )
+                Self.logSweepOutcome(report)
             } catch {
                 Self.reclaimLog.warning(
                     "storage sweep failed: \(String(describing: error), privacy: .public)"
@@ -224,20 +228,27 @@ extension WiltedMacModel {
             startupState = .failed(WiltedMacStartupFailure(
                 message: Self.staleInvalidationFailureMessage,
                 detail: String(describing: invalidationFailure.underlying),
-                retainedV5StoreURL: nil,
+                recoveryCopyURL: nil,
                 canRetry: startupAttemptCount < Self.maximumStartupAttempts
             ))
         } catch {
             configureStoreDependencies(nil)
-            let retainedURL = await Task.detached { [libraryURL, retainedPathsBeforeAttempt] in
-                Self.retainedV5StoreURLs(for: libraryURL).first {
-                    !retainedPathsBeforeAttempt.contains($0.path)
-                }
-            }.value
+            // A failed migration names its own backup; only other failures
+            // fall back to whichever retained copy this attempt created.
+            let recoveryURL: URL?
+            if let typedBackupURL = Self.migrationBackupURL(from: error) {
+                recoveryURL = typedBackupURL
+            } else {
+                recoveryURL = await Task.detached { [libraryURL, retainedPathsBeforeAttempt] in
+                    Self.recoveryCopyURLs(for: libraryURL).first {
+                        !retainedPathsBeforeAttempt.contains($0.path)
+                    }
+                }.value
+            }
             startupState = .failed(WiltedMacStartupFailure(
-                message: "Wilted could not open your larder. The existing library was left in place.",
+                message: Self.storeOpenFailureMessage(for: error),
                 detail: String(describing: error),
-                retainedV5StoreURL: retainedURL,
+                recoveryCopyURL: recoveryURL,
                 canRetry: startupAttemptCount < Self.maximumStartupAttempts
             ))
         }
@@ -267,6 +278,93 @@ extension WiltedMacModel {
     /// not open: the library is intact and only the version check failed.
     nonisolated static let staleInvalidationFailureMessage =
         "Wilted could not check your preparations against this build. The existing library was left in place."
+
+    /// The backup a failed migration reports for itself, when the error is one.
+    nonisolated static func migrationBackupURL(from error: Error) -> URL? {
+        guard let storeError = error as? LocalLibraryStoreError else { return nil }
+        switch storeError {
+        case let .migrationFailedRestored(backupURL, _), let .migrationRestoreFailed(backupURL, _):
+            return backupURL
+        default:
+            return nil
+        }
+    }
+
+    /// The headline for a store that would not open. Only a failed restore
+    /// says the library is not in place: that is the one case where it is not.
+    nonisolated static func storeOpenFailureMessage(for error: Error) -> String {
+        if let storeError = error as? LocalLibraryStoreError, case .migrationRestoreFailed = storeError {
+            return "Wilted could not restore your previous library after a failed update. "
+                + "Restore the recovery copy by hand before Wilted can open your larder."
+        }
+        return "Wilted could not open your larder. The existing library was left in place."
+    }
+
+    /// Removes the `<UUID>.<ext>` files a download left in
+    /// `<media>/.podcast-staging/` when its process died before the
+    /// coordinator's own cleanup ran. Looks only at regular files directly in
+    /// that directory; nothing else under `media` is read or removed, and no
+    /// failure escapes: it is counted so the launch can log it and go on.
+    nonisolated static func removeAbandonedDownloadStaging(in mediaDirectory: URL) -> (removed: Int, failed: Int) {
+        let manager = FileManager.default
+        let staging = mediaDirectory.appendingPathComponent(".podcast-staging", isDirectory: true)
+        // A staging directory that is itself a link would point the removals elsewhere.
+        guard let stagingValues = try? staging.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              stagingValues.isDirectory == true, stagingValues.isSymbolicLink != true,
+              let entries = try? manager.contentsOfDirectory(
+                  at: staging, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: []
+              ) else { return (0, 0) }
+        var removed = 0
+        var failed = 0
+        for entry in entries {
+            guard !entry.pathExtension.isEmpty,
+                  UUID(uuidString: entry.deletingPathExtension().lastPathComponent) != nil,
+                  let values = try? entry.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            do {
+                try manager.removeItem(at: entry)
+                removed += 1
+            } catch {
+                failed += 1
+            }
+        }
+        return (removed, failed)
+    }
+
+    private static func logStagingCleanup(_ outcome: (removed: Int, failed: Int)) {
+        if outcome.failed > 0 {
+            reclaimLog.warning(
+                "download staging cleanup removed=\(outcome.removed) failedRemovals=\(outcome.failed)"
+            )
+        } else if outcome.removed > 0 {
+            reclaimLog.notice("download staging cleanup removed=\(outcome.removed)")
+        }
+    }
+
+    /// Logs one sweep at a level that persists: a skipped or partly failed
+    /// sweep at `.warning` with the reason, a clean one at `.notice`.
+    private static func logSweepOutcome(_ report: MediaSweepReport) {
+        if let skipped = report.skipped {
+            let reason: String
+            switch skipped {
+            case let .storedPathOutsideLibrary(count):
+                reason = "storedPathOutsideLibrary count=\(count)"
+            case .noReferencedFileFound:
+                reason = "noReferencedFileFound"
+            }
+            reclaimLog.warning("storage sweep skipped: \(reason, privacy: .public)")
+        }
+        if report.failedRemovals > 0 {
+            reclaimLog.warning(
+                "storage sweep removed files=\(report.files) bytes=\(report.bytes) failedRemovals=\(report.failedRemovals)"
+            )
+        }
+        if report.skipped == nil, report.failedRemovals == 0 {
+            reclaimLog.notice(
+                "storage sweep removed files=\(report.files) bytes=\(report.bytes) clearedRecords=\(report.clearedRecords)"
+            )
+        }
+    }
 
     /// Closes every run the journal still calls live.
     ///

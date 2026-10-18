@@ -226,15 +226,15 @@ struct WiltedMacRootView: View {
                     .textSelection(.enabled)
                     .accessibilityIdentifier("wilted-mac-startup-error-detail")
             }
-            if let retainedURL = failure.retainedV5StoreURL {
-                Text("A retained V5 recovery copy is available at:")
+            if let recoveryURL = failure.recoveryCopyURL {
+                Text("A recovery copy of your library is available at:")
                     .wiltedFont(.body)
-                Text(retainedURL.path)
+                Text(recoveryURL.path)
                     .wiltedFont(.utility)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("wilted-mac-retained-v5-location")
                 Button("Show Recovery Copy in Finder") {
-                    model.presentRetainedV5Store()
+                    model.presentRecoveryCopy()
                 }
                 .accessibilityIdentifier("wilted-mac-show-retained-v5")
             }
