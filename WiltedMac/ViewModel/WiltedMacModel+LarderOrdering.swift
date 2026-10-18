@@ -424,15 +424,6 @@ extension WiltedMacModel {
 #endif
 
 #if canImport(WiltedProducer)
-    /// Uses the revision already loaded into the transport, never a newer catalog revision.
-    func loadEpisodeTranscript(itemID: ItemID) async {
-        guard playback?.itemID == itemID else { return }
-        cancelPlaybackPresentation()
-        guard let revisionID = playback?.revisionID,
-              let owner = playbackPresentationOwner(itemID: itemID, revisionID: revisionID) else { return }
-        await readPlaybackPresentation(owner, includesCuts: true)
-    }
-
     /// The removed intervals placed on the prepared clock, in the order a
     /// listener meets them.
     nonisolated static func removedSpans(

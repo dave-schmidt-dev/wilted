@@ -332,14 +332,6 @@ extension WiltedMacModel {
 #endif
     }
 
-    /// Resumes claims that outlived the process that made them.
-    func reconcileAutomation() {
-#if canImport(WiltedProducer)
-        guard !isClosingTemporaryState, !fixtureMode, let coordinator = automationCoordinator() else { return }
-        automationTask = Task { await coordinator.reconcile() }
-#endif
-    }
-
     /// Stops the pass in flight. Claims stay durable and the next launch
     /// reconciles them, so stopping loses no eligibility.
     func cancelAutomation() {

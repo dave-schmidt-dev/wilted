@@ -249,7 +249,6 @@ extension WiltedMacModel {
         if [currentPodcastEpisodeID, loaded].contains(where: { $0.map(owned.contains) == true }) {
             stopPlaybackAfterCommittedRemoval()
         }
-        if let selected = selectedLibraryItemID, owned.contains(selected) { selectedLibraryItemID = nil }
         // Undo records for this feed's episodes would restore rows that no
         // longer exist; any other episode's undo is left alone.
         if undoableRemoval?.feedID == subscription.id { undoableRemoval = nil }
@@ -344,7 +343,6 @@ extension WiltedMacModel {
         // has no task to cancel, and its entry outlived the row.
         preparationQueue.leave(episode.id)
         hiddenEpisodeIDs.insert(episode.id)
-        if selectedLibraryItemID == episode.id { selectedLibraryItemID = nil }
     }
 
 #if canImport(WiltedProducer)

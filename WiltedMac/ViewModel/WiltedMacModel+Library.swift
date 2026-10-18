@@ -230,8 +230,6 @@ extension WiltedMacModel {
         }
     }
 
-    func selectLibraryItem(_ id: String) { selectedLibraryItemID = id }
-
     /// Starts production persistence only after the root surface has made its
     /// loading state visible. Fixture modes are already ready at construction.
     func startStoreBootstrap() {
@@ -527,10 +525,6 @@ extension WiltedMacModel {
         podcastFeedDraft = url.absoluteString
         podcastFeedDraftStatus = "Podcast feed detected. Review the address, then subscribe."
         selectedNavigation = .feeds
-    }
-
-    func dismissAdvertisedFeed() {
-        advertisedFeed = nil
     }
 
     func refreshPodcastFeeds() {
