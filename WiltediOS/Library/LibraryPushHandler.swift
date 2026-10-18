@@ -1,5 +1,16 @@
 @preconcurrency import Intents
+import Foundation
 import UIKit
+
+/// The silent-push routing the runtime needs. `LibraryPushHandler` is the production implementation;
+/// tests hand the runtime a fake to count attachments and drive an early push.
+@MainActor
+protocol LibraryPushHandling: AnyObject {
+    /// Installs the fetch to run on a silent push; replays one that arrived early.
+    func attach(_ onSilentPush: @escaping @MainActor () async -> Bool)
+    /// Runs the fetch a silent push asks for and reports whether anything changed.
+    func receiveSilentPush() async -> UIBackgroundFetchResult
+}
 
 /// Routes silent CloudKit pushes to the library model.
 ///
@@ -8,7 +19,7 @@ import UIKit
 /// SwiftUI app register for remote notifications and receive `didReceiveRemoteNotification`.
 /// A push that lands before `LibraryRoot` has attached is remembered and replayed on attach.
 @MainActor
-final class LibraryPushHandler {
+final class LibraryPushHandler: LibraryPushHandling {
     static let shared = LibraryPushHandler()
 
     private var onSilentPush: (@MainActor () async -> Bool)?
@@ -33,13 +44,26 @@ final class LibraryPushHandler {
 }
 
 /// Registers for remote notifications and forwards silent pushes to `LibraryPushHandler`.
+@MainActor
 final class LibraryPushAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         application.registerForRemoteNotifications()
+        startBackgroundEntryPoints()
         return true
+    }
+
+    /// A background launch for a silent push or a Watch message has no scene, so the shared runtime
+    /// attaches its push handler and Watch session here. A fixture launch and the XCTest host keep
+    /// the lazy runtime unbuilt, exactly as the rest of the launch path does.
+    private func startBackgroundEntryPoints() {
+        guard NSClassFromString("XCTestCase") == nil else { return }
+        #if DEBUG
+        guard LibraryUITestFixture.scenario() == nil else { return }
+        #endif
+        LibraryRuntime.shared.bootstrapBackgroundEntryPoints()
     }
 
     func application(

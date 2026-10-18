@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WiltedDomain
 import WiltedLibrary
 import WiltedPlayback
@@ -55,6 +56,41 @@ final class RuntimeFakeNowPlaying: ListenerNowPlaying, @unchecked Sendable {
     func updateApplicationContext(_ context: [String: Any]) throws { contexts.append(context) }
 }
 
+@MainActor final class RuntimeFakeWatchSession: WatchSessionProtocol {
+    var isSupported = true
+    var activationState: WatchSessionActivationState = .notActivated
+    let isPaired = true
+    let isWatchAppInstalled = true
+    weak var delegate: (any WatchSessionDelegate)?
+    private(set) var activations = 0
+
+    func activate() {
+        guard isSupported else { return }
+        activations += 1
+        activationState = .activated
+        delegate?.watchSessionDidActivate()
+    }
+
+    func updateApplicationContext(_ context: [String: Any]) throws {}
+}
+
+@MainActor final class RuntimeFakePushHandler: LibraryPushHandling {
+    private(set) var attaches = 0
+    private(set) var pushes = 0
+    private var onSilentPush: (@MainActor () async -> Bool)?
+
+    func attach(_ onSilentPush: @escaping @MainActor () async -> Bool) {
+        attaches += 1
+        self.onSilentPush = onSilentPush
+    }
+
+    func receiveSilentPush() async -> UIBackgroundFetchResult {
+        pushes += 1
+        guard let onSilentPush else { return .noData }
+        return await onSilentPush() ? .newData : .noData
+    }
+}
+
 @MainActor
 final class LibraryRuntimeTests: XCTestCase {
     private struct Rig {
@@ -70,7 +106,11 @@ final class LibraryRuntimeTests: XCTestCase {
         entryID: try! ItemID(rawValue: "entry-1"), title: "Episode", showTitle: "Show",
         fileURL: localFile) }
 
-    private func makeRig() async -> Rig {
+    private func makeRig(
+        watchSession: (any WatchSessionProtocol)? = nil,
+        pushHandler: any LibraryPushHandling = RuntimeFakePushHandler(),
+        syncs: Bool = false
+    ) async -> Rig {
         let suite = "wilted.runtime.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
@@ -103,10 +143,18 @@ final class LibraryRuntimeTests: XCTestCase {
             byteCount: Int64(bytes.count), mediaType: "audio/mp4", durationSeconds: 600))
         localFile = try! await PreparedMediaFixture.adopt(into: cache, verifiedFile: incoming, for: offer, owner: "fixture-owner")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let transport: any LibraryTransport
+        if syncs {
+            transport = phone
+        } else {
+            transport = UnavailableLibraryTransport(reason: "test")
+        }
         let model = LibraryAppModel(
-            transport: UnavailableLibraryTransport(reason: "test"), store: store, deviceID: "phone",
+            transport: transport, store: store, deviceID: "phone",
             mediaCache: cache, preferences: defaults)
-        let runtime = LibraryRuntime(model: model, player: player, settings: LibrarySettingsStore(defaults: defaults))
+        let runtime = LibraryRuntime(
+            model: model, player: player, settings: LibrarySettingsStore(defaults: defaults),
+            watchSession: watchSession, pushHandler: pushHandler)
         return Rig(runtime: runtime, remote: remote, session: session, defaults: defaults, nowPlaying: nowPlaying)
     }
 
@@ -186,6 +234,72 @@ final class LibraryRuntimeTests: XCTestCase {
         XCTAssertNotNil(rig.runtime.player.onListened)
         XCTAssertNil(rig.runtime.model.lastSynchronizedAt, "prepare must not run the network sync")
         await rig.runtime.prepare()
+    }
+
+    func testBootstrapAttachesOnePushHandlerAndActivatesTheWatchSessionOnce() async {
+        let session = RuntimeFakeWatchSession(), pushHandler = RuntimeFakePushHandler()
+        let rig = await makeRig(watchSession: session, pushHandler: pushHandler)
+
+        rig.runtime.bootstrapBackgroundEntryPoints()
+        rig.runtime.bootstrapBackgroundEntryPoints()
+
+        XCTAssertEqual(pushHandler.attaches, 1)
+        XCTAssertEqual(session.activations, 1)
+    }
+
+    func testWatchMessageReceivedBeforePrepareReachesTheBridgeAfterIt() async throws {
+        let session = RuntimeFakeWatchSession(), pushHandler = RuntimeFakePushHandler()
+        let rig = await makeRig(watchSession: session, pushHandler: pushHandler)
+        rig.runtime.bootstrapBackgroundEntryPoints()
+        let message = try WatchLinkCodec.encode(WatchCommand(action: .cancelSleep))
+        var reply: [String: Any] = [:]
+
+        session.delegate?.watchSessionDidReceiveMessage(message) { reply = $0 }
+        XCTAssertTrue(reply.isEmpty, "the message waits until the bridge starts")
+
+        await rig.runtime.prepare()
+        await waitUntil { !reply.isEmpty }
+        XCTAssertEqual(reply[WatchBridge.okKey] as? Bool, true)
+        XCTAssertEqual(session.activations, 1, "prepare does not activate the early session again")
+    }
+
+    func testPushBeforeAnySceneRunsHandleSilentPushOncePrepared() async {
+        let pushHandler = RuntimeFakePushHandler()
+        let rig = await makeRig(pushHandler: pushHandler, syncs: true)
+        rig.runtime.bootstrapBackgroundEntryPoints()
+        XCTAssertFalse(rig.runtime.model.localStateLoaded)
+
+        _ = await pushHandler.receiveSilentPush()
+
+        XCTAssertEqual(pushHandler.pushes, 1)
+        XCTAssertEqual(pushHandler.attaches, 1, "prepare does not attach a second push handler")
+        XCTAssertTrue(rig.runtime.model.localStateLoaded)
+        XCTAssertNotNil(rig.runtime.model.lastSynchronizedAt, "the push ran the model's refresh")
+    }
+
+    func testBootstrapDoesNotLoadLocalState() async {
+        let session = RuntimeFakeWatchSession()
+        let rig = await makeRig(watchSession: session)
+
+        rig.runtime.bootstrapBackgroundEntryPoints()
+
+        XCTAssertFalse(rig.runtime.model.localStateLoaded)
+        XCTAssertNil(rig.runtime.model.lastSynchronizedAt)
+    }
+
+    func testBufferedMessageIsRejectedWhenTheBridgeCannotStart() async throws {
+        let session = RuntimeFakeWatchSession()
+        let rig = await makeRig(watchSession: session)
+        rig.runtime.bootstrapBackgroundEntryPoints()
+        let message = try WatchLinkCodec.encode(WatchCommand(action: .cancelSleep))
+        var reply: [String: Any] = [:]
+        session.delegate?.watchSessionDidReceiveMessage(message) { reply = $0 }
+        session.isSupported = false
+
+        await rig.runtime.prepare()
+
+        XCTAssertEqual(reply[WatchBridge.okKey] as? Bool, false)
+        XCTAssertEqual(reply[WatchBridge.reasonKey] as? String, WatchRejection.notReady.rawValue)
     }
 
     func testStartAppliesSettingsAndFollowsChanges() async {

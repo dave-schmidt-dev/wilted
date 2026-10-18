@@ -17,17 +17,23 @@ final class LibraryRuntime {
     let settings: LibrarySettingsStore
     private let artwork: LibraryArtworkCache?
     private let watchSession: (any WatchSessionProtocol)?
+    private let pushHandler: any LibraryPushHandling
     private var watchBridge: WatchBridge?
+    private var watchBuffer: WatchSessionBackgroundBuffer?
     private var prepareTask: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
     private var subscriptions: Set<AnyCancellable> = []
+    private var pushHandlerAttached = false
+    private var backgroundEntryPointsStarted = false
 
     init(
         model: LibraryAppModel, player: LibraryPlayer, settings: LibrarySettingsStore,
-        artwork: LibraryArtworkCache? = nil, watchSession: (any WatchSessionProtocol)? = nil
+        artwork: LibraryArtworkCache? = nil, watchSession: (any WatchSessionProtocol)? = nil,
+        pushHandler: any LibraryPushHandling = LibraryPushHandler.shared
     ) {
         self.artwork = artwork
-        self.watchSession = watchSession
+        self.watchSession = watchSession.map { WatchSessionActivationGate($0) as (any WatchSessionProtocol) }
+        self.pushHandler = pushHandler
         self.model = model
         self.player = player
         self.settings = settings
@@ -39,6 +45,22 @@ final class LibraryRuntime {
         LibraryRuntime(
             model: LibraryEnvironment.makeModel(), player: .live(), settings: LibrarySettingsStore(),
             artwork: .shared, watchSession: WatchSession())
+    }
+
+    /// Wires the entry points a launch with no scene still needs: the silent-push handler and an
+    /// activated Watch session whose delegate holds Watch traffic until the bridge starts. A
+    /// silent push then awaits `prepare()` and handles the push, and a Watch message is buffered
+    /// until `prepare()` replays it. Nothing here loads local state, syncs or touches audio, and
+    /// repeated calls do nothing.
+    func bootstrapBackgroundEntryPoints() {
+        guard !backgroundEntryPointsStarted else { return }
+        backgroundEntryPointsStarted = true
+        attachPushHandler()
+        guard watchBridge == nil, let watchSession, watchSession.isSupported else { return }
+        let buffer = WatchSessionBackgroundBuffer()
+        watchBuffer = buffer
+        watchSession.delegate = buffer
+        watchSession.activate()
     }
 
     /// Wires the player to the model and the settings and loads what is already on the phone, with no
@@ -65,7 +87,7 @@ final class LibraryRuntime {
             return cached.url == item.fileURL
         }
         let model = model
-        LibraryPushHandler.shared.attach { await model.handleSilentPush() }
+        attachPushHandler()
         player.apply(settings.playback)
         ShortcutParameterRefresher.observe(model).store(in: &subscriptions)
         subscriptions.insert(SpotlightIndexer.observe(model))
@@ -93,17 +115,36 @@ final class LibraryRuntime {
         startWatchBridge()
     }
 
+    /// Installs this runtime's one silent-push fetch. It waits for `prepare()`, so a push that
+    /// arrives before any scene still runs against the loaded library.
+    private func attachPushHandler() {
+        guard !pushHandlerAttached else { return }
+        pushHandlerAttached = true
+        pushHandler.attach { [weak self] in
+            guard let self else { return false }
+            await self.prepare()
+            return await self.model.handleSilentPush()
+        }
+    }
+
     /// Starts the Watch bridge after the runtime has prepared. The bridge never blocks or fails
     /// prepare: it does nothing when the system does not support watch sessions or when this
     /// runtime was built without a session (tests, previews).
     private func startWatchBridge() {
         guard let watchSession, watchBridge == nil else { return }
+        guard watchSession.isSupported else {
+            watchBuffer?.rejectPending()
+            watchBuffer = nil
+            return
+        }
         let bridge = WatchBridge(
             session: watchSession,
             target: LibraryVoiceTarget(model: model, player: player, settings: settings),
             source: LibraryWatchSource(model: model, player: player))
         watchBridge = bridge
         bridge.start()
+        watchBuffer?.flush(to: bridge)
+        watchBuffer = nil
     }
 
     /// Downloads artwork for the episodes on the phone while the app has a connection, so the car and
