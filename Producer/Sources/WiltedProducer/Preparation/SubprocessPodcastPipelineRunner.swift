@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import OSLog
 import WiltedDomain
@@ -229,10 +230,10 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
     ) async throws {
         try await Task.detached {
             let pid = process.processIdentifier
-            if process.isRunning { process.terminate() }
-            let termDeadline = Date().addingTimeInterval(1)
+            if process.isRunning { Self.signalProcess(pid, signal: SIGTERM) }
+            let termDeadline = Date().addingTimeInterval(5)
             while exitObservation.terminationStatus == nil && Date() < termDeadline { usleep(20_000) }
-            if process.isRunning && exitObservation.terminationStatus == nil { _ = kill(pid, SIGKILL) }
+            if process.isRunning && exitObservation.terminationStatus == nil { Self.signalProcess(pid, signal: SIGKILL) }
             let killDeadline = Date().addingTimeInterval(3)
             while exitObservation.terminationStatus == nil && Date() < killDeadline { usleep(20_000) }
             guard exitObservation.terminationStatus != nil,
@@ -242,6 +243,15 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
                 )
             }
         }.value
+    }
+
+    private static func signalProcess(_ pid: pid_t, signal: Int32) {
+        guard pid > 1 else { return }
+        if getpgid(pid) == pid && pid != getpgrp() {
+            _ = killpg(pid, signal)
+        } else {
+            _ = kill(pid, signal)
+        }
     }
 
     /// Foundation owns this child PID; ESRCH confirms its exit has been reaped.

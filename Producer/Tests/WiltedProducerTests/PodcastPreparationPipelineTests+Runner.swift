@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import Testing
 import WiltedDomain
@@ -289,4 +290,76 @@ extension PodcastPreparationPipelineTests {
         #expect(!tail.contains("\u{FFFD}"))
     }
 
+    @Test func subprocessRunnerCancellationTerminatesGrandchildrenInProcessGroup() async throws {
+        let directory = try Fixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pidFile = directory.appendingPathComponent("grandchild.pid")
+        let worker = directory.appendingPathComponent("worker.sh")
+        try """
+        #!/bin/sh
+        exec python3 -c '
+        import os, subprocess, time
+        try:
+            os.setpgid(0, 0)
+        except OSError:
+            pass
+        child = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open("\(pidFile.path)", "w") as f:
+            f.write(str(child.pid) + "\\n")
+            f.flush()
+        while True:
+            time.sleep(1)
+        '
+        """.write(to: worker, atomically: true, encoding: .utf8)
+
+        let runner = SubprocessPodcastPipelineRunner(configuration: .init(
+            interpreterURL: URL(fileURLWithPath: "/bin/sh"),
+            workerURL: worker,
+            timeout: 30
+        ))
+
+        let runTask = Task {
+            try await runner.run(request: Data("{}".utf8)) { _ in }
+        }
+
+        let pidDeadline = Date().addingTimeInterval(5)
+        var pidString = ""
+        while Date() < pidDeadline {
+            if let data = try? Data(contentsOf: pidFile), !data.isEmpty {
+                let candidate = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !candidate.isEmpty {
+                    pidString = candidate
+                    break
+                }
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let grandchildPID = try #require(pid_t(pidString))
+        #expect(kill(grandchildPID, 0) == 0)
+
+        runTask.cancel()
+
+        do {
+            _ = try await runTask.value
+            Issue.record("expected cancellation error")
+        } catch let error as PodcastPreparationError {
+            #expect(error == .cancelled)
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        let reapDeadline = Date().addingTimeInterval(5)
+        var grandchildReaped = false
+        while Date() < reapDeadline {
+            if kill(grandchildPID, 0) == -1 && errno == ESRCH {
+                grandchildReaped = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(grandchildReaped, "grandchild process \(grandchildPID) survived cancellation")
+        if !grandchildReaped {
+            _ = kill(grandchildPID, SIGKILL)
+        }
+    }
 }

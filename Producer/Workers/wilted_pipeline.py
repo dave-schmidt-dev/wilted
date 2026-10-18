@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -381,7 +382,17 @@ def run(request: dict) -> dict:
 TRACEBACK_TAIL_CHARS = 700
 
 
+def _terminate(signum: int, frame: object) -> None:
+    raise SystemExit(143)
+
+
 def main() -> int:
+    signal.signal(signal.SIGTERM, _terminate)
+    try:
+        os.setpgid(0, 0)
+    except OSError:
+        pass
+
     try:
         faulthandler.enable()
     except Exception:
