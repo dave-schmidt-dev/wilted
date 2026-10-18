@@ -490,6 +490,33 @@ if [[ -e "$real_bundle" ]]; then
   retained_bundle_before=present
 fi
 
+# A gate copy cut off right after one of its EXIT traps and ending in a parse
+# error must fail. Bash leaves $? at 0 for a parse error, so a trap that only
+# returned $? let an edit made during a run turn a failed leg into a pass.
+truncated_gate_status() {
+  local source="$1" stop="$2" fixture="$3" helper copy
+  mkdir -p "$fixture/scripts" "$fixture/tmp"
+  ln -s "$repo_root/scripts/lib" "$fixture/scripts/lib"
+  for helper in run-bounded.py check-temp-leaks.py build-with-cache.py; do
+    ln -s "$repo_root/scripts/$helper" "$fixture/scripts/$helper"
+  done
+  copy="$fixture/scripts/$(basename "$source")"
+  awk -v stop="$stop" '{ print } $0 == stop { exit }' "$source" >"$copy"
+  grep -Fxq -- "$stop" "$copy" || { printf 'truncation line missing: %s\n' "$stop" >&2; exit 1; }
+  printf '%s\n' 'echo "unterminated' >>"$copy"
+  set +e
+  env TMPDIR="$fixture/tmp" bash "$copy" >"$fixture/output.log" 2>&1
+  local result=$?
+  set -e
+  printf '%s\n' "$result"
+}
+
+for truncation in "trap 'cleanup_initialization; exit 129' HUP|during initialization" "trap 'cleanup; exit 129' HUP|before its verdict"; do
+  truncated_status="$(truncated_gate_status "$gate" "${truncation%%|*}" "$tmp_dir/truncated-${truncation##*|}")"
+  [[ "$truncated_status" -ne 0 ]] || { cat "$tmp_dir/truncated-${truncation##*|}/output.log" >&2; printf 'a truncated gate passed\n' >&2; exit 1; }
+  assert_contains "native.error stopped ${truncation##*|}" "$tmp_dir/truncated-${truncation##*|}/output.log"
+done
+
 success_log="$tmp_dir/success.log"
 success_status="$(run_case success "$success_log" bash "$gate")"
 [[ "$success_status" -eq 0 ]] || { cat "$success_log" >&2; exit 1; }

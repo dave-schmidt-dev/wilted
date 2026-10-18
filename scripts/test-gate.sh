@@ -45,7 +45,9 @@ native_audit_parent="$(wilted_temp_prepare_parent "${WILTED_NATIVE_TEMP_AUDIT_PA
 native_audit_root="$(mktemp -d "$native_audit_parent/native-temp-audit.XXXXXX")" || exit 1
 tmp_root=""
 cleanup_initialization() { trap - EXIT INT TERM HUP; wilted_temp_remove_owned_pair "$tmp_root" "$inherited_tmp" wilted-native-gate. "$native_audit_root" "$native_audit_parent" native-temp-audit.; }
-trap 'status=$?; cleanup_initialization; exit "$status"' EXIT
+# Initialization never ends the gate successfully, and a parse error (such as
+# this file being edited while it runs) leaves $? at 0, so a 0 here fails closed.
+trap 'status=$?; cleanup_initialization; (( status != 0 )) || { printf "native.error stopped during initialization\n" >&2; status=1; }; exit "$status"' EXIT
 trap 'cleanup_initialization; exit 130' INT
 trap 'cleanup_initialization; exit 143' TERM
 trap 'cleanup_initialization; exit 129' HUP
@@ -90,11 +92,17 @@ finally:
 PYMAC
 }
 
+native_verdict_reached=0
 cleanup() {
   local status=$?
   trap - EXIT INT TERM HUP
   wilted_temp_cleanup_native_gate "$tmp_root" "$inherited_tmp" "$native_audit_root" "$native_audit_parent" || true
   tmp_root=""; native_audit_root=""
+  # A parse error or unplanned exit before the verdict leaves $? at 0.
+  if [[ "$status" -eq 0 && "$native_verdict_reached" -ne 1 ]]; then
+    printf 'native.error stopped before its verdict\n' >&2
+    status=1
+  fi
   return "$status"
 }
 trap cleanup EXIT
@@ -746,6 +754,7 @@ fi
 if [[ -n "$native_interrupt_test_command" ]]; then
   if [[ "${NATIVE_INTERRUPT_UI_TEST:-0}" == "1" ]]; then WILTED_UI_LOCK_PID_FILE="${NATIVE_INTERRUPT_UI_LOCK_PID_FILE:-$tmp_root/interrupt.ui-lock.pid}"; run_leg "interrupt-fixture" "none" wilted_run_ui_lock_fixture "$native_interrupt_test_command"; else run_leg "interrupt-fixture" "none" run_with_build_cache swiftpm native-wiltedproducer-tests swift run "$native_interrupt_test_command"; fi
   (( failed_legs == 0 )) || exit 1
+  native_verdict_reached=1
   exit 0
 fi
 
@@ -772,3 +781,4 @@ if [[ "$deferred_legs" -ne 0 ]]; then
 else
   status "native.passed count=$completed_legs$(wilted_gate_legs_suffix)"
 fi
+native_verdict_reached=1

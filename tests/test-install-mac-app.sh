@@ -428,6 +428,46 @@ else
     pass 'installer no longer stamps a bare revision'
 fi
 
+# 12. Replacing the installed bundle never leaves no app: a failed copy keeps
+#     the old bundle and its contents, and a good copy swaps in with no
+#     staging or previous-bundle leftovers.
+signed_bundle() {
+    local path="$1" marker="$2"
+    mkdir -p "$path/Contents/MacOS" "$path/Contents/Resources"
+    cp /usr/bin/true "$path/Contents/MacOS/Wilted"
+    /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $bundle_id" \
+        -c 'Add :CFBundleExecutable string Wilted' "$path/Contents/Info.plist" >/dev/null
+    printf '%s\n' "$marker" >"$path/Contents/Resources/marker"
+    codesign -s - --force "$path" >/dev/null 2>&1
+}
+swap_root="$tmp_root/swap"
+installed="$swap_root/Applications/Wilted.app"
+signed_bundle "$installed" old
+signed_bundle "$swap_root/build/Wilted.app" new
+failing_bin="$swap_root/failing-bin"
+mkdir -p "$failing_bin"
+printf '%s\n' '#!/usr/bin/env bash' 'mkdir -p "$2/Contents"' 'exit 1' >"$failing_bin/ditto"
+chmod +x "$failing_bin/ditto"
+if PATH="$failing_bin:$PATH" wilted_replace_bundle "$swap_root/build/Wilted.app" "$installed"; then
+    fail 'replace reported success after a failed copy'
+elif [[ "$(cat "$installed/Contents/Resources/marker" 2>/dev/null)" != old || -e "$installed.installing" ]]; then
+    fail 'a failed copy changed or removed the installed bundle'
+else
+    pass 'a failed copy leaves the installed bundle in place'
+fi
+if ! wilted_replace_bundle "$swap_root/build/Wilted.app" "$installed"; then
+    fail 'replace failed for a good signed copy'
+elif [[ "$(cat "$installed/Contents/Resources/marker")" != new || -e "$installed.installing" || -e "$installed.previous" ]]; then
+    fail 'a good copy did not replace the bundle cleanly'
+else
+    pass 'a good copy replaces the bundle with no leftovers'
+fi
+assert_installer_contains 'wilted_replace_bundle "$app" "$target"' \
+    'installs through the staged bundle replace'
+if grep -Fq 'rm -rf "$target"' "$installer"; then
+    fail 'installer still deletes the installed bundle before copying'
+fi
+
 bash -n "$installer" || fail 'installer failed a syntax check'
 bash -n "$library" || fail 'identity library failed a syntax check'
 

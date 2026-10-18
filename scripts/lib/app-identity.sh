@@ -137,3 +137,32 @@ wilted_sweep_registrations() {
     "$lsregister" -f "$keep" >/dev/null 2>&1 || true
     return 0
 }
+
+# Replaces the bundle at <target> with a copy of <source> so a failed or
+# interrupted copy never leaves no app installed. The copy is staged beside the
+# target under a name LaunchServices does not treat as a bundle, its signature
+# is verified, and only then is it renamed over the old bundle. Any failure
+# before the rename leaves the installed app untouched.
+wilted_replace_bundle() {
+    local source="$1" target="$2"
+    local staged="$target.installing" previous="$target.previous"
+    rm -rf "$staged" "$previous"
+    if ! ditto "$source" "$staged"; then
+        rm -rf "$staged"
+        return 1
+    fi
+    if ! codesign --verify --strict "$staged"; then
+        rm -rf "$staged"
+        return 1
+    fi
+    if [[ -e "$target" ]] && ! mv "$target" "$previous"; then
+        rm -rf "$staged"
+        return 1
+    fi
+    if ! mv "$staged" "$target"; then
+        [[ -e "$previous" ]] && mv "$previous" "$target"
+        rm -rf "$staged"
+        return 1
+    fi
+    rm -rf "$previous"
+}
