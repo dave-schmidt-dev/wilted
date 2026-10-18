@@ -29,9 +29,21 @@ private final class Flag: @unchecked Sendable {
     var isSet: Bool { get { lock.lock(); defer { lock.unlock() }; return value } set { lock.lock(); value = newValue; lock.unlock() } }
 }
 
+/// Counts fetch attempts across copies of a transport.
+private final class FetchCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int { lock.lock(); defer { lock.unlock() }; value += 1; return value }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 /// Delegates to the in-memory transport, with hooks to hold, stall or fail media operations.
 private struct ScriptedTransport: LibraryTransport {
-    enum Delivery: Sendable { case normal, holdAfter(bytes: Int64, gate: Gate), neverDelivers }
+    enum Delivery: Sendable {
+        case normal, holdAfter(bytes: Int64, gate: Gate), neverDelivers
+        /// The first `times` fetches fail as a dropped connection would; later ones deliver.
+        case failFirst(times: Int, counter: FetchCounter)
+    }
 
     let inner: InMemoryLibraryTransport
     var delivery: Delivery = .normal
@@ -67,6 +79,9 @@ private struct ScriptedTransport: LibraryTransport {
         case .neverDelivers:
             try await Task.sleep(for: .seconds(60))
             throw LibraryTransportError.transport("unreachable")
+        case let .failFirst(times, counter):
+            if counter.next() <= times { throw URLError(.networkConnectionLost) }
+            return try await inner.fetchMedia(offer, progress: progress)
         }
     }
 }
@@ -354,7 +369,30 @@ final class LibraryMediaModelTests: XCTestCase {
         model.performMediaAction(.request, entryID: entryID)
         await model.waitForMedia(entryID: entryID)
         guard case let .failed(reason) = model.mediaState(for: entryID) else { return XCTFail("expected failed") }
-        XCTAssertTrue(reason.contains("has not answered"), reason)
+        XCTAssertEqual(reason, "The Mac did not send this episode. Open Wilted on the Mac and try again.")
+    }
+
+    func testTransientFetchFailuresRetryOnTheirOwnAndShowTheAttempt() async throws {
+        try await macPublish(makeOffer())
+        let counter = FetchCounter()
+        let held = Gate()
+        var timing = fast
+        timing.retrySleep = { _ in await held.wait() }
+        let model = makeModel(.failFirst(times: 2, counter: counter), timing: timing)
+        model.performMediaAction(.request, entryID: entryID)
+
+        let retrying = LibraryMediaRetry(attempt: 2, attempts: 3)
+        try await eventually("first retry shown") {
+            if case let .requested(_, retry) = model.mediaState(for: self.entryID), retry == retrying { return true }
+            return false
+        }
+        XCTAssertEqual(model.mediaState(for: entryID).statusText(), "Retrying (2 of 3)")
+        XCTAssertTrue(model.mediaState(for: entryID).isInFlight, "a retry can still be cancelled")
+
+        await held.open()
+        await model.waitForMedia(entryID: entryID)
+        XCTAssertEqual(model.mediaState(for: entryID), .onPhone, "no manual Retry was needed")
+        XCTAssertEqual(counter.count, 3)
     }
 
     func testStalledDownloadFailsAfterTheWatchdog() async throws {
@@ -483,6 +521,34 @@ final class LibraryMediaModelTests: XCTestCase {
         XCTAssertEqual(LibraryMediaState.onPhone.statusText(), "On phone")
         XCTAssertEqual(LibraryMediaState.failed("x").statusText(), "Failed: x")
         XCTAssertEqual(LibraryMediaState.notPrepared.statusText(), "Not prepared on Mac")
+        let retrying = LibraryMediaState.requested(since: start, retry: LibraryMediaRetry(attempt: 3, attempts: 3))
+        XCTAssertEqual(retrying.statusText(elapsed: 5), "Retrying (3 of 3)")
+    }
+
+    func testFailureTextIsAPlainSentenceForEveryMappedCause() {
+        var reasons = MediaFetchFailure.allCases.map { MediaFailureReason.deliveryFailed($0.rawValue) }
+        reasons += [
+            .timedOut, .hashMismatch, .byteCountMismatch(expected: 2, actual: 1),
+            // Free text from an older producer is never shown either.
+            .deliveryFailed("transport(\"no ready media is offered for item-a\")"),
+            .cacheFailed("CocoaError(Code=512)"),
+        ]
+        var texts = reasons.map { LibraryAppModel.text(for: $0) }
+        let errors: [any Error] = [
+            URLError(.notConnectedToInternet), LibraryTransportError.transport("media transfer stalled (300 s)"),
+            LibraryTransportError.ownershipViolation("phone may not publish media"), LibraryTransportError.superseded,
+        ]
+        texts += errors.map { LibraryAppModel.mediaText(for: $0) }
+        for text in texts {
+            XCTAssertFalse(text.contains("(") || text.contains(")"), "enum syntax leaked into: \(text)")
+            XCTAssertTrue(text.hasSuffix("."), text)
+        }
+        let byCause = MediaFetchFailure.allCases.map { LibraryAppModel.text(for: $0) }
+        XCTAssertEqual(Set(byCause).count, MediaFetchFailure.allCases.count, "each cause has its own sentence")
+        XCTAssertEqual(LibraryAppModel.text(for: .deliveryFailed(MediaFetchFailure.offline.rawValue)),
+                       "The phone could not reach iCloud. Check the connection and try again.")
+        XCTAssertEqual(LibraryAppModel.text(for: .deliveryFailed(MediaFetchFailure.tooLarge.rawValue)),
+                       "The episode is too large to send to the phone.")
     }
 
     func testLegacyReadyOfferCannotDownloadOrPromoteToOnPhone() async throws {
