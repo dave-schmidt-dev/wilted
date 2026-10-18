@@ -27,7 +27,9 @@ cleanup_phase0_initialization() {
   wilted_temp_remove_owned_pair "$tmp_root" "$inherited_tmp" wilted-phase0. "$audit_root" "$audit_parent" phase0-temp-audit.
 }
 
-trap 'status=$?; cleanup_phase0_initialization; exit "$status"' EXIT
+# Initialization never ends phase 0 successfully, and a parse error leaves $?
+# at 0, so a 0 here fails closed.
+trap 'status=$?; cleanup_phase0_initialization; (( status != 0 )) || { printf "phase0.error stopped during initialization\n" >&2; status=1; }; exit "$status"' EXIT
 trap 'cleanup_phase0_initialization; exit 130' INT
 trap 'cleanup_phase0_initialization; exit 143' TERM
 trap 'cleanup_phase0_initialization; exit 129' HUP
@@ -71,6 +73,7 @@ stop_active_legs() {
   done
 }
 
+phase0_verdict_reached=0
 cleanup_phase0() {
   local status=$?
   trap - EXIT INT TERM HUP
@@ -80,6 +83,11 @@ cleanup_phase0() {
   tmp_root=""
   wilted_temp_finish_audit "$inherited_tmp" "$audit_root" "$audit_root/parent-before.json" phase0-parent "$audit_parent" phase0-temp-audit. || true
   audit_root=""
+  # A parse error or unplanned exit before the verdict leaves $? at 0.
+  if [[ "$status" -eq 0 && "$phase0_verdict_reached" -ne 1 ]]; then
+    printf 'phase0.error stopped before its verdict\n' >&2
+    status=1
+  fi
   return "$status"
 }
 
@@ -335,3 +343,4 @@ if (( failed_legs > 0 )); then
   exit 1
 fi
 print_leg_status "phase0.passed count=${total_legs}"
+phase0_verdict_reached=1

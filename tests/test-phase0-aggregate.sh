@@ -333,4 +333,32 @@ assert all(entry["environment"]["WILTED_MAC_UI"] == "0" for entry in entries), e
 print("validate-inner environment isolation passed: meta=5 native=1 recipes=8")
 PY
 
+# A gate copy cut off right after one of its EXIT traps and ending in a parse
+# error must fail. Bash leaves $? at 0 for a parse error, so a trap that only
+# returned $? let an edit made during a run turn a failed leg into a pass.
+truncated_gate_status() {
+  local source="$1" stop="$2" fixture="$3" helper copy
+  mkdir -p "$fixture/scripts" "$fixture/tmp"
+  ln -s "$repo_root/scripts/lib" "$fixture/scripts/lib"
+  for helper in run-bounded.py check-temp-leaks.py build-with-cache.py; do
+    ln -s "$repo_root/scripts/$helper" "$fixture/scripts/$helper"
+  done
+  copy="$fixture/scripts/$(basename "$source")"
+  awk -v stop="$stop" '{ print } $0 == stop { exit }' "$source" >"$copy"
+  grep -Fxq -- "$stop" "$copy" || { printf 'truncation line missing: %s\n' "$stop" >&2; exit 1; }
+  printf '%s\n' 'echo "unterminated' >>"$copy"
+  set +e
+  env TMPDIR="$fixture/tmp" bash "$copy" >"$fixture/output.log" 2>&1
+  local result=$?
+  set -e
+  printf '%s\n' "$result"
+}
+
+for truncation in "trap 'cleanup_phase0_initialization; exit 129' HUP|during initialization" "trap 'cleanup_phase0; exit 129' HUP|before its verdict"; do
+  truncated_status="$(truncated_gate_status "$phase0_script" "${truncation%%|*}" "$tmp_dir/truncated-${truncation##*|}")"
+  [[ "$truncated_status" -ne 0 ]] || { cat "$tmp_dir/truncated-${truncation##*|}/output.log" >&2; printf 'a truncated phase 0 passed\n' >&2; exit 1; }
+  grep -Fq "phase0.error stopped ${truncation##*|}" "$tmp_dir/truncated-${truncation##*|}/output.log" || {
+    cat "$tmp_dir/truncated-${truncation##*|}/output.log" >&2; exit 1; }
+done
+
 printf '%s\n' "phase0 aggregate meta-test passed (self-test count=${expected_count})"
