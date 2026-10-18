@@ -10,11 +10,12 @@ import WiltedPlayback
 ///
 /// A separate class from `AVFoundationAudioEngine` because speed needs `enableRate` set before
 /// the player prepares, and that engine's player is private to its package.
-nonisolated final class LibraryAudioEngine: NSObject, ListenerAudioEngine, LibraryRateAdjustable, LibraryAudioUnloading, AVAudioPlayerDelegate, @unchecked Sendable {
+nonisolated final class LibraryAudioEngine: NSObject, ListenerAudioEngine, LibraryRateAdjustable, LibraryAudioUnloading, LibraryCompletingAudioEngine, AVAudioPlayerDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var player: AVAudioPlayer?
     private var generation: UInt64 = 0
-    private var completion: (@Sendable (UInt64) -> Void)?
+    private var completion: (@Sendable (UInt64, Bool) -> Void)?
+    private var legacyCompletion: (@Sendable (UInt64) -> Void)?
     private var desiredRate: Float = 1
 
     var duration: Double { lock.withLock { player?.duration ?? 0 } }
@@ -48,15 +49,25 @@ nonisolated final class LibraryAudioEngine: NSObject, ListenerAudioEngine, Libra
     func clearAudio() { lock.withLock { player?.stop(); player?.delegate = nil; player = nil; generation &+= 1 } }
 
     func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) {
+        lock.withLock { legacyCompletion = handler }
+    }
+
+    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64, Bool) -> Void) {
         lock.withLock { completion = handler }
     }
 
     func audioPlayerDidFinishPlaying(_ finished: AVAudioPlayer, successfully flag: Bool) {
-        guard flag else { return }
-        let report: (UInt64, (@Sendable (UInt64) -> Void)?)? = lock.withLock {
-            player === finished ? (generation, completion) : nil
+        let report: (UInt64, Bool, (@Sendable (UInt64, Bool) -> Void)?, (@Sendable (UInt64) -> Void)?)? = lock.withLock {
+            guard player === finished else { return nil }
+            return (generation, flag, completion, legacyCompletion)
         }
-        if let (generation, handler) = report { handler?(generation) }
+        if let (generation, flag, handler, legacy) = report {
+            if let handler {
+                handler(generation, flag)
+            } else if flag {
+                legacy?(generation)
+            }
+        }
     }
 }
 

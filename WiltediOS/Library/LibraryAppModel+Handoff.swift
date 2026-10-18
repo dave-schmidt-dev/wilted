@@ -100,6 +100,23 @@ extension LibraryAppModel {
         player.onFinished = { [weak self] ended, autoPlayNext in
             Task { @MainActor [weak self] in await self?.episodeFinished(ended, autoPlayNext: autoPlayNext) }
         }
+        player.onWillReplaceItem = { [weak self] outgoingID, position in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let saveTask = self.savePositionLocally(for: outgoingID, position: position)
+                let reportedPlaying = self.handoffState.reportedPlaying && self.handoffState.reportedEntry == outgoingID
+                if reportedPlaying { self.handoffState.reportedPlaying = false }
+                let previous = self.handoffState.chain
+                self.handoffState.chain = Task { @MainActor [weak self] in
+                    await previous?.value
+                    await saveTask.value
+                    guard let self else { return }
+                    if reportedPlaying {
+                        await self.publishPause(outgoingID, at: position, stopped: false, clock: self.now())
+                    }
+                }
+            }
+        }
         handoffState.subscriptions.removeAll()
         handoffState.player = player
         handoffState.interruptions = NSClassFromString("XCTestCase") == nil
@@ -228,18 +245,7 @@ extension LibraryAppModel {
             let paused = item == nil
                 ? entryID.flatMap { state.unpublished[$0]?.position } ?? state.lastPosition
                 : position
-            var published = true
-            do {
-                if item == nil { try await coordinator.stopped(at: paused) } else { try await coordinator.paused(at: paused) }
-            } catch {
-                published = false
-                handoffLog.error("Could not publish the pause: \(String(describing: error), privacy: .public)")
-            }
-            if let entryID {
-                await rememberOwnPosition(entryID, position: paused)
-                if !published { state.unpublished[entryID] = (paused, clock) } else { state.unpublished[entryID] = nil }
-            }
-            await updateSyncTick()
+            await publishPause(entryID, at: paused, stopped: item == nil, clock: clock)
         } else if let item, state.lastItemEntry == item.entryID, abs(position - state.lastPosition) > 0.01 {
             // The coordinator's session speaks for a seek only while it is this entry's, still exists
             // and has not been outranked by another device's epoch since (a Mac takeover): its
@@ -259,6 +265,23 @@ extension LibraryAppModel {
         }
     }
 
+    /// Publishes a pause (or a stop) and notes whether it reached the server, so the next sync
+    /// retries one that did not.
+    private func publishPause(_ entryID: ItemID?, at position: Double, stopped: Bool, clock: Date) async {
+        var published = true
+        do {
+            if stopped { try await coordinator.stopped(at: position) } else { try await coordinator.paused(at: position) }
+        } catch {
+            published = false
+            handoffLog.error("Could not publish the pause: \(String(describing: error), privacy: .public)")
+        }
+        if let entryID {
+            await rememberOwnPosition(entryID, position: position)
+            handoffState.unpublished[entryID] = published ? nil : (position, clock)
+        }
+        await updateSyncTick()
+    }
+
     /// Writes the loaded episode's position to the phone's own store now, outside the handoff event
     /// chain. The chain waits on the network (a pause publish, or an earlier call that is still
     /// hanging in a car park), and a locked, backgrounded phone is suspended before it gets there:
@@ -267,9 +290,7 @@ extension LibraryAppModel {
     /// and the next sync publishes it.
     /// Returns the queued save so callers can wait for local persistence.
     @discardableResult
-    func saveLoadedPositionLocally(_ position: Double? = nil) -> Task<Void, Never>? {
-        guard let player = handoffState.player, let entryID = player.item?.entryID else { return nil }
-        let position = position ?? player.position
+    func savePositionLocally(for entryID: ItemID, position: Double) -> Task<Void, Never> {
         let token = (handoffState.localSaveTokens[entryID] ?? 0) &+ 1
         handoffState.localSaveTokens[entryID] = token
         handoffState.lastLocalSave = position
@@ -279,6 +300,13 @@ extension LibraryAppModel {
             guard self.handoffState.localSaveTokens[entryID] == token, self.handoffState.ownPositions[entryID] != nil else { return }
             self.handoffState.unpublished[entryID] = (position, self.now())
         }
+    }
+
+    /// Returns the queued save so callers can wait for local persistence.
+    @discardableResult
+    func saveLoadedPositionLocally(_ position: Double? = nil) -> Task<Void, Never>? {
+        guard let player = handoffState.player, let entryID = player.item?.entryID else { return nil }
+        return savePositionLocally(for: entryID, position: position ?? player.position)
     }
 
     /// Keeps this phone's own last position current between device-record fetches, so returning to
