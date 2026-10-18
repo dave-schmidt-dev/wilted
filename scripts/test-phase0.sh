@@ -291,44 +291,15 @@ if [[ -n "${PHASE0_INTERRUPT_TEST_LEG:-}" ]]; then
   exit "$failed_legs"
 fi
 
-run_leg_async "test-build-with-cache" "$repo_root/tests/test-build-with-cache.sh"
-run_leg_async "test-bounded-entry" "$repo_root/tests/test-bounded-entry.sh"
-run_leg_async "test-runtime-static-admission" "$repo_root/tests/test-runtime-static-admission.sh"
-run_leg_async "test-no-global-tmp" "$repo_root/tests/test-no-global-tmp.sh"
-run_leg_async "assert-mac-first-docs" "$repo_root/tests/test-mac-first-docs.sh"
-run_leg_async "test-contract-fixtures" "$repo_root/tests/test-contract-fixtures.sh"
-run_leg_async "test-domain-contract" "$repo_root/tests/test-domain-contract.sh"
-run_leg_async "test-cloudkit-contract" "$repo_root/tests/test-cloudkit-contract.sh"
-run_leg_async "test-article-extraction-probe" "$repo_root/tests/test-article-extraction-probe.sh"
-run_leg_async "test-speech-ipc-probe" "$repo_root/tests/test-speech-ipc-probe.sh"
-run_leg_async "test-persistence-probe" "$repo_root/tests/test-persistence-probe.sh"
-run_leg_async "test-audio-contract-probe" "$repo_root/tests/test-audio-contract-probe.sh"
-run_leg_async "test-audit-walkthrough" "$repo_root/tests/test-audit-walkthrough.sh"
-run_leg_async "test-pipeline-worker" "$repo_root/tests/test-pipeline-worker.sh"
-run_leg_async "test-preparation-runtime" "$repo_root/tests/test-preparation-runtime.sh"
-run_leg_async "test-install-mac-app" "$repo_root/tests/test-install-mac-app.sh"
-run_leg_async "test-install-mac-contract" "$repo_root/tests/test-install-mac-contract.sh"
-run_leg_async "test-temp-sweep" "$repo_root/tests/test-temp-sweep.sh"
-run_leg_async "test-storage-retention" "$repo_root/tests/test-storage-retention.sh"
-run_leg_async "test-temp-leaks" "$repo_root/tests/test-temp-leaks.sh"
-run_leg_async "test-git-hooks" "$repo_root/tests/test-git-hooks.sh"
-run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"
-run_leg_async "test-native-ui-receipt" "$repo_root/tests/test-native-ui-receipt.sh"
-run_leg_async "test-native-gate-parallel" "$repo_root/tests/test-native-gate-parallel.sh"
-run_leg_async "test-native-gate-xcode" "$repo_root/tests/test-native-gate-xcode.sh"
-run_leg_async "test-native-gate-legs" "$repo_root/tests/test-native-gate-legs.sh"
-run_leg_async "test-release-wrappers" "$repo_root/tests/test-release-wrappers.sh"
-run_leg_async "test-file-size" "$repo_root/tests/test-file-size.sh"
-run_leg_async "test-attended-library-sync" "$repo_root/tests/test-attended-library-sync.sh"
-run_leg_async "test-attended-nested-signature" "$repo_root/tests/test-attended-nested-signature.sh"
-run_leg_async "test-test-product-metadata" "$repo_root/tests/test-test-product-metadata.sh"
-run_leg_async "test-record-ios-snapshots" "$repo_root/tests/test-record-ios-snapshots.sh"
-if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
-  run_leg_async "test-audio-contract-ios-build" "$repo_root/tests/test-audio-contract-ios-build.sh"
-fi
-if [[ -f "$repo_root/tests/test-audio-budget-evidence.sh" ]]; then
-  run_leg_async "test-audio-budget-evidence" "$repo_root/tests/test-audio-budget-evidence.sh"
-fi
+# The one list of parallel legs; the aggregate meta-test reads the same file.
+phase0_legs=()
+while read -r leg_name leg_script; do
+  [[ -z "$leg_name" || "$leg_name" == \#* ]] && continue
+  phase0_legs+=("$leg_name" "$leg_script")
+done <"$repo_root/scripts/phase0-legs.list"
+for ((leg_index = 0; leg_index < ${#phase0_legs[@]}; leg_index += 2)); do
+  run_leg_async "${phase0_legs[leg_index]}" "$repo_root/tests/${phase0_legs[leg_index + 1]}"
+done
 
 collect_parallel_legs
 
