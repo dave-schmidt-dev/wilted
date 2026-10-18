@@ -56,15 +56,18 @@ final class WatchViewModelTests: XCTestCase {
         return Rig(model: model, clock: clock, sender: sender)
     }
 
-    private func snapshot(rate: Double = 1.25) -> WatchSnapshot {
+    private func snapshot(
+        rate: Double = 1.25, isPlaying: Bool = true, positionSeconds: Double = 12,
+        publishedAt: Date? = Date(timeIntervalSince1970: 1_000_000)
+    ) -> WatchSnapshot {
         WatchSnapshot(
             nowPlaying: NowPlaying(
                 episodeID: "ep-1", title: "Episode One", showTitle: "Show One",
-                positionSeconds: 12, durationSeconds: 600, isPlaying: true),
+                positionSeconds: positionSeconds, durationSeconds: 600, isPlaying: isPlaying),
             upNext: [UpNextRow(episodeID: "ep-2", title: "Episode Two", showTitle: "Show One")],
             rate: rate,
             sleep: .off,
-            publishedAt: Date(timeIntervalSince1970: 900_000))
+            publishedAt: publishedAt)
     }
 
     private func receiveSnapshot(_ rig: Rig, rate: Double = 1.25) throws {
@@ -240,6 +243,29 @@ final class WatchViewModelTests: XCTestCase {
         XCTAssertEqual(rig.model.ageText, "Updated 5 min ago")
     }
 
+    func testAgeTextUsesPublishedAtInsteadOfReceiptTime() throws {
+        let rig = makeRig()
+        rig.model.receive(context: try WatchLinkCodec.encode(
+            snapshot(publishedAt: rig.clock.now.addingTimeInterval(-120))))
+        XCTAssertEqual(rig.model.ageText, "Updated 2 min ago")
+    }
+
+    func testAgeTextClampsAFuturePublishedAtToNow() throws {
+        let rig = makeRig()
+        rig.model.receive(context: try WatchLinkCodec.encode(
+            snapshot(publishedAt: rig.clock.now.addingTimeInterval(600))))
+        XCTAssertEqual(rig.model.ageText, "Updated just now")
+    }
+
+    func testAgeTextFallsBackToReceiptTimeWithoutPublishedAt() throws {
+        let rig = makeRig()
+        rig.model.receive(context: try WatchLinkCodec.encode(snapshot(publishedAt: nil)))
+        XCTAssertEqual(rig.model.ageText, "Updated just now")
+
+        rig.clock.advance(seconds: 120)
+        XCTAssertEqual(rig.model.ageText, "Updated 2 min ago")
+    }
+
     func testUnreachableNoteIsNilWhenReachable() throws {
         let rig = makeRig()
         try receiveSnapshot(rig)
@@ -294,8 +320,7 @@ final class WatchViewModelTests: XCTestCase {
         }
         XCTAssertTrue(model.hasPendingSpeed)
         XCTAssertTrue(model.hasPendingSleep)
-        model.receive(context: try WatchLinkCodec.encode(snapshot()))
-        XCTAssertTrue(model.pendingControls.isEmpty)
+        XCTAssertEqual(model.pendingControls.count, actions.count, "each action keeps its own pending key")
     }
 
     func testRejectedCommandsNeverBecomePending() throws {
@@ -310,14 +335,90 @@ final class WatchViewModelTests: XCTestCase {
         XCTAssertTrue(model.pendingControls.isEmpty)
     }
 
-    func testOnlyAValidSnapshotClearsPending() throws {
+    // MARK: Pending confirmation
+
+    func testASnapshotPublishedBeforeTheCommandWasAppliedKeepsPending() throws {
         let sleeper = PendingSleeper()
         let model = try readyModel(sleeper: sleeper)
         XCTAssertTrue(model.send(.toggle))
-        model.receive(context: [:])
+        let raced = snapshot(isPlaying: true, publishedAt: Date(timeIntervalSince1970: 1_000_100))
+        model.receive(context: try WatchLinkCodec.encode(raced))
+        XCTAssertTrue(model.isPending(.toggle), "a publish that raced the command cannot confirm it")
+        XCTAssertNil(model.commandFailed)
+    }
+
+    func testUnrelatedFieldsOfAStaleSnapshotDoNotClearPending() throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        XCTAssertTrue(model.send(.setRate(1.5)))
+        let unrelated = snapshot(rate: 1.25, isPlaying: false, positionSeconds: 300,
+            publishedAt: Date(timeIntervalSince1970: 1_000_100))
+        model.receive(context: try WatchLinkCodec.encode(unrelated))
+        XCTAssertTrue(model.isPending(.setRate(1.5)), "another field changing cannot confirm the rate")
+    }
+
+    func testASnapshotShowingTheRequestedValueClearsPending() throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        let appliedAt = Date(timeIntervalSince1970: 1_000_100)
+
+        XCTAssertTrue(model.send(.toggle))
+        model.receive(context: try WatchLinkCodec.encode(snapshot(isPlaying: false, publishedAt: appliedAt)))
+        XCTAssertFalse(model.isPending(.toggle), "the applied pause clears the toggle")
+
+        XCTAssertTrue(model.send(.setRate(1.5)))
+        model.receive(context: try WatchLinkCodec.encode(snapshot(
+            rate: 1.5, isPlaying: false, publishedAt: appliedAt.addingTimeInterval(1))))
+        XCTAssertFalse(model.hasPendingSpeed)
+
+        XCTAssertTrue(model.send(.skipForward))
+        model.receive(context: try WatchLinkCodec.encode(snapshot(
+            rate: 1.5, isPlaying: false, positionSeconds: 40,
+            publishedAt: appliedAt.addingTimeInterval(2))))
+        XCTAssertFalse(model.isPending(.skipForward), "the moved position clears the skip")
+    }
+
+    func testARejectionClearsPendingAndSetsTheNote() throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        XCTAssertTrue(model.send(.toggle))
+
+        model.commandDidFail(WatchCommand(action: .toggle), note: "iPhone didn't apply that. Try again.")
+
+        XCTAssertFalse(model.isPending(.toggle))
+        XCTAssertEqual(model.commandFailed, "iPhone didn't apply that. Try again.")
+    }
+
+    func testAnUndeliverableCommandClearsPendingAndSetsTheNote() throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        XCTAssertTrue(model.send(.skipBack))
+
+        model.commandDidFail(WatchCommand(action: .skipBack), note: "iPhone isn't reachable.")
+
+        XCTAssertFalse(model.isPending(.skipBack))
+        XCTAssertEqual(model.commandFailed, "iPhone isn't reachable.")
+    }
+
+    func testUndecodableContextKeepsPending() throws {
+        let sleeper = PendingSleeper()
+        let model = try readyModel(sleeper: sleeper)
+        XCTAssertTrue(model.send(.toggle))
+        XCTAssertFalse(model.receive(context: [:]))
         XCTAssertTrue(model.isPending(.toggle))
-        model.receive(context: try WatchLinkCodec.encode(snapshot()))
-        XCTAssertTrue(model.pendingControls.isEmpty)
+    }
+
+    func testAPendingControlExpiresOnceTheInjectedClockPassesTheTimeout() throws {
+        let rig = makeRig()
+        try receiveSnapshot(rig)
+        rig.model.isPhoneReachable = true
+        XCTAssertTrue(rig.model.send(.toggle))
+        XCTAssertTrue(rig.model.isPending(.toggle))
+
+        rig.clock.advance(seconds: WatchViewModel.pendingTimeout + 1)
+        rig.model.receive(context: try WatchLinkCodec.encode(snapshot()))
+
+        XCTAssertFalse(rig.model.isPending(.toggle), "the bounded timeout releases a command the phone never confirmed")
     }
 
     func testThreeSecondExpiryClearsOnlyItsMatchingControl() async throws {
@@ -346,7 +447,9 @@ final class WatchViewModelTests: XCTestCase {
         XCTAssertTrue(model.send(.toggle))
         await waitUntil { sleeper.waits.count == 1 }
         let oldExpiry = try XCTUnwrap(model.pendingExpiryTasks[.toggle])
-        model.receive(context: try WatchLinkCodec.encode(snapshot()))
+        let applied = snapshot(isPlaying: false, publishedAt: Date(timeIntervalSince1970: 1_000_001))
+        model.receive(context: try WatchLinkCodec.encode(applied))
+        XCTAssertFalse(model.isPending(.toggle), "the applied pause confirms the first tap")
         XCTAssertTrue(model.send(.toggle))
         await waitUntil { sleeper.waits.count == 2 }
         sleeper.finish(0)
@@ -356,16 +459,15 @@ final class WatchViewModelTests: XCTestCase {
         await waitUntil { !model.isPending(.toggle) }
     }
 
-    func testSynchronousSnapshotDeliveryDoesNotRemarkPending() throws {
+    func testSynchronousSnapshotDeliveryCannotConfirmTheJustSentCommand() throws {
         let sleeper = PendingSleeper()
         let context = try WatchLinkCodec.encode(snapshot())
         var model: WatchViewModel!
         model = try readyModel(sleeper: sleeper) { _ in model.receive(context: context) }
         defer { model.commandSender = nil }
         XCTAssertTrue(model.send(.toggle))
-        XCTAssertTrue(model.pendingControls.isEmpty)
-        XCTAssertTrue(model.send(.toggle))
-        XCTAssertTrue(model.pendingControls.isEmpty)
+        XCTAssertTrue(model.isPending(.toggle), "a snapshot captured before the command cannot confirm it")
+        XCTAssertFalse(model.send(.toggle))
     }
 
     func testAllSpeedTextMatchesBothPhoneFormatters() {

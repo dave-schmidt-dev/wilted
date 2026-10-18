@@ -1,7 +1,11 @@
 import Combine
 import Foundation
+import OSLog
 import WiltedDomain
 import WiltedLibrary
+
+/// The iPhone's watch link log; snapshot and command payloads are never logged.
+private let bridgeLog = Logger(subsystem: "com.zerodelta.wilted", category: "WatchBridge")
 
 /// The phone state the bridge publishes, reduced to watch-sized reads. `LibraryWatchSource` wraps
 /// the Larder's model and player; a test fake stands in without a library.
@@ -155,10 +159,28 @@ final class WatchBridge {
            now().timeIntervalSince(lastPublishedAt) < positionRepublishInterval {
             return
         }
-        guard let context = try? WatchLinkCodec.encode(snapshot) else { return }
-        guard (try? session.updateApplicationContext(context)) != nil else { return }
+        guard let context = encodeSnapshot(snapshot) else { return }
+        do { try session.updateApplicationContext(context) }
+        catch {
+            let nsError = error as NSError
+            bridgeLog.error("Watch context update failed: \(nsError.domain, privacy: .public) code \(nsError.code, privacy: .public)")
+            return
+        }
         lastPublished = snapshot
         lastPublishedAt = now()
+    }
+
+    private func encodeSnapshot(_ snapshot: WatchSnapshot) -> [String: Any]? {
+        do { return try WatchLinkCodec.encode(snapshot) }
+        catch {
+            bridgeLog.error("Watch snapshot encoding failed: \(Self.encodeFailureReason(error), privacy: .public)")
+            return nil
+        }
+    }
+
+    private static func encodeFailureReason(_ error: Error) -> String {
+        if let linkError = error as? WatchLinkError { return String(describing: linkError) }
+        return String(describing: type(of: error))
     }
 
     private func sleepState() -> SleepState {
@@ -267,6 +289,7 @@ extension WatchBridge: WatchSessionDelegate {
             return
         }
         guard let command = try? WatchLinkCodec.decodeCommand(message) else {
+            bridgeLog.error("Watch command did not decode; refusing it")
             replyHandler(Self.rejectionReply(.invalidCommand))
             return
         }
