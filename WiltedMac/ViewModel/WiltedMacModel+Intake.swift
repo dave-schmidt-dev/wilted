@@ -209,6 +209,9 @@ extension WiltedMacModel {
             self.preparationRun = nil
             self.refresh()
         }
+        return true
+#else
+        return false
 #endif
     }
 
