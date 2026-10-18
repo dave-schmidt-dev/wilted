@@ -148,6 +148,7 @@ public actor PreparationCoordinator {
                 }
             }
             try Task.checkCancellation()
+            let textHash = SHA256.hash(data: Data(extracted.body.utf8)).map { String(format: "%02x", $0) }.joined()
             let itemID = try ItemID.derive(from: extracted.canonicalURL)
             resolvedItemIDsByRun[runID] = itemID
             await emitter.setItemID(itemID)
@@ -157,6 +158,19 @@ public actor PreparationCoordinator {
             )
             try await store.save(article: article)
             await emitter.emit(.extracting, "Article text ready", fraction: 0.35)
+
+            // The revision identity is derived from the extracted text, so the
+            // same article always names the same revision. When it is already
+            // ready, re-adding the article must reuse it instead of paying for
+            // synthesis and hitting the immutable-revision conflict.
+            let expectedRevisionID = try AudioAssembler.derivedRevisionID(extractedTextSHA256: textHash)
+            if let stored = try await store.readyRevision(for: itemID, revisionID: expectedRevisionID),
+               FileManager.default.fileExists(atPath: stored.mediaURL.path) {
+                let terminal = try PreparationTerminalResult(outcome: .succeeded, revisionID: stored.revision.revisionID)
+                await emitter.emit(.completed, "Ready to play", fraction: 1, terminal: terminal)
+                await finishRun(runID: runID, candidateURL: candidateURL, candidateCommitted: candidateCommitted, emitter: emitter)
+                return
+            }
 
             await emitter.emit(.synthesizing, "Generating speech", fraction: 0.4)
             let speech: SpeechSynthesisResult
@@ -190,7 +204,6 @@ public actor PreparationCoordinator {
             // The candidate exists before the revision does; a sweep that runs
             // during synthesis must not reclaim it.
             store.inFlightMedia.begin(destination)
-            let textHash = SHA256.hash(data: Data(extracted.body.utf8)).map { String(format: "%02x", $0) }.joined()
             let result: AudioAssemblyResult
             if let assemblyOperation {
                 result = try await assemblyOperation(speech.samples, itemID, destination, textHash)
@@ -239,18 +252,29 @@ public actor PreparationCoordinator {
             } else {
                 lifetimeStatistics = []
             }
-            if let saveOperation {
-                try await saveOperation(result, transcript, lifetimeStatistics)
-            } else {
-                try await store.saveReadyRevision(
-                    result.revision,
-                    mediaURL: result.mediaURL,
-                    transcript: transcript,
-                    lifetimeStatistics: lifetimeStatistics
-                )
+            var publishedRevisionID = result.revision.revisionID
+            do {
+                if let saveOperation {
+                    try await saveOperation(result, transcript, lifetimeStatistics)
+                } else {
+                    try await store.saveReadyRevision(
+                        result.revision,
+                        mediaURL: result.mediaURL,
+                        transcript: transcript,
+                        lifetimeStatistics: lifetimeStatistics
+                    )
+                }
+                candidateCommitted = true
+            } catch {
+                // A concurrent save published this exact identity while this run
+                // was synthesizing. The durable revision wins, and the candidate
+                // stays uncommitted so the cleanup below removes it.
+                guard let stored = try await storedRevisionMatchingFailedWrite(
+                    error, attemptedRevisionID: result.revision.revisionID, itemID: result.revision.itemID
+                ) else { throw error }
+                publishedRevisionID = stored.revision.revisionID
             }
-            candidateCommitted = true
-            let terminal = try PreparationTerminalResult(outcome: .succeeded, revisionID: result.revision.revisionID)
+            let terminal = try PreparationTerminalResult(outcome: .succeeded, revisionID: publishedRevisionID)
             await emitter.emit(.completed, "Ready to play", fraction: 1, terminal: terminal)
         } catch is CancellationError, AudioAssemblerError.cancelled {
             let terminal = try? PreparationTerminalResult(outcome: .cancelled)
@@ -263,6 +287,16 @@ public actor PreparationCoordinator {
             let terminal = producerError.flatMap { try? PreparationTerminalResult(outcome: .failed, error: $0) }
             await emitter.emit(.failed, producerError?.message ?? "Preparation failed", terminal: terminal)
         }
+        await finishRun(runID: runID, candidateURL: candidateURL, candidateCommitted: candidateCommitted, emitter: emitter)
+    }
+
+    /// Closes one run: releases the candidate it owns and finishes its stream.
+    private func finishRun(
+        runID: UUID,
+        candidateURL: URL?,
+        candidateCommitted: Bool,
+        emitter: PreparationEmitter
+    ) async {
         if let candidateURL {
             if !candidateCommitted {
                 try? FileManager.default.removeItem(at: candidateURL)
@@ -276,6 +310,24 @@ public actor PreparationCoordinator {
             activeTask = nil
             activeRunID = nil
         }
+    }
+
+    /// The stored revision a failed immutable-revision write can resolve to.
+    ///
+    /// Only a conflict for this exact content identity whose media is still on
+    /// disk is the benign concurrent-save race; every other conflict is the
+    /// caller's failure to surface.
+    private func storedRevisionMatchingFailedWrite(
+        _ error: Error,
+        attemptedRevisionID: RevisionID,
+        itemID: ItemID
+    ) async throws -> StoredAudioRevision? {
+        guard let storeError = error as? LocalLibraryStoreError,
+              case let .immutableRevision(revisionID, _) = storeError,
+              revisionID == attemptedRevisionID,
+              let stored = try await store.readyRevision(for: itemID, revisionID: revisionID),
+              FileManager.default.fileExists(atPath: stored.mediaURL.path) else { return nil }
+        return stored
     }
 }
 
@@ -350,7 +402,11 @@ private func mapError(_ error: Error) -> ProducerErrorCode {
 }
 
 private func userMessage(_ error: Error) -> String {
-    (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    if let storeError = error as? LocalLibraryStoreError,
+       case .immutableRevision = storeError {
+        return "This article's audio already exists with different content."
+    }
+    return (error as? LocalizedError)?.errorDescription ?? String(describing: error)
 }
 
 private func isRetryable(_ error: Error) -> Bool {

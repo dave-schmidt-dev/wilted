@@ -50,6 +50,10 @@ public struct AudioAssembler: Sendable {
     public static let maxRevisionAssetBytes: Int64 = 80_000_000
     public static let mediaType = "audio/mp4"
     private static let chunkFrameCount = 4_096
+    /// The canonical audio-format input to every revision identity this
+    /// assembler derives. `assemble` and `derivedRevisionID` share it, so a
+    /// predicted identity cannot drift from the committed one.
+    private static let audioFormatCanonicalJSON = "{\"bitRate\":96000,\"channels\":1,\"codec\":\"AAC\",\"container\":\"M4A\",\"sampleRateHz\":44100}"
 
     private let maxBytes: Int64
     /// The store's in-flight registry, when the caller will commit the
@@ -63,6 +67,24 @@ public struct AudioAssembler: Sendable {
     ) {
         self.maxBytes = maxRevisionAssetBytes
         self.inFlightMedia = inFlightMedia
+    }
+
+    /// The revision identity `assemble` derives for one content identity.
+    ///
+    /// A caller can resolve this before synthesizing speech, so an already
+    /// ready revision can be reused instead of regenerated. The identity
+    /// inputs and defaults mirror `assemble`'s.
+    public static func derivedRevisionID(
+        extractedTextSHA256: String,
+        voiceID: String = "default",
+        synthesisSettingsCanonicalJSON: String = "{}"
+    ) throws -> RevisionID {
+        try RevisionID.derive(
+            extractedTextSHA256: extractedTextSHA256,
+            voiceID: voiceID,
+            synthesisSettingsCanonicalJSON: synthesisSettingsCanonicalJSON,
+            audioFormatCanonicalJSON: audioFormatCanonicalJSON
+        )
     }
 
     /// Encodes an array of mono Float32 samples and atomically publishes its ready revision.
@@ -173,11 +195,10 @@ public struct AudioAssembler: Sendable {
             throw AudioAssemblerError.invalidAudio("published hash changed")
         }
         _ = try validate(destinationURL, expectedDuration: duration)
-        let derivedRevision = try revisionID ?? RevisionID.derive(
+        let derivedRevision = try revisionID ?? Self.derivedRevisionID(
             extractedTextSHA256: extractedTextSHA256.isEmpty ? hash : extractedTextSHA256,
             voiceID: voiceID,
-            synthesisSettingsCanonicalJSON: synthesisSettingsCanonicalJSON,
-            audioFormatCanonicalJSON: "{\"bitRate\":96000,\"channels\":1,\"codec\":\"AAC\",\"container\":\"M4A\",\"sampleRateHz\":44100}"
+            synthesisSettingsCanonicalJSON: synthesisSettingsCanonicalJSON
         )
         let revision = try AudioRevision(
             itemID: itemID,
