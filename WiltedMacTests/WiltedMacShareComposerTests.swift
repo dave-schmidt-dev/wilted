@@ -11,14 +11,11 @@ import WiltedProducer
 
 @MainActor
 final class WiltedMacShareComposerTests: XCTestCase {
-    private var suiteNames: [String] = []
     private var models: [WiltedMacModel] = []
 
     override func tearDown() async throws {
         for model in models { await model.close() }
         models.removeAll()
-        suiteNames.forEach { UserDefaults().removePersistentDomain(forName: $0) }
-        suiteNames.removeAll()
         try await super.tearDown()
     }
 
@@ -255,8 +252,7 @@ final class WiltedMacShareComposerTests: XCTestCase {
     }
 
     private func makeModel() -> WiltedMacModel {
-        let suite = "com.zerodelta.wilted.mac.share-composer.\(UUID().uuidString)"
-        suiteNames.append(suite)
+        let suite = WiltedMacTestPreferences.suiteName("share-composer")
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("share-composer"),
                                    preferences: UserDefaults(suiteName: suite) ?? .standard)
         models.append(model)
