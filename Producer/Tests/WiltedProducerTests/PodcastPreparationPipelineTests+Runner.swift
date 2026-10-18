@@ -191,4 +191,102 @@ extension PodcastPreparationPipelineTests {
         }
     }
 
+    @Test func subprocessRunnerCarriesWorkerStderrTailInNoOutputError() async throws {
+        let directory = try Fixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let worker = directory.appendingPathComponent("crash.sh")
+        try """
+        #!/bin/sh
+        printf 'Traceback (most recent call last):\\n  File "worker.py", line 42\\nValueError: boom\\n' >&2
+        exit 1
+        """.write(to: worker, atomically: true, encoding: .utf8)
+        let runner = SubprocessPodcastPipelineRunner(configuration: .init(
+            interpreterURL: URL(fileURLWithPath: "/bin/sh"), workerURL: worker, timeout: 30
+        ))
+        do {
+            _ = try await runner.run(request: Data("{}".utf8)) { _ in }
+            Issue.record("expected runner to fail with no-output")
+        } catch let PodcastPreparationError.workerFailed(code, message) {
+            #expect(code == "no-output")
+            #expect(message.contains("ValueError: boom"))
+            #expect(!message.contains("\n"))
+            #expect(!message.contains("\r"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    @Test func subprocessRunnerCapsOversizedStderrInNoOutputError() async throws {
+        let directory = try Fixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let worker = directory.appendingPathComponent("noisy.sh")
+        try """
+        #!/bin/sh
+        for i in $(seq 1 200); do
+            printf 'noise line %03d: padding padding padding padding padding\\n' "$i" >&2
+        done
+        printf 'final error: noisy crash\\n' >&2
+        exit 1
+        """.write(to: worker, atomically: true, encoding: .utf8)
+        let runner = SubprocessPodcastPipelineRunner(configuration: .init(
+            interpreterURL: URL(fileURLWithPath: "/bin/sh"), workerURL: worker, timeout: 30
+        ))
+        do {
+            _ = try await runner.run(request: Data("{}".utf8)) { _ in }
+            Issue.record("expected runner to fail with no-output")
+        } catch let PodcastPreparationError.workerFailed(code, message) {
+            #expect(code == "no-output")
+            #expect(message.contains("final error: noisy crash"))
+            #expect(message.contains("…"))
+            #expect(message.count <= 700)
+            #expect(!message.contains("\n"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    @Test func subprocessRunnerExcludesProgressJSONFromStderrDiagnosticTail() async throws {
+        let directory = try Fixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let worker = directory.appendingPathComponent("progress_and_error.sh")
+        try """
+        #!/bin/sh
+        printf '{"stage":"starting","detail":"initializing"}\\n' >&2
+        printf 'Traceback (most recent call last):\\n' >&2
+        printf '{"stage":"working","detail":"in progress"}\\n' >&2
+        printf 'ValueError: failure after progress\\n' >&2
+        exit 1
+        """.write(to: worker, atomically: true, encoding: .utf8)
+        let runner = SubprocessPodcastPipelineRunner(configuration: .init(
+            interpreterURL: URL(fileURLWithPath: "/bin/sh"), workerURL: worker, timeout: 30
+        ))
+        let statuses = StatusLog()
+        do {
+            _ = try await runner.run(request: Data("{}".utf8)) { progress in
+                statuses.append(progress.stage, detail: progress.detail, fraction: progress.fraction)
+            }
+            Issue.record("expected runner to fail with no-output")
+        } catch let PodcastPreparationError.workerFailed(code, message) {
+            #expect(code == "no-output")
+            #expect(statuses.stages == ["starting", "working"])
+            #expect(message.contains("ValueError: failure after progress"))
+            #expect(!message.contains("initializing"))
+            #expect(!message.contains("in progress"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    @Test func workerOutputCollectorCutsDiagnosticTailOnUTF8BoundaryAt8KiB() {
+        let collector = WorkerOutputCollector()
+        let emoji = "😀"
+        let line = String(repeating: emoji, count: 2500)
+        collector.appendProgress(Data((line + "\n").utf8))
+        collector.flushProgress()
+        let tail = collector.diagnosticTail()
+        #expect(tail.hasPrefix("…"))
+        #expect(tail.count <= 600)
+        #expect(!tail.contains("\u{FFFD}"))
+    }
+
 }

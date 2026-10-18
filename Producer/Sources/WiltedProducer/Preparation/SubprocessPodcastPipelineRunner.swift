@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import OSLog
 import WiltedDomain
 
 /// Runs the pipeline worker as a subprocess.
@@ -175,6 +176,13 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         if let interrupted {
             try await terminateAndReap(process, exitObservation: exitObservation)
             await writer.value
+            errors.fileHandleForReading.readabilityHandler = nil
+            output.fileHandleForReading.readabilityHandler = nil
+            collector.stopReading()
+            // No drain here: a grandchild that outlived the worker can hold
+            // stderr open, and waiting for its EOF would hang the timeout.
+            collector.flushProgress()
+            Self.logDiagnosticTail(collector.diagnosticTail())
             throw interrupted
         }
         guard let terminationStatus = exitObservation.terminationStatus else {
@@ -202,9 +210,12 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         collector.flushProgress()
         let result = collector.result()
         guard !result.isEmpty else {
+            let tail = collector.diagnosticTail()
+            Self.logDiagnosticTail(tail)
+            let suffix = tail.isEmpty ? "" : "; stderr: \(tail)"
             throw PodcastPreparationError.workerFailed(
                 code: "no-output",
-                message: "the worker exited with status \(terminationStatus) and produced no result"
+                message: "the worker exited with status \(terminationStatus) and produced no result\(suffix)"
             )
         }
         return result
@@ -244,6 +255,13 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         let result = kill(pid, 0)
         return result == -1 && errno == ESRCH
     }
+
+    private static let logger = Logger(subsystem: "com.zerodelta.wilted", category: "preparation-worker")
+
+    private static func logDiagnosticTail(_ tail: String) {
+        guard !tail.isEmpty else { return }
+        logger.error("\(tail, privacy: .private)")
+    }
 }
 
 /// Receives Foundation's asynchronous termination observation without making
@@ -267,15 +285,19 @@ private final class ProcessExitObservation: @unchecked Sendable {
 ///
 /// The handlers fire on an arbitrary queue, so every access is behind one lock
 /// rather than relying on the caller's isolation.
-private final class WorkerOutputCollector: @unchecked Sendable {
+final class WorkerOutputCollector: @unchecked Sendable {
     private let lock = NSLock()
     private let readLock = NSLock()
     private var reading = true
     private var stdoutBuffer = Data()
     private var stderrBuffer = Data()
+    private var diagnosticBuffer = Data()
     private let onProgress: @Sendable (PodcastPreparationProgress) -> Void
 
-    init(onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void) {
+    private static let maxDiagnosticBytes = 8 * 1024
+    private static let maxDiagnosticTailCharacters = 600
+
+    init(onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void = { _ in }) {
         self.onProgress = onProgress
     }
 
@@ -329,13 +351,54 @@ private final class WorkerOutputCollector: @unchecked Sendable {
         return stdoutBuffer
     }
 
+    func diagnosticTail() -> String {
+        lock.lock()
+        let data = diagnosticBuffer
+        lock.unlock()
+        guard !data.isEmpty else { return "" }
+        let raw = String(decoding: data, as: UTF8.self)
+        let lines = raw
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let collapsed = lines.joined(separator: " | ").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collapsed.isEmpty else { return "" }
+        if collapsed.count > Self.maxDiagnosticTailCharacters {
+            return "…" + collapsed.suffix(Self.maxDiagnosticTailCharacters - 1)
+        }
+        return collapsed
+    }
+
+    private func recordDiagnostic(_ line: Data) {
+        guard !line.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if !diagnosticBuffer.isEmpty {
+            diagnosticBuffer.append(0x0A)
+        }
+        diagnosticBuffer.append(line)
+        trimDiagnosticBuffer()
+    }
+
+    private func trimDiagnosticBuffer() {
+        guard diagnosticBuffer.count > Self.maxDiagnosticBytes else { return }
+        var startIndex = diagnosticBuffer.endIndex - Self.maxDiagnosticBytes
+        while startIndex < diagnosticBuffer.endIndex && (diagnosticBuffer[startIndex] & 0xC0) == 0x80 {
+            startIndex = diagnosticBuffer.index(after: startIndex)
+        }
+        diagnosticBuffer = Data(diagnosticBuffer[startIndex...])
+    }
+
     private func emit(_ line: Data) {
-        guard !line.isEmpty,
-              let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-              let stage = object["stage"] as? String else { return }
-        onProgress(PodcastPreparationProgress(stage: stage,
-                                              detail: object["detail"] as? String ?? "",
-                                              fraction: object["fraction"] as? Double,
-                                              requestID: (object["requestID"] as? String).flatMap(UUID.init(uuidString:))))
+        guard !line.isEmpty else { return }
+        if let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+           let stage = object["stage"] as? String {
+            onProgress(PodcastPreparationProgress(stage: stage,
+                                                  detail: object["detail"] as? String ?? "",
+                                                  fraction: object["fraction"] as? Double,
+                                                  requestID: (object["requestID"] as? String).flatMap(UUID.init(uuidString:))))
+            return
+        }
+        recordDiagnostic(line)
     }
 }
