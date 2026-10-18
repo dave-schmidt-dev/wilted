@@ -117,6 +117,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Compact feed rule previews keep the audio deletion warning and episode count beside Apply while results scroll, retaining row flags and confirmation.
 - Seeking during a spoken bulletin on the Mac keeps the selected position and prior playing intent, including repeated seeks and a failed checkpoint; a newer pause, stop, seek, item change or output-route invalidation prevents an obsolete resume. The iPhone seek behavior is unchanged.
 - Mac spoken bulletins stop without resuming when the held output changes or becomes unavailable. Output monitoring is scoped to enabled announcements, Reports shows monitoring failures, and close or quit tears down held speech without restarting audio.
 - Applied duplicate-episode associations remain readable after capture/reopen when source creation dates contain fractional seconds. Generation checks compare canonical captured instants at the existing timestamp precision while retaining exact raw identity, feed and membership guards.

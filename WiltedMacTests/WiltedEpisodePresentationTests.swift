@@ -204,11 +204,15 @@ final class WiltedEpisodePresentationTests: XCTestCase {
         XCTAssertTrue(metadata.contains("duration < Double(Int.max)"))
         XCTAssertTrue(views.contains("wilted-feeds-metadata-\\(episode.id)"))
         XCTAssertTrue(views.contains("wilted-larder-metadata-\\(episode.id)"))
-        let history = try WiltedMacHeadless.viewSource("WiltedMacFeedHistoryView.swift")
+        let history = try String(contentsOf: root.appendingPathComponent(
+            "WiltedMac/Views/WiltedMacFeedHistoryView.swift"), encoding: .utf8
+        )
         XCTAssertTrue(history.contains("WiltedMacEpisodeMetadata("))
         XCTAssertTrue(history.contains("presentation: record.presentation"))
-        XCTAssertTrue(history.contains("lifecycleLabel: record.status.rawValue"))
+        XCTAssertTrue(history.contains("Text(record.status.rawValue)"))
+        XCTAssertTrue(history.contains(".accessibilityIdentifier(\"wilted-feed-history-status-\\(record.id)\")"))
         XCTAssertTrue(history.contains("wilted-feed-history-metadata-\\(record.id)"))
+        XCTAssertTrue(history.contains("isLarder: true"))
         XCTAssertTrue(views.contains(".buttonStyle(.borderedProminent)"))
         XCTAssertTrue(views.contains(".buttonStyle(.bordered)"))
         XCTAssertTrue(sections.contains("WiltedMacEpisodePresentationSections.displaySections"))

@@ -165,11 +165,15 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
         XCTAssertEqual(model.larderSortDirection.displayName, "Descending")
         XCTAssertEqual(WiltedMacLarderSort.presentationOptions.map(\.displayName), ["Length", "Age", "Alphabetical", "Custom"])
 
-        // The direction button is an icon, so its presence and names are pinned where they are declared.
+        // The direction button is shared across list pages; verify its policy there and its Larder wiring here.
         let source = try WiltedMacHeadless.viewSource("WiltedMacLarderView.swift")
-        XCTAssertTrue(source.contains("if model.larderSort != .custom {"))
-        XCTAssertTrue(source.contains(".accessibilityLabel(\"Larder sort direction: \\(model.larderSortDirection.displayName)\")"))
-        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-larder-sort-direction\")"))
+        let controls = try WiltedMacHeadless.viewSource("WiltedMacEpisodeListSortControls.swift")
+        XCTAssertTrue(controls.contains("if sort.canonical != .custom {"))
+        XCTAssertTrue(controls.contains(".accessibilityLabel(\"\\(label) sort direction: \\(direction.displayName)\")"))
+        XCTAssertTrue(controls.contains(".accessibilityIdentifier(\"\\(identifierPrefix)-sort-direction\")"))
+        XCTAssertTrue(source.contains("WiltedMacEpisodeListSortControls("))
+        XCTAssertTrue(source.contains("label: \"Larder\", identifierPrefix: \"wilted-larder\""))
+        XCTAssertTrue(source.contains("sort: $model.larderSort, direction: $model.larderSortDirection"))
     }
 
     func testEpisodeCountControlOffersFiveTenAndCustomWithNumericInputOnlyForCustom() throws {

@@ -58,7 +58,8 @@ final class WiltedMacFeedRulesSheetTests: XCTestCase {
         fixture.editor.preview()
         await fixture.editor.task?.value
         let plan = try XCTUnwrap(fixture.editor.plan)
-        XCTAssertTrue(plan.rows.contains { $0.outcome == .history }, "the fixture has a history row")
+        let historyRow = try XCTUnwrap(plan.rows.first { $0.title == "Fight Companion - January 5" })
+        XCTAssertEqual(historyRow.outcome, .history, "the fixture's retired episode remains in history")
         XCTAssertTrue(plan.rows.contains { $0.deletesDownloadedAudio }, "the fixture has a row that deletes audio")
         XCTAssertEqual(WiltedMacFeedRulesPreview.audioDeletions(in: plan), 1, "Apply asks first: Undo cannot restore audio")
         XCTAssertEqual(WiltedMacFeedRulesPreview.audioDeletions(in: nil), 0)
@@ -66,21 +67,43 @@ final class WiltedMacFeedRulesSheetTests: XCTestCase {
 
         for scheme in [ColorScheme.light, .dark] {
             for size in [minimum, wide] {
-                let host = WiltedMacRulesSheetCapture.host(fixture.sheet, size: size, scheme: scheme)
-                await fixture.editor.task?.value  // the preview the sheet runs as it opens
-                XCTAssertNil(fixture.editor.progress, "rendered after the opening preview settled")
-                XCTAssertTrue(fixture.editor.canApply)
-                let name = "rules-sheet-\(scheme == .dark ? "dark" : "light")-\(Int(size.width))x\(Int(size.height))"
-                let shown = try WiltedMacRulesSheetCapture.text(host, name: name, in: self)
-                for text in [
-                    "Match rules for Rules Sheet Feed", "Done", "Rule 1", "Rule 2", "Add rule", "Rule results",
-                    "Apply to existing", "Automatic decisions", "1 Keep to Skip", "January 5", "retired or finished",
-                ] {
-                    XCTAssertTrue(shown.contains(text), "\(text) in \(name): \(shown)")
+                try await WiltedMacRulesSheetCapture.withMountedHost(fixture.sheet, size: size, scheme: scheme) { host in
+                    await fixture.editor.task?.value  // the preview the sheet runs as it opens
+                    XCTAssertNil(fixture.editor.progress, "rendered after the opening preview settled")
+                    XCTAssertTrue(fixture.editor.canApply)
+                    let name = "rules-sheet-\(scheme == .dark ? "dark" : "light")-\(Int(size.width))x\(Int(size.height))"
+                    let shown = try WiltedMacRulesSheetCapture.text(host, name: name, in: self)
+                    for text in [
+                        "Match rules for Rules Sheet Feed", "Done", "Rule 1", "Rule 2", "Add rule", "Rule results",
+                        "Apply to existing", "Automatic decisions", "1 Keep to Skip",
+                    ] {
+                        XCTAssertTrue(shown.contains(text), "\(text) in \(name): \(shown)")
+                    }
+                    XCTAssertTrue(shown.localizedCaseInsensitiveContains("Apply will delete downloaded audio"), "\(name): \(shown)")
+                    XCTAssertTrue(shown.contains("1 episode"), "aggregate deletion count stays beside Apply: \(name): \(shown)")
+                    XCTAssertTrue(shown.contains("Undo cannot restore"), "audio consequence stays visible: \(name): \(shown)")
+                    XCTAssertFalse(shown.contains("Preview"), "live preview has no Preview button: \(name): \(shown)")
+                    XCTAssertFalse(shown.contains("Checking episodes"), "settled: \(name): \(shown)")
+                    if size == minimum {
+                        let scrollDistance = try WiltedMacRulesSheetCapture.scrollResultsToBottom(in: host)
+                        XCTAssertGreaterThan(scrollDistance, 0, "the minimum-size results can be scrolled")
+                        let lower = try WiltedMacRulesSheetCapture.text(host, name: "\(name)-scrolled-history", in: self)
+                        XCTAssertTrue(lower.contains("Apply to existing"), "Apply stays visible while results scroll: \(lower)")
+                        XCTAssertTrue(
+                            lower.localizedCaseInsensitiveContains("Apply will delete downloaded audio"),
+                            "aggregate audio warning stays visible while results scroll: \(lower)"
+                        )
+                        XCTAssertTrue(lower.contains("January 5"), "history title after scrolling: \(lower)")
+                        XCTAssertTrue(lower.localizedCaseInsensitiveContains("retired or finished"), "history status after scrolling: \(lower)")
+                        XCTAssertTrue(lower.localizedCaseInsensitiveContains("deletes downloaded audio"), "per-episode audio flag after scrolling: \(lower)")
+                        XCTAssertTrue(lower.contains("Left as they are"), "manual and history group after scrolling: \(lower)")
+                    } else {
+                        XCTAssertTrue(shown.contains("January 5"), "wide history title: \(shown)")
+                        XCTAssertTrue(shown.localizedCaseInsensitiveContains("retired or finished"), "wide history status: \(shown)")
+                        XCTAssertTrue(shown.localizedCaseInsensitiveContains("deletes downloaded audio"), "wide per-episode audio flag: \(shown)")
+                        XCTAssertTrue(shown.contains("Left as they are"), "wide manual and history group: \(shown)")
+                    }
                 }
-                XCTAssertTrue(shown.localizedCaseInsensitiveContains("deletes downloaded audio"), "\(name): \(shown)")
-                XCTAssertFalse(shown.contains("Preview"), "live preview has no Preview button: \(name): \(shown)")
-                XCTAssertFalse(shown.contains("Checking episodes"), "settled: \(name): \(shown)")
             }
         }
     }
@@ -161,11 +184,18 @@ final class WiltedMacFeedRulesSheetTests: XCTestCase {
         }
         for source in [rules, preview] {
             XCTAssertFalse(source.contains("Button(\"Preview\")"))
-            XCTAssertFalse(source.contains("\"wilted-feed-rules-preview\""))
+            XCTAssertFalse(source.contains(".accessibilityIdentifier(\"wilted-feed-rules-preview\")"))
         }
         XCTAssertTrue(preview.contains(".confirmationDialog("), "Apply confirms before deleting audio")
         XCTAssertTrue(preview.contains("if Self.audioDeletions(in: editor.plan) > 0 { isConfirmingApply = true } else { editor.apply() }"))
         XCTAssertTrue(preview.contains("\"wilted-feed-rules-apply-confirm\""))
+        XCTAssertTrue(preview.contains("Label(\"Deletes downloaded audio\""), "each affected episode keeps its own flag")
+        XCTAssertTrue(preview.contains("wilted-feed-rules-audio-warning"), "aggregate consequence is outside the results scroller")
+        let actionsStart = try XCTUnwrap(preview.range(of: "private var actions"))
+        let statusStart = try XCTUnwrap(preview.range(of: "private var status", range: actionsStart.upperBound..<preview.endIndex))
+        let actions = preview[actionsStart.lowerBound..<statusStart.lowerBound]
+        XCTAssertTrue(actions.contains("Button(\"Apply to existing\")"))
+        XCTAssertTrue(actions.contains("wilted-feed-rules-audio-warning"))
         XCTAssertTrue(rules.contains("minWidth: Self.width"))
         XCTAssertTrue(rules.contains("minHeight: Self.height"))
         let task = try XCTUnwrap(rules.range(of: ".task {"))
@@ -266,6 +296,33 @@ enum WiltedMacRulesSheetCapture {
         return host
     }
 
+    /// Attaches the capture to a never-ordered window so AppKit lays out
+    /// SwiftUI's native scroll document at its real content height.
+    static func withMountedHost<Result>(
+        _ view: some View,
+        size: CGSize,
+        scheme: ColorScheme,
+        perform operation: @MainActor (NSHostingView<AnyView>) async throws -> Result
+    ) async rethrows -> Result {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: AnyView(view
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .background(WiltedTheme.color(.card, scheme: scheme))
+            .environment(\.colorScheme, scheme)))
+        host.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        XCTAssertFalse(window.isVisible, "the hosted capture remains offscreen")
+        XCTAssertFalse(window.isKeyWindow, "the hosted capture does not take keyboard focus")
+        defer { window.contentView = nil; window.close() }
+        return try await operation(host)
+    }
+
     static func text<V: View>(
         _ view: V, size: CGSize, scheme: ColorScheme = .light, columns: Bool = true, name: String, in test: XCTestCase
     ) throws -> String {
@@ -299,6 +356,47 @@ enum WiltedMacRulesSheetCapture {
             ? [CGRect(x: 0, y: 0, width: split, height: height), CGRect(x: split, y: 0, width: width - split, height: height)]
             : [CGRect(x: 0, y: 0, width: width, height: height)]
         return try crops.map { try read(XCTUnwrap(image.cropping(to: $0))) }.joined(separator: " ")
+    }
+
+    /// Scrolls the right-hand results pane without mouse input so below-the-fold
+    /// rows can be rendered at the sheet's real minimum size.
+    static func scrollResultsToBottom(in host: NSView) throws -> CGFloat {
+        guard let window = host.window else {
+            throw NSError(domain: "WiltedMacRulesSheetCapture", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "the rules sheet host must be mounted before scrolling"])
+        }
+        window.displayIfNeeded()
+        host.needsLayout = true
+        host.layoutSubtreeIfNeeded()
+        let scrollViews = descendants(of: host).compactMap { $0 as? NSScrollView }
+        let resultsScroll = try XCTUnwrap(scrollViews.max {
+            $0.convert($0.bounds, to: host).midX < $1.convert($1.bounds, to: host).midX
+        }, "the hosted rules sheet has a results scroll view")
+        XCTAssertGreaterThan(
+            resultsScroll.convert(resultsScroll.bounds, to: host).midX,
+            host.bounds.midX,
+            "the selected scroll view is the right-hand results pane"
+        )
+        let documentView = try XCTUnwrap(resultsScroll.documentView)
+        let clipView = resultsScroll.contentView
+        let initialOrigin = clipView.bounds.origin
+        let distance = max(0, documentView.bounds.height - clipView.bounds.height)
+        let layoutDiagnostic = "document=\(documentView.bounds) viewport=\(clipView.bounds) initialOffset=\(initialOrigin)"
+        XCTAssertGreaterThan(distance, 0, "results content exceeds its viewport; \(layoutDiagnostic)")
+        let targetY = documentView.isFlipped ? documentView.bounds.minY + distance : documentView.bounds.minY
+        clipView.scroll(to: NSPoint(x: documentView.bounds.minX, y: targetY))
+        resultsScroll.reflectScrolledClipView(clipView)
+        window.displayIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        XCTAssertNotEqual(
+            clipView.bounds.origin, initialOrigin,
+            "the results clip view moves to reveal later rows; \(layoutDiagnostic) finalOffset=\(clipView.bounds.origin)"
+        )
+        return distance
+    }
+
+    private static func descendants(of view: NSView) -> [NSView] {
+        view.subviews.flatMap { [$0] + descendants(of: $0) }
     }
 
     private static func read(_ image: CGImage) throws -> String {

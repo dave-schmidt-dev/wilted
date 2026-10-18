@@ -135,17 +135,28 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
                     XCTAssertEqual(lines.filter { $0.text.contains("Evening") }.count, 1, "one title line: \(lines)")
                     let publication = published.formatted(date: .numeric, time: .omitted)
                     if state.0.isInFlight || state.1.isRunning {
-                        XCTAssertTrue((2...3).contains(baselines.count),
-                                      "one title and up to two visible status lines; state=\(index) width=\(width): \(lines)")
                         let expectedStatus = index == 1 ? "Downloading" : "Preparing"
+                        let progress = index == 1 ? "25%" : "Transcribing"
+                        let statusLines = lines.filter { $0.text.contains(expectedStatus) || $0.text.contains(progress) }
+                        XCTAssertTrue((1...2).contains(statusLines.count),
+                                      "live status remains bounded to two lines; state=\(index) width=\(width): \(lines)")
+                        XCTAssertTrue((3...5).contains(baselines.count),
+                                      "title, bounded status, and responsive facts fit within five lines; state=\(index) width=\(width): \(lines)")
                         let status = try XCTUnwrap(lines.first { $0.text.contains(expectedStatus) }, "live status stays visible: \(lines)")
                         XCTAssertGreaterThan(status.top, title.top + 0.025, "status follows the one-line title: \(lines)")
                         XCTAssertLessThan(status.top, 0.5, "status remains inside the rendered row: \(lines)")
                         let text = lines.map(\.text).joined(separator: " ")
-                        XCTAssertTrue(text.contains(index == 1 ? "25%" : "Transcribing"), "live progress is visible: \(lines)")
-                        for staleMetadata in ["Garden Radio", publication, "1h 02m"] {
-                            XCTAssertFalse(text.contains(staleMetadata), "active status replaces stale \(staleMetadata): \(lines)")
-                        }
+                        XCTAssertTrue(text.contains(progress), "live progress is visible: \(lines)")
+                        let sourceFacts = try XCTUnwrap(
+                            lines.first { $0.text.contains("Garden Radio") && $0.text.contains("1h 02m") },
+                            "active rows retain the show and source duration: \(lines)"
+                        )
+                        let date = try XCTUnwrap(lines.first { $0.text.contains(publication) },
+                                                 "active rows retain the publication date: \(lines)")
+                        XCTAssertGreaterThan(sourceFacts.top, status.top + 0.025,
+                                             "source facts follow active status: \(lines)")
+                        XCTAssertGreaterThanOrEqual(date.top, sourceFacts.top - 0.025,
+                                                    "publication follows or shares the source-facts line: \(lines)")
                     } else {
                         XCTAssertEqual(baselines.count, 3, "state=\(index) width=\(width) active=\(active): \(lines)")
                         let date = try XCTUnwrap(lines.first { $0.text.contains(publication) })

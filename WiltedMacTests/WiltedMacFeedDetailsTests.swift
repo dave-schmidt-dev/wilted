@@ -1,5 +1,7 @@
+import AppKit
 import SwiftUI
 import XCTest
+import Vision
 @testable import WiltedMac
 
 @MainActor
@@ -39,18 +41,32 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
         let board = WiltedMacFeedPolicyBoard(model: model)
         await board.reload()
 
-        let recognizedText = try WiltedMacHeadless.recognizedText(
+        let lines = try recognizedLines(
             WiltedMacFeedDetailsView(model: model, board: board, subscription: subscription),
             size: CGSize(width: 900, height: 2_000)
-        ).joined(separator: "\n")
+        )
+        let recognizedText = lines.map(\.text).joined(separator: "\n")
         let text = recognizedText.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         XCTAssertTrue(text.contains(subscription.title), text)
         XCTAssertTrue(text.contains(subscription.feedURL.absoluteString), text)
         XCTAssertTrue(text.contains(subscription.publisherTitle ?? "Publisher not provided"), text)
         XCTAssertTrue(text.contains("Followed"), text)
-        XCTAssertTrue(text.contains("Global podcast refresh"), text)
         let globalRefresh = model.lastPodcastRefreshAt?.formatted(date: .complete, time: .standard) ?? "Never"
         XCTAssertTrue(text.contains(globalRefresh), text)
+        let globalLabel = try XCTUnwrap(lines.first { words(in: $0.text).contains("global") }, recognizedText)
+        let rowLines = lines.filter { abs($0.top - globalLabel.top) <= 0.035 }
+        let rowWords = rowLines.reduce(into: Set<String>()) { $0.formUnion(words(in: $1.text)) }
+        let refreshValueWords = words(in: globalRefresh)
+        let rowText = rowLines.map(\.text).joined(separator: " ")
+        for word in ["global", "podcast", "refresh"] + Array(refreshValueWords) {
+            XCTAssertTrue(rowWords.contains(word), "\(word) in the Global podcast refresh fact row: \(rowText)")
+        }
+        let valueLine = try XCTUnwrap(rowLines.first { refreshValueWords.isSubset(of: words(in: $0.text)) }, rowText)
+        for labelLine in rowLines where
+            ["global", "podcast", "refresh"].contains(where: { words(in: labelLine.text).contains($0) })
+                && !refreshValueWords.isSubset(of: words(in: labelLine.text)) {
+            XCTAssertLessThan(labelLine.bounds.midX, valueLine.bounds.midX, "label stays left of its value: \(rowText)")
+        }
         XCTAssertFalse(text.contains("Last refreshed: Last refreshed"), text)
         XCTAssertTrue(text.contains("Current settings"), text)
         XCTAssertTrue(text.contains("Episode history"), text)
@@ -124,5 +140,40 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
         ).joined(separator: " ")
         XCTAssertTrue(details.contains(failure), "actual safe startup error should be visible: \(details)")
         XCTAssertTrue(details.contains("Retry settings"), details)
+    }
+
+    private struct RecognizedLine {
+        let text: String
+        let bounds: CGRect
+        var top: CGFloat { 1 - bounds.maxY }
+    }
+
+    private func recognizedLines<V: View>(_ view: V, size: CGSize) throws -> [RecognizedLine] {
+        let scale = 2
+        let hostingView = NSHostingView(rootView: AnyView(
+            view.environment(\.colorScheme, .light).padding(24)
+                .frame(width: size.width, height: size.height, alignment: .topLeading)
+                .background(Color.white)
+        ))
+        hostingView.frame = NSRect(origin: .zero, size: size)
+        hostingView.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width) * scale, pixelsHigh: Int(size.height) * scale,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0))
+        bitmap.size = size
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.minimumTextHeight = 0.004
+        try VNImageRequestHandler(cgImage: try XCTUnwrap(bitmap.cgImage)).perform([request])
+        return (request.results ?? []).compactMap { observation in
+            observation.topCandidates(1).first.map { RecognizedLine(text: $0.string, bounds: observation.boundingBox) }
+        }.sorted { $0.top < $1.top }
+    }
+
+    private func words(in text: String) -> Set<String> {
+        Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
     }
 }

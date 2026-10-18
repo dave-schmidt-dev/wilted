@@ -101,29 +101,39 @@ struct WiltedMacFeedRulesPreview: View {
     }
 
     private var actions: some View {
-        HStack(spacing: WiltedTheme.Spacing.small) {
-            Text("Rule results")
-                .wiltedFont(.body)
-                .fontWeight(.semibold)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                .lineLimit(1)
-                .layoutPriority(-1)
-            Spacer(minLength: 0)
-            if editor.undo != nil {
-                Button("Undo") { editor.undoLastApply() }
-                    .disabled(editor.isBusy)
-                    .accessibilityLabel("Undo applied match rules for \(subscription.title)")
-                    .accessibilityIdentifier("wilted-feed-rules-undo")
+        let audioDeletions = Self.audioDeletions(in: editor.plan)
+        return VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Text("Rule results")
+                    .wiltedFont(.body)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .lineLimit(1)
+                    .layoutPriority(-1)
+                Spacer(minLength: 0)
+                if editor.undo != nil {
+                    Button("Undo") { editor.undoLastApply() }
+                        .disabled(editor.isBusy)
+                        .accessibilityLabel("Undo applied match rules for \(subscription.title)")
+                        .accessibilityIdentifier("wilted-feed-rules-undo")
+                }
+                Button("Apply to existing") {
+                    if Self.audioDeletions(in: editor.plan) > 0 { isConfirmingApply = true } else { editor.apply() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                .disabled(!editor.canApply)
+                .fixedSize()
+                .accessibilityLabel("Apply match rules to existing episodes of \(subscription.title)")
+                .accessibilityIdentifier("wilted-feed-rules-apply")
             }
-            Button("Apply to existing") {
-                if Self.audioDeletions(in: editor.plan) > 0 { isConfirmingApply = true } else { editor.apply() }
+            if audioDeletions > 0 {
+                Text("Apply will delete downloaded audio for \(audioDeletions) episode\(audioDeletions == 1 ? "" : "s"). Undo cannot restore it.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-feed-rules-audio-warning")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-            .disabled(!editor.canApply)
-            .fixedSize()
-            .accessibilityLabel("Apply match rules to existing episodes of \(subscription.title)")
-            .accessibilityIdentifier("wilted-feed-rules-apply")
         }
         .confirmationDialog(
             "Apply match rules to \(subscription.title)?", isPresented: $isConfirmingApply, titleVisibility: .visible

@@ -315,6 +315,12 @@ extension WiltedVisualSystemTests {
 
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let source = try WiltedMacSource.views(root: root)
+        let larder = try String(
+            contentsOf: root.appendingPathComponent("WiltedMac/Views/WiltedMacLarderView.swift"), encoding: .utf8
+        )
+        let sortControls = try String(
+            contentsOf: root.appendingPathComponent("WiltedMac/Views/WiltedMacEpisodeListSortControls.swift"), encoding: .utf8
+        )
         let player = try XCTUnwrap(source.range(of: "struct WiltedMacPlayerContent")?.lowerBound)
         let playerSource = source[player...]
 
@@ -346,13 +352,16 @@ extension WiltedVisualSystemTests {
         XCTAssertTrue(source.contains("Prepare all now (\\(model.larderPreparableEpisodes.count))"))
         XCTAssertTrue(source.contains("\"Needs preparation\""))
         XCTAssertTrue(source.contains("Label(\"Group by: \\(model.larderGrouping.rawValue)\""))
-        XCTAssertTrue(source.contains("Label(\"Sort by: \\(model.larderSort.displayName)\""))
         XCTAssertTrue(source.contains("wilted-larder-grouping"))
-        XCTAssertFalse(source.contains("Picker(\"Sort order\""),
+        XCTAssertTrue(larder.contains("WiltedMacEpisodeListSortControls("))
+        XCTAssertTrue(larder.contains("sort: $model.larderSort"))
+        XCTAssertTrue(larder.contains("direction: $model.larderSortDirection"))
+        XCTAssertFalse(larder.contains("Picker(\"Sort order\""),
                        "the Larder sort menu must not nest a Picker submenu")
-        XCTAssertTrue(source.contains("model.larderSort = option"),
-                      "each sort order must be a directly clickable menu action")
-        XCTAssertTrue(source.contains("Button {\n                            model.larderSort = option"))
+        XCTAssertTrue(sortControls.contains("Label(\"Sort by: \\(sort.displayName)\""))
+        XCTAssertTrue(sortControls.contains("ForEach(WiltedMacLarderSort.presentationOptions"))
+        XCTAssertTrue(sortControls.contains("Button {\n                        sort = option"),
+                      "each sort option remains a directly clickable shared menu action")
         XCTAssertTrue(source.contains("wilted-player-share"))
         XCTAssertTrue(source.contains("if let shareURL = model.currentPlaybackShareURL"))
         XCTAssertTrue(source.contains("else if let shareText = model.currentPlaybackShareText"))
