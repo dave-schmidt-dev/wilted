@@ -199,6 +199,16 @@ final class WiltedMacModel {
     var episodeCompletionProjections: [String: WiltedMacEpisodeCompletionProjection] = [:]
     var selectedLibraryItemID: String?
     var preparation: WiltedMacPreparation?
+    /// The article the current preparation row can retry. The Add sheet
+    /// clears `urlDraft` as soon as a run starts, so the canonical address
+    /// lives here until the row is dismissed or another article replaces it.
+    var articlePreparationURL: URL?
+    /// Identifies the newest article run. A cancelled older task may only
+    /// report a terminal state while it still owns the row.
+    var articlePreparationGeneration = 0
+    /// The typed cause of each podcast preparation that failed in this
+    /// session, keyed by episode id, shown beside the row's Retry control.
+    var preparationFailureCauses: [String: String] = [:]
     var selectedArticleID: String?
     var isNowPlaying = false
     var isPlaying = false
@@ -331,8 +341,9 @@ final class WiltedMacModel {
     var feedDecisionAfterDurableCommitForTesting: (@Sendable () async -> Void)?
     var podcastQueueReadBarrierForTesting: (@Sendable () async -> Void)?
     var librarySnapshotReadBarrierForTesting: (@Sendable () async -> Void)?
-    /// Runs before each Larder-sort queue write; a test holds it open to delay the
-    /// write, or throws to fail it.
+    /// Runs before each Larder queue write the owner drives -- sort, reorder,
+    /// or group clear; a test holds it open to delay the write, or throws to
+    /// fail it.
     var larderSortWriteHookForTesting: (@Sendable () async throws -> Void)?
     /// Runs before feed enable or rename writes; a test holds it open or throws to fail the write.
     var subscriptionWriteHookForTesting: (@Sendable () async throws -> Void)?

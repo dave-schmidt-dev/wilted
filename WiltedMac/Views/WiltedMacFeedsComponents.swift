@@ -172,11 +172,12 @@ enum WiltedMacPodcastOperationMessageLayout {
     }
 }
 
-/// The running report for the last podcast action.
+/// The running report for the last Larder or Feeds action.
 ///
-/// Downloads and preparation are reported from Larder and refreshes from Feeds,
-/// so both pages render it. Only one destination is on screen at a time, which
-/// keeps the identifier unique.
+/// Downloads, preparation, completion, reordering and Undo report from Larder;
+/// feed refreshes report from Feeds and Feed History. Each destination renders
+/// it once near the top of its list, and only one destination is on screen at a
+/// time, which keeps the identifier unique.
 struct WiltedMacPodcastOperationMessage: View {
     let model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
