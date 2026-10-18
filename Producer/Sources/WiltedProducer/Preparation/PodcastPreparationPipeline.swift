@@ -220,6 +220,7 @@ public actor PodcastPreparationPipeline {
     let workDirectory: URL
     private let defaultPolicy: PodcastPreparationPolicySnapshot
     let now: @Sendable () -> Date
+    let appVersion: String?
 
     public init(
         store: LocalLibraryStore,
@@ -228,7 +229,8 @@ public actor PodcastPreparationPipeline {
         documentLoader: any PodcastFeedLoading = URLSessionPodcastFeedLoader(),
         removeAds: Bool = true,
         allowSpeechToText: Bool = true,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        appVersion: String? = PodcastPreparationBuildStamp.hostAppVersion()
     ) {
         self.store = store
         self.runner = runner
@@ -239,6 +241,7 @@ public actor PodcastPreparationPipeline {
             removeAds: removeAds
         )
         self.now = now
+        self.appVersion = appVersion
     }
 
     /// The journal key for one episode's preparation history.
@@ -295,7 +298,11 @@ public actor PodcastPreparationPipeline {
         var provenanceFields = [
             "sourceRevisionID": stored.revision.revisionID.rawValue,
             "sourceHash": stored.revision.contentHash,
+            "engineVersion": Self.semanticVersion,
         ]
+        if let appVersion {
+            provenanceFields["appVersion"] = appVersion
+        }
         // Omitted rather than stamped with the sentinel: an absent fingerprint
         // reads as "not recorded", which is true, where `-unresolved` would
         // later read as a different pipeline.
@@ -422,7 +429,11 @@ public actor PodcastPreparationPipeline {
                 "fingerprint": value,
                 "sourceRevisionID": sourceRevisionID?.rawValue ?? "",
                 "sourceHash": sourceHash ?? "",
+                "engineVersion": Self.semanticVersion,
             ]
+            if let appVersion {
+                fields["appVersion"] = appVersion
+            }
             if let sourceURL, sourceURL.absoluteString.count <= 256 {
                 fields["sourceURL"] = sourceURL.absoluteString
             }
