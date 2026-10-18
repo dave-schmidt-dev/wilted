@@ -29,6 +29,7 @@ import contextlib
 import difflib
 import errno
 import fcntl
+import faulthandler
 import html
 import json
 import logging
@@ -40,6 +41,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
@@ -376,7 +378,17 @@ def run(request: dict) -> dict:
         result["report"]["warning"] = uncertain_warning
     return result
 
+TRACEBACK_TAIL_CHARS = 700
+
+
 def main() -> int:
+    try:
+        faulthandler.enable()
+    except Exception:
+        if getattr(sys, "__stderr__", None) is not None:
+            with contextlib.suppress(Exception):
+                faulthandler.enable(file=sys.__stderr__)
+
     try:
         request = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError as error:
@@ -403,11 +415,11 @@ def main() -> int:
                 json.dump({"ok": False, "operation": "summary", "protocolVersion": PROTOCOL_VERSION,
                            "requestID": request_id, "code": error.code, "message": str(error)}, sys.stdout)
                 return 1
-            except Exception:
+            except Exception as error:
                 warnings.summarize()
                 json.dump({"ok": False, "operation": "summary", "protocolVersion": PROTOCOL_VERSION,
                            "requestID": request_id, "code": "summary-failed",
-                           "message": "Local transcript summary failed."}, sys.stdout)
+                           "message": f"Local transcript summary failed ({type(error).__name__})."}, sys.stdout)
                 return 1
             finally:
                 logging.getLogger().removeHandler(warnings)
@@ -434,10 +446,16 @@ def main() -> int:
         warnings.summarize()
         json.dump({"ok": False, "code": error.code, "message": str(error)}, sys.stdout)
         return 1
-    except Exception as error:  # noqa: BLE001 - the caller needs a result, not a traceback
+    except Exception as error:  # noqa: BLE001 - structured failure reporting
         warnings.summarize()
+        # The app journals the first 1,024 characters of this message, so the
+        # traceback is cut to its innermost frames, where the failure is.
+        frames = " ".join(traceback.format_exc().split())
+        if len(frames) > TRACEBACK_TAIL_CHARS:
+            frames = "…" + frames[-TRACEBACK_TAIL_CHARS:]
+        message = f"{type(error).__name__}: {error} | {frames}"
         json.dump({"ok": False, "code": "worker-failed",
-                   "message": f"{type(error).__name__}: {error}"}, sys.stdout)
+                   "message": message}, sys.stdout)
         return 1
     warnings.summarize()
     json.dump(result, sys.stdout)

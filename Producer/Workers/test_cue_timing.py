@@ -35,13 +35,6 @@ from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import glossary as _worker_glossary
-from wilted_worker import gpu_admission as _worker_gpu_admission
-from wilted_worker import reporting as _worker_reporting
-from wilted_worker import transcript_sources as _worker_transcript_sources
 
 class KeepMapTests(unittest.TestCase):
     def test_accumulates_output_offsets_and_skips_empty_spans(self):
@@ -496,3 +489,22 @@ class ProgressTests(unittest.TestCase):
             handled.assert_called_once()
         finally:
             logger.removeHandler(handler)
+
+    def test_summary_warning_contains_logger_name_without_record_text(self):
+        handler = wp.ForwardedWarnings(limit=2)
+        logger = logging.getLogger("wilted.test-summary-privacy")
+        logger.addHandler(handler)
+        logger.propagate = False
+        stream = io.StringIO()
+        try:
+            with _worker_reporting.summary_scope("summary-req-42"), redirect_stderr(stream):
+                handler.summary_request_id = "summary-req-42"
+                logger.warning("secret transcript text that must never be logged")
+        finally:
+            logger.removeHandler(handler)
+        lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["detail"], "Local summarizer warning from wilted.test-summary-privacy.")
+        self.assertIn("wilted.test-summary-privacy", lines[0]["detail"])
+        self.assertNotIn("secret transcript text", lines[0]["detail"])
+        self.assertNotIn("secret transcript text", stream.getvalue())

@@ -85,7 +85,7 @@ class ForwardedWarnings(logging.Handler):
         try:
             if self.summary_request_id is not None:
                 with summary_scope(self.summary_request_id):
-                    progress(f"log.{record.levelname.lower()}.{self.forwarded}", "Local summarizer warning.")
+                    progress(f"log.{record.levelname.lower()}.{self.forwarded}", f"Local summarizer warning from {record.name}.")
             else:
                 progress(f"log.{record.levelname.lower()}.{self.forwarded}", f"{record.name}: {record.getMessage()}")
         except Exception:  # noqa: BLE001 - a handler must never unwind its caller

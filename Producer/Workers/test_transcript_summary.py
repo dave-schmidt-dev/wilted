@@ -5,18 +5,18 @@ No subprocess, inference, model download, or CloudKit operation occurs here.
 """
 from __future__ import annotations
 
-import io
-import hashlib
 import contextlib
-import logging
-import threading
-from dataclasses import dataclass
+import hashlib
+import io
 import json
+import logging
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 from uuid import uuid4
@@ -408,6 +408,52 @@ class TranscriptSummaryTests(unittest.TestCase):
             self.rejected(self.request("Actual transcript"), "summary-model-changed")
         self.assertTrue(self.backend.closed)
         self.assertEqual(self.lock_events, ["lock.enter", "lock.exit"])
+
+    def test_main_summary_failure_names_exception_class_without_message_text(self):
+        capability = types.ModuleType("wilted.execution_capability")
+        capability.execution_capability_scope = lambda **_kwargs: contextlib.nullcontext()
+        request = self.request("PRIVATE TRANSCRIPT")
+        with mock.patch.dict(sys.modules, {"wilted.execution_capability": capability}), \
+                mock.patch.object(wp, "run", side_effect=RuntimeError("secret-diagnostic-details")), \
+                mock.patch.object(sys, "stdin", io.StringIO(json.dumps(request))), \
+                redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()):
+            status = wp.main()
+        self.assertEqual(status, 1)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["code"], "summary-failed")
+        self.assertEqual(result["message"], "Local transcript summary failed (RuntimeError).")
+        self.assertIn("RuntimeError", result["message"])
+        self.assertNotIn("secret-diagnostic-details", result["message"])
+        self.assertNotIn(request["transcriptText"], stdout.getvalue())
+
+    def test_main_worker_failed_names_traceback_frame_and_keeps_prefix(self):
+        capability = types.ModuleType("wilted.execution_capability")
+        capability.execution_capability_scope = lambda **_kwargs: contextlib.nullcontext()
+        request = {"operation": "prepare", "audioPath": "/nonexistent/test/audio.mp3"}
+
+        def innermost_failing_frame(_request):
+            raise ValueError("invalid parameter value")
+
+        with mock.patch.dict(sys.modules, {"wilted.execution_capability": capability}), \
+                mock.patch.object(wp, "run", side_effect=innermost_failing_frame), \
+                mock.patch.object(sys, "stdin", io.StringIO(json.dumps(request))), \
+                redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()):
+            status = wp.main()
+        self.assertEqual(status, 1)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["code"], "worker-failed")
+        self.assertTrue(result["message"].startswith("ValueError: invalid parameter value | "))
+        self.assertIn("in innermost_failing_frame", result["message"])
+        self.assertNotIn("\n", result["message"])
+        self.assertLessEqual(len(result["message"]), len("ValueError: invalid parameter value | ") + 1 + wp.TRACEBACK_TAIL_CHARS)
+
+    def test_main_calls_faulthandler_enable(self):
+        with mock.patch("faulthandler.enable") as mock_enable, \
+                mock.patch.object(sys, "stdin", io.StringIO("not-valid-json")), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            status = wp.main()
+        self.assertEqual(status, 2)
+        mock_enable.assert_called_once_with()
 
 
 if __name__ == "__main__":
