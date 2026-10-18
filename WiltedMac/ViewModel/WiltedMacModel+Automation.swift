@@ -313,7 +313,10 @@ extension WiltedMacModel {
         do {
             try await playback.checkpoint()
             await refreshLifetimeStatistics()
-        } catch { /* a later checkpoint remains available */ }
+        } catch {
+            // A later checkpoint remains available; the log keeps the cause.
+            Self.playbackLog.error("Playback checkpoint failed: \(String(describing: error), privacy: .public)")
+        }
 #endif
     }
 
