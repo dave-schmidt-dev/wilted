@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
+import OSLog
 import WiltedDomain
+
+private let logger = Logger(subsystem: "com.zerodelta.wilted", category: "preparation-journal")
 
 /// Tracks the journal writes one run has started.
 ///
@@ -8,13 +11,34 @@ import WiltedDomain
 /// rather than awaited where it is reported. Recording them synchronously here
 /// means the run can drain the exact set before announcing its outcome, so the
 /// journal a reader sees afterwards is complete rather than still arriving.
-private final class JournalWrites: @unchecked Sendable {
+final class JournalWrites: @unchecked Sendable {
+    /// Stages the worker re-emits on a timer, listed from the worker sources:
+    /// - "ads.model.wait" (gpu_admission.py)
+    /// - "ads.cut.render.progress" (cue_timing.py)
+    /// - "transcript.glossary.progress" (glossary.py)
+    /// - "summary.wait" (transcript_summary.py)
+    /// - "summary.model.verify" (transcript_summary.py)
+    /// - "summary.load" (transcript_summary.py)
+    /// - "summary.generate" (transcript_summary.py)
+    static let heartbeatStages: Set<String> = [
+        "ads.model.wait",
+        "ads.cut.render.progress",
+        "transcript.glossary.progress",
+        "summary.wait",
+        "summary.model.verify",
+        "summary.load",
+        "summary.generate",
+    ]
+
     private let lock = NSLock()
     private var pending: [Task<Void, Never>] = []
     private var nextOrdinal = 0
 
     func eventID(for stage: String) -> String {
         lock.lock(); defer { lock.unlock() }
+        if Self.heartbeatStages.contains(stage) {
+            return "\(stage)#heartbeat"
+        }
         nextOrdinal += 1
         return "\(stage)#\(nextOrdinal)"
     }
@@ -232,7 +256,13 @@ public actor PodcastPreparationPipeline {
         // The journal is one attempt deep. Left in place, the previous
         // attempt's terminal row would report this one as finished before it
         // had started, and its stale stage rows would read as this run's.
-        if attempt == nil { try? await store.clearPreparationJournal(for: requestID) }
+        if attempt == nil {
+            do {
+                try await store.clearPreparationJournal(for: requestID)
+            } catch {
+                logger.error("Failed to clear preparation journal for \(requestID, privacy: .public): \(error.localizedDescription, privacy: .private)")
+            }
+        }
         let writes = JournalWrites()
         // Every status is journalled as well as reported, so a run that failed
         // while the window was closed still leaves evidence a reader can find.
@@ -350,9 +380,13 @@ public actor PodcastPreparationPipeline {
             stage: progress.journalStage, detail: String(detail.prefix(1_024)),
             fraction: progress.fraction, cancellable: true, emittedAt: emittedAt, evidence: progress.evidence, attempt: attempt, step: progress.stage
         ) else { return }
-        try? await store.record(preparation: PreparationJournalEntry(
-            id: requestID + "|" + (attempt.map { $0.key + "|" } ?? "") + eventID, itemID: episodeID, requestID: requestID, status: status
-        ))
+        do {
+            try await store.record(preparation: PreparationJournalEntry(
+                id: requestID + "|" + (attempt.map { $0.key + "|" } ?? "") + eventID, itemID: episodeID, requestID: requestID, status: status
+            ))
+        } catch {
+            logger.error("Journal write failed for stage \(progress.stage, privacy: .public) event \(eventID, privacy: .public): \(error.localizedDescription, privacy: .private)")
+        }
     }
 
     private func journalTerminal(
@@ -397,9 +431,14 @@ public actor PodcastPreparationPipeline {
                 evidence: evidence,
                 timeline: outcome == .succeeded ? timeline : nil, attempt: attempt
               ) else { return }
-        try? await store.record(preparation: PreparationJournalEntry(
-            id: requestID + "|" + (attempt.map { $0.key + "|" } ?? "") + "terminal", itemID: episodeID, requestID: requestID, status: status
-        ))
+        let eventID = "terminal"
+        do {
+            try await store.record(preparation: PreparationJournalEntry(
+                id: requestID + "|" + (attempt.map { $0.key + "|" } ?? "") + eventID, itemID: episodeID, requestID: requestID, status: status
+            ))
+        } catch {
+            logger.error("Journal write failed for stage \(status.stage.rawValue, privacy: .public) event \(eventID, privacy: .public): \(error.localizedDescription, privacy: .private)")
+        }
     }
 
     private static func errorCode(for error: any Error) -> ProducerErrorCode {

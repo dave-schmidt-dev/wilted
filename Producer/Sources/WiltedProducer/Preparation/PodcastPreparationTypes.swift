@@ -14,13 +14,39 @@ public enum PodcastPreparationError: Error, Equatable, LocalizedError, Sendable 
     public var errorDescription: String? {
         switch self {
         case .episodeNotDownloaded: "Download the episode before preparing it."
-        case .workerUnavailable: "Wilted could not start the preparation pipeline."
+        case .workerUnavailable(let detail):
+            Self.formatDescription(
+                prefix: "Wilted could not start the preparation pipeline",
+                fallback: "Wilted could not start the preparation pipeline.",
+                detail: detail
+            )
         case .workerFailed(_, let message): "Preparation failed: \(message)"
         case .workerTimedOut: "Preparation took too long and was stopped."
-        case .malformedWorkerResponse: "The preparation pipeline returned an unreadable result."
+        case .malformedWorkerResponse(let detail):
+            Self.formatDescription(
+                prefix: "The preparation pipeline returned an unreadable result",
+                fallback: "The preparation pipeline returned an unreadable result.",
+                detail: detail
+            )
         case .preparedAudioUnreadable: "The prepared audio could not be read back."
         case .cancelled: "Preparation was cancelled."
         }
+    }
+
+    private static func formatDescription(prefix: String, fallback: String, detail: String) -> String {
+        let collapsed = detail
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else { return fallback }
+        let bounded: String
+        if collapsed.count > 300 {
+            bounded = String(collapsed.prefix(299)) + "…"
+        } else {
+            bounded = collapsed
+        }
+        return "\(prefix): \(bounded)."
     }
 }
 

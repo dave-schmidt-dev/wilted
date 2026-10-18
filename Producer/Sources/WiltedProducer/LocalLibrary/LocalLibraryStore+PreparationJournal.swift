@@ -27,6 +27,7 @@ extension LocalLibraryStore {
         let records = try context.fetch(descriptor)
         preparationJournalLookupRowsRead += records.count
         if let existing = records.first {
+            guard entry.status.emittedAt.date >= existing.emittedAt else { return }
             existing.itemID = entry.itemID.rawValue; existing.requestID = entry.requestID
             existing.statusData = try JSONEncoder().encode(entry.status); existing.emittedAt = entry.status.emittedAt.date
         } else { context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(entry)) }

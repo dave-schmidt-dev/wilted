@@ -207,11 +207,11 @@ struct Fixture {
         ]
     }
 
-    func pipeline(_ runner: some PodcastPipelineRunning) -> PodcastPreparationPipeline {
+    func pipeline(_ runner: some PodcastPipelineRunning, now: (@Sendable () -> Date)? = nil) -> PodcastPreparationPipeline {
         PodcastPreparationPipeline(
             store: store, workDirectory: workDirectory, runner: runner,
             documentLoader: TranscriptDocumentLoader(statusCode: transcriptStatusCode),
-            now: { Date(timeIntervalSince1970: 1_700_000_200) }
+            now: now ?? { Date(timeIntervalSince1970: 1_700_000_200) }
         )
     }
 
