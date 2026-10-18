@@ -111,16 +111,6 @@ extension LocalLibraryStore {
         }
         return (committed, alreadyAtTarget, unresolved, manualCommitted)
     }
-    /// The explicit Restore choice is saved beside its lifecycle changes;
-    /// genuine listening/revision evidence is never rewritten to encode it.
-    static func stageExplicitRestoreDecision(_ episodeID: ItemID, at: Date, in context: ModelContext) throws {
-        let identifier = episodeID.rawValue
-        var descriptor = FetchDescriptor<LocalLibrarySchemaV16Models.EpisodeDecisionRecord>(
-            predicate: #Predicate { $0.episodeID == identifier })
-        descriptor.fetchLimit = 1
-        applyExplicitRestoreDecision(try context.fetch(descriptor).first, for: episodeID, at: at, in: context)
-    }
-
     private static func applyExplicitRestoreDecision(
         _ existing: LocalLibrarySchemaV16Models.EpisodeDecisionRecord?, for episodeID: ItemID,
         at: Date, in context: ModelContext

@@ -103,17 +103,6 @@ extension LocalLibraryStore {
         return result
     }
 
-    static func stageManualDecision(_ value: EpisodeDecisionRecord, in context: ModelContext) throws {
-        try stageAssociationManualTie(value, in: context)
-        if let record = try context.fetch(FetchDescriptor<DecisionRecord>()).first(where: { $0.episodeID == value.episodeID.rawValue }) {
-            record.decision = value.decision.rawValue; record.source = value.source.rawValue
-            record.ruleID = value.ruleID; record.decidedAt = value.decidedAt.date
-        } else {
-            context.insert(DecisionRecord(episodeID: value.episodeID.rawValue, decision: value.decision.rawValue,
-                source: value.source.rawValue, ruleID: value.ruleID, decidedAt: value.decidedAt.date))
-        }
-    }
-
     static func expandedLogicalEpisodeIDs(_ requested: [ItemID], in context: ModelContext) throws -> [ItemID] {
         let lookup = try EpisodeAssociationReadLookup(in: context)
         var seen = Set<ItemID>()

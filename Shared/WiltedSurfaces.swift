@@ -107,55 +107,6 @@ public struct WiltedSettingsRow: View {
     }
 }
 
-/// The transcript disclosure, in primitives so both apps render it identically.
-///
-/// The listener and the producer read transcripts from different types, so this
-/// deliberately takes resolved strings rather than a domain value. When text is
-/// missing it says why instead of rendering nothing.
-public struct WiltedTranscriptSection: View {
-    @Environment(\.colorScheme) private var colorScheme
-    private let isReadable: Bool
-    private let title: String
-    private let text: String?
-    private let unavailableLabel: String
-    private let identifier: String
-
-    public init(
-        isReadable: Bool,
-        title: String,
-        text: String?,
-        unavailableLabel: String,
-        identifier: String
-    ) {
-        self.isReadable = isReadable
-        self.title = title
-        self.text = text
-        self.unavailableLabel = unavailableLabel
-        self.identifier = identifier
-    }
-
-    public var body: some View {
-        Group {
-            if isReadable, let text {
-                DisclosureGroup(title) {
-                    Text(text)
-                        .wiltedFont(.body)
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        .textSelection(.enabled)
-                        .padding(.top, WiltedTheme.Spacing.small)
-                }
-                .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-            } else {
-                Label(unavailableLabel, systemImage: "doc.text.magnifyingglass")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityIdentifier(identifier)
-    }
-}
-
 /// One transcript line a reader can follow and jump to.
 public struct WiltedTranscriptCueLine: Identifiable, Equatable, Sendable {
     public let id: Int
@@ -463,71 +414,6 @@ public struct WiltedSyncedTranscriptView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(marker.stamp). \(marker.text)")
         .accessibilityIdentifier("\(identifier)-removed-\(marker.id)")
-    }
-}
-
-/// A persistent transcript panel for constrained playback surfaces.
-///
-/// The player keeps transport controls outside this scroll view, so reading a
-/// long article never scrolls those controls away. The panel fills only the
-/// height its parent reserves and owns its own vertical scrolling.
-public struct WiltedTranscriptPanel: View {
-    @Environment(\.colorScheme) private var colorScheme
-    private let isReadable: Bool
-    private let title: String
-    private let text: String?
-    private let unavailableLabel: String
-    private let identifier: String
-
-    public init(
-        isReadable: Bool,
-        title: String,
-        text: String?,
-        unavailableLabel: String,
-        identifier: String
-    ) {
-        self.isReadable = isReadable
-        self.title = title
-        self.text = text
-        self.unavailableLabel = unavailableLabel
-        self.identifier = identifier
-    }
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-            Text(title)
-                .wiltedFont(.title)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-
-            Divider()
-
-            ScrollView {
-                Group {
-                    if isReadable, let text {
-                        Text(text)
-                            .wiltedFont(.body)
-                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                            .textSelection(.enabled)
-                    } else {
-                        Label(unavailableLabel, systemImage: "doc.text.magnifyingglass")
-                            .wiltedFont(.utility)
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .accessibilityIdentifier(identifier)
-        }
-        .padding(WiltedTheme.Spacing.medium)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            WiltedTheme.color(.card, scheme: colorScheme),
-            in: RoundedRectangle(cornerRadius: WiltedTheme.Radius.card)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: WiltedTheme.Radius.card)
-                .stroke(WiltedTheme.color(.steel, scheme: colorScheme), lineWidth: 1)
-        )
     }
 }
 

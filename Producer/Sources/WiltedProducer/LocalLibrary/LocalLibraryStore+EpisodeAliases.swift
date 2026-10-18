@@ -3,8 +3,6 @@ import SwiftData
 import WiltedDomain
 
 private typealias AssociationRecord = LocalLibrarySchemaV20Models.EpisodeAssociationRecord
-private typealias AliasEpisodeRecord = LocalLibrarySchemaV13Models.PodcastEpisodeRecord
-private typealias AliasDecisionRecord = LocalLibrarySchemaV16Models.EpisodeDecisionRecord
 
 /// Typed state, including immutable source generation, guards both application
 /// and reversal. No media files are opened and no backing row is modified.

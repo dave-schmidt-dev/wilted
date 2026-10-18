@@ -235,11 +235,6 @@ struct LibrarySettingsView: View {
         }
     }
 
-    /// An "i" that opens `text` in a popover, so explanations stay off the page until asked for.
-    private func infoButton(_ text: String, identifier: String) -> some View {
-        SettingsInfoButton(text: text, identifier: identifier)
-    }
-
     /// The text-size choice as a row of themed segments (the system control ignores the app's type).
     private func segmented(selection: Binding<WiltedTheme.TextScale>, identifier: String) -> some View {
         HStack(spacing: 2) {

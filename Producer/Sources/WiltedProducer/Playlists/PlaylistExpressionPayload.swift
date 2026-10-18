@@ -47,9 +47,6 @@ extension PlaylistComparator {
     public static var matchesExpression: PlaylistComparator { .expression }
 }
 
-/// Alternate spelling for callers that read the number first.
-public typealias NumberedPlaylistRule = PlaylistNumberedRule
-
 /// The versioned, Codable payload an expression rule stores in its value
 /// string: the ordered numbered leaves exactly as declared and the formula
 /// exactly as written. Decoding refuses an unsupported version before reading

@@ -179,7 +179,6 @@ public final class PlaybackController {
     @ObservationIgnored public var episodeEligibilityPredicate: (@MainActor @Sendable (ItemID) async -> Bool)?
 
     var currentRevision: AudioRevision?
-    var checkpointTask: Task<Void, Never>?
     var completionHandledGeneration: UInt64?
     /// Bumped by every explicit pause or stop. A queue advance compares it
     /// with the value at the end of file to tell whether one was issued since.
@@ -257,7 +256,6 @@ public final class PlaybackController {
         }
         try backend.load(url: mediaURL)
         beginLifetimeAttempt(itemID: revision.itemID, revisionID: revision.revisionID)
-        checkpointTask?.cancel()
         pendingSpeedIntervals.removeAll()
         loadedBackendGeneration = backend.loadedGeneration
         setRate(defaultRate)

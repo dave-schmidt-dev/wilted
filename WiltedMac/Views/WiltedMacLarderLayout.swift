@@ -104,33 +104,3 @@ struct WiltedMacShellLayout: Equatable {
         return resolve(windowWidth: windowWidth, scale: scale, sidebarVisible: sidebarVisible)
     }
 }
-
-/// What a Larder row shows about listening progress: the bar and the
-/// "time left" wording. The wording matches the CarPlay list rows
-/// (`mm:ss left`), so the same episode reads the same on both surfaces.
-struct WiltedMacEpisodeProgress: Equatable {
-    /// 0...1 of the episode heard.
-    let fraction: Double
-    let timeLeftLabel: String
-
-    /// Nil unless the episode is partway through: not started, finished, or
-    /// of unknown length have nothing honest to draw.
-    init?(positionSeconds: TimeInterval, durationSeconds: TimeInterval?, isPlayed: Bool) {
-        guard !isPlayed,
-              positionSeconds.isFinite, positionSeconds > 0,
-              let duration = durationSeconds, duration.isFinite, duration > 0
-        else { return nil }
-        let heard = min(positionSeconds, duration)
-        fraction = heard / duration
-        timeLeftLabel = Self.clock(duration - heard) + " left"
-    }
-
-    /// `mm:ss`, or `h:mm:ss` from one hour up, as the CarPlay rows draw it.
-    static func clock(_ seconds: TimeInterval) -> String {
-        let total = Int(max(0, seconds).rounded(.down))
-        let (hours, minutes, secs) = (total / 3600, total % 3600 / 60, total % 60)
-        return hours > 0
-            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
-            : String(format: "%02d:%02d", minutes, secs)
-    }
-}
