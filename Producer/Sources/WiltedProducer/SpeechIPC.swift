@@ -200,6 +200,10 @@ public final class UnixConnection: @unchecked Sendable {
         guard fd >= 0 else { throw SpeechIPCError.systemCall(operation: "socket", code: errno) }
         descriptor = fd
         do {
+            var enabled: Int32 = 1
+            guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+                throw SpeechIPCError.systemCall(operation: "setsockopt", code: errno)
+            }
             try Self.setNonBlocking(fd)
             var address = sockaddr_un()
             let pathOffset = MemoryLayout<sockaddr_un>.offset(of: \sockaddr_un.sun_path)!
@@ -240,6 +244,15 @@ public final class UnixConnection: @unchecked Sendable {
         Darwin.shutdown(descriptor, SHUT_RDWR)
         Darwin.close(descriptor)
         descriptor = -1
+    }
+
+    var isNoSIGPIPEEnabled: Bool {
+        var enabled: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        guard descriptor >= 0, getsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &enabled, &length) == 0 else {
+            return false
+        }
+        return enabled != 0
     }
 
     public func write(_ data: Data, timeout: TimeInterval, status: @escaping StatusSink = { _ in }) throws {

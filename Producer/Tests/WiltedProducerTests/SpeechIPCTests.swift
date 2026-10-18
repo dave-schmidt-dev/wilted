@@ -249,6 +249,42 @@ final class SpeechIPCTests: XCTestCase {
         try server.finish()
         XCTAssertTrue(observedEOF.value)
     }
+
+    func testConnectionEnablesNoSIGPIPE() throws {
+        let server = try FakeServer { fd in
+            _ = try TestWire.waitForEOF(fd)
+        }
+        let connection = try UnixConnection(socketPath: server.path, timeout: 1)
+        XCTAssertTrue(connection.isNoSIGPIPEEnabled)
+        connection.close()
+        try server.finish()
+    }
+
+    func testWriteToAClosedPeerThrowsWithoutSIGPIPE() throws {
+        let server = try FakeServer { _ in }
+        let connection = try UnixConnection(socketPath: server.path, timeout: 1)
+        defer { connection.close() }
+        let payload = Data(repeating: 0x41, count: 1 << 20)
+        let start = Date()
+        do {
+            for _ in 0..<4 {
+                try connection.write(payload, timeout: 0.5)
+            }
+            XCTFail("writing to a closed peer must throw")
+        } catch let error as SpeechIPCError {
+            switch error {
+            case .systemCall(let operation, let code):
+                XCTAssertEqual(operation, "write")
+                XCTAssertTrue(code == EPIPE || code == ECONNRESET, "unexpected errno \(code)")
+            default:
+                XCTFail("unexpected error \(error)")
+            }
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+        try server.finish()
+    }
 }
 
 private final class Locked<Value>: @unchecked Sendable {
