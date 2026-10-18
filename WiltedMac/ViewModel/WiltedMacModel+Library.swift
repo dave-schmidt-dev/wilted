@@ -278,9 +278,9 @@ extension WiltedMacModel {
 #endif
     }
 
-    func presentRetainedV5Store() {
+    func presentRecoveryCopy() {
 #if canImport(WiltedProducer)
-        guard case let .failed(failure) = startupState, let url = failure.retainedV5StoreURL else { return }
+        guard case let .failed(failure) = startupState, let url = failure.recoveryCopyURL else { return }
         retainedArtifactPresenter(url)
 #endif
     }

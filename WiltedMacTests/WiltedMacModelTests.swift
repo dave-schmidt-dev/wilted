@@ -83,7 +83,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(model.articles.map(\.title), ["Migrated article"])
     }
 
-    func testFailureExposesRetainedV5ArtifactAndInjectedRecoveryAction() async throws {
+    func testFailureExposesRecoveryCopyAndInjectedRecoveryAction() async throws {
         let directory = temporaryDirectory("failure")
 
         let bootstrap = FailingBootstrap()
@@ -101,15 +101,130 @@ final class WiltedMacModelTests: XCTestCase {
         guard case let .failed(failure) = model.startupState else {
             return XCTFail("A failed store bootstrap must not look like a ready empty larder")
         }
-        let retainedURL = try XCTUnwrap(failure.retainedV5StoreURL)
+        let retainedURL = try XCTUnwrap(failure.recoveryCopyURL)
         XCTAssertTrue(failure.detail?.contains("expectedFailure") == true)
         XCTAssertEqual(retainedURL.lastPathComponent, "library.sqlite")
         XCTAssertTrue(retainedURL.path.contains("library.sqlite.v5-test"))
+        XCTAssertTrue(failure.message.contains("left in place"), "a store that never changed is still in place")
         XCTAssertTrue(failure.canRetry)
         XCTAssertTrue(model.articles.isEmpty)
 
-        model.presentRetainedV5Store()
+        model.presentRecoveryCopy()
         XCTAssertEqual(presentedURL, retainedURL)
+    }
+
+    func testRecoveryCopyLookupFindsVersionedMigrationBackups() throws {
+        let directory = temporaryDirectory("recovery-lookup")
+        let libraryURL = directory.appendingPathComponent("library.sqlite")
+        let manager = FileManager.default
+        func makeCopy(_ name: String, modified: Date) throws {
+            let copy = directory.appendingPathComponent(name, isDirectory: true)
+            try manager.createDirectory(at: copy, withIntermediateDirectories: true)
+            try Data("copy".utf8).write(to: copy.appendingPathComponent("library.sqlite"))
+            try manager.setAttributes([.modificationDate: modified], ofItemAtPath: copy.path)
+        }
+        let backupName = "library.sqlite.v19-backup-\(UUID().uuidString)"
+        try makeCopy("library.sqlite.v5-legacy", modified: Date(timeIntervalSince1970: 1_700_000_000))
+        try makeCopy(backupName, modified: Date(timeIntervalSince1970: 1_700_000_500))
+        // Look-alikes that are not retained copies, each holding a store file.
+        try makeCopy("library.sqlite.vX-backup-1", modified: Date(timeIntervalSince1970: 1_700_001_000))
+        try makeCopy("library.sqlite.v19-notes", modified: Date(timeIntervalSince1970: 1_700_001_000))
+        try makeCopy("other.sqlite.v19-backup-1", modified: Date(timeIntervalSince1970: 1_700_001_000))
+
+        let found = WiltedMacModel.recoveryCopyURLs(for: libraryURL)
+
+        XCTAssertEqual(found.map { $0.deletingLastPathComponent().lastPathComponent },
+                       [backupName, "library.sqlite.v5-legacy"], "newest first, both naming schemes")
+        XCTAssertTrue(found.allSatisfy { $0.lastPathComponent == "library.sqlite" })
+    }
+
+    func testMigrationRestoreFailureCarriesTypedBackupAndDoesNotClaimLibraryInPlace() async throws {
+        let directory = temporaryDirectory("restore-failed")
+        let backupURL = directory.appendingPathComponent("somewhere-else", isDirectory: true)
+            .appendingPathComponent("library.sqlite.v19-backup-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("library.sqlite")
+        var presentedURL: URL?
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            storeBootstrap: { _ in
+                throw LocalLibraryStoreError.migrationRestoreFailed(backupURL: backupURL, reason: "restore failed")
+            },
+            retainedArtifactPresenter: { presentedURL = $0 }, preferences: WiltedMacTestPreferences.ephemeral()
+        )
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        guard case let .failed(failure) = model.startupState else {
+            return XCTFail("A failed restore must not look like a ready larder")
+        }
+        XCTAssertEqual(failure.recoveryCopyURL, backupURL, "the typed backup, not a directory guess")
+        XCTAssertFalse(failure.message.contains("left in place"))
+        XCTAssertTrue(failure.message.contains("could not restore your previous library"))
+        XCTAssertTrue(failure.message.contains("by hand"))
+        XCTAssertFalse(failure.message.contains("migrationRestoreFailed"), "no raw enum text in the headline")
+        XCTAssertTrue(failure.detail?.contains("migrationRestoreFailed") == true)
+
+        model.presentRecoveryCopy()
+        XCTAssertEqual(presentedURL, backupURL)
+    }
+
+    func testMigrationFailedRestoredCarriesTypedBackupAndKeepsLeftInPlaceCopy() async throws {
+        let directory = temporaryDirectory("migration-restored")
+        let backupURL = directory.appendingPathComponent("elsewhere", isDirectory: true)
+            .appendingPathComponent("library.sqlite.v19-backup-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("library.sqlite")
+        let model = WiltedMacModel(
+            arguments: [],
+            stateDirectoryOverride: directory,
+            storeBootstrap: { _ in
+                throw LocalLibraryStoreError.migrationFailedRestored(backupURL: backupURL, reason: "migration failed")
+            },
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        guard case let .failed(failure) = model.startupState else {
+            return XCTFail("A failed migration must not look like a ready larder")
+        }
+        XCTAssertEqual(failure.recoveryCopyURL, backupURL)
+        XCTAssertTrue(failure.message.contains("left in place"))
+    }
+
+    func testLaunchStagingCleanupRemovesOnlyAbandonedDownloadFiles() throws {
+        let media = temporaryDirectory("staging-cleanup")
+        let manager = FileManager.default
+        let staging = media.appendingPathComponent(".podcast-staging", isDirectory: true)
+        let nested = staging.appendingPathComponent("nested", isDirectory: true)
+        let audioDirectory = media.appendingPathComponent("PodcastAudio", isDirectory: true)
+        try manager.createDirectory(at: nested, withIntermediateDirectories: true)
+        try manager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        let abandoned = staging.appendingPathComponent("\(UUID().uuidString).mp3")
+        let notes = staging.appendingPathComponent("notes.txt")
+        let nestedFile = nested.appendingPathComponent("\(UUID().uuidString).mp3")
+        let downloaded = audioDirectory.appendingPathComponent("\(UUID().uuidString).mp3")
+        for file in [abandoned, notes, nestedFile, downloaded] {
+            try Data("bytes".utf8).write(to: file)
+        }
+
+        let outcome = WiltedMacModel.removeAbandonedDownloadStaging(in: media)
+
+        XCTAssertEqual(outcome.removed, 1)
+        XCTAssertEqual(outcome.failed, 0)
+        XCTAssertFalse(manager.fileExists(atPath: abandoned.path))
+        XCTAssertTrue(manager.fileExists(atPath: notes.path), "a file that is not <UUID>.<ext> stays")
+        XCTAssertTrue(manager.fileExists(atPath: nested.path), "a nested directory stays")
+        XCTAssertTrue(manager.fileExists(atPath: nestedFile.path), "the cleanup never recurses")
+        XCTAssertTrue(manager.fileExists(atPath: downloaded.path), "nothing outside the staging directory is touched")
+
+        let missing = WiltedMacModel.removeAbandonedDownloadStaging(
+            in: media.appendingPathComponent("never-created", isDirectory: true)
+        )
+        XCTAssertEqual(missing.removed, 0)
+        XCTAssertEqual(missing.failed, 0)
     }
 
     func testRetryIsBoundedToOneRecoveryAttempt() async {
@@ -131,7 +246,7 @@ final class WiltedMacModelTests: XCTestCase {
             return XCTFail("The second failure must remain a recovery state")
         }
         XCTAssertFalse(failure.canRetry)
-        XCTAssertNil(failure.retainedV5StoreURL, "a retained copy from an earlier attempt is not this attempt's recovery artifact")
+        XCTAssertNil(failure.recoveryCopyURL, "a retained copy from an earlier attempt is not this attempt's recovery artifact")
         XCTAssertTrue(failure.detail?.contains("expectedFailure") == true)
         model.retryStoreBootstrap()
         let attempts = await bootstrap.attempts

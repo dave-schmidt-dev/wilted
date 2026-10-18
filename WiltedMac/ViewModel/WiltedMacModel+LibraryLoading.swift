@@ -477,22 +477,35 @@ extension WiltedMacModel {
         WiltedMacStartupFailure(
             message: "Wilted could not open your larder. The existing library was left in place.",
             detail: nil,
-            retainedV5StoreURL: nil,
+            recoveryCopyURL: nil,
             canRetry: canRetry
         )
     }
 
-    nonisolated static func retainedV5StoreURLs(for libraryURL: URL) -> [URL] {
+    /// Whether `name` is a directory the store retains a copy of the library
+    /// in: the legacy `<library>.v5-*` copy or a migration backup named
+    /// `<library>.v<N>-backup-<UUID>` (LocalLibraryStore+Migration).
+    nonisolated static func isRecoveryCopyDirectoryName(_ name: String, libraryName: String) -> Bool {
+        let prefix = "\(libraryName).v"
+        guard name.hasPrefix(prefix) else { return false }
+        let rest = name.dropFirst(prefix.count)
+        if rest.hasPrefix("5-") { return true }
+        let digits = rest.prefix { $0.isASCII && $0.isNumber }
+        return !digits.isEmpty && rest.dropFirst(digits.count).hasPrefix("-backup-")
+    }
+
+    /// Every retained copy of the library beside `libraryURL`, newest first.
+    nonisolated static func recoveryCopyURLs(for libraryURL: URL) -> [URL] {
         let manager = FileManager.default
         let directory = libraryURL.deletingLastPathComponent()
-        let prefix = "\(libraryURL.lastPathComponent).v5-"
+        let libraryName = libraryURL.lastPathComponent
         let candidates = (try? manager.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         )) ?? []
         return candidates
-            .filter { $0.lastPathComponent.hasPrefix(prefix) }
+            .filter { isRecoveryCopyDirectoryName($0.lastPathComponent, libraryName: libraryName) }
             .compactMap { retainedDirectory -> (URL, Date)? in
                 let retainedStore = retainedDirectory.appendingPathComponent(libraryURL.lastPathComponent)
                 guard manager.fileExists(atPath: retainedStore.path) else { return nil }
