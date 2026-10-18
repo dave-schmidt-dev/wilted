@@ -84,10 +84,24 @@ extension LocalLibraryStore {
         return LocalLibraryMigrationPreflight(sourceURL: sourceURL, retainedURL: retainedURL, retainedFiles: retainedFiles)
     }
 
+    /// The durable marker that names the retained backup while its files are
+    /// being copied over the source. The suffix is not a `-` sidecar, so
+    /// `storeFiles(named:in:)` never treats it as a store file; the open path
+    /// refuses to open or create a store while it exists.
+    public nonisolated static func restoreInProgressMarkerURL(for storeURL: URL) -> URL {
+        storeURL.deletingLastPathComponent()
+            .appendingPathComponent("\(storeURL.lastPathComponent).restore-in-progress")
+    }
+
     /// Replaces the source store's main file and sidecars with the retained
     /// backup's. Every source file is removed first and the backup is copied
     /// to new files, so a connection still holding the old files cannot write
     /// into the restored ones. The backup itself is never modified.
+    ///
+    /// A marker naming the backup is written and fsynced before the first
+    /// removal and removed only after the last copy, so an interrupt at any
+    /// point leaves evidence that the store is mid-restore and the next open
+    /// refuses instead of silently creating an empty library.
     public nonisolated static func restoreMigrationBackup(_ preflight: LocalLibraryMigrationPreflight) throws {
         let manager = FileManager.default
         let sourceDirectory = preflight.sourceURL.deletingLastPathComponent()
@@ -96,6 +110,11 @@ extension LocalLibraryStore {
         guard manager.fileExists(atPath: preflight.retainedURL.path) else {
             throw LocalLibraryStoreError.migrationPreflightFailed("retained backup is missing")
         }
+        let markerURL = restoreInProgressMarkerURL(for: preflight.sourceURL)
+        try Data(preflight.retainedURL.path.utf8).write(to: markerURL)
+        let markerHandle = try FileHandle(forWritingTo: markerURL)
+        try markerHandle.synchronize()
+        try markerHandle.close()
         for file in try storeFiles(named: sourceName, in: sourceDirectory) {
             try manager.removeItem(at: file)
         }
@@ -103,6 +122,7 @@ extension LocalLibraryStore {
             let suffix = String(file.lastPathComponent.dropFirst(retainedName.count))
             try manager.copyItem(at: file, to: sourceDirectory.appendingPathComponent(sourceName + suffix))
         }
+        try manager.removeItem(at: markerURL)
     }
 
     /// The main store file plus its `-wal`/`-shm` (or other `-`) sidecars.

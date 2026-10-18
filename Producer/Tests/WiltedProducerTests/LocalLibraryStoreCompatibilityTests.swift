@@ -79,6 +79,9 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         XCTAssertEqual(try Self.sha256(of: copied), Self.v13FixtureSHA256, "the original bytes are restored")
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(13))
         XCTAssertEqual(try Self.sha256(of: XCTUnwrap(backupURL)), Self.v13FixtureSHA256, "the backup is retained")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: LocalLibraryStore.restoreInProgressMarkerURL(for: copied).path
+        ), "a completed restore removes its marker")
 
         let recovered = try LocalLibraryStore(url: copied)
         try await assertFixtureValues(in: recovered)
@@ -99,6 +102,9 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         try LocalLibraryStore.restoreMigrationBackup(LocalLibraryMigrationPreflight(
             sourceURL: copied, retainedURL: backupURL, retainedFiles: []
         ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: LocalLibraryStore.restoreInProgressMarkerURL(for: copied).path
+        ), "a completed restore removes its marker")
         XCTAssertEqual(try Self.sha256(of: copied), Self.v13FixtureSHA256)
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied), .known(13))
         let reopened = try LocalLibraryStore(url: copied)
@@ -127,6 +133,57 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: backupURL), .known(13))
         let backupFiles = try FileManager.default.contentsOfDirectory(atPath: backupURL.deletingLastPathComponent().path)
         XCTAssertTrue(backupFiles.contains(backupURL.lastPathComponent + "-wal"), "the backup keeps the WAL sidecar")
+    }
+
+    func testRestoreMarkerRefusesToOpenEvenWhenNoStoreExists() throws {
+        let directory = OwnedTestTemp.root
+            .appendingPathComponent("wilted-restore-marker-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("library.store")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let backupURL = directory.appendingPathComponent("retained/library.store")
+        let markerURL = LocalLibraryStore.restoreInProgressMarkerURL(for: url)
+        try Data(backupURL.path.utf8).write(to: markerURL)
+
+        XCTAssertThrowsError(try LocalLibraryStore(url: url)) { error in
+            guard case .migrationRestoreFailed(let namedBackup, let reason)? = error as? LocalLibraryStoreError else {
+                return XCTFail("expected a restore-in-progress refusal, got \(error)")
+            }
+            XCTAssertEqual(namedBackup, backupURL)
+            XCTAssertTrue(reason.contains(markerURL.path), "the refusal names the marker to remove")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "a refused open must not create an empty store")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path),
+                      "the refusal keeps the marker for the manual restore")
+    }
+
+    func testFailedRestoreKeepsTheMarkerAndTheNextOpenRefusesAnEmptyStore() async throws {
+        let copied = try copiedFixture()
+        defer { try? FileManager.default.removeItem(at: copied.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: copied)
+        let retained = await store.migrationBackupURL
+        let backupURL = try XCTUnwrap(retained)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: backupURL.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: backupURL.path) }
+
+        XCTAssertThrowsError(try LocalLibraryStore.restoreMigrationBackup(LocalLibraryMigrationPreflight(
+            sourceURL: copied, retainedURL: backupURL, retainedFiles: []
+        )))
+        let markerURL = LocalLibraryStore.restoreInProgressMarkerURL(for: copied)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path), "a failed restore keeps the marker")
+        XCTAssertEqual(try String(contentsOf: markerURL, encoding: .utf8), backupURL.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copied.path),
+                       "the failed restore already removed the source files")
+
+        XCTAssertThrowsError(try LocalLibraryStore(url: copied)) { error in
+            guard case .migrationRestoreFailed(let namedBackup, _)? = error as? LocalLibraryStoreError else {
+                return XCTFail("expected a restore-in-progress refusal, got \(error)")
+            }
+            XCTAssertEqual(namedBackup, backupURL)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copied.path),
+                       "the refused open must not leave an empty store in the backup's place")
     }
 
     func testNewerStoreIsRefusedWithoutAnyWrite() throws {
