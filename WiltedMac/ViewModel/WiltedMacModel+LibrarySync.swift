@@ -463,7 +463,6 @@ extension WiltedMacModel {
     /// cloud success, and the caller bounds the join. Task 5.0's publisher
     /// shutdown belongs here, between the cancel and the join.
     func closeLibraryControllersForTermination() async {
-        syncLifecycle?.cancel()
         stopLibrarySync()
         await waitForLibrarySyncShutdown()
     }
@@ -531,7 +530,7 @@ final class WiltedMacModelHandoffPlayer: WiltedMacHandoffPlayer {
             try await playback.pauseAndCheckpoint()
             model.isPlaying = playback.isPlaying
             model.refreshPlaybackReadout()
-            await model.queueCurrentPlaybackCheckpoint()
+            model.refreshLifetimeStatisticsAfterPlayback()
         } catch {
             librarySyncLog.error("Handoff pause failed: \(String(describing: error), privacy: .public)")
         }

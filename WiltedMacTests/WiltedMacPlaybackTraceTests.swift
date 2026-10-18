@@ -27,7 +27,7 @@ final class WiltedMacPlaybackTraceTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(40))
         gate.release()
         await model.waitForPlaybackOperationForTesting()
-        await model.waitForPlaybackCheckpointForTesting()
+        await model.waitForLifetimeStatisticsRefreshForTesting()
 
         let trace = model.playbackCommands.trace
         let inherited = try XCTUnwrap(
@@ -109,7 +109,7 @@ final class WiltedMacPlaybackTraceTests: XCTestCase {
             await gate.waitUntilHeld()
             gate.release()
             await model.waitForPlaybackOperationForTesting()
-            await model.waitForPlaybackCheckpointForTesting()
+            await model.waitForLifetimeStatisticsRefreshForTesting()
         }
 
         let summary = try XCTUnwrap(

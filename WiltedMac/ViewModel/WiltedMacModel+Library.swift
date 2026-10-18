@@ -13,6 +13,33 @@ import WiltedProducer
 import CloudKit
 #endif
 
+/// The phases the retired article sync card named. Kept so the visual system
+/// can still assert that every phase writes its own name and tone.
+enum WiltedMacSyncPhase: String, Sendable {
+    case disabled
+    case idle
+    case staging
+    case fetching
+    case sending
+    case completed
+    case failed
+    case cancelled
+    case quarantined
+
+    /// Emphasis only. The row always spells the phase out, so colour is never
+    /// the sole carrier of state (W-INV-010). The listener already tinted a
+    /// quarantined account; the producer showed it in plain secondary text.
+    var tone: WiltedStatusTone {
+        switch self {
+        case .disabled, .idle, .cancelled: .neutral
+        case .staging, .fetching, .sending: .active
+        case .completed: .positive
+        case .quarantined: .caution
+        case .failed: .failure
+        }
+    }
+}
+
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
     /// Starts one already-claimed episode and waits for it to settle.
@@ -286,78 +313,6 @@ extension WiltedMacModel {
     func waitForStoreBootstrap() async {
 #if canImport(WiltedProducer)
         await startupTask?.value
-#endif
-    }
-
-    var syncStatus: WiltedMacSyncStatus {
-#if canImport(WiltedProducer)
-        syncLifecycle?.status ?? .disabled
-#else
-        .disabled
-#endif
-    }
-
-    var syncObservability: WiltedMacObservability {
-#if canImport(WiltedProducer)
-        syncLifecycle?.observability ?? .unavailable
-#else
-        .unavailable
-#endif
-    }
-
-    /// Starts the explicit manual refresh action.
-    func refreshSync() {
-#if canImport(WiltedProducer)
-        syncLifecycle?.startRefresh()
-#endif
-    }
-
-    /// Starts the explicit manual upload action.
-    func uploadPendingSync() {
-#if canImport(WiltedProducer)
-        Task { [weak self] in
-            _ = await self?.queueUnpublishedReadyRevisions()
-            self?.syncLifecycle?.startUpload()
-        }
-#endif
-    }
-
-    /// Reconciles durable ready revisions when the producer launches or returns to the
-    /// foreground. The task guard makes repeated scene callbacks harmless while the
-    /// existing lifecycle coalesces any automatic send requested by the reconciliation.
-    func reconcileSyncOnLaunchOrForeground() {
-#if canImport(WiltedProducer)
-        guard !fixtureMode else { return }
-        switch startupState {
-        case let .loading(attempt, _):
-            pendingSyncReconciliation = true
-            if attempt == 0 {
-                startStoreBootstrap()
-            }
-            return
-        case .failed:
-            return
-        case .ready:
-            break
-        }
-        guard let syncLifecycle,
-              syncLifecycle.status.phase != .disabled,
-              syncReconciliationTask == nil else { return }
-        syncReconciliationTask = Task { [weak self] in
-            guard let self else { return }
-            let queued = await self.queueUnpublishedReadyRevisions()
-            if queued {
-                self.syncLifecycle?.startAutomaticUpload()
-            }
-            self.syncReconciliationTask = nil
-        }
-#endif
-    }
-
-    /// Cancels the current bounded sync action.
-    func cancelSync() {
-#if canImport(WiltedProducer)
-        syncLifecycle?.cancel()
 #endif
     }
 

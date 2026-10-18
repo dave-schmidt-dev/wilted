@@ -258,8 +258,6 @@ final class WiltedMacModel {
     var lifetimeStatistics: LifetimeStatistics { statisticsState.summary?.legacy ?? LifetimeStatistics() }
     /// The one background summary load/rebuild. Never awaited by bootstrap.
     var statisticsTask: Task<Void, Never>?
-    var articlePublicationCount = 0
-    var articlePlaybackCheckpointCount = 0
     /// Set only after the one automatic route recovery attempt fails. The
     /// recovery control is gated on this so it is a manual retry, not a second
     /// action competing with the automatic repair.
@@ -302,7 +300,6 @@ final class WiltedMacModel {
     }
     var coordinator: PreparationCoordinator?
     var playback: PlaybackController?
-    var syncLifecycle: WiltedMacSyncLifecycle?
     /// Why CloudKit calls are paused (rate limited, unavailable) and until when; nil while they run.
     /// Set by the library sync's shared gate, shown in the Sync settings card.
     var libraryThrottle: TransportGateState?
@@ -355,8 +352,6 @@ final class WiltedMacModel {
 
     let libraryURL: URL
     let mediaDirectory: URL
-    let syncTransportFactory: WiltedMacSyncTransportFactory?
-    let assetResolver: LocalLibraryAssetResolver
     let storeBootstrap: WiltedMacStoreBootstrap
     let pipelineFingerprint: String?
     /// Awaited at the fingerprint step, never on the launch path.
@@ -375,10 +370,8 @@ final class WiltedMacModel {
     let retainedArtifactPresenter: (URL) -> Void
     var startupAttemptCount = 0
     var startupTask: Task<Void, Never>?
-    var pendingSyncReconciliation = false
     var preparationRun: PreparationRun?
     var preparationTask: Task<Void, Never>?
-    var syncReconciliationTask: Task<Void, Never>?
     var podcastRefreshTask: Task<Void, Never>?
     /// Every refresh task carries this identity so a cancelled predecessor
     /// cannot clear a replacement's visible work state when it returns late.
@@ -483,9 +476,13 @@ final class WiltedMacModel {
     var fixtureInstallTask: Task<Void, Never>?
     var fixturePodcastInstallTask: Task<Void, Never>?
     var playbackOperationTask: Task<Void, Never>?
-    /// Every finite subscription, Feed-decision, or Restore writer. Close and
-    /// deinit cancel and drain this ledger before an owned fixture root goes.
+    /// Every finite subscription, Feed-decision, Restore, or playback
+    /// statistics refresh writer. Close and deinit cancel and drain this
+    /// ledger before an owned fixture root goes.
     var subscriptionWriteTasks: [UUID: Task<Void, Never>] = [:]
+    /// The final playback statistics refresh in issue order, so refreshes
+    /// never read the summary out of order.
+    var lifetimeStatisticsRefreshTailToken: UUID?
     var audioRouteRecoveryInFlight = false
     var audioRouteRecoveryAttempted = false
     /// The playback command owner: token order, pending and failure state,
@@ -518,8 +515,6 @@ final class WiltedMacModel {
 #endif
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments,
-         syncTransportFactory: WiltedMacSyncTransportFactory? = nil,
-         assetResolver: @escaping LocalLibraryAssetResolver = { _, _ in nil },
          stateDirectoryOverride: URL? = nil,
          storeBootstrap: WiltedMacStoreBootstrap? = nil,
          podcastDownloadTransportFactory: WiltedMacPodcastDownloadTransportFactory? = nil,
@@ -574,8 +569,6 @@ final class WiltedMacModel {
         }
         self.libraryURL = stateDirectory.appendingPathComponent("library.sqlite")
         self.mediaDirectory = stateDirectory.appendingPathComponent("media", isDirectory: true)
-        self.syncTransportFactory = syncTransportFactory
-        self.assetResolver = assetResolver
         self.storeBootstrap = storeBootstrap ?? { url in
             try await Task.detached(priority: .userInitiated) {
                 try LocalLibraryStore(url: url)
@@ -648,7 +641,6 @@ final class WiltedMacModel {
         let voidTasks = [
             startupTask,
             preparationTask,
-            syncReconciliationTask,
             podcastRefreshTask,
             bootstrapRecoveryTask,
             statisticsTask,
@@ -671,7 +663,6 @@ final class WiltedMacModel {
             + Array(playbackPresentationTasks.values)
         let downloadTasks = Array(podcastDownloadTasks.values)
         let automation = automation
-        let syncLifecycle = syncLifecycle
         cancelPendingTemporaryStateWork()
         Task { @MainActor in
             await closeOwnedTemporaryStateAfterDeinit(
@@ -679,7 +670,6 @@ final class WiltedMacModel {
                 voidTasks: voidTasks,
                 downloadTasks: downloadTasks,
                 automation: automation,
-                syncLifecycle: syncLifecycle,
                 preferencesSuite: fixtureSuite
             )
         }

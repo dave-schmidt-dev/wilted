@@ -62,7 +62,7 @@ validate_pixel_snapshot_baselines() {
   grep -Fq '.accessibilityAddTraits(isSelected ? [.isSelected] : [])' \
     "$root"/WiltedMac/Views/*.swift ||
     fail 'Mac sidebar does not announce its selected destination to accessibility'
-  grep -Fq 'testPodcastPlaybackStaysOutOfArticleSyncWhileArticleQueuesOneCheckpoint' \
+  grep -Fq 'testPodcastPlaybackStaysOutOfArticleSyncAcrossArticleTransition' \
     "$root/WiltedMacTests/WiltedVisualSystemTests.swift" ||
     fail 'Mac podcast/article sync-isolation model selector is missing'
   grep -Fq 'testPodcastPlaybackJourneyAcrossDestinations' \

@@ -91,9 +91,6 @@ extension WiltedMacModel {
                 // fingerprint can be resolved on a later launch.
                 invalidation = PodcastPreparationInvalidationResult()
             }
-            // The account-review gate is durable state, so restore it before
-            // the ready surface can expose sync controls.
-            syncLifecycle?.restoreAccountQuarantine()
             // Before the library is read, so the rows derive from a journal
             // that tells the truth about what is running: nothing, yet.
             announceStartupStep(.closingInterruptedRuns)
@@ -208,10 +205,6 @@ extension WiltedMacModel {
             // After `.ready`: the summary is observed state, so a slow, failed
             // or rebuilding one never holds the larder closed or fails it.
             beginLifetimeStatisticsLoad()
-            if pendingSyncReconciliation {
-                pendingSyncReconciliation = false
-                reconcileSyncOnLaunchOrForeground()
-            }
             // After the library is in memory, not in a parallel task: automation
             // resolves a claimed episode ID against `episodes`.
             startAutomationOnLaunch()
@@ -621,7 +614,6 @@ extension WiltedMacModel {
                 removeAds: removesAdvertisements
             )
         }
-        syncLifecycle = nil
         if configuredStore != nil, !fixtureMode { startMorningReportSchedule() }
     }
 

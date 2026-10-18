@@ -425,7 +425,6 @@ extension WiltedMacModel {
             let id = try await coordinator.prepareArticle(url: url) { [weak self] detail in
                 Task { @MainActor in self?.podcastOperationMessage = "Preparing article: \(detail)" }
             }
-            if await queuePreparedPublication(itemID: id) { syncLifecycle?.startAutomaticUpload() }
             await recordWorkTicketTransition(
                 kind: .articlePreparation, subjectID: subject, requestSequence: sequence,
                 state: .succeeded, resolvedItemID: id.rawValue

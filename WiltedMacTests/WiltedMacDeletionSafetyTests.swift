@@ -75,7 +75,6 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
         XCTAssertEqual(after.subscriptions, before.subscriptions.subtracting([feed.id]))
         XCTAssertEqual(after.episodes, before.episodes.subtracting([episodeID]))
         XCTAssertEqual(after.liveArticles, before.liveArticles, "articles are not part of a feed")
-        XCTAssertEqual(after.tombstones, before.tombstones)
         XCTAssertFalse(after.queue.contains(episodeID))
         XCTAssertNotEqual(after.currentQueued, episodeID)
         // W-INV-025: the unsubscribed feed's audio goes with its records, and
@@ -289,7 +288,6 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
         XCTAssertEqual(model.episodes.map(\.id), rows, "episodes are not part of an article")
         let after = try await durable(model)
         XCTAssertEqual(after.deletedArticles, before.deletedArticles.union([article.id]))
-        XCTAssertEqual(after.tombstones, (before.tombstones + [article.id]).sorted())
         XCTAssertEqual(after.subscriptions, before.subscriptions)
         XCTAssertEqual(after.episodes, before.episodes)
         XCTAssertTrue(mediaExists(model))
@@ -305,7 +303,7 @@ final class WiltedMacDeletionSafetyTests: XCTestCase {
         await model.waitForPodcastOperations()
         XCTAssertEqual(flow.phase, .saved)
         let repeated = try await durable(model)
-        XCTAssertEqual(repeated.tombstones, after.tombstones, "a repeat must not write a second tombstone")
+        XCTAssertEqual(repeated, after, "a repeat must not write anything")
     }
 
     func testEveryFailedArticleStageKeepsSelectionPlayerAndRecords() async throws {
@@ -373,7 +371,6 @@ private struct DurableLibrary: Equatable {
     var episodes: Set<String>
     var liveArticles: Set<String>
     var deletedArticles: Set<String>
-    var tombstones: [String]
     var queue: [String]
     var currentQueued: String?
     var downloads: Set<String>
@@ -458,7 +455,6 @@ extension WiltedMacDeletionSafetyTests {
             episodes: Set(episodes.map(\.itemID.rawValue)),
             liveArticles: Set(articles.filter { !$0.isDeleted }.map(\.itemID.rawValue)),
             deletedArticles: Set(articles.filter(\.isDeleted).map(\.itemID.rawValue)),
-            tombstones: store.tombstones().map(\.itemID.rawValue).sorted(),
             queue: queue.episodeIDs.map(\.rawValue),
             currentQueued: queue.currentEpisodeID?.rawValue,
             downloads: Set(store.downloads().map(\.episodeID.rawValue)),

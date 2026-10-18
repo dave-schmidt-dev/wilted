@@ -102,9 +102,6 @@ struct WiltedMacApp: App {
         let _ = Self.recordFixtureSceneEvaluation()
         WindowGroup {
             WiltedMacRootView(model: model)
-                .task {
-                    model.reconcileSyncOnLaunchOrForeground()
-                }
                 // Scene phase reports that the windows went away, which is
                 // not the same event as quitting and must not stop the audio.
                 // A normal quit already drained in `applicationShouldTerminate`;
@@ -153,7 +150,6 @@ struct WiltedMacApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                model.reconcileSyncOnLaunchOrForeground()
                 // Symmetric with the checkpoint below. Hiding the app
                 // checkpoints and stops the ticker, and without this a window
                 // left open past the first focus dip would never tick again for

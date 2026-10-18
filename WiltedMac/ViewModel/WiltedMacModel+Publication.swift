@@ -6,7 +6,6 @@ import os
 #if canImport(WiltedProducer)
 import WiltedDomain
 import WiltedProducer
-import WiltedSync
 #endif
 
 #if WILTED_CLOUDKIT_LIVE
@@ -69,167 +68,36 @@ extension WiltedMacModel {
         )
     }
 
-    @discardableResult
-    func queuePreparedPublication(itemID: ItemID, chunkedFile: AudioChunkedFile? = nil) async -> Bool {
-        guard let store, let syncLifecycle,
-              let article = try? await store.article(for: itemID),
-              let stored = try? await store.readyRevision(for: itemID),
-              let bytes = try? Data(contentsOf: stored.mediaURL),
-              let chunkedFile = chunkedFile ?? (try? AudioChunking.chunk(bytes)) else { return false }
-        let revisionResult = await syncLifecycle.queueRevision(stored.revision, chunkedFile: chunkedFile)
-        let itemResult = await syncLifecycle.queueItem(article, currentRevisionID: stored.revision.revisionID)
-        guard case .success = itemResult, case .success = revisionResult else { return false }
-        articlePublicationCount += 1
-        return true
-    }
-
-    /// Re-queues ready revisions that are durable locally but absent from the outbound queue.
-    ///
-    /// Publication is otherwise queued only at the instant a preparation completes, so any
-    /// enqueue that failed then stays unqueued forever: the revision cannot be re-derived by
-    /// re-preparing it either, because the same text and settings derive the same immutable
-    /// revision ID and `saveReadyRevision` rejects a second media path for it. Reconciling
-    /// from durable local state before an upload is what makes the queue recoverable, and it
-    /// matches W-INV-007's rule that local state, not CloudKit, is the source of truth.
-    ///
-    /// Membership is checked rather than sync status so a partially queued item repairs
-    /// itself, and a revision whose media file is gone is skipped instead of failing the
-    /// whole upload. The item record has one stable identity across revisions, so an
-    /// acknowledgement counts only when its persisted pointer names the ready revision.
-    func queueUnpublishedReadyRevisions() async -> Bool {
-        guard let store, let syncLifecycle else { return false }
-        guard let articles = try? await store.articles() else { return false }
-        let state = try? await store.syncRepositoryState()
-        let queued = Set((state?.pendingChanges.map(\.recordID) ?? []) + Array(state?.remoteAcknowledgedRecordIDs ?? []))
-        var didQueue = false
-        for article in articles where !article.isDeleted {
-            guard let stored = try? await store.readyRevision(for: article.itemID),
-                  FileManager.default.fileExists(atPath: stored.mediaURL.path),
-                  let bytes = try? Data(contentsOf: stored.mediaURL),
-                  let chunkedFile = try? AudioChunking.chunk(bytes),
-                  let revisionRecordID = try? WiltedRecordID.revision(article.itemID, stored.revision.revisionID) else { continue }
-            let chunkRecordIDs = chunkedFile.manifest.chunks.compactMap {
-                try? WiltedRecordID.revisionChunk(article.itemID, stored.revision.revisionID, index: $0.index)
-            }
-            guard let itemRecordID = try? WiltedRecordID.item(article.itemID) else { continue }
-            let revisionExpected = Set([revisionRecordID] + chunkRecordIDs)
-            let hasCurrentItemPointer = state.map { state in
-                let pointsToReadyRevision: (WiltedRecordEnvelope?) -> Bool = { record in
-                    guard case let .string(revisionID)? = record?.fields["currentRevisionID"] else { return false }
-                    return revisionID == stored.revision.revisionID.rawValue
-                }
-                if state.pendingChanges.contains(where: {
-                    $0.recordID == itemRecordID && pointsToReadyRevision($0.record)
-                }) {
-                    return true
-                }
-                return state.remoteAcknowledgedRecordIDs.contains(itemRecordID) &&
-                    state.records.contains(where: {
-                        $0.id == itemRecordID && pointsToReadyRevision($0)
-                    })
-            } ?? false
-            guard !revisionExpected.isSubset(of: queued) || !hasCurrentItemPointer else { continue }
-            if revisionExpected.isSubset(of: queued) {
-                if case .success = await syncLifecycle.queueItem(article, currentRevisionID: stored.revision.revisionID) {
-                    didQueue = true
-                }
-            } else {
-                didQueue = await queuePreparedPublication(itemID: article.itemID, chunkedFile: chunkedFile) || didQueue
-            }
-        }
-        let hasSendablePending = (try? await store.syncRepositoryState())?.sendableChanges.isEmpty == false
-        return didQueue || hasSendablePending
-    }
-
-    /// Frozen before any publication suspension: an older command may never
-    /// publish a newer command's durable position as its own checkpoint.
-    struct PlaybackCheckpointCapture {
-        let itemID: ItemID
-        let revisionID: RevisionID
-        let sessionID: String?
-        let sequence: Int64
-        let positionSeconds: Double
-        let completed: Bool
-        let intent: PlaybackIntent
-
-        func matches(_ state: PlaybackState) -> Bool {
-            state.sessionID == sessionID && state.sequence == sequence
-                && state.positionSeconds == positionSeconds && state.completed == completed
-                && state.intent == intent
-        }
-    }
-
-    private func captureCurrentPlaybackCheckpoint() -> PlaybackCheckpointCapture? {
-        guard let playback, let itemID = playback.itemID, let revisionID = playback.revisionID,
-              selectedArticleID == itemID.rawValue,
-              articles.contains(where: { $0.id == itemID.rawValue }) else { return nil }
-        return PlaybackCheckpointCapture(itemID: itemID, revisionID: revisionID,
-                                         sessionID: playback.sessionID, sequence: playback.sequence,
-                                         positionSeconds: playback.positionSeconds,
-                                         completed: playback.completed, intent: playback.intent)
-    }
-
-    /// Transport publications serialize independently of audio effects. The
-    /// finite-writer ledger already cancels and joins them on close/deinit.
-    /// Other checkpoint callers retain their existing awaited ordering.
-    func enqueueCurrentPlaybackCheckpoint() {
+    /// Refreshes the lifetime statistics card after playback moved the
+    /// durable summary. Transport commands call this without waiting; the
+    /// finite-writer ledger tracks the task, so close and deinit cancel and
+    /// join it as the retired checkpoint writer's did.
+    func refreshLifetimeStatisticsAfterPlayback() {
         guard !isClosingTemporaryState else { return }
-        let captured = captureCurrentPlaybackCheckpoint()
         let token = UUID()
-        let predecessor = playbackCommands.checkpointTailToken.flatMap { subscriptionWriteTasks[$0] }
+        let predecessor = lifetimeStatisticsRefreshTailToken.flatMap { subscriptionWriteTasks[$0] }
         let task = Task { @MainActor [weak self] in
             defer {
                 if let self {
                     self.subscriptionWriteTasks[token] = nil
-                    if self.playbackCommands.checkpointTailToken == token {
-                        self.playbackCommands.checkpointTailToken = nil
+                    if self.lifetimeStatisticsRefreshTailToken == token {
+                        self.lifetimeStatisticsRefreshTailToken = nil
                     }
                 }
             }
             await predecessor?.value
             guard let self, !self.isClosingTemporaryState, !Task.isCancelled else { return }
-            await self.performPlaybackCheckpoint(captured, strict: true)
+            await self.refreshLifetimeStatistics()
         }
         subscriptionWriteTasks[token] = task
-        playbackCommands.checkpointTailToken = token
+        lifetimeStatisticsRefreshTailToken = token
     }
 
-    func waitForPlaybackCheckpointForTesting() async {
-        while let token = playbackCommands.checkpointTailToken, let task = subscriptionWriteTasks[token] {
+    /// Deterministic test seam; production never waits on a playback refresh.
+    func waitForLifetimeStatisticsRefreshForTesting() async {
+        while let token = lifetimeStatisticsRefreshTailToken,
+              let task = subscriptionWriteTasks[token] {
             await task.value
-        }
-    }
-
-    func queueCurrentPlaybackCheckpoint() async {
-        await performPlaybackCheckpoint(nil, strict: false)
-    }
-
-    private func performPlaybackCheckpoint(_ captured: PlaybackCheckpointCapture?, strict: Bool) async {
-        await playbackCommands.beforeCheckpointForTesting?()
-        guard !strict || (!isClosingTemporaryState && !Task.isCancelled) else { return }
-        await refreshLifetimeStatistics()
-        guard !strict || (!isClosingTemporaryState && !Task.isCancelled),
-              let captured = strict ? captured : captureCurrentPlaybackCheckpoint(),
-              let store, let syncLifecycle else { return }
-        let state: PlaybackState?
-        do {
-            state = try await store.playbackState(for: captured.itemID, revisionID: captured.revisionID)
-        } catch {
-            Self.playbackLog.error("Playback checkpoint could not be read for publication")
-            return
-        }
-        guard !strict || (!isClosingTemporaryState && !Task.isCancelled),
-              let state, !strict || captured.matches(state) else { return }
-        await playbackCommands.checkpointCapturedForTesting?(state)
-        guard !strict || (!isClosingTemporaryState && !Task.isCancelled) else { return }
-        let sidecar = try? await store.playbackSidecar(for: captured.itemID, revisionID: captured.revisionID)
-        guard !strict || (!isClosingTemporaryState && !Task.isCancelled) else { return }
-        let opaque = sidecar.map {
-            WiltedOpaqueSidecar(changeTag: $0.changeTag, encodedSystemFields: $0.encodedSystemFields)
-        }
-        switch await syncLifecycle.queuePlayback(state, sidecar: opaque) {
-        case .success: articlePlaybackCheckpointCount += 1
-        case .failure: Self.playbackLog.error("Playback checkpoint publication failed")
         }
     }
 

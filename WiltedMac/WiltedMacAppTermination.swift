@@ -412,8 +412,7 @@ extension WiltedMacModel {
         isPlaying = playback.liveIsPlaying
         try await playback.flushLifetimeMeasures()
         refreshPlaybackReadout()
-        // The sync outbox is local; this enqueues and never waits on cloud.
-        await queueCurrentPlaybackCheckpoint()
+        refreshLifetimeStatisticsAfterPlayback()
 #endif
     }
 }

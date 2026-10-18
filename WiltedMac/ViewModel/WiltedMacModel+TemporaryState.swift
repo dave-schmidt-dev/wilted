@@ -177,7 +177,6 @@ func closeOwnedTemporaryStateAfterDeinit(
     voidTasks: [Task<Void, Never>],
     downloadTasks: [Task<PodcastDownloadResult, Error>],
     automation: WiltedAutomationCoordinator?,
-    syncLifecycle: WiltedMacSyncLifecycle?,
     preferencesSuite: String? = nil
 ) async {
     for task in voidTasks {
@@ -187,7 +186,6 @@ func closeOwnedTemporaryStateAfterDeinit(
         _ = try? await task.value
     }
     await automation?.cancel()
-    await syncLifecycle?.close()
     temporaryState?.closeSynchronously()
     if let preferencesSuite { UserDefaults().removePersistentDomain(forName: preferencesSuite) }
 }
@@ -277,7 +275,6 @@ extension WiltedMacModel {
 #endif
         startupTask?.cancel()
         preparationTask?.cancel()
-        syncReconciliationTask?.cancel()
         podcastRefreshTask?.cancel()
         bootstrapRecoveryTask?.cancel()
         statisticsTask?.cancel()
@@ -295,7 +292,6 @@ extension WiltedMacModel {
         for task in subscriptionWriteTasks.values { task.cancel() }
         for task in playbackPresentationTasks.values { task.cancel() }
         cancelAutomationForTemporaryState()
-        syncLifecycle?.cancel()
     }
 
     func waitForPendingTemporaryStateWork() async {
@@ -306,7 +302,6 @@ extension WiltedMacModel {
         // root merely because it appeared after the original cancellation.
         for _ in 0..<2 {
             let preparation = preparationTask
-            let reconciliation = syncReconciliationTask
             let refresh = podcastRefreshTask
             let recovery = bootstrapRecoveryTask
             let statistics = statisticsTask
@@ -324,7 +319,6 @@ extension WiltedMacModel {
             let subscriptionWrites = Array(subscriptionWriteTasks.values)
             let presentations = Array(playbackPresentationTasks.values)
             await preparation?.value
-            await reconciliation?.value
             await refresh?.value
             await recovery?.value
             await statistics?.value
@@ -343,7 +337,6 @@ extension WiltedMacModel {
             for task in presentations { await task.value }
         }
         await waitForAutomationForTemporaryState()
-        await syncLifecycle?.close()
         await waitForLibrarySyncShutdown()
     }
 

@@ -349,20 +349,6 @@ extension WiltedMacModel {
         }
     }
 
-    /// Quarantines sync after an account-owner change.
-    func quarantineSyncAccount() {
-#if canImport(WiltedProducer)
-        syncLifecycle?.quarantineAccount()
-#endif
-    }
-
-    /// Clears the explicit account quarantine after review.
-    func resetSyncAccount() {
-#if canImport(WiltedProducer)
-        syncLifecycle?.resetAfterAccountChange()
-#endif
-    }
-
     var currentArticle: WiltedMacArticle? {
         guard let selectedArticleID else { return nil }
         return articles.first(where: { $0.id == selectedArticleID })

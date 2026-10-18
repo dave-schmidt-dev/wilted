@@ -300,7 +300,7 @@ extension WiltedMacModelTests {
         model = nil
         let mediaDrain = Task {
             await closeOwnedTemporaryStateAfterDeinit(mediaState, voidTasks: [writer], downloadTasks: [],
-                automation: nil, syncLifecycle: nil)
+                automation: nil)
         }
 
         // Cancellation is advisory: the captured writer deliberately waits.
@@ -391,7 +391,7 @@ extension WiltedMacModelTests {
         await second.value
         await gate.waitUntilWritten()
         await closeOwnedTemporaryStateAfterDeinit(mediaState, voidTasks: [try XCTUnwrap(model.fixtureInstallTask)],
-            downloadTasks: [], automation: nil, syncLifecycle: nil)
+            downloadTasks: [], automation: nil)
         XCTAssertTrue(model.fixtureInstallTask?.isCancelled ?? false)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
         _ = try await store.inspect()

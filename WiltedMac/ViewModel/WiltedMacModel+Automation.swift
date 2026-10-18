@@ -21,7 +21,6 @@ extension WiltedMacModel {
     /// widget and media keys, and a fixture run must not get them.
     static func isFixtureLaunch(arguments: [String]) -> Bool {
         arguments.contains("--wilted-ui-fixture-article-flow")
-            || arguments.contains("--wilted-ui-fixture-quarantined")
             || arguments.contains("--wilted-ui-smoke")
             || arguments.contains("--wilted-ui-fixture-ready")
             || arguments.contains("--wilted-ui-fixture-playing")

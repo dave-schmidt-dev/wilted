@@ -247,7 +247,7 @@ final class WiltedMacPlaybackPresentationTests: XCTestCase {
         model.playEpisode(episode)
         await gate.waitUntilHeld()
         await model.waitForPlaybackOperationForTesting()
-        await model.waitForPlaybackCheckpointForTesting()
+        await model.waitForLifetimeStatisticsRefreshForTesting()
         let presentationID = try XCTUnwrap(model.playbackPresentationTaskID)
         XCTAssertNotNil(model.playbackPresentationTasks[presentationID])
         XCTAssertNil(model.subscriptionWriteTasks[presentationID])

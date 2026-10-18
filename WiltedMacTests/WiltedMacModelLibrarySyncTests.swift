@@ -526,16 +526,14 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTAssertEqual(recorded.first?.action, .requestMedia(entryID: ids[0]))
     }
 
-    func testEnvironmentFlagTurnsLegacyEngineOffAndDefaultLeavesItOn() async throws {
+    func testTheEnvironmentFlagStartsLibrarySyncAndTheDefaultDoesNot() async throws {
         let (defaultModel, _) = try await bootstrapped("library-sync-legacy-default")
-        XCTAssertNil(defaultModel.syncLifecycle, "a test host's default runs no sync engine")
         XCTAssertNil(defaultModel.librarySyncController)
         XCTAssertFalse(defaultModel.startLibrarySyncIfEnabled(environment: [:]))
 
         setenv("WILTED_LIBRARY_SYNC", "1", 1)
         defer { unsetenv("WILTED_LIBRARY_SYNC") }
         let (flagged, _) = try await bootstrapped("library-sync-legacy-flag")
-        XCTAssertNil(flagged.syncLifecycle, "each app owns at most one engine")
         XCTAssertNotNil(flagged.librarySyncController)
         XCTAssertNotNil(flagged.libraryDeviceID().range(of: "mac-"))
         flagged.stopLibrarySync()
@@ -617,7 +615,6 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
     func testALiveLaunchRunsExactlyOneEngineAndNeverTheUnavailableTransport() async throws {
         let (model, _) = try await liveBootstrapped("library-sync-live-bootstrap")
         XCTAssertEqual(model.libraryRuntimeSelection(environment: [:]).reason, .liveDefault)
-        XCTAssertNil(model.syncLifecycle, "no sync engine runs beside the library publisher")
         XCTAssertNil(model.librarySyncController, "the unavailable stand-in is refused, not started")
         XCTAssertEqual(model.libraryAccountStatus, .transportUnavailable)
 
@@ -634,19 +631,17 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
             environment: [:], transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
             debounce: .milliseconds(20), account: account.source))
         XCTAssertEqual(model.libraryAccountStatus, .awaitingAccount)
-        XCTAssertNil(model.syncLifecycle)
         model.stopLibrarySync()
         await model.waitForLibrarySyncShutdown()
     }
 
-    func testExplicitOffKeepsTheLegacyEngineInALiveBuildAndExplicitOnStillRunsUnmanaged() async throws {
+    func testExplicitOffRunsNoEngineAndExplicitOnStillRunsUnmanaged() async throws {
         let off: WiltedMacModel
         do {
             setenv("WILTED_LIBRARY_SYNC", "0", 1)
             defer { unsetenv("WILTED_LIBRARY_SYNC") }
             off = try await liveBootstrapped("library-sync-live-off").0
         }
-        XCTAssertNil(off.syncLifecycle, "explicit off runs no sync engine")
         XCTAssertEqual(off.libraryRuntimeSelection(environment: ["WILTED_LIBRARY_SYNC": "0"]).engine, .none)
         XCTAssertEqual(off.libraryRuntimeSelection(environment: ["WILTED_LIBRARY_SYNC": "0"]).reason, .explicitOff)
         XCTAssertNil(off.librarySyncController)
@@ -671,7 +666,6 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTAssertEqual(model.libraryRuntimeSelection(environment: [:]).reason, .fixture)
         XCTAssertEqual(model.libraryRuntimeSelection(environment: flagOn).engine, .none)
         XCTAssertEqual(model.libraryRuntimeSelection(environment: flagOn).reason, .fixture)
-        XCTAssertNil(model.syncLifecycle)
         let server = InMemoryLibraryServer(writerDeviceID: "mac-test")
         XCTAssertFalse(model.startLibrarySyncIfEnabled(
             environment: flagOn, transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),

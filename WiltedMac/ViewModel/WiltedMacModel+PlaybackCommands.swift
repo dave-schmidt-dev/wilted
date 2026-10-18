@@ -86,8 +86,6 @@ struct WiltedMacPlaybackCommandState {
     var pending: WiltedMacPlaybackPending?
     var failure: WiltedMacPlaybackFailure?
     var tail: Task<Void, Never>?
-    /// Publication writers use the existing close/deinit ledger, independently of audio effects.
-    var checkpointTailToken: UUID?
     var recoveryScope: WiltedMacPlaybackRecoveryScope?
     /// The owed automatic advance (an episode ending, Mark finished); nil
     /// once claimed, superseded or cancelled by Pause.
@@ -104,12 +102,9 @@ struct WiltedMacPlaybackCommandState {
     var trace = WiltedMacPlaybackTrace()
     /// Test seam: runs after a command is admitted and before its effect.
     var beforeEffectForTesting: (@MainActor (WiltedMacPlaybackCommand) async -> Void)?
-    /// Test seam: suspends publication independently of the audio backend.
-    var beforeCheckpointForTesting: (@MainActor () async -> Void)?
     /// Test seam: suspends the post-play transcript tail so the wait a later
     /// command inherits can be caused rather than raced.
     var beforeTranscriptTailForTesting: (@MainActor () async -> Void)?
-    var checkpointCapturedForTesting: (@MainActor (PlaybackState) async -> Void)?
     /// Test seam: replaces the durable speed write.
     var speedSaveForTesting: (@MainActor (Double) async throws -> Void)?
 }
@@ -286,14 +281,13 @@ extension WiltedMacModel {
         let startPending = playbackCommands.pending?.command.kind.startsAudio == true
         guard startPending || playback.liveIsPlaying || isPlaying else { return }
         issuePlaybackCommand(.pause, pending: nil,
-                             failureMessage: WiltedMacPlaybackCopy.pauseNotSaved) { [weak self] command in
+                             failureMessage: WiltedMacPlaybackCopy.pauseNotSaved) { [weak self] _ in
             guard let self else { return }
             defer { self.isPlaying = playback.liveIsPlaying }
             guard playback.revisionID != nil else { return }
             try await playback.checkpoint()
             self.refreshPlaybackReadout()
-            self.enqueueCurrentPlaybackCheckpoint()
-            self.playbackCommands.trace.record(.checkpointEnqueued, token: command.token)
+            self.refreshLifetimeStatisticsAfterPlayback()
         }
         // Nothing loaded yet means nothing is audible; the superseded
         // selection will not start it.
@@ -353,8 +347,7 @@ extension WiltedMacModel {
         if let token { playbackCommands.trace.record(.playCalled, token: token) }
         isPlaying = playback.isPlaying
         refreshPlaybackReadout()
-        enqueueCurrentPlaybackCheckpoint()
-        if let token { playbackCommands.trace.record(.checkpointEnqueued, token: token) }
+        refreshLifetimeStatisticsAfterPlayback()
     }
 
     /// A seek or scrub. Superseding a pending start cancels that start, so
@@ -363,15 +356,14 @@ extension WiltedMacModel {
                       _ move: @escaping @MainActor (PlaybackController) async throws -> Void) {
         guard let playback else { return }
         let cancelsStart = playbackCommands.pending?.command.kind.startsAudio == true
-        issuePlaybackCommand(.seek, pending: nil) { [weak self] command in
+        issuePlaybackCommand(.seek, pending: nil) { [weak self] _ in
             guard let self else { return }
             if cancelsStart, playback.liveIsPlaying { try await playback.pause() }
             try await move(playback)
             self.isPlaying = playback.isPlaying
             self.refreshPlaybackReadout()
             if publishesJump { self.publishNowPlaying(force: true) }
-            self.enqueueCurrentPlaybackCheckpoint()
-            self.playbackCommands.trace.record(.checkpointEnqueued, token: command.token)
+            self.refreshLifetimeStatisticsAfterPlayback()
         }
     }
 
@@ -379,13 +371,12 @@ extension WiltedMacModel {
     func restartPlayback() {
         guard let playback else { return }
         issuePlaybackCommand(.restart, pending: nil,
-                             failureMessage: "Playback restart is unavailable.") { [weak self] command in
+                             failureMessage: "Playback restart is unavailable.") { [weak self] _ in
             guard let self else { return }
             try await playback.restart()
             self.isPlaying = playback.isPlaying
             self.refreshPlaybackReadout()
-            self.enqueueCurrentPlaybackCheckpoint()
-            self.playbackCommands.trace.record(.checkpointEnqueued, token: command.token)
+            self.refreshLifetimeStatisticsAfterPlayback()
         }
     }
 

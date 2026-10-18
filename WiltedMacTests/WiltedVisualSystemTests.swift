@@ -140,7 +140,7 @@ final class WiltedVisualSystemTests: XCTestCase {
 
 
     @MainActor
-    func testPodcastPlaybackStaysOutOfArticleSyncWhileArticleQueuesOneCheckpoint() async throws {
+    func testPodcastPlaybackStaysOutOfArticleSyncAcrossArticleTransition() async throws {
         let podcastRoot = wiltedTemporaryDirectory("visual-system")
 
         let podcastModel = WiltedMacModel(
@@ -154,12 +154,8 @@ final class WiltedVisualSystemTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(podcastModel.isPlaying, "Play must load and start the selected episode")
-        await podcastModel.checkpointCurrentPlaybackForTesting()
-        let podcastStore = try LocalLibraryStore(url: podcastRoot.appendingPathComponent("library.sqlite"))
-        let podcastPendingCount = try await podcastStore.syncRepositoryState()?.pendingChanges.count ?? 0
-        XCTAssertEqual(podcastPendingCount, 0)
-        XCTAssertEqual(podcastModel.articlePublicationCount, 0)
-        XCTAssertEqual(podcastModel.articlePlaybackCheckpointCount, 0)
+        podcastModel.refreshLifetimeStatisticsAfterPlayback()
+        await podcastModel.waitForLifetimeStatisticsRefreshForTesting()
 
         let podcastID = try ItemID(rawValue: podcast.id)
         podcastModel.applyPodcastPlaybackObservationForTesting(
@@ -172,18 +168,15 @@ final class WiltedVisualSystemTests: XCTestCase {
 
         let article = try XCTUnwrap(podcastModel.articles.first)
         podcastModel.beginArticlePlaybackTransitionForTesting(article)
-        await podcastModel.checkpointCurrentPlaybackForTesting()
-        XCTAssertEqual(
-            podcastModel.articlePlaybackCheckpointCount, 0,
-            "an article selection must not publish the still-loaded podcast during its async transition"
-        )
+        podcastModel.refreshLifetimeStatisticsAfterPlayback()
+        await podcastModel.waitForLifetimeStatisticsRefreshForTesting()
         podcastModel.openNowPlaying(for: article)
         for _ in 0..<100 {
             if podcastModel.playbackDurationSeconds == 120 { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        await podcastModel.checkpointCurrentPlaybackForTesting()
-        XCTAssertEqual(podcastModel.articlePlaybackCheckpointCount, 1)
+        XCTAssertEqual(podcastModel.playbackDurationSeconds, 120, "the article selection loads its revision")
+        XCTAssertEqual(podcastModel.selectedArticleID, article.id)
     }
 
     @MainActor

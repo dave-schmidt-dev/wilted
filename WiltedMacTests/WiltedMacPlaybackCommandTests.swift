@@ -92,124 +92,40 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         XCTAssertNil(model.playbackCommands.pending?.usesPlayPauseButtonFeedback)
     }
 
-    func testPlaySettlesPendingWhilePublicationCheckpointIsHeld() async throws {
-        let (model, backend, episode) = makePlaybackCommandModel()
-        await loadPausedThroughOwner(model, episode)
-        await model.waitForPlaybackCheckpointForTesting()
-        let gate = WiltedMacCommandGate()
-        model.playbackCommands.beforeCheckpointForTesting = {
-            await gate.hold(.init(token: 0, kind: .start, itemID: nil, revisionID: nil))
-        }
-        gate.arm()
-        model.startPlayback()
-        await gate.waitUntilHeld()
-        XCTAssertTrue(backend.isPlaying)
-        XCTAssertNil(model.playbackCommands.pending, "the backend answered Play before publication finished")
-        gate.release()
-        await model.waitForPlaybackOperationForTesting()
-        await model.close()
-    }
-
-    func testPauseReachesBackendWhileEarlierPlayCheckpointIsHeld() async throws {
-        let (model, backend, episode) = makePlaybackCommandModel()
-        await loadPausedThroughOwner(model, episode)
-        await model.waitForPlaybackCheckpointForTesting()
-        let gate = WiltedMacCommandGate()
-        model.playbackCommands.beforeCheckpointForTesting = {
-            await gate.hold(.init(token: 0, kind: .start, itemID: nil, revisionID: nil))
-        }
-        gate.arm()
-        model.startPlayback()
-        await gate.waitUntilHeld()
-        let paused = expectation(description: "Pause reaches backend before Play checkpoint releases")
-        backend.onPause = { paused.fulfill() }
-        model.pausePlayback()
-        await fulfillment(of: [paused], timeout: 2)
-        backend.onPause = nil
-        gate.release()
-        await model.waitForPlaybackOperationForTesting()
-        XCTAssertFalse(backend.isPlaying)
-        XCTAssertNil(model.playbackCommands.pending)
-        await model.close()
-    }
-
-    func testPauseSettlesPendingWhileItsPublicationCheckpointIsHeld() async throws {
-        let (model, backend, episode) = makePlaybackCommandModel()
-        model.playEpisode(episode)
-        await model.waitForPlaybackOperationForTesting()
-        await model.waitForPlaybackCheckpointForTesting()
-        let gate = WiltedMacCommandGate()
-        model.playbackCommands.beforeCheckpointForTesting = {
-            await gate.hold(.init(token: 0, kind: .pause, itemID: nil, revisionID: nil))
-        }
-        gate.arm()
-        model.pausePlayback()
-        await gate.waitUntilHeld()
-        XCTAssertFalse(backend.isPlaying)
-        XCTAssertNil(model.playbackCommands.pending)
-        gate.release()
-        await model.waitForPlaybackOperationForTesting()
-        await model.waitForPlaybackCheckpointForTesting()
-        await model.close()
-    }
-
-    func testTransportCheckpointsKeepCapturedPositionsAndAdmissionOrder() async throws {
-        let (model, backend, _) = makePlaybackCommandModel()
-        await model.fixtureInstallTask?.value
+    func testCloseCancelsAndJoinsHeldLifetimeStatisticsRefresh() async throws {
+        let held = HeldStatisticsSummary()
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("playback-statistics-close"),
+            statisticsOperations: WiltedMacStatisticsOperations(
+                summary: { _ in await held.next() },
+                rebuild: { _, _ in throw HeldStatisticsSummaryFailure() }
+            ),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        let backend = WiltedMacScriptedBackend()
+        model.installPlaybackBackendForTesting(backend)
+        await model.waitForLifetimeStatisticsForTesting()
         let article = try XCTUnwrap(model.articles.first(where: \.isReady))
-        model.openNowPlaying(for: article, autoplay: false)
+        model.openNowPlaying(for: article, autoplay: true)
         await model.waitForPlaybackOperationForTesting()
-        model.scrub(to: 10)
-        await model.waitForPlaybackOperationForTesting()
-        await model.waitForPlaybackCheckpointForTesting()
-        let gate = WiltedMacCommandGate()
-        var states: [PlaybackState] = []
-        let publicationsBefore = model.articlePlaybackCheckpointCount
-        model.playbackCommands.checkpointCapturedForTesting = { state in
-            states.append(state)
-            await gate.hold(.init(token: 0, kind: .start, itemID: article.id, revisionID: nil))
-        }
-        gate.arm()
-        model.startPlayback()
-        await gate.waitUntilHeld()
-        XCTAssertNil(model.playbackCommands.pending)
-        backend.currentTime = 25
+        XCTAssertTrue(model.isPlaying)
+
         model.pausePlayback()
         await model.waitForPlaybackOperationForTesting()
-        XCTAssertNil(model.playbackCommands.pending)
-        XCTAssertEqual(states.map(\.positionSeconds), [10], "later publication waits behind the captured first state")
-        gate.release()
-        await model.waitForPlaybackCheckpointForTesting()
-        XCTAssertEqual(states.map(\.positionSeconds), [10, 25])
-        XCTAssertLessThan(try XCTUnwrap(states.first).sequence, try XCTUnwrap(states.last).sequence)
-        XCTAssertEqual(model.articlePlaybackCheckpointCount, publicationsBefore + 2)
-        XCTAssertNil(model.playbackCommands.checkpointTailToken)
-        await model.close()
-    }
-
-    func testCloseCancelsAndJoinsHeldCheckpointWriter() async throws {
-        let (model, _, episode) = makePlaybackCommandModel()
-        await loadPausedThroughOwner(model, episode)
-        await model.waitForPlaybackCheckpointForTesting()
-        let gate = WiltedMacCommandGate()
-        model.playbackCommands.beforeCheckpointForTesting = {
-            await gate.hold(.init(token: 0, kind: .start, itemID: nil, revisionID: nil))
-        }
-        gate.arm()
-        model.startPlayback()
-        await gate.waitUntilHeld()
-        let token = try XCTUnwrap(model.playbackCommands.checkpointTailToken)
+        for _ in 0..<100 where model.subscriptionWriteTasks.isEmpty { await Task.yield() }
+        let token = try XCTUnwrap(model.lifetimeStatisticsRefreshTailToken)
         let writer = try XCTUnwrap(model.subscriptionWriteTasks[token])
         var didClose = false
         let close = Task { await model.close(); didClose = true }
         for _ in 0..<100 where !model.isClosingTemporaryState { await Task.yield() }
         XCTAssertTrue(model.isClosingTemporaryState)
         XCTAssertTrue(writer.isCancelled)
-        XCTAssertFalse(didClose, "close joins even a writer whose test gate ignores cancellation")
-        gate.release()
+        XCTAssertFalse(didClose, "close joins even a refresh whose summary read ignores cancellation")
+        await held.release()
         await close.value
         XCTAssertTrue(didClose)
-        XCTAssertNil(model.playbackCommands.checkpointTailToken)
+        XCTAssertNil(model.lifetimeStatisticsRefreshTailToken)
         XCTAssertNil(model.subscriptionWriteTasks[token])
     }
 
@@ -491,3 +407,30 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         backend.resetCounts()
     }
 }
+
+/// Answers the first lifetime summary immediately and holds every later read
+/// until released, so a test can cause a playback refresh to be in flight.
+private actor HeldStatisticsSummary {
+    private var calls = 0
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private var isReleased = false
+
+    func next() async -> LifetimeStatisticsSummary {
+        calls += 1
+        if calls > 1, !isReleased {
+            await withCheckedContinuation { held.append($0) }
+        }
+        return LifetimeStatisticsSummary(
+            state: .ready,
+            measured: LifetimeMeasuredTotals(playedMilliseconds: Int64(calls) * 1_000)
+        )
+    }
+
+    func release() {
+        isReleased = true
+        for continuation in held { continuation.resume() }
+        held = []
+    }
+}
+
+private struct HeldStatisticsSummaryFailure: Error {}

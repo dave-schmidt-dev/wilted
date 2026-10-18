@@ -169,9 +169,6 @@ extension WiltedMacModel {
             switch self.preparation?.phase {
             case .completed:
                 await self.refreshLifetimeStatistics()
-                if await self.queuePreparedPublication(itemID: preparedItemID) {
-                    self.syncLifecycle?.startAutomaticUpload()
-                }
                 await self.recordWorkTicketTransition(
                     kind: .articlePreparation, subjectID: preparedItemID.rawValue,
                     requestSequence: requestSequence, state: .succeeded,

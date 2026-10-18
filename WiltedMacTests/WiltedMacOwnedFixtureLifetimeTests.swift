@@ -34,12 +34,11 @@ final class WiltedMacOwnedFixtureLifetimeTests: XCTestCase {
     func testDefaultFixtureDeinitRetainsDatabaseWhileStoreRemainsLive() async throws {
         var model: WiltedMacModel? = fixture(); await settle(try XCTUnwrap(model))
         let store = try XCTUnwrap(model?.store)
-        XCTAssertNil(model?.syncLifecycle, "fixture models run no sync engine")
         let state = try XCTUnwrap(model?.temporaryState); let before = try await store.inspect(); let database = await store.url
         let tasks = [model?.fixtureInstallTask, model?.fixturePodcastInstallTask, model?.statisticsTask].compactMap { $0 }
         weak var observedModel = model; model = nil
         await closeOwnedTemporaryStateAfterDeinit(state, voidTasks: tasks, downloadTasks: [],
-            automation: nil, syncLifecycle: nil)
+            automation: nil)
         XCTAssertNil(observedModel)
         XCTAssertTrue(try WiltedMacTestRootOwnership.isManaged(state.directory))
         XCTAssertTrue(FileManager.default.fileExists(atPath: database.path))

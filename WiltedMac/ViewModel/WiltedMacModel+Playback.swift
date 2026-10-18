@@ -145,7 +145,7 @@ extension WiltedMacModel {
                 if !self.playbackCompleted {
                     try await playback.markCompleted()
                     self.refreshPlaybackReadout()
-                    await self.queueCurrentPlaybackCheckpoint()
+                    self.refreshLifetimeStatisticsAfterPlayback()
                     await self.reloadLibraryRows()
                 }
                 await self.retireFinishedEpisode()
@@ -236,7 +236,7 @@ extension WiltedMacModel {
         enqueuePlaybackEffect { [weak self] in
             guard let self else { return }
             try? await playback.manualCheckpoint()
-            await self.queueCurrentPlaybackCheckpoint()
+            self.refreshLifetimeStatisticsAfterPlayback()
         }
 #endif
     }
@@ -257,17 +257,8 @@ extension WiltedMacModel {
             guard let self else { return }
             try? await playback.handlePauseOrQuit()
             self.isPlaying = playback.liveIsPlaying
-            await self.queueCurrentPlaybackCheckpoint()
+            self.refreshLifetimeStatisticsAfterPlayback()
         }
-#endif
-    }
-
-    /// Deterministic model-test seam for the same checkpoint path used by
-    /// transport actions. It never contacts a live service.
-    func checkpointCurrentPlaybackForTesting() async {
-#if canImport(WiltedProducer)
-        try? await playback?.checkpoint()
-        await queueCurrentPlaybackCheckpoint()
 #endif
     }
 

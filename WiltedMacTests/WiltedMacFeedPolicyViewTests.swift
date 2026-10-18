@@ -145,7 +145,12 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         let rows = WiltedFeedAutomationSummary.globalRows(model.automationSettings)
         XCTAssertEqual(rows, WiltedFeedAutomationSummary.rows(FeedAutomationPolicy().resolved(using: defaults)))
         XCTAssertEqual(rows.map(\.label), ["Auto keep", "Auto download", "Auto prepare", "Kept limit"])
-        XCTAssertTrue(shown.contains("No limit"), shown)
+        // Read the controls on their own: in the full page, Vision misreads the menu picker's
+        // "No limit" whenever an unrelated card moves it to a different pixel offset.
+        let controls = try WiltedMacHeadless.recognizedText(
+            WiltedMacGlobalFeedDefaultsControls(model: model), size: CGSize(width: 600, height: 320)
+        )
+        XCTAssertTrue(controls.contains { $0.contains("No limit") }, "\(controls)")
     }
 
     // MARK: Done when 2: waiting episodes on Feeds, and a label on every new control
