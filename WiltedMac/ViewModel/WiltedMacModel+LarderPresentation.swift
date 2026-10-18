@@ -4,7 +4,6 @@ import WiltedLibrary
 
 #if canImport(WiltedProducer)
 import WiltedProducer
-import WiltedSync
 #endif
 
 /// Larder and Feeds presentation state projections, the persisted-preference keys,

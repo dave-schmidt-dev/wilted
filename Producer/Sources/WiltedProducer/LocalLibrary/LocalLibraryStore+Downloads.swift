@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 /// Why a media sweep stopped before deleting anything: the store and the disk
 /// disagreed about where media lives, and resolving that by deleting is how a

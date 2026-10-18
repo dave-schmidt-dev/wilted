@@ -8,7 +8,6 @@ import WiltedLibrary
 #if canImport(WiltedProducer)
 import WiltedDomain
 import WiltedProducer
-import WiltedSync
 #endif
 
 #if WILTED_CLOUDKIT_LIVE
@@ -197,7 +196,6 @@ final class WiltedMacModel {
     var feedEnabledProjections: [String: WiltedMacFeedEnabledProjection] = [:]
     /// Optimistic Larder completions, keyed by episode ID. See `skipEpisode`.
     var episodeCompletionProjections: [String: WiltedMacEpisodeCompletionProjection] = [:]
-    var selectedLibraryItemID: String?
     var preparation: WiltedMacPreparation?
     /// The article the current preparation row can retry. The Add sheet
     /// clears `urlDraft` as soon as a run starts, so the canonical address

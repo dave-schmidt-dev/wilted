@@ -7,7 +7,6 @@ import WiltedLibrary
 #if canImport(WiltedProducer)
 import WiltedDomain
 import WiltedProducer
-import WiltedSync
 #endif
 
 #if WILTED_CLOUDKIT_LIVE
@@ -329,14 +328,6 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
         guard !isClosingTemporaryState, !fixtureMode, let coordinator = automationCoordinator() else { return }
         automationTask = Task { await coordinator.run(trigger: trigger) }
-#endif
-    }
-
-    /// Resumes claims that outlived the process that made them.
-    func reconcileAutomation() {
-#if canImport(WiltedProducer)
-        guard !isClosingTemporaryState, !fixtureMode, let coordinator = automationCoordinator() else { return }
-        automationTask = Task { await coordinator.reconcile() }
 #endif
     }
 

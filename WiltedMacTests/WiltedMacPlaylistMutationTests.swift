@@ -1,7 +1,6 @@
 import Foundation
 import WiltedDomain
 import WiltedProducer
-import WiltedSync
 import XCTest
 @testable import WiltedMac
 

@@ -6,7 +6,6 @@ import os
 #if canImport(WiltedProducer)
 import WiltedDomain
 import WiltedProducer
-import WiltedSync
 #endif
 
 #if WILTED_CLOUDKIT_LIVE

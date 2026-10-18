@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 /// What kind of background work a `WorkTicket` tracks.
 public enum WorkTicketKind: String, Codable, Equatable, Sendable, CaseIterable {

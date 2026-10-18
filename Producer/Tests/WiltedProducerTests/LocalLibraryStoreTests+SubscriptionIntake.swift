@@ -1,7 +1,6 @@
 import Foundation
 import XCTest
 import WiltedDomain
-import WiltedSync
 @testable import WiltedProducer
 
 extension LocalLibraryStoreTests {

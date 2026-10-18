@@ -382,9 +382,11 @@ run_leg() {
   if [[ "$command_status" -ne 0 ]]; then
     failed_legs+=1
     status "native.leg.complete name=$name status=$command_status"
+    # The whole output already streamed live; the replay repeats only its
+    # tail so the failure sits beside this leg's verdict without doubling the log.
     if [[ -s "$output_file" ]]; then
-      printf '%s\n' "--- $name output ---" >&2
-      cat "$output_file" >&2 || true
+      printf '%s\n' "--- $name output (last 200 of $(wc -l <"$output_file" | tr -d ' ') lines) ---" >&2
+      tail -n 200 "$output_file" >&2 || true
     fi
     return 0
   fi

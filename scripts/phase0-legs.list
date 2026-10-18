@@ -1,0 +1,37 @@
+# Phase-0 legs that scripts/test-phase0.sh runs in parallel: <leg name> <script in tests/>.
+# tests/test-phase0-aggregate.sh takes its expected leg count from this file and fails when
+# a tests/test-*.sh is neither listed here nor named in its run-elsewhere set.
+test-build-with-cache test-build-with-cache.sh
+test-bounded-entry test-bounded-entry.sh
+test-runtime-static-admission test-runtime-static-admission.sh
+test-no-global-tmp test-no-global-tmp.sh
+assert-mac-first-docs test-mac-first-docs.sh
+test-contract-fixtures test-contract-fixtures.sh
+test-domain-contract test-domain-contract.sh
+test-cloudkit-contract test-cloudkit-contract.sh
+test-article-extraction-probe test-article-extraction-probe.sh
+test-speech-ipc-probe test-speech-ipc-probe.sh
+test-persistence-probe test-persistence-probe.sh
+test-audio-contract-probe test-audio-contract-probe.sh
+test-audit-walkthrough test-audit-walkthrough.sh
+test-pipeline-worker test-pipeline-worker.sh
+test-preparation-runtime test-preparation-runtime.sh
+test-install-mac-app test-install-mac-app.sh
+test-install-mac-contract test-install-mac-contract.sh
+test-temp-sweep test-temp-sweep.sh
+test-storage-retention test-storage-retention.sh
+test-temp-leaks test-temp-leaks.sh
+test-git-hooks test-git-hooks.sh
+test-simulator-cleanup test-simulator-cleanup.sh
+test-native-ui-receipt test-native-ui-receipt.sh
+test-native-gate-parallel test-native-gate-parallel.sh
+test-native-gate-xcode test-native-gate-xcode.sh
+test-native-gate-legs test-native-gate-legs.sh
+test-release-wrappers test-release-wrappers.sh
+test-file-size test-file-size.sh
+test-attended-library-sync test-attended-library-sync.sh
+test-attended-nested-signature test-attended-nested-signature.sh
+test-test-product-metadata test-test-product-metadata.sh
+test-record-ios-snapshots test-record-ios-snapshots.sh
+test-audio-contract-ios-build test-audio-contract-ios-build.sh
+test-audio-budget-evidence test-audio-budget-evidence.sh

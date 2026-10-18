@@ -7,7 +7,6 @@ import os
 #if canImport(WiltedProducer)
 import WiltedDomain
 import WiltedProducer
-import WiltedSync
 #endif
 
 #if WILTED_CLOUDKIT_LIVE
@@ -229,8 +228,6 @@ extension WiltedMacModel {
             return lhs.id < rhs.id
         }
     }
-
-    func selectLibraryItem(_ id: String) { selectedLibraryItemID = id }
 
     /// Starts production persistence only after the root surface has made its
     /// loading state visible. Fixture modes are already ready at construction.
@@ -527,10 +524,6 @@ extension WiltedMacModel {
         podcastFeedDraft = url.absoluteString
         podcastFeedDraftStatus = "Podcast feed detected. Review the address, then subscribe."
         selectedNavigation = .feeds
-    }
-
-    func dismissAdvertisedFeed() {
-        advertisedFeed = nil
     }
 
     func refreshPodcastFeeds() {

@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 enum LocalLibrarySchemaV8Models {
     /// One episode the listener removed from the Larder on purpose.

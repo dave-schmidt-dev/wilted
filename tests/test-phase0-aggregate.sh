@@ -15,46 +15,14 @@ source "$repo_root/scripts/lib/temp-sweep.sh"
 # sweep abandoned ones from a killed prior run before adding another.
 wilted_sweep_stale_temp_dirs
 
-expected_legs=(
-  "test-build-with-cache"
-  "test-bounded-entry"
-  "test-runtime-static-admission"
-  "test-no-global-tmp"
-  "assert-mac-first-docs"
-  "test-contract-fixtures"
-  "test-domain-contract"
-  "test-cloudkit-contract"
-  "test-article-extraction-probe"
-  "test-speech-ipc-probe"
-  "test-persistence-probe"
-  "test-audio-contract-probe"
-  "test-audit-walkthrough"
-  "test-pipeline-worker"
-  "test-preparation-runtime"
-  "test-install-mac-app"
-  "test-install-mac-contract"
-  "test-temp-sweep"
-  "test-storage-retention"
-  "test-temp-leaks"
-  "test-git-hooks"
-  "test-simulator-cleanup"
-  "test-native-ui-receipt"
-  "test-native-gate-parallel"
-  "test-native-gate-xcode"
-  "test-native-gate-legs"
-  "test-release-wrappers"
-  "test-file-size"
-  "test-attended-library-sync"
-  "test-attended-nested-signature"
-  "test-test-product-metadata"
-  "test-record-ios-snapshots"
-)
-if [[ -f "$repo_root/tests/test-audio-contract-ios-build.sh" ]]; then
-  expected_legs+=("test-audio-contract-ios-build")
-fi
-if [[ -f "$repo_root/tests/test-audio-budget-evidence.sh" ]]; then
-  expected_legs+=("test-audio-budget-evidence")
-fi
+legs_list="$repo_root/scripts/phase0-legs.list"
+expected_legs=()
+listed_scripts=()
+while read -r leg_name leg_script; do
+  [[ -z "$leg_name" || "$leg_name" == \#* ]] && continue
+  expected_legs+=("$leg_name")
+  listed_scripts+=("$leg_script")
+done <"$legs_list"
 expected_legs+=("test-signed-speech-runtime")
 
 expected_count="${#expected_legs[@]}"
@@ -76,12 +44,15 @@ run_phase0_self_test() {
   printf '%s\n' "$status"
 }
 
+# Prints a run's output only when its status is not the one the case expects:
+# a forced failure is the point of its case, so its fixture output stays quiet.
 run_and_capture() {
   local label="$1"
   local output_file="$2"
   local status="$3"
+  local expect="${4:-pass}"
   printf '%s\n' "meta-test[$label] status=$status"
-  if [[ "$status" -ne 0 ]]; then
+  if [[ "$expect" == "pass" && "$status" -ne 0 ]] || [[ "$expect" == "fail" && "$status" -eq 0 ]]; then
     cat "$output_file" >&2
   fi
 }
@@ -114,13 +85,41 @@ assert_contains() {
   fi
 }
 
-assert_contains 'run_leg_async "assert-mac-first-docs" "$repo_root/tests/test-mac-first-docs.sh"' "$phase0_script"
-assert_contains 'run_leg_async "test-bounded-entry" "$repo_root/tests/test-bounded-entry.sh"' "$phase0_script"
-assert_contains 'run_leg_async "test-storage-retention" "$repo_root/tests/test-storage-retention.sh"' "$phase0_script"
-assert_contains 'run_leg_async "test-temp-leaks" "$repo_root/tests/test-temp-leaks.sh"' "$phase0_script"
+assert_contains 'done <"$repo_root/scripts/phase0-legs.list"' "$phase0_script"
+assert_contains 'assert-mac-first-docs test-mac-first-docs.sh' "$legs_list"
+assert_contains 'test-bounded-entry test-bounded-entry.sh' "$legs_list"
+assert_contains 'test-storage-retention test-storage-retention.sh' "$legs_list"
+assert_contains 'test-temp-leaks test-temp-leaks.sh' "$legs_list"
 assert_contains 'python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" --' "$phase0_script"
 assert_contains 'trap '\''cleanup_phase0; exit 129'\'' HUP' "$phase0_script"
-assert_contains 'run_leg_async "test-simulator-cleanup" "$repo_root/tests/test-simulator-cleanup.sh"' "$phase0_script"
+assert_contains 'test-simulator-cleanup test-simulator-cleanup.sh' "$legs_list"
+assert_contains 'run_leg_sync "test-signed-speech-runtime" "$repo_root/tests/test-signed-speech-runtime.sh"' "$phase0_script"
+
+# Every tests/test-*.sh runs in some gate: from the list, as phase0's one
+# serial leg, or from the Makefile's validate-inner. A listed script that is
+# missing fails here rather than silently dropping its leg.
+run_elsewhere=(test-signed-speech-runtime.sh test-phase0-aggregate.sh test-native-gate.sh
+  test-native-gate-watch.sh test-carplay-config.sh)
+for listed in "${listed_scripts[@]}"; do
+  [[ -f "$repo_root/tests/$listed" ]] || {
+    printf 'assertion failed: scripts/phase0-legs.list names missing tests/%s\n' "$listed" >&2
+    exit 1
+  }
+done
+for elsewhere in "${run_elsewhere[@]:2}"; do
+  assert_contains "bash tests/$elsewhere" "$repo_root/Makefile"
+done
+for script in "$repo_root"/tests/test-*.sh; do
+  script_name="$(basename "$script")"
+  found=0
+  for known in "${listed_scripts[@]}" "${run_elsewhere[@]}"; do
+    [[ "$script_name" == "$known" ]] && found=1
+  done
+  if [[ "$found" -eq 0 ]]; then
+    printf 'assertion failed: tests/%s runs in no gate; add it to scripts/phase0-legs.list\n' "$script_name" >&2
+    exit 1
+  fi
+done
 
 tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0-agg.XXXXXX")"
 phase_owned_pids=""
@@ -263,7 +262,7 @@ fi
 
 forced_leg="test-contract-fixtures"
 forced_status="$(run_phase0_self_test "$forced_output" "$forced_leg")"
-run_and_capture "forced" "$forced_output" "$forced_status"
+run_and_capture "forced" "$forced_output" "$forced_status" fail
 assert_nonzero_exit "$forced_status" "forced phase0 self-test"
 assert_contains "phase0.failed count=1" "$forced_output"
 assert_contains "phase0.leg.complete name=$forced_leg status=1 reason=self-test-forced-failure" "$forced_output"
@@ -271,7 +270,7 @@ assert_contains "forced_self_test_failure" "$forced_output"
 
 static_forced_output="$tmp_dir/static-forced.log"
 static_forced_status="$(run_phase0_self_test "$static_forced_output" "test-runtime-static-admission")"
-run_and_capture "static-forced" "$static_forced_output" "$static_forced_status"
+run_and_capture "static-forced" "$static_forced_output" "$static_forced_status" fail
 assert_nonzero_exit "$static_forced_status" "forced static admission leg"
 assert_contains "phase0.failed count=1" "$static_forced_output"
 assert_contains "phase0.leg.complete name=test-runtime-static-admission status=1 reason=self-test-forced-failure" "$static_forced_output"
