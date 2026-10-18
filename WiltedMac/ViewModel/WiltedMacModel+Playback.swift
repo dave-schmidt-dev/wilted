@@ -76,15 +76,6 @@ extension WiltedMacModel {
         }
     }
 
-    /// Returns to Library without changing playback state.
-    ///
-    /// The player no longer draws its own back button — the sidebar is
-    /// permanent, so a second way back was redundant and the listener has no
-    /// equivalent — but menu and keyboard paths still need the operation.
-    func returnToLibrary() {
-        selectedNavigation = .larder
-    }
-
     func rewind() { seek(by: -Self.backwardSkipSeconds) }
     func forward() { seek(by: Self.forwardSkipSeconds) }
 
@@ -278,12 +269,6 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
         try? await playback?.checkpoint()
         await queueCurrentPlaybackCheckpoint()
-#endif
-    }
-
-    func completePodcastPlaybackForTesting(successfully: Bool = true) {
-#if canImport(WiltedProducer)
-        (playback?.backend as? WiltedFixturePlaybackBackend)?.finish(successfully: successfully)
 #endif
     }
 

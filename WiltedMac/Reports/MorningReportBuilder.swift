@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 
 /// One forecast period as the script reads it.
@@ -225,7 +226,7 @@ struct MorningReportBuilder: Sendable {
         let samples = speech.samples, rate = speech.sampleRate
         let duration = try await Self.blocking { try MorningReportAudio.write(samples: samples, sampleRate: rate, to: destination) }
         let size = (try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
-        let hash = try Self.sha256(of: destination)
+        let hash = try MediaHash.sha256Hex(fileAt: destination)
         let textHash = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
         let createdAt = now
         let revision = try AudioRevision(
@@ -267,13 +268,5 @@ struct MorningReportBuilder: Sendable {
     private static func blocking<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
         let task = Task.detached { try work() }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
-    }
-
-    private static func sha256(of url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

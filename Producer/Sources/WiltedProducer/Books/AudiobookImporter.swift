@@ -1,8 +1,8 @@
 import AVFoundation
-import CryptoKit
 import Foundation
 import UniformTypeIdentifiers
 import WiltedDomain
+import WiltedLibrary
 
 public struct AudiobookImportProgress: Sendable, Equatable {
     public enum Stage: String, Sendable { case checking, reading, joining, saving }
@@ -141,7 +141,7 @@ public struct AudiobookImporter: Sendable {
             for (index, volume) in volumes.enumerated() {
                 try Task.checkCancellation()
                 let itemID = try ItemID.audiobook(contentDigest: digest, layout: layout, volume: index)
-                let hash = try Self.sha256(of: volume.url)
+                let hash = try MediaHash.sha256Hex(fileAt: volume.url)
                 let destination = media.appendingPathComponent("audiobook-\(itemID.rawValue)-\(UUID().uuidString).m4a")
                 store.inFlightMedia.begin(destination)
                 placed.append(destination)
@@ -297,14 +297,6 @@ public struct AudiobookImporter: Sendable {
             }
             progress(Double(index + 1) / Double(files.count))
         }
-    }
-
-    private static func sha256(of url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// The revision is keyed by the volume's item and its bytes, so identical audio under two

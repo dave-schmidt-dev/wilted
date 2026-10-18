@@ -209,33 +209,6 @@ extension LocalLibraryStore {
         try ctx.save()
     }
 
-    /// Convenience for seeding a malformed revision record.
-    nonisolated internal func seedMalformedRevision(
-        in context: ModelContext? = nil,
-        id: String = "malformed-revision",
-        itemID: String,
-        durationSeconds: Double = -1,
-        byteCount: Int64 = 128,
-        contentHash: String = "sha256:" + String(repeating: "a", count: 64),
-        mediaType: String = "audio/mp4",
-        mediaURL: String? = "file:///tmp/malformed.mp4",
-        createdAt: Date = Date(),
-        schemaVersion: Int = 3
-    ) throws {
-        try seedRevisionRecord(
-            in: context,
-            id: id,
-            itemID: itemID,
-            durationSeconds: durationSeconds,
-            byteCount: byteCount,
-            contentHash: contentHash,
-            mediaType: mediaType,
-            mediaURL: mediaURL,
-            createdAt: createdAt,
-            schemaVersion: schemaVersion
-        )
-    }
-
     /// Test-only seam: inserts a work-ticket row directly against a fresh
     /// `ModelContext` on this store's container, bypassing
     /// `issueWorkTicket`'s find-or-insert check entirely. `nonisolated`, so a

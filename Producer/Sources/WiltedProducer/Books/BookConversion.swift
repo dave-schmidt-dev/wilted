@@ -2,6 +2,7 @@ import AVFoundation
 import CryptoKit
 import Foundation
 import WiltedDomain
+import WiltedLibrary
 
 public struct BookConversionProgress: Sendable, Equatable {
     public enum Stage: String, Sendable { case reading, synthesizing, joining, saving }
@@ -164,7 +165,7 @@ public struct BookConversion: Sendable {
             let file = work.appendingPathComponent(String(format: "chapter-%04d.m4a", number))
             let entry: Manifest.Chapter
             if let kept = manifest.chapters.first(where: { $0.index == index }), kept.textSHA256 == textHash,
-               kept.file == file.lastPathComponent, (try? Self.sha256(of: file)) == kept.audioSHA256 {
+               kept.file == file.lastPathComponent, (try? MediaHash.sha256Hex(fileAt: file)) == kept.audioSHA256 {
                 entry = kept
                 report(.synthesizing, fraction(words), "Chapter \(number) of \(count) already converted", chapter: number, of: count)
             } else {
@@ -176,7 +177,7 @@ public struct BookConversion: Sendable {
                 let duration = try await Self.blocking { try Self.writeChapterAudio(speech, to: file) }
                 entry = Manifest.Chapter(
                     index: index, title: chapter.title, textSHA256: textHash, file: file.lastPathComponent,
-                    audioSHA256: try Self.sha256(of: file), durationSeconds: duration)
+                    audioSHA256: try MediaHash.sha256Hex(fileAt: file), durationSeconds: duration)
                 manifest.chapters.append(entry)
                 try save(manifest, in: work)
                 report(.synthesizing, fraction(words), "Converted chapter \(number) of \(count)", chapter: number, of: count)
@@ -210,7 +211,7 @@ public struct BookConversion: Sendable {
         for (index, volume) in volumes.enumerated() {
             try Task.checkCancellation()
             let itemID = try ItemID.audiobook(contentDigest: digest, layout: layout, volume: index)
-            let hash = try Self.sha256(of: volume.url)
+            let hash = try MediaHash.sha256Hex(fileAt: volume.url)
             let destination = media.appendingPathComponent("audiobook-\(itemID.rawValue)-\(UUID().uuidString).m4a")
             store.inFlightMedia.begin(destination)
             placed.append(destination)
@@ -319,14 +320,6 @@ public struct BookConversion: Sendable {
     }
 
     private static func sha256(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
-
-    private static func sha256(of url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
 
     private static func revision(
         _ itemID: ItemID, _ volume: AudiobookJoinedVolume, hash: String, createdAt: Date

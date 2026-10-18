@@ -14,12 +14,6 @@ public struct LocalLibraryMigrationPreflight: Equatable, Sendable {
     }
 }
 
-public typealias PodcastFeedSubscription = PodcastSubscription
-public typealias PodcastDownloadState = PodcastDownload
-public typealias PodcastArtworkAsset = PodcastArtwork
-public typealias UpNextEntry = PodcastQueueEntry
-public typealias PodcastPlaybackRate = PodcastPlaybackSpeed
-
 public struct StoredAudioRevision: Codable, Equatable, Sendable {
     public let revision: AudioRevision
     public let mediaURL: URL

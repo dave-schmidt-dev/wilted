@@ -26,13 +26,14 @@ import WiltedDomain
 ///
 /// Crash-tail bound: played and skipped time is admitted at every
 /// `checkpoint()` (the periodic cadence is
-/// `playedTimeCheckpointInterval`, 10 seconds), on pause, completion and
+/// `playedTimeCheckpointInterval`, 10 seconds, ticked by the Mac model's
+/// `playbackCheckpointInterval` timer), on pause, completion and
 /// item change, and by `flushLifetimeMeasures()`. A process that dies without
 /// a terminal flush loses at most the time since the last checkpoint: 10
 /// seconds of played time.
 @MainActor
 extension PlaybackController {
-    /// Cadence of the periodic checkpoint, which also bounds unsaved played time.
+    /// Cadence the app's checkpoint timer keeps, which also bounds unsaved played time.
     public static let playedTimeCheckpointInterval: TimeInterval = 10
 
     struct PendingSpeedInterval {
@@ -113,26 +114,6 @@ extension PlaybackController {
         try await persistPendingSpeedIntervals(revisionID: revisionID)
         speedSavingsBaselineSeconds = durationSeconds
         try await flushLifetimeMeasures()
-    }
-
-    public func startPeriodicCheckpoint(every interval: TimeInterval = playedTimeCheckpointInterval) {
-        checkpointTask?.cancel()
-        guard interval > 0, interval.isFinite else { return }
-        checkpointTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(interval))
-                    guard let self else { return }
-                    try await self.checkpoint()
-                } catch is CancellationError { return }
-                catch { /* a later manual checkpoint remains available */ }
-            }
-        }
-    }
-
-    public func stopPeriodicCheckpoint() {
-        checkpointTask?.cancel()
-        checkpointTask = nil
     }
 
     func stageSpeedInterval(endingAt position: TimeInterval) {

@@ -366,33 +366,6 @@ final class WiltedMacRedesignTests: XCTestCase {
         XCTAssertFalse(root.contains("model.selectedNavigation != .larder"))
     }
 
-    // MARK: Row progress
-
-    func testProgressNeedsAStartedUnfinishedEpisodeOfKnownLength() {
-        XCTAssertNil(WiltedMacEpisodeProgress(positionSeconds: 0, durationSeconds: 600, isPlayed: false))
-        XCTAssertNil(WiltedMacEpisodeProgress(positionSeconds: 100, durationSeconds: 600, isPlayed: true))
-        XCTAssertNil(WiltedMacEpisodeProgress(positionSeconds: 100, durationSeconds: nil, isPlayed: false))
-        XCTAssertNil(WiltedMacEpisodeProgress(positionSeconds: 100, durationSeconds: 0, isPlayed: false))
-        XCTAssertNil(WiltedMacEpisodeProgress(positionSeconds: .nan, durationSeconds: 600, isPlayed: false))
-    }
-
-    func testProgressFractionAndTimeLeftMatchTheCarPlayWording() throws {
-        let partway = try XCTUnwrap(
-            WiltedMacEpisodeProgress(positionSeconds: 150, durationSeconds: 600, isPlayed: false))
-        XCTAssertEqual(partway.fraction, 0.25, accuracy: 0.0001)
-        XCTAssertEqual(partway.timeLeftLabel, "07:30 left")
-        let long = try XCTUnwrap(
-            WiltedMacEpisodeProgress(positionSeconds: 600, durationSeconds: 7_200, isPlayed: false))
-        XCTAssertEqual(long.timeLeftLabel, "1:50:00 left")
-    }
-
-    func testProgressClampsAPositionPastTheEnd() throws {
-        let over = try XCTUnwrap(
-            WiltedMacEpisodeProgress(positionSeconds: 700, durationSeconds: 600, isPlayed: false))
-        XCTAssertEqual(over.fraction, 1)
-        XCTAssertEqual(over.timeLeftLabel, "00:00 left")
-    }
-
     // MARK: Transcript mapping
 
     private let transcript = WiltedMacTranscript(

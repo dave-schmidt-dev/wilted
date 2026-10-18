@@ -214,16 +214,4 @@ public struct WiltedPreviewFixture: Identifiable, Hashable, Sendable {
     public static let matrix: [WiltedPreviewFixture] = WiltedPreviewState.allCases.map { state in
         WiltedPreviewFixture(state: state)
     }
-
-    /// UI-test launch arguments select static content without introducing a
-    /// persistence or playback dependency into the native shell.
-    public static func fromLaunchArguments(_ arguments: [String]) -> Self {
-        if arguments.contains("--wilted-ui-fixture-playing") {
-            return Self(state: .playing)
-        }
-        if arguments.contains("--wilted-ui-fixture-ready") {
-            return Self(state: .ready)
-        }
-        return Self(state: .emptyLibrary)
-    }
 }

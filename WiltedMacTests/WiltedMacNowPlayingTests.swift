@@ -41,17 +41,6 @@ private struct UncheckedBox<Value>: @unchecked Sendable {
 
 @MainActor
 final class WiltedMacNowPlayingTests: XCTestCase {
-    private var suiteNames: [String] = []
-
-    // Async, so the override inherits this class's main actor isolation. The
-    // synchronous form is unisolated, and reaching the two properties from it
-    // is exactly the kind of isolation slip that crashed this feature once.
-    override func tearDown() async throws {
-        suiteNames.forEach { UserDefaults().removePersistentDomain(forName: $0) }
-        suiteNames.removeAll()
-        try await super.tearDown()
-    }
-
     // MARK: - Test host
 
     /// `WiltedMacApp` decides whether to seize the machine's Now Playing widget
@@ -415,8 +404,7 @@ final class WiltedMacNowPlayingTests: XCTestCase {
     private func makeModel() -> (WiltedMacModel, RecordingNowPlayingSink, RecordingRemoteCommandSource) {
         let sink = RecordingNowPlayingSink()
         let commands = RecordingRemoteCommandSource()
-        let suite = "com.zerodelta.wilted.mac.nowplaying-tests.\(UUID().uuidString)"
-        suiteNames.append(suite)
+        let suite = WiltedMacTestPreferences.suiteName("nowplaying-tests")
         let preferences = UserDefaults(suiteName: suite) ?? .standard
         let directory = wiltedTemporaryDirectory("now-playing")
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory,

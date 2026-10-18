@@ -1,7 +1,7 @@
 import AVFoundation
-import CryptoKit
 import Foundation
 import WiltedDomain
+import WiltedLibrary
 
 /// Cursor for the resampler's pull block. `AVAudioConverter` invokes that block
 /// synchronously on the calling thread for the duration of one `convert` call, so the
@@ -172,7 +172,7 @@ public struct AudioAssembler: Sendable {
             temporaryURL, expectedDuration: Double(samples.count) / Double(sourceSampleRate)
         )
         onStatus("stage=hash")
-        let hash = try sha256(temporaryURL)
+        let hash = try MediaHash.sha256Hex(fileAt: temporaryURL)
         let byteCount = try fileSize(temporaryURL)
         guard byteCount <= maxBytes else { throw AudioAssemblerError.outputTooLarge(byteCount) }
         try checkpoint(isCancelled)
@@ -191,7 +191,7 @@ public struct AudioAssembler: Sendable {
         published = true
 
         onStatus("stage=verify-published")
-        guard try sha256(destinationURL) == hash else {
+        guard try MediaHash.sha256Hex(fileAt: destinationURL) == hash else {
             throw AudioAssemblerError.invalidAudio("published hash changed")
         }
         _ = try validate(destinationURL, expectedDuration: duration)
@@ -411,13 +411,5 @@ public struct AudioAssembler: Sendable {
                 throw AudioAssemblerError.invalidPCM("unknown resample status")
             }
         }
-    }
-
-    private func sha256(_ url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var digest = SHA256()
-        while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty { digest.update(data: chunk) }
-        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
