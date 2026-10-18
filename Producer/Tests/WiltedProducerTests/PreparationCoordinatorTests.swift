@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 import WiltedDomain
@@ -66,6 +67,95 @@ struct PreparationCoordinatorTests {
         #expect(statuses.last?.stage == .failed)
         #expect(statuses.filter(\.terminal).count == 1)
         #expect(try Data(contentsOf: prior) == Data("prior".utf8))
+        #expect(try fixture.candidateFiles().isEmpty)
+    }
+
+    @Test func reAddingTheSameArticleReusesTheReadyRevisionWithoutSynthesis() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let synthesisCalls = SynthesisCallCounter()
+        let coordinator = fixture.coordinator(
+            synthesis: { _ in
+                await synthesisCalls.record()
+                return SpeechSynthesisResult(requestID: "fixture", samples: [0, 0.1, -0.1], sampleRate: 24_000)
+            },
+            assembly: { _, itemID, destination, textHash in
+                try Data("candidate".utf8).write(to: destination)
+                return try derivedAssemblyResult(itemID: itemID, mediaURL: destination, extractedTextSHA256: textHash)
+            }
+        )
+
+        let first = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+        let firstRevisionID = try #require(first.last?.terminalResult?.revisionID)
+        #expect(first.last?.stage == .completed)
+        let candidatesAfterFirstRun = try fixture.candidateFiles().count
+
+        let second = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+
+        #expect(second.last?.stage == .completed)
+        #expect(second.last?.terminalResult?.outcome == .succeeded)
+        #expect(second.last?.terminalResult?.revisionID == firstRevisionID)
+        #expect(await synthesisCalls.count == 1)
+        #expect(try fixture.candidateFiles().count == candidatesAfterFirstRun)
+    }
+
+    @Test func duplicateSaveRaceResolvesToTheStoredRevisionAndRemovesTheNewCandidate() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let itemID = try ItemID.derive(from: fixture.articleURL)
+        let revisionID = try AudioAssembler.derivedRevisionID(extractedTextSHA256: sha256Hex("Fixture article body."))
+        let storedMediaURL = fixture.mediaDirectory.appending(path: "stored.m4a")
+        let storedRevision = try AudioRevision(
+            itemID: itemID,
+            revisionID: revisionID,
+            durationSeconds: 1,
+            byteCount: 9,
+            contentHash: "sha256:" + String(repeating: "b", count: 64),
+            mediaType: "audio/mp4",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1)),
+            schemaVersion: 1
+        )
+        // The record predates the run but its media does not, so the reuse
+        // pre-check misses and the conflict only surfaces at save time.
+        try await fixture.store.saveReadyRevision(storedRevision, mediaURL: storedMediaURL)
+        let coordinator = fixture.coordinator(
+            assembly: { _, itemID, destination, textHash in
+                try Data("candidate".utf8).write(to: destination)
+                return try derivedAssemblyResult(itemID: itemID, mediaURL: destination, extractedTextSHA256: textHash)
+            },
+            save: { _, _, _ in
+                try Data("stored".utf8).write(to: storedMediaURL)
+                throw LocalLibraryStoreError.immutableRevision(revisionID, site: .readyRevisionWithTranscript)
+            }
+        )
+
+        let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+
+        #expect(statuses.last?.stage == .completed)
+        #expect(statuses.last?.terminalResult?.outcome == .succeeded)
+        #expect(statuses.last?.terminalResult?.revisionID == revisionID)
+        #expect(try fixture.candidateFiles().isEmpty)
+        #expect(try Data(contentsOf: storedMediaURL) == Data("stored".utf8))
+    }
+
+    @Test func immutableRevisionWithoutAStoredMediaFileFailsWithAReadableMessage() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let revisionID = try RevisionID(rawValue: "rev-test")
+        let coordinator = fixture.coordinator(
+            assembly: { _, itemID, destination, _ in
+                try Data("candidate".utf8).write(to: destination)
+                return try assemblyResult(itemID: itemID, mediaURL: destination)
+            },
+            save: { _, _, _ in
+                throw LocalLibraryStoreError.immutableRevision(revisionID, site: .readyRevisionWithTranscript)
+            }
+        )
+
+        let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+
+        #expect(statuses.last?.stage == .failed)
+        #expect(statuses.last?.terminalResult?.error?.message == "This article's audio already exists with different content.")
         #expect(try fixture.candidateFiles().isEmpty)
     }
 
@@ -167,6 +257,13 @@ struct PreparationCoordinatorTests {
 
 private enum TestPreparationError: Error { case saveFailed, timedOut }
 
+private actor SynthesisCallCounter {
+    private var calls = 0
+
+    func record() { calls += 1 }
+    var count: Int { calls }
+}
+
 private actor CapturedLifetimeStatistics {
     private var contributions: [LifetimeStatisticContribution] = []
 
@@ -189,6 +286,9 @@ private struct CoordinatorFixture {
 
     func coordinator(
         body: String = "Fixture article body.",
+        synthesis: @escaping PreparationCoordinator.SynthesisOperation = { _ in
+            SpeechSynthesisResult(requestID: "fixture", samples: [0, 0.1, -0.1], sampleRate: 24_000)
+        },
         assembly: @escaping PreparationCoordinator.AssemblyOperation,
         save: PreparationCoordinator.SaveOperation? = nil
     ) -> PreparationCoordinator {
@@ -201,7 +301,7 @@ private struct CoordinatorFixture {
                     author: nil, body: body
                 )
             },
-            synthesis: { _ in SpeechSynthesisResult(requestID: "fixture", samples: [0, 0.1, -0.1], sampleRate: 24_000) },
+            synthesis: synthesis,
             assembly: assembly,
             save: save
         )
@@ -215,10 +315,26 @@ private struct CoordinatorFixture {
     func remove() { try? FileManager.default.removeItem(at: directory) }
 }
 
-private func assemblyResult(itemID: ItemID, mediaURL: URL) throws -> AudioAssemblyResult {
+/// The revision identity the coordinator predicts, so a run that depends on
+/// reusing a prior revision stores and finds the same one.
+private func derivedAssemblyResult(
+    itemID: ItemID,
+    mediaURL: URL,
+    extractedTextSHA256: String
+) throws -> AudioAssemblyResult {
+    let revisionID = try AudioAssembler.derivedRevisionID(extractedTextSHA256: extractedTextSHA256)
+    return try assemblyResult(itemID: itemID, mediaURL: mediaURL, revisionID: revisionID)
+}
+
+private func assemblyResult(
+    itemID: ItemID,
+    mediaURL: URL,
+    revisionID: RevisionID? = nil
+) throws -> AudioAssemblyResult {
+    let resolvedRevisionID = try revisionID ?? RevisionID(rawValue: "rev-test")
     let revision = try AudioRevision(
         itemID: itemID,
-        revisionID: RevisionID(rawValue: "rev-test"),
+        revisionID: resolvedRevisionID,
         durationSeconds: 1,
         byteCount: 9,
         contentHash: "sha256:" + String(repeating: "a", count: 64),
@@ -227,6 +343,10 @@ private func assemblyResult(itemID: ItemID, mediaURL: URL) throws -> AudioAssemb
         schemaVersion: 1
     )
     return AudioAssemblyResult(revision: revision, mediaURL: mediaURL)
+}
+
+private func sha256Hex(_ text: String) -> String {
+    SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
 }
 
 private func collect(_ stream: AsyncStream<PreparationStatus>) async -> [PreparationStatus] {
