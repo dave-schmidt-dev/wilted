@@ -32,7 +32,9 @@ extension WiltedMacLarderView {
                 ) { model.prepareAllDownloadedLarderEpisodes() }
             }
             .buttonStyle(.bordered)
-            if let completion = model.undoableSkip {
+            // The operation message above already carries this Undo when it is
+            // showing; this control keeps it reachable once that message clears.
+            if let completion = model.undoableSkip, model.podcastOperationMessage == nil {
                 Button("Undo completion") { model.undoSkipEpisode(completion) }
                     .accessibilityIdentifier("wilted-larder-undo-completion")
             }

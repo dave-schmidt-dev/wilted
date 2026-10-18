@@ -106,6 +106,11 @@ struct WiltedMacLarderView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // One operation message for the whole list: reorder, download,
+            // preparation, completion and Undo all report where the owner is
+            // looking, never once per row.
+            WiltedMacPodcastOperationMessage(model: model)
+            WiltedMacLarderArticlePreparationRow(model: model)
             WiltedMacFlowLayout {
                 Menu {
                     ForEach(Array(WiltedMacLarderGrouping.allCases), id: \.id) { option in

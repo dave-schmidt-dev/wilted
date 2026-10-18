@@ -14,26 +14,72 @@ import CloudKit
 #endif
 
 extension WiltedMacModel {
-    func addArticle() {
-        guard let url = URL(string: urlDraft.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+    /// The one invalid-address sentence the Add sheet and the model share.
+    nonisolated static let invalidArticleURLDetail = "Enter a complete HTTPS article URL."
+
+    /// The address a draft names, or nil unless it is a complete HTTPS URL.
+    nonisolated static func articleURL(from draft: String) -> URL? {
+        guard let url = URL(string: draft.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme?.lowercased() == "https", url.host?.isEmpty == false else { return nil }
+        return url
+    }
+
+    /// Starts the pasted article, answering whether a run actually began.
+    /// A refusal leaves the preparation failed so a direct caller still sees why.
+    @discardableResult
+    func addArticle() -> Bool {
+        guard let url = Self.articleURL(from: urlDraft) else {
             preparation = WiltedMacPreparation(
-                phase: .failed, detail: "Enter a complete HTTPS article URL.", fraction: nil, cancellable: false
+                phase: .failed, detail: Self.invalidArticleURLDetail, fraction: nil, cancellable: false
+            )
+            return false
+        }
+        return startArticlePreparation(url)
+    }
+
+    /// Re-runs the article the Larder's status row is showing. The canonical
+    /// address is kept on the model because the Add sheet clears `urlDraft`.
+    func retryArticlePreparation() {
+        guard let url = articlePreparationURL ?? Self.articleURL(from: urlDraft) else {
+            preparation = WiltedMacPreparation(
+                phase: .failed, detail: "Add the article again from the Add sheet.",
+                fraction: nil, cancellable: false
             )
             return
         }
-        guard url.scheme?.lowercased() == "https", url.host != nil else {
+        _ = startArticlePreparation(url)
+    }
+
+    /// Dismisses a finished article's status row. Work still in flight stays put.
+    func dismissArticlePreparation() {
+        guard preparation?.phase.isTerminal == true else { return }
+        preparation = nil
+        articlePreparationURL = nil
+    }
+
+    /// The preparation row the Larder renders: nil once the run completed,
+    /// because the ready article itself now appears in the list.
+    var larderArticlePreparation: WiltedMacPreparation? {
+        guard let preparation, preparation.phase != .completed else { return nil }
+        return preparation
+    }
+
+    @discardableResult
+    private func startArticlePreparation(_ url: URL) -> Bool {
+        guard let preparedItemID = try? ItemID.derive(from: url) else {
             preparation = WiltedMacPreparation(
-                phase: .failed, detail: "Enter a complete HTTPS article URL.", fraction: nil, cancellable: false
+                phase: .failed, detail: Self.invalidArticleURLDetail, fraction: nil, cancellable: false
             )
-            return
+            return false
         }
-        guard let preparedItemID = try? ItemID.derive(from: url) else { return }
 
         if fixtureMode {
+            articlePreparationURL = url
+            articlePreparationGeneration &+= 1
             preparation = WiltedMacPreparation(
                 phase: .preparing, detail: "Validating article URL", fraction: 0, cancellable: true
             )
-            return
+            return true
         }
 
 #if canImport(WiltedProducer)
@@ -41,8 +87,11 @@ extension WiltedMacModel {
             preparation = WiltedMacPreparation(
                 phase: .failed, detail: "The local larder is unavailable.", fraction: nil, cancellable: false
             )
-            return
+            return false
         }
+        articlePreparationURL = url
+        articlePreparationGeneration &+= 1
+        let generation = articlePreparationGeneration
         preparationTask?.cancel()
         // Article text-to-speech and podcast preparation share one GPU, so they
         // share the admission gate. This path used to start the coordinator
@@ -69,33 +118,46 @@ extension WiltedMacModel {
         )
         articlePreparationIsPending = true
         preparationTask = Task { [weak self] in
-            defer { self?.articlePreparationIsPending = false }
+            defer {
+                if self?.articlePreparationGeneration == generation {
+                    self?.articlePreparationIsPending = false
+                }
+            }
             guard let gate = self?.preparationGate else { return }
             do {
                 try await gate.admit(sequence: requestSequence)
             } catch {
                 // Cancelled while queued: there is no status stream to carry a
-                // terminal state, so this path reports its own.
-                self?.preparation = WiltedMacPreparation(
+                // terminal state, so this path reports its own. A newer retry
+                // owns the row now, so an older task cannot overwrite it.
+                guard let self, self.articlePreparationGeneration == generation else { return }
+                self.preparation = WiltedMacPreparation(
                     phase: .cancelled, detail: "Preparation cancelled.", fraction: nil, cancellable: false
                 )
-                await self?.recordWorkTicketTransition(
+                await self.recordWorkTicketTransition(
                     kind: .articlePreparation, subjectID: preparedItemID.rawValue,
                     requestSequence: requestSequence, state: .cancelled
                 )
                 return
             }
             defer { gate.release() }
+            guard let self, self.articlePreparationGeneration == generation else { return }
             if queued {
-                self?.preparation = WiltedMacPreparation(
+                self.preparation = WiltedMacPreparation(
                     phase: .preparing, detail: "Validating article URL", fraction: 0, cancellable: true
                 )
             }
             let run = await coordinator.start(url: url)
-            guard let self else { await run.cancel(); return }
+            guard self.articlePreparationGeneration == generation else {
+                await run.cancel()
+                return
+            }
             self.preparationRun = run
             for await status in run.statuses {
-                guard !Task.isCancelled else { await run.cancel(); return }
+                guard !Task.isCancelled, self.articlePreparationGeneration == generation else {
+                    await run.cancel()
+                    return
+                }
                 self.update(status)
                 if status.terminal { break }
             }
@@ -129,7 +191,7 @@ extension WiltedMacModel {
                 // `.retryable` -- unlike a podcast run, there is no bounded
                 // in-process retry upstream of this ticket at all, so
                 // marking it terminal would only ever hide a retry option
-                // the reader could otherwise take from Prep.
+                // the reader could otherwise take from the Larder.
                 await self.recordWorkTicketTransition(
                     kind: .articlePreparation, subjectID: preparedItemID.rawValue,
                     requestSequence: requestSequence, state: .failed,
@@ -137,6 +199,13 @@ extension WiltedMacModel {
                     failureKind: PodcastDownloadFailureKind.retryable.rawValue,
                     lastFailureMessage: self.preparation?.detail
                 )
+            }
+            guard self.articlePreparationGeneration == generation else { return }
+            // The ready article itself is the Larder row now, so the status row
+            // is dismissed rather than left behind a completed run.
+            if self.preparation?.phase == .completed {
+                self.preparation = nil
+                self.articlePreparationURL = nil
             }
             self.preparationRun = nil
             self.refresh()
@@ -151,7 +220,15 @@ extension WiltedMacModel {
             fraction: preparation?.fraction, cancellable: false
         )
         if fixtureMode {
-            preparation = nil
+            // The fixture has no worker to answer; move off "Cancelling" on the
+            // next turn, after the immediate state has been observable.
+            Task { [weak self] in
+                await Task.yield()
+                guard let self, self.preparation?.phase == .cancelling else { return }
+                self.preparation = WiltedMacPreparation(
+                    phase: .cancelled, detail: "Preparation cancelled.", fraction: nil, cancellable: false
+                )
+            }
             return
         }
 #if canImport(WiltedProducer)

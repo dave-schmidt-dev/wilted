@@ -232,7 +232,7 @@ extension WiltedMacTranscript {
 ///
 /// The seam is on the prepared clock because that is what the transcript and
 /// the scrubber are counting in; the span is on the original clock because
-/// that is what the cut removed, and it is what Prep reports for the same run.
+/// that is what the cut removed, and it is what the Larder reports for the same run.
 struct WiltedMacRemovedSpan: Identifiable, Equatable, Sendable {
     let id: Int
     /// Where the cut lands in the prepared audio.

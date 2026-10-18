@@ -186,10 +186,10 @@ extension WiltedMacModel {
         guard let pipeline = podcastPreparationPipeline,
               let itemID = try? ItemID(rawValue: episode.id) else { return false }
         // Whether this run waits is decided now, so the row can say so now,
-        // and so Prep can list it in the order it will run. The place in line
-        // is taken here rather than where the run suspends on the gate: those
-        // are one main-actor hop apart, and a row saying `Queued` that Prep
-        // cannot name is the gap this closes.
+        // and so the Larder can list it in the order it will run. The place in
+        // line is taken here rather than where the run suspends on the gate:
+        // those are one main-actor hop apart, and a row saying `Queued` that
+        // the Larder cannot name is the gap this closes.
         //
         // The gate is asked, and so is this process: a run becomes the gate's
         // business only when its task body reaches `admit()`, one main-actor
@@ -213,12 +213,13 @@ extension WiltedMacModel {
         // are represented by preparationQueue; once one owns the gate it
         // gets the active projection below.
         processorRuns.removeAll { $0.isPodcast && $0.itemID == episode.id }
+        preparationFailureCauses[episode.id] = nil
         if !queued { startProjectedProcessorRun(for: episode) }
         podcastOperationMessage = queued
             ? "\(episode.title) is queued behind the preparation in flight."
             : "Preparing \(episode.title)…"
         // The row says only that the episode is preparing. Every status the
-        // worker emits is journalled by the pipeline, and Prep reads that
+        // worker emits is journalled by the pipeline, and the Larder reads that
         // journal back as the narrative and, on request, the full log.
         //
         // The request sequence was issued when the reader asked for the
@@ -332,7 +333,9 @@ extension WiltedMacModel {
                     requestSequence: requestSequence, state: .cancelled, expectedAttempt: attempt, requiresAttempt: true
                 )
             } catch {
-                // The reason is on Prep, with the log that led to it.
+                // The row shows a short cause beside Retry; the log that led
+                // to it stays with the run.
+                self?.preparationFailureCauses[episode.id] = Self.preparationFailureCause(for: error)
                 self?.updateEpisode(episode.id) { $0.preparationState = .failed(Self.preparationFailedLabel) }
                 self?.podcastOperationMessage = "\(episode.title): \(Self.preparationFailedLabel)"
                 // `PreparationCoordinator` classifies every terminal failure
@@ -390,8 +393,27 @@ extension WiltedMacModel {
     }
 #endif
 
-    /// What a row says when its preparation failed. The cause is on Prep.
+    /// What a row says when its preparation failed. The Larder row shows the
+    /// short cause from its typed phase beside the Retry control.
     nonisolated static let preparationFailedLabel = "Preparation failed. Retry it from Larder."
+
+#if canImport(WiltedProducer)
+    /// The short cause a failed row shows beside Retry, chosen from the error's
+    /// typed code. The error's own message never reaches the row.
+    nonisolated static func preparationFailureCause(for error: any Error) -> String {
+        guard let code = (error as? ProducerError)?.code else { return "Preparation failed" }
+        switch code {
+        case .timedOut: return "Timed out"
+        case .speechUnavailable: return "Speech unavailable"
+        case .extractionFailed: return "Could not read the source"
+        case .outputInvalid: return "Output was unusable"
+        case .protocolMismatch: return "Worker needs an update"
+        case .invalidRequest, .unsupported: return "Not supported"
+        case .cancelled: return "Cancelled"
+        case .failed: return "Preparation failed"
+        }
+    }
+#endif
 
     /// What a row says once its preparation owns the single run slot.
     nonisolated static let preparingStage = "Preparing…"
@@ -405,9 +427,8 @@ extension WiltedMacModel {
     /// whole sentence.
     nonisolated static let articlePreparationQueuedDetail = "Queued behind the preparation in flight."
 
-    /// Runs a podcast preparation again from its row on Prep. A failed run's
-    /// retry lives next to the failure rather than in the Larder, where the
-    /// row only says to look here.
+    /// Runs a podcast preparation again from its Larder row. The Retry control
+    /// lives next to the failure it retries.
     func retryProcessorRun(_ run: WiltedMacProcessorRun) {
         guard run.isPodcast else { return }
         guard let episode = episodes.first(where: { $0.id == run.itemID }) else {
@@ -433,7 +454,7 @@ extension WiltedMacModel {
         podcastPreparationTasks[episode.id]?.cancel()
     }
 
-    /// Stops a run that is still waiting for the slot, from Prep, where the
+    /// Stops a run that is still waiting for the slot, from Larder, where the
     /// waiting run is named but its episode row is not in reach. The gate lets
     /// a queued caller leave at the moment it is cancelled rather than when
     /// the run ahead of it finishes, so the row clears now.

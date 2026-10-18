@@ -77,6 +77,15 @@ extension WiltedMacLarderView {
                 .accessibilityAction(named: Text("Move later")) {
                     model.moveLarderEpisode(episode.id, by: 1)
                 }
+            if group == .downloaded, let cause = preparationFailureCause(episode) {
+                Text(cause)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .lineLimit(1)
+                    .frame(maxWidth: 120, alignment: .trailing)
+                    .help(cause)
+                    .accessibilityIdentifier("wilted-larder-preparation-cause-\(episode.id)")
+            }
             nextStepControl(episode, group: group)
                 .controlSize(.small)
             // Visible, not only in the context menu: a row can reach the
@@ -160,6 +169,13 @@ extension WiltedMacLarderView {
     /// published none or it has not arrived. A report has its own tile: it has no show.
     @ViewBuilder private func rowArtwork(_ episode: WiltedMacEpisode) -> some View {
         WiltedMacEpisodeArtwork(episode: episode, size: 40)
+    }
+
+    /// The short cause beside a failed preparation's Retry: the typed cause
+    /// from this session, or a plain "failed" for a failure found at launch.
+    private func preparationFailureCause(_ episode: WiltedMacEpisode) -> String? {
+        guard case .failed = episode.preparationState else { return nil }
+        return model.preparationFailureCauses[episode.id] ?? "Preparation failed"
     }
 
     /// This installed view resolves appearance and keeps every lifecycle action in one slot.

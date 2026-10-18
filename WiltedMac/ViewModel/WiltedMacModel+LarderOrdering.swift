@@ -47,21 +47,35 @@ extension WiltedMacModel {
         // The optimistic half: the whole group leaves the Larder on the next
         // render, exactly as one row's removal does.
         podcastQueueIDs.removeAll { ids.contains($0) }
-        // A bulk clear is not one episode's Skip, so nothing single is left
-        // for Undo Skip to restore.
         if podcasts.isEmpty {
-            podcastOperationMessage = "Removed all \(books.count) in \(group.displayName) from Larder. No download, prepared cut, transcript, or listening history was touched."
+            podcastOperationMessage = "Removing all \(books.count) in \(group.displayName) from Larder…"
         }
         Task { [weak self] in
             guard let self else { return }
+            var failedCount = 0
             for episode in books {
-                if let playback = self.playback, let id = try? ItemID(rawValue: episode.id) {
-                    try? await playback.removePodcastQueueEpisode(id)
+                do {
+                    try await self.larderSortWriteHookForTesting?()
+                    guard let playback = self.playback, let id = try? ItemID(rawValue: episode.id) else {
+                        failedCount += 1
+                        continue
+                    }
+                    try await playback.removePodcastQueueEpisode(id)
+                } catch {
+                    failedCount += 1
                 }
             }
             if wasPlaying, let current = self.currentPodcastEpisodeID, ids.contains(current) { await self.stopPlaybackForRemovedEpisode() }
             await self.refreshPodcastQueueState()
             await self.reloadLibraryRows()
+            // A bulk clear is not one episode's Skip, so nothing single is left
+            // for Undo Skip to restore. Announce only what the writes actually
+            // did; a failure names the rows it left behind.
+            if failedCount == 0, podcasts.isEmpty {
+                self.podcastOperationMessage = "Removed all \(books.count) in \(group.displayName) from Larder. No download, prepared cut, transcript, or listening history was touched."
+            } else if failedCount > 0 {
+                self.podcastOperationMessage = "Removed \(books.count - failedCount) of \(books.count) in \(group.displayName) from Larder; \(failedCount) could not be removed and stay in Larder."
+            }
         }
 #endif
     }
@@ -133,12 +147,22 @@ extension WiltedMacModel {
 
     func moveEpisodeInUpNext(from source: Int, to destination: Int) {
 #if canImport(WiltedProducer)
-        guard let playback else { return }
+        guard let playback else {
+            playbackOperationStatus = "The Larder order could not be saved."
+            return
+        }
         playbackOperationStatus = "Reordering Larder…"
         Task { [weak self] in
-            try? await playback.movePodcastQueueEpisode(from: source, to: destination)
-            await self?.refreshPodcastQueueState()
-            self?.playbackOperationStatus = nil
+            guard let self else { return }
+            do {
+                try await self.larderSortWriteHookForTesting?()
+                try await playback.movePodcastQueueEpisode(from: source, to: destination)
+                await self.refreshPodcastQueueState()
+                self.playbackOperationStatus = nil
+            } catch {
+                await self.refreshPodcastQueueState()
+                self.playbackOperationStatus = "The Larder order could not be saved."
+            }
         }
 #endif
     }

@@ -55,6 +55,8 @@ final class WiltedMacAddSession {
     /// Feeds the session saw list no audio: offered as "Follow as article feed".
     private(set) var articleOnlyFeeds: Set<URL> = []
     private(set) var importState = ImportState.idle
+    /// Why an Add article press did not start a run, shown beneath the field.
+    private(set) var articleStatusMessage: String?
 
     @ObservationIgnored private let model: WiltedMacModel
     @ObservationIgnored private let search: Search
@@ -104,6 +106,7 @@ final class WiltedMacAddSession {
 
     /// Words for the sheet's current state; nil when the result list speaks for itself.
     var statusMessage: String? {
+        if let articleStatusMessage { return articleStatusMessage }
         switch query.state {
         case .idle: "Search for a podcast, or paste a link to a feed, a show or an article."
         case .classifying: "Checking that address\u{2026}"
@@ -159,6 +162,7 @@ final class WiltedMacAddSession {
         model.podcastFeedDraftStatus = nil
         model.linkDraftStatus = nil
         model.advertisedFeed = nil
+        articleStatusMessage = nil
         restart(immediately: true)
     }
 
@@ -190,13 +194,22 @@ final class WiltedMacAddSession {
         model.subscribeToPodcastFeed(url)
     }
 
-    /// Adds the pasted page as one article and closes the sheet.
+    /// Adds the pasted page as one article. The sheet stays open with the
+    /// owner's text until the model confirms that a run actually started.
     func addArticle(_ row: Row) {
         guard row.action == .addArticle, let url = row.articleURL else { return }
+        guard WiltedMacModel.articleURL(from: url.absoluteString) != nil else {
+            articleStatusMessage = WiltedMacModel.invalidArticleURLDetail
+            return
+        }
         task?.cancel()
         task = nil
         model.urlDraft = url.absoluteString
-        model.addArticle()
+        guard model.addArticle() else {
+            articleStatusMessage = model.preparation?.detail ?? WiltedMacModel.invalidArticleURLDetail
+            return
+        }
+        articleStatusMessage = nil
         model.urlDraft = ""
         query = AddQuery()
         resolvedFeed = nil
@@ -227,6 +240,7 @@ final class WiltedMacAddSession {
     private func restart(immediately: Bool) {
         task?.cancel()
         task = nil
+        articleStatusMessage = nil
         resolvedFeed = nil
         advertisedFeed = nil
         articleOnlyFeeds = []
