@@ -342,6 +342,13 @@ public actor PodcastPreparationPipeline {
             let response = try await runner.run(request: try JSONSerialization.data(withJSONObject: request),
                                                 onProgress: report)
             let payload = try Self.decode(response)
+            if payload.droppedCueCount > 0 {
+                let totalCues = payload.cues.count + payload.droppedCueCount
+                report(PodcastPreparationProgress(
+                    stage: "transcript.cues.dropped",
+                    detail: "\(payload.droppedCueCount) of \(totalCues) transcript cues were malformed and left out"
+                ))
+            }
             report(Self.resultProgress(payload))
             for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
             let result = try await commit(payload, episode: episode, download: download,

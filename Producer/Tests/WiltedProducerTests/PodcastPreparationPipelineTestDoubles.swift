@@ -30,6 +30,9 @@ final class StatusLog: @unchecked Sendable {
     }
 
     var stages: [String] { lock.lock(); defer { lock.unlock() }; return recorded.map(\.0) }
+    var entries: [(stage: String, detail: String, fraction: Double?)] {
+        lock.lock(); defer { lock.unlock() }; return recorded.map { (stage: $0.0, detail: $0.1, fraction: $0.2) }
+    }
     var fractions: [Double] { lock.lock(); defer { lock.unlock() }; return recorded.compactMap(\.2) }
 }
 

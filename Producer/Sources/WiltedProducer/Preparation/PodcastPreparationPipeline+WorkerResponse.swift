@@ -21,6 +21,7 @@ extension PodcastPreparationPipeline {
         var warning: String? = nil
         var adAuditDiagnostics: [String: String] = [:]
         var timeline: PreparationStatus.PreparationTimeline
+        var droppedCueCount: Int = 0
     }
 
     static func decode(_ data: Data) throws -> WorkerPayload {
@@ -85,7 +86,9 @@ extension PodcastPreparationPipeline {
             throw PodcastPreparationError.malformedWorkerResponse("unknown timing")
         }
         var cues: [TranscriptCue] = []
-        for raw in object["cues"] as? [[String: Any]] ?? [] {
+        var droppedCueCount = 0
+        let rawCues = object["cues"] as? [[String: Any]] ?? []
+        for raw in rawCues {
             guard let start = raw["startSeconds"] as? Double, let end = raw["endSeconds"] as? Double,
                   let text = raw["text"] as? String else {
                 throw PodcastPreparationError.malformedWorkerResponse("malformed cue")
@@ -98,8 +101,21 @@ extension PodcastPreparationPipeline {
                 endSeconds: end,
                 text: text,
                 speaker: speaker
-            ) else { continue }
+            ) else {
+                droppedCueCount += 1
+                continue
+            }
             cues.append(cue)
+        }
+        let totalCueCount = rawCues.count
+        // A handful of degenerate cues (zero-length, empty text) is normal
+        // transcript noise and costs only those lines; more than that means
+        // the worker and app disagree about the cue contract and the stored
+        // timing would be wrong.
+        if droppedCueCount > max(20, totalCueCount / 20) {
+            throw PodcastPreparationError.malformedWorkerResponse(
+                "\(droppedCueCount) of \(totalCueCount) transcript cues were malformed"
+            )
         }
         let rawAds = try intervalObjects(named: "adSegments", in: object)
         // The worker's kind is external input, so an unrecognised one reads as
@@ -183,7 +199,8 @@ extension PodcastPreparationPipeline {
             adRemovalOutcome: outcome,
             warning: outcome == "uncertain" ? (report["warning"] as? String).map { String($0.prefix(768)) } : nil,
             adAuditDiagnostics: outcome == "uncertain" ? diagnosticFields(report["audit"] as? [String: Any] ?? [:]) : [:],
-            timeline: timeline
+            timeline: timeline,
+            droppedCueCount: droppedCueCount
         )
     }
 
