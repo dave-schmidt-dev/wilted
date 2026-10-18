@@ -288,6 +288,8 @@ if [[ -n "${PHASE0_INTERRUPT_TEST_LEG:-}" ]]; then
       ;;
   esac
   collect_parallel_legs
+  # The fixture's own leg result is its verdict.
+  phase0_verdict_reached=1
   exit "$failed_legs"
 fi
 
