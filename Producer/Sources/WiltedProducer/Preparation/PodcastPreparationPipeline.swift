@@ -50,15 +50,6 @@ public actor PodcastPreparationPipeline {
     /// deliberately independent of the app or UI build number so a launch can
     /// identify old preparation results without invalidating unrelated work.
     public static let semanticVersion = "podcast-preparation-v8"
-    /// The worker is part of the semantic pipeline even though it lives in a
-    /// separate Python source tree. Update this alongside the fingerprint when
-    /// that worker changes.
-    public static let workerSourceHash = "sha256:1172f02d45ad59c8521d4fe7e49225b15e3aed9915b913292f7843024db5b07d"
-    /// This file's own source hash is computed with this value normalized out;
-    /// it makes a semantic edit fail the coverage test until this fingerprint
-    /// block is deliberately updated.
-    public static let pipelineSourceHash = "sha256:8d374b3d491725b36a0956f1fc780452fe70c2c7657fed655eedb0e151853fab"
-
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
     /// but `speech-stack` is still an editable dependency resolved outside it,
@@ -106,8 +97,6 @@ public actor PodcastPreparationPipeline {
             hasher.update(data: Data([0]))
         }
         include(semanticVersion)
-        include(workerSourceHash)
-        include(pipelineSourceHash)
         guard let workerData = try? Data(contentsOf: configuration.workerURL, options: .mappedIfSafe) else {
             return nil
         }

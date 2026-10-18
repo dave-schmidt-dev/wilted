@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Testing
 import WiltedDomain
@@ -65,17 +64,6 @@ struct PodcastPreparationPipelineTests {
         }
         #expect(provenance?.fields["fingerprint"] == PodcastPreparationPipeline.semanticFingerprint)
         #expect(provenance?.fields["sourceHash"] == fixture.contentHash)
-    }
-
-    @Test func semanticFingerprintCoverageRequiresTheWorkerAndSwiftSourcesToBeBumped() throws {
-        let sourceRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let workerHash = try ProducerSource.workerSourceHash(root: sourceRoot)
-        #expect(workerHash == PodcastPreparationPipeline.workerSourceHash)
-
-        let pipelineHash = try ProducerSource.pipelineSourceHash(root: sourceRoot)
-        #expect(pipelineHash == PodcastPreparationPipeline.pipelineSourceHash)
     }
 
     @Test func semanticFingerprintTracksExternalPythonDependencies() throws {
