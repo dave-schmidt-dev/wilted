@@ -49,6 +49,61 @@ private actor SleepGate {
     func release() { let pending = waiters; waiters = []; pending.forEach { $0.resume() } }
 }
 
+/// Forwards to the in-memory transport and fails the first `failing` uploads of ready audio, as a
+/// dropped connection would.
+private final class FlakyUploadTransport: LibraryTransport, @unchecked Sendable {
+    private let inner: InMemoryLibraryTransport
+    private let lock = NSLock()
+    private var failuresLeft: Int
+    private var attempts = 0
+    private var uploads = 0
+
+    init(_ inner: InMemoryLibraryTransport, failing count: Int) {
+        self.inner = inner
+        failuresLeft = count
+    }
+
+    var readyAttempts: Int { lock.withLock { attempts } }
+    var readyUploads: Int { lock.withLock { uploads } }
+
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
+    func send(intent: LibraryIntent) async throws { try await inner.send(intent: intent) }
+    func listIntents() async throws -> [LibraryIntent] { try await inner.listIntents() }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws { try await inner.publish(record, as: channel) }
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { try await inner.fetchDeviceRecords() }
+    func mediaOffers() async throws -> [LibraryMediaOffer] { try await inner.mediaOffers() }
+    func removeMedia(entryID: ItemID) async throws { try await inner.removeMedia(entryID: entryID) }
+    func publishTranscript(_ transcript: LibraryTranscript) async throws { try await inner.publishTranscript(transcript) }
+    func removeTranscript(entryID: ItemID) async throws { try await inner.removeTranscript(entryID: entryID) }
+    func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
+        try await inner.transcript(entryID: entryID, revisionID: revisionID)
+    }
+
+    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
+        guard offer.state == .ready else { return try await inner.publishMedia(offer: offer, fileURL: fileURL) }
+        let fails = lock.withLock { () -> Bool in
+            attempts += 1
+            guard failuresLeft > 0 else { return false }
+            failuresLeft -= 1
+            return true
+        }
+        if fails { throw URLError(.networkConnectionLost) }
+        try await inner.publishMedia(offer: offer, fileURL: fileURL)
+        lock.withLock { uploads += 1 }
+    }
+}
+
+/// Records each wait the service asks for and returns at once.
+private final class WaitLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waits: [Duration] = []
+    func append(_ wait: Duration) { lock.withLock { waits.append(wait) } }
+    var values: [Duration] { lock.withLock { waits } }
+}
+
 private actor IntentCollector: LibraryIntentSink {
     private(set) var received: [String] = []
     func receive(_ intent: LibraryIntent) async throws { received.append(intent.id) }
@@ -186,6 +241,59 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         let offers = try await rig.phone.mediaOffers()
         XCTAssertTrue(offers.isEmpty)
         XCTAssertEqual(rig.source.lookupCount, 0)
+    }
+
+    // MARK: Upload retry
+
+    private func flakyService(_ rig: Rig, failing count: Int, waits: WaitLog) -> (WiltedMacMediaService, FlakyUploadTransport) {
+        let flaky = FlakyUploadTransport(rig.mac, failing: count)
+        let clock = rig.clock
+        let service = WiltedMacMediaService(
+            source: rig.source, transport: flaky, accountingURL: rig.directory.appendingPathComponent("media-accounting.json"),
+            now: { clock.now }, uploadRetryDelay: .seconds(5), sleep: { waits.append($0) }
+        )
+        return (service, flaky)
+    }
+
+    func testAFailedUploadIsRetriedOnceThenOfferedWithNoFailureLeft() async throws {
+        let rig = rig("media-upload-retry")
+        let entry = try id("episode-flaky")
+        let audio = try makeAudio(rig.directory, revision: "rev-1")
+        rig.source.set(entry, audio)
+        let waits = WaitLog()
+        let (service, flaky) = flakyService(rig, failing: 1, waits: waits)
+
+        await service.handle(try request(rig, entry, from: phoneID, intentID: "retry-1"))
+
+        XCTAssertEqual(flaky.readyAttempts, 2)
+        XCTAssertEqual(flaky.readyUploads, 1, "the offer is published once")
+        XCTAssertEqual(waits.values, [.seconds(5)])
+        let offers = try await rig.phone.mediaOffers()
+        XCTAssertEqual(offers.count, 1)
+        XCTAssertEqual(offers.first?.state, .ready)
+        XCTAssertEqual(offers.first?.revisionID, audio.revisionID)
+        let failure = await service.lastFailure
+        XCTAssertNil(failure)
+        let holding = await service.isHolding(entryID: entry, revisionID: audio.revisionID)
+        XCTAssertTrue(holding)
+    }
+
+    func testAnUploadThatFailsTwiceIsReportedWithItsCauseAndPublishesNoAnswer() async throws {
+        let rig = rig("media-upload-gives-up")
+        let entry = try id("episode-offline")
+        rig.source.set(entry, try makeAudio(rig.directory, revision: "rev-1"))
+        let waits = WaitLog()
+        let (service, flaky) = flakyService(rig, failing: 2, waits: waits)
+
+        await service.handle(try request(rig, entry, from: phoneID, intentID: "retry-2"))
+
+        XCTAssertEqual(flaky.readyAttempts, 2, "one retry, then it gives up")
+        XCTAssertEqual(waits.values, [.seconds(5)])
+        let offers = try await rig.phone.mediaOffers()
+        XCTAssertTrue(offers.isEmpty, "no notReady and no new offer state: the phone's timeout speaks")
+        let lastFailure = await service.lastFailure
+        let failure = try XCTUnwrap(lastFailure)
+        XCTAssertTrue(failure.hasPrefix("URLError."), failure)
     }
 
     // MARK: Ledger

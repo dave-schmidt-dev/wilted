@@ -90,6 +90,129 @@ private final class StateLog: @unchecked Sendable {
     var states: [MediaTransferState] { lock.lock(); defer { lock.unlock() }; return values }
 }
 
+/// Thread-safe collector for retry callbacks and backoff waits.
+private final class Recorder<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [Value] = []
+    func append(_ value: Value) { lock.lock(); stored.append(value); lock.unlock() }
+    var values: [Value] { lock.lock(); defer { lock.unlock() }; return stored }
+}
+
+/// The CloudKit adapter's error as it reaches the fetcher: same case name and printed form as
+/// `CloudKitSyncError.cloudKit(code:message:)`, which this package cannot import.
+private enum AdapterError: Error { case cloudKit(code: Int, message: String) }
+
+/// Throws the scripted errors on the first fetches, then delivers through the in-memory transport.
+private final class ScriptedFetch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: [any Error]
+    private var count = 0
+    init(_ failures: [any Error]) { self.failures = failures }
+    var attempts: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func next() -> (any Error)? {
+        lock.lock(); defer { lock.unlock() }
+        count += 1
+        return failures.isEmpty ? nil : failures.removeFirst()
+    }
+}
+
+private struct FlakyTransport: LibraryTransport {
+    let inner: InMemoryLibraryTransport
+    let script: ScriptedFetch
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { fatalError() }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { fatalError() }
+    func send(intent: LibraryIntent) async throws {}
+    func listIntents() async throws -> [LibraryIntent] { [] }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {}
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { LibraryDeviceRecords() }
+
+    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
+        if let failure = script.next() { throw failure }
+        return try await inner.fetchMedia(offer, progress: progress)
+    }
+}
+
+/// A clock that moves only when told to; a sleeper wakes once time reaches its deadline.
+private final class ManualClock: Clock, @unchecked Sendable {
+    typealias Duration = Swift.Duration
+    struct Instant: InstantProtocol {
+        typealias Duration = Swift.Duration
+        var offset: Swift.Duration
+        func advanced(by duration: Swift.Duration) -> Instant { Instant(offset: offset + duration) }
+        func duration(to other: Instant) -> Swift.Duration { other.offset - offset }
+        static func < (lhs: Instant, rhs: Instant) -> Bool { lhs.offset < rhs.offset }
+    }
+
+    private let lock = NSLock()
+    private var current = Instant(offset: .zero)
+    private var sleepers: [UUID: (deadline: Instant, continuation: CheckedContinuation<Void, Error>)] = [:]
+
+    var now: Instant { lock.lock(); defer { lock.unlock() }; return current }
+    var minimumResolution: Swift.Duration { .zero }
+    var sleeperCount: Int { lock.lock(); defer { lock.unlock() }; return sleepers.count }
+
+    func sleep(until deadline: Instant, tolerance: Swift.Duration?) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                let early: Result<Void, Error>?
+                if Task.isCancelled {
+                    early = .failure(CancellationError())
+                } else if current >= deadline {
+                    early = .success(())
+                } else {
+                    sleepers[id] = (deadline, continuation)
+                    early = nil
+                }
+                lock.unlock()
+                if let early { continuation.resume(with: early) }
+            }
+        } onCancel: {
+            lock.lock()
+            let sleeper = sleepers.removeValue(forKey: id)
+            lock.unlock()
+            sleeper?.continuation.resume(throwing: CancellationError())
+        }
+    }
+
+    func advance(by duration: Swift.Duration) {
+        lock.lock()
+        current = current.advanced(by: duration)
+        let due = sleepers.filter { $0.value.deadline <= current }
+        for id in due.keys { sleepers[id] = nil }
+        lock.unlock()
+        for sleeper in due.values { sleeper.continuation.resume() }
+    }
+}
+
+/// Reports a little progress every `step` of clock time for `steps` steps, then delivers.
+private struct SlowTransport: LibraryTransport {
+    let inner: InMemoryLibraryTransport
+    let clock: ManualClock
+    let step: Duration
+    let steps: Int
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { fatalError() }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { fatalError() }
+    func send(intent: LibraryIntent) async throws {}
+    func listIntents() async throws -> [LibraryIntent] { [] }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {}
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { LibraryDeviceRecords() }
+
+    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
+        for index in 1...steps {
+            clock.advance(by: step)
+            progress(Int64(index))
+            await Task.yield()
+        }
+        return try await inner.fetchMedia(offer, progress: progress)
+    }
+}
+
 final class MediaFetcherTests: XCTestCase {
     private var scratch: URL!
     private let entry = try! ItemID(rawValue: "item-a")
@@ -281,6 +404,153 @@ final class MediaFetcherTests: XCTestCase {
         XCTAssertEqual(log.states.last, .failed(.timedOut))
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(10))
         XCTAssertEqual(MediaFetcher.defaultWatchdog, .seconds(300))
+    }
+
+    // MARK: automatic retry
+
+    func testTwoTransientFailuresThenSuccessCacheWithoutAManualRetry() async throws {
+        let (inner, source, cache) = try await fixture()
+        let ready = try offer(for: source)
+        try await inner.publishMedia(offer: ready, fileURL: source)
+        let script = ScriptedFetch([
+            AdapterError.cloudKit(code: 4, message: "Network failure"),
+            NSError(domain: "CKErrorDomain", code: 23),
+        ])
+        let sleeps = Recorder<Duration>(), retries = Recorder<MediaFetchRetry>(), log = StateLog()
+        let fetcher = MediaFetcher(cache: cache, sleep: { sleeps.append($0) })
+
+        let outcome = try await fetcher.fetch(
+            ready, from: FlakyTransport(inner: inner, script: script), admission: await cache.admission(for: ready),
+            onState: { log.append($0) }, onRetry: { retries.append($0) })
+
+        guard case let .cached(url) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(try Data(contentsOf: url), try Data(contentsOf: source))
+        XCTAssertEqual(script.attempts, 3)
+        XCTAssertEqual(sleeps.values, [.seconds(2), .seconds(8)])
+        XCTAssertEqual(retries.values, [
+            MediaFetchRetry(attempt: 2, attempts: 3, delay: .seconds(2), cause: .offline),
+            MediaFetchRetry(attempt: 3, attempts: 3, delay: .seconds(8), cause: .other),
+        ])
+        XCTAssertFalse(log.states.contains { if case .failed = $0 { true } else { false } })
+        XCTAssertEqual(log.states.filter { $0 == .awaiting }.count, 3, "each attempt starts over")
+        XCTAssertEqual(log.states.last, .cached)
+    }
+
+    func testTransientFailureOnEveryAttemptEndsOfflineAfterThree() async throws {
+        let (inner, source, cache) = try await fixture([1, 2, 3])
+        let ready = try offer(for: source)
+        try await inner.publishMedia(offer: ready, fileURL: source)
+        let script = ScriptedFetch(Array(repeating: URLError(.notConnectedToInternet), count: 5))
+        let sleeps = Recorder<Duration>()
+
+        let outcome = try await MediaFetcher(cache: cache, sleep: { sleeps.append($0) })
+            .fetch(ready, from: FlakyTransport(inner: inner, script: script), admission: await cache.admission(for: ready))
+
+        XCTAssertEqual(outcome, .failed(.deliveryFailed(MediaFetchFailure.offline.rawValue)))
+        guard case let .failed(reason) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(reason.fetchFailure, .offline)
+        XCTAssertEqual(script.attempts, 3)
+        XCTAssertEqual(sleeps.values.count, 2)
+    }
+
+    func testTerminalFailuresEndAtOnceWithoutRetrying() async throws {
+        let cases: [(any Error, MediaFetchFailure)] = [
+            (AdapterError.cloudKit(code: 11, message: "Record not found"), .macNotAnswering),
+            (LibraryTransportError.transport("the offer for item-a exceeds the size limit"), .tooLarge),
+            (AdapterError.cloudKit(code: -1, message: "Raw CloudKit operations are unavailable"), .other),
+            (URLError(.badServerResponse), .other),
+        ]
+        for (error, expected) in cases {
+            let (inner, source, cache) = try await fixture([1, 2, 3])
+            let ready = try offer(for: source)
+            try await inner.publishMedia(offer: ready, fileURL: source)
+            let script = ScriptedFetch([error, error, error])
+            let sleeps = Recorder<Duration>(), retries = Recorder<MediaFetchRetry>()
+
+            let outcome = try await MediaFetcher(cache: cache, sleep: { sleeps.append($0) }).fetch(
+                ready, from: FlakyTransport(inner: inner, script: script), admission: await cache.admission(for: ready),
+                onRetry: { retries.append($0) })
+
+            XCTAssertEqual(outcome, .failed(.deliveryFailed(expected.rawValue)), "\(error)")
+            XCTAssertEqual(script.attempts, 1, "\(error)")
+            XCTAssertTrue(sleeps.values.isEmpty, "\(error)")
+            XCTAssertTrue(retries.values.isEmpty, "\(error)")
+        }
+    }
+
+    func testHashMismatchIsTerminalAndNotRetried() async throws {
+        let (inner, source, cache) = try await fixture([1, 2, 3, 4])
+        let other = MediaHash.prefix + SHA256.hash(data: Data([9])).map { String(format: "%02x", $0) }.joined()
+        let wrong = try offer(for: source, hash: other)
+        try await inner.publishMedia(offer: wrong, fileURL: source)
+        let script = ScriptedFetch([])
+        let sleeps = Recorder<Duration>()
+
+        let outcome = try await MediaFetcher(cache: cache, sleep: { sleeps.append($0) })
+            .fetch(wrong, from: FlakyTransport(inner: inner, script: script), admission: await cache.admission(for: wrong))
+
+        XCTAssertEqual(outcome, .failed(.hashMismatch))
+        XCTAssertEqual(script.attempts, 1)
+        XCTAssertTrue(sleeps.values.isEmpty)
+    }
+
+    func testAClosedGateStretchesTheBackoffUpToItsCap() {
+        XCTAssertEqual(MediaFetcher.backoff(.seconds(2), after: URLError(.timedOut)), .seconds(2))
+        let soon = MediaFetcher.backoff(.seconds(2), after: TransportThrottled(retryAt: Date().addingTimeInterval(30)))
+        XCTAssertTrue(soon > .seconds(29) && soon <= .seconds(30), "\(soon)")
+        let late = MediaFetcher.backoff(.seconds(8), after: TransportThrottled(retryAt: Date().addingTimeInterval(3_600)))
+        XCTAssertEqual(late, .seconds(MediaFetcher.maximumThrottleWait))
+        XCTAssertTrue(MediaFetchErrorClassifier.isTransient(TransportThrottled(retryAt: Date())))
+    }
+
+    // MARK: stall by progress, not elapsed time
+
+    func testSteadySlowProgressPastTheOldLimitIsNotAStall() async throws {
+        let (inner, source, cache) = try await fixture()
+        let ready = try offer(for: source)
+        try await inner.publishMedia(offer: ready, fileURL: source)
+        let clock = ManualClock()
+        // A byte every minute for ten minutes: twice the watchdog, never a minute without progress.
+        let slow = SlowTransport(inner: inner, clock: clock, step: .seconds(60), steps: 10)
+        let sleeps = Recorder<Duration>()
+
+        let outcome = try await MediaFetcher(cache: cache, clock: clock, sleep: { sleeps.append($0) })
+            .fetch(ready, from: slow, admission: await cache.admission(for: ready))
+
+        guard case .cached = outcome else { return XCTFail("slow progress was treated as a stall: \(outcome)") }
+        XCTAssertGreaterThan(clock.now.offset, MediaFetcher.defaultWatchdog)
+        XCTAssertTrue(sleeps.values.isEmpty)
+    }
+
+    func testNoProgressForTheWatchdogIntervalIsAStall() async throws {
+        let cache = TempMediaCache(root: scratch.appendingPathComponent("cache"))
+        let source = try makeFile([1, 2, 3])
+        let ready = try offer(for: source)
+        let clock = ManualClock()
+        let log = StateLog(), sleeps = Recorder<Duration>()
+        let admission = await cache.admission(for: ready)
+        let fetcher = MediaFetcher(cache: cache, clock: clock, sleep: { sleeps.append($0) })
+        let pending = Task { try await fetcher.fetch(ready, from: StalledTransport(), admission: admission) { log.append($0) } }
+
+        try await waitUntil("the early progress and a sleeping watchdog") {
+            log.states.contains(.downloading(bytes: 10, total: 3)) && clock.sleeperCount == 1
+        }
+        clock.advance(by: .seconds(299))
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertFalse(log.states.contains(.failed(.timedOut)), "one second short of the watchdog is not a stall")
+
+        clock.advance(by: .seconds(1))
+        let outcome = try await pending.value
+        XCTAssertEqual(outcome, .failed(.timedOut))
+        XCTAssertTrue(sleeps.values.isEmpty, "a stall is not retried")
+    }
+
+    private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return XCTFail("timed out waiting for \(what)") }
+            try await Task.sleep(for: .milliseconds(1))
+        }
     }
 
     func testNotReadyOfferNeverFetches() async throws {

@@ -1,13 +1,23 @@
 import Foundation
+import OSLog
 import WiltedDomain
 import WiltedLibrary
+
+private let mediaLog = Logger(subsystem: "com.zerodelta.wilted", category: "LibraryMedia")
+
+/// An automatic retry of a download that failed for a passing reason: attempt `attempt` of `attempts`.
+struct LibraryMediaRetry: Equatable, Sendable {
+    var attempt: Int
+    var attempts: Int
+}
 
 /// What a Larder row shows and offers for one episode's audio.
 enum LibraryMediaState: Equatable, Sendable {
     /// Not on the phone and not requested.
     case available
-    /// The request intent is sent; the Mac has not published an offer yet.
-    case requested(since: Date)
+    /// The request intent is sent; the Mac has not published an offer yet. With `retry`, a download
+    /// failed for a passing reason and the next attempt starts after a short wait.
+    case requested(since: Date, retry: LibraryMediaRetry? = nil)
     case downloading(bytes: Int64, total: Int64, since: Date)
     case verifying
     /// Verified and cached on this phone.
@@ -27,7 +37,7 @@ enum LibraryMediaState: Equatable, Sendable {
     /// The moment the transfer began, for the elapsed-time readout.
     var startedAt: Date? {
         switch self {
-        case let .requested(since), let .downloading(_, _, since): since
+        case let .requested(since, _), let .downloading(_, _, since): since
         default: nil
         }
     }
@@ -42,6 +52,7 @@ enum LibraryMediaState: Equatable, Sendable {
     func statusText(elapsed: TimeInterval = 0) -> String {
         switch self {
         case .available: "Not on phone"
+        case let .requested(_, retry?): "Retrying (\(retry.attempt) of \(retry.attempts))"
         case .requested: "Requested, waiting for Mac · \(LibraryClockFormat.duration(elapsed))"
         case let .downloading(bytes, total, _):
             "Downloading \(Self.size(bytes)) of \(Self.size(total)) · \(LibraryClockFormat.duration(elapsed))\(Self.rateSuffix(bytes: bytes, total: total, elapsed: elapsed))"
@@ -83,6 +94,10 @@ struct LibraryMediaTiming: Sendable {
     var offerTimeout: Duration = .seconds(180)
     /// Longest a download may go without receiving bytes.
     var watchdog: Duration = MediaFetcher.defaultWatchdog
+    /// The waits before each automatic retry of a download that failed for a passing reason.
+    var retryDelays: [Duration] = MediaFetcher.defaultRetryDelays
+    /// How a retry waits. Tests replace it so a retry costs no real time.
+    var retrySleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
 }
 
 /// Identifies one request so a cancelled or replaced run can never write state for its successor.
@@ -209,7 +224,9 @@ extension LibraryAppModel {
             let intent = try LibraryIntent.requestMedia(entryID: entryID, deviceID: deviceID, createdAt: now())
             try await transport.send(intent: intent)
             guard let offer = try await awaitOffer(for: entryID, runID: runID, context: context) else {
-                setMedia(.failed("The Mac has not answered. Check that Wilted is running on it."), entryID, runID)
+                let entry = entryID.rawValue, timeout = mediaTiming.offerTimeout
+                mediaLog.notice("No answer from the Mac for \(entry, privacy: .public) within \(timeout, privacy: .public)")
+                setMedia(.failed(Self.text(for: MediaFetchFailure.macNotAnswering)), entryID, runID)
                 return
             }
             guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return }
@@ -242,7 +259,9 @@ extension LibraryAppModel {
         } catch is CancellationError {
             return
         } catch {
-            setMedia(.failed(Self.text(for: error)), entryID, runID)
+            let entry = entryID.rawValue, detail = MediaFetchErrorClassifier.logDescription(error)
+            mediaLog.error("Media request for \(entry, privacy: .public) failed: \(detail, privacy: .public)")
+            setMedia(.failed(Self.mediaText(for: error)), entryID, runID)
         }
     }
 
@@ -252,50 +271,69 @@ extension LibraryAppModel {
     /// upload. A failing read is retried until the timeout rather than ending the request.
     ///
     /// While the sync tick runs, its rounds read the offers (with the playback records, every round) and this
-    /// only looks at what they found, so a request costs no reads of its own. Without a tick (the app is
-    /// not in front) it reads the offers itself every `pollInterval`, which defaults to the tick interval.
+    /// only looks at what they found, so a request costs no reads of its own, except a single read of its
+    /// own at half the timeout, in case the rounds missed the answer. Without a tick (the app is not in
+    /// front) it reads the offers itself every `pollInterval`, which defaults to the tick interval.
     private func awaitOffer(for entryID: ItemID, runID: UUID, context: LibraryMediaContext) async throws -> LibraryMediaOffer? {
-        let deadline = ContinuousClock.now.advanced(by: mediaTiming.offerTimeout)
+        let start = ContinuousClock.now
+        let deadline = start.advanced(by: mediaTiming.offerTimeout)
+        let halfway = start.advanced(by: mediaTiming.offerTimeout / 2)
         let requestedAt = now()
+        var rechecked = false
         while true {
             try Task.checkCancellation()
             guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else {
                 throw LibraryTransportError.superseded
             }
-            if tickState.tick != nil {
-                if let readAt = tickState.offersReadAt, readAt >= requestedAt,
-                   let offer = tickState.offers[entryID], offer.state != .available { return offer }
-            } else if let offers = try? await transport.mediaOffers() {
-                // A request's notReady response settles this run after durable revocation; it must
-                // not cancel its own result while applying the response.
-                guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else { throw LibraryTransportError.superseded }
-                if let offer = offers.first(where: { $0.entryID == entryID }), offer.state != .available {
-                    if offer.state == .notReady {
-                        try await mediaCache.revokePreparation(entryID: entryID)
-                    } else if offer.isPrepared {
-                        let old = await mediaCache.cachedEntries()[entryID]?.preparation?.offer
-                        if let old, !Self.samePreparedIdentity(old, offer) { try await mediaCache.revokePreparation(entryID: entryID) }
-                    }
-                    guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else { throw LibraryTransportError.superseded }
-                    return offer
-                }
+            let ticking = tickState.tick != nil
+            if ticking, let readAt = tickState.offersReadAt, readAt >= requestedAt,
+               let offer = tickState.offers[entryID], offer.state != .available { return offer }
+            let recheck = ticking && !rechecked && ContinuousClock.now >= halfway
+            if !ticking || recheck {
+                rechecked = rechecked || recheck
+                if let offer = try await readOffer(for: entryID, context: context) { return offer }
             }
             if ContinuousClock.now >= deadline { return nil }
             // Looking at the tick's findings costs nothing, so that check is quick.
-            try await Task.sleep(for: tickState.tick != nil ? min(mediaTiming.pollInterval, .milliseconds(500)) : mediaTiming.pollInterval)
+            try await Task.sleep(for: ticking ? min(mediaTiming.pollInterval, .milliseconds(500)) : mediaTiming.pollInterval)
         }
     }
 
-    /// Runs the fetcher and mirrors its states into `media` in the order they happened.
+    /// One read of the offers: the Mac's answer for `entryID`, or nil when there is none yet or the read
+    /// failed, so the caller keeps waiting.
+    private func readOffer(for entryID: ItemID, context: LibraryMediaContext) async throws -> LibraryMediaOffer? {
+        guard let offers = try? await transport.mediaOffers() else { return nil }
+        // A request's notReady response settles this run after durable revocation; it must
+        // not cancel its own result while applying the response.
+        guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else { throw LibraryTransportError.superseded }
+        guard let offer = offers.first(where: { $0.entryID == entryID }), offer.state != .available else { return nil }
+        if offer.state == .notReady {
+            try await mediaCache.revokePreparation(entryID: entryID)
+        } else if offer.isPrepared {
+            let old = await mediaCache.cachedEntries()[entryID]?.preparation?.offer
+            if let old, !Self.samePreparedIdentity(old, offer) { try await mediaCache.revokePreparation(entryID: entryID) }
+        }
+        guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else { throw LibraryTransportError.superseded }
+        return offer
+    }
+
+    /// Runs the fetcher and mirrors its states and automatic retries into `media` in the order they happened.
     private func download(_ offer: LibraryMediaOffer, runID: UUID, admission: MediaCacheAdmission) async throws -> MediaFetchOutcome {
-        let (states, continuation) = AsyncStream<MediaTransferState>.makeStream()
+        let (events, continuation) = AsyncStream<MediaFetchEvent>.makeStream()
         let entryID = offer.entryID
         let mirror = Task { @MainActor [weak self] in
-            for await state in states { self?.applyTransfer(state, total: offer.byteCount, entryID: entryID, runID: runID) }
+            for await event in events {
+                switch event {
+                case let .transfer(state): self?.applyTransfer(state, total: offer.byteCount, entryID: entryID, runID: runID)
+                case let .retry(retry): self?.applyRetry(retry, entryID: entryID, runID: runID)
+                }
+            }
         }
-        let fetcher = MediaFetcher(cache: mediaCache, watchdog: mediaTiming.watchdog)
+        let fetcher = MediaFetcher(cache: mediaCache, watchdog: mediaTiming.watchdog,
+                                   retryDelays: mediaTiming.retryDelays, sleep: mediaTiming.retrySleep)
         do {
-            let outcome = try await fetcher.fetch(offer, from: transport, admission: admission) { continuation.yield($0) }
+            let outcome = try await fetcher.fetch(offer, from: transport, admission: admission,
+                onState: { continuation.yield(.transfer($0)) }, onRetry: { continuation.yield(.retry($0)) })
             continuation.finish()
             await mirror.value
             return outcome
@@ -317,6 +355,11 @@ extension LibraryAppModel {
         case .verifying: setMedia(.verifying, entryID, runID)
         case .cached, .failed, .notReady: break // the final state is set from the fetch outcome
         }
+    }
+
+    /// The download failed for a passing reason and the fetcher waits before trying again.
+    private func applyRetry(_ retry: MediaFetchRetry, entryID: ItemID, runID: UUID) {
+        setMedia(.requested(since: now(), retry: LibraryMediaRetry(attempt: retry.attempt, attempts: retry.attempts)), entryID, runID)
     }
 
     private func sendPendingMediaAcknowledgements() async {
@@ -351,14 +394,33 @@ extension LibraryAppModel {
 
     // MARK: - Wording
 
+    /// One plain sentence per typed cause. A reason's payload is never shown: the fetcher keeps the
+    /// transport's own text in the log.
     static func text(for reason: MediaFailureReason) -> String {
         switch reason {
-        case .timedOut: "The download stalled."
+        case .timedOut: "The download stalled. Try again."
         case .byteCountMismatch: "The file was the wrong size."
-        case .hashMismatch: "The file did not match the Mac's copy."
-        case let .deliveryFailed(detail): "The download failed. \(detail)"
-        case let .cacheFailed(detail): "The audio could not be saved. \(detail)"
+        case .hashMismatch: text(for: MediaFetchFailure.mismatch)
+        case .deliveryFailed: text(for: reason.fetchFailure ?? .other)
+        case .cacheFailed: "The audio could not be saved on this phone."
         }
+    }
+
+    static func text(for failure: MediaFetchFailure) -> String {
+        switch failure {
+        case .offline: "The phone could not reach iCloud. Check the connection and try again."
+        case .macNotAnswering: "The Mac did not send this episode. Open Wilted on the Mac and try again."
+        case .mismatch: "The file did not match the Mac's copy."
+        case .tooLarge: "The episode is too large to send to the phone."
+        case .other: "The download failed. Try again."
+        }
+    }
+
+    /// The row's sentence for an error that ended a media request outside the fetch, such as the
+    /// request intent failing to send. Never the error's own text.
+    static func mediaText(for error: Error) -> String {
+        if case LibraryTransportError.superseded = error { return "iCloud account changed." }
+        return text(for: MediaFetchErrorClassifier.failure(for: error))
     }
 
     static func text(for error: Error) -> String {
@@ -368,4 +430,10 @@ extension LibraryAppModel {
         default: error.localizedDescription
         }
     }
+}
+
+/// What the fetcher reports, in the order it happened: a transfer step or an automatic retry.
+private enum MediaFetchEvent: Sendable {
+    case transfer(MediaTransferState)
+    case retry(MediaFetchRetry)
 }

@@ -125,6 +125,8 @@ actor WiltedMacMediaService {
     static let maximumIntentAge: TimeInterval = 7 * 24 * 60 * 60
     /// Mirrors the transport limit so an oversize file is answered `notReady` up front.
     static let maximumByteCount: Int64 = 250 * 1024 * 1024
+    /// The wait before the one retry of an upload that failed.
+    static let defaultUploadRetryDelay: Duration = .seconds(5)
 
     struct AssetKey: Hashable, Codable, Sendable {
         var entryID: String
@@ -154,6 +156,8 @@ actor WiltedMacMediaService {
     private let transport: any LibraryTransport
     private let accountingURL: URL?
     private let now: @Sendable () -> Date
+    private let uploadRetryDelay: Duration
+    private let sleep: @Sendable (Duration) async throws -> Void
     private var records: [AssetKey: AssetRecord] = [:]
     private var published: [String: String] = [:]
     /// What the transport holds per entry, seeded from it on the first reconcile.
@@ -165,14 +169,21 @@ actor WiltedMacMediaService {
     private var tail: Task<Void, Never>?
     private(set) var lastFailure: String?
 
+    /// - Parameters:
+    ///   - uploadRetryDelay: the wait before retrying an upload that failed once.
+    ///   - sleep: how that wait passes. Tests replace it so a retry costs no real time.
     init(
         source: any WiltedMacReadyAudioSource, transport: any LibraryTransport, accountingURL: URL?,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        uploadRetryDelay: Duration = WiltedMacMediaService.defaultUploadRetryDelay,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.source = source
         self.transport = transport
         self.accountingURL = accountingURL
         self.now = now
+        self.uploadRetryDelay = uploadRetryDelay
+        self.sleep = sleep
         if let accountingURL, let data = try? Data(contentsOf: accountingURL),
            let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             records = Dictionary(stored.records.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last })
@@ -270,7 +281,7 @@ actor WiltedMacMediaService {
             }
             mediaLog.notice("Uploading \(ready.byteCount, privacy: .public) bytes of audio for \(entryID.rawValue, privacy: .public)")
             let started = Date()
-            try await transport.publishMedia(offer: offer, fileURL: ready.fileURL)
+            try await upload(offer, from: ready.fileURL)
             mediaLog.notice("Uploaded audio for \(entryID.rawValue, privacy: .public) in \(Date().timeIntervalSince(started), format: .fixed(precision: 1), privacy: .public) s")
             var record = records[key] ?? AssetRecord(key: key, requesters: [], acked: [], touchedAt: now())
             record.requesters.insert(requester)
@@ -283,9 +294,32 @@ actor WiltedMacMediaService {
             await publishTranscript(for: entryID, revisionID: ready.revisionID)
             lastFailure = nil
         } catch {
-            lastFailure = String(describing: error)
-            mediaLog.error("Media request for \(entryID.rawValue, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            // No answer is published: the phone's own timeout tells the person, without claiming why.
+            let cause = Self.typedCause(error)
+            lastFailure = cause
+            mediaLog.error("Media request for \(entryID.rawValue, privacy: .public) failed: \(cause, privacy: .public)")
         }
+    }
+
+    /// Uploads the audio for `offer`, trying once more after `uploadRetryDelay` when the first attempt
+    /// fails. The second attempt's error is the one thrown.
+    private func upload(_ offer: LibraryMediaOffer, from fileURL: URL) async throws {
+        do {
+            try await transport.publishMedia(offer: offer, fileURL: fileURL)
+            return
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let entry = offer.entryID.rawValue, delay = uploadRetryDelay, cause = Self.typedCause(error)
+            mediaLog.notice("Upload of audio for \(entry, privacy: .public) failed; retrying once in \(delay, privacy: .public): \(cause, privacy: .public)")
+        }
+        try await self.sleep(uploadRetryDelay)
+        try await transport.publishMedia(offer: offer, fileURL: fileURL)
+    }
+
+    /// The error's type and value, e.g. `CloudKitSyncError.cloudKit(code: 4, message: "…")`.
+    private static func typedCause(_ error: Error) -> String {
+        "\(type(of: error)).\(String(describing: error))"
     }
 
     /// Tells followers there is nothing to fetch and drops any asset the books still hold for the entry.
