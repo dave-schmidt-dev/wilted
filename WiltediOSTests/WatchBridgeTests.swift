@@ -283,6 +283,23 @@ final class WatchBridgeTests: XCTestCase {
         XCTAssertTrue(rig.target.performed.isEmpty)
     }
 
+    func testUndecodableCommandProducesARejectionReplyRatherThanSilence() async {
+        let rig = await makeReadyRig()
+        let messages: [[String: Any]] = [
+            [:],
+            [WatchLinkCodec.commandKey: 1],
+            [WatchLinkCodec.commandKey: Data("{not json".utf8)],
+        ]
+        for message in messages {
+            let box = ReplyBox()
+            rig.session.receive(message) { box.set($0) }
+            XCTAssertFalse(box.isEmpty, "every command must be answered; a silent drop hides delivery bugs")
+            XCTAssertEqual(box.value[WatchBridge.okKey] as? Bool, false)
+            XCTAssertEqual(box.value[WatchBridge.reasonKey] as? String, WatchRejection.invalidCommand.rawValue)
+        }
+        XCTAssertTrue(rig.target.performed.isEmpty)
+    }
+
     // MARK: Command mapping
 
     func testEveryValidCommandMapsToItsVoiceAction() async throws {

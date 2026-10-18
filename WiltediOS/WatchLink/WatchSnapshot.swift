@@ -126,8 +126,10 @@ public struct WatchSnapshot: Codable, Equatable, Sendable {
     public let skipForwardSeconds: Int
     /// Current sleep-timer state.
     public let sleep: SleepState
-    /// When the phone produced this snapshot.
-    public let publishedAt: Date
+    /// When the phone produced this snapshot, when the writer stamped one. A
+    /// legacy payload without the field decodes with nil, and the watch then
+    /// falls back to its own receipt time for the age.
+    public let publishedAt: Date?
 
     public init(
         version: Int = WatchSnapshot.currentVersion,
@@ -137,7 +139,7 @@ public struct WatchSnapshot: Codable, Equatable, Sendable {
         sleep: SleepState = .off,
         skipBackSeconds: Int = 15,
         skipForwardSeconds: Int = 30,
-        publishedAt: Date = Date()
+        publishedAt: Date? = Date()
     ) {
         self.version = version
         self.nowPlaying = nowPlaying
@@ -175,6 +177,6 @@ public struct WatchSnapshot: Codable, Equatable, Sendable {
         sleep = try container.decode(SleepState.self, forKey: .sleep)
         skipBackSeconds = try container.decodeIfPresent(Int.self, forKey: .skipBackSeconds) ?? 15
         skipForwardSeconds = try container.decodeIfPresent(Int.self, forKey: .skipForwardSeconds) ?? 30
-        publishedAt = try container.decode(Date.self, forKey: .publishedAt)
+        publishedAt = try container.decodeIfPresent(Date.self, forKey: .publishedAt)
     }
 }

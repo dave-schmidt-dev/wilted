@@ -38,11 +38,17 @@ enum WatchSpeeds {
 final class WatchViewModel {
     /// The sleep lengths the watch offers, matching `WatchBridge.allowedSleepMinutes`.
     static let sleepMinutes = [5, 10, 15, 20, 30, 45, 60, 90]
+    /// How long a control may stay pending without the phone confirming or refusing it.
+    static let pendingTimeout: TimeInterval = 3
 
     /// The last successfully decoded snapshot, or nil before one arrives.
     private(set) var snapshot: WatchSnapshot?
-    /// When `snapshot` was last decoded; `ageText` measures from here.
+    /// When `snapshot` was last decoded; the age falls back to this only when
+    /// the snapshot carries no `publishedAt`.
     private(set) var lastReceivedAt: Date?
+    /// A short note for the UI after the phone refused a command or could not
+    /// receive it; nil while no command has failed.
+    private(set) var commandFailed: String?
     /// Whether the system reports the phone as reachable right now.
     var isPhoneReachable = false { didSet { if !isPhoneReachable { endHold() } } }
     /// The transport commands are handed to; set by the session client.
@@ -54,8 +60,28 @@ final class WatchViewModel {
         case episode(String), rate(Double), sleepMinutes(Int), sleepEnd, sleepCancel
     }
 
+    /// What an inbound snapshot must show before a pending control is confirmed.
+    private enum Expectation {
+        case playing(Bool)
+        case speed(Double)
+        case movedPosition
+        case episode(String)
+        case sleepChanged
+        case sleepEndOfEpisode
+        case sleepOff
+    }
+
+    /// The bookkeeping that keeps one pending control from being cleared by a
+    /// snapshot the phone published before it applied the command.
+    private struct PendingCommand {
+        let generation: UUID
+        let sentAt: Date
+        let baseline: WatchSnapshot?
+        let expected: Expectation
+    }
+
     private(set) var pendingControls: Set<ControlKey> = []
-    @ObservationIgnored private var pendingGenerations: [ControlKey: UUID] = [:]
+    @ObservationIgnored private var pendingCommands: [ControlKey: PendingCommand] = [:]
     /// Owned expiries; read-only internally so regressions can await actual completion.
     @ObservationIgnored private(set) var pendingExpiryTasks: [ControlKey: Task<Void, Never>] = [:]
     private let pendingSleep: @MainActor (TimeInterval) async throws -> Void
@@ -79,11 +105,21 @@ final class WatchViewModel {
 
     /// How fresh the snapshot on screen is: "Updated just now" under a minute,
     /// "Updated N min ago" after that, and "No update yet" before any arrives.
+    ///
+    /// The age measures from the phone's `publishedAt`, so a snapshot replayed
+    /// at activation shows its true age; receipt time is the fallback for a
+    /// legacy payload without the field. A future stamp is clamped to now.
     var ageText: String {
-        guard let lastReceivedAt else { return "No update yet" }
-        let seconds = now().timeIntervalSince(lastReceivedAt)
+        guard let reference = ageReference else { return "No update yet" }
+        let seconds = now().timeIntervalSince(reference)
         guard seconds >= 60 else { return "Updated just now" }
         return "Updated \(Int(seconds / 60)) min ago"
+    }
+
+    private var ageReference: Date? {
+        guard let snapshot else { return nil }
+        if let publishedAt = snapshot.publishedAt { return min(publishedAt, now()) }
+        return lastReceivedAt
     }
 
     /// Whether the phone is reachable and there is state to control.
@@ -103,16 +139,23 @@ final class WatchViewModel {
         return deadline
     }
 
-    /// Decodes an application context and adopts it. An undecodable context is
-    /// ignored, so the previous snapshot stays on screen.
-    func receive(context: [String: Any]) {
-        guard let decoded = try? WatchLinkCodec.decodeSnapshot(context) else { return }
+    /// Decodes an application context and adopts it, reporting whether it was
+    /// adopted. An undecodable context is ignored, so the previous snapshot
+    /// stays on screen. A decoded snapshot clears a pending control only when
+    /// it shows that control's requested value already applied, when the
+    /// command's bounded timeout has passed, or when the control failed; a
+    /// snapshot the phone published before applying a command leaves it pending.
+    @discardableResult
+    func receive(context: [String: Any]) -> Bool {
+        guard let decoded = try? WatchLinkCodec.decodeSnapshot(context) else { return false }
         if let heldAction, case let .seek(_, _, _, episode, session, load) = heldAction,
            decoded.nowPlaying?.episodeID != episode || decoded.controlSessionID != session
             || decoded.nowPlaying?.seekSessionID != load || decoded.nowPlaying?.canSeek != true { endHold() }
-        clearPending()
+        expireTimedOutPending()
+        clearAppliedPending(against: decoded)
         snapshot = decoded
         lastReceivedAt = now()
+        return true
     }
 
     /// Hands one action to the phone through the injected sender when the phone
@@ -121,18 +164,35 @@ final class WatchViewModel {
     func send(_ action: WatchCommand.Action) -> Bool {
         guard canSend(action), let commandSender else { return false }
         let key = Self.key(for: action), generation = UUID(), sleep = pendingSleep
+        let baseline = snapshot
         pendingControls.insert(key)
-        pendingGenerations[key] = generation
+        pendingCommands[key] = PendingCommand(
+            generation: generation, sentAt: now(), baseline: baseline,
+            expected: Self.expectation(for: action, in: baseline))
+        commandFailed = nil
         pendingExpiryTasks[key] = Task { [weak self] in
             guard !Task.isCancelled else { return }
-            try? await sleep(3)
-            guard let self, self.pendingGenerations[key] == generation else { return }
-            self.pendingControls.remove(key)
-            self.pendingGenerations.removeValue(forKey: key)
-            self.pendingExpiryTasks.removeValue(forKey: key)
+            try? await sleep(Self.pendingTimeout)
+            guard let self, self.pendingCommands[key]?.generation == generation else { return }
+            self.clearPending(key)
         }
         commandSender(WatchCommand(action: action))
         return true
+    }
+
+    /// Clears the pending state for a command the phone refused or could not
+    /// receive, and sets the short note the UI shows.
+    func commandDidFail(_ command: WatchCommand, note: String) {
+        switch command.action {
+        case let .seek(_, _, holdID, _, _, _):
+            guard case let .seek(_, _, current, _, _, _) = heldAction, current == holdID else { return }
+            endHold()
+        default:
+            let key = Self.key(for: command.action)
+            guard pendingControls.contains(key) else { return }
+            clearPending(key)
+        }
+        commandFailed = note
     }
 
     /// Eligibility and pending feedback use the exact same semantic key as sending.
@@ -156,11 +216,59 @@ final class WatchViewModel {
         }
     }
 
-    private func clearPending() {
-        pendingExpiryTasks.values.forEach { $0.cancel() }
-        pendingExpiryTasks.removeAll()
-        pendingGenerations.removeAll()
-        pendingControls.removeAll()
+    private func clearPending(_ key: ControlKey) {
+        pendingExpiryTasks[key]?.cancel()
+        pendingExpiryTasks.removeValue(forKey: key)
+        pendingCommands.removeValue(forKey: key)
+        pendingControls.remove(key)
+    }
+
+    /// Drops every pending control whose bounded timeout passed, read from the
+    /// injectable clock so a test can advance time without sleeping.
+    private func expireTimedOutPending() {
+        let cutoff = now().addingTimeInterval(-Self.pendingTimeout)
+        for key in pendingControls {
+            if let sentAt = pendingCommands[key]?.sentAt, sentAt <= cutoff { clearPending(key) }
+        }
+    }
+
+    /// Clears the pending controls whose requested value the snapshot shows as
+    /// applied. Each control checks only its own field, so an unrelated change
+    /// in a snapshot cannot confirm it.
+    private func clearAppliedPending(against snapshot: WatchSnapshot) {
+        for key in pendingControls {
+            guard let pending = pendingCommands[key] else { continue }
+            if Self.isApplied(pending, to: snapshot) { clearPending(key) }
+        }
+    }
+
+    private static func isApplied(_ pending: PendingCommand, to snapshot: WatchSnapshot) -> Bool {
+        if let baseline = pending.baseline?.publishedAt, let published = snapshot.publishedAt,
+           published <= baseline { return false }
+        switch pending.expected {
+        case let .playing(expected): return snapshot.nowPlaying?.isPlaying == expected
+        case let .speed(expected): return snapshot.rate == expected
+        case .movedPosition:
+            return snapshot.nowPlaying?.positionSeconds != pending.baseline?.nowPlaying?.positionSeconds
+        case let .episode(episodeID): return snapshot.nowPlaying?.episodeID == episodeID
+        case .sleepChanged: return snapshot.sleep != pending.baseline?.sleep
+        case .sleepEndOfEpisode: return snapshot.sleep == .endOfEpisode
+        case .sleepOff: return snapshot.sleep == .off
+        }
+    }
+
+    private static func expectation(
+        for action: WatchCommand.Action, in baseline: WatchSnapshot?
+    ) -> Expectation {
+        switch action {
+        case .toggle: return .playing(!(baseline?.nowPlaying?.isPlaying ?? false))
+        case .skipBack, .skipForward, .seek: return .movedPosition
+        case let .playRow(episodeID): return .episode(episodeID)
+        case let .setRate(rate): return .speed(rate)
+        case .startSleep: return .sleepChanged
+        case .startSleepEndOfEpisode: return .sleepEndOfEpisode
+        case .cancelSleep: return .sleepOff
+        }
     }
 
     private static func key(for action: WatchCommand.Action) -> ControlKey {
