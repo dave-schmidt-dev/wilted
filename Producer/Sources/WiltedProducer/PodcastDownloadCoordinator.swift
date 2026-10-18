@@ -96,7 +96,7 @@ public struct URLSessionPodcastDownloadTransport: PodcastDownloadTransporting, S
     public func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
         let configuration = configuration.copy() as! URLSessionConfiguration
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return AsyncThrowingStream { continuation in
+        return AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation in
             let operation = PodcastDownloadRequestOperation(continuation: continuation)
             let session = URLSession(configuration: configuration, delegate: operation, delegateQueue: nil)
             operation.start(session: session, url: url)
@@ -236,7 +236,11 @@ public actor PodcastDownloadCoordinator {
         }
 
         var received: Int64 = 0
-        var expected = episode.enclosureByteCount
+        // The feed's enclosure length is a progress hint only. It is replaced
+        // by a response Content-Length when the server sends one, and only
+        // that response value is ever enforced against the received bytes.
+        var expected = episode.enclosureByteCount.flatMap { $0 > 0 ? $0 : nil }
+        var enforcedExpected: Int64?
         var responseSeen = false
         var responseMediaType: String?
         let storedMediaType: String
@@ -248,9 +252,6 @@ public actor PodcastDownloadCoordinator {
             guard Self.isHTTPS(episode.enclosureURL) else { throw PodcastDownloadCoordinatorError.invalidURL }
             if let expectedContentHash, !Self.isContentHash(expectedContentHash) {
                 throw PodcastDownloadCoordinatorError.invalidExpectedHash
-            }
-            if let declared = episode.enclosureByteCount, declared > maximumBytes {
-                throw PodcastDownloadCoordinatorError.declaredSizeTooLarge(declared)
             }
             storedMediaType = try Self.validatedMediaType(episode.enclosureMediaType)
         } catch let error as PodcastDownloadCoordinatorError {
@@ -290,10 +291,12 @@ public actor PodcastDownloadCoordinator {
         }
 
         do {
+            let startedAt = now()
             try await store.save(download: PodcastDownload(
                 episodeID: episodeID, status: .downloading, bytesReceived: 0,
-                expectedByteCount: expected, updatedAt: Timestamp(now())
+                expectedByteCount: expected, updatedAt: Timestamp(startedAt)
             ))
+            var lastProgressSaveAt = startedAt
             onStatus(.init(stage: .transferring, bytesReceived: 0, expectedByteCount: expected))
             for try await event in transport.events(for: episode.enclosureURL) {
                 try Task.checkCancellation()
@@ -311,11 +314,12 @@ public actor PodcastDownloadCoordinator {
                         throw PodcastDownloadCoordinatorError.mediaTypeMismatch(expected: episodeType, actual: actualType)
                     }
                     responseMediaType = actualType
-                    if let responseExpected = response.expectedByteCount, responseExpected >= 0 {
+                    if let responseExpected = response.expectedByteCount, responseExpected > 0 {
                         guard responseExpected <= maximumBytes else {
                             throw PodcastDownloadCoordinatorError.declaredSizeTooLarge(responseExpected)
                         }
                         expected = responseExpected
+                        enforcedExpected = responseExpected
                     }
                     try await store.save(download: PodcastDownload(
                         episodeID: episodeID, status: .downloading, bytesReceived: received,
@@ -323,29 +327,31 @@ public actor PodcastDownloadCoordinator {
                     ))
                     onStatus(.init(stage: .transferring, bytesReceived: received, expectedByteCount: expected))
                 case .data(let data):
+                    let moment = now()
                     byteMeter.receive(data.count)
-                    await persistReceivedBytes(byteMeter.takeDueCheckpoint(at: now()), meter: &byteMeter)
+                    await persistReceivedBytes(byteMeter.takeDueCheckpoint(at: moment), meter: &byteMeter)
                     guard responseSeen else { throw PodcastDownloadCoordinatorError.invalidResponse(nil) }
                     guard Int64(data.count) <= maximumBytes - received else {
-                        throw PodcastDownloadCoordinatorError.streamedSizeTooLarge(received + Int64(data.count))
-                    }
-                    if let expected, Int64(data.count) > expected - received {
                         throw PodcastDownloadCoordinatorError.streamedSizeTooLarge(received + Int64(data.count))
                     }
                     try handle.write(contentsOf: data)
                     hasher.update(data: data)
                     received += Int64(data.count)
-                    try await store.save(download: PodcastDownload(
-                        episodeID: episodeID, status: .downloading, bytesReceived: received,
-                        expectedByteCount: expected, updatedAt: Timestamp(now())
-                    ))
+                    if moment.timeIntervalSince(lastProgressSaveAt) >= 1 {
+                        lastProgressSaveAt = moment
+                        try await store.save(download: PodcastDownload(
+                            episodeID: episodeID, status: .downloading, bytesReceived: received,
+                            expectedByteCount: Self.persistedExpectedByteCount(expected, received: received),
+                            updatedAt: Timestamp(moment)
+                        ))
+                    }
                     onStatus(.init(stage: .transferring, bytesReceived: received, expectedByteCount: expected))
                 }
             }
             try Task.checkCancellation()
             guard responseSeen else { throw PodcastDownloadCoordinatorError.invalidResponse(nil) }
-            if let expected, received != expected {
-                throw PodcastDownloadCoordinatorError.declaredSizeMismatch(expected: expected, actual: received)
+            if let enforcedExpected, received != enforcedExpected {
+                throw PodcastDownloadCoordinatorError.declaredSizeMismatch(expected: enforcedExpected, actual: received)
             }
             guard received > 0 else { throw PodcastDownloadCoordinatorError.invalidAudio }
             try handle.synchronize()
@@ -411,8 +417,8 @@ public actor PodcastDownloadCoordinator {
             )
             let completed = try PodcastDownload(
                 episodeID: episodeID, status: .completed, bytesReceived: received,
-                expectedByteCount: expected, localURL: finalURL, contentHash: contentHash,
-                updatedAt: Timestamp(now())
+                expectedByteCount: Self.persistedExpectedByteCount(expected, received: received),
+                localURL: finalURL, contentHash: contentHash, updatedAt: Timestamp(now())
             )
             try await store.finalizePodcastDownload(revision: revision, mediaURL: finalURL, download: completed)
             await persistReceivedBytes(byteMeter.pendingAmount, meter: &byteMeter)
@@ -429,8 +435,8 @@ public actor PodcastDownloadCoordinator {
             let failureKind: PodcastDownloadFailureKind? = interrupted ? .retryable : (cancelled ? nil : typedError.failureKind)
             let terminal = try PodcastDownload(
                 episodeID: episodeID, status: status, bytesReceived: received,
-                expectedByteCount: expected.map { max($0, received) }, updatedAt: Timestamp(now()),
-                failureKind: failureKind
+                expectedByteCount: Self.persistedExpectedByteCount(expected, received: received),
+                updatedAt: Timestamp(now()), failureKind: failureKind
             )
             // A quit must not approve an interrupted transfer whose durable
             // disposition could not be written. Other outcomes keep their policy.
@@ -465,6 +471,14 @@ public actor PodcastDownloadCoordinator {
               stored.mediaURL == url else { return nil }
         guard try await verificationHash(of: url, onStatus: onStatus) == hash else { return nil }
         return PodcastDownloadResult(revision: stored.revision, mediaURL: url, download: download)
+    }
+
+    /// The expected byte count a persisted snapshot can carry. A stale feed
+    /// hint that the actual transfer has already outgrown is raised to what
+    /// actually arrived, so the record never contradicts itself.
+    private static func persistedExpectedByteCount(_ expected: Int64?, received: Int64) -> Int64? {
+        guard let expected else { return nil }
+        return max(expected, received)
     }
 
     fileprivate static func isHTTPS(_ url: URL) -> Bool {

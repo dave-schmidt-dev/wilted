@@ -46,8 +46,12 @@ public struct MediaSweepReport: Equatable, Sendable {
 extension LocalLibraryStore {
     public func save(download: PodcastDownload) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
-        if let existing = records.first(where: { $0.episodeID == download.episodeID.rawValue }) {
+        let episodeID = download.episodeID.rawValue
+        var descriptor = FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>(
+            predicate: #Predicate { $0.episodeID == episodeID }
+        )
+        descriptor.fetchLimit = 1
+        if let existing = try context.fetch(descriptor).first {
             existing.status = download.status.rawValue; existing.bytesReceived = download.bytesReceived; existing.expectedByteCount = download.expectedByteCount
             existing.localURL = download.localURL?.absoluteString; existing.contentHash = download.contentHash; existing.updatedAt = download.updatedAt.date
             existing.failureKind = download.failureKind?.rawValue

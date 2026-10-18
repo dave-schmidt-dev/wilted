@@ -104,8 +104,19 @@ extension WiltedMacModel {
                             throw PodcastClaimAlreadyHeld()
                         }
                     }
+                    // A deliberate retry is a newer request, not a repeat of
+                    // the settled one: re-admitting with a fresh sequence lets
+                    // a terminal ticket leave terminal and counts this attempt.
+                    // The row's own sequence is adopted first when an
+                    // interrupted replay's admission outran the model's mark.
+                    if let current = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id),
+                       current.requestSequence > self.preparationRequestSequence {
+                        self.preparationRequestSequence = current.requestSequence
+                    }
                     await self.recordWorkTicketTransition(
-                        kind: .podcastDownload, subjectID: episode.id, state: .running
+                        kind: .podcastDownload, subjectID: episode.id,
+                        requestSequence: self.nextPreparationRequestSequence(),
+                        state: .running, admitting: true
                     )
                     guard let ticket = try await store.workTicket(kind: .podcastDownload, subjectID: episode.id)
                     else { throw CancellationError() }
@@ -159,6 +170,9 @@ extension WiltedMacModel {
                     // The verified download is still valid. Keeping the forced
                     // marker is conservative and lets a later launch retry;
                     // misreporting this as a failed transfer would be false.
+                    Self.downloadLog.error(
+                        "download recovery checkpoint not saved: episode=\(episode.id, privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                    )
                     recoveryCheckpointSaved = false
                 }
                 self.podcastOperationMessage = recoveryCheckpointSaved
@@ -198,7 +212,11 @@ extension WiltedMacModel {
                     self.applyEpisodes(values.episodes)
                     self.subscriptions = values.subscriptions
                     self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
-                } catch {}
+                } catch {
+                    Self.downloadLog.error(
+                        "download landed but the library reload failed: episode=\(episode.id, privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                    )
+                }
                 await self.recordWorkTicketTransition(
                     kind: .podcastDownload, subjectID: episode.id,
                     requestSequence: ownedTicket.requestSequence, state: .succeeded
@@ -232,7 +250,7 @@ extension WiltedMacModel {
                     throw PodcastDownloadCoordinatorError.cancelled
                 }
                 self.updateEpisode(episode.id) { $0.downloadState = .failed }
-                self.podcastOperationMessage = "Download failed. Retry when you are online."
+                self.podcastOperationMessage = Self.downloadFailureMessage(for: error)
                 // This is the across-attempt seam: `withRetries` (unchanged,
                 // in `WiltedAutomationCoordinator`) retries a `.retryable`
                 // failure in-process up to its own bound before this throw
@@ -243,6 +261,9 @@ extension WiltedMacModel {
                 // attempt's outcome, independent of whether automation or a
                 // deliberate click made it.
                 let failureKind = (error as? PodcastDownloadCoordinatorError)?.failureKind ?? .retryable
+                Self.downloadLog.error(
+                    "download failed: episode=\(episode.id, privacy: .public) attempt=\(ownedTicket.attemptCount, privacy: .public) state=\(ownedTicket.state.rawValue, privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                )
                 await self.recordWorkTicketTransition(
                     kind: .podcastDownload, subjectID: episode.id,
                     requestSequence: ownedTicket.requestSequence, state: .failed,

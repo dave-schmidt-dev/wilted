@@ -43,10 +43,6 @@ struct PodcastDownloadCoordinatorTests {
     }
 
     @Test func enforcesDeclaredAndStreamedBounds() async throws {
-        let declared = try await Fixture(declaredBytes: 11)
-        defer { declared.remove() }
-        await expect(.declaredSizeTooLarge(11), fixture: declared, maximumBytes: 10, events: [])
-
         let streamed = try await Fixture()
         defer { streamed.remove() }
         await expect(.declaredSizeTooLarge(11), fixture: streamed, maximumBytes: 10, events: [
@@ -59,6 +55,43 @@ struct PodcastDownloadCoordinatorTests {
             .data(Data(repeating: 1, count: 6)), .data(Data(repeating: 2, count: 5))
         ])
         #expect(try stagingFiles(in: streamed.libraryDirectory).isEmpty)
+    }
+
+    @Test func staleFeedLengthWithoutResponseLengthDoesNotFailTheTransfer() async throws {
+        let fixture = try await Fixture(declaredBytes: 4)
+        defer { fixture.remove() }
+        let coordinator = fixture.coordinator(events: [
+            .response(.init(url: fixture.enclosureURL, statusCode: 200,
+                            mediaType: fixture.mediaType, expectedByteCount: nil)),
+            .data(Data(fixture.body.prefix(3))), .data(Data(fixture.body.suffix(3)))
+        ])
+        let result = try await coordinator.download(episodeID: fixture.episodeID)
+        #expect(result.download.bytesReceived == Int64(fixture.body.count))
+        #expect(result.download.expectedByteCount == Int64(fixture.body.count))
+    }
+
+    @Test func manyChunkTransferPersistsProgressByElapsedTimeNotPerChunk() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let clock = SteppingClock(step: 0.05)
+        let chunks = (0..<64).map { Data([UInt8($0)]) }
+        let coordinator = PodcastDownloadCoordinator(
+            store: fixture.store, libraryDirectory: fixture.libraryDirectory,
+            transport: EventTransport([.response(.init(url: fixture.enclosureURL, statusCode: 200,
+                                                       mediaType: fixture.mediaType, expectedByteCount: 64))]
+                                      + chunks.map { .data($0) }),
+            mediaValidator: StubValidator(result: .success(12)), now: { clock.next() }
+        )
+        let result = try await coordinator.download(episodeID: fixture.episodeID)
+        #expect(result.download.bytesReceived == 64)
+        let stored = try await fixture.store.download(for: fixture.episodeID)
+        #expect(stored?.bytesReceived == 64, "the final state keeps the full byte count")
+        let events = try receivedByteEvents(fixture.store)
+        #expect(events.reduce(0) { $0 + $1.amount } == 64)
+        #expect(events.count < chunks.count, "progress is persisted by elapsed time, not once per chunk")
+        for (earlier, later) in zip(events.dropLast(), events.dropLast().dropFirst()) {
+            #expect(later.recordedAt.timeIntervalSince(earlier.recordedAt) >= 1)
+        }
     }
 
     @Test func treatsResponseLengthAsAuthoritativeForCompletionAndProgress() async throws {
