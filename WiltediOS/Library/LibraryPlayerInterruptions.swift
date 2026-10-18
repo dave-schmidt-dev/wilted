@@ -126,9 +126,10 @@ extension AlertMonitor: LibraryAlertMonitoring {}
 final class LibrarySpeechSynthesizer: NSObject, LibrarySpeaking, AVSpeechSynthesizerDelegate {
     static let startTimeout: Duration = .seconds(3)
     private let synthesizer = AVSpeechSynthesizer()
-    private var finish: (@MainActor () -> Void)?
-    private var started = false
+    private var current: (id: ObjectIdentifier, finish: @MainActor () -> Void)?
+    private var startedUtterance: ObjectIdentifier?
     private var startWatch: Task<Void, Never>?
+    private(set) var currentUtterance: AVSpeechUtterance?
 
     override init() {
         super.init()
@@ -138,42 +139,57 @@ final class LibrarySpeechSynthesizer: NSObject, LibrarySpeaking, AVSpeechSynthes
 
     func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool {
         guard !text.isEmpty else { return false }
-        finish = onFinish
-        started = false
-        synthesizer.speak(AVSpeechUtterance(string: text))
+        stop()
+        let utterance = AVSpeechUtterance(string: text)
+        let id = ObjectIdentifier(utterance)
+        current = (id, onFinish)
+        currentUtterance = utterance
+        startedUtterance = nil
+        synthesizer.speak(utterance)
         startWatch = Task { [weak self] in
             try? await Task.sleep(for: Self.startTimeout)
-            guard !Task.isCancelled, let self, !self.started else { return }
+            guard !Task.isCancelled, let self, self.current?.id == id, self.startedUtterance != id else { return }
             interruptionLog.error("Speech did not start; giving up on this bulletin")
             self.synthesizer.stopSpeaking(at: .immediate)
-            self.complete()
+            self.complete(id)
         }
         return true
     }
 
     func stop() {
-        finish = nil
+        guard current != nil else { return }
+        current = nil
+        currentUtterance = nil
+        startedUtterance = nil
         startWatch?.cancel()
         synthesizer.stopSpeaking(at: .immediate)
     }
 
-    private func complete() {
+    private func complete(_ id: ObjectIdentifier) {
+        guard let current, current.id == id else { return }
+        self.current = nil
+        self.currentUtterance = nil
+        self.startedUtterance = nil
         startWatch?.cancel()
-        let callback = finish
-        finish = nil
-        callback?()
+        current.finish()
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.started = true }
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in
+            guard let self, self.current?.id == id else { return }
+            self.startedUtterance = id
+        }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.complete() }
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in self?.complete(id) }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.complete() }
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in self?.complete(id) }
     }
 }
 

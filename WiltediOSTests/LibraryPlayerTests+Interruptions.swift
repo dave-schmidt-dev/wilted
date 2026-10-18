@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import WiltedDomain
@@ -312,6 +313,31 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
             id: id, kind: .report, sourceID: id, title: "Morning report, Oct 10", summary: "",
             publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 240)
         XCTAssertEqual(LibraryRowBuilder.showTitle(entry, sources: [:]), "Morning report")
+    }
+
+    func testLateCancelForUtteranceADoesNotFinishUtteranceB() async throws {
+        let speaker = LibrarySpeechSynthesizer()
+        var finishedA = false
+        var finishedB = false
+
+        XCTAssertTrue(speaker.speak("First utterance") { finishedA = true })
+        let uttA = try XCTUnwrap(speaker.currentUtterance)
+
+        XCTAssertTrue(speaker.speak("Second utterance") { finishedB = true })
+        let uttB = try XCTUnwrap(speaker.currentUtterance)
+        XCTAssertNotEqual(ObjectIdentifier(uttA), ObjectIdentifier(uttB))
+
+        // Late cancel for utterance A arrives
+        speaker.speechSynthesizer(AVSpeechSynthesizer(), didCancel: uttA)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(finishedA)
+        XCTAssertFalse(finishedB)
+
+        // Utterance B finishes normally
+        speaker.speechSynthesizer(AVSpeechSynthesizer(), didFinish: uttB)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(finishedA)
+        XCTAssertTrue(finishedB)
     }
 }
 

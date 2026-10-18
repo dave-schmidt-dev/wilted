@@ -758,4 +758,36 @@ final class LibraryHandoffModelTests: XCTestCase {
         XCTAssertEqual(after?.serverModifiedAt, before?.serverModifiedAt, "nothing pending, nothing written")
         XCTAssertEqual(after?.record.positionSeconds, 400)
     }
+
+    func testStartingBWhileAPlaysSavesAPosition() async throws {
+        let rig = try await makeRig(cached: rev1)
+        let itemA = try await item(rig)
+        let idB = try ItemID(rawValue: "item-b")
+        let entryB = try LibraryEntry(
+            id: idB, kind: .podcastEpisode, sourceID: idB, title: "B", summary: "",
+            publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 3_600)
+        _ = try await mac.push(changes: [
+            PendingLibraryChange(localSeq: 3, change: .entry(entryB), baseVersion: 1),
+            PendingLibraryChange(localSeq: 4, change: .slot(try QueueSlot(entryID: idB, sortKey: 1)), baseVersion: 1),
+        ])
+        let fileB = scratch.appendingPathComponent("b")
+        try payload.write(to: fileB)
+        let offerB = try PreparedMediaFixture.certified(LibraryMediaOffer(
+            entryID: idB, revisionID: rev1, contentHash: hash(payload), byteCount: Int64(payload.count),
+            mediaType: "audio/mp4", durationSeconds: 3_600))
+        _ = try await PreparedMediaFixture.adopt(into: rig.cache, verifiedFile: fileB, for: offerB, owner: "fixture-owner")
+        await rig.model.refresh()
+        let cachedB = try XCTUnwrap(await rig.cache.cachedEntries()[idB])
+        let itemB = LibraryPlayer.Item(entryID: idB, title: "B", showTitle: "Show", fileURL: cachedB.url)
+
+        rig.player.start(itemA)
+        rig.engine.currentTime = 42
+        rig.player.refreshPosition()
+        await rig.model.waitForHandoff()
+
+        rig.player.start(itemB)
+        await rig.model.waitForHandoff()
+
+        XCTAssertEqual(rig.model.handoffState.ownPositions[itemA.entryID]?.record.positionSeconds, 42)
+    }
 }

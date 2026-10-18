@@ -5,11 +5,12 @@ import XCTest
 @testable import WiltediOS
 
 /// Records every call so a test can assert what the player asked of the engine.
-private final class PlayerFakeEngine: ListenerAudioEngine, LibraryRateAdjustable, @unchecked Sendable {
+private final class PlayerFakeEngine: ListenerAudioEngine, LibraryRateAdjustable, LibraryCompletingAudioEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var _currentTime = 0.0
     private var _isPlaying = false
-    private var handler: (@Sendable (UInt64) -> Void)?
+    private var handler: (@Sendable (UInt64, Bool) -> Void)?
+    private var legacyHandler: (@Sendable (UInt64) -> Void)?
     private var generation: UInt64 = 0
     var duration = 600.0
     var rate: Float = 1
@@ -40,13 +41,16 @@ private final class PlayerFakeEngine: ListenerAudioEngine, LibraryRateAdjustable
         return true
     }
     func pause() { pauseCount += 1; isPlaying = false }
-    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { self.handler = handler }
+    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64, Bool) -> Void) { self.handler = handler }
+    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64) -> Void) { self.legacyHandler = handler }
 
     /// The file played out: the engine stops and reports the load it finished.
-    func finishNaturally(reporting reported: UInt64? = nil) {
+    func finishNaturally(reporting reported: UInt64? = nil, successfully: Bool = true) {
         isPlaying = false
         currentTime = duration
-        handler?(reported ?? generation)
+        let gen = reported ?? generation
+        handler?(gen, successfully)
+        if successfully { legacyHandler?(gen) }
     }
 }
 
@@ -500,5 +504,87 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertEqual(rig.player.position, 135)
         XCTAssertEqual(rig.remote.skipIntervals?.back, 10)
         XCTAssertEqual(rig.remote.skipIntervals?.forward, 45)
+    }
+
+    // MARK: - Natural finish and auto-pause
+
+    func testTickAutoPauseThenSuccessfulFinishReachesEndedAndCallsOnFinishedOnce() async throws {
+        let rig = makeRig()
+        var finishedCount = 0
+        rig.player.onFinished = { _, _ in finishedCount += 1 }
+        XCTAssertTrue(rig.player.start(item, at: 0))
+        XCTAssertEqual(rig.player.status, .playing)
+
+        rig.engine.isPlaying = false
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.status, .paused)
+
+        rig.engine.finishNaturally(successfully: true)
+        await waitUntil { rig.player.status == .ended }
+        XCTAssertEqual(rig.player.status, .ended)
+        XCTAssertEqual(finishedCount, 1)
+    }
+
+    func testFinishAfterUserPauseDoesNotReachEnded() async throws {
+        let rig = makeRig()
+        var finishedCount = 0
+        rig.player.onFinished = { _, _ in finishedCount += 1 }
+        XCTAssertTrue(rig.player.start(item, at: 0))
+        XCTAssertEqual(rig.player.status, .playing)
+
+        rig.player.pause()
+        XCTAssertEqual(rig.player.status, .paused)
+
+        rig.engine.finishNaturally(successfully: true)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(rig.player.status, .paused)
+        XCTAssertEqual(finishedCount, 0)
+    }
+
+    func testFinishAfterUserSeekDoesNotReachEnded() async throws {
+        let rig = makeRig()
+        var finishedCount = 0
+        rig.player.onFinished = { _, _ in finishedCount += 1 }
+        XCTAssertTrue(rig.player.start(item, at: 0))
+        XCTAssertEqual(rig.player.status, .playing)
+
+        rig.engine.isPlaying = false
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.status, .paused)
+
+        rig.player.seek(to: 100)
+
+        rig.engine.finishNaturally(successfully: true)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(rig.player.status, .paused)
+        XCTAssertEqual(finishedCount, 0)
+    }
+
+    func testDuplicateFinishIsIgnored() async throws {
+        let rig = makeRig()
+        var finishedCount = 0
+        rig.player.onFinished = { _, _ in finishedCount += 1 }
+        XCTAssertTrue(rig.player.start(item, at: 0))
+
+        rig.engine.finishNaturally(successfully: true)
+        await waitUntil { rig.player.status == .ended }
+        XCTAssertEqual(finishedCount, 1)
+
+        rig.engine.finishNaturally(successfully: true)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(rig.player.status, .ended)
+        XCTAssertEqual(finishedCount, 1)
+    }
+
+    func testUnsuccessfulFinishLeavesPlayerPaused() async throws {
+        let rig = makeRig()
+        var finishedCount = 0
+        rig.player.onFinished = { _, _ in finishedCount += 1 }
+        XCTAssertTrue(rig.player.start(item, at: 0))
+
+        rig.engine.finishNaturally(successfully: false)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(rig.player.status, .paused)
+        XCTAssertEqual(finishedCount, 0)
     }
 }

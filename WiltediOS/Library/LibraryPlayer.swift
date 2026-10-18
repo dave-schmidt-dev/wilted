@@ -2,9 +2,17 @@ import AVFoundation
 import Combine
 import Foundation
 import MediaPlayer
+import OSLog
 import WiltedDomain
 import WiltedLibrary
 import WiltedPlayback
+
+/// An engine that reports whether natural playback completed successfully.
+protocol LibraryCompletingAudioEngine: AnyObject {
+    func installCompletionHandler(_ handler: @escaping @Sendable (UInt64, Bool) -> Void)
+}
+
+private let playerLog = Logger(subsystem: "com.zerodelta.wilted", category: "Player")
 
 /// An engine that can also change speed. `ListenerAudioEngine` has no rate, and the legacy
 /// article path never needed one; the Larder player does, so speed is an optional capability.
@@ -85,9 +93,12 @@ final class LibraryPlayer: ObservableObject {
     /// Called with the entry that just played to its end and whether "Auto-play next episode" is on.
     /// Never called for a pause, a stop, a seek away from the end or a superseded load.
     var onFinished: ((ItemID, _ autoPlayNext: Bool) -> Void)?
+    /// Called before a newly loaded item replaces an already loaded one, with the outgoing item's ID and playhead.
+    var onWillReplaceItem: ((ItemID, TimeInterval) -> Void)?
     /// Counts every transport action (start, play, pause, seek, stop); `owns(_:)` compares it
     /// with its value when the item finished, so a command given after the end cancels what follows it.
     private(set) var transportCount = 0
+    private var autoPausedAt: (generation: UInt64, transportCount: Int)?
     var admissionEpoch: UInt64 = 0
     var admissionTask: Task<Void, Never>?
     var authorizePlayback: (@MainActor (Item) async -> Bool)?
@@ -166,8 +177,14 @@ final class LibraryPlayer: ObservableObject {
         self.tickInterval = tickInterval
         self.remoteSeekSleep = remoteSeekSleep
         self.remoteSeekNow = remoteSeekNow
-        engine.installCompletionHandler { [weak self] generation in
-            Task { @MainActor in self?.engineFinished(generation: generation) }
+        if let completing = engine as? any LibraryCompletingAudioEngine {
+            completing.installCompletionHandler { [weak self] generation, successfully in
+                Task { @MainActor in self?.engineFinished(generation: generation, successfully: successfully) }
+            }
+        } else {
+            engine.installCompletionHandler { [weak self] generation in
+                Task { @MainActor in self?.engineFinished(generation: generation, successfully: true) }
+            }
         }
         sessionEvents.observe { [weak self] event in self?.handle(event) }
         // Artwork the app finishes caching after this item started still reaches Now Playing.
@@ -203,10 +220,17 @@ final class LibraryPlayer: ObservableObject {
         resumeAfterInterruption = false
         // "End of this episode" belongs to the episode it was set on, not to whatever plays next.
         if self.item?.entryID != item.entryID { stopsAfterCurrentItem = false }
+        if let outgoing = self.item {
+            let outgoingPosition = duration > 0 ? min(max(0, engine.currentTime), duration) : max(0, engine.currentTime)
+            position = outgoingPosition
+            onWillReplaceItem?(outgoing.entryID, outgoingPosition)
+        }
         loadGeneration &+= 1
         do {
             try engine.load(url: item.fileURL, completionGeneration: loadGeneration)
         } catch {
+            let nsError = error as NSError
+            playerLog.error("Load failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public)")
             self.item = nil
             position = 0
             duration = 0
@@ -244,8 +268,15 @@ final class LibraryPlayer: ObservableObject {
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
+        autoPausedAt = nil
         guard item != nil else { return false }
-        do { try session.activate() } catch { return fail(.audioSession) }
+        do {
+            try session.activate()
+        } catch {
+            let nsError = error as NSError
+            playerLog.error("Audio session activation failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public)")
+            return fail(.audioSession)
+        }
         LibraryPlaybackTrace.shared.record(.sessionActivated, token: traceToken)
         if status == .ended { engine.currentTime = 0 }
         guard engine.play() else { return fail(.engineRefused) }
@@ -375,6 +406,7 @@ final class LibraryPlayer: ObservableObject {
         position = min(max(0, engine.currentTime), duration)
         // The engine stopped on its own without a completion (something else took the output).
         if status == .playing, !engine.isPlaying {
+            autoPausedAt = (loadGeneration, transportCount)
             status = .paused
             stopTicking()
             lastAccrual = nil
@@ -413,8 +445,21 @@ final class LibraryPlayer: ObservableObject {
 
     // MARK: Internals
 
-    private func engineFinished(generation: UInt64) {
-        guard generation == loadGeneration, item != nil, status == .playing else { return }
+    private func engineFinished(generation: UInt64, successfully: Bool) {
+        guard generation == loadGeneration, item != nil else { return }
+        guard successfully else {
+            playerLog.error("Engine completion reported failure for generation \(generation, privacy: .public)")
+            if status == .playing {
+                status = .paused
+                stopTicking()
+                lastAccrual = nil
+                publishNowPlaying()
+            }
+            return
+        }
+        let isAutoPaused = status == .paused && autoPausedAt?.generation == generation && autoPausedAt?.transportCount == transportCount
+        guard status == .playing || isAutoPaused else { return }
+        autoPausedAt = nil
         if isRemoteSeeking {
             position = min(max(0, engine.currentTime), duration)
             _ = cancelRemoteSeeking()
@@ -435,6 +480,7 @@ final class LibraryPlayer: ObservableObject {
 
     @discardableResult
     func fail(_ failure: LibraryStartFailure) -> Bool {
+        playerLog.error("Player failure: \(failure.playerReason, privacy: .public)")
         _ = cancelRemoteSeeking()
         stopTicking()
         engine.pause()
