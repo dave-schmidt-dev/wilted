@@ -20,7 +20,7 @@ from dataclasses import dataclass, is_dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
-from .constants import ALIGNED_TIMING_TAIL_ALLOWANCE_S, NOMINATED_SECONDS_FLOOR, NOMINATED_SHARE_FLOOR, RENDER_DURATION_TOLERANCE_S, RENDER_PROGRESS_INTERVAL_S, RENDER_TIMEOUT_S, SPLIT_WORD_CONTIGUITY_TOLERANCE_S
+from .constants import ALIGNED_TIMING_TAIL_ALLOWANCE_S, FFPROBE_TIMEOUT_S, NOMINATED_SECONDS_FLOOR, NOMINATED_SHARE_FLOOR, RENDER_DURATION_TOLERANCE_S, RENDER_PROGRESS_INTERVAL_S, RENDER_TIMEOUT_S, SPLIT_WORD_CONTIGUITY_TOLERANCE_S
 from .reporting import WorkerError
 
 @dataclass(frozen=True)
@@ -472,9 +472,12 @@ def cues_to_text(cues: list[dict]) -> str:
 def probe_duration(audio_path: Path) -> float:
     import subprocess
 
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
-        capture_output=True, text=True, check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+            capture_output=True, text=True, check=True, timeout=FFPROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise WorkerError("probe-timeout", f"ffprobe did not answer within {FFPROBE_TIMEOUT_S}s") from error
     return float(result.stdout.strip())

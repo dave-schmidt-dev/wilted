@@ -439,6 +439,20 @@ class PublishedTranscriptTests(unittest.TestCase):
             wp.parse_published_transcript("WEBVTT", "text/vtt", "https://x.test/a.vtt")
         self.assertNotIn("markup-stripped", errors.getvalue())
 
+class ProbeDurationTests(unittest.TestCase):
+    def test_a_hung_ffprobe_fails_with_a_named_worker_error(self):
+        timeout = subprocess.TimeoutExpired("ffprobe", 60)
+        with mock.patch.object(_worker_cue_timing.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(wp.WorkerError) as raised:
+                _worker_cue_timing.probe_duration(Path("download.mp3"))
+        self.assertEqual(raised.exception.code, "probe-timeout")
+
+    def test_ffprobe_is_given_a_timeout(self):
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="12.5\n", stderr="")
+        with mock.patch.object(_worker_cue_timing.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(_worker_cue_timing.probe_duration(Path("download.mp3")), 12.5)
+        self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
 class ProgressTests(unittest.TestCase):
     def test_emits_one_clamped_ndjson_record_per_call(self):
         stream = io.StringIO()
