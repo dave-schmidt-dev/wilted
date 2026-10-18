@@ -27,6 +27,8 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/app-identity.sh
 source "$repo_root/scripts/lib/app-identity.sh"
+# shellcheck source=lib/source-stamp.sh
+source "$repo_root/scripts/lib/source-stamp.sh"
 destination_dir="${1:-/Applications}"
 bundle_id='com.zerodelta.wilted.mac'
 build_cache="$repo_root/scripts/build-with-cache.py"
@@ -34,6 +36,7 @@ derived=''
 build_log="$repo_root/.logs/install-mac-app.log"
 configuration='Development'
 container='iCloud.com.zerodelta.wilted'
+source_commit=''
 
 status() { printf '%s\n' "$*" >&2; }
 
@@ -82,6 +85,9 @@ mkdir -p "$repo_root/.logs"
 status 'install.generate project'
 xcodegen generate --spec "$repo_root/project.yml" --project "$repo_root" --project-root "$repo_root" >/dev/null
 
+source_commit="$(wilted_source_stamp "$repo_root")"
+status "install.stamp commit=$source_commit"
+
 # Xcode's signing pass rejects Finder metadata on a prior app product.
 # The helper removes it under the same lock that serializes the build.
 status "install.build configuration=$configuration"
@@ -90,6 +96,7 @@ python3 "$build_cache" run xcode mac-install --clean-app-product -- xcodebuild b
   -scheme WiltedMac \
   -configuration "$configuration" \
   -destination 'platform=macOS' \
+  WILTED_SOURCE_COMMIT="$source_commit" \
   -quiet >"$build_log" 2>&1 || {
     status 'install.build failed; last 40 lines follow'
     tail -40 "$build_log" >&2
@@ -105,6 +112,9 @@ app="$derived/Build/Products/$configuration/WiltedMac.app"
 built_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null || true)"
 [[ "$built_id" == "$bundle_id" ]] ||
   { status "install.error built bundle identifier is '$built_id', expected '$bundle_id'"; exit 1; }
+built_commit="$(/usr/libexec/PlistBuddy -c 'Print :WiltedSourceCommit' "$app/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$built_commit" == "$source_commit" ]] ||
+  { status "install.error built app carries source commit '$built_commit', expected '$source_commit'"; exit 1; }
 codesign --verify --strict "$app" || { status 'install.error built app failed signature verification'; exit 1; }
 
 # The live build is only useful with its CloudKit entitlement; without it the
@@ -218,6 +228,6 @@ fi
 status "install.register resolves=$target"
 
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$target/Contents/Info.plist" 2>/dev/null || echo unknown)"
-# describe --always --dirty, not rev-parse: a plain revision stamped from a dirty
-# tree names a commit the installed binary was not built from.
-status "install.complete path=$target version=$version commit=$(git -C "$repo_root" describe --always --dirty)"
+# The stamp carries -dirty: a plain revision stamped from a dirty tree names a
+# commit the installed binary was not built from.
+status "install.complete path=$target version=$version commit=$source_commit"

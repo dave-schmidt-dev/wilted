@@ -24,5 +24,7 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSLocationUsageDescription</key>
 	<string>Wilted uses your approximate location (rounded to about 1 km) only to look up weather alerts for your area. Typed coordinates work instead if you decline.</string>
+	<key>WiltedSourceCommit</key>
+	<string>$(WILTED_SOURCE_COMMIT)</string>
 </dict>
 </plist>

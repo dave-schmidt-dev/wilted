@@ -18,6 +18,7 @@ test-pipeline-worker test-pipeline-worker.sh
 test-preparation-runtime test-preparation-runtime.sh
 test-install-mac-app test-install-mac-app.sh
 test-install-mac-contract test-install-mac-contract.sh
+test-source-stamp test-source-stamp.sh
 test-temp-sweep test-temp-sweep.sh
 test-storage-retention test-storage-retention.sh
 test-temp-leaks test-temp-leaks.sh

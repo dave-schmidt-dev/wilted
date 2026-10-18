@@ -58,11 +58,17 @@ printf '%s\n' '#!/usr/bin/env bash' \
     >"$guard_bin/xcodegen"
 printf '%s\n' '#!/usr/bin/env bash' \
     'configuration=Debug' \
-    'while (( $# > 0 )); do [[ "$1" == -configuration ]] && configuration="$2"; shift; done' \
+    'source_commit=""' \
+    'while (( $# > 0 )); do' \
+    '  [[ "$1" == -configuration ]] && configuration="$2"' \
+    '  [[ "$1" == WILTED_SOURCE_COMMIT=* ]] && source_commit="${1#WILTED_SOURCE_COMMIT=}"' \
+    '  shift' \
+    'done' \
     'app="$WILTED_TEST_DERIVED/Build/Products/$configuration/WiltedMac.app"' \
     'mkdir -p "$app/Contents"' \
     ': >"$app/Contents/embedded.provisionprofile"' \
     '/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.zerodelta.wilted.mac" "$app/Contents/Info.plist" >/dev/null' \
+    '/usr/libexec/PlistBuddy -c "Add :WiltedSourceCommit string $source_commit" "$app/Contents/Info.plist" >/dev/null' \
     '[[ "${WILTED_TEST_ACTIVATE_DURING_BUILD:-0}" == 1 ]] && : >"$WILTED_TEST_ACTIVE_MARKER"' \
     'exit 0' \
     >"$guard_bin/xcodebuild"
@@ -408,13 +414,20 @@ assert_installer_contains 'run xcode mac-install --clean-app-product -- xcodebui
     'routes the installer build through the build-cache helper'
 assert_installer_contains 'run xcode mac-install --clean-app-product -- xcodebuild build' \
     'cleans the prior app product under the shared cache lock'
+assert_installer_contains 'WILTED_SOURCE_COMMIT="$source_commit"' \
+    'passes the source commit build setting to xcodebuild'
+assert_installer_contains 'Print :WiltedSourceCommit' \
+    'checks the built app carries the expected source commit'
 if grep -Fq 'pgrep -f "$target/Contents/MacOS/"' "$installer"; then
     fail 'installer still looks for a running copy at the install path only'
 else
     pass 'installer no longer keys the running-copy check on the install path'
 fi
-assert_installer_contains 'describe --always --dirty' \
-    'stamps a revision that admits a dirty tree'
+# test-source-stamp.sh covers the -dirty suffix itself.
+assert_installer_contains 'source_commit="$(wilted_source_stamp "$repo_root")"' \
+    'stamps the build with a revision that admits a dirty tree'
+assert_installer_contains 'commit=$source_commit"' \
+    'reports the stamped revision, not a fresh one, when the install completes'
 
 if grep -Fq -- '-derivedDataPath' "$installer"; then
     fail 'installer still supplies a per-run DerivedData path outside the build-cache helper'

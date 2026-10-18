@@ -28,6 +28,7 @@ settings:
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "0.7.0"
     CURRENT_PROJECT_VERSION: "12"
+    WILTED_SOURCE_COMMIT: ""
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGNING_REQUIRED: NO
@@ -117,6 +118,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         NSLocationUsageDescription: Wilted uses your approximate location (rounded to about 1 km) only to look up weather alerts for your area. Typed coordinates work instead if you decline.
+        WiltedSourceCommit: $(WILTED_SOURCE_COMMIT)
 
   WiltediOS:
     type: application
