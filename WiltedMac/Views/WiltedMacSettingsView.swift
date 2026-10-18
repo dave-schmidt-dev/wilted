@@ -357,74 +357,9 @@ struct WiltedMacSettingsView: View {
         }
     }
 
-    /// The selected engine's card: the library publisher never falls back to the legacy "Disabled".
+    /// The library publisher's card, or its not-running state when no engine is selected.
     @ViewBuilder private var syncCard: some View {
-        if model.showsLibraryPublisherSync {
-            WiltedMacLibrarySyncCard(model: model)
-        } else {
-            legacySyncCard
-        }
-    }
-
-    var legacySyncCard: some View {
-        WiltedSettingsCard(title: WiltedScreenCopy.sync) {
-            WiltedSettingsRow(
-                "Status",
-                value: model.syncStatus.phase.rawValue.capitalized,
-                identifier: "wilted-sync-status",
-                tone: model.syncStatus.phase.tone
-            )
-            if model.syncStatus.phase != .disabled {
-                Divider()
-                WiltedSettingsRow(
-                    "Detail",
-                    value: model.syncStatus.detail,
-                    identifier: "wilted-sync-detail"
-                )
-            }
-            Divider()
-            WiltedSettingsRow("Last fetch", value: lastFetchLabel, identifier: "wilted-sync-last-fetch")
-            Divider()
-            WiltedSettingsRow("Last send", value: lastSendLabel, identifier: "wilted-sync-last-send")
-
-            if !syncActionsDisabled {
-                HStack(spacing: WiltedTheme.Spacing.small) {
-                    Button("Refresh") { model.refreshSync() }
-                        .accessibilityIdentifier("wilted-sync-refresh")
-                    Button("Upload") { model.uploadPendingSync() }
-                        .accessibilityIdentifier("wilted-sync-upload")
-                    if model.syncStatus.phase == .fetching
-                        || model.syncStatus.phase == .sending
-                        || model.syncStatus.phase == .staging {
-                        Button("Cancel") { model.cancelSync() }
-                            .accessibilityIdentifier("wilted-sync-cancel")
-                    }
-                }
-                .padding(.top, WiltedTheme.Spacing.xSmall)
-            }
-
-            if model.syncStatus.phase == .quarantined {
-                WiltedAccountRecoveryNotice(identifier: "wilted-sync-use-current-account") {
-                    model.resetSyncAccount()
-                }
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-sync-controls")
-    }
-
-    private var syncActionsDisabled: Bool {
-        model.syncStatus.phase == .disabled || model.syncStatus.phase == .quarantined
-    }
-
-    private var lastFetchLabel: String {
-        model.syncObservability.lastSuccessfulFetchAt
-            .map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet"
-    }
-
-    private var lastSendLabel: String {
-        model.syncObservability.lastSuccessfulSendAt
-            .map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Not yet"
+        WiltedMacLibrarySyncCard(model: model)
     }
 }
 

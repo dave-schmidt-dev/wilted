@@ -226,13 +226,13 @@ final class WiltedMacLibrarySyncStatusTests: XCTestCase {
         return (server, LedgerTransport(inner: InMemoryLibraryTransport(deviceID: device, server: server), counts: counts), counts)
     }
 
-    func testASelectedPublisherShowsItsOwnCardAndATestHostKeepsTheLegacyOne() async throws {
+    func testASelectedPublisherShowsItsOwnCardAndATestHostRunsNoEngine() async throws {
         let (model, _) = try await launch("library-status-selected")
-        XCTAssertFalse(model.showsLibraryPublisherSync, "a test host selects the legacy engine")
-        model.librarySyncBuildFacts = WiltedMacLibraryBuildFacts(compiledLive: true, hostsTests: false)
-        XCTAssertTrue(model.showsLibraryPublisherSync, "a live launch selects the publisher")
-        XCTAssertEqual(model.librarySyncStatus.phase, .unavailable, "not running reads Unavailable, never Disabled")
+        XCTAssertEqual(model.libraryRuntimeSelection().engine, .none, "a test host selects no sync engine")
+        XCTAssertEqual(model.librarySyncStatus.headline, "Library sync is not running on this Mac")
         XCTAssertNil(model.syncLibraryNow(), "nothing to sync while the publisher is not running")
+        model.librarySyncBuildFacts = WiltedMacLibraryBuildFacts(compiledLive: true, hostsTests: false)
+        XCTAssertEqual(model.libraryRuntimeSelection().engine, .libraryPublisher)
     }
 
     func testSyncNowCoalescesABurstIntoOneRoundAndReportsTheMacsOwnSend() async throws {

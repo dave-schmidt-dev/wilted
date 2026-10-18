@@ -152,9 +152,6 @@ extension WiltedMacModel {
             podcasts: arguments.contains("--wilted-ui-fixture-podcasts") || fixtureLarderDemo
         )
         if fixtureLarderDemo, let first = episodes.first { playEpisode(first) }
-        if arguments.contains("--wilted-ui-fixture-quarantined") {
-            syncLifecycle?.quarantineAccount()
-        }
         if let scenario = WiltedMacLibrarySyncFixtureScenario.scenario(in: arguments) {
             installLibrarySyncFixture(scenario)
         }

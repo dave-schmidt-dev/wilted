@@ -241,12 +241,6 @@ extension WiltedMacModel {
         (objc_getAssociatedObject(self, &librarySyncFixtureKey) as? WiltedMacLibrarySyncFixtureBox)?.scenario
     }
 
-    /// Whether Settings shows the library publisher's card: it is this launch's selected engine, or a
-    /// fixture scripts it. A selected publisher never falls back to the legacy "Disabled" card.
-    var showsLibraryPublisherSync: Bool {
-        librarySyncFixture != nil || libraryRuntimeSelection().engine == .libraryPublisher
-    }
-
     var libraryPublicationVerified: Bool {
         guard let owner = librarySyncActivity.publicationOwner else { return false }
         return libraryAccount?.approvedPublicationOwner == owner && libraryAccountStatus == .active

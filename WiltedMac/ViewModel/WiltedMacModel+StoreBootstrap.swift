@@ -8,9 +8,6 @@ import WiltedDomain
 import WiltedProducer
 #endif
 
-#if WILTED_CLOUDKIT_LIVE
-import CloudKit
-#endif
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
@@ -624,29 +621,7 @@ extension WiltedMacModel {
                 removeAds: removesAdvertisements
             )
         }
-        var selectedSyncFactory = syncTransportFactory
-#if WILTED_CLOUDKIT_LIVE
-        if !fixtureMode, selectedSyncFactory == nil, let configuredStore {
-            let liveConfiguration = WiltedMacLiveSyncConfiguration(
-                database: CKContainer(identifier: "iCloud.com.zerodelta.wilted").privateCloudDatabase,
-                assetRootURL: mediaDirectory,
-                store: configuredStore,
-                assetResolver: assetResolver
-            )
-            selectedSyncFactory = makeWiltedMacLiveSyncTransportFactory(configuration: liveConfiguration)
-        }
-#endif
-        // Exactly one engine: the runtime selection names it (the library publisher by default
-        // in a live build, the legacy engine for an explicit off, a test host or a fixture).
-        syncLifecycle = libraryRuntimeSelection().engine != .legacy ? nil : configuredStore.map {
-            WiltedMacSyncLifecycle(
-                store: $0,
-                transportFactory: fixtureMode ? nil : selectedSyncFactory,
-                assetResolver: assetResolver
-            )
-        }
-        // An inbound apply can delete items, which also drops them from playlist entries.
-        syncLifecycle?.onInboundApplied = { [weak self] in await self?.reloadLibraryRows() }
+        syncLifecycle = nil
         if configuredStore != nil, !fixtureMode { startMorningReportSchedule() }
     }
 

@@ -31,15 +31,13 @@ struct WiltedMacLibraryBuildFacts: Equatable, Sendable {
 
 // MARK: - Selection
 
-/// Which sync engine this launch runs. Exactly one is ever selected, so the library publisher and
-/// the legacy article engine never run together.
+/// Which sync engine this launch runs: the library publisher, or none.
 ///
 /// A normal live build (Development or Release, outside a test host and fixture mode) selects the
 /// library publisher by default. `WILTED_LIBRARY_SYNC=1` forces it on; any other non-empty value
-/// forces it off, which keeps the legacy engine as before. Test hosts, non-live builds and
-/// fixtures keep the legacy engine, inert without a live transport.
+/// forces it off (`.none`). Test hosts, non-live builds and fixtures run with no sync engine (`.none`).
 struct WiltedMacLibraryRuntimeSelection: Equatable, Sendable {
-    enum Engine: Equatable, Sendable { case libraryPublisher, legacy, none }
+    enum Engine: Equatable, Sendable { case libraryPublisher, none }
     enum Reason: String, Equatable, Sendable {
         case explicitOn, explicitOff, liveDefault, nonLiveBuild, testHost, fixture
     }
@@ -61,11 +59,11 @@ struct WiltedMacLibraryRuntimeSelection: Equatable, Sendable {
             // Fixture runs never publish, even when asked to (unchanged from the flag-only era).
             return fixtureMode ? Self(engine: .none, reason: .fixture) : Self(engine: .libraryPublisher, reason: .explicitOn)
         case .off:
-            return Self(engine: .legacy, reason: .explicitOff)
+            return Self(engine: .none, reason: .explicitOff)
         case .unset:
-            if fixtureMode { return Self(engine: .legacy, reason: .fixture) }
-            if facts.hostsTests { return Self(engine: .legacy, reason: .testHost) }
-            if !facts.compiledLive { return Self(engine: .legacy, reason: .nonLiveBuild) }
+            if fixtureMode { return Self(engine: .none, reason: .fixture) }
+            if facts.hostsTests { return Self(engine: .none, reason: .testHost) }
+            if !facts.compiledLive { return Self(engine: .none, reason: .nonLiveBuild) }
             return Self(engine: .libraryPublisher, reason: .liveDefault)
         }
     }

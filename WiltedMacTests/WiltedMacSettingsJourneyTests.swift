@@ -5,7 +5,7 @@ import XCTest
 @testable import WiltedMac
 
 /// Headless form of the Settings and Larder journeys that used to launch the app under XCUITest:
-/// library publisher sync review, automation controls with quarantined-sync recovery, and Prepare now.
+/// library publisher sync review, automation controls, and Prepare now.
 @MainActor
 final class WiltedMacSettingsJourneyTests: XCTestCase {
     func testEveryLifetimeTimeRowUsesTheSameAbbreviatedDurationUnits() async throws {
@@ -62,27 +62,6 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         }
     }
 
-    func testDisabledLegacySyncHasOneStatusAndNoUnavailableActions() async throws {
-        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-quarantined"])
-        await WiltedMacHeadless.eventually("fixture quarantine") { model.syncStatus.phase == .quarantined }
-        let size = CGSize(width: 800, height: 500)
-        let view = WiltedMacSettingsView(model: model)
-        var lines = try WiltedMacHeadless.recognizedText(view.legacySyncCard, size: size)
-        var text = lines.joined(separator: " ")
-        XCTAssertTrue(text.contains("Quarantined"), text)
-        XCTAssertFalse(lines.contains { $0 == "Upload" || $0 == "Refresh" || $0 == "Refresh Upload" }, text)
-        XCTAssertTrue(text.localizedCaseInsensitiveContains("Use Current iCloud Account"), text)
-        try retainCopyEvidence(WiltedMacHeadless.render(view.legacySyncCard, size: size), name: "sync-quarantined-light")
-        model.resetSyncAccount()
-        await WiltedMacHeadless.eventually("fixture disabled") { model.syncStatus.phase == .disabled }
-        lines = try WiltedMacHeadless.recognizedText(view.legacySyncCard, size: size)
-        text = lines.joined(separator: " ")
-        XCTAssertTrue(text.contains("Disabled"), text)
-        XCTAssertFalse(text.contains("Sync is not configured"), text)
-        XCTAssertFalse(lines.contains { $0 == "Upload" || $0 == "Refresh" || $0 == "Refresh Upload" }, text)
-        try retainCopyEvidence(WiltedMacHeadless.render(view.legacySyncCard, size: size), name: "sync-disabled-light")
-    }
-
     private func retainCopyEvidence(_ bitmap: NSBitmapImageRep, name: String) throws {
         let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
                                        uniformTypeIdentifier: "public.png")
@@ -97,7 +76,6 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
     func testLibraryPublisherSyncReviewAndSyncNowJourney() async throws {
         let model = await WiltedMacHeadless.model(
             self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-library-sync", "switched"])
-        XCTAssertTrue(model.showsLibraryPublisherSync, "the fixture selects the publisher card, not the legacy one")
         XCTAssertEqual(model.librarySyncStatus.headline, held)
         XCTAssertFalse(model.librarySyncStatus.canSyncNow, "a held library has no Sync now")
         XCTAssertNil(model.syncLibraryNow(), "Sync now does nothing while held")
@@ -145,9 +123,9 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
 
     /// Was `testSettingsAutomationAndSyncRecoveryJourney`.
     func testSettingsAutomationAndSyncRecoveryJourney() async throws {
-        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-quarantined"])
-        XCTAssertEqual(model.libraryRuntimeSelection(environment: [:]).engine, .legacy,
-                       "a fixture runs the legacy engine, which owns the quarantine this journey recovers")
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        XCTAssertEqual(model.libraryRuntimeSelection(environment: [:]).engine, .none,
+                       "a fixture runs no sync engine")
 
         // Nothing is playing, and Now Playing is not a destination.
         XCTAssertFalse(model.hasCurrentPlayback)
@@ -198,17 +176,12 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         let offPeakBitmap = try WiltedMacHeadless.render(WiltedMacRootView(model: model))
         XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: offPeakBitmap, region: detail), 8)
 
-        // A quarantined account offers its recovery, and using the current account ends it.
-        XCTAssertFalse(model.showsLibraryPublisherSync)
-        await WiltedMacHeadless.eventually("sync quarantined") { model.syncStatus.phase == .quarantined }
-        XCTAssertEqual(model.syncStatus.phase.rawValue.capitalized, "Quarantined")
-        XCTAssertTrue(settings.contains("if model.syncStatus.phase == .quarantined {"))
-        XCTAssertTrue(settings.contains("WiltedAccountRecoveryNotice(identifier: \"wilted-sync-use-current-account\")"))
-
-        model.resetSyncAccount()
-        await WiltedMacHeadless.eventually("sync recovered") { model.syncStatus.phase == .disabled }
-        XCTAssertEqual(model.syncStatus.phase.rawValue.capitalized, "Disabled")
-        XCTAssertNotEqual(model.syncStatus.phase, .quarantined, "the recovery control is gone")
+        // When no sync engine runs, Settings shows the not-running text.
+        let settingsView = WiltedMacSettingsView(model: model)
+        let settingsLines = try WiltedMacHeadless.recognizedText(settingsView, size: CGSize(width: 1_000, height: 2_000))
+        let settingsText = settingsLines.joined(separator: " ")
+        XCTAssertTrue(settingsText.contains("Library sync is not running on this Mac"), settingsText)
+        XCTAssertEqual(model.librarySyncStatus.headline, "Library sync is not running on this Mac")
     }
 
     /// Was `testMenuOverridesAnOffPeakDeferralWithPrepareNow`: pressing Prepare now has to end the
