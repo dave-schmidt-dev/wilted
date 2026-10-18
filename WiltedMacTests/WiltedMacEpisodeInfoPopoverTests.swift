@@ -283,7 +283,7 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
             return
         }
         let nodes = accessibilityNodes(in: window)
-        let tab = try XCTUnwrap(nodes.first { $0.accessibilityLabel() == label },
+        let tab = try XCTUnwrap(nodes.first { WiltedMacHeadless.accessibilityLabel(of: $0) == label },
                                "Hidden host did not vend the \(label) segment. Native AX nodes: \(describe(nodes))")
         XCTAssertTrue(tab.accessibilityPerformPress(), "native AX press rejected \(label) segment")
     }
@@ -310,12 +310,13 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
         nodes.flatMap { node -> [String] in
             let value = node.accessibilityValue()
             let textValue = (value as? String) ?? (value as? NSAttributedString)?.string
-            return [node.accessibilityLabel(), node.accessibilityTitle(), textValue].compactMap { $0 }
+            return [WiltedMacHeadless.accessibilityLabel(of: node), WiltedMacHeadless.accessibilityTitle(of: node),
+                    textValue].compactMap { $0 }
         }.joined(separator: "\n")
     }
 
     private func describe(_ nodes: [NSAccessibilityProtocol]) -> String {
-        nodes.map { "\($0.accessibilityRole()?.rawValue ?? "unknown"):\($0.accessibilityIdentifier() ?? ""):\($0.accessibilityLabel() ?? "")" }
+        nodes.map { "\($0.accessibilityRole()?.rawValue ?? "unknown"):\($0.accessibilityIdentifier() ?? ""):\(WiltedMacHeadless.accessibilityLabel(of: $0) ?? "")" }
             .joined(separator: ", ")
     }
 

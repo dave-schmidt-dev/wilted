@@ -244,7 +244,7 @@ final class WiltedMacRulePreviewParityTests: XCTestCase {
                   seen.insert(ObjectIdentifier(node as AnyObject)).inserted else { return }
             if let identifier = node.accessibilityIdentifier(), identifiers.contains(identifier) {
                 let rawValue = node.accessibilityValue()
-                let rawLabel = node.accessibilityLabel()
+                let rawLabel = WiltedMacHeadless.accessibilityLabel(of: node)
                 let valueText = text(rawValue)
                 let labelText = text(rawLabel)
                 matches[identifier, default: []].append(PreviewAXNode(

@@ -221,7 +221,8 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
         func visit(_ value: Any, depth: Int) {
             guard depth < 32, let node = value as? NSAccessibilityProtocol,
                   seen.insert(ObjectIdentifier(node as AnyObject)).inserted else { return }
-            result.append((node.accessibilityIdentifier() ?? "", node.accessibilityLabel() ?? "", node.accessibilityFrame()))
+            result.append((node.accessibilityIdentifier() ?? "", WiltedMacHeadless.accessibilityLabel(of: node) ?? "",
+                           node.accessibilityFrame()))
             for child in node.accessibilityChildren() ?? [] { visit(child, depth: depth + 1) }
         }
         visit(root, depth: 0)

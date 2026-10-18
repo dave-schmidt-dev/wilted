@@ -23,6 +23,26 @@ enum WiltedMacHeadless {
         return model
     }
 
+    /// AXLabel read without trusting its declared `String` type; see `accessibilityText`.
+    static func accessibilityLabel(of node: Any) -> String? {
+        accessibilityText(of: node, NSSelectorFromString("accessibilityLabel"))
+    }
+
+    /// AXTitle read without trusting its declared `String` type; see `accessibilityText`.
+    static func accessibilityTitle(of node: Any) -> String? {
+        accessibilityText(of: node, NSSelectorFromString("accessibilityTitle"))
+    }
+
+    /// SwiftUI can vend an `NSAttributedString` for a text attribute AppKit declares as a string.
+    /// Bridged as a Swift `String`, its first use raises an Objective-C exception, and inside an
+    /// async test that exception aborts the test host. Reading the raw object avoids the bridge.
+    static func accessibilityText(of node: Any, _ selector: Selector) -> String? {
+        guard let object = node as? NSObject, object.responds(to: selector),
+              let raw = object.perform(selector)?.takeUnretainedValue() else { return nil }
+        if let attributed = raw as? NSAttributedString { return attributed.string }
+        return raw as? String
+    }
+
     /// Polls `condition` until it holds; fails the test with `what` after `timeout`.
     @discardableResult
     static func eventually(

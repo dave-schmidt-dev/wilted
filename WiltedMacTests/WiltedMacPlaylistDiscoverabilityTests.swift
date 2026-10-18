@@ -377,7 +377,8 @@ final class WiltedMacPlaylistDiscoverabilityTests: XCTestCase {
                   seen.insert(ObjectIdentifier(node as AnyObject)).inserted else { return }
             let rawValue = node.accessibilityValue()
             let valueText = (rawValue as? String) ?? (rawValue as? NSAttributedString)?.string
-            let text = [node.accessibilityLabel(), node.accessibilityTitle(), valueText]
+            let text = [WiltedMacHeadless.accessibilityLabel(of: node), WiltedMacHeadless.accessibilityTitle(of: node),
+                        valueText]
                 .compactMap { $0 }.joined(separator: " ")
             result.append((node.accessibilityIdentifier() ?? "", text))
             for child in node.accessibilityChildren() ?? [] { visit(child, depth: depth + 1) }
