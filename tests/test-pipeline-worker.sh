@@ -20,18 +20,19 @@ suite="$repo_root/Producer/Workers/test_wilted_pipeline.py"
 output_file="$(mktemp -t wilted-pipeline-worker.XXXXXX)"
 trap 'rm -f "$output_file"' EXIT
 pipeline_python="${WILTED_PIPELINE_PYTHON:-$repo_root/Producer/Runtime/.venv/bin/python}"
-expected_test_files=26
 
 [[ -x "$pipeline_python" ]] || { printf 'missing required Python interpreter: %s\n' "$pipeline_python" >&2; exit 1; }
 [[ -f "$worker" ]] || { printf 'missing worker: %s\n' "$worker" >&2; exit 1; }
 [[ -f "$suite" ]] || { printf 'missing worker test suite: %s\n' "$suite" >&2; exit 1; }
 
-test_files="$(find "$repo_root/Producer/Workers" -maxdepth 1 -type f -name 'test_*.py' | wc -l | tr -d '[:space:]')"
-if [[ "$test_files" -ne "$expected_test_files" ]]; then
-  printf 'pipeline worker suite found %s test files; exactly %s are expected\n' \
-    "$test_files" "$expected_test_files" >&2
-  exit 1
-fi
+# The file list is frozen before the run so the count and the discovery check
+# below describe one suite. A file unittest never collects (no test methods, a
+# class that stopped deriving from TestCase) still leaves the run reporting OK,
+# so every file must appear in the verbose output.
+test_file_list="$(find "$repo_root/Producer/Workers" -maxdepth 1 -type f -name 'test_*.py' | sort)"
+test_files="$(printf '%s\n' "$test_file_list" | wc -l | tr -d '[:space:]')"
+
+python3 "$repo_root/tests/test_pipeline_suite_discovery.py"
 
 printf '%s\n' 'stage=pipeline-worker-tests.start' >&2
 # The worker must never depend on an inherited PYTHONPATH to import cleanly;
@@ -45,6 +46,8 @@ if [[ -z "$test_count" || "$test_count" -lt 420 ]]; then
   exit 1
 fi
 grep -q '^OK' "$output_file" || { printf '%s\n' 'pipeline worker suite did not report OK' >&2; exit 1; }
+
+printf '%s\n' "$test_file_list" | python3 "$repo_root/tests/pipeline_suite_discovery.py" "$output_file"
 
 # The worker answers a malformed request instead of dying, which is what keeps
 # a failed episode from looking like a crashed app.
