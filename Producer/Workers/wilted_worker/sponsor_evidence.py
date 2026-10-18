@@ -21,6 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
 from .constants import COMMERCIAL_RECOVERY_CONTEXT_CHARS, COMMERCIAL_RECOVERY_CONTEXT_IDS, COMMERCIAL_RECOVERY_MAX_CANDIDATE_SECONDS, COMMERCIAL_RECOVERY_MAX_CANDIDATE_SHARE, EXPLICIT_SPONSOR_DOT_DOMAIN_RE, EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE, EXPLICIT_SPONSOR_NAME_LEADING_FILLER, EXPLICIT_SPONSOR_NAME_MAX_WORDS, EXPLICIT_SPONSOR_NAME_MINIMUM_CHARACTERS, EXPLICIT_SPONSOR_NAME_WORD_RE, EXPLICIT_SPONSOR_OFFER_CODE_RE, EXPLICIT_SPONSOR_PREROLL_ANCHOR_MAX_SECONDS, EXPLICIT_SPONSOR_PREROLL_LEFT_GAP_MAX_SECONDS, EXPLICIT_SPONSOR_SPOKEN_PATH_RE, EXPLICIT_SPONSOR_URL_RE, EXPLICIT_SUPPORT_OPENING_COMPATIBILITY_PATTERN, PARTNER_SPONSOR_OPENING_COMPATIBILITY_PATTERN
+from .interval_geometry import interval_contains
 
 def explicit_sponsor_name_phrases(text, opening_pattern):
     """The names a host read might be repeating, longest first.
@@ -110,9 +111,9 @@ def explicit_sponsor_anchor_ids(segments, opening_pattern):
 def sponsor_anchor_is_covered(anchor_id, segments, detections):
     """Return whether a proposed raw-timed cut contains an anchor cue whole."""
     anchor = segments[anchor_id]
+    anc_start, anc_end = float(anchor.start_s), float(anchor.end_s)
     return any(
-        float(ad.start_s) <= float(anchor.start_s)
-        and float(ad.end_s) >= float(anchor.end_s)
+        interval_contains(float(ad.start_s), float(ad.end_s), anc_start, anc_end)
         for ad in detections
     )
 

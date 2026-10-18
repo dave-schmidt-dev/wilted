@@ -21,6 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from . import prompts
 from .constants import CUT_TOOLS
+from .interval_geometry import interval_contains
 from .reporting import WorkerError
 
 def is_context_capacity_error(error: Exception) -> bool:
@@ -313,7 +314,8 @@ class AuditingBackend(CountingBackend):
             if not 0 <= segment_id < len(segments):
                 continue
             segment = segments[segment_id]
-            if not any(float(ad.start_s) <= float(segment.start_s) and float(ad.end_s) >= float(segment.end_s)
+            seg_start, seg_end = float(segment.start_s), float(segment.end_s)
+            if not any(interval_contains(float(ad.start_s), float(ad.end_s), seg_start, seg_end)
                        for ad in detections):
                 candidates.append(AuditCandidate(
                     "positive-missing-final-span", (segment_id,),

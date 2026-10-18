@@ -102,7 +102,7 @@ class AdDetectionMixinB:
         )
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
-        self.assertIn("safe-prefix confirmation failed", details["ads.detect.span.resize.skipped"])
+        self.assertIn("preserving audio", details["ads.detect.span.resize.skipped"])
         self.assertNotIn(wp.OVERSIZED_SPAN_RESCAN_PROMPT, llm.request_prompts)
         self.assertEqual(self.confirmed, frozenset())
 
@@ -110,7 +110,7 @@ class AdDetectionMixinB:
         # Reading the whole span and finding no programme in it is an answer,
         # not a failure to answer. A short news alert can legitimately be
         # mostly advertising, so the verdict stands and the span is vouched for.
-        llm = FakeLLM(preroll_program_start_id=-1)
+        llm = FakeLLM(preroll_program_start_id=-1, preroll_program_id=-1)
         resized, details = self.resize(llm, FakeAd(6.72, 456.88))
         self.assertEqual([(ad.start_s, ad.end_s) for ad in resized], [(6.72, 456.88)])
         self.assertIn("advertising throughout", details["ads.detect.span.confirmed"])

@@ -31,6 +31,8 @@ from .ad_audit import AdAnalysis, AdAnalysisAudit, AuditingBackend, DeclinedComm
 from .ad_runtime_adaptations import install_context_aware_overlap_resolution, install_legacy_sponsor_opening_compatibility, install_produced_disclaimer_evidence, install_proportional_render_budget
 from .constants import COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
 from .cue_timing import _near_empty_nominations, build_effective_cut_map, build_keep_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
+from .boundary_review import reject_programme_conflicts
+from .interval_geometry import interval_contains, intervals_overlap
 from .nomination import _CallBudgetBackend, _experimental_speculative_cuts, detect_nominated_ad_spans
 from .reporting import DiscardedRuns, WorkerError
 from .span_bounds import enforce_total_ad_share_ceiling, recover_adjacent_ad_pod_continuations, reject_implausible_ad_spans
@@ -121,23 +123,13 @@ def analyze_ad_detections(
     )
     opening_pattern = explicit_sponsor_opening_pattern(ads_module)
     explicit_anchor_ids = explicit_sponsor_anchor_ids(segments, opening_pattern)
-    detections_before_explicit_recovery = tuple(detections)
     detections = _worker_commercial_recovery.recover_unclaimed_explicit_sponsor_reads(
         ads_module,
         auditing_backend,
         segments,
         detections,
     )
-    prefix_rebase_anchor_ids = frozenset(
-        anchor_id
-        for anchor_id in explicit_anchor_ids
-        if len(segments) > 1
-        and anchor_id == 1
-        and 0 not in explicit_anchor_ids
-        and not sponsor_anchor_is_covered(0, segments, detections_before_explicit_recovery)
-        and sponsor_anchor_is_covered(0, segments, detections)
-        and sponsor_anchor_is_covered(anchor_id, segments, detections)
-    )
+    prefix_rebase_anchor_ids = frozenset(explicit_anchor_ids)
     detections = _worker_commercial_seeds.recover_commercial_evidence_reads(
         ads_module, commercial_recovery_backend, segments, detections, total_seconds
     )
@@ -148,8 +140,9 @@ def analyze_ad_detections(
     detections = _worker_edge_recovery.recover_transcript_start_preroll(
         ads_module, auditing_backend, segments, detections
     )
+    held_spans = []
     detections = _worker_tail_recovery.recover_transcript_end_postroll(
-        ads_module, auditing_backend, segments, detections, total_seconds
+        ads_module, auditing_backend, segments, detections, total_seconds,
     )
     detections = trim_straddling_span_tails(
         ads_module,
@@ -157,8 +150,11 @@ def analyze_ad_detections(
         segments,
         detections,
         explicit_sponsor_opening_pattern(ads_module),
+        held_spans=held_spans,
     )
-    held_spans = []
+    detections = _worker_tail_recovery.trim_credit_span_heads(
+        ads_module, auditing_backend, segments, detections, held_spans
+    )
     detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
         ads_module, auditing_backend, segments, detections, total_seconds,
         rebase_anchor_ids=prefix_rebase_anchor_ids, held_spans=held_spans,
@@ -171,14 +167,19 @@ def analyze_ad_detections(
         ads_module, auditing_backend, segments, detections, total_seconds, held_spans
     )
     detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
+    detections = reject_programme_conflicts(detections, held_spans)
     dropped_anchor_ids = [
         anchor_id
         for anchor_id in explicit_anchor_ids
         if sponsor_anchor_is_covered(anchor_id, segments, proposed_detections)
         and not sponsor_anchor_is_covered(anchor_id, segments, detections)
         and not any(
-            held.start_s < float(segments[anchor_id].end_s)
-            and held.end_s > float(segments[anchor_id].start_s)
+            held.reason in {"sponsor-prefix-programme-found", "programme-boundary",
+                            "total-share-ceiling", "programme-boundary-conflict"}
+            and intervals_overlap(
+                held.start_s, held.end_s,
+                float(segments[anchor_id].start_s), float(segments[anchor_id].end_s),
+            )
             for held in held_spans
         )
     ]
@@ -203,8 +204,10 @@ def analyze_ad_detections(
             reason=(
                 "dropped-after-proposal"
                 if any(
-                    float(ad.start_s) < float(segments[seed_ids[-1]].end_s)
-                    and float(ad.end_s) > float(segments[seed_ids[0]].start_s)
+                    intervals_overlap(
+                        float(ad.start_s), float(ad.end_s),
+                        float(segments[seed_ids[0]].start_s), float(segments[seed_ids[-1]].end_s),
+                    )
                     for ad in proposed_detections
                 )
                 else ("review-declined" if all(
@@ -383,18 +386,27 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             unresolved_seeds = [
                 seed for seed in analysis.audit.declined_commercial_evidence_seeds
                 if seed.reason != "review-declined" and not any(
-                    held.reason == "sponsor-prefix-programme-found"
-                    and held.start_s <= seed.start_s and held.end_s >= seed.end_s
+                    # A positively preserved mixed cue resolves its own CTA evidence.
+                    held.reason in {"sponsor-prefix-programme-found", "programme-boundary"}
+                    and interval_contains(held.start_s, held.end_s, seed.start_s, seed.end_s)
                     for held in analysis.audit.held_spans
                 )
             ]
-            if with_report and (any(span.reason == "total-share-ceiling" for span in analysis.audit.held_spans)
-                                or unresolved_seeds):
+            if (
+                any(span.reason in {"total-share-ceiling", "programme-boundary-conflict",
+                                    "boundary-review-unresolved", "credits-boundary-unresolved"}
+                    for span in analysis.audit.held_spans)
+                or unresolved_seeds
+            ):
+                # Without a report there is no audit to carry the warning, but
+                # an unresolved span still keeps the whole original.
                 analysis = uncertain_ad_analysis(
                     counting, segments, "ad review could not safely resolve all proposed commercial spans",
                     held_spans=analysis.audit.held_spans, proposed_detections=detections, audit=analysis.audit,
                 )
-                return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
+                if with_report:
+                    return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
+                return audio_path, [], []
         finally:
             try:
                 backend.close()

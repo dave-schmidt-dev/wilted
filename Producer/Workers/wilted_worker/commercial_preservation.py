@@ -23,6 +23,7 @@ from . import reporting as _worker_reporting
 from .constants import COMMERCIAL_PRESERVATION_FLANK_IDS, COMMERCIAL_PRESERVATION_FLANK_STEPS, COMMERCIAL_SPARSE_PREFIX_MAX_IDS, COMMERCIAL_SPARSE_PREFIX_MAX_SECONDS, EXPLICIT_SPONSOR_CTA_RE, RECOVERED_CONFIDENCE_CEILING, RECOVERED_CONFIDENCE_FLOOR
 from .prompts import COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT, COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT, COMMERCIAL_EVIDENCE_NOMINATION_PROMPT, COMMERCIAL_PREFIX_CUE_PROMPT, COMMERCIAL_PREFIX_ROLE_PROMPT
 from .review_formats import _commercial_conflict_response_format, _commercial_preservation_labels, _commercial_preservation_response_format, _experimental_id_response_format, _parse_commercial_conflict_response, _parse_experimental_ids
+from .interval_geometry import interval_contains
 from .sponsor_evidence import _commercial_recovery_context, explicit_sponsor_destination_seen
 
 def _commercial_preservation_review(
@@ -263,8 +264,9 @@ def _commercial_envelope_preserved(
 
 def _evidence_is_covered(segment_id, segments, detections):
     segment = segments[segment_id]
+    seg_start, seg_end = float(segment.start_s), float(segment.end_s)
     return any(
-        float(ad.start_s) <= float(segment.start_s) and float(ad.end_s) >= float(segment.end_s)
+        interval_contains(float(ad.start_s), float(ad.end_s), seg_start, seg_end)
         for ad in detections
     )
 

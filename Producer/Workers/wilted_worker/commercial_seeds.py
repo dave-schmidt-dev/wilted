@@ -22,6 +22,7 @@ from pathlib import Path
 from . import reporting as _worker_reporting
 from .commercial_preservation import _commercial_envelope_preserved, _evidence_is_covered, recovered_confidence
 from .constants import COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_IDS, COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS, COMMERCIAL_RECOVERY_MAX_CANDIDATES, COMMERCIAL_SPARSE_CONTEXT_FLANK_IDS, COMMERCIAL_SPARSE_GAP_MIN_SECONDS, COMMERCIAL_SPARSE_MAX_ENVELOPE_SECONDS, COMMERCIAL_SPARSE_MAX_SECONDS, COMMERCIAL_SPARSE_TRANSITION_MAX_CHARS, COMMERCIAL_SPARSE_TRANSITION_MAX_SECONDS, EXPLICIT_SPONSOR_CTA_RE
+from .interval_geometry import interval_contains, intervals_overlap
 from .sponsor_evidence import explicit_sponsor_destination_seen
 
 def commercial_evidence_seed_ids(segments, detections):
@@ -90,7 +91,7 @@ def recover_commercial_evidence_reads(ads_module, backend, segments, detections,
             continue
         start_s = float(segments[proposed_ids[0]].start_s)
         end_s = float(segments[proposed_ids[-1]].end_s)
-        if any(float(ad.start_s) < end_s and float(ad.end_s) > start_s for ad in [*detections, *recovered]):
+        if any(intervals_overlap(float(ad.start_s), float(ad.end_s), start_s, end_s) for ad in [*detections, *recovered]):
             _worker_reporting.progress(
                 "ads.detect.recovery.skipped",
                 f"commercial evidence IDs {first}-{last} overlapped an existing cut",
@@ -131,8 +132,10 @@ def sparse_commercial_seeds(segments, detections, audit):
             continue
         segment_id = candidate.ids[0]
         if 0 <= segment_id < len(segments) and not any(
-            float(ad.start_s) < float(segments[segment_id].end_s)
-            and float(ad.end_s) > float(segments[segment_id].start_s)
+            intervals_overlap(
+                float(ad.start_s), float(ad.end_s),
+                float(segments[segment_id].start_s), float(segments[segment_id].end_s),
+            )
             for ad in detections
         ):
             seeds.append((segment_id, None))
@@ -224,8 +227,8 @@ def recover_sparse_commercial_reads(
             continue
         start_s = float(segments[proposed_ids[0]].start_s)
         end_s = float(segments[proposed_ids[-1]].end_s)
-        if original is not None and not (
-            start_s <= float(original.start_s) and end_s >= float(original.end_s)
+        if original is not None and not interval_contains(
+            start_s, end_s, float(original.start_s), float(original.end_s)
         ):
             _worker_reporting.progress("ads.detect.sparse.skipped", f"proposal did not contain existing cut at ID {segment_id}")
             continue
@@ -235,7 +238,7 @@ def recover_sparse_commercial_reads(
         ):
             continue
         if any(
-            ad is not original and float(ad.start_s) < end_s and float(ad.end_s) > start_s
+            ad is not original and intervals_overlap(float(ad.start_s), float(ad.end_s), start_s, end_s)
             for ad in recovered
         ):
             _worker_reporting.progress("ads.detect.sparse.skipped", f"proposal overlaps another cut at ID {segment_id}")

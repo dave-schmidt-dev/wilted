@@ -165,3 +165,11 @@ EXPERIMENTAL_NOMINATION_PROMPT = """\
 Review the bounded podcast context. Return only the supplied global IDs that are definitely spoken
 advertising and form one contiguous candidate. Context on both sides is programme, not permission to
 extend a cut. Return only strict JSON with no prose: {"ad_ids":[ID,...]}."""
+
+
+CREDITS_BOUNDARY_PROGRAMME_PROMPT = """\
+This is the first passage of a proposed closing-credits cut. Does it contain any of the
+show's reporting, discussion, interview, conclusion, sign-off, or preview of its next episode?
+Those words are programme and must stay audible, even when credits follow in the same passage.
+A list of production staff, acknowledgements, and music credits alone is not programme for this
+question. Return only strict JSON {"carries_program": true} or {"carries_program": false}."""

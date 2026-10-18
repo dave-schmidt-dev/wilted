@@ -62,7 +62,7 @@ class AdKindContractTests(unittest.TestCase):
         ]
 
     def cut(self, detections, total=100.0):
-        llm = FakeLLM()
+        llm = FakeLLM(answer='{"carries_program": false}')
         install_fake_ads(llm, detections=list(detections))
         with redirect_stderr(io.StringIO()), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=total):

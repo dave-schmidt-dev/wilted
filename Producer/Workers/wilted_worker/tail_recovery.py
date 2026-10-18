@@ -20,14 +20,17 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
+from .ad_audit import HeldAdSpan
+from .boundary_review import complete_fragment_visible
 from .commercial_preservation import recovered_confidence
 from .commercial_seeds import _constrained_id
 from .constants import MAXIMUM_SINGLE_AD_SHARE, POSTROLL_ALREADY_CLAIMED_SECONDS, POSTROLL_CLEAN_BREAK_SECONDS, POSTROLL_LEADER_MAX_SECONDS, POSTROLL_RECOVERY_MAX_SECONDS, POSTROLL_RECOVERY_MAX_SEGMENTS, POSTROLL_RECOVERY_MINIMUM_SECONDS, STRADDLING_TAIL_MAX_PROBES
 from .edge_recovery import _program_start_inside_answer
-from .prompts import BOUNDARY_SEGMENT_TAIL_PROMPT, POSTROLL_CONFIRM_PROMPT, POSTROLL_PROGRAM_END_PROMPT
+from .interval_geometry import intervals_overlap
+from .prompts import CREDITS_BOUNDARY_PROGRAMME_PROMPT, BOUNDARY_SEGMENT_TAIL_PROMPT, POSTROLL_CONFIRM_PROMPT, POSTROLL_PROGRAM_END_PROMPT
 from .sponsor_evidence import explicit_sponsor_anchor_ids
 
-def trim_straddling_span_tails(ads_module, backend, segments, detections, opening_pattern):
+def trim_straddling_span_tails(ads_module, backend, segments, detections, opening_pattern, held_spans=None):
     """Pull a span's end back when the programme resumes inside its final cue.
 
     Every span the detector emits ends on a cue edge, which is correct only
@@ -73,6 +76,9 @@ def trim_straddling_span_tails(ads_module, backend, segments, detections, openin
         if _program_start_inside_answer(ads_module, backend, segments, boundary_id) is not True:
             trimmed.append(ad)
             continue
+        if held_spans is not None:
+            cue = segments[boundary_id]
+            held_spans.append(HeldAdSpan(float(cue.start_s), float(cue.end_s), "programme-boundary"))
         end_s = float(segments[boundary_id].start_s)
         _worker_reporting.progress(
             "ads.detect.tail.shortened",
@@ -324,3 +330,50 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
         ads_module.AdSegment(start_s, total_seconds, confidence, "ad_break",
                              kinds=(ads_module.AD_KIND_CREDITS,)),
     ])
+
+
+def trim_credit_span_heads(ads_module, backend, segments, detections, held_spans=None):
+    """Preserve a credits cut's first cue when it also contains programme speech."""
+    kept = []
+    probes = 0
+    for ad in detections:
+        kinds = tuple(getattr(ad, "kinds", ()) or ())
+        if not kinds or kinds != (ads_module.AD_KIND_CREDITS,):
+            kept.append(ad)
+            continue
+        cue_id = next((i for i, cue in enumerate(segments)
+                       if intervals_overlap(float(cue.start_s), float(cue.end_s),
+                                            float(ad.start_s), float(ad.end_s))), None)
+        if cue_id is None or probes >= STRADDLING_TAIL_MAX_PROBES:
+            if held_spans is not None:
+                held_spans.append(HeldAdSpan(float(ad.start_s), float(ad.end_s), "credits-boundary-unresolved"))
+            continue  # Optional credits never justify an unreviewed boundary.
+        probes += 1
+        cue = segments[cue_id]
+        try:
+            if not complete_fragment_visible(ads_module, [cue_id], segments):
+                raise ValueError("credits boundary text is incomplete")
+            response, _tokens = ads_module._generate_constrained_response(
+                backend, CREDITS_BOUNDARY_PROGRAMME_PROMPT,
+                ads_module._render_segments_bounded([cue_id], segments),
+                {"type": "json_object"},
+            )
+            parsed = json.loads(response)
+            if not isinstance(parsed, dict) or set(parsed) != {"carries_program"} or not isinstance(parsed["carries_program"], bool):
+                raise ValueError("credits boundary response must contain one boolean")
+        except Exception as error:  # An unanswered optional cut stays audible.
+            _worker_reporting.progress("ads.detect.credits.held", f"boundary review failed: {type(error).__name__}")
+            if held_spans is not None:
+                held_spans.append(HeldAdSpan(float(ad.start_s), float(ad.end_s), "credits-boundary-unresolved"))
+            continue
+        if not parsed["carries_program"]:
+            kept.append(ad)
+            continue
+        if held_spans is not None:
+            held_spans.append(HeldAdSpan(float(cue.start_s), float(cue.end_s), "programme-boundary"))
+        start_s = max(float(ad.start_s), float(cue.end_s))
+        _worker_reporting.progress("ads.detect.credits.shortened", f"preserving programme in credits boundary cue {cue_id}")
+        if start_s < float(ad.end_s):
+            kept.append(ads_module.AdSegment(start_s, float(ad.end_s), float(ad.confidence), ad.label,
+                                             kinds=tuple(ad.kinds)))
+    return kept
