@@ -1,4 +1,4 @@
-.PHONY: validate validate-inner native-meta native native-ui lint deadcode file-size check-fast install-hooks install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
+.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
 
 lint:
 	@$(MAKE) -C Producer/Runtime lint
@@ -18,21 +18,39 @@ install-hooks:
 validate:
 	@bash -c 'source scripts/lib/test-temp-state.sh; WILTED_TEMP_LEAK_CHECKER="$(CURDIR)/scripts/check-temp-leaks.py"; wilted_full_run "$(CURDIR)" $(MAKE) validate-inner'
 
+# Unit selector and iteration variables are diagnostics: keep them out of every
+# meta-test and the pre-push gate that validate-inner runs.
+NATIVE_UNIT_FILTER_UNSET = -u WILTED_MAC_UNIT_SELECTORS -u WILTED_MAC_UNIT_ITERATIONS -u WILTED_IOS_UNIT_SELECTORS -u WILTED_IOS_UNIT_ITERATIONS
+
 validate-inner:
 	@python3 scripts/check-no-global-tmp.py
 	@python3 scripts/check_file_size.py --all
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash tests/test-phase0-aggregate.sh
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash scripts/test-phase0.sh
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash tests/test-native-gate.sh
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash tests/test-native-gate-watch.sh
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR bash tests/test-carplay-config.sh
-	@bash scripts/test-gate.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-phase0-aggregate.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash scripts/test-phase0.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-native-gate.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-native-gate-watch.sh
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-carplay-config.sh
+	@env $(NATIVE_UNIT_FILTER_UNSET) bash scripts/test-gate.sh
 
 native-meta:
 	@bash tests/test-native-gate.sh
 
 native:
 	@bash scripts/test-gate.sh
+
+# Runs one Mac unit test class or method N times through the native gate.
+# Usage: make native-mac-unit TEST=WiltedMacFooTests/testBar ITERATIONS=5
+# TEST and ITERATIONS reach the recipe through the environment, never through
+# make text expansion, so the gate's validation sees the value unquoted.
+native-mac-unit:
+	@test -n "$${TEST-}" || { printf '%s\n' 'usage: make native-mac-unit TEST=<Class[/testMethod],...> [ITERATIONS=<n>]' >&2; exit 2; }
+	@if [ -n "$${ITERATIONS-}" ]; then export WILTED_MAC_UNIT_ITERATIONS="$$ITERATIONS"; fi; WILTED_GATE_LEGS=macos-unit-tests WILTED_MAC_UNIT_SELECTORS="$$TEST" bash scripts/test-gate.sh
+
+# Runs one iOS unit test class or method N times through the native gate.
+# Usage: make native-ios-unit TEST=WiltediOSFooTests/testBar ITERATIONS=5
+native-ios-unit:
+	@test -n "$${TEST-}" || { printf '%s\n' 'usage: make native-ios-unit TEST=<Class[/testMethod],...> [ITERATIONS=<n>]' >&2; exit 2; }
+	@if [ -n "$${ITERATIONS-}" ]; then export WILTED_IOS_UNIT_ITERATIONS="$$ITERATIONS"; fi; WILTED_GATE_LEGS=ios-unit-tests WILTED_IOS_UNIT_SELECTORS="$$TEST" bash scripts/test-gate.sh
 
 # The full gate INCLUDING the macos-ui-tests leg. That leg drives real HID
 # events through WindowServer and will hold the cursor, keyboard, and window

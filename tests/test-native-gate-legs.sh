@@ -262,4 +262,193 @@ prepare_native_results_dir || exit $?
 unittest.main(argv=[sys.argv[0]],verbosity=2)
 PYRETENTION
 
+# Unit selectors and iteration counts are diagnostics: the gate accepts a
+# valid selection through its normal validation path before any leg starts.
+for spec in \
+  'unit-mac-class|macos-unit-tests|WILTED_MAC_UNIT_SELECTORS=WiltedMacFooTests' \
+  'unit-mac-selectors|macos-unit-tests|WILTED_MAC_UNIT_SELECTORS=WiltedMacFooTests/testBar,WiltedMacBazTests' \
+  'unit-ios-class|ios-unit-tests|WILTED_IOS_UNIT_SELECTORS=WiltediOSFooTests' \
+  'unit-ios-selectors|ios-unit-tests|WILTED_IOS_UNIT_SELECTORS=WiltediOSFooTests/testBar,WiltediOSBazTests' \
+  'unit-mac-iterations|macos-unit-tests|WILTED_MAC_UNIT_ITERATIONS=3' \
+  'unit-ios-iterations|ios-unit-tests|WILTED_IOS_UNIT_ITERATIONS=3'; do
+  label="${spec%%|*}"; spec="${spec#*|}"; leg="${spec%%|*}"; assignment="${spec#*|}"
+  log="$tmp_dir/$label.log"
+  [[ "$(run_case "$label" "$log" "WILTED_GATE_LEGS=$leg" "$assignment")" -eq 0 ]] || { cat "$log" >&2; exit 1; }
+done
+
+# Every malformed selector and iteration count fails closed before a leg starts.
+reject_selector_values=('' 'A,,B' 'A,' ',A' 'A B' 'A/testB/testC' 'A/b' 'A;true' 'A$(true)' '-only-testing:X' '../A')
+reject_iteration_values=('' '0' '101' '3x' '-1')
+reject_index=0
+for family in mac ios; do
+  if [[ "$family" == mac ]]; then
+    leg=macos-unit-tests; selectors_var=WILTED_MAC_UNIT_SELECTORS; iterations_var=WILTED_MAC_UNIT_ITERATIONS
+  else
+    leg=ios-unit-tests; selectors_var=WILTED_IOS_UNIT_SELECTORS; iterations_var=WILTED_IOS_UNIT_ITERATIONS
+  fi
+  for value in "${reject_selector_values[@]}"; do
+    reject_index=$((reject_index + 1))
+    label="reject-$family-selector-$reject_index"
+    log="$tmp_dir/$label.log"
+    [[ "$(run_case "$label" "$log" "WILTED_GATE_LEGS=$leg" "$selectors_var=$value")" -ne 0 ]] || { cat "$log" >&2; exit 1; }
+    assert_contains 'native.error' "$log"
+    assert_absent 'native.leg.start' "$log"
+    assert_absent 'native.passed' "$log"
+  done
+  for value in "${reject_iteration_values[@]}"; do
+    reject_index=$((reject_index + 1))
+    label="reject-$family-iterations-$reject_index"
+    log="$tmp_dir/$label.log"
+    [[ "$(run_case "$label" "$log" "WILTED_GATE_LEGS=$leg" "$iterations_var=$value")" -ne 0 ]] || { cat "$log" >&2; exit 1; }
+    assert_contains 'native.error' "$log"
+    assert_absent 'native.leg.start' "$log"
+    assert_absent 'native.passed' "$log"
+  done
+done
+
+# A selected Mac unit test lowers the floor to one, so a misspelled class fails
+# as native.zero-tests instead of passing an empty run.
+(
+  unset WILTED_MAC_UNIT_SELECTORS WILTED_MAC_UNIT_ITERATIONS WILTED_IOS_UNIT_SELECTORS WILTED_IOS_UNIT_ITERATIONS
+  repo_root="$repo_root"
+  native_self_test=0
+  fail() { printf 'native.error %s\n' "$1" >&2; exit 1; }
+  source "$repo_root/scripts/lib/native-gate-validation.sh"
+  [[ "$(expected_test_count_floor macos-unit-tests)" == 30 ]]
+  WILTED_MAC_UNIT_SELECTORS='Foo/testBar'
+  [[ "$(expected_test_count_floor macos-unit-tests)" == 1 ]]
+) || { printf '%s\n' 'assertion failed: unit selector floor' >&2; exit 1; }
+
+# The selector summary names the filter, and the pass line is qualified even
+# when no leg filter (WILTED_GATE_LEGS) is set.
+log="$tmp_dir/unit-filtered-summary.log"
+[[ "$(run_case unit-filtered-summary "$log" WILTED_GATE_LEGS=macos-unit-tests \
+  WILTED_MAC_UNIT_SELECTORS=WiltedMacFooTests/testBar WILTED_MAC_UNIT_ITERATIONS=2)" -eq 0 ]] ||
+  { cat "$log" >&2; exit 1; }
+assert_contains 'native.filtered.tests leg=macos-unit-tests selectors=WiltedMacFooTests/testBar iterations=2 receipt=never' "$log"
+assert_contains 'native.passed count=2 filtered=7' "$log"
+
+log="$tmp_dir/unit-unfiltered-legs-summary.log"
+[[ "$(run_case unit-unfiltered-legs-summary "$log" WILTED_MAC_UI=1 \
+  WILTED_MAC_UNIT_SELECTORS=WiltedMacFooTests/testBar)" -eq 0 ]] ||
+  { cat "$log" >&2; exit 1; }
+assert_contains 'native.passed count=9 filtered=0' "$log"
+if grep -Eq '^native\.passed count=[0-9]+$' "$log"; then
+  printf '%s\n' 'assertion failed: a unit-filtered run emitted the unqualified native.passed line' >&2
+  cat "$log" >&2
+  exit 1
+fi
+
+# The selected -only-testing arguments and -test-iterations reach xcodebuild
+# through the real xcode_test_leg, and an unselected run keeps today's argv.
+write_xcode_harness() {
+  local harness="$1"
+  cat >"$harness" <<'HARNESS'
+set -Eeuo pipefail
+repo_root="$1"; tmp_root="$2"; label="$3"; scheme="$4"; destination="$5"; target="$6"
+WILTED_TEMP_LEG_WORK="$tmp_root/work"
+build_with_cache="$tmp_root/fake-build-with-cache"
+xcode_test_timeout_seconds=1
+xcode_build_and_test_timeout_seconds=1
+record_argv="$tmp_root/argv-$label.txt"
+mkdir -p "$tmp_root/fake/Fake.xcodeproj" "$WILTED_TEMP_LEG_WORK"
+require_tool() { return 0; }
+assert_test_sources() { return 0; }
+find_project() { printf '%s\n' "$tmp_root/fake/Fake.xcodeproj"; }
+wilted_mac_test_scheme_configure() { return 0; }
+wilted_mac_test_cleanup_roots() { return 0; }
+wilted_stop_active_ui_lock() { return 0; }
+wilted_stop_active_supervisor() { return 0; }
+wilted_wait_active_supervisor() { wait "$WILTED_ACTIVE_SUPERVISOR_PID"; }
+gate_ui_test_lock() { printf '%s\n' "$@" >"$record_argv"; }
+wilted_gate_simulator_session() { printf '%s\n' "$@" >"$record_argv"; }
+# shellcheck source=/dev/null
+source "$repo_root/scripts/lib/native-gate-xcode.sh"
+wilted_testmanagerd_preflight() { :; }
+xcode_test_leg "$label" "$tmp_root/sources" "$scheme" "$destination" "$target"
+HARNESS
+}
+
+run_xcode_harness() {
+  local leg="$1" scheme="$2" destination="$3" target="$4" mode="$5"
+  shift 5
+  local root="$tmp_dir/xcode-$leg-$mode" log="$tmp_dir/xcode-$leg-$mode.log"
+  mkdir -p "$root"
+  if [[ "$mode" == filtered ]]; then
+    env "$@" bash "$xcode_harness" "$repo_root" "$root" "$leg" "$scheme" "$destination" "$target"
+  else
+    env -u WILTED_MAC_UNIT_SELECTORS -u WILTED_MAC_UNIT_ITERATIONS \
+      -u WILTED_IOS_UNIT_SELECTORS -u WILTED_IOS_UNIT_ITERATIONS \
+      bash "$xcode_harness" "$repo_root" "$root" "$leg" "$scheme" "$destination" "$target"
+  fi >"$log" 2>&1 || { cat "$log" >&2; exit 1; }
+  printf '%s\n' "$root/argv-$leg.txt"
+}
+
+assert_unit_argv() {
+  local argv="$1" prefix="$2"
+  assert_contains "-only-testing:$prefix/Foo/testBar" "$argv"
+  assert_contains "-only-testing:$prefix/Baz" "$argv"
+  awk -v first='-test-iterations' -v second='3' \
+    'previous == first && $0 == second { found = 1 } { previous = $0 } END { exit !found }' "$argv" || {
+    printf 'assertion failed: %s has no -test-iterations 3 pair\n' "$argv" >&2
+    cat "$argv" >&2
+    exit 1
+  }
+  if grep -Fxq -- "-only-testing:$prefix" "$argv"; then
+    printf 'assertion failed: %s kept the bare -only-testing:%s\n' "$argv" "$prefix" >&2
+    cat "$argv" >&2
+    exit 1
+  fi
+}
+
+xcode_harness="$tmp_dir/xcode-leg-harness.sh"
+write_xcode_harness "$xcode_harness"
+mac_argv="$(run_xcode_harness macos-unit-tests WiltedMac platform=macOS WiltedMacTests filtered \
+  'WILTED_MAC_UNIT_SELECTORS=Foo/testBar,Baz' 'WILTED_MAC_UNIT_ITERATIONS=3')"
+assert_unit_argv "$mac_argv" WiltedMacTests
+ios_argv="$(run_xcode_harness ios-unit-tests WiltediOS 'platform=iOS Simulator,id=FAKE' WiltediOSTests filtered \
+  'WILTED_IOS_UNIT_SELECTORS=Foo/testBar,Baz' 'WILTED_IOS_UNIT_ITERATIONS=3')"
+assert_unit_argv "$ios_argv" WiltediOSTests
+mac_unfiltered_argv="$(run_xcode_harness macos-unit-tests WiltedMac platform=macOS WiltedMacTests unfiltered)"
+assert_contains '-only-testing:WiltedMacTests' "$mac_unfiltered_argv"
+assert_absent '-test-iterations' "$mac_unfiltered_argv"
+ios_unfiltered_argv="$(run_xcode_harness ios-unit-tests WiltediOS 'platform=iOS Simulator,id=FAKE' WiltediOSTests unfiltered)"
+assert_contains '-only-testing:WiltediOSTests' "$ios_unfiltered_argv"
+assert_absent '-test-iterations' "$ios_unfiltered_argv"
+
+# The Make targets hand TEST and ITERATIONS to the gate through the
+# environment, so a quote in TEST reaches validation instead of the shell.
+run_make_case() {
+  local label="$1" output="$2" result
+  shift 2
+  mkdir -p "$tmp_dir/$label-parent"
+  set +e
+  env -u WILTED_GATE_LEGS -u TEST -u ITERATIONS TMPDIR="$tmp_dir/$label-parent" NATIVE_SELF_TEST=1 WILTED_MAC_UI=0 \
+    WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR="$tmp_dir/diagnostics/$label" \
+    make -s -C "$repo_root" "$@" >"$output" 2>&1
+  result=$?
+  set -e
+  printf 'meta-test[%s] status=%s\n' "$label" "$result" >&2
+  printf '%s\n' "$result"
+}
+
+log="$tmp_dir/make-mac-unit.log"
+[[ "$(run_make_case make-mac-unit "$log" native-mac-unit TEST=WiltedMacFooTests/testBar ITERATIONS=2)" -eq 0 ]] ||
+  { cat "$log" >&2; exit 1; }
+assert_contains 'native.filtered.tests leg=macos-unit-tests selectors=WiltedMacFooTests/testBar iterations=2 receipt=never' "$log"
+log="$tmp_dir/make-ios-unit.log"
+[[ "$(run_make_case make-ios-unit "$log" native-ios-unit TEST=WiltediOSFooTests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
+assert_contains 'native.filtered.tests leg=ios-unit-tests selectors=WiltediOSFooTests iterations=1 receipt=never' "$log"
+log="$tmp_dir/make-mac-unit-usage.log"
+[[ "$(run_make_case make-mac-unit-usage "$log" native-mac-unit)" -eq 2 ]] || { cat "$log" >&2; exit 1; }
+assert_contains 'usage: make native-mac-unit TEST=' "$log"
+assert_absent 'native.leg.start' "$log"
+make_marker="$tmp_dir/make-injection-marker"
+log="$tmp_dir/make-mac-unit-quote.log"
+[[ "$(run_make_case make-mac-unit-quote "$log" native-mac-unit "TEST=A';touch $make_marker;'")" -ne 0 ]] ||
+  { cat "$log" >&2; exit 1; }
+assert_contains 'native.error' "$log"
+assert_absent 'native.leg.start' "$log"
+[[ ! -e "$make_marker" ]] || { printf '%s\n' 'assertion failed: a quote in TEST ran a shell command' >&2; exit 1; }
+
 printf '%s\n' 'native gate leg filter test passed'

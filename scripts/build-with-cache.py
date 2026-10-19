@@ -8,18 +8,22 @@
 `path` prints the cache directory for a key on stdout. `run` injects that
 directory into the child build command -- `--scratch-path` directly after the
 `swift build|test|run` subcommand, `-derivedDataPath` directly after
-`xcodebuild` -- then execs the child, so the child's exit status and signal
-death become the helper's own and stdout stays the child's.
+`xcodebuild` -- then supervises the child, so the child's exit status and
+signal death become the helper's own and stdout stays the child's.
 
-`run swiftpm` instead supervises the child so it can survive File Provider
-tagging under ~/Documents: it clears extended attributes on the cache before
-the build and, when a failed build reports codesign's "resource fork, Finder
-information, or similar detritus", clears again and retries exactly once
-within the remaining budget (`native.xattr.retry`). Child stdout and stderr
-are relayed live to the helper's own streams, INT/TERM/HUP are forwarded, and
-the child's exit status or signal death still becomes the helper's own. The
-streams are pipes, so interactive TTY progress and color are not preserved;
-the supervisor's periodic status remains visible.
+`run swiftpm` and `run xcode` both supervise the child so it can survive File
+Provider tagging under ~/Documents: they clear extended attributes before the
+build and, when a failed build reports codesign's "resource fork, Finder
+information, or similar detritus", clear again and retry exactly once within
+the remaining budget (`native.xattr.retry`). SwiftPM clears the whole cache;
+Xcode clears only `<cache>/Build`, since the installer/recorder cache is
+`<cache>` itself and other native keys' DerivedData lives beside it under
+different locks. Child stdout and stderr are relayed live to the helper's own
+streams, INT/TERM/HUP are forwarded, and the child's exit status or signal
+death still becomes the helper's own. The streams are pipes, so interactive TTY
+progress and color are not preserved; the supervisor's periodic status remains
+visible. Raw `swift` or `xcodebuild` calls outside this helper get no detritus
+protection.
 
 Every build command is supervised by ``run-bounded.py``.  Its default 300s
 work budget can be changed with ``WILTED_TEST_TIMEOUT_SECONDS``. Lock waits
@@ -106,6 +110,11 @@ def cache_paths(root: Path, kind: str, key: str) -> tuple[Path, Path]:
             cache = root / ".build" / "xcode"
             lock = root / ".build" / "xcode.lock"
     return cache, lock
+
+
+def xattr_clear_root(kind: str, cache: Path) -> Path:
+    """Return the subtree whose extended attributes a build kind clears."""
+    return cache / "Build" if kind == "xcode" else cache
 
 
 def validate_key(key: str) -> None:
@@ -257,6 +266,20 @@ def clean_app_product(cache: Path) -> None:
         emit(f"clean-app-product path={target}")
 
 
+def clear_xattrs_if_present(
+    cache: Path, reason: str, runner: Path, deadline: float,
+    lock_descriptor: int, pending: list[int],
+    current: list[subprocess.Popen[bytes]],
+) -> int:
+    """Skip xattr cleanup when the clear root is absent."""
+    if not cache.exists():
+        emit(f"native.xattr.clear skipped reason={reason} path={cache} absent")
+        return 0
+    return clear_xattrs(
+        cache, reason, runner, deadline, lock_descriptor, pending, current
+    )
+
+
 def clear_xattrs(cache: Path, reason: str, runner: Path, deadline: float,
                  lock_descriptor: int, pending: list[int],
                  current: list[subprocess.Popen[bytes]]) -> int:
@@ -372,7 +395,7 @@ def relay_attempt(argv: list[str], lock_descriptor: int, pending: list[int],
 
 def run_swiftpm_with_retry(runner: Path, plan: list[str], cache: Path,
                            command_timeout: float, lock_descriptor: int) -> int:
-    """Build under the runner, retrying once after File Provider detritus."""
+    """Build either kind under the runner, retrying once after detritus."""
     deadline = time.monotonic() + command_timeout
     pending: list[int] = []
     current: list[subprocess.Popen[bytes]] = []
@@ -389,7 +412,7 @@ def run_swiftpm_with_retry(runner: Path, plan: list[str], cache: Path,
         # An ignored disposition (Bash background INT) stays ignored, as under exec.
         if signal.getsignal(managed) is not signal.SIG_IGN:
             signal.signal(managed, forward)
-    cleanup_status = clear_xattrs(
+    cleanup_status = clear_xattrs_if_present(
         cache, "pre-build", runner, deadline, lock_descriptor, pending, current
     )
     budget = deadline - time.monotonic()
@@ -420,7 +443,7 @@ def run_swiftpm_with_retry(runner: Path, plan: list[str], cache: Path,
             if budget <= 0:
                 returncode = 124
                 break
-            cleanup_status = clear_xattrs(
+            cleanup_status = clear_xattrs_if_present(
                 cache, "detritus", runner, deadline, lock_descriptor, pending, current
             )
             budget = deadline - time.monotonic()
@@ -474,8 +497,11 @@ def main(argv: list[str]) -> int:
             clean_app_product(cache)
         sys.stderr.flush()
         runner = Path(__file__).with_name("run-bounded.py")
-        if action == "run" and kind == "swiftpm":
-            return run_swiftpm_with_retry(runner, plan, cache, command_timeout, lock_descriptor)
+        if action == "run":
+            return run_swiftpm_with_retry(
+                runner, plan, xattr_clear_root(kind, cache), command_timeout,
+                lock_descriptor,
+            )
         try:
             os.execvpe(
                 sys.executable,

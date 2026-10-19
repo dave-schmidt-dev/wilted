@@ -302,6 +302,47 @@ validate_mac_ui_selector() {
   fi
 }
 
+validate_unit_selectors() {
+  local variable="$1"
+  local value="${!variable-}"
+  [[ -n "${!variable+x}" ]] || return 0
+  if [[ -z "$value" ]]; then
+    fail "$variable is set but empty; name a test or unset it"
+    return 1
+  fi
+  # One anchored expression accepts the whole comma list, so empty entries,
+  # whitespace, extra separators and shell metacharacters cannot reach xcodebuild.
+  if [[ ! "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*(/test[A-Za-z0-9_]*)?(,[A-Za-z_][A-Za-z0-9_]*(/test[A-Za-z0-9_]*)?)*$ ]]; then
+    fail "$variable must be a comma list of Class or Class/testMethod"
+    return 1
+  fi
+}
+
+validate_unit_iterations() {
+  local variable="$1"
+  local value="${!variable-}"
+  [[ -n "${!variable+x}" ]] || return 0
+  if [[ -z "$value" ]]; then
+    fail "$variable is set but empty; name an iteration count or unset it"
+    return 1
+  fi
+  if [[ ! "$value" =~ ^([1-9][0-9]?|100)$ ]]; then
+    fail "$variable must be an integer from 1 to 100"
+    return 1
+  fi
+}
+
+validate_unit_test_environment() {
+  local variable
+  for variable in WILTED_MAC_UNIT_SELECTORS WILTED_IOS_UNIT_SELECTORS; do
+    [[ -z "${!variable+x}" ]] || validate_unit_selectors "$variable" || return 1
+  done
+  for variable in WILTED_MAC_UNIT_ITERATIONS WILTED_IOS_UNIT_ITERATIONS; do
+    [[ -z "${!variable+x}" ]] || validate_unit_iterations "$variable" || return 1
+  done
+  return 0
+}
+
 # The default Mac UI floor is read from the suite rather than pinned, so it
 # follows journeys as they are added, merged, or retired (INVARIANTS.md
 # W-INV-012) while a run that executes fewer tests than the suite declares
@@ -321,6 +362,11 @@ mac_ui_declared_test_count() {
 expected_test_count_floor() {
   if [[ "$1" == "macos-ui-tests" && -n "${WILTED_MAC_UI_SELECTOR:-}" ]]; then
     validate_mac_ui_selector "$WILTED_MAC_UI_SELECTOR" || return 1
+    printf '1\n'
+    return
+  fi
+  if [[ "$1" == "macos-unit-tests" && -n "${WILTED_MAC_UNIT_SELECTORS+x}" ]]; then
+    validate_unit_selectors WILTED_MAC_UNIT_SELECTORS || return 1
     printf '1\n'
     return
   fi
@@ -604,3 +650,6 @@ clear_ui_failure_bundle() {
   rm -rf "$retained_bundle"
   status "native.ui-leg.failure-bundle-cleared leg=$1 path=$retained_bundle"
 }
+
+# Fail before any leg (or a self-test stub) starts when a selector is malformed.
+validate_unit_test_environment
