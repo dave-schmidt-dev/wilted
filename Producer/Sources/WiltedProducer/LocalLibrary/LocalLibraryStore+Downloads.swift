@@ -110,18 +110,12 @@ extension LocalLibraryStore {
                     && $0.id != revision.revisionID.rawValue
                     && $0.mediaURL.flatMap(URL.init)?.standardizedFileURL.path == previousMediaURL.standardizedFileURL.path
             }
-            let supersededIDs = Set(superseded.map(\.id))
-            for record in superseded {
-                context.delete(record)
-            }
-            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
-            where record.itemID == revision.itemID.rawValue && supersededIDs.contains(record.revisionID) {
-                context.delete(record)
-            }
-            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
-            where record.itemID == revision.itemID.rawValue && supersededIDs.contains(record.revisionID) {
-                context.delete(record)
-            }
+            try deleteRevisionScopedRecords(
+                itemID: revision.itemID.rawValue,
+                revisionIDs: Set(superseded.map(\.id)),
+                includingOutcomes: false,
+                in: context
+            )
         }
         try context.save()
         if let previousMediaURL {
@@ -181,17 +175,12 @@ extension LocalLibraryStore {
         }
         try upsert(transcript, in: context)
 
-        for record in revisions where record.id == superseded.rawValue && record.itemID == revision.itemID.rawValue {
-            context.delete(record)
-        }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
-        where record.itemID == revision.itemID.rawValue && record.revisionID == superseded.rawValue {
-            context.delete(record)
-        }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
-        where record.itemID == revision.itemID.rawValue && record.revisionID == superseded.rawValue {
-            context.delete(record)
-        }
+        try deleteRevisionScopedRecords(
+            itemID: revision.itemID.rawValue,
+            revisionIDs: [superseded.rawValue],
+            includingOutcomes: false,
+            in: context
+        )
         if let playback {
             context.insert(LocalLibrarySchemaV21Models.PlaybackRecord(playback))
         }
@@ -211,6 +200,36 @@ extension LocalLibraryStore {
         try upsertPreparationOutcome(outcome, in: context)
         try appendLifetimeStatistics(lifetimeStatistics, in: context)
         try context.save()
+    }
+
+    /// Stages deletion of the revision, transcript, and playback rows scoped to
+    /// `revisionIDs` of one item. Preparation outcome rows are retained by the
+    /// superseding paths as preparation history; they are removed only when the
+    /// revision's audio is gone (`includingOutcomes`), because content-derived
+    /// revision IDs would otherwise meet a stale `.current` outcome after a
+    /// re-download of the same bytes. Item-scoped rows are untouched, and the
+    /// caller performs the single `context.save()`.
+    func deleteRevisionScopedRecords(
+        itemID: String, revisionIDs: Set<String>, includingOutcomes: Bool, in context: ModelContext
+    ) throws {
+        guard !revisionIDs.isEmpty else { return }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+        where record.itemID == itemID && revisionIDs.contains(record.id) {
+            context.delete(record)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
+        where record.itemID == itemID && revisionIDs.contains(record.revisionID) {
+            context.delete(record)
+        }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
+        where record.itemID == itemID && revisionIDs.contains(record.revisionID) {
+            context.delete(record)
+        }
+        guard includingOutcomes else { return }
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
+        where record.episodeID == itemID && revisionIDs.contains(record.revisionID) {
+            context.delete(record)
+        }
     }
 
     /// Every media path the store's records name -- revisions, downloads, and
@@ -408,11 +427,15 @@ extension LocalLibraryStore {
     /// Clears the records whose named media file is gone.
     ///
     /// A completed download loses its record entirely, which is how
-    /// `download(for:)` reports "never downloaded"; a revision record is
-    /// deleted the way the superseding paths delete one; a revision that names no
-    /// media is not an audio record and is left alone. A path an
-    /// in-flight registration holds is left alone, and nothing is cleared
-    /// while the library media directory itself is missing.
+    /// `download(for:)` reports "never downloaded"; a missing revision loses its
+    /// record together with the transcript and playback rows for that revision,
+    /// and its preparation outcome as well. Revision IDs are derived from
+    /// content, so a later re-download of the same bytes reuses the ID, and a
+    /// stale `.current` outcome left behind would claim the new download was
+    /// already prepared. A revision that names no media is not an audio record
+    /// and is left alone. A path an in-flight registration holds is left alone,
+    /// and nothing is cleared while the library media directory itself is
+    /// missing.
     private func clearRecordsForMissingMedia() throws -> Int {
         let manager = FileManager.default
         let mediaDirectory = self.url.deletingLastPathComponent().appendingPathComponent("media", isDirectory: true)
@@ -428,11 +451,17 @@ extension LocalLibraryStore {
             context.delete(record)
             cleared += 1
         }
+        var missingRevisionsByItem: [String: Set<String>] = [:]
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()) {
             guard let mediaURL = record.mediaURL.flatMap(URL.init) else { continue }
             if manager.fileExists(atPath: mediaURL.path) || inFlightMedia.isInFlight(mediaURL) { continue }
-            context.delete(record)
+            missingRevisionsByItem[record.itemID, default: []].insert(record.id)
             cleared += 1
+        }
+        for (itemID, revisionIDs) in missingRevisionsByItem.sorted(by: { $0.key < $1.key }) {
+            try deleteRevisionScopedRecords(
+                itemID: itemID, revisionIDs: revisionIDs, includingOutcomes: true, in: context
+            )
         }
         if cleared > 0 { try context.save() }
         return cleared
