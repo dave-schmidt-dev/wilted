@@ -347,8 +347,8 @@ final class WiltedMacLibrarySyncStatusTests: XCTestCase {
         XCTAssertTrue(model.librarySyncActivity.accountReviewed)
         XCTAssertNil(model.librarySyncActivity.lastSentAt)
         counts.publicationFails = false
-        let retry = try XCTUnwrap(model.syncLibraryNow())
-        await retry.value
+        // Sync now joins a sync in flight, which may have sent the receipt before the flip: ask until one lands.
+        try await eventually("the receipt retry") { await model.syncLibraryNow()?.value; return (try? await transport.readPublication()) != nil }
         let fulfilled = try await publicationStore.load(owner: owner)
         let remoteAfter = try await transport.readPublication()
         let expected = try XCTUnwrap(pending.receipt())
