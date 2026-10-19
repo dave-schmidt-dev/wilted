@@ -279,7 +279,7 @@ public actor PodcastDownloadCoordinator {
                 expectedByteCount: expected, updatedAt: Timestamp(now()),
                 failureKind: .retryable
             ))
-            throw PodcastDownloadCoordinatorError.transport(String(describing: error))
+            throw PodcastDownloadCoordinatorError.transport(LogSafeError.describe(error))
         }
         var hasher = SHA256()
         var byteMeter = PodcastDownloadByteMeter(episodeID: episodeID, startedAt: now())
@@ -431,7 +431,7 @@ public actor PodcastDownloadCoordinator {
             let interrupted = cancelled ? await interruptedForTermination() : false
             let status: PodcastDownloadStatus = interrupted ? .failed : (cancelled ? .cancelled : .failed)
             let typedError = (error as? PodcastDownloadCoordinatorError)
-                ?? .transport(String(describing: error))
+                ?? .transport(LogSafeError.describe(error))
             let failureKind: PodcastDownloadFailureKind? = interrupted ? .retryable : (cancelled ? nil : typedError.failureKind)
             let terminal = try PodcastDownload(
                 episodeID: episodeID, status: status, bytesReceived: received,
