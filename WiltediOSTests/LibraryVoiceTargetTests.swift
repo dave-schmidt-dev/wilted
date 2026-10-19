@@ -479,7 +479,18 @@ final class LibraryVoiceTargetTests: XCTestCase {
         let rig = try await makeRig(cached: ["a"], sendsIntents: false)
 
         let outcome = await rig.target.perform(.markCompleted(id("a")))
-        XCTAssertEqual(outcome, .queued, "the decision exists and will be retried, but the Mac has not been told")
+        XCTAssertEqual(outcome, .queued, "the decision is saved and will be retried, but the Mac has not been told")
+    }
+
+    func testMarkCompletedFailsWhenTheUnsentDecisionCouldNotBeSaved() async throws {
+        try await seedStartedEpisodeA()
+        let blocker = scratch.appendingPathComponent("not-a-folder")
+        try Data().write(to: blocker)
+        let rig = try await makeRig(cached: ["a"], sendsIntents: false, outbox: blocker.appendingPathComponent("pending-intents.json"))
+
+        let outcome = await rig.target.perform(.markCompleted(id("a")))
+        XCTAssertEqual(outcome, .failed, "a decision that would not survive a relaunch is never promised")
+        XCTAssertNotNil(rig.model.pendingDecision(for: id("a")), "this run still retries it")
     }
 
     func testMarkCompletedFailsWhenAnotherActionOwnsTheRow() async throws {

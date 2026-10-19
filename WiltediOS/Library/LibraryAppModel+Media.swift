@@ -248,8 +248,9 @@ extension LibraryAppModel {
             case .cached:
                 setMedia(.onPhone, entryID, runID)
                 phoneStats.recordDownload(bytes: offer.byteCount)
-                if let revisionID = offer.revisionID {
-                    unacknowledgedMedia[entryID] = revisionID
+                if let revisionID = offer.revisionID, let intent = try? LibraryIntent.mediaCached(
+                    entryID: entryID, revisionID: revisionID, deviceID: deviceID, createdAt: now()) {
+                    unacknowledgedMedia[entryID] = intent
                     await sendPendingMediaAcknowledgements()
                 }
                 startTranscriptLoad(entryID: entryID, fetchOnMiss: true)
@@ -362,14 +363,17 @@ extension LibraryAppModel {
         setMedia(.requested(since: now(), retry: LibraryMediaRetry(attempt: retry.attempt, attempts: retry.attempts)), entryID, runID)
     }
 
+    /// Sends each saved acknowledgement with its own intent id, so a retry, or a replay after a relaunch,
+    /// is the same request to the Mac. An entry that is not current now is skipped and kept.
     private func sendPendingMediaAcknowledgements() async {
         guard let context = await mediaContext(live: true) else { return }
-        for (entryID, revisionID) in unacknowledgedMedia {
-            guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return }
-            guard let intent = try? LibraryIntent.mediaCached(
-                entryID: entryID, revisionID: revisionID, deviceID: deviceID, createdAt: now()) else { continue }
+        for (entryID, intent) in unacknowledgedMedia {
+            guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else {
+                guard await mediaContextIsCurrent(context, live: true) else { return }
+                continue
+            }
             if (try? await transport.send(intent: intent)) != nil,
-               await mediaContextIsCurrent(context, entryID: entryID, live: true), unacknowledgedMedia[entryID] == revisionID {
+               await mediaContextIsCurrent(context, entryID: entryID, live: true), unacknowledgedMedia[entryID]?.id == intent.id {
                 unacknowledgedMedia[entryID] = nil
             }
         }

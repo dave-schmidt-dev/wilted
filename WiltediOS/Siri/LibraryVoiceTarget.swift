@@ -107,8 +107,9 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
     }
 
     /// Mark completed is a request to the Mac: sent is as done as the phone can make it (the Larder
-    /// shows the same optimistic result), an unsent one is queued for retry, and a row that started no
-    /// decision, or whose pending decision is some other action, is a failure.
+    /// shows the same optimistic result), an unsent one saved in the outbox is queued for retry, and an
+    /// unsent one that could not be saved, a row that started no decision, or one whose pending decision
+    /// is some other action, is a failure: Siri never promises what a relaunch could lose.
     private func markCompleted(_ entryID: ItemID) async -> VoiceOutcome {
         if model.pendingDecision(for: entryID) == nil {
             await IntentDonor.shared.withoutDonatingMark(of: entryID) { await model.decide(.markDone, entryID: entryID) }
@@ -116,7 +117,8 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
         guard let pending = model.pendingDecision(for: entryID), pending.intent.action == .markDone(entryID: entryID) else {
             return .failed
         }
-        return pending.isSent ? .done : .queued
+        if pending.isSent { return .done }
+        return model.isDurablyQueued(pending.id) ? .queued : .failed
     }
 
     private static func outcome(_ succeeded: Bool) -> VoiceOutcome { succeeded ? .done : .failed }

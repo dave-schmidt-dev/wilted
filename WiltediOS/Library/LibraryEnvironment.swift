@@ -50,7 +50,8 @@ enum LibraryEnvironment {
         }
         return LibraryAppModel(
             transport: built.transport, store: store, deviceID: deviceID, recovery: recovery,
-            ownPositionsURL: directory.appendingPathComponent("own-positions.json"))
+            ownPositionsURL: directory.appendingPathComponent("own-positions.json"),
+            outboxURL: directory.appendingPathComponent("pending-intents.json"))
     }
 
     /// Constructor failure retains the same mirror and expected owner; it never retries unowned.

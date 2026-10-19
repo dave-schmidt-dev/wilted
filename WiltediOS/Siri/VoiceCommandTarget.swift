@@ -1,8 +1,8 @@
 import Foundation
 import WiltedLibrary
 
-/// How far a performed action got. `queued` is for a Mac-side decision that could not be sent yet and
-/// will be retried: true, but not done, so Siri must not say it is.
+/// How far a performed action got. `queued` is for a Mac-side decision that could not be sent yet and is
+/// saved on the phone to be retried, even after a relaunch: true, but not done, so Siri must not say it is.
 enum VoiceOutcome: Equatable {
     case done, queued, failed
 }

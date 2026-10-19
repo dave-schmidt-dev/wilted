@@ -63,8 +63,9 @@ extension LibraryVoiceTargetTests {
         try await macPublishesProgress("a", position: 100)
     }
 
-    /// A phone whose media cache already holds `raws`, verified against the Mac's offer for them.
-    func makeRig(cached raws: [String], sendsIntents: Bool = true) async throws -> Rig {
+    /// A phone whose media cache already holds `raws`, verified against the Mac's offer for them. Its unsent
+    /// intents are saved under the scratch folder unless `outbox` names another file.
+    func makeRig(cached raws: [String], sendsIntents: Bool = true, outbox: URL? = nil) async throws -> Rig {
         let phoneTransport = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
         let mirror = FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json"))
         try await PreparedMediaFixture.bootstrap(mirror, transport: phoneTransport)
@@ -91,8 +92,9 @@ extension LibraryVoiceTargetTests {
             handoffTiming: LibraryHandoffTiming(
                 observeInterval: SyncCadence.phoneObserveInterval, sleep: { try await sleeper.sleep($0) }, settleSleep: { _ in }),
             decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60),
-            preferences: UserDefaults(suiteName: suite)!, now: { Date(timeIntervalSince1970: 1_000) },
-            timeZone: TimeZone(identifier: "UTC")!)
+            preferences: UserDefaults(suiteName: suite)!,
+            outboxURL: outbox ?? scratch.appendingPathComponent("outbox-" + UUID().uuidString + ".json"),
+            now: { Date(timeIntervalSince1970: 1_000) }, timeZone: TimeZone(identifier: "UTC")!)
         model.attachPlayer(player)
         await model.refresh()
         return Rig(

@@ -76,6 +76,12 @@ struct EntryPlacement: Equatable, Sendable {
     /// The entry just before this one in the Larder, nil at the front or when not queued.
     let predecessor: ItemID?
 
+    init(removal: LibraryRemoval, isQueued: Bool, predecessor: ItemID?) {
+        self.removal = removal
+        self.isQueued = isQueued
+        self.predecessor = predecessor
+    }
+
     init?(of entryID: ItemID, in content: LibrarySnapshot) {
         guard let entry = content.entries[entryID] else { return nil }
         removal = entry.removal
@@ -100,7 +106,7 @@ struct PendingDecision: Identifiable, Equatable, Sendable {
     /// The entry's mirrored placement when the decision was made.
     let baseline: EntryPlacement
     var phase: Phase = .awaiting
-    /// False until the transport accepted the intent; unsent intents are retried.
+    /// False until the transport accepted the intent; unsent intents are saved in the outbox and retried.
     var isSent = false
     /// A decision the listener did not make (an episode that played to its end): sent and tracked like
     /// any other, but it changes nothing on screen and says nothing on the row; the row follows the Mac.
@@ -283,7 +289,9 @@ extension LibraryAppModel {
     /// Compares every unsettled decision with the Mac's outcomes and the fetched state: a rejection
     /// rolls it back with a reason, an applied outcome or a matching publish confirms it, a publish
     /// that moved the entry somewhere else contradicts it (the Mac's state wins), and an unanswered
-    /// one reverts to "Pending on Mac" after the timeout while staying tracked.
+    /// one reverts to "Pending on Mac" after the timeout while staying tracked. A decision the Mac does
+    /// not have yet is still owed to it: a contradicting publish only reverts its display, and it stays
+    /// in the outbox until it is sent.
     func resolveDecisions(outcomes read: [IntentOutcome]) async {
         guard !decisions.isEmpty else {
             clearUnavailableCompletionRestore()
@@ -311,6 +319,7 @@ extension LibraryAppModel {
                 }
             }
             if !settled { settled = isSettledByFetchedState(decision) }
+            if !settled, !decision.isSent, isContradictedByFetchedState(decision) { decision.phase = .pendingOnMac }
             if !settled { settled = advance(&decision, at: current) }
             if settled { changed[decision.id] = .some(nil) } else if decision != original { changed[decision.id] = decision }
         }
@@ -331,8 +340,16 @@ extension LibraryAppModel {
         if case .restore = decision.intent.action, let group = episodeGroup(decision.entryID) {
             return group.latestManualChoice == .keep && (group.manualDecidedAt.map { $0 >= decision.intent.createdAt } ?? false)
         }
+        guard let placement = EntryPlacement(of: decision.entryID, in: decisionContent) else { return decision.isSent }
+        if decision.isSatisfied(by: placement) { return true }
+        // An unsent decision is never dropped for a contradiction: the Mac has not seen it yet.
+        return decision.isSent && placement != decision.baseline
+    }
+
+    /// The fetched state moved the entry away from where it was when the decision was made.
+    private func isContradictedByFetchedState(_ decision: PendingDecision) -> Bool {
         guard let placement = EntryPlacement(of: decision.entryID, in: decisionContent) else { return true }
-        return decision.isSatisfied(by: placement) || placement != decision.baseline
+        return placement != decision.baseline
     }
 
     /// Applies the clock to a decision; true when it should be forgotten.
