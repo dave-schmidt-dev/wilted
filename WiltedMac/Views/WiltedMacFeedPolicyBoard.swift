@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import WiltedDomain
 import WiltedProducer
 
@@ -16,6 +17,8 @@ import WiltedProducer
 /// and `settle()` are awaitable so callers do not race reads or writes.
 @MainActor @Observable
 final class WiltedMacFeedPolicyBoard {
+    private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "FeedPolicy")
+
     let model: WiltedMacModel
     private(set) var policies: [String: FeedAutomationPolicy] = [:]
     private(set) var failedFeedIDs: Set<String> = []
@@ -109,7 +112,8 @@ final class WiltedMacFeedPolicyBoard {
                     throw error
                 } catch {
                     if Task.isCancelled { throw CancellationError() }
-                    throw LoadError.feedRead(subscription.title, error.localizedDescription)
+                    Self.log.error("feed settings read failed: \(LogSafeError.describe(error), privacy: .public)")
+                    throw LoadError.feedRead(subscription.title)
                 }
             }
             let articleFeeds: [ArticleFeed]
@@ -119,7 +123,8 @@ final class WiltedMacFeedPolicyBoard {
                 throw error
             } catch {
                 if Task.isCancelled { throw CancellationError() }
-                throw LoadError.articleRead(error.localizedDescription)
+                Self.log.error("feed settings read failed: \(LogSafeError.describe(error), privacy: .public)")
+                throw LoadError.articleRead
             }
             var news: Set<String> = []
             for feed in articleFeeds {
@@ -130,7 +135,8 @@ final class WiltedMacFeedPolicyBoard {
                     throw error
                 } catch {
                     if Task.isCancelled { throw CancellationError() }
-                    throw LoadError.articleRead(error.localizedDescription)
+                    Self.log.error("feed settings read failed: \(LogSafeError.describe(error), privacy: .public)")
+                    throw LoadError.articleRead
                 }
             }
             await settle()
@@ -152,7 +158,12 @@ final class WiltedMacFeedPolicyBoard {
             loadState = .idle
         } catch {
             guard activeReloadID == reloadID else { return }
-            loadState = .failed(error.localizedDescription)
+            if let failure = (error as? LoadError)?.errorDescription {
+                loadState = .failed(failure)
+            } else {
+                Self.log.error("feed settings read failed: \(LogSafeError.describe(error), privacy: .public)")
+                loadState = .failed("Could not load feed settings. Try again.")
+            }
         }
     }
 
@@ -198,21 +209,21 @@ final class WiltedMacFeedPolicyBoard {
         case storeUnavailable
         case startup(String)
         case invalidFeedIdentifier(String)
-        case feedRead(String, String)
-        case articleRead(String)
+        case feedRead(String)
+        case articleRead
 
         var errorDescription: String? {
             switch self {
             case .storeUnavailable:
-                "The saved library is not available yet. Retry the capacity check."
+                "The saved library is not open yet. Try again."
             case let .startup(message):
-                "\(message) Retry the capacity check when the library is ready."
+                "\(message) Try again when the library is ready."
             case let .invalidFeedIdentifier(title):
-                "Could not load capacity for \(title): invalid feed identifier."
-            case let .feedRead(title, detail):
-                "Could not load saved settings for \(title): \(detail)"
-            case let .articleRead(detail):
-                "Could not load article feed settings: \(detail)"
+                "Could not load settings for \(title)."
+            case let .feedRead(title):
+                "Could not load settings for \(title). Try again."
+            case .articleRead:
+                "Could not load article feed settings. Try again."
             }
         }
     }

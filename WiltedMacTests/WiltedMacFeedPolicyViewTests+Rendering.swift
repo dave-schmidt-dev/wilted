@@ -150,7 +150,7 @@ extension WiltedMacFeedPolicyViewTests {
             throw error
         }
         let renderedCapacity = capacity.joined(separator: " ")
-        XCTAssertFalse(renderedCapacity.contains("Capacity loading"), renderedCapacity)
+        XCTAssertFalse(renderedCapacity.contains("Loading settings"), renderedCapacity)
         XCTAssertTrue(renderedCapacity.contains("kept"), renderedCapacity)
 
         await gate.release()

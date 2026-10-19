@@ -171,7 +171,7 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         XCTAssertTrue(text.contains("\(kept) kept"), text)
         XCTAssertTrue(text.contains("No limit"), text)
         XCTAssertTrue(text.contains("0 waiting for space"), text)
-        XCTAssertFalse(text.contains("Capacity loading"), text)
+        XCTAssertFalse(text.contains("Loading settings"), text)
     }
 
     /// Capacity follows committed Keep/Skip/removal, while raw feed metadata retains all three records.
@@ -291,7 +291,7 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         }
         hold.release()
         await refresh.value
-        XCTAssertFalse(text.contains("Capacity loading"), text)
+        XCTAssertFalse(text.contains("Loading settings"), text)
         XCTAssertTrue(text.contains("kept"), text)
         await WiltedMacHeadless.eventually("the refresh settles") { !board.isLoading }
         XCTAssertTrue(model.subscriptions.allSatisfy { board.isLoaded($0.id) })
@@ -377,6 +377,6 @@ struct WiltedMacCapacityCountFixture {
         XCTAssertTrue(text.contains("\(kept) of 2 kept"), text, file: file, line: line)
         XCTAssertTrue(text.contains("\(waiting) waiting for space"), text, file: file, line: line)
         XCTAssertFalse(text.contains("3 of 2 kept"), "raw snapshot count must never masquerade as kept capacity: \(text)", file: file, line: line)
-        XCTAssertFalse(text.contains("Capacity loading"), text, file: file, line: line)
+        XCTAssertFalse(text.contains("Loading settings"), text, file: file, line: line)
     }
 }

@@ -73,6 +73,14 @@ struct WiltedMacEpisodeIdentityReviewLayout: View {
     let dismiss: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
+    static func audioFingerprintLabel(_ hash: String?) -> String {
+        hash.map { "Audio fingerprint \($0)" } ?? "No completed original download"
+    }
+
+    static func preparedVersionLabel(_ revision: RevisionID?) -> String {
+        revision.map { "Prepared version \($0.rawValue)" } ?? "Not prepared"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -281,10 +289,10 @@ struct WiltedMacEpisodeIdentityReviewLayout: View {
             if let guid = member.rssGUID {
                 Text("GUID \(guid)").wiltedFont(.caption).textSelection(.enabled)
             }
-            Text(member.originalMediaContentHash.map { "Original media proof \($0)" } ?? "No completed original download")
+            Text(Self.audioFingerprintLabel(member.originalMediaContentHash))
                 .wiltedFont(.caption)
                 .textSelection(.enabled)
-            Text(member.preparedRevisionID.map { "Prepared revision \($0.rawValue)" } ?? "Not prepared")
+            Text(Self.preparedVersionLabel(member.preparedRevisionID))
                 .wiltedFont(.caption)
             Text(progressLabel(member))
                 .wiltedFont(.caption)

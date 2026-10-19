@@ -129,7 +129,7 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
             WiltedMacFeedCapacityLabel(board: board, subscription: subscription),
             size: CGSize(width: 360, height: 80)
         )
-        XCTAssertTrue(capacity.contains("Capacity unavailable"), "the failure is visible instead of a default count")
+        XCTAssertTrue(capacity.contains("Settings unavailable"), "the failure is visible instead of a default count")
 
         await board.retryReload()
         XCTAssertFalse(board.isLoading)
@@ -140,6 +140,39 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
         ).joined(separator: " ")
         XCTAssertTrue(details.contains(failure), "actual safe startup error should be visible: \(details)")
         XCTAssertTrue(details.contains("Retry settings"), details)
+    }
+
+    func testFeedSettingsReadFailureIsPlainAndHidesErrorDetails() async throws {
+        let model = await WiltedMacHeadless.model(
+            self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "feed-settings-read-failure"
+        )
+        addTeardownBlock { await model.close() }
+        let subscription = try XCTUnwrap(model.subscriptions.first)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        board.afterFeedPolicyReadHookForTesting = { _ in
+            throw URLError(.notConnectedToInternet, userInfo: [
+                NSURLErrorFailingURLStringErrorKey: "https://feeds.example.test/x?token=SECRET-TOKEN",
+            ])
+        }
+        await board.reload()
+
+        XCTAssertEqual(board.loadFailureMessage, "Could not load settings for \(subscription.title). Try again.")
+        let message = try XCTUnwrap(board.loadFailureMessage)
+        XCTAssertFalse(message.contains("SECRET-TOKEN"), message)
+        XCTAssertFalse(message.contains("Error Domain"), message)
+        XCTAssertFalse(message.contains("NSURLErrorDomain"), message)
+        XCTAssertFalse(message.contains("capacity"), message)
+    }
+
+    func testCompletionRetryMessageIsPlainAndSourceDropsAdmissionWording() throws {
+        XCTAssertEqual(WiltedMacModel.completionRetryMessage,
+                       "Some completions are still being finished. Wilted will retry.")
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("WiltedMac/ViewModel/WiltedMacModel+EpisodeCompletion.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(source.contains("admissions"))
     }
 
     private struct RecognizedLine {
