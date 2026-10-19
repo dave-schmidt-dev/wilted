@@ -37,7 +37,8 @@ wilted_testmanagerd_preflight() {
   done <<<"$pids"
 }
 
-# Each build-and-test transaction holds its product lock; work starts after destination readiness.
+# Simulator legs build outside the lane and host-UI locks and hold them only for
+# test-without-building; the Mac unit leg keeps build and test in one host-UI transaction.
 xcode_test_leg() {
   local label="$1" source_dir="$2" scheme="$3" destination="$4" target="$5"
   shift 5
@@ -105,15 +106,22 @@ xcode_test_leg() {
     trap 'xcode_signal_status=143; wilted_stop_active_ui_lock; wilted_stop_active_supervisor 300' TERM
     trap 'xcode_signal_status=129; wilted_stop_active_ui_lock; wilted_stop_active_supervisor 300' HUP
   fi
-  local test_command=(env WILTED_TEST_TIMEOUT_SECONDS="${xcode_build_and_test_timeout_seconds:-$xcode_test_timeout_seconds}" \
-    WILTED_WORK_PHASE=build-and-test \
-    python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test \
-    "${common[@]}" ${iteration_args[@]+"${iteration_args[@]}"} -collect-test-diagnostics never -resultBundlePath "$tmp_root/$label.xcresult")
   if [[ "$destination" == *'id='* ]]; then
+    # Compile before entering the lane: a failed or timed-out build never boots a
+    # simulator and never waits for another leg's host-UI lock.
+    run_with_build_cache xcode "$cache_key" xcodebuild build-for-testing "${common[@]}" || return $?
     udid="${destination##*id=}"
+    local test_command=(env WILTED_TEST_TIMEOUT_SECONDS="$xcode_test_timeout_seconds" \
+      WILTED_WORK_PHASE=test \
+      python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building \
+      "${common[@]}" ${iteration_args[@]+"${iteration_args[@]}"} -collect-test-diagnostics never -resultBundlePath "$tmp_root/$label.xcresult")
     wilted_gate_simulator_session "$udid" "${test_command[@]}" &
     WILTED_ACTIVE_SUPERVISOR_PID=$!
   else
+    local test_command=(env WILTED_TEST_TIMEOUT_SECONDS="${xcode_build_and_test_timeout_seconds:-$xcode_test_timeout_seconds}" \
+      WILTED_WORK_PHASE=build-and-test \
+      python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test \
+      "${common[@]}" ${iteration_args[@]+"${iteration_args[@]}"} -collect-test-diagnostics never -resultBundlePath "$tmp_root/$label.xcresult")
     # Mac test hosts share a bundle identifier. Keep the current project build
     # and test under one host/product transaction so queued peers cannot replace it.
     local lock_pid_file="$tmp_root/$label.ui-lock.pid"

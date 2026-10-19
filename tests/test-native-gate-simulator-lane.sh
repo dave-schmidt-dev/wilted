@@ -9,6 +9,8 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
 fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 -B - "$repo_root" <<'PY'
+import fcntl
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -31,6 +33,37 @@ class SimulatorLaneTests(fixture.XcodeFixture, unittest.TestCase):
         self.assertIn('native.simulator.boot.raced', result.stderr)
         self.assertNotIn('simctl shutdown', self.events.read_text())
         self.assertEqual(json.loads(self.state.read_text())['devices'][RUNTIME][0]['state'], 'Booted')
+    def test_ios_build_runs_outside_lane_and_host_ui_locks(self):
+        self.select()
+        script=self.write_ios_leg_script()
+        (self.bin / 'ui-lock').write_text('#!/bin/bash\nwhile [[ "$1" != -- ]]; do shift; done\nshift\necho "ui-lock acquired" >>"$FAKE_EVENTS"\nexec "$@"\n')
+        lock_dir=self.root / '.build/simulator-locks'; lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_file=(lock_dir / (hashlib.sha256(RUNTIME.encode()).hexdigest()[:16] + '.lock')).open('a+')
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        process=subprocess.Popen(['bash', str(script), str(self.root)],
+                                 env=dict(self.env, FAKE_BUILD_DELAY='.2', FAKE_TEST_DELAY='.1'),
+                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        released=False
+        try:
+            deadline=time.monotonic()+20
+            while 'build end' not in self.events.read_text() and time.monotonic()<deadline: time.sleep(.02)
+            self.assertIn('build end', self.events.read_text())
+            time.sleep(1)
+            events=self.events.read_text()
+            self.assertNotIn('test start', events)
+            self.assertNotIn('ui-lock acquired', events)
+            self.assertNotIn('simctl boot', events)
+            fcntl.flock(lock_file, fcntl.LOCK_UN); released=True
+            out,err=process.communicate(timeout=60)
+            self.assertEqual(process.returncode, 0, err)
+            events=self.events.read_text().splitlines()
+            order=['build start', 'build end', 'ui-lock acquired', 'test start', 'test end']
+            positions=[events.index(event) for event in order]
+            self.assertEqual(positions, sorted(positions))
+        finally:
+            if process.poll() is None: process.terminate(); process.communicate(timeout=60)
+            if not released: fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
     def test_worktrees_of_one_repository_share_the_simulator_lane(self):
         self.select()
         env={k: v for k, v in self.env.items() if not k.startswith('GIT_')}

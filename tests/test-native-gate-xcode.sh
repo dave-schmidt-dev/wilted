@@ -83,7 +83,9 @@ run_package_xctest_bundles() {
 import json,os,sys,subprocess
 from pathlib import Path
 import xml.etree.ElementTree as ET
-args=sys.argv[1:];project=Path(args[args.index('-project')+1]);root=ET.parse(project/'xcshareddata/xcschemes/WiltediOS.xcscheme').getroot()
+args=sys.argv[1:]
+with open(os.environ['FAKE_CAPTURE']+'.calls','a') as calls:calls.write(json.dumps(args)+'\\n')
+project=Path(args[args.index('-project')+1]);root=ET.parse(project/'xcshareddata/xcschemes/WiltediOS.xcscheme').getroot()
 record={'args':args,'project':str(project),'environment':[dict(x.attrib) for x in root.findall('.//EnvironmentVariable')]}
 products=[arg.split('=',1)[1] for arg in args if arg.startswith('CONFIGURATION_BUILD_DIR=')]
 def expanded(platform):return Path(products[0].replace('$(CONFIGURATION)','Debug').replace('$(EFFECTIVE_PLATFORM_NAME)',platform))
@@ -124,6 +126,7 @@ source "$1/scripts/lib/native-gate-xcode.sh"
 require_tool() { :; };assert_test_sources() { :; }
 find_project() { printf '%s\\n' "$repo_root/generated/Project.xcodeproj"; }
 build_cache_path() { python3 "$build_with_cache" path "$@"; }
+run_with_build_cache() { local kind="$1" key="$2"; shift 2; WILTED_TEST_TIMEOUT_SECONDS=10 WILTED_WORK_PHASE=build python3 "$build_with_cache" run "$kind" "$key" -- "$@"; }
 xcode_test_leg "$2" "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1111-1111-1111-111111111111" "$3"
 ''')
         source = (ROOT / 'project.yml').read_text()
@@ -173,7 +176,16 @@ xcode_test_leg "$2" "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1
                 self.assertEqual(sentinel.read_text(), 'built by this xcodebuild invocation')
                 self.assertEqual(list((self.root / 'legs' / label / 'work').iterdir()), [])
                 self.assertEqual(args[args.index('-collect-test-diagnostics') + 1], 'never')
-                self.assertIn('test', args)
+                self.assertIn('test-without-building', args)
+                calls = [json.loads(line) for line in (self.root / (label + '.json.calls')).read_text().splitlines()]
+                self.assertEqual(len(calls), 2)
+                self.assertIn('build-for-testing', calls[0])
+                self.assertIn('test-without-building', calls[1])
+                for option in ['CONFIGURATION_BUILD_DIR=', '-only-testing:']:
+                    self.assertEqual([arg for arg in calls[0] if arg.startswith(option)],
+                                     [arg for arg in calls[1] if arg.startswith(option)])
+                for option in ['-project', '-destination']:
+                    self.assertEqual(calls[0][calls[0].index(option) + 1], calls[1][calls[1].index(option) + 1])
 
     def test_phone_and_watch_same_configuration_keep_distinct_sdk_products_and_embed(self):
         self.select()
@@ -400,7 +412,10 @@ exit "$result"
             with self.subTest(label=label):
                 self.assertEqual(args.count('-collect-test-diagnostics'), 1)
                 self.assertEqual(args[args.index('-collect-test-diagnostics') + 1], 'never')
-                self.assertEqual(args.count('test'), 1)
+                if label == 'ios-unit-tests':
+                    self.assertEqual(args.count('test-without-building'), 1)
+                else:
+                    self.assertEqual(args.count('test'), 1)
                 self.assertIn('-only-testing:' + target, args)
                 self.assertEqual(args[args.index('-resultBundlePath') + 1], str(self.root / (label + '.xcresult')))
         self.assertIn('CODE_SIGNING_ALLOWED=YES', ios['args'])
@@ -629,48 +644,30 @@ exit "$result"
             self.assertIn('simctl shutdown', self.events.read_text())
         finally:
             if process.poll() is None: process.kill(); process.wait()
-    def test_xcode_leg_ready_wait_excluded_from_combined_work_deadline(self):
+    def test_ios_build_precedes_lane_and_test_follows_readiness(self):
         self.select()
-        project=self.root / 'generated/Project.xcodeproj'; project.mkdir(parents=True)
-        schemes=project / 'xcshareddata/xcschemes'; schemes.mkdir(parents=True)
-        (schemes / 'WiltediOS.xcscheme').write_text('<Scheme><TestAction /></Scheme>')
-        script=self.root / 'leg.sh'
-        script.write_text('''#!/bin/bash
-set -Eeuo pipefail
-repo_root="$1"; tmp_root="$repo_root"; native_project="$repo_root/generated/Project.xcodeproj"
-build_with_cache="$repo_root/scripts/build-with-cache.py"
-xcode_test_timeout_seconds=3; WILTED_TEMP_LEG_WORK="$repo_root"; integration_root="$repo_root"
-xcode_build_and_test_timeout_seconds="${FIXTURE_BUILD_AND_TEST_BUDGET:-}"
-source "$repo_root/scripts/lib/test-runner.sh"
-source "$repo_root/scripts/lib/mac-test-parent.sh"
-source "$repo_root/scripts/lib/native-gate-simulator.sh"
-source "$repo_root/scripts/lib/native-gate-xcode.sh"
-require_tool() { :; }
-assert_test_sources() { :; }
-build_cache_path() { python3 "$build_with_cache" path "$@"; }
-find_project() { printf '%s\\n' "$native_project"; }
-status() { printf '%s\\n' "$1" >&2; }
-run_with_build_cache() {
- local kind="$1" key="$2"; shift 2
- WILTED_TEST_TIMEOUT_SECONDS=10 WILTED_WORK_PHASE=build python3 "$build_with_cache" run "$kind" "$key" -- "$@"
-}
-xcode_test_leg ios-unit-tests "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1111-1111-1111-111111111111" WiltediOSTests
-''')
+        script=self.write_ios_leg_script()
         result=self.invoke('bash', str(script), str(self.root), env=dict(self.env, FAKE_BUILD_DELAY='1', FAKE_TEST_DELAY='.1', FAKE_READY_DELAY='4'))
         self.assertEqual(result.returncode, 0, result.stderr)
         events=self.events.read_text().splitlines()
-        ready=next(i for i,x in enumerate(events) if 'bootstatus' in x)
-        self.assertLess(ready, events.index('build start'))
-        self.assertLess(events.index('build end'), events.index('test start'))
+        lane=next(i for i,x in enumerate(events) if 'simctl boot' in x or 'bootstatus' in x)
+        self.assertLess(events.index('build end'), lane)
+        self.assertLess(next(i for i,x in enumerate(events) if 'bootstatus' in x), events.index('test start'))
         self.events.write_text('')
         timed=self.invoke('bash',str(script),str(self.root),env=dict(self.env,FAKE_BUILD_DELAY='60',FAKE_READY_DELAY='4'))
         self.assertEqual(timed.returncode,124,timed.stderr)
-        self.assertIn('phase=build-and-test',timed.stderr)
+        self.assertIn('phase=build',timed.stderr)
+        self.assertNotIn('simctl boot',self.events.read_text())
+        # A ready simulator holds the test timeout only; a hung test still cleans up the owned boot.
+        self.events.write_text('')
+        hung=self.invoke('bash',str(script),str(self.root),env=dict(self.env,FAKE_TEST_DELAY='60',FAKE_READY_DELAY='1'))
+        self.assertEqual(hung.returncode,124,hung.stderr)
+        self.assertIn('phase=test',hung.stderr)
         self.assertIn('simctl shutdown',self.events.read_text())
-        # A build longer than the test budget passes under the combined build-and-test budget.
+        # A build longer than the 3 s test budget passes because the build has its own budget.
         self.events.write_text('')
         slow=self.invoke('bash',str(script),str(self.root),env=dict(self.env,FAKE_BUILD_DELAY='5',FAKE_TEST_DELAY='.1',
-                         FAKE_READY_DELAY='1',FIXTURE_BUILD_AND_TEST_BUDGET='20'))
+                         FAKE_READY_DELAY='1'))
         self.assertEqual(slow.returncode,0,slow.stderr)
         self.assertIn('test end',self.events.read_text().splitlines())
 
