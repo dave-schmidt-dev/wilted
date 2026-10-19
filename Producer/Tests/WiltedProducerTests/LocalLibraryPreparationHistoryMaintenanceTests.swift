@@ -238,11 +238,47 @@ extension LocalLibraryStoreTests {
             currentFingerprint: "current", rules: [])
         let deepAfter = await deep.store.preparationMaintenanceRowsRead
         XCTAssertEqual(shallowAfter - shallowBefore, deepAfter - deepBefore)
+        XCTAssertGreaterThanOrEqual(shallowAfter - shallowBefore, LocalLibraryStore.maintenanceDiscoveryWindow)
         XCTAssertLessThan(shallowAfter - shallowBefore, 3 * 100)
         let requiresBefore = await shallow.store.preparationMaintenanceRowsRead
         let requires = try await shallow.store.requiresForcedRedownload(for: shallow.itemID)
         XCTAssertFalse(requires)
         let requiresAfter = await shallow.store.preparationMaintenanceRowsRead
         XCTAssertLessThanOrEqual(requiresAfter - requiresBefore, 1)
+    }
+
+    func testPreparationHistoryForcedRedownloadCompletionClearsOnlyThatItemsMarkers() async throws {
+        let fixture = try await makePreparationHistoryDownload("marker-completion")
+        defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
+        let other = try ItemID(rawValue: fixture.itemID.rawValue + "b")
+        let context = ModelContext(fixture.store.container)
+        let markerResult = try PreparationTerminalResult(outcome: .failed,
+            error: try ProducerError(code: .failed, message: "marker", retryable: true))
+        for item in [fixture.itemID, other] {
+            for prefix in [LocalLibraryStore.forcedRedownloadRequestPrefix, LocalLibraryStore.resetPreparationRequestPrefix] {
+                try insertPreparation(context, id: prefix + item.rawValue + "|marker", itemID: item,
+                    requestID: prefix + item.rawValue, stage: .failed, at: fixture.base, attempt: nil,
+                    terminal: markerResult)
+            }
+        }
+        for ordinal in 1...100 {
+            try insertPreparation(context, id: fixture.requestID + "|extracting#\(ordinal)", itemID: fixture.itemID,
+                requestID: fixture.requestID, stage: .extracting,
+                at: fixture.base.addingTimeInterval(Double(ordinal)), attempt: nil)
+        }
+        try context.save()
+        let before = await fixture.store.preparationMaintenanceRowsRead
+        try await fixture.store.markForcedRedownloadCompleted(for: fixture.itemID, currentFingerprint: "current")
+        let after = await fixture.store.preparationMaintenanceRowsRead
+        // One exact forced-marker probe plus this item's two markers; no journal history.
+        XCTAssertEqual(after - before, 3)
+        let cleared = try await fixture.store.requiresForcedRedownload(for: fixture.itemID)
+        XCTAssertFalse(cleared)
+        let untouched = try await fixture.store.requiresForcedRedownload(for: other)
+        XCTAssertTrue(untouched)
+        let otherReset = LocalLibraryStore.resetPreparationRequestPrefix + other.rawValue
+        XCTAssertEqual(try preparationHistoryRowCount(in: fixture.store.container, requestID: otherReset), 1)
+        XCTAssertEqual(try preparationHistoryRowCount(
+            in: fixture.store.container, requestID: fixture.requestID), 100)
     }
 }

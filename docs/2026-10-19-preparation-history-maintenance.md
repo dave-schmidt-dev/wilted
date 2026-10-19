@@ -85,7 +85,7 @@ generation-exact slices.
    `markForcedRedownloadCompleted` reads only the item's marker rows.
 
 **Bound**: per item, rows read are at most window (64) + newest generation + anchored
-batch (32) + Ready-proving generation + markers. A generation's size is set by one
+batch (32) + Ready-proving generation; markers are read once per pass for the library. A generation's size is set by one
 pipeline run's events, so the bound does not grow with the number of retained
 generations. Each complete-generation read is capped at 4,096 rows so a corrupt or
 externally written prefix cannot materialise without bound; the newest-generation search
