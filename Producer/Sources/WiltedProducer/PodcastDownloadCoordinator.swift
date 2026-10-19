@@ -354,7 +354,7 @@ public actor PodcastDownloadCoordinator {
                 throw PodcastDownloadCoordinatorError.declaredSizeMismatch(expected: enforcedExpected, actual: received)
             }
             guard received > 0 else { throw PodcastDownloadCoordinatorError.invalidAudio }
-            try handle.synchronize()
+            try DurableFile.fullSync(handle, at: stagingURL)
             try handle.close()
 
             let contentHash = "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()

@@ -74,7 +74,7 @@ extension LocalLibraryStore {
         for file in checkpointedFiles {
             let suffix = String(file.url.lastPathComponent.dropFirst(sourceName.count))
             let copy = retainedDirectory.appendingPathComponent(retainedName + suffix)
-            try file.bytes.write(to: copy, options: .atomic)
+            try DurableFile.write(file.bytes, to: copy)
             retainedFiles.append(copy)
         }
         guard manager.fileExists(atPath: retainedURL.path) else {
@@ -97,10 +97,11 @@ extension LocalLibraryStore {
     /// to new files, so a connection still holding the old files cannot write
     /// into the restored ones. The backup itself is never modified.
     ///
-    /// A marker naming the backup is written and fsynced before the first
-    /// removal and removed only after the last copy, so an interrupt at any
-    /// point leaves evidence that the store is mid-restore and the next open
-    /// refuses instead of silently creating an empty library.
+    /// A marker naming the backup is flushed with F_FULLFSYNC before the first
+    /// removal and removed only after the last copy; every restored file is
+    /// flushed before the marker goes, so an interrupt at any point leaves
+    /// evidence that the store is mid-restore and the next open refuses instead
+    /// of silently creating an empty library.
     public nonisolated static func restoreMigrationBackup(_ preflight: LocalLibraryMigrationPreflight) throws {
         let manager = FileManager.default
         let sourceDirectory = preflight.sourceURL.deletingLastPathComponent()
@@ -110,16 +111,13 @@ extension LocalLibraryStore {
             throw LocalLibraryStoreError.migrationPreflightFailed("retained backup is missing")
         }
         let markerURL = restoreInProgressMarkerURL(for: preflight.sourceURL)
-        try Data(preflight.retainedURL.path.utf8).write(to: markerURL)
-        let markerHandle = try FileHandle(forWritingTo: markerURL)
-        try markerHandle.synchronize()
-        try markerHandle.close()
+        try DurableFile.write(Data(preflight.retainedURL.path.utf8), to: markerURL)
         for file in try storeFiles(named: sourceName, in: sourceDirectory) {
             try manager.removeItem(at: file)
         }
         for file in try storeFiles(named: retainedName, in: preflight.retainedURL.deletingLastPathComponent()) {
             let suffix = String(file.lastPathComponent.dropFirst(retainedName.count))
-            try manager.copyItem(at: file, to: sourceDirectory.appendingPathComponent(sourceName + suffix))
+            try DurableFile.write(Data(contentsOf: file), to: sourceDirectory.appendingPathComponent(sourceName + suffix))
         }
         try manager.removeItem(at: markerURL)
     }
