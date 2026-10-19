@@ -229,7 +229,9 @@ extension LocalLibraryStore {
     private nonisolated static func runSQLite(url: URL, readOnly: Bool = false, sql: String) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = (readOnly ? ["-readonly"] : []) + [url.path, sql]
+        // Wait out a lock another connection holds for a moment (a checkpoint,
+        // a writer finishing) instead of failing the migration as "locked".
+        process.arguments = (readOnly ? ["-readonly"] : []) + ["-cmd", ".timeout 5000", url.path, sql]
         let pipe = Pipe()
         process.standardOutput = pipe; process.standardError = pipe
         do {
