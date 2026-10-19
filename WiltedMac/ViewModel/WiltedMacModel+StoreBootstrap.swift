@@ -114,6 +114,18 @@ extension WiltedMacModel {
                 Self.removeAbandonedDownloadStaging(in: mediaDirectory)
             }.value
             Self.logStagingCleanup(staging)
+            // Nothing prepares this early either, so a prepared copy, a worker's
+            // render file or an encode temp left in `<media>` belongs to a run
+            // that crashed or failed. Named files only; a failure never blocks launch.
+            do {
+                Self.logPreparationScratchCleanup(
+                    try await configuredStore.removeAbandonedPreparationScratch(in: mediaDirectory)
+                )
+            } catch {
+                Self.reclaimLog.warning(
+                    "preparation scratch cleanup failed: \(String(describing: error), privacy: .public)"
+                )
+            }
             var storageSweepErrors: [String] = []
             do {
                 let report = try await reclaimStorage(
@@ -327,6 +339,16 @@ extension WiltedMacModel {
             )
         } else if outcome.removed > 0 {
             reclaimLog.notice("download staging cleanup removed=\(outcome.removed)")
+        }
+    }
+
+    private static func logPreparationScratchCleanup(_ sweep: PreparationScratchSweep) {
+        if sweep.failed > 0 || sweep.skippedLiveWorker {
+            reclaimLog.warning(
+                "preparation scratch cleanup removed=\(sweep.removed) bytes=\(sweep.bytes) failedRemovals=\(sweep.failed) liveWorker=\(sweep.skippedLiveWorker)"
+            )
+        } else if sweep.removed > 0 {
+            reclaimLog.notice("preparation scratch cleanup removed=\(sweep.removed) bytes=\(sweep.bytes)")
         }
     }
 

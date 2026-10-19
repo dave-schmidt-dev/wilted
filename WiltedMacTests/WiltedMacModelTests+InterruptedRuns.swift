@@ -77,6 +77,32 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.episodes.first { $0.id == finished.rawValue }?.preparationState.isRunning, false)
     }
 
+    /// A crash leaves a prepared copy, the worker's render file and an article
+    /// encode temp behind, each a full-size audio file nothing else removes.
+    /// The next launch removes them and keeps committed article audio.
+    func testBootstrapRemovesAbandonedPreparationScratch() async throws {
+        let directory = temporaryDirectory("preparation-scratch")
+        let media = directory.appendingPathComponent("media", isDirectory: true)
+        let preparation = media.appendingPathComponent("preparation", isDirectory: true)
+        try FileManager.default.createDirectory(at: preparation, withIntermediateDirectories: true)
+        let prepared = preparation.appendingPathComponent("prepared-episode.mp3")
+        let rendering = preparation.appendingPathComponent(".prepared-episode.rendering-99999999.mp3")
+        let encode = media.appendingPathComponent(".candidate-run.m4a.tmp-\(UUID().uuidString).m4a")
+        let committed = media.appendingPathComponent("candidate-run.m4a")
+        for file in [prepared, rendering, encode, committed] { try Data("audio".utf8).write(to: file) }
+
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory,
+                                   preferences: WiltedMacTestPreferences.ephemeral())
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+
+        for leftover in [prepared, rendering, encode] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path),
+                           "\(leftover.lastPathComponent) is abandoned scratch")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: committed.path), "committed article audio stays")
+    }
+
     /// The closing entry is written only for a run that has no terminal
     /// entry, and it is one the journal reader recognises as a failure.
     func testInterruptedEntryIsWrittenOnlyForALiveRun() throws {

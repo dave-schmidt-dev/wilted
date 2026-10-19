@@ -218,7 +218,7 @@ extension LocalLibraryStore {
     /// directory. A stored path outside means the store and this disk describe
     /// different locations, which is the disagreement a sweep must not settle
     /// by deleting.
-    private func storedMediaPaths() throws -> (reachable: Set<String>, outsideLibrary: Int) {
+    func storedMediaPaths() throws -> (reachable: Set<String>, outsideLibrary: Int) {
         let context = ModelContext(container)
         var reachable: Set<String> = []
         var outsideLibrary = 0
@@ -392,7 +392,7 @@ extension LocalLibraryStore {
     ///
     /// The deletion primitives only remove media the library owns; a record
     /// naming a file outside it is not something a sweep may touch.
-    private func isInsideLibraryDirectory(_ url: URL) -> Bool {
+    func isInsideLibraryDirectory(_ url: URL) -> Bool {
         let libraryPath = self.url.deletingLastPathComponent().standardizedFileURL.path
         return url.standardizedFileURL.path.hasPrefix(libraryPath + "/")
     }
