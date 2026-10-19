@@ -140,7 +140,6 @@ final class LibraryResumePersistenceTests: XCTestCase {
 
     @MainActor private final class FakeRemote: LibraryRemoteCommands {
         func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
-        func uninstall() {}
     }
 
     @MainActor private final class FakeEvents: LibrarySessionEvents {

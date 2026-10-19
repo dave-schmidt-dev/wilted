@@ -47,7 +47,6 @@ final class InterruptionNowPlaying: ListenerNowPlaying, @unchecked Sendable {
 @MainActor final class InterruptionRemote: LibraryRemoteCommands {
     private(set) var handler: (@MainActor (LibraryRemoteCommand) -> Bool)?
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) { self.handler = handler }
-    func uninstall() { handler = nil }
 }
 
 @MainActor final class InterruptionEvents: LibrarySessionEvents {

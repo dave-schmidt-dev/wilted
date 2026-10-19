@@ -436,7 +436,6 @@ final class LibraryUITestNowPlaying: ListenerNowPlaying, @unchecked Sendable {
 
 @MainActor final class LibraryUITestRemote: LibraryRemoteCommands {
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
-    func uninstall() {}
 }
 
 @MainActor final class LibraryUITestSessionEvents: LibrarySessionEvents {

@@ -85,14 +85,22 @@ extension LibraryPlayer {
         if speechHold != nil { releaseSpeechHold(resume: true) }
     }
 
-    /// Lock-screen and headset commands. Next-track arrives as `.skipForward`, so while a bulletin is
-    /// spoken it skips the bulletin instead of seeking; at any other time it is unchanged.
+    /// Lock-screen, headset, steering-wheel and CarPlay commands. Next-track arrives as `.skipForward`, so
+    /// while a bulletin is spoken it skips the bulletin instead of seeking; with nothing loaded only play
+    /// and play/pause can act (they resume from the library); every command is logged with its result.
     func handleRemote(_ command: LibraryRemoteCommand) -> Bool {
+        let loaded = item != nil
+        let handled: Bool
         if speechHold != nil, case .skipForward = command {
             skipSpeech()
-            return true
+            handled = true
+        } else if loaded {
+            handled = handle(command)
+        } else {
+            handled = handleIdleRemote(command)
         }
-        return handle(command)
+        logRemote(command, loaded: loaded, handled: handled)
+        return handled
     }
 }
 

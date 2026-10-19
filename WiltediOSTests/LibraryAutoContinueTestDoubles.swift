@@ -50,7 +50,6 @@ final class AutoNowPlaying: ListenerNowPlaying, @unchecked Sendable {
 
 @MainActor final class AutoRemote: LibraryRemoteCommands {
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
-    func uninstall() {}
 }
 
 @MainActor final class AutoEvents: LibrarySessionEvents {

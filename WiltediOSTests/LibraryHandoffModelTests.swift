@@ -74,7 +74,6 @@ private final class HandoffFakeNowPlaying: ListenerNowPlaying, @unchecked Sendab
 
 @MainActor private final class HandoffFakeRemote: LibraryRemoteCommands {
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
-    func uninstall() {}
 }
 
 @MainActor private final class HandoffFakeEvents: LibrarySessionEvents {

@@ -12,7 +12,7 @@ protocol LibraryCompletingAudioEngine: AnyObject {
     func installCompletionHandler(_ handler: @escaping @Sendable (UInt64, Bool) -> Void)
 }
 
-private let playerLog = Logger(subsystem: "com.zerodelta.wilted", category: "Player")
+let playerLog = Logger(subsystem: "com.zerodelta.wilted", category: "Player")
 
 /// An engine that can also change speed. `ListenerAudioEngine` has no rate, and the legacy
 /// article path never needed one; the Larder player does, so speed is an optional capability.
@@ -137,7 +137,11 @@ final class LibraryPlayer: ObservableObject {
     let engine: any ListenerAudioEngine
     let session: any ListenerAudioSession
     private let nowPlaying: any ListenerNowPlaying
-    private let remoteCommands: any LibraryRemoteCommands
+    let remoteCommands: any LibraryRemoteCommands
+    /// True once the system command handlers are registered; they stay registered with nothing loaded.
+    var remoteCommandsInstalled = false
+    /// Where a play or play/pause command goes when nothing is loaded. Set by the runtime, which knows the library.
+    var onIdleRemoteCommand: (@MainActor (LibraryRemoteCommand) -> Bool)?
     private let tickInterval: Duration
     private var loadGeneration: UInt64 = 0
     private let seekInstanceID = UUID()
@@ -234,7 +238,6 @@ final class LibraryPlayer: ObservableObject {
             self.item = nil
             position = 0
             duration = 0
-            remoteCommands.uninstall()
             return fail(.unreadableFile)
         }
         LibraryPlaybackTrace.shared.record(.loadCalled, token: traceToken)
@@ -247,7 +250,7 @@ final class LibraryPlayer: ObservableObject {
         engine.currentTime = min(max(0, start), duration)
         position = engine.currentTime
         status = .paused
-        remoteCommands.install { [weak self] command in self?.handleRemote(command) ?? false }
+        installRemoteCommands()
         guard autoplay else {
             publishNowPlaying()
             return true
@@ -361,7 +364,8 @@ final class LibraryPlayer: ObservableObject {
         publishNowPlaying()
     }
 
-    /// Stops and forgets the item; the audio session and system controls are released.
+    /// Stops and forgets the item and releases the audio session. The system command handlers stay
+    /// registered, so a play command can still start something from the library.
     func stop() {
         onCommand?()
         transportCount &+= 1; cancelAdmission()
@@ -394,7 +398,6 @@ final class LibraryPlayer: ObservableObject {
         position = 0
         duration = 0
         nowPlaying.clear()
-        remoteCommands.uninstall()
         session.deactivate()
     }
 

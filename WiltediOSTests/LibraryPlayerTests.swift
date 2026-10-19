@@ -89,7 +89,6 @@ private final class PlayerFakeNowPlaying: ListenerNowPlaying, @unchecked Sendabl
     private(set) var handler: (@MainActor (LibraryRemoteCommand) -> Bool)?
     private(set) var installs = 0
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) { installs += 1; self.handler = handler }
-    func uninstall() { handler = nil }
     private(set) var skipIntervals: (back: TimeInterval, forward: TimeInterval)?
     func setSkipIntervals(back: TimeInterval, forward: TimeInterval) { skipIntervals = (back, forward) }
 }
@@ -140,7 +139,7 @@ final class LibraryPlayerTests: XCTestCase {
         rig.player.onCommand = { commanded += 1 }
         rig.player.invalidateLoadedItem()
         XCTAssertNil(rig.player.item)
-        XCTAssertNil(rig.remote.handler)
+        XCTAssertNotNil(rig.remote.handler, "the system command handlers stay registered with nothing loaded")
         XCTAssertEqual(rig.nowPlaying.clears, 1)
         XCTAssertFalse(rig.engine.isPlaying)
         XCTAssertEqual(rig.player.status, .idle)
@@ -443,7 +442,7 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertEqual(rig.player.status, .idle)
         XCTAssertEqual(rig.nowPlaying.clears, 1)
         XCTAssertEqual(rig.session.deactivations, 1)
-        XCTAssertNil(rig.remote.handler)
+        XCTAssertNotNil(rig.remote.handler, "stop keeps the system command handlers registered")
         XCTAssertFalse(rig.engine.isPlaying)
     }
 

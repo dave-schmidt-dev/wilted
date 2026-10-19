@@ -79,7 +79,6 @@ final class VoiceFakeNowPlaying: ListenerNowPlaying, @unchecked Sendable {
 
 @MainActor final class VoiceFakeRemote: LibraryRemoteCommands {
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
-    func uninstall() {}
 }
 
 @MainActor final class VoiceFakeEvents: LibrarySessionEvents {

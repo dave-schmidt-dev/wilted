@@ -130,7 +130,6 @@ private struct WatchSourceNowPlaying: ListenerNowPlaying {
 }
 @MainActor private final class WatchSourceRemote: LibraryRemoteCommands {
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) {}
-    func uninstall() {}
 }
 @MainActor private final class WatchSourceEvents: LibrarySessionEvents {
     func observe(_ handler: @escaping @MainActor (LibrarySessionEvent) -> Void) {}

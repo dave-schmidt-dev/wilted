@@ -17,7 +17,6 @@ enum LibraryRemoteCommand: Equatable, Sendable {
 @MainActor protocol LibraryRemoteCommands: AnyObject {
     /// The handler returns whether the command did anything.
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool)
-    func uninstall()
     /// The lengths the lock-screen skip buttons advertise. Optional: doubles need not care.
     func setSkipIntervals(back: TimeInterval, forward: TimeInterval)
 }

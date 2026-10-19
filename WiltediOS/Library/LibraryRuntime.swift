@@ -47,14 +47,17 @@ final class LibraryRuntime {
             artwork: .shared, watchSession: WatchSession())
     }
 
-    /// Wires the entry points a launch with no scene still needs: the silent-push handler and an
-    /// activated Watch session whose delegate holds Watch traffic until the bridge starts. A
-    /// silent push then awaits `prepare()` and handles the push, and a Watch message is buffered
-    /// until `prepare()` replays it. Nothing here loads local state, syncs or touches audio, and
-    /// repeated calls do nothing.
+    /// Wires the entry points a launch with no scene still needs: the silent-push handler, the system
+    /// transport commands (a car or Bluetooth play command relaunches a killed app in the background and
+    /// is dropped unless a handler is registered by then) and an activated Watch session whose delegate
+    /// holds Watch traffic until the bridge starts. A silent push then awaits `prepare()` and handles
+    /// the push, a play command resumes after `prepare()`, and a Watch message is buffered until
+    /// `prepare()` replays it. Nothing here loads local state, syncs or touches audio, and repeated
+    /// calls do nothing.
     func bootstrapBackgroundEntryPoints() {
         guard !backgroundEntryPointsStarted else { return }
         backgroundEntryPointsStarted = true
+        installRemoteCommands()
         attachPushHandler()
         guard watchBridge == nil, let watchSession, watchSession.isSupported else { return }
         let buffer = WatchSessionBackgroundBuffer()
@@ -79,6 +82,7 @@ final class LibraryRuntime {
     }
 
     private func performPrepare() async {
+        installRemoteCommands()
         model.attachPlayer(player)
         player.authorizePlayback = { [weak model] item in
             guard let model else { return false }

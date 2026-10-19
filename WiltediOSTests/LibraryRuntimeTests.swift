@@ -34,7 +34,6 @@ final class RuntimeFakeNowPlaying: ListenerNowPlaying, @unchecked Sendable {
     private(set) var skipCalls = 0
     private(set) var handler: (@MainActor (LibraryRemoteCommand) -> Bool)?
     func install(handler: @escaping @MainActor (LibraryRemoteCommand) -> Bool) { self.handler = handler }
-    func uninstall() { handler = nil }
     func setSkipIntervals(back: TimeInterval, forward: TimeInterval) { skipIntervals = (back, forward); skipCalls += 1 }
 }
 
@@ -393,7 +392,7 @@ final class LibraryRuntimeTests: XCTestCase {
         await rig.runtime.model.decide(.removeFromLarder, entryID: item.entryID)
         XCTAssertNil(rig.runtime.player.item, "full queue emission invalidates without waiting for another run-loop turn")
         XCTAssertFalse(installed(.play))
-        XCTAssertNil(rig.remote.handler)
+        XCTAssertNotNil(rig.remote.handler, "the handlers stay registered; with nothing on the phone, play fails")
         XCTAssertGreaterThan(rig.nowPlaying.clears, 0)
         XCTAssertNotEqual(rig.runtime.model.mediaState(for: item.entryID), .onPhone)
         let retained = await rig.runtime.model.mediaCache.cachedEntries()
@@ -408,7 +407,7 @@ final class LibraryRuntimeTests: XCTestCase {
         rig.runtime.model.media[item.entryID] = .available
         XCTAssertNil(rig.runtime.player.item, "emitted media value must be used before Published storage changes")
         XCTAssertFalse(installed(.play))
-        XCTAssertNil(rig.remote.handler)
+        XCTAssertNotNil(rig.remote.handler, "the handlers stay registered; with nothing on the phone, play fails")
     }
 
     func testSearchAndFilterDoNotInvalidateFullyQueuedOnPhonePlayback() async throws {
