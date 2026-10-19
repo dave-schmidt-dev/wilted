@@ -242,16 +242,3 @@ enum LocalLibraryMigrationPlan: SchemaMigrationPlan {
          .lightweight(fromVersion: LocalLibrarySchemaV12.self, toVersion: LocalLibrarySchemaV13.self)]
     }
 }
-
-enum LocalLibraryV5MigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] {
-        [LocalLibrarySchemaV1.self, LocalLibrarySchemaV2.self, LocalLibrarySchemaV3.self,
-         LocalLibrarySchemaV4.self, LocalLibrarySchemaV5.self]
-    }
-    static var stages: [MigrationStage] {
-        [.lightweight(fromVersion: LocalLibrarySchemaV1.self, toVersion: LocalLibrarySchemaV2.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV2.self, toVersion: LocalLibrarySchemaV3.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV3.self, toVersion: LocalLibrarySchemaV4.self),
-         .lightweight(fromVersion: LocalLibrarySchemaV4.self, toVersion: LocalLibrarySchemaV5.self)]
-    }
-}

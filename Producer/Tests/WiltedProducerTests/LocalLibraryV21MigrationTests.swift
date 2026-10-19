@@ -6,10 +6,13 @@ import WiltedDomain
 @testable import WiltedProducer
 
 /// V21 drops the retired legacy sync storage: the tombstone and repository-state
-/// entities and the playback system-fields column. Every live row must survive.
+/// entities, the playback system-fields and change-tag columns, and the article
+/// sync-status column. Every live row must survive.
 final class LocalLibraryV21MigrationTests: XCTestCase {
     private let origin = Date(timeIntervalSince1970: 1_700_000_000)
     private let systemFieldsColumn = "ZENCODEDCLOUDKITRECORDSYSTEMFIELDS"
+    private let changeTagColumn = "ZENCODEDCLOUDKITRECORDCHANGETAG"
+    private let syncStatusColumn = "ZSYNCSTATUS"
 
     private struct Fixture {
         let article: Article
@@ -41,7 +44,8 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
     private func writeV20Fixture(at url: URL) throws -> Fixture {
         let articleURL = URL(string: "https://example.test/v21/article")!
         let article = try Article(itemID: ItemID.derive(from: articleURL), canonicalURL: articleURL,
-                                  title: "Retained article", source: "example.test", createdAt: at(0))
+                                  title: "Retained article", source: "example.test", createdAt: at(0),
+                                  isDeleted: true)
         let revision = try AudioRevision(itemID: article.itemID, revisionID: RevisionID(rawValue: "v21-article-rev"),
                                          durationSeconds: 42, byteCount: 128,
                                          contentHash: "sha256:" + String(repeating: "a", count: 64),
@@ -83,7 +87,7 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
             let context = ModelContext(container)
             context.insert(LocalLibrarySchemaV14Models.LifetimeStatisticsTrackingRecord(startedAt: origin, schemaVersion: 20))
             context.insert(LocalLibrarySchemaV14Models.LifetimeStatisticsSummaryRecord(state: .ready, updatedAt: origin))
-            context.insert(LocalLibrarySchemaV17Models.ArticleRecord(article))
+            context.insert(LocalLibrarySchemaV17Models.ArticleRecord(article, feedID: feed.itemID.rawValue))
             context.insert(LocalLibrarySchemaV3Models.RevisionRecord(revision, mediaURL: fixture.mediaURL))
             let withSystemFields = LocalLibrarySchemaV3Models.PlaybackRecord(fixture.articlePlayback)
             withSystemFields.encodedCloudKitRecordSystemFields = Data([0xCA, 0xFE, 0xBA, 0xBE])
@@ -120,6 +124,8 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
         let fixture = try writeV20Fixture(at: url)
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(20))
         XCTAssertTrue(try columns(of: "ZPLAYBACKRECORD", at: url).contains(systemFieldsColumn))
+        XCTAssertTrue(try columns(of: "ZPLAYBACKRECORD", at: url).contains(changeTagColumn))
+        XCTAssertTrue(try columns(of: "ZARTICLERECORD", at: url).contains(syncStatusColumn))
         XCTAssertEqual(try scalar("SELECT count(*) FROM ZPLAYBACKRECORD WHERE \(systemFieldsColumn) IS NOT NULL", at: url), 1)
         let original = try Data(contentsOf: url)
         let before = try LocalLibraryStore.tableRowCounts(at: url)
@@ -145,7 +151,10 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
         XCTAssertEqual(after, expected, "every live table keeps its exact row count")
         let playbackColumns = try columns(of: "ZPLAYBACKRECORD", at: url)
         XCTAssertFalse(playbackColumns.contains(systemFieldsColumn))
+        XCTAssertFalse(playbackColumns.contains(changeTagColumn))
         XCTAssertTrue(playbackColumns.isSuperset(of: ["ZID", "ZSESSIONID", "ZSEQUENCE", "ZPOSITIONSECONDS", "ZCOMPLETED", "ZINTENT"]))
+        let articleColumns = try columns(of: "ZARTICLERECORD", at: url)
+        XCTAssertFalse(articleColumns.contains(syncStatusColumn))
 
         let article = try await store.article(for: fixture.article.itemID)
         let revision = try await store.readyRevision(for: fixture.article.itemID)
@@ -180,6 +189,13 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
         XCTAssertEqual(associations.map(\.associationID), [fixture.associationID])
         XCTAssertEqual(associations.first?.members, Data("[\"m\"]".utf8))
         XCTAssertEqual(associations.first?.representativeID, fixture.episode.itemID.rawValue)
+        let articleRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>())
+        let articleRecord = try XCTUnwrap(articleRecords.first)
+        XCTAssertEqual(articleRecords.count, 1)
+        XCTAssertEqual(articleRecord.id, fixture.article.itemID.rawValue)
+        XCTAssertEqual(articleRecord.title, fixture.article.title)
+        XCTAssertEqual(articleRecord.feedID, fixture.feed.itemID.rawValue)
+        XCTAssertEqual(articleRecord.isRemoved, fixture.article.isDeleted)
         let playbackRows = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
         XCTAssertEqual(Set(playbackRows.map(\.sequence)), [7, 3])
         XCTAssertEqual(Set(playbackRows.map(\.completed)), [false, true])

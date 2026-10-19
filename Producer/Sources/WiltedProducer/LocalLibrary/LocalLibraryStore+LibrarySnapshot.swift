@@ -217,7 +217,7 @@ extension LocalLibraryStore {
 
         podcastLibrarySnapshotFetchCount += 1
         var feedIDByArticle: [ItemID: ItemID] = [:]
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>()) {
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>()) {
             guard let feedRaw = record.feedID, let articleID = try? ItemID(rawValue: record.id),
                   let feedID = try? ItemID(rawValue: feedRaw) else { continue }
             feedIDByArticle[articleID] = feedID

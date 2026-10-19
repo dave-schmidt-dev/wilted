@@ -74,7 +74,7 @@ extension LocalLibraryStore {
         let episodes = FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>(
             predicate: #Predicate { $0.id == identifier })
         if try context.fetchCount(episodes) > 0 { return true }
-        let articles = FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>(
+        let articles = FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>(
             predicate: #Predicate { $0.id == identifier })
         if try context.fetchCount(articles) > 0 { return true }
         let revisions = FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>(

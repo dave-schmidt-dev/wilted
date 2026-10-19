@@ -349,7 +349,7 @@ extension LocalLibraryStoreTests {
             "transcripts": try rows(LocalLibrarySchemaV7Models.TranscriptRecord.self) { "\($0.itemID)|\($0.id)" },
             "playback": try rows(LocalLibrarySchemaV21Models.PlaybackRecord.self) { "\($0.id)|\($0.positionSeconds)" },
             "preparations": try rows(LocalLibrarySchemaV3Models.PreparationRecord.self) { $0.id },
-            "articles": try rows(LocalLibrarySchemaV17Models.ArticleRecord.self) { "\($0.id)|\($0.isRemoved)" },
+            "articles": try rows(LocalLibrarySchemaV21Models.ArticleRecord.self) { "\($0.id)|\($0.isRemoved)" },
         ])
     }
 

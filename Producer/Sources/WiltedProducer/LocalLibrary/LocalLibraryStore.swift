@@ -76,7 +76,7 @@ public actor LocalLibraryStore {
     public func inspect() throws -> LocalLibraryInspection {
         let context = ModelContext(container)
         return LocalLibraryInspection(schemaVersion: .current,
-                                      articleCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>()),
+                                      articleCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>()),
                                       revisionCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()),
                                       preparationCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()),
                                       playbackCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>()),

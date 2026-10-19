@@ -8,7 +8,6 @@ public enum CloudKitSyncError: Error, Equatable, Sendable {
     case unsupportedRecordType(String)
     case missingField(String)
     case invalidField(String)
-    case systemFieldsCorrupt
     case assetUnavailable(String)
     case assetCopyFailed(String)
     case accountChanged
@@ -28,7 +27,6 @@ extension CloudKitSyncError: LocalizedError {
         case let .unsupportedRecordType(type): "Unsupported CloudKit record type: \(type)"
         case let .missingField(field): "Missing CloudKit field: \(field)"
         case let .invalidField(field): "Invalid CloudKit field: \(field)"
-        case .systemFieldsCorrupt: "CloudKit system fields could not be decoded"
         case let .assetUnavailable(id): "CloudKit asset is unavailable: \(id)"
         case let .assetCopyFailed(message): "CloudKit asset copy failed: \(message)"
         case .accountChanged: "The iCloud account changed; local sync state is quarantined"

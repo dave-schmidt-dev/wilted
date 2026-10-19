@@ -6,19 +6,19 @@ import WiltedDomain
 extension LocalLibraryStore {
     public func save(article: Article) throws {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>())
         if let existing = records.first(where: { $0.id == article.itemID.rawValue }) {
             existing.canonicalURL = article.canonicalURL.absoluteString; existing.title = article.title
             existing.source = article.source; existing.author = article.author
             existing.publishedTime = article.publishedTime?.date; existing.createdAt = article.createdAt.date
             existing.isRemoved = article.isDeleted; existing.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
-        } else { context.insert(LocalLibrarySchemaV17Models.ArticleRecord(article)) }
+        } else { context.insert(LocalLibrarySchemaV21Models.ArticleRecord(article)) }
         try context.save()
     }
 
     public func article(for itemID: ItemID) throws -> Article? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return nil }
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>()).first(where: { $0.id == itemID.rawValue }) else { return nil }
         return try Article(itemID: try ItemID(rawValue: record.id), canonicalURL: URL(string: record.canonicalURL)!,
                            title: record.title, source: record.source, author: record.author,
                            publishedTime: record.publishedTime.map(Timestamp.init), createdAt: Timestamp(record.createdAt), isDeleted: record.isRemoved)
@@ -30,7 +30,7 @@ extension LocalLibraryStore {
     @discardableResult
     public func assign(articleID: ItemID, toFeed feedID: ItemID) throws -> Bool {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>())
             .first(where: { $0.id == articleID.rawValue }) else { return false }
         if record.feedID == nil {
             record.feedID = feedID.rawValue
@@ -42,7 +42,7 @@ extension LocalLibraryStore {
     /// The feed an article was saved from; nil for one added by hand.
     public func feedID(forArticle articleID: ItemID) throws -> ItemID? {
         let context = ModelContext(container)
-        let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
+        let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>())
             .first(where: { $0.id == articleID.rawValue })
         return try record?.feedID.map { try ItemID(rawValue: $0) }
     }
@@ -50,14 +50,14 @@ extension LocalLibraryStore {
     /// The live (not removed) articles saved from `feedID`'s feed.
     public func articleIDs(forFeed feedID: ItemID) throws -> [ItemID] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>())
             .filter { $0.feedID == feedID.rawValue && !$0.isRemoved }
             .map { try ItemID(rawValue: $0.id) }
     }
 
     public func articles() throws -> [Article] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>())
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.ArticleRecord>())
             .sorted { $0.createdAt > $1.createdAt }
             .compactMap { record in
                 guard let itemID = try? ItemID(rawValue: record.id),
