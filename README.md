@@ -162,6 +162,7 @@ Explicitly excluded from the active Mac milestone: automatic classification, rad
 | `LICENSE` | MIT license. |
 | `contracts/` | Domain, CloudKit, and audio contracts with checked-in fixtures and evidence. |
 | `Producer/Workers/adcorpus/` | Hand-labelled ground truth for the ad detector: labels and cache pointers only, no podcast prose or audio. |
+| `Producer/Workers/ad_proximity_eval.py` | Read-only measurement of whether audio next to a stored cut deserves review first; results in [`docs/task8-ad-proximity-review-priority.md`](docs/task8-ad-proximity-review-priority.md). It never produces a cut. |
 | `Producer/Workers/wilted_pipeline.py` | Stable executable protocol boundary for one preparation request. |
 | `Producer/Workers/wilted_worker/` | Focused Python implementation modules behind the worker entry point. |
 | `Producer/Sources/WiltedProducer/LocalLibrary/` | Versioned SwiftData library store split into 23 focused core, type, schema, and behavior files. |
