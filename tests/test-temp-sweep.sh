@@ -39,7 +39,7 @@ mark_dead_owned() {
     printf 'pid=99999\nstarted=dead-owner\npath=%s\n' "$canonical" >"$canonical/.wilted-temp-owned"
 }
 
-hermetic_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-temp-sweep-test.XXXXXX")"
+hermetic_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-temp-sweep-test.XXXXXX")"; wilted_temp_mark_owned "$hermetic_root"
 # The undeletable-directory case below sets the macOS user-immutable flag to
 # force a real removal failure; strip it recursively before teardown or this
 # test's own cleanup would fail the same way it is testing for.

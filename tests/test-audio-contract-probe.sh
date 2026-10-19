@@ -9,13 +9,15 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 package="$repo_root/Probes/AudioContractProbe"
-output_file="$(mktemp -t audio-contract-probe-tests.XXXXXX)"
-status_file="$(mktemp -t audio-contract-probe-status.XXXXXX)"
-artifact="$(mktemp -t audio-contract-probe-artifact.XXXXXX).m4a"
-artifact_seed="${artifact%.m4a}"
-sizing_dir="$(mktemp -d -t audio-contract-sizing.XXXXXX)"
-sizing_status_file="$(mktemp -t audio-contract-sizing-status.XXXXXX)"
-trap 'rm -f "$output_file" "$status_file" "$artifact_seed" "$artifact" "$sizing_status_file"; rm -rf "$sizing_dir"' EXIT
+source "$repo_root/scripts/lib/test-temp-state.sh"
+work_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-audio-contract-probe.XXXXXX")"; wilted_temp_mark_owned "$work_dir"
+trap 'rm -rf "$work_dir"' EXIT
+output_file="$work_dir/tests.log"
+status_file="$work_dir/status.log"
+artifact="$work_dir/artifact.m4a"
+sizing_dir="$work_dir/sizing"
+sizing_status_file="$work_dir/sizing-status.log"
+mkdir "$sizing_dir"
 
 printf '%s\n' 'stage=audio-contract-probe-tests.start' >&2
 python3 "$repo_root/scripts/build-with-cache.py" run swiftpm audio-contract-probe -- swift test --package-path "$package" 2>&1 | tee "$output_file"

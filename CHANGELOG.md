@@ -123,6 +123,8 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- A gate run in one worktree no longer fails its temp audit because a gate in another worktree is running: tests that used `mktemp -t` or a template-less `mktemp` (which macOS places in the shared per-user temp root, ignoring `TMPDIR`) now keep their files in a `TMPDIR` root they mark as owned, so the audit attributes them to their live owner, while an unmarked or orphaned entry is still a leak. `scripts/check-no-global-tmp.py` rejects the escaping forms and unmarked top-level roots, and `tests/test-temp-attribution.sh` covers both sides.
+- A fresh `.claude/worktrees/*` checkout can pass `make validate`: `make worktree-setup` links the `speech-stack` and `apple_developer` sibling projects beside the worktree, syncs `Producer/Runtime/.venv` from the lock, and proves the speech stack's GPU lock is still the shared one (`tests/test-worktree-setup.sh`).
 - The Mac no longer fails to open a library that needs an upgrade when another Wilted process holds the store for a moment; the upgrade check waits up to 5 seconds for the lock.
 - After a crash, force quit or failed preparation, the Mac's next launch removes the leftover prepared episode copy, worker render file and article or audiobook encode temp, so the full-size audio they held no longer fills the disk; committed audio and anything the library names are never touched.
 - A crashed or stopped preparation worker now says why: the "produced no result" error carries the worker's last stderr lines, a worker failure names its innermost frame, and summary failures name the exception class without transcript text.

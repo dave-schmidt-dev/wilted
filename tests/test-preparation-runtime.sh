@@ -21,8 +21,10 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime_root="$repo_root/Producer/Runtime"
 python_bin="$runtime_root/.venv/bin/python"
-output_file="$(mktemp -t wilted-preparation-runtime.XXXXXX)"
-trap 'rm -f "$output_file"' EXIT
+source "$repo_root/scripts/lib/test-temp-state.sh"
+work_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-preparation-runtime.XXXXXX")"; wilted_temp_mark_owned "$work_dir"
+trap 'rm -rf "$work_dir"' EXIT
+output_file="$work_dir/output.log"
 
 # The floor is deliberately well under the current count so ordinary test
 # additions never touch it, while a collection collapse -- a broken conftest, a

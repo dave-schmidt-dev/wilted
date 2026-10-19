@@ -24,7 +24,8 @@ for tool in xattr codesign shasum python3; do
   command -v "$tool" >/dev/null 2>&1 || fail "required tool is missing: $tool"
 done
 
-root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-product-metadata-test.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-product-metadata-test.XXXXXX")"; wilted_temp_mark_owned "$root"
 root="$(cd -P "$root" && pwd)"
 cleanup() { [[ -n "$root" && -d "$root" ]] && rm -rf "$root"; root=""; }
 trap cleanup EXIT

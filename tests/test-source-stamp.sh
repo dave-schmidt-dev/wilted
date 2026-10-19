@@ -31,7 +31,8 @@ pass() { printf 'source-stamp.ok %s\n' "$*" >&2; }
 # shellcheck source=../scripts/lib/source-stamp.sh
 source "$library"
 
-tmp_root="$(mktemp -d "${TMPDIR:?}/wilted-source-stamp.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_root="$(mktemp -d "${TMPDIR:?}/wilted-source-stamp.XXXXXX")"; wilted_temp_mark_owned "$tmp_root"
 cleanup() { [[ -d "$tmp_root" ]] && rm -rf "$tmp_root"; }
 trap cleanup EXIT
 

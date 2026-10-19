@@ -1,4 +1,4 @@
-.PHONY: validate validate-inner native-meta native native-ui lint deadcode file-size check-fast install-hooks install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
+.PHONY: validate validate-inner native-meta native native-ui lint deadcode file-size check-fast install-hooks worktree-setup install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
 
 lint:
 	@$(MAKE) -C Producer/Runtime lint
@@ -14,6 +14,13 @@ check-fast: file-size lint deadcode
 
 install-hooks:
 	@$(MAKE) -C Producer/Runtime install-hooks
+
+# Provisions this checkout for the gates: links the sibling projects the runtime
+# lock and the release wrappers resolve beside a linked worktree, syncs
+# Producer/Runtime/.venv from uv.lock, and proves the speech stack's GPU lock is
+# the shared canonical one. Idempotent; run once in each new worktree.
+worktree-setup:
+	@bash scripts/worktree-setup.sh
 
 validate:
 	@bash -c 'source scripts/lib/test-temp-state.sh; WILTED_TEMP_LEAK_CHECKER="$(CURDIR)/scripts/check-temp-leaks.py"; wilted_full_run "$(CURDIR)" $(MAKE) validate-inner'

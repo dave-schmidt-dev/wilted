@@ -8,8 +8,10 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-output_file="$(mktemp -t speech-ipc-probe-tests.XXXXXX)"
-trap 'rm -f "$output_file"' EXIT
+source "$repo_root/scripts/lib/test-temp-state.sh"
+work_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-speech-ipc-probe-tests.XXXXXX")"; wilted_temp_mark_owned "$work_dir"
+trap 'rm -rf "$work_dir"' EXIT
+output_file="$work_dir/output.log"
 
 printf '%s\n' 'stage=speech-ipc-probe-tests.start' >&2
 python3 "$repo_root/scripts/build-with-cache.py" run swiftpm speech-ipc-probe -- swift test --package-path "$repo_root/Probes/SpeechIPCProbe" 2>&1 | tee "$output_file"

@@ -9,7 +9,8 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner="$repo_root/Probes/SignedSpeechRuntimeProbe/signed-speech-runtime-probe.sh"
-temp_dir="$(mktemp -d -t wilted-signed-runtime-tests.XXXXXX)"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+temp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-signed-runtime-tests.XXXXXX")"; wilted_temp_mark_owned "$temp_dir"
 trap 'rm -rf "$temp_dir"' EXIT
 
 printf '%s\n' 'stage=signed-speech-runtime-tests.start' >&2

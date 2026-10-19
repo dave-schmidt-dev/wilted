@@ -8,7 +8,8 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-bounded-entry.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-bounded-entry.XXXXXX")"; wilted_temp_mark_owned "$tmp_root"
 native_owned_pids=""
 cleanup_native_fixture() {
   local pid

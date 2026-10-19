@@ -9,7 +9,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 collector="$root/scripts/collect-storage-backlog.py"
 retainer="$root/scripts/retain-delivery-evidence.py"
 wrapper="$root/scripts/with-spec-scratch.sh"
-test_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-storage-test.XXXXXXXX")"
+source "$root/scripts/lib/test-temp-state.sh"
+test_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-storage-test.XXXXXXXX")"; wilted_temp_mark_owned "$test_root"
 trap '[[ -d "$test_root" ]] && rm -rf "$test_root"' EXIT
 failures=0
 fail() { printf 'storage-retention.fail %s\n' "$*" >&2; failures=$((failures + 1)); }

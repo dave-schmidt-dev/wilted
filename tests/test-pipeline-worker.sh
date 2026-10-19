@@ -17,8 +17,10 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 worker="$repo_root/Producer/Workers/wilted_pipeline.py"
 suite="$repo_root/Producer/Workers/test_wilted_pipeline.py"
-output_file="$(mktemp -t wilted-pipeline-worker.XXXXXX)"
-trap 'rm -f "$output_file"' EXIT
+source "$repo_root/scripts/lib/test-temp-state.sh"
+work_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-pipeline-worker.XXXXXX")"; wilted_temp_mark_owned "$work_dir"
+trap 'rm -rf "$work_dir"' EXIT
+output_file="$work_dir/output.log"
 pipeline_python="${WILTED_PIPELINE_PYTHON:-$repo_root/Producer/Runtime/.venv/bin/python}"
 
 [[ -x "$pipeline_python" ]] || { printf 'missing required Python interpreter: %s\n' "$pipeline_python" >&2; exit 1; }

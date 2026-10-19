@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
+# shellcheck source=../../scripts/lib/test-temp-state.sh
+source "$repo_root/scripts/lib/test-temp-state.sh"
 probe_path=""
 harness_path="$script_dir/fake-speech-socket-harness.py"
 temp_dir=""
@@ -122,7 +124,12 @@ else
     [[ -S "$live_socket" ]] || fail "live socket does not exist: $live_socket"
 fi
 
-temp_dir="$(mktemp -d -t wilted-signed-runtime.XXXXXX)" || fail "could not create temporary workspace"
+# The fake harness binds s.sock here, and sun_path holds 104 bytes, which a gate leg's nested
+# TMPDIR exceeds. The workspace therefore lives at the short per-user temp root, marked as
+# owned so a sibling gate's audit attributes it to this live run.
+short_temp_root="$(getconf DARWIN_USER_TEMP_DIR)" || fail "could not resolve the per-user temp root"
+temp_dir="$(mktemp -d "${short_temp_root%/}/wilted-signed-runtime.XXXXXX")" || fail "could not create temporary workspace"
+wilted_temp_mark_owned "$temp_dir" || fail "could not mark temporary workspace"
 socket_path="$temp_dir/s.sock"
 if [[ -n "$live_socket" ]]; then
     socket_path="$live_socket"

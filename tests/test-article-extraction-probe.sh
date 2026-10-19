@@ -26,9 +26,11 @@ if [[ -z "$test_count" || "$test_count" -eq 0 ]]; then
   exit 1
 fi
 
-status_file="$(mktemp)"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+work_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-article-extraction-probe.XXXXXX")"; wilted_temp_mark_owned "$work_dir"
+trap 'rm -rf "$work_dir"' EXIT
+status_file="$work_dir/status.log"
 summary="$(python3 "$repo_root/scripts/build-with-cache.py" run swiftpm article-extraction-probe -- swift run --package-path "$package" article-extraction-probe --fixtures "$fixtures" 2> >(tee "$status_file" >&2))"
-trap 'rm -f "$status_file"' EXIT
 printf '%s\n' "$summary"
 
 finished_count="$(grep -c 'stage=finished' "$status_file")"

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/test-temp-state.sh
+source "$repo_root/scripts/lib/test-temp-state.sh"
 
 say() { printf '%s\n' "$*" >&2; }
 fail() { printf 'audit.error %s\n' "$1" >&2; exit 1; }
@@ -75,9 +78,10 @@ img_data="$(printf '%s' "$html" | perl -0777 -ne 'while(/data:image\/png;base64,
 [[ -n "$img_data" ]] || fail 'missing embedded PNG evidence'
 img_count="$(printf '%s\n' "$img_data" | grep -c .)"
 [[ "$img_count" -eq "$figure_count" ]] || fail "figure/image mismatch: figures=$figure_count images=$img_count"
+png_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-audit.XXXXXX")"; wilted_temp_mark_owned "$png_dir"
+trap 'rm -rf "$png_dir"' EXIT
 while IFS= read -r data; do
-  tmp="$(mktemp -t wilted-audit.XXXXXX)"
-  trap 'rm -f "${tmp:-}"' EXIT
+  tmp="$png_dir/evidence.png"
   printf '%s' "$data" | base64 -D >"$tmp" 2>/dev/null || fail 'malformed embedded PNG evidence'
   file -b "$tmp" | grep -q '^PNG image data' || fail 'malformed embedded PNG evidence'
   rm -f "$tmp"

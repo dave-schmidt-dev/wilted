@@ -9,10 +9,14 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 package="$repo_root/Probes/PersistenceProbe"
-output_file="$(mktemp -t wilted-persistence-probe.XXXXXX)"
-status_file="$(mktemp -t wilted-persistence-probe-status.XXXXXX)"
-probe_scratch="${TMPDIR:?TMPDIR must be set}/wilted-persistence-probe"
-trap 'rm -f "$output_file" "$status_file"; rm -rf "$probe_scratch"' EXIT
+source "$repo_root/scripts/lib/test-temp-state.sh"
+work_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-persistence-probe-tests.XXXXXX")"; wilted_temp_mark_owned "$work_dir"
+trap 'rm -rf "$work_dir"' EXIT
+# The probe and its XCTest suite keep their fixed-name store root under TMPDIR, so nest it in
+# this marked root: a sibling gate's audit then attributes it to this live run.
+export TMPDIR="$work_dir"
+output_file="$work_dir/output.log"
+status_file="$work_dir/status.log"
 
 printf '%s\n' 'stage=persistence-probe-tests.start' >&2
 python3 "$repo_root/scripts/build-with-cache.py" run swiftpm persistence-probe -- swift test --package-path "$package" 2>&1 | tee "$output_file"
@@ -36,8 +40,7 @@ for stage in store.open.ready concurrent-callbacks.complete probe.complete; do
   grep -q "stage=$stage" "$status_file" || { printf 'missing status: %s\n' "$stage" >&2; exit 1; }
 done
 
-crash_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-persistence-crash.XXXXXX")"
-trap 'rm -f "$output_file" "$status_file"; rm -rf "$crash_dir" "$probe_scratch"' EXIT
+crash_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-persistence-crash.XXXXXX")"; wilted_temp_mark_owned "$crash_dir"
 crash_store="$crash_dir/store.sqlite"
 set +e
 "$probe_bin" --durable-child "$crash_store" >"$output_file" 2>"$status_file"

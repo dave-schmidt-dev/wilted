@@ -10,9 +10,11 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 package="$repo_root/Probes/AudioContractProbe"
 build_path="$(python3 "$repo_root/scripts/build-with-cache.py" path swiftpm audio-contract-ios-build)"
-core_output="$(mktemp -t audio-contract-ios-core-build.XXXXXX)"
-test_output="$(mktemp -t audio-contract-ios-test-build.XXXXXX)"
-trap 'rm -f "$core_output" "$test_output"' EXIT
+source "$repo_root/scripts/lib/test-temp-state.sh"
+work_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-audio-contract-ios-build.XXXXXX")"; wilted_temp_mark_owned "$work_dir"
+trap 'rm -rf "$work_dir"' EXIT
+core_output="$work_dir/core-build.log"
+test_output="$work_dir/test-build.log"
 
 # Xcode 27's SwiftPM drives Swift Build, which no longer prints the legacy
 # driver line "Compiling <Module> <File>.swift"; it prints "[n / m] <Target>"

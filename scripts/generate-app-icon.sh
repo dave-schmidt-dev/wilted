@@ -2,7 +2,8 @@
 # Compiles and runs the icon generator against the shipping brand geometry.
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-build_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-icon.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+build_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-icon.XXXXXX")"; wilted_temp_mark_owned "$build_dir"
 trap 'rm -rf "$build_dir"' EXIT
 
 swiftc -O -o "$build_dir/icongen" \
