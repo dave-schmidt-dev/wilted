@@ -72,7 +72,7 @@ final class WiltedMorningReportController {
     @ObservationIgnored private weak var model: WiltedMacModel?
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var running = false
-    @ObservationIgnored private let logger = Logger(subsystem: "com.zerodelta.wilted.mac", category: "morning-report")
+    @ObservationIgnored private let logger = Logger(subsystem: "com.zerodelta.wilted.mac", category: "MorningReport")
 
     init(model: WiltedMacModel) { self.model = model }
 

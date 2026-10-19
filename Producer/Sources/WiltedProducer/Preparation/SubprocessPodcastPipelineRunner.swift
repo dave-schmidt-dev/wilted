@@ -273,7 +273,7 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         return result == -1 && errno == ESRCH
     }
 
-    private static let logger = Logger(subsystem: "com.zerodelta.wilted", category: "preparation-worker")
+    private static let logger = Logger(subsystem: "com.zerodelta.wilted", category: "PreparationWorker")
 
     private static func logDiagnosticTail(_ tail: String) {
         guard !tail.isEmpty else { return }

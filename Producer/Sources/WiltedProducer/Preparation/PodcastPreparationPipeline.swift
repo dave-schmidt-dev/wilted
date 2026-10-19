@@ -3,7 +3,7 @@ import Foundation
 import OSLog
 import WiltedDomain
 
-private let logger = Logger(subsystem: "com.zerodelta.wilted", category: "preparation-journal")
+private let logger = Logger(subsystem: "com.zerodelta.wilted", category: "PreparationJournal")
 
 /// Tracks the journal writes one run has started.
 ///

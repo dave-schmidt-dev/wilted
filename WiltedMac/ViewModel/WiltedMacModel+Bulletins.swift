@@ -8,7 +8,7 @@ import WiltedLibrary
 import WiltedProducer
 import WiltedWeather
 
-private let bulletinLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "bulletins")
+private let bulletinLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Bulletins")
 private nonisolated(unsafe) var bulletinHubKey: UInt8 = 0
 
 /// Owns what Reports needs beyond the settings file: the location provider, and the

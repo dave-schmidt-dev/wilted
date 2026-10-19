@@ -369,7 +369,7 @@ extension LibraryAppModel {
         let localSaveToken = state.localSaveTokens[item.entryID] ?? 0
         guard let revision = await mediaCache.cachedEntries()[item.entryID]?.revisionID else {
             state.lastTakeoverFailure = clock
-            handoffLog.error("Playing an entry with no cached revision; handoff not published")
+            handoffLog.warning("Playing \(item.entryID.rawValue, privacy: .public) has no cached revision; handoff not published")
             return
         }
         do {

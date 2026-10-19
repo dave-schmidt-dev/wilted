@@ -5,6 +5,7 @@ test-build-with-cache test-build-with-cache.sh
 test-bounded-entry test-bounded-entry.sh
 test-runtime-static-admission test-runtime-static-admission.sh
 test-no-global-tmp test-no-global-tmp.sh
+test-log-conventions test-log-conventions.sh
 assert-mac-first-docs test-mac-first-docs.sh
 test-contract-fixtures test-contract-fixtures.sh
 test-domain-contract test-domain-contract.sh

@@ -214,7 +214,7 @@ final class WiltedMacHandoffController {
 
     private func takeOver(_ sample: WiltedMacPlaybackSample) async throws {
         guard let revision = await player.handoffRevision(for: sample.episodeID) else {
-            handoffLog.notice("Playing \(sample.episodeID.rawValue, privacy: .public) has no known revision; not published")
+            handoffLog.warning("Playing \(sample.episodeID.rawValue, privacy: .public) has no known revision; not published")
             return
         }
         let epoch = try await coordinator.takeover(

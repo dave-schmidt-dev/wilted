@@ -42,7 +42,7 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
     /// The launch storage-sweep log. A sweep that throws is not silent: it
     /// lands here at `.warning`, retrievable with
-    /// `log show --predicate 'subsystem == "com.zerodelta.wilted.mac"'`.
+    /// `log show --predicate 'subsystem BEGINSWITH "com.zerodelta.wilted" AND processImagePath BEGINSWITH "/Applications/"'`.
     private static let reclaimLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Reclaim")
 
     func performStoreBootstrap() async {

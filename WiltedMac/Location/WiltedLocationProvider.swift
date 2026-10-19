@@ -82,7 +82,7 @@ final class WiltedLocationProvider {
     @ObservationIgnored private let manager: WiltedLocationManaging
     @ObservationIgnored private let wifi: WiltedWiFiPowerReading
     @ObservationIgnored private let now: () -> Date
-    @ObservationIgnored private let logger = Logger(subsystem: "com.zerodelta.wilted.mac", category: "location")
+    @ObservationIgnored private let logger = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Location")
     @ObservationIgnored private var lastAttempt: Date?
     @ObservationIgnored private var awaitingFix = false
     @ObservationIgnored private var wakeObserver: (token: NSObjectProtocol, center: NotificationCenter)?

@@ -31,7 +31,7 @@ extension WiltedMacModel {
     /// policy stays immutable.
     /// The work-ticket durability log. A rejected or failed transition write
     /// is not silent: it lands here at `.warning`, retrievable with
-    /// `log show --predicate 'subsystem == "com.zerodelta.wilted.mac"'`.
+    /// `log show --predicate 'subsystem BEGINSWITH "com.zerodelta.wilted" AND processImagePath BEGINSWITH "/Applications/"'`.
     private static let workTicketLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "WorkTicket")
     static let playbackLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Playback")
 

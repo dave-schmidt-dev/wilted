@@ -78,7 +78,7 @@ struct EpisodeAssociationReadLookup {
     }
 
     static func reportInvalid(_ id: UUID) {
-        Logger(subsystem: "com.zerodelta.wilted", category: "episode-associations")
+        Logger(subsystem: "com.zerodelta.wilted", category: "EpisodeAssociations")
             .warning("Ignoring invalid episode association \(id.uuidString, privacy: .public); retaining raw state")
         #if DEBUG
         LocalLibraryStore.invalidAssociationReadObserver?(id)

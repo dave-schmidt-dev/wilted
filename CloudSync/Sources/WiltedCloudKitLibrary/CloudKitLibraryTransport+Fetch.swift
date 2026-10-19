@@ -126,7 +126,7 @@ extension CloudKitLibraryTransport {
             if let change = mapper.deletion(recordID: deletion.recordID, recordType: deletion.recordType) {
                 fetchAcc.library[change.key] = VersionedLibraryChange(version: deletionVersion(change.key, floor: 0), change: change)
             } else {
-                log.notice("Ignoring deletion of \(deletion.recordType, privacy: .public)")
+                log.notice("Ignoring deletion of \(deletion.recordType, privacy: .public) \(deletion.recordID.recordName, privacy: .public)")
             }
         }
     }
