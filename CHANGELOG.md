@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- The Mac app keeps its own warnings, errors and faults in `~/Library/Application Support/Wilted/logs/wilted.log` (at most 1 MiB, with three older files), so a problem can still be read after the system log has dropped it. Only values the app already logs as public (such as episode IDs, feed hosts and error descriptions) are written; everything else appears as `<private>`.
 - Every podcast preparation run records which Wilted build (version, build number and source commit), which ad engine version and which ad-removal code revision processed it, and the Mac episode info popover shows it (with the build and reason when the newest attempt failed), so a missed ad or an error can be checked against the fix that addressed it. `make install` stamps the app with the commit it was built from and refuses a build that does not carry it.
 - The iPhone Larder shows read-only Mac preparation reports before audio is available, with stage-local progress and separate associated-copy status; media filters and playback admission retain their existing meaning.
 - The Mac publishes current preparation progress for kept episodes through the existing debounced library sync, with exact retry identity, curated stage/count text and automatic success/withdrawal clearing. Older attempts cannot replace current status or invalidate a newer Ready revision.

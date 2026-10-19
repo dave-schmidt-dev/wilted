@@ -353,6 +353,9 @@ extension WiltedMacModel: WiltedMacTerminationDraining {
 
     func closeNetworkWorkForTermination() async {
         await closeLibraryControllersForTermination()
+        // After the library closes, so its shutdown warnings reach the file. The periodic
+        // pass keeps running, so a cancelled quit keeps archiving.
+        await WiltedMacLogArchive.launch?.archivePass()
     }
 
     func resumeAfterCancelledTermination() {
