@@ -380,26 +380,13 @@ extension WiltedMacModel {
         }
     }
 
-    /// Records a playback fault and gives the backend one automatic chance to
-    /// rebuild itself, per item, revision and session, before exposing a
-    /// manual retry.
-    func reportAudioRouteFault(_ message: String) {
-        playbackError = message
-        refreshAudioRouteRecoveryBudget()
-        audioRouteFault = true
-        guard !audioRouteRecoveryAttempted else { return }
-        audioRouteRecoveryAttempted = true
-        recoverAudioRoute(automatic: true)
-    }
-
-    func recoverAudioRoute() { recoverAudioRoute(automatic: false) }
-
-    private func recoverAudioRoute(automatic: Bool) {
+    /// The Recover control: the one manual retry once a command's automatic
+    /// recovery has been spent.
+    func recoverAudioRoute() {
         guard let playback, !audioRouteRecoveryInFlight else { return }
         audioRouteRecoveryInFlight = true
         audioRouteFault = false
-        let message = automatic ? WiltedMacPlaybackCopy.routeRetrying : WiltedMacPlaybackCopy.routeRecovering
-        issuePlaybackCommand(.recover, pending: message) { [weak self] command in
+        issuePlaybackCommand(.recover, pending: WiltedMacPlaybackCopy.routeRecovering) { [weak self] command in
             guard let self else { return }
             do {
                 try await playback.recoverFromRouteChange()

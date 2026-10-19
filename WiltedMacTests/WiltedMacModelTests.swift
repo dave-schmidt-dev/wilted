@@ -399,7 +399,7 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
     }
 
-    func testAudioRouteRecoveryAutomaticallyAttemptsOnceThenExposesManualRetry() async throws {
+    func testManualAudioRouteRecoveryKeepsRecoverOnFailureAndClearsOnSuccess() async throws {
         let directory = temporaryDirectory("audio-route-recovery")
 
         let model = WiltedMacModel(
@@ -411,16 +411,12 @@ final class WiltedMacModelTests: XCTestCase {
         model.openNowPlaying(for: article)
         try await settle(model)
 
+        model.audioRouteFault = true
         model.failNextAudioRouteRecoveryForTesting()
-        model.reportAudioRouteFault("Playback is unavailable.")
+        model.recoverAudioRoute()
         try await settle(model)
-
-        XCTAssertTrue(model.audioRouteFault, "failed automatic recovery exposes manual retry")
+        XCTAssertTrue(model.audioRouteFault, "a failed manual recovery keeps Recover available")
         XCTAssertEqual(model.playbackError, "Audio route recovery failed.")
-
-        model.reportAudioRouteFault("Playback is unavailable.")
-        try await settle(model)
-        XCTAssertTrue(model.audioRouteFault, "a repeated fault must not start another automatic retry")
 
         model.recoverAudioRoute()
         try await settle(model)
