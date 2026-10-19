@@ -28,6 +28,7 @@ test-simulator-cleanup test-simulator-cleanup.sh
 test-native-ui-receipt test-native-ui-receipt.sh
 test-native-gate-parallel test-native-gate-parallel.sh
 test-native-gate-xcode test-native-gate-xcode.sh
+test-native-gate-simulator-lane test-native-gate-simulator-lane.sh
 test-native-gate-legs test-native-gate-legs.sh
 test-release-wrappers test-release-wrappers.sh
 test-file-size test-file-size.sh

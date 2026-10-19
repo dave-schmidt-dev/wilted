@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-26-0'
@@ -65,7 +67,10 @@ if args[:3]==['simctl','list','devices']:
 elif args[1]=='create':
  devices.append({'udid':'11111111-1111-1111-1111-111111111111','name':args[2],
  'deviceTypeIdentifier':args[3],'state':'Shutdown','isAvailable':True}); p.write_text(json.dumps(state)); print(devices[-1]['udid'])
-elif args[1]=='boot': devices[0]['state']='Booted'; p.write_text(json.dumps(state))
+elif args[1]=='boot':
+ devices[0]['state']='Booted'; p.write_text(json.dumps(state))
+ # Another lane booted it first: real simctl reports SimError 405 as exit 149.
+ if os.environ.get('FAKE_BOOT_RACE'): raise SystemExit(149)
 elif args[1]=='bootstatus': time.sleep(float(os.environ.get('FAKE_READY_DELAY','0')))
 elif args[1]=='shutdown':
  time.sleep(float(os.environ.get('FAKE_SHUTDOWN_DELAY','0')))
@@ -107,6 +112,16 @@ raise SystemExit(int(os.environ.get('FAKE_TEST_STATUS','0')) if phase=='test' el
         for p in self.bin.iterdir(): p.chmod(0o755)
         self.wedged_report = (self.repository_root / 'tests/fixtures/testmanagerd-wedged-sample.txt').read_text()
     def tearDown(self): self.temp.cleanup()
+    def invoke(self, *args, env=None, timeout=60):
+        return subprocess.run(args, env=env or self.env, text=True, capture_output=True, timeout=timeout)
+    def select(self):
+        result = self.invoke('bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'select', str(self.root), RUNTIME, TYPE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+    def session(self, env=None, key="native-ios-unit-tests"):
+        return self.invoke('bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'run', str(self.root), UDID,
+                           sys.executable, str(self.root / 'scripts/build-with-cache.py'), 'run', 'xcode', key,
+                           '--', 'xcodebuild', 'test-without-building', env=env)
     def run_testmanagerd_leg(self, pid='66575', report='', **extra):
         """Run the Mac unit leg against a fake host testmanagerd; the preflight leaves no scratch behind."""
         report_path = self.root / 'testmanagerd-report.txt'; report_path.write_text(report)
