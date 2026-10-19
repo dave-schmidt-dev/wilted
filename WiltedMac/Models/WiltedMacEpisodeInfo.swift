@@ -17,17 +17,25 @@ struct WiltedMacEpisodeInfo: Equatable, Sendable {
     let title: String
     let presentation: WiltedMacEpisodePresentation
     let notes: String?
+    /// The build and ad engine behind the audio, when the episode row carries
+    /// them. Nil for a stored source record, which has no run history.
+    let preparationStamp: WiltedMacPreparationStamp?
 
-    init(id: String, title: String, presentation: WiltedMacEpisodePresentation, notes: String?) {
+    init(
+        id: String, title: String, presentation: WiltedMacEpisodePresentation, notes: String?,
+        preparationStamp: WiltedMacPreparationStamp? = nil
+    ) {
         self.id = id
         self.title = title
         self.presentation = presentation
         self.notes = notes
+        self.preparationStamp = preparationStamp
     }
 
     init(episode: WiltedMacEpisode) {
         self.init(
-            id: episode.id, title: episode.title, presentation: episode.presentation, notes: episode.notes)
+            id: episode.id, title: episode.title, presentation: episode.presentation, notes: episode.notes,
+            preparationStamp: episode.preparationStamp)
     }
 
 #if canImport(WiltedProducer)

@@ -319,6 +319,9 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     var removalKind: PodcastEpisodeRemovalKind? = nil
     var downloadState: WiltedMacEpisodeDownloadState
     var preparationState: WiltedMacEpisodePreparationState = .notPrepared
+    /// The Wilted build and ad engine behind this row's audio, when the store
+    /// snapshot proves them. Diagnostic only; nil when nothing was recorded.
+    var preparationStamp: WiltedMacPreparationStamp? = nil
     /// Whether the ready revision's media file was found on disk the last
     /// time the library loaded. Filesystem-authoritative and deliberately
     /// undurable: no store column backs it, a snapshot just caches a `stat`.
@@ -366,6 +369,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         downloadState: WiltedMacEpisodeDownloadState,
         preparationState: WiltedMacEpisodePreparationState = .notPrepared,
         isReadyMediaAvailable: Bool = true,
+        preparationStamp: WiltedMacPreparationStamp? = nil,
         feedID: String? = nil,
         feedURL: URL? = nil,
         episodeLink: URL? = nil
@@ -377,6 +381,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             durationSeconds: durationSeconds, playbackSeconds: playbackSeconds, isPlayed: isPlayed,
             retiredAt: retiredAt, removalKind: removalKind, downloadState: downloadState,
             preparationState: preparationState, isReadyMediaAvailable: isReadyMediaAvailable,
+            preparationStamp: preparationStamp,
             feedID: feedID, feedURL: feedURL, episodeLink: episodeLink
         )
     }
@@ -403,6 +408,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         downloadState: WiltedMacEpisodeDownloadState,
         preparationState: WiltedMacEpisodePreparationState = .notPrepared,
         isReadyMediaAvailable: Bool = true,
+        preparationStamp: WiltedMacPreparationStamp? = nil,
         feedID: String? = nil,
         feedURL: URL? = nil,
         episodeLink: URL? = nil,
@@ -426,6 +432,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         self.downloadState = downloadState
         self.preparationState = preparationState
         self.isReadyMediaAvailable = isReadyMediaAvailable
+        self.preparationStamp = preparationStamp
         self.feedID = feedID
         self.feedURL = feedURL
         self.episodeLink = episodeLink
@@ -458,6 +465,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             lhs.playableDurationSeconds == rhs.playableDurationSeconds && lhs.durationSeconds == rhs.durationSeconds && lhs.playbackSeconds == rhs.playbackSeconds &&
             lhs.isPlayed == rhs.isPlayed && lhs.retiredAt == rhs.retiredAt && lhs.removalKind == rhs.removalKind &&
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState &&
+            lhs.preparationStamp == rhs.preparationStamp &&
             lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable && lhs.feedID == rhs.feedID &&
             lhs.feedURL == rhs.feedURL && lhs.episodeLink == rhs.episodeLink && lhs.audiobook == rhs.audiobook
     }

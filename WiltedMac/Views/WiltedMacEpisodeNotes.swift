@@ -172,6 +172,15 @@ struct WiltedMacEpisodeNotes<Actions: View>: View {
                 }
             }
             .frame(maxHeight: .infinity)
+            if let stampText = info.preparationStamp?.displayText {
+                Text(stampText)
+                    .wiltedFont(.caption)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("\(prefix)-notes-stamp-\(info.id)")
+            }
             actions()
         }
         .padding(WiltedTheme.Spacing.large)

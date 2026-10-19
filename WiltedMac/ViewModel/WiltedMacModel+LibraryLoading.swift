@@ -243,7 +243,12 @@ extension WiltedMacModel {
         // Retained attempt history has several summaries per raw item. Project
         // one current generation without discarding the underlying history.
         var runs: [ItemID: PreparationRunSummary] = [:]
+        // The stamp builder needs every run, not only the newest one: the
+        // prepared line must come from the run that produced the ready audio
+        // even when a later retry failed.
+        var runsByItem: [ItemID: [PreparationRunSummary]] = [:]
         for run in snapshot.preparationRuns where run.requestID.hasPrefix(Self.podcastRequestPrefix) {
+            runsByItem[run.itemID, default: []].append(run)
             if let previous = runs[run.itemID], !Self.preparationRunIsNewer(run, than: previous) { continue }
             runs[run.itemID] = run
         }
@@ -317,6 +322,11 @@ extension WiltedMacModel {
                     transcript: transcript
                 ),
                 isReadyMediaAvailable: isReadyMediaAvailable,
+                preparationStamp: WiltedMacPreparationStamp.make(
+                    outcome: outcome,
+                    readyRevisionID: revision?.revision.revisionID,
+                    runs: runsByItem[episode.itemID] ?? []
+                ),
                 feedID: episode.feedID.rawValue,
                 feedURL: episode.feedURL,
                 episodeLink: episode.episodeLink
@@ -419,7 +429,7 @@ extension WiltedMacModel {
     }
 
     /// Projects retained history by persisted generation before observation time.
-    nonisolated private static func preparationRunIsNewer(
+    nonisolated static func preparationRunIsNewer(
         _ candidate: PreparationRunSummary, than previous: PreparationRunSummary
     ) -> Bool {
         let candidateAttempt = candidate.entries.first?.status.attempt
