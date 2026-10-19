@@ -71,3 +71,23 @@ final class VirtualTime: @unchecked Sendable {
         for _ in 0..<20 { await Task.yield() }
     }
 }
+
+/// Waits on the real clock until `condition` holds or `timeout` passes, sleeping between checks so
+/// work on other threads can land. Returns whether it held; the caller's own assertion reports a miss.
+@MainActor
+func waitOnClock(timeout: Duration = .seconds(5), until condition: () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while !condition() {
+        if ContinuousClock.now >= deadline { return false }
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return true
+}
+
+/// Lets queued work run, then gives work on other threads a short real interval. For checks that
+/// something did not happen, where there is no condition to wait for.
+func settleOnClock(_ interval: Duration = .milliseconds(100)) async {
+    for _ in 0..<20 { await Task.yield() }
+    try? await Task.sleep(for: interval)
+}

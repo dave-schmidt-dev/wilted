@@ -188,7 +188,7 @@ final class WatchBridgeTests: XCTestCase {
     private func send(_ action: WatchCommand.Action, on rig: Rig) async throws -> ReplyBox {
         let box = ReplyBox()
         rig.session.receive(try WatchLinkCodec.encode(WatchCommand(action: action))) { box.set($0) }
-        for _ in 0..<100 where box.isEmpty { await Task.yield() }
+        _ = await waitOnClock { !box.isEmpty }
         XCTAssertFalse(box.isEmpty, "the bridge must answer every command")
         return box
     }

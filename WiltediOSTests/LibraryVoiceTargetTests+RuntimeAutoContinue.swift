@@ -128,7 +128,7 @@ extension LibraryVoiceTargetTests {
         let started = await target.perform(.play(id("a")))
         XCTAssertEqual(started, .done)
         await model.waitForHandoff()
-        for _ in 0..<20 { await Task.yield() }
+        await settleOnClock()
         player.setRate(1.5)
         await gate.arm()
         engine.finishNaturally()

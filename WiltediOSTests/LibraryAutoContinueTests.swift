@@ -121,7 +121,7 @@ final class LibraryAutoContinueTests: XCTestCase {
         }
     }
 
-    func settle() async { for _ in 0..<40 { await Task.yield() }; try? await Task.sleep(for: .milliseconds(100)) }
+    func settle() async { await settleOnClock() }
 
     /// One fixture, four views of the order: the phone's list, CarPlay's list, Siri's list and what
     /// auto-continue plays, which must all be the same sequence.

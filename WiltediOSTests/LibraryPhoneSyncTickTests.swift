@@ -176,7 +176,13 @@ final class LibraryPhoneSyncTickTests: XCTestCase {
     func testAnIdlePhoneInFrontMakesAtMostAboutTwoAndAThirdRequestsAMinute() async throws {
         let rig = try await makeRig()
         let before = rig.calls.total
-        await rig.time.advance(by: 600)
+        // Move one interval at a time, each only after the last round has finished and installed
+        // its nap: one ten-minute jump lets a loaded machine wake a nap before its round re-arms.
+        for _ in 0..<20 {
+            await waitFor(rig.timerBarrier.registration(at: rig.time.now.addingTimeInterval(30)))
+            await rig.time.advance(by: 30)
+        }
+        await waitFor(rig.timerBarrier.registration(at: rig.time.now.addingTimeInterval(30)))
         let spent = rig.calls.total - before
         XCTAssertEqual(rig.calls.count("poll") - 1, 20, "one batched read per 30 s round")
         XCTAssertEqual(rig.calls.count("fetchDeviceRecords") + rig.calls.count("mediaOffers") + rig.calls.count("intentOutcomes"), 0,

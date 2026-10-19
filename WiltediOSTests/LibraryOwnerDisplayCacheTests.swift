@@ -287,7 +287,7 @@ final class LibraryOwnerDisplayCacheTests: XCTestCase {
         await online.recoverFromAccountChange()
         XCTAssertEqual(online.visibleRows.map(\.id), [id("old")])
         await barrier.release()
-        for _ in 0..<200 { await Task.yield() }
+        await settleOnClock()
         XCTAssertEqual(online.visibleRows.map(\.id), [id("old")])
         let saved = await next.state()
         XCTAssertEqual(saved.displayPreparedIDs, [id("old")])

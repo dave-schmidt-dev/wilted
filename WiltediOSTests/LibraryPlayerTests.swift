@@ -430,8 +430,7 @@ final class LibraryPlayerTests: XCTestCase {
         rig.player.start(second)
         rig.engine.isPlaying = true
         rig.engine.finishNaturally(reporting: 1)  // the first load's generation
-        for _ in 0..<20 { await Task.yield() }
-        try? await Task.sleep(for: .milliseconds(50))
+        await settleOnClock(.milliseconds(50))
         XCTAssertEqual(rig.player.status, .playing)
         XCTAssertEqual(rig.player.item?.title, "Two")
     }

@@ -114,8 +114,7 @@ final class LibraryPlaybackCommandTests: XCTestCase {
     /// Lets queued main-actor work (handoff syncs, position saves) finish, so the next armed
     /// lookup is the start's own.
     private func settle(_ rig: Rig) async {
-        for _ in 0..<20 { await Task.yield() }
-        try? await Task.sleep(for: .milliseconds(100))
+        await settleOnClock()
         await rig.model.waitForHandoff()
     }
 

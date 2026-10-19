@@ -189,8 +189,7 @@ final class LibraryRuntimeSeamTests: XCTestCase {
         let rig = try await makeRig()
         await rig.runtime.prepare()
         // Let the prepare's own background lookups finish, so the armed hold is the press's.
-        for _ in 0..<20 { await Task.yield() }
-        try await Task.sleep(for: .milliseconds(100))
+        await settleOnClock()
         let row = try carRow(rig)
         let counts = CarCounts()
         await rig.gate.arm()

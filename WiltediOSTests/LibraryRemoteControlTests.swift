@@ -52,7 +52,7 @@ final class LibraryRemoteControlTests: XCTestCase {
         r.player.authorizePlayback = { _ in calls += 1; return true }
         XCTAssertTrue(r.player.handle(.play))
         r.player.pause()
-        for _ in 0..<20 { await Task.yield() }
+        await settleOnClock()
         XCTAssertEqual(calls, 0)
         XCTAssertFalse(r.engine.isPlaying)
     }
@@ -62,11 +62,11 @@ final class LibraryRemoteControlTests: XCTestCase {
         var waiter: CheckedContinuation<Bool, Never>?
         r.player.authorizePlayback = { _ in await withCheckedContinuation { waiter = $0 } }
         XCTAssertTrue(r.player.handle(.beginSeeking(.forward)))
-        for _ in 0..<200 where waiter == nil { await Task.yield() }
+        _ = await waitOnClock { waiter != nil }
         XCTAssertNotNil(waiter)
         XCTAssertFalse(r.player.handle(.endSeeking(.forward)))
         waiter?.resume(returning: true)
-        for _ in 0..<20 { await Task.yield() }
+        await settleOnClock()
         XCTAssertFalse(r.player.isRemoteSeeking)
         XCTAssertFalse(r.engine.isPlaying)
     }
@@ -76,7 +76,7 @@ final class LibraryRemoteControlTests: XCTestCase {
         XCTAssertTrue(r.player.handle(.beginSeeking(.forward)))
         r.player.authorizePlayback = { _ in false }
         XCTAssertTrue(r.player.handle(.skipForward(30)))
-        for _ in 0..<200 where r.player.item != nil { await Task.yield() }
+        _ = await waitOnClock { r.player.item == nil }
         XCTAssertNil(r.player.item)
         XCTAssertFalse(r.engine.isPlaying)
         XCTAssertFalse(r.player.isRemoteSeeking)
@@ -87,7 +87,7 @@ final class LibraryRemoteControlTests: XCTestCase {
         XCTAssertTrue(r.player.handle(.beginSeeking(.forward)))
         r.player.authorizePlayback = { _ in false }
         XCTAssertTrue(r.player.handle(.endSeeking(.forward)))
-        for _ in 0..<200 where r.player.item != nil { await Task.yield() }
+        _ = await waitOnClock { r.player.item == nil }
         XCTAssertNil(r.player.item)
         XCTAssertFalse(r.engine.isPlaying)
         XCTAssertFalse(r.player.isRemoteSeeking)
