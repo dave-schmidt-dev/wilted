@@ -5,6 +5,8 @@ import WiltedDomain
 @testable import WiltedProducer
 @testable import WiltedMac
 
+private struct PlainFailure: Error {}
+
 /// Builder behaviour with an injected stub synthesizer (never real speech), a stub forecast and
 /// stub headlines. "Long" results carry a low sample rate so 320 s costs few samples and is never encoded.
 @MainActor
@@ -56,6 +58,11 @@ final class MorningReportBuilderTests: XCTestCase {
     }
 
     private func headlineCount(_ text: String) -> Int { text.components(separatedBy: "Headline").count - 1 }
+
+    private func assertPlain(_ reason: String) {
+        XCTAssertFalse(reason.contains("Error Domain"), reason)
+        XCTAssertFalse(reason.contains("SECRET-TOKEN"), reason)
+    }
 
     func testTenHeadlinesYieldAScriptEstimatedUnder300Seconds() async throws {
         let (store, _) = try makeStore()
@@ -231,6 +238,51 @@ final class MorningReportBuilderTests: XCTestCase {
         XCTAssertEqual(url.pathExtension, "m4a")
         let seconds = try await AVURLAsset(url: url).load(.duration).seconds
         XCTAssertEqual(seconds, 2, accuracy: 0.2)
+    }
+
+    func testAnOfflineHeadlineFailureGivesTheOfflineSentence() async throws {
+        let (store, _) = try makeStore()
+        let periods = self.periods
+        let builder = MorningReportBuilder(
+            store: store, synthesize: stub(Calls()) { _ in 2 },
+            coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
+            headlines: { _ in
+                throw URLError(
+                    .notConnectedToInternet,
+                    userInfo: [NSURLErrorFailingURLStringErrorKey: "https://news.example.test/x?token=SECRET-TOKEN"])
+            },
+            calendar: Calendar(identifier: .gregorian))
+        let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
+        guard case let .skipped(reason) = outcome else { return XCTFail("expected a skip, got \(outcome)") }
+        XCTAssertEqual(reason, "No report published: this Mac is offline.")
+        assertPlain(reason)
+    }
+
+    func testASpeechFailureGivesTheSpeechEngineSentence() async throws {
+        let (store, _) = try makeStore()
+        let periods = self.periods
+        let news = headlines(2)
+        let builder = MorningReportBuilder(
+            store: store, synthesize: { _, _ in throw SpeechIPCError.timeout("speech") },
+            coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
+            headlines: { _ in news }, calendar: Calendar(identifier: .gregorian))
+        let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
+        guard case let .skipped(reason) = outcome else { return XCTFail("expected a skip, got \(outcome)") }
+        XCTAssertEqual(reason, "No report published: the speech engine is not available.")
+        assertPlain(reason)
+    }
+
+    func testAnUnknownHeadlineFailureGivesTheFallbackSentence() async throws {
+        let (store, _) = try makeStore()
+        let periods = self.periods
+        let builder = MorningReportBuilder(
+            store: store, synthesize: stub(Calls()) { _ in 2 },
+            coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
+            headlines: { _ in throw PlainFailure() }, calendar: Calendar(identifier: .gregorian))
+        let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
+        guard case let .skipped(reason) = outcome else { return XCTFail("expected a skip, got \(outcome)") }
+        XCTAssertEqual(reason, "No report published: something went wrong while building it. Try Build now.")
+        assertPlain(reason)
     }
 
     func testTheScheduleRunsAtTheTimeAndMakesUpAMissedRunWithinTwoHours() throws {

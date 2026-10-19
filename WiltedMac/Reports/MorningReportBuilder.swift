@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 import WiltedDomain
 import WiltedLibrary
 import WiltedProducer
@@ -41,6 +42,8 @@ struct MorningReportBuilder: Sendable {
     typealias Forecast = @Sendable (_ latitude: Double, _ longitude: Double) async throws -> [MorningReportForecastPeriod]
     typealias Coordinates = @Sendable () async -> (latitude: Double, longitude: Double)?
     typealias HeadlineSource = @Sendable (_ publishedSince: Date) async throws -> MorningReportHeadlines
+
+    private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "MorningReport")
 
     static let maximumSeconds = 300.0
     static let maximumHeadlines = 5
@@ -200,7 +203,14 @@ struct MorningReportBuilder: Sendable {
         } catch is CancellationError {
             return .skipped(reason: "The report was cancelled.")
         } catch {
-            return .skipped(reason: "No report published: \(error.localizedDescription)")
+            Self.log.error("morning report build failed: \(LogSafeError.describe(error), privacy: .public)")
+            let reason = switch ReportFailureCause.of(error) {
+            case .offline: "No report published: this Mac is offline."
+            case .timedOut: "No report published: the connection timed out."
+            case .speechUnavailable: "No report published: the speech engine is not available."
+            case .other: "No report published: something went wrong while building it. Try Build now."
+            }
+            return .skipped(reason: reason)
         }
     }
 

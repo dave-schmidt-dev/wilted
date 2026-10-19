@@ -332,7 +332,7 @@ final class WiltedMacBulletinHub {
         if let waiting = status.waitingFor { return "Waiting: \(waiting)" }
         if let error = status.lastError {
             let retry = status.nextPollAt.map { " Next try \($0.formatted(date: .omitted, time: .shortened))." } ?? ""
-            return "Last check failed: \(error).\(retry)"
+            return "\(error)\(retry)"
         }
         if let last = status.lastPollAt { return "Last checked \(last.formatted(date: .omitted, time: .shortened))" }
         return nil
