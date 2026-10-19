@@ -60,7 +60,8 @@ extension WiltedMacEpisodeInfoUITests {
         try relaunchFixture(app)
         let sidebarRow = app.descendants(matching: .any)["wilted-navigation-playlist:\(playlistID)"]
         XCTAssertTrue(sidebarRow.waitForExistence(timeout: 10), "the created playlist survives a relaunch")
-        XCTAssertEqual(sidebarRow.label, name)
+        // The row names its kind for VoiceOver, as `WiltedMacSidebarRow` describes it.
+        XCTAssertEqual(sidebarRow.label, "\(name), Manual playlist")
         sidebarRow.click()
         XCTAssertTrue(title.waitForExistence(timeout: 10), "the renamed playlist heading survives relaunch")
         XCTAssertTrue(words(title).contains(name))
