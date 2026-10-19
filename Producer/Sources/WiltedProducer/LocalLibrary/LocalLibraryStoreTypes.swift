@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 /// The version of the local producer schema.  CloudKit mirroring is deliberately
 /// not configured here; this store is the producer's local source of truth.
@@ -309,106 +308,9 @@ public struct LocalLibraryTombstone: Codable, Equatable, Sendable {
     }
 }
 
-/// Opaque system fields and change tag needed for an optimistic playback save/delete.
-public struct PlaybackSystemFieldsSidecar: Codable, Equatable, Sendable {
-    public let encodedSystemFields: Data?
-    public let changeTag: String?
-
-    public init(encodedSystemFields: Data? = nil, changeTag: String? = nil) {
-        self.encodedSystemFields = encodedSystemFields
-        self.changeTag = changeTag
-    }
-}
-
-/// The deterministic result of finalizing one full-zone fetch generation.
-public struct LocalLibrarySnapshotResult: Equatable, Sendable {
-    public let generationID: String
-    public let deletedItemIDs: [ItemID]
-    public let retainedItemIDs: [ItemID]
-    public let mutated: Bool
-
-    public init(generationID: String, deletedItemIDs: [ItemID], retainedItemIDs: [ItemID], mutated: Bool) {
-        self.generationID = generationID
-        self.deletedItemIDs = deletedItemIDs
-        self.retainedItemIDs = retainedItemIDs
-        self.mutated = mutated
-    }
-}
-
-/// One validated sync transaction applied to the local SwiftData source of truth.
-public struct LocalLibrarySyncCommit: Sendable {
-    /// A decoded item and its ownership status to apply in the transaction.
-    public struct ArticleApply: Sendable {
-        public let article: Article
-        public let status: LocalLibrarySyncStatus
-
-        public init(article: Article, status: LocalLibrarySyncStatus) {
-            self.article = article; self.status = status
-        }
-    }
-
-    /// A decoded revision backed by already validated local media.
-    public struct RevisionApply: Sendable {
-        public let revision: AudioRevision
-        public let mediaURL: URL
-
-        public init(revision: AudioRevision, mediaURL: URL) {
-            self.revision = revision; self.mediaURL = mediaURL
-        }
-    }
-
-    /// A decoded playback state and its opaque CloudKit sidecar.
-    public struct PlaybackApply: Sendable {
-        public let state: PlaybackState
-        public let sidecar: PlaybackSystemFieldsSidecar
-
-        public init(state: PlaybackState, sidecar: PlaybackSystemFieldsSidecar) {
-            self.state = state; self.sidecar = sidecar
-        }
-    }
-
-    /// A decoded transcript bound to an existing immutable revision identity.
-    public struct TranscriptApply: Sendable {
-        public let transcript: Transcript
-
-        public init(transcript: Transcript) {
-            self.transcript = transcript
-        }
-    }
-
-    /// A status-only update for an existing item, used by send outcomes.
-    public struct StatusApply: Sendable {
-        public let recordID: WiltedRecordID
-        public let status: LocalLibrarySyncStatus
-
-        public init(recordID: WiltedRecordID, status: LocalLibrarySyncStatus) {
-            self.recordID = recordID; self.status = status
-        }
-    }
-
-    public let state: SyncRepositoryState
-    public let articles: [ArticleApply]
-    public let revisions: [RevisionApply]
-    public let transcripts: [TranscriptApply]
-    public let playbacks: [PlaybackApply]
-    public let statusUpdates: [StatusApply]
-    public let deletions: [WiltedRecordID]
-    public let lastFetchAt: Timestamp?
-    public let lastSendAt: Timestamp?
-
-    public init(state: SyncRepositoryState, articles: [ArticleApply] = [], revisions: [RevisionApply] = [],
-                transcripts: [TranscriptApply] = [],
-                playbacks: [PlaybackApply] = [], statusUpdates: [StatusApply] = [], deletions: [WiltedRecordID] = [],
-                lastFetchAt: Timestamp? = nil, lastSendAt: Timestamp? = nil) {
-        self.state = state; self.articles = articles; self.revisions = revisions; self.transcripts = transcripts
-        self.playbacks = playbacks; self.statusUpdates = statusUpdates; self.deletions = deletions
-        self.lastFetchAt = lastFetchAt; self.lastSendAt = lastSendAt
-    }
-}
-
 /// Where an immutable-revision violation was detected.
 ///
-/// Seven call sites raise the same invariant failure, and without this a
+/// Six call sites raise the same invariant failure, and without this a
 /// reproduction can only say "some identity mismatch", never which write was
 /// refused. The raw values are stable names for diagnostics; nothing persists
 /// them.
@@ -419,8 +321,6 @@ public enum ImmutableRevisionSite: String, CaseIterable, Equatable, Sendable {
     case readyRevisionWithTranscript
     /// `saveReadyRevision(_:mediaURL:transcript:outcome:)` found an existing record that differs.
     case readyRevisionWithOutcome
-    /// `applySyncCommit(_:)` tried to write a revision identity the store holds differently.
-    case syncCommit
     /// `finalizePodcastDownload(revision:mediaURL:download:)` found an existing record that differs.
     case finalizedDownload
     /// `replaceReadyRevision` was asked to supersede the revision it is writing.

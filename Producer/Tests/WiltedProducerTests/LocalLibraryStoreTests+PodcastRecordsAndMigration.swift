@@ -3,7 +3,6 @@ import Foundation
 import SwiftData
 import XCTest
 import WiltedDomain
-import WiltedSync
 @testable import WiltedProducer
 
 extension LocalLibraryStoreTests {
@@ -296,11 +295,14 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(inspection.preparationCount, 1)
         XCTAssertEqual(inspection.playbackCount, 1)
         let syncState = try await migrated.syncState(for: "private-zone")
-        let tombstone = try await migrated.tombstone(for: "v5-tombstone")
+        let context = ModelContext(migrated.container)
+        let tombstone = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.TombstoneRecord>())
+            .first { $0.id == "v5-tombstone" }
+        let repositoryState = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RepositoryStateRecord>())
+            .first { $0.key == "private-zone" }
         let transcript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let journal = try await migrated.preparationJournal(for: "v5-request")
         let loadedPlayback = try await migrated.playbackState(for: item.itemID, revisionID: rev.revisionID)
-        let repositoryState = try await migrated.syncRepositoryState()
         let expectedUpdatedAt = Timestamp(Date(timeIntervalSince1970: 1_700_000_010))
         let expectedRevision = try AudioRevision(itemID: item.itemID, revisionID: rev.revisionID, durationSeconds: 42,
                                                   byteCount: 1, contentHash: "sha256:" + String(repeating: "5", count: 64),
@@ -326,10 +328,14 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(loadedPlayback, expectedPlayback)
         XCTAssertEqual(transcript, expectedTranscript)
         XCTAssertEqual(journal, [expectedJournal])
-        XCTAssertEqual(tombstone, expectedTombstone)
+        XCTAssertEqual(tombstone?.id, expectedTombstone.id)
+        XCTAssertEqual(tombstone?.itemID, expectedTombstone.itemID.rawValue)
+        XCTAssertEqual(tombstone?.generationID, expectedTombstone.generationID)
+        XCTAssertEqual(tombstone?.requestedAt, expectedTombstone.requestedAt.date)
+        XCTAssertEqual(tombstone?.remoteAcknowledged, expectedTombstone.remoteAcknowledged)
         XCTAssertEqual(syncState, LocalLibrarySyncState(key: "private-zone", engineState: Data([5]),
                                                          lastFetchAt: expectedUpdatedAt, lastSendAt: expectedUpdatedAt))
-        XCTAssertEqual(repositoryState, SyncRepositoryState(engineState: Data([5])))
+        XCTAssertEqual(repositoryState?.stateData, Data("{}".utf8))
     }
 
 }

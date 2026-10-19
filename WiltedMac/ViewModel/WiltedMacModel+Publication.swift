@@ -105,11 +105,10 @@ extension WiltedMacModel {
     /// Removes an article from the library, committing before anything on
     /// screen changes.
     ///
-    /// `LocalLibraryStore.removeArticle` writes the deleted flag and the local
-    /// tombstone in one save, so a throw means neither landed and the row,
+    /// `LocalLibraryStore.removeArticle` writes the deleted flag and drops the
+    /// playlist entry in one save, so a throw means nothing landed and the row,
     /// selection and player stay as they were for a retry. A repeat returns
-    /// false and changes nothing. Local only: publishing the tombstone to
-    /// CloudKit rides the existing pending-change path.
+    /// false and changes nothing.
     @discardableResult
     func commitArticleRemoval(_ article: WiltedMacArticle) async throws -> Bool {
         guard let store else { throw WiltedMacRemovalUnavailable() }

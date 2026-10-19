@@ -3,7 +3,6 @@ import Foundation
 import SwiftData
 import XCTest
 import WiltedDomain
-import WiltedSync
 @testable import WiltedProducer
 
 extension LocalLibraryStoreTests {
@@ -125,30 +124,6 @@ extension LocalLibraryStoreTests {
         )
     }
 
-    func testImmutableRevisionSiteNamesTheSyncCommit() async throws {
-        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let store = try LocalLibraryStore(url: url)
-        let itemID = try immutableRevisionItemID("sync")
-        let base = try immutableRevisionFixture(
-            itemID: itemID, id: "rev-site-sync", hashCharacter: "d", path: "/tmp/site/sync.mp3"
-        )
-        try await store.saveReadyRevision(base.revision, mediaURL: base.mediaURL)
-        let conflicting = try immutableRevisionFixture(
-            itemID: itemID, id: base.revision.revisionID.rawValue, hashCharacter: "e", path: "/tmp/site/sync-conflict.mp3"
-        )
-
-        let error = await immutableRevisionError {
-            try await store.applySyncCommit(LocalLibrarySyncCommit(
-                state: SyncRepositoryState(),
-                revisions: [.init(revision: conflicting.revision, mediaURL: conflicting.mediaURL)]
-            ))
-        }
-        XCTAssertEqual(
-            error,
-            .immutableRevision(base.revision.revisionID, site: .syncCommit)
-        )
-    }
-
     func testImmutableRevisionSiteNamesTheFinalizedDownload() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: url)
@@ -223,12 +198,12 @@ extension LocalLibraryStoreTests {
         )
     }
 
-    func testTheSevenImmutableRevisionSitesProducePairwiseDistinctErrors() throws {
+    func testTheSixImmutableRevisionSitesProducePairwiseDistinctErrors() throws {
         let revision = try RevisionID(rawValue: "rev-distinct-" + String(repeating: "5", count: 50))
         let errors = ImmutableRevisionSite.allCases.map {
             LocalLibraryStoreError.immutableRevision(revision, site: $0)
         }
-        XCTAssertEqual(errors.count, 7, "each immutable-revision site has a value")
+        XCTAssertEqual(errors.count, 6, "each immutable-revision site has a value")
         for (index, lhs) in errors.enumerated() {
             for rhs in errors[(index + 1)...] {
                 XCTAssertNotEqual(lhs, rhs, "\(lhs) must not equal \(rhs)")

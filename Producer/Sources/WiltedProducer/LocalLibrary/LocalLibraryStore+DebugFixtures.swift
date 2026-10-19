@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
-import WiltedSync
 
 extension LocalLibraryStore {
     #if DEBUG
@@ -48,7 +47,7 @@ extension LocalLibraryStore {
         context.insert(LocalLibrarySchemaV3Models.TombstoneRecord(
             LocalLibraryTombstone(id: "v5-tombstone", itemID: playback.itemID, generationID: "v5-generation", requestedAt: playback.updatedAt)))
         context.insert(LocalLibrarySchemaV3Models.RepositoryStateRecord(
-            stateData: try JSONEncoder().encode(SyncRepositoryState(engineState: Data([5])))))
+            stateData: Data("{}".utf8)))
         try context.save()
     }
 
@@ -165,17 +164,6 @@ extension LocalLibraryStore {
                 dismissedAt: dismissal.dismissedAt
             ))
         }
-        try context.save()
-    }
-
-    /// Corrupts repository metadata for deterministic decoder-failure tests.
-    nonisolated internal static func corruptRepositoryStateFixture(at url: URL, data: Data) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let schema = Schema(versionedSchema: LocalLibrarySchemaV3.self)
-        let configuration = ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)
-        let container = try ModelContainer(for: schema, configurations: [configuration])
-        let context = ModelContext(container)
-        context.insert(LocalLibrarySchemaV3Models.RepositoryStateRecord(stateData: data))
         try context.save()
     }
 

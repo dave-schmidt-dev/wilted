@@ -3,7 +3,6 @@ import CryptoKit
 import SwiftData
 import XCTest
 import WiltedDomain
-import WiltedSync
 @testable import WiltedProducer
 
 final class LocalLibraryStoreCompatibilityTests: XCTestCase {
@@ -246,8 +245,11 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         let playback = try await store.playbackState(for: values.article.itemID, revisionID: values.articleRevision.revisionID)
         let preparation = try await store.preparationJournal(for: values.preparation.requestID)
         let syncState = try await store.syncState(for: values.syncState.key)
-        let tombstone = try await store.tombstone(for: values.tombstone.id)
-        let repositoryState = try await store.syncRepositoryState()
+        let context = ModelContext(store.container)
+        let tombstone = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.TombstoneRecord>())
+            .first { $0.id == values.tombstone.id }
+        let repositoryState = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RepositoryStateRecord>())
+            .first { $0.key == "private-zone" }
         let feed = try await store.podcastFeed(for: values.feed.itemID)
         let episode = try await store.podcastEpisode(for: values.episode.itemID)
         let dismissedEpisode = try await store.podcastEpisode(for: values.dismissedEpisode.itemID)
@@ -277,8 +279,14 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         XCTAssertEqual(playback, values.playback)
         XCTAssertEqual(preparation, [values.preparation])
         XCTAssertEqual(syncState, values.syncState)
-        XCTAssertEqual(tombstone, values.tombstone)
-        XCTAssertEqual(repositoryState, SyncRepositoryState())
+        XCTAssertEqual(tombstone?.id, values.tombstone.id)
+        XCTAssertEqual(tombstone?.itemID, values.tombstone.itemID.rawValue)
+        XCTAssertEqual(tombstone?.generationID, values.tombstone.generationID)
+        XCTAssertEqual(tombstone?.requestedAt, values.tombstone.requestedAt.date)
+        XCTAssertEqual(tombstone?.remoteAcknowledged, values.tombstone.remoteAcknowledged)
+        XCTAssertEqual(repositoryState?.stateData, Data(
+            #"{"protectedRecordIDs":[],"conflictedRecordIDs":[],"remoteAcknowledgedRecordIDs":[],"records":[],"conflictServerRecords":[],"pendingChanges":[],"tombstones":[]}"#.utf8
+        ))
         XCTAssertEqual(feed, values.feed)
         XCTAssertEqual(episode, values.episode)
         XCTAssertEqual(dismissedEpisode, values.dismissedEpisode)

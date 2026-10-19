@@ -10,30 +10,25 @@ import WiltedDomain
 extension LocalLibraryStoreTests {
     // MARK: - Article removal
 
-    func testArticleRemovalCommitsFlagAndTombstoneInOneSave() async throws {
+    func testArticleRemovalCommitsFlagInOneSave() async throws {
         let url = makeURL(); defer { removeStore(url) }
         let article = try article()
         try await saveArticle(article, at: url)
-        let requestedAt = Timestamp(Date(timeIntervalSince1970: 1_700_000_500))
 
         let recorder = RemovalStageRecorder()
         let removed = try await recorder.observing {
-            try await LocalLibraryStore(url: url).removeArticle(itemID: article.itemID, at: requestedAt)
+            try await LocalLibraryStore(url: url).removeArticle(itemID: article.itemID)
         }
         XCTAssertTrue(removed)
         XCTAssertEqual(recorder.stages, LocalLibraryRemovalStage.articleRemoval)
-        XCTAssertEqual(recorder.count(of: .save), 1, "flag and tombstone share one commit")
+        XCTAssertEqual(recorder.count(of: .save), 1, "the flag and playlist entry share one commit")
 
         let reopened = try LocalLibraryStore(url: url)
         let stored = try await reopened.article(for: article.itemID)
-        let tombstone = try await reopened.tombstone(for: article.itemID.rawValue)
         XCTAssertEqual(stored?.isDeleted, true)
-        XCTAssertEqual(tombstone?.itemID, article.itemID)
-        XCTAssertEqual(tombstone?.requestedAt, requestedAt)
-        XCTAssertEqual(tombstone?.remoteAcknowledged, false)
     }
 
-    func testArticleRemovalFailureAtEachStageLeavesFlagAndTombstoneUnchangedOnReopen() async throws {
+    func testArticleRemovalFailureAtEachStageLeavesFlagUnchangedOnReopen() async throws {
         for stage in LocalLibraryRemovalStage.articleRemoval {
             let url = makeURL("articleFailure-\(stage.rawValue)"); defer { removeStore(url) }
             let article = try article()
@@ -51,16 +46,14 @@ extension LocalLibraryStoreTests {
 
             let reopened = try LocalLibraryStore(url: url)
             let stored = try await reopened.article(for: article.itemID)
-            let tombstones = try await reopened.tombstones()
             XCTAssertEqual(stored?.isDeleted, false, "\(stage): the flag never committed alone")
-            XCTAssertTrue(tombstones.isEmpty, "\(stage): the tombstone never committed alone")
 
             let retried = try await reopened.removeArticle(itemID: article.itemID)
             XCTAssertTrue(retried, "\(stage): a retry after the failure succeeds")
         }
     }
 
-    func testDuplicateArticleRemovalWritesOnceAndRepairsAHalfRemovedArticle() async throws {
+    func testDuplicateArticleRemovalWritesOnceAndAlreadyRemovedWritesNothing() async throws {
         let url = makeURL(); defer { removeStore(url) }
         let article = try article()
         try await saveArticle(article, at: url)
@@ -78,21 +71,15 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(results.filter { $0 }.count, 1, "concurrent confirms coalesce: \(results)")
         XCTAssertEqual(results.suffix(2), [false, false])
         XCTAssertEqual(recorder.count(of: .save), 1, "four confirms, one write")
-        let tombstones = try await store.tombstones()
-        XCTAssertEqual(tombstones.count, 1)
 
-        // The old two-save path could commit the flag and lose the tombstone.
-        let halfURL = makeURL("halfRemoved"); defer { removeStore(halfURL) }
-        let half = try Article(itemID: article.itemID, canonicalURL: article.canonicalURL, title: article.title,
-                               source: article.source, createdAt: article.createdAt, isDeleted: true)
-        try await saveArticle(half, at: halfURL)
-        let halfStore = try LocalLibraryStore(url: halfURL)
-        let repaired = try await halfStore.removeArticle(itemID: article.itemID)
-        let again = try await halfStore.removeArticle(itemID: article.itemID)
-        let repairedTombstone = try await halfStore.tombstone(for: article.itemID.rawValue)
-        XCTAssertTrue(repaired, "a flagged article without its tombstone gets one")
-        XCTAssertFalse(again)
-        XCTAssertNotNil(repairedTombstone)
+        // An article whose flag is already committed is already removed: a
+        // later confirm returns false and writes nothing.
+        let alreadyRemoved = RemovalStageRecorder()
+        let confirmedAgain = try await alreadyRemoved.observing {
+            try await store.removeArticle(itemID: article.itemID)
+        }
+        XCTAssertFalse(confirmedAgain)
+        XCTAssertEqual(alreadyRemoved.stages, [], "an already removed article writes nothing")
     }
 
     // MARK: - Unsubscribe cascade

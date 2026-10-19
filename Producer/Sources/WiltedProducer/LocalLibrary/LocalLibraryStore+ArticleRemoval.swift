@@ -9,7 +9,6 @@ import WiltedDomain
 /// operation stopped, so a caller can report where a removal failed.
 public enum LocalLibraryRemovalStage: String, CaseIterable, Sendable {
     case articleFlag
-    case articleTombstone
     case subscription
     case feed
     case episodes
@@ -23,8 +22,8 @@ public enum LocalLibraryRemovalStage: String, CaseIterable, Sendable {
     /// The single commit of everything staged before it.
     case save
 
-    /// The stages `removeArticle(itemID:at:)` passes through, in order.
-    public static let articleRemoval: [Self] = [.articleFlag, .articleTombstone, .save]
+    /// The stages `removeArticle(itemID:)` passes through, in order.
+    public static let articleRemoval: [Self] = [.articleFlag, .save]
     /// The stages `unsubscribeFromPodcast(feedID:)` passes through, in order.
     public static let unsubscribe: [Self] = [
         .subscription, .feed, .episodes, .queue, .downloads, .playbackSpeeds,
@@ -90,24 +89,18 @@ extension LocalLibraryStore {
         }
     }
 
-    /// Removes an article: marks it deleted and records its sync tombstone in
-    /// one `ModelContext` save, so the flag and the tombstone commit together
-    /// or not at all.
+    /// Removes an article: marks it deleted and removes its playlist entry in
+    /// one `ModelContext` save, so both commit together or not at all.
     ///
-    /// The tombstone is keyed by item (`id == itemID.rawValue`), the shape
-    /// `refresh()` and the sync repository already read. An existing
-    /// tombstone keeps its remote acknowledgement, as `record(tombstone:)`
-    /// does. Records only: no media file is deleted, and there is no undo.
+    /// Records only: no media file is deleted, and there is no undo.
     ///
-    /// Idempotent. An article that is already removed and already has its
-    /// tombstone writes nothing and returns false, so a duplicate confirm
-    /// coalesces. An article flagged by the earlier two-save path without its
-    /// tombstone gets the tombstone and returns true. An unknown article
+    /// Idempotent. An article that is already removed writes nothing and
+    /// returns false, so a duplicate confirm coalesces. An unknown article
     /// returns false and writes nothing.
     ///
     /// - Throws: `LocalLibraryRemovalError` when nothing was committed.
     @discardableResult
-    public func removeArticle(itemID: ItemID, at requestedAt: Timestamp = Timestamp(Date())) throws -> Bool {
+    public func removeArticle(itemID: ItemID) throws -> Bool {
         try Self.performRemoval(.removeArticle, startingAt: .articleFlag) { stage in
             let context = ModelContext(container)
             let identifier = itemID.rawValue
@@ -115,29 +108,11 @@ extension LocalLibraryStore {
                 predicate: #Predicate { $0.id == identifier })
             articleQuery.fetchLimit = 1
             guard let article = try context.fetch(articleQuery).first else { return false }
-            var tombstoneQuery = FetchDescriptor<LocalLibrarySchemaV3Models.TombstoneRecord>(
-                predicate: #Predicate { $0.id == identifier })
-            tombstoneQuery.fetchLimit = 1
-            let tombstone = try context.fetch(tombstoneQuery).first
-            if article.isRemoved, tombstone != nil { return false }
+            if article.isRemoved { return false }
 
-            if !article.isRemoved {
-                article.isRemoved = true
-                article.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
-            }
+            article.isRemoved = true
+            article.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
             try Self.reachRemovalStage(.articleFlag)
-
-            stage = .articleTombstone
-            if let tombstone {
-                tombstone.itemID = identifier
-                tombstone.generationID = nil
-                tombstone.requestedAt = requestedAt.date
-                tombstone.schemaVersion = LocalLibrarySchemaVersion.current.rawValue
-            } else {
-                context.insert(LocalLibrarySchemaV3Models.TombstoneRecord(
-                    LocalLibraryTombstone(id: identifier, itemID: itemID, requestedAt: requestedAt)))
-            }
-            try Self.reachRemovalStage(.articleTombstone)
 
             try stagePlaylistEntryRemoval(entryIDs: [identifier], in: context)
 
