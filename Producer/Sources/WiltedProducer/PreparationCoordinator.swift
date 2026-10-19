@@ -23,17 +23,18 @@ public struct PreparationRun: Sendable {
 /// Refuses an article whose speech could not fit one revision's audio budget,
 /// decided from its text before any synthesis is paid for.
 public enum ArticleSpeechBudgetError: Error, Equatable, LocalizedError, Sendable {
-    case tooLong(estimatedSeconds: Double, limitSeconds: Double)
+    case tooLong(wordCount: Int, limitSeconds: Double)
 
+    /// Names the word count, a fact, rather than the fast-pace estimate, which
+    /// understates real speech. Anything refused runs at least 1.6 times the
+    /// limit at the measured pace, so "well past" holds.
     public var errorDescription: String? {
         switch self {
-        case let .tooLong(estimatedSeconds, limitSeconds):
-            let estimatedHours = estimatedSeconds / 3_600
-            let limitHours = limitSeconds / 3_600
+        case let .tooLong(wordCount, limitSeconds):
             return String(
-                format: "This article is too long for Wilted to read aloud: it would run about %.1f hours, "
-                    + "and one article's audio is limited to about %.1f hours.",
-                estimatedHours, limitHours
+                format: "This article is too long for Wilted to read aloud: its %d words would run "
+                    + "well past the %.1f-hour limit for one article's audio.",
+                wordCount, limitSeconds / 3_600
             )
         }
     }
@@ -71,9 +72,9 @@ public actor PreparationCoordinator {
     /// for anything it lets through.
     static let budgetEstimateWordsPerSecond = 4.0
 
-    /// Estimates how long the text would take to speak at the budget-estimate pace.
-    static func estimatedSpeechSeconds(_ text: String) -> Double {
-        Double(text.split(whereSeparator: \.isWhitespace).count) / budgetEstimateWordsPerSecond
+    /// Words in the text, as the pre-synthesis budget estimate counts them.
+    static func spokenWordCount(_ text: String) -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
     }
 
     private let store: LocalLibraryStore
@@ -208,11 +209,9 @@ public actor PreparationCoordinator {
                 return
             }
 
-            let estimatedSeconds = Self.estimatedSpeechSeconds(extracted.body)
-            guard estimatedSeconds <= Self.maximumSpeechSeconds else {
-                throw ArticleSpeechBudgetError.tooLong(
-                    estimatedSeconds: estimatedSeconds, limitSeconds: Self.maximumSpeechSeconds
-                )
+            let wordCount = Self.spokenWordCount(extracted.body)
+            guard Double(wordCount) / Self.budgetEstimateWordsPerSecond <= Self.maximumSpeechSeconds else {
+                throw ArticleSpeechBudgetError.tooLong(wordCount: wordCount, limitSeconds: Self.maximumSpeechSeconds)
             }
 
             await emitter.emit(.synthesizing, "Generating speech", fraction: 0.4)

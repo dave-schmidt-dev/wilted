@@ -257,9 +257,8 @@ struct PreparationCoordinatorTests {
     @Test func overBudgetArticleFailsBeforeSynthesisAndIsNotRetryable() async throws {
         let fixture = try CoordinatorFixture()
         defer { fixture.remove() }
-        let wordCount = Int(
-            PreparationCoordinator.maximumSpeechSeconds * PreparationCoordinator.budgetEstimateWordsPerSecond
-        ) + 1_000
+        let wordCount = 30_000
+        #expect(Double(wordCount) > PreparationCoordinator.maximumSpeechSeconds * PreparationCoordinator.budgetEstimateWordsPerSecond)
         let body = Array(repeating: "word", count: wordCount).joined(separator: " ")
         let synthesisCalls = SynthesisCallCounter()
         let coordinator = fixture.coordinator(
@@ -276,18 +275,13 @@ struct PreparationCoordinatorTests {
 
         let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
 
-        let expectedError = ArticleSpeechBudgetError.tooLong(
-            estimatedSeconds: PreparationCoordinator.estimatedSpeechSeconds(body),
-            limitSeconds: PreparationCoordinator.maximumSpeechSeconds
-        )
-        let expectedMessage = try #require(expectedError.errorDescription)
         #expect(await synthesisCalls.count == 0)
         #expect(statuses.map(\.stage) == [.preparing, .extracting, .failed])
         #expect(statuses.filter(\.terminal).count == 1)
         #expect(statuses.last?.terminalResult?.error?.code == .unsupported)
         #expect(statuses.last?.terminalResult?.error?.retryable == false)
-        #expect(statuses.last?.terminalResult?.error?.message == expectedMessage)
-        #expect(statuses.last?.terminalResult?.error?.message.contains("too long") == true)
+        #expect(statuses.last?.terminalResult?.error?.message == "This article is too long for Wilted to read aloud: "
+            + "its 30000 words would run well past the 1.9-hour limit for one article's audio.")
         #expect(try fixture.candidateFiles().isEmpty)
     }
 
