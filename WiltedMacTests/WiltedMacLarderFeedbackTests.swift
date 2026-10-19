@@ -1,6 +1,6 @@
 import Foundation
 import WiltedDomain
-import WiltedProducer
+@testable import WiltedProducer
 import XCTest
 @testable import WiltedMac
 
@@ -213,5 +213,38 @@ final class WiltedMacLarderFeedbackTests: XCTestCase {
         )
         XCTAssertFalse(model.podcastOperationMessage?.contains("Removed all 2") ?? false,
                        "a failed clear never announces the whole group removed")
+    }
+
+    /// The producer's retry classification reaches the article's work ticket:
+    /// a failure it calls not retryable (here a paywall) is recorded terminal,
+    /// and one it calls retryable stays retryable.
+    func testArticleTicketKeepsTheProducersRetryClassification() async throws {
+        let cases: [(String, ArticleExtractionError, PodcastDownloadFailureKind)] = [
+            ("walled", .unsupported("paywall"), .terminal),
+            ("flaky", .invalidResponse, .retryable),
+        ]
+        for (name, failure, expected) in cases {
+            let model = try await bootedModel("larder-feedback-classify-\(name)")
+            let store = try XCTUnwrap(model.store)
+            model.coordinator = PreparationCoordinator(
+                store: store,
+                mediaDirectory: wiltedTemporaryDirectory("larder-feedback-classify-\(name)-media"),
+                extraction: { _ in throw failure },
+                synthesis: { _ in throw CancellationError() },
+                assembly: { _, _, _, _ in throw CancellationError() }
+            )
+            let page = try XCTUnwrap(URL(string: "https://blog.example.test/posts/\(name)"))
+            model.urlDraft = page.absoluteString
+
+            XCTAssertTrue(model.addArticle())
+            await model.preparationTask?.value
+
+            XCTAssertEqual(model.preparation?.phase, .failed, name)
+            let ticket = try await store.workTicket(
+                kind: .articlePreparation, subjectID: try ItemID.derive(from: page).rawValue
+            )
+            XCTAssertEqual(ticket?.state, .failed, name)
+            XCTAssertEqual(ticket?.failureKind, expected.rawValue, name)
+        }
     }
 }
