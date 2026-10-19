@@ -296,7 +296,7 @@ extension WiltedVisualSystemTests {
         XCTAssertFalse(source.contains(".disabled(!model.hasCurrentPlayback || model.playbackCompleted)"))
 
         let modelSource = try WiltedMacSource.model(root: root)
-        XCTAssertTrue(modelSource.contains("guard !audioRouteRecoveryAttempted else { return }"))
+        XCTAssertTrue(modelSource.contains("guard let playback, !audioRouteRecoveryAttempted else {"))
         XCTAssertTrue(modelSource.contains("audioRouteRecoveryAttempted = true"))
         XCTAssertTrue(modelSource.contains("self.audioRouteFault = true"))
     }
