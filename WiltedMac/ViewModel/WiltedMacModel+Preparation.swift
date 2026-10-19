@@ -75,7 +75,7 @@ extension WiltedMacModel {
     ) async -> WorkTicket? {
         if requiresAttempt && expectedAttempt == nil {
             Self.workTicketLog.warning(
-                "terminal ticket write skipped: subject=\(subjectID, privacy: .public) state=\(state.rawValue, privacy: .public) reconciliationRequired=true; no acknowledged generation"
+                "terminal ticket write skipped: \(self.episodeLogContext(subjectID, requestSequence: requestSequence), privacy: .public) state=\(state.rawValue, privacy: .public) reconciliationRequired=true; no acknowledged generation"
             )
             if kind == .podcastPreparation,
                let requestSequence,
@@ -140,7 +140,7 @@ extension WiltedMacModel {
             return ticket
         } catch {
             Self.workTicketLog.warning(
-                "work ticket transition failed: kind=\(kind.rawValue, privacy: .public) subject=\(subjectID, privacy: .public) attemptedState=\(state.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                "work ticket transition failed: kind=\(kind.rawValue, privacy: .public) \(self.episodeLogContext(subjectID, requestSequence: requestSequence ?? expectedAttempt?.requestSequence, attempt: expectedAttempt?.attemptCount), privacy: .public) attemptedState=\(state.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
             )
             return nil
         }
@@ -531,7 +531,7 @@ extension WiltedMacModel {
             return
         }
         Self.playbackLog.notice(
-            "advanceToNextLarderEpisode: nextEpisode=\(next.id, privacy: .public)"
+            "advanceToNextLarderEpisode: next \(self.episodeLogContext(next.id), privacy: .public)"
         )
         playEpisode(next)
     }

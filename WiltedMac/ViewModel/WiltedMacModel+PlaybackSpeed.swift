@@ -45,6 +45,19 @@ extension WiltedMacModel {
         }
     }
 
+    /// The episode a speed choice is saved for. While a selection is opening,
+    /// that is the incoming episode: its load keeps the choice (PB-7), so the
+    /// outgoing one must not inherit it. Otherwise the loaded podcast episode.
+    /// Articles keep no speed of their own.
+    var speedSaveTarget: ItemID? {
+        if let pending = playbackCommands.pending?.command, pending.kind == .select, let target = pending.itemID {
+            guard !articles.contains(where: { $0.id == target }) else { return nil }
+            return try? ItemID(rawValue: target)
+        }
+        guard isPodcastPlayback else { return nil }
+        return playback?.itemID
+    }
+
     /// The speed-save line for the loaded episode only.
     var currentSpeedSaveStatus: WiltedMacSpeedSaveStatus? {
         guard let status = playbackCommands.speedSave,

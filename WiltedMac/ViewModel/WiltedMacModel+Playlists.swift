@@ -427,6 +427,9 @@ extension WiltedMacModel {
               let itemID = try? ItemID(rawValue: entryID) else { return }
         let opening = "Opening \(item.title)…"
         playbackOperationStatus = opening
+        // A speed picked from here on, even while this command waits behind
+        // older ones, outranks the entry's saved speed (PB-7).
+        let rateBaseline = playback.listenerRateSerial
         issuePlaybackCommand(.select, pending: opening, target: entryID,
                              failureMessage: WiltedMacPlaybackCopy.missing) { [weak self] command in
             guard let self else { return }
@@ -440,7 +443,7 @@ extension WiltedMacModel {
             self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
             try await playback.load(stored)
             try self.ensureNewestSelection(command)
-            if let savedRate { playback.setRate(Float(savedRate.speed)) }
+            if let savedRate, playback.listenerRateSerial == rateBaseline { playback.setRate(Float(savedRate.speed)) }
             self.playlists.session?.index = index
             switch item {
             case .article(let article):

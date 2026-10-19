@@ -170,7 +170,7 @@ extension WiltedMacModel {
                     // marker is conservative and lets a later launch retry;
                     // misreporting this as a failed transfer would be false.
                     Self.downloadLog.error(
-                        "download recovery checkpoint not saved: episode=\(episode.id, privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                        "download recovery checkpoint not saved: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) cause=\(String(describing: error), privacy: .public)"
                     )
                     recoveryCheckpointSaved = false
                 }
@@ -213,7 +213,7 @@ extension WiltedMacModel {
                     self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 } catch {
                     Self.downloadLog.error(
-                        "download landed but the library reload failed: episode=\(episode.id, privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                        "download landed but the library reload failed: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) cause=\(String(describing: error), privacy: .public)"
                     )
                 }
                 await self.recordWorkTicketTransition(
@@ -261,7 +261,7 @@ extension WiltedMacModel {
                 // deliberate click made it.
                 let failureKind = (error as? PodcastDownloadCoordinatorError)?.failureKind ?? .retryable
                 Self.downloadLog.error(
-                    "download failed: episode=\(episode.id, privacy: .public) attempt=\(ownedTicket.attemptCount, privacy: .public) state=\(ownedTicket.state.rawValue, privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                    "download failed: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) state=\(ownedTicket.state.rawValue, privacy: .public) cause=\(String(describing: error), privacy: .public)"
                 )
                 await self.recordWorkTicketTransition(
                     kind: .podcastDownload, subjectID: episode.id,

@@ -122,6 +122,8 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- On the Mac, a speed you pick after choosing an episode or playlist entry, while it is still opening, is the speed it plays at and the speed saved for it. The episode's older saved speed no longer overwrites your pick, and the episode you were leaving keeps its own speed.
+- Mac preparation, download and playback log lines name their episode by feed and title, with the request sequence and attempt where they apply, instead of an opaque item ID alone. Titles are shortened to one line; notes and transcript text never appear.
 - The Mac no longer fails to open a library that needs an upgrade when another Wilted process holds the store for a moment; the upgrade check waits up to 5 seconds for the lock.
 - After a crash, force quit or failed preparation, the Mac's next launch removes the leftover prepared episode copy, worker render file and article or audiobook encode temp, so the full-size audio they held no longer fills the disk; committed audio and anything the library names are never touched.
 - A crashed or stopped preparation worker now says why: the "produced no result" error carries the worker's last stderr lines, a worker failure names its innermost frame, and summary failures name the exception class without transcript text.

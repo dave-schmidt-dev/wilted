@@ -147,6 +147,10 @@ public final class PlaybackController {
     /// True while a spoken bulletin holds program audio: the hold is not a pause.
     public var liveIsPlaying: Bool { backend.isPlaying || speechHeld }
     public var playbackRate: Float { backend.rate }
+    /// Counts the speeds the listener chose through `setListenerRate`. A load
+    /// compares it across its own awaits, so a choice made while an episode
+    /// loads outranks the saved speed that load read before it (PB-7).
+    @ObservationIgnored public private(set) var listenerRateSerial: UInt64 = 0
 
     public internal(set) var sessionID: String?
     public internal(set) var sequence: Int64 = 1
@@ -317,8 +321,13 @@ public final class PlaybackController {
         try await store.movePodcastQueueEpisode(from: source, to: destination)
     }
 
-    public func selectPodcastQueueEpisode(_ episodeID: ItemID, autoplay: Bool = false) async throws {
-        try await loadQueuedEpisode(episodeID, playAfterLoad: autoplay)
+    /// `listenerRateSince` is `listenerRateSerial` as the caller read it when
+    /// the listener asked for the episode: a speed picked after that wins
+    /// over the episode's saved speed. It defaults to the load's own start.
+    public func selectPodcastQueueEpisode(
+        _ episodeID: ItemID, autoplay: Bool = false, listenerRateSince: UInt64? = nil
+    ) async throws {
+        try await loadQueuedEpisode(episodeID, playAfterLoad: autoplay, listenerRateSince: listenerRateSince)
         try await store.addPodcastQueueEpisode(episodeID)
         try await store.setCurrentPodcastQueueEpisode(episodeID)
         podcastStateHandler?(episodeID, nil)
@@ -332,9 +341,10 @@ public final class PlaybackController {
     /// `startsIf` is asked at the moment the loaded episode would start, after
     /// the last await, so a caller that owns start intent can decline when a
     /// newer command (a Pause) arrived while the media loaded. Declining
-    /// still loads the episode and moves the queue.
+    /// still loads the episode and moves the queue. `listenerRateSince` is as
+    /// for `selectPodcastQueueEpisode`.
     public func playPodcastQueueEpisodeNow(
-        _ episodeID: ItemID, startsIf shouldStart: () -> Bool = { true }
+        _ episodeID: ItemID, listenerRateSince: UInt64? = nil, startsIf shouldStart: () -> Bool = { true }
     ) async throws {
         guard try await isEpisodeEligible(episodeID) else {
             recoverableFault = .podcastMediaUnavailable(episodeID)
@@ -345,7 +355,8 @@ public final class PlaybackController {
             if itemID == episodeID, loadedIsPodcastEpisode {
                 if !backend.isPlaying, shouldStart() { try play() }
             } else {
-                try await loadQueuedEpisode(episodeID, playAfterLoad: true, startsIf: shouldStart)
+                try await loadQueuedEpisode(
+                    episodeID, playAfterLoad: true, listenerRateSince: listenerRateSince, startsIf: shouldStart)
             }
             podcastStateHandler?(episodeID, nil)
             return
@@ -358,7 +369,8 @@ public final class PlaybackController {
         if itemID == state.currentEpisodeID, currentRevision != nil {
             try await checkpoint()
         }
-        try await loadQueuedEpisode(episodeID, playAfterLoad: true, startsIf: shouldStart)
+        try await loadQueuedEpisode(
+            episodeID, playAfterLoad: true, listenerRateSince: listenerRateSince, startsIf: shouldStart)
 
         var episodeIDs = state.episodeIDs
         episodeIDs.removeAll { $0 == episodeID }
@@ -494,6 +506,13 @@ public final class PlaybackController {
         let rate = Self.clampRate(value)
         backend.rate = rate
         speedSavingsRate = Double(rate)
+    }
+
+    /// A speed the listener chose. Unlike `setRate`, it also wins over the
+    /// saved speed of an episode whose load is already in flight.
+    public func setListenerRate(_ value: Float) {
+        listenerRateSerial &+= 1
+        setRate(value)
     }
 
     private static func clampRate(_ value: Float) -> Float {
