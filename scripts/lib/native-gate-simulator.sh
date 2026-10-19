@@ -75,9 +75,23 @@ def emit(message):
 def inventory():
     return json.loads(run(['xcrun', 'simctl', 'list', 'devices', '-j'], 'simulator-inventory', 1800, capture=True))['devices']
 
+def lock_directory():
+    # Every worktree of this repository reuses the same persistent simulator, so
+    # its lane lock lives in the shared git directory, not in one checkout's .build.
+    try:
+        top, common = subprocess.run(['git', '-C', str(root), 'rev-parse', '--path-format=absolute',
+                                      '--show-toplevel', '--git-common-dir'],
+                                     env={k: v for k, v in os.environ.items() if not k.startswith('GIT_')},
+                                     capture_output=True, text=True, timeout=30, check=True).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return root / '.build/simulator-locks'
+    if Path(top).resolve() != root.resolve():
+        return root / '.build/simulator-locks'
+    return Path(common) / 'wilted-simulator-locks'
+
 def lock(runtime):
     key = hashlib.sha256(runtime.encode()).hexdigest()[:16]
-    path = root / '.build/simulator-locks' / (key + '.lock')
+    path = lock_directory() / (key + '.lock')
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     started = time.monotonic()
@@ -172,7 +186,15 @@ try:
         if device['state'] != 'Booted':
             # Register ownership before simctl can boot or wait, including interrupts.
             boot_owned = True
-            run(['xcrun', 'simctl', 'boot', udid], 'simulator-boot', 1800)
+            try:
+                run(['xcrun', 'simctl', 'boot', udid], 'simulator-boot', 1800)
+            except SystemExit as error:
+                # simctl exits 149 (SimError 405) when something outside this lane
+                # booted the device first; that boot is not ours to shut down.
+                if error.code != 149 or next(d for d in inventory()[runtime] if d['udid'] == udid)['state'] != 'Booted':
+                    raise
+                boot_owned = False
+                emit(f'boot.raced runtime={runtime} udid={udid}')
         run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], 'simulator-readiness', 1800)
         emit(f'ready runtime={runtime} udid={udid} boot_owned={int(boot_owned)}')
         # The shared Apple lane is acquired after readiness, before the cache

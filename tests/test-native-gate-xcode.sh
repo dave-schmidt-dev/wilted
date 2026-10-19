@@ -26,16 +26,6 @@ RUNTIME, TYPE, UDID = fixture.RUNTIME, fixture.TYPE, fixture.UDID
 
 class XcodeLifecycleTests(fixture.XcodeFixture, unittest.TestCase):
     repository_root = ROOT
-    def invoke(self, *args, env=None, timeout=60):
-        return subprocess.run(args, env=env or self.env, text=True, capture_output=True, timeout=timeout)
-    def select(self):
-        result = self.invoke('bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'select', str(self.root), RUNTIME, TYPE)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return result.stdout.strip()
-    def session(self, env=None, key="native-ios-unit-tests"):
-        return self.invoke('bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'run', str(self.root), UDID,
-                           sys.executable, str(self.root / 'scripts/build-with-cache.py'), 'run', 'xcode', key,
-                           '--', 'xcodebuild', 'test-without-building', env=env)
     def managed_root(self, host=None):
         parent=self.root / 'managed-work'; parent.mkdir(exist_ok=True)
         owner_started=subprocess.check_output(['/bin/ps','-o','lstart=','-p',str(os.getpid())],text=True).strip()

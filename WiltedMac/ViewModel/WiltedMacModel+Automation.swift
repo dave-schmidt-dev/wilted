@@ -313,7 +313,10 @@ extension WiltedMacModel {
             await refreshLifetimeStatistics()
         } catch {
             // A later checkpoint remains available; the log keeps the cause.
-            Self.playbackLog.error("Playback checkpoint failed: \(String(describing: error), privacy: .public)")
+            let context = playback.itemID.map { episodeLogContext($0.rawValue) } ?? "episode=none"
+            Self.playbackLog.error(
+                "Playback checkpoint failed: \(context, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
         }
 #endif
     }

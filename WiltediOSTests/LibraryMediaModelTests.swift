@@ -144,14 +144,15 @@ final class LibraryMediaModelTests: XCTestCase {
 
     private func makeModel(
         _ delivery: ScriptedTransport.Delivery = .normal, cache: FileMediaCache? = nil,
-        timing: LibraryMediaTiming? = nil, failAcknowledgements: Flag = Flag(false), store: MediaModelStore? = nil
+        timing: LibraryMediaTiming? = nil, failAcknowledgements: Flag = Flag(false), store: MediaModelStore? = nil,
+        outbox: URL? = nil
     ) -> LibraryAppModel {
         let transport = ScriptedTransport(
             inner: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "media-model-owner"),
             delivery: delivery, failAcknowledgements: failAcknowledgements)
         return LibraryAppModel(
             transport: transport, store: store ?? fixtureStore(), deviceID: "phone", mediaCache: cache ?? makeCache(),
-            mediaTiming: timing ?? fast, timeZone: TimeZone(identifier: "UTC")!)
+            mediaTiming: timing ?? fast, outboxURL: outbox, timeZone: TimeZone(identifier: "UTC")!)
     }
 
     private func fixtureStore() -> MediaModelStore {
@@ -478,7 +479,7 @@ final class LibraryMediaModelTests: XCTestCase {
         model.performMediaAction(.request, entryID: entryID)
         await model.waitForMedia(entryID: entryID)
         XCTAssertEqual(model.mediaState(for: entryID), .onPhone)
-        XCTAssertEqual(model.unacknowledgedMedia[entryID], revisionID)
+        XCTAssertEqual(model.unacknowledgedMedia[entryID]?.action, .mediaCached(entryID: entryID, revisionID: revisionID, deviceID: "phone"))
         var sent = try await intents()
         XCTAssertFalse(sent.contains { if case .mediaCached = $0.action { true } else { false } })
 
@@ -487,6 +488,26 @@ final class LibraryMediaModelTests: XCTestCase {
         XCTAssertTrue(model.unacknowledgedMedia.isEmpty)
         sent = try await intents()
         XCTAssertEqual(sent.filter { if case .mediaCached = $0.action { true } else { false } }.count, 1)
+    }
+
+    func testAnUnsentAcknowledgementSurvivesARelaunchAndIsSentOnceWithItsOwnID() async throws {
+        let outbox = scratch.appendingPathComponent("pending-intents.json")
+        try await macPublish(makeOffer())
+        let first = makeModel(failAcknowledgements: Flag(true), outbox: outbox)
+        first.performMediaAction(.request, entryID: entryID)
+        await first.waitForMedia(entryID: entryID)
+        let ack = try XCTUnwrap(first.unacknowledgedMedia[entryID])
+        XCTAssertTrue(first.isDurablyQueued(ack.id))
+
+        // The app is killed before the Mac hears; the next launch has signal.
+        let second = makeModel(outbox: outbox)
+        XCTAssertEqual(second.unacknowledgedMedia[entryID]?.id, ack.id)
+        await second.refresh()
+        XCTAssertTrue(second.unacknowledgedMedia.isEmpty)
+        let sent = try await intents().filter { if case .mediaCached = $0.action { true } else { false } }
+        XCTAssertEqual(sent.map(\.id), [ack.id], "sent once, with the id it was made with")
+        guard case let .saved(saved) = LibraryIntentOutbox(url: outbox).load() else { return XCTFail("the outbox file is gone") }
+        XCTAssertTrue(saved.intentIDs.isEmpty)
     }
 
     func testTransportFailureOnRequestShowsFailedWithReason() async throws {

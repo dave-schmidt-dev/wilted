@@ -146,7 +146,7 @@ final class WiltedMacLifecycleRegressionTests: XCTestCase {
         XCTAssertEqual(rig.model.currentPodcastEpisodeID, rig.id(21), "the run continues with 21")
         XCTAssertTrue(rig.backend.isPlaying)
         XCTAssertEqual(rig.recorder.finishes, 1, "one admitted natural-end handoff")
-        XCTAssertTrue(decisions.contains("advance.decision chosen=\(rig.id(21)) reason=first_ready_row"))
+        XCTAssertTrue(decisions.contains { $0.hasPrefix("advance.decision chosen=\(rig.id(21)) reason=first_ready_row ") })
         XCTAssertFalse(decisions.contains("advance.decision chosen=none reason=no_eligible_ready_row"),
                        "skipping 20 is not a terminal Ready decision")
         await rig.model.close()

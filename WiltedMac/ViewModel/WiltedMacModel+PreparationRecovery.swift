@@ -45,12 +45,12 @@ extension WiltedMacModel {
                     }
                 } catch {
                     recoveryFailed = true
-                    Self.preparationRecoveryLog.warning("Invalid saved preparation policy for \(ticket.subjectID, privacy: .public): \(String(describing: error), privacy: .public)")
+                    Self.preparationRecoveryLog.warning("Invalid saved preparation policy: \(self.episodeLogContext(ticket.subjectID, requestSequence: ticket.requestSequence, attempt: ticket.attemptCount), privacy: .public) error=\(String(describing: error), privacy: .public)")
                     continue
                 }
                 if processing != nil, snapshot == nil {
                     recoveryFailed = true
-                    Self.preparationRecoveryLog.warning("Missing saved preparation snapshot for \(ticket.subjectID, privacy: .public)")
+                    Self.preparationRecoveryLog.warning("Missing saved preparation snapshot: \(self.episodeLogContext(ticket.subjectID, requestSequence: ticket.requestSequence, attempt: ticket.attemptCount), privacy: .public)")
                     continue
                 }
                 let waitingForDeadline = ticket.nextEligibleAt.map { $0.date > date } ?? false

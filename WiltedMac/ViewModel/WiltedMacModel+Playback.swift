@@ -135,7 +135,7 @@ extension WiltedMacModel {
             guard let self else { return }
             do {
                 Self.playbackLog.notice(
-                    "markCurrentPlaybackCompleted: episode=\(self.currentPodcastEpisodeID ?? "none", privacy: .public)"
+                    "markCurrentPlaybackCompleted: \(self.currentPodcastEpisodeID.map { self.episodeLogContext($0) } ?? "episode=none", privacy: .public)"
                 )
                 // Idempotent by halves: a record that already says completed is
                 // not rewritten, but the retirement it never got runs anyway.

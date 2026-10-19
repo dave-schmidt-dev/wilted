@@ -87,7 +87,7 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.currentEpisode?.id, successorID.rawValue,
                        "the top Ready row starts even when displayed above the finished episode")
         XCTAssertTrue(model.isPlaying, "natural completion starts the prepared successor playing")
-        XCTAssertTrue(decisionLogs.contains("advance.decision chosen=\(successorID.rawValue) reason=first_ready_row"))
+        XCTAssertTrue(decisionLogs.contains { $0.hasPrefix("advance.decision chosen=\(successorID.rawValue) reason=first_ready_row ") })
         let finished = try XCTUnwrap(model.episodes.first { $0.id == finishedID.rawValue },
                                      "retirement is not dismissal -- the row survives")
         XCTAssertNotNil(finished.retiredAt,

@@ -263,9 +263,9 @@ extension WiltedMacModel {
         preferences.set(playbackRate, forKey: Self.playbackRatePreferenceKey)
 #if canImport(WiltedProducer)
         playback?.defaultRate = Float(playbackRate)
-        playback?.setRate(Float(playbackRate))
+        playback?.setListenerRate(Float(playbackRate))
         rescheduleSeamMarker()
-        guard isPodcastPlayback, let id = playback?.itemID else { return }
+        guard let id = speedSaveTarget else { return }
         // The live speed above stays in force whatever the save does; the
         // save reports on its own status line, scoped to this episode.
         savePlaybackSpeed(playbackRate, for: id)

@@ -96,7 +96,9 @@ extension WiltedMacModel {
     static var advanceDecisionLogObserverForTesting: ((String) -> Void)?
 
     private func logAutomaticAdvanceDecision(chosenID: String?, reason: String) {
+        // The chosen episode's feed and title follow, so the line names it (LG-6).
         let message = "advance.decision chosen=\(chosenID ?? "none") reason=\(reason)"
+            + (chosenID.map { " " + episodeLogContext($0) } ?? "")
         Self.playbackLog.notice("\(message, privacy: .public)")
         Self.advanceDecisionLogObserverForTesting?(message)
     }

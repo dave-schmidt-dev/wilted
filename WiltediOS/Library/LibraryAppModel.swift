@@ -71,15 +71,18 @@ final class LibraryAppModel: ObservableObject {
     /// Why the phone stopped or could not hand over, in words; nil when there is nothing to say.
     @Published var handoffMessage: String?
     /// Decisions sent to the Mac and not yet settled; written by `LibraryAppModel+Decisions`.
-    /// They only shape the display; the phone never writes library state.
+    /// They only shape the display; the phone never writes library state. Unsent ones are saved in the outbox.
     @Published var decisions: [PendingDecision] = [] {
-        didSet { episodeProjectionDirty = true }
+        didSet { episodeProjectionDirty = true; persistOutbox() }
     }
     /// Why a decision was rolled back, per entry, in words.
     @Published var decisionNotices: [ItemID: String] = [:]
     /// Adds sent to the Mac (a podcast to follow, an article to add) and not yet cleared; written by
     /// `LibraryAppModel+Add`. Kept apart from `decisions`: an add names an item the Mac does not hold yet.
-    @Published var adds: [PendingAdd] = []
+    /// Unsent ones are saved in the outbox.
+    @Published var adds: [PendingAdd] = [] {
+        didSet { persistOutbox() }
+    }
     /// Why the last add was not sent, in words; nil when it was.
     @Published var addNotice: String?
     /// The add actions the Mac says it applies (`supportedIntentActions`); nil until read.
@@ -155,8 +158,13 @@ final class LibraryAppModel: ObservableObject {
     var entryDurations: [ItemID: Double] = [:]
     /// One live request per entry; the run id lets a cancelled run detect that it was replaced.
     var mediaRuns: [ItemID: LibraryMediaRun] = [:]
-    /// Verified files that still need their `mediaCached` acknowledgement sent to the Mac.
-    var unacknowledgedMedia: [ItemID: RevisionID] = [:]
+    /// Verified files whose `mediaCached` acknowledgement the Mac does not have yet, with the one intent
+    /// every retry sends. Saved in the outbox.
+    var unacknowledgedMedia: [ItemID: LibraryIntent] = [:] {
+        didSet { persistOutbox() }
+    }
+    /// The unsent intents on disk; owned by `LibraryAppModel+Outbox`.
+    let outboxState: LibraryOutboxState
     var mediaRevocations: Set<ItemID> = []
     @Published var undoableCompletion: ItemID?
     /// Transcripts for audio on the phone, keyed by entry; each is for the cached revision.
@@ -190,6 +198,7 @@ final class LibraryAppModel: ObservableObject {
         decisionTiming: LibraryDecisionTiming = LibraryDecisionTiming(),
         preferences: UserDefaults = .standard,
         ownPositionsURL: URL? = nil,
+        outboxURL: URL? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current,
         throttleSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
@@ -210,6 +219,7 @@ final class LibraryAppModel: ObservableObject {
             transport: transport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
         self.preferences = preferences
         handoffState.ownPositionStore = LibraryOwnPositionStore(url: ownPositionsURL)
+        self.outboxState = LibraryOutboxState(outbox: LibraryIntentOutbox(url: outboxURL))
         self.phoneStats = LibraryPhoneStatsStore(defaults: preferences)
         self.store = store
         self.deviceID = deviceID
@@ -219,6 +229,7 @@ final class LibraryAppModel: ObservableObject {
         self.reconciler = LibraryReconciler(transport: transport, store: store)
         kindFilter = LibraryKindFilter.stored(preferences.string(forKey: LibraryKindFilter.storageKey))
         relay.model = self
+        restoreOutbox()
     }
 
     /// Launch entry point: watches for account changes once, then fetches.
@@ -246,6 +257,7 @@ final class LibraryAppModel: ObservableObject {
     /// launch with no signal still lists and plays what is downloaded. `start()` follows with the sync.
     func loadLocalState() async {
         let saved = await store.state()
+        verifyOutboxOwner(saved.ownerToken)
         applyStoreMetadata(saved)
         _ = await bindMediaOwner()
         displayContext = (await transport.operationGeneration(), saved.displayAdmissionRevision)
@@ -431,6 +443,7 @@ final class LibraryAppModel: ObservableObject {
     }
 
     private func applyStoreMetadata(_ saved: LibraryStoreState) {
+        outboxOwnerChanged(saved.ownerToken)
         accountQuarantined = accountQuarantined || saved.reviewHold
         cachedDisplayIDs = saved.displayPreparedIDs ?? []
         if saved.ownerToken != nil, saved.displayRefreshPending, let content = saved.completedDisplay {

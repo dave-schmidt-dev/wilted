@@ -91,11 +91,15 @@ extension PlaybackController {
     @discardableResult
     func loadQueuedEpisode(
         _ episodeID: ItemID, playAfterLoad: Bool, expectedGeneration: UInt64? = nil,
-        startsIf shouldStart: () -> Bool = { true }
+        listenerRateSince: UInt64? = nil, startsIf shouldStart: () -> Bool = { true }
     ) async throws -> UInt64 {
         if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
             throw CancellationError()
         }
+        // A speed the listener picks after the caller's baseline (by default,
+        // from here on) is newer than the saved speed read below, so the load
+        // keeps it (PB-7).
+        let listenerRateBaseline = listenerRateSince ?? listenerRateSerial
         guard try await isEpisodeEligible(episodeID) else {
             recoverableFault = .podcastMediaUnavailable(episodeID)
             throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
@@ -127,7 +131,7 @@ extension PlaybackController {
         guard loadedBackendGeneration == loadedGeneration, itemID == episodeID else {
             throw CancellationError()
         }
-        setRate(savedRate)
+        if listenerRateSerial == listenerRateBaseline { setRate(savedRate) }
         // Queue operations keep their silent autoplay: the queue move must
         // complete whether or not the backend agreed to start. A caller that
         // needs a typed answer follows the operation with `start()`.

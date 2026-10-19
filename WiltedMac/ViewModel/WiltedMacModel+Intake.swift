@@ -415,6 +415,9 @@ extension WiltedMacModel {
         guard let playback, let id = try? ItemID(rawValue: episode.id) else { return }
         let opening = "Opening \(episode.title)…"
         playbackOperationStatus = opening
+        // A speed picked from the click on, even while this command waits
+        // behind older ones, outranks the episode's saved speed (PB-7).
+        let rateBaseline = playback.listenerRateSerial
         // A selection supersedes any pending command, auto-advance included.
         // The queue move lands without autoplay; only the newest command may
         // then start it, so a Pause issued meanwhile wins.
@@ -424,7 +427,7 @@ extension WiltedMacModel {
             defer { if self.playbackOperationStatus == opening { self.playbackOperationStatus = nil } }
             do {
                 await self.fixturePodcastInstallTask?.value
-                Self.playbackLog.notice("playEpisode started: episode=\(episode.id, privacy: .public)")
+                Self.playbackLog.notice("playEpisode started: \(self.episodeLogContext(episode.id), privacy: .public)")
                 // The outgoing episode is still current here; the forced
                 // publish below is the one that names the new episode.
                 self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
@@ -456,7 +459,7 @@ extension WiltedMacModel {
                         self.playbackCommands.trace.record(.outgoingCheckpointCalled, token: command.token)
                     }
                     try self.ensureCurrentPlaybackCommand(command)
-                    try await playback.selectPodcastQueueEpisode(id, autoplay: false)
+                    try await playback.selectPodcastQueueEpisode(id, autoplay: false, listenerRateSince: rateBaseline)
                     self.playbackCommands.trace.record(.loadCalled, token: command.token)
                     try self.ensureNewestSelection(command)
                     // The selected row loaded, so the session now belongs to
@@ -468,7 +471,8 @@ extension WiltedMacModel {
                     try self.ensureCurrentPlaybackCommand(command)
                     // The controller asks at its own start point, after the
                     // load's last await, so a Pause issued meanwhile wins.
-                    try await playback.playPodcastQueueEpisodeNow(id, startsIf: { self.isCurrentPlaybackCommand(command) })
+                    try await playback.playPodcastQueueEpisodeNow(
+                        id, listenerRateSince: rateBaseline, startsIf: { self.isCurrentPlaybackCommand(command) })
                     self.playbackCommands.trace.record(.loadCalled, token: command.token)
                     try self.ensureNewestSelection(command)
                     // A generic Play keeps the Larder-wide continuation
@@ -482,7 +486,7 @@ extension WiltedMacModel {
                 self.isPlaying = playback.isPlaying
 
                 Self.playbackLog.notice(
-                    "playEpisode returned: episode=\(episode.id, privacy: .public) isPlaying=\(playback.liveIsPlaying, privacy: .public) time=\(playback.livePositionSeconds, privacy: .public) rate=\(playback.playbackRate, privacy: .public)"
+                    "playEpisode returned: \(self.episodeLogContext(episode.id), privacy: .public) isPlaying=\(playback.liveIsPlaying, privacy: .public) time=\(playback.livePositionSeconds, privacy: .public) rate=\(playback.playbackRate, privacy: .public)"
                 )
                 self.selectedArticleID = nil
                 self.currentPodcastEpisodeID = episode.id
@@ -497,7 +501,7 @@ extension WiltedMacModel {
             } catch {
                 if !(error is WiltedMacPlaybackSuperseded) { await self.refreshPodcastQueueState() }
                 Self.playbackLog.error(
-                    "playEpisode failed: episode=\(episode.id, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                    "playEpisode failed: \(self.episodeLogContext(episode.id), privacy: .public) error=\(String(describing: error), privacy: .public)"
                 )
                 throw error
             }
