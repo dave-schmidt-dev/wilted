@@ -247,17 +247,28 @@ struct CancellingPodcastPipelineRunner: PodcastPipelineRunning {
 /// timer against however long the pipeline takes to fail on its own.
 actor BlockingPodcastPipelineRunner: PodcastPipelineRunning {
     private var continuation: CheckedContinuation<Data, Error>?
+    /// A resume that came before the pipeline called `run`; that run then ends with it at once
+    /// instead of blocking a test's teardown forever.
+    private var early: Error?
 
     func run(
         request: Data,
         onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation = $0 }
+        if let early {
+            self.early = nil
+            throw early
+        }
+        return try await withCheckedThrowingContinuation { continuation = $0 }
     }
 
     func resume(throwing error: Error) {
-        continuation?.resume(throwing: error)
-        continuation = nil
+        guard let continuation else {
+            early = error
+            return
+        }
+        continuation.resume(throwing: error)
+        self.continuation = nil
     }
 }
 

@@ -143,6 +143,26 @@ extension WiltedMacModelTests {
         await model.waitForPodcastPreparationOperationsForTesting()
     }
 
+    /// Both runner tests resume the blocking runner once admission is visible, which can be
+    /// before the pipeline calls it. That resume must still end the run, or teardown waits forever.
+    func testBlockingRunnerKeepsAResumeThatComesBeforeTheRun() async throws {
+        let runner = BlockingPodcastPipelineRunner()
+        await runner.resume(throwing: CancellationError())
+        let run = Task { try await runner.run(request: Data(), onProgress: { _ in }) }
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(5))
+            await runner.resume(throwing: URLError(.timedOut))
+        }
+        defer { watchdog.cancel() }
+        do {
+            _ = try await run.value
+            XCTFail("an early resume must end the run")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("the early resume was dropped and the run blocked: \(error)")
+        }
+    }
+
     /// Article text-to-speech and podcast preparation share one GPU. The
     /// article path used to start its coordinator without asking the gate, so
     /// both could hold the device at once.
