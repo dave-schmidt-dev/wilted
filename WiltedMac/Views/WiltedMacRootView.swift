@@ -220,14 +220,17 @@ struct WiltedMacRootView: View {
                 .wiltedFont(.body)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             if let detail = failure.detail {
-                Text(detail)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .textSelection(.enabled)
-                    .accessibilityIdentifier("wilted-mac-startup-error-detail")
+                DisclosureGroup("Show details") {
+                    Text(detail)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("wilted-mac-startup-error-detail")
+                }
+                .accessibilityIdentifier("wilted-mac-startup-error-details")
             }
             if let recoveryURL = failure.recoveryCopyURL {
-                Text("A recovery copy of your library is available at:")
+                Text("A recovery copy of your previous library is at:")
                     .wiltedFont(.body)
                 Text(recoveryURL.path)
                     .wiltedFont(.utility)
@@ -244,9 +247,11 @@ struct WiltedMacRootView: View {
                 }
                 .accessibilityIdentifier("wilted-mac-startup-retry")
             } else {
-                Text("Retry limit reached. Keep the recovery copy and relaunch Wilted before trying again.")
+                Text("Wilted stopped retrying. Quit, then open Wilted again to try once more.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                Button("Quit Wilted") { NSApplication.shared.terminate(nil) }
+                    .accessibilityIdentifier("wilted-mac-startup-quit")
             }
         }
         .frame(maxWidth: 640, alignment: .leading)

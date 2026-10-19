@@ -182,13 +182,16 @@ enum WiltedMacStartupStep: Equatable, Sendable {
         case .openingStore: text = "Opening your larder"
         case .updatingLibraryFormat: text = "Updating the library format"
         case .retiringFinishedEpisodes: text = "Tidying finished episodes"
-        case .checkingPreparationFingerprint: text = "Checking preparation fingerprints"
-        case .closingInterruptedRuns: text = "Closing interrupted preparations"
-        case .reconcilingWork: text = "Reconciling background work"
+        case .checkingPreparationFingerprint: text = "Checking prepared audio"
+        case .closingInterruptedRuns: text = "Clearing interrupted preparations"
+        case .reconcilingWork: text = "Finishing interrupted work"
         case .reclaimingStorage: text = "Reclaiming storage"
         case let .recoveringWork(action, done, total, errors):
-            let issue = errors.isEmpty ? "" : " \(errors.joined(separator: " "))"
-            return "Recovering \(done) of \(total) requests: \(action).\(issue)"
+            let progress = total > 0
+                ? "Recovering \(done) of \(total) requests: \(action)."
+                : "Finishing interrupted work: \(action)."
+            let issue = errors.isEmpty ? "" : " Some work could not be finished; Wilted will try again next launch."
+            return progress + issue
         case .loadingLibrary: text = "Loading saved episodes and articles"
         case .restoringPlayback: text = "Restoring playback"
         }
