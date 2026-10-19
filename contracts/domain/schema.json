@@ -259,7 +259,7 @@
     "rules": [
       "a position applies only to the exact itemID and revisionID it names",
       "a position is never applied to an episode playing on this device",
-      "a completed episode is never resurrected by a position; only an explicit local restart reverses completion",
+      "a completed episode is never resurrected by a position",
       "a position that is not positive, not finite, or within one second of the end is refused",
       "a position whose save time is not later than the stored updatedAt is refused, even when it is further along",
       "a newer backward move of more than 0.5 seconds is an intentional rewind: it starts a new sessionID at sequence 1 with rewind intent",
