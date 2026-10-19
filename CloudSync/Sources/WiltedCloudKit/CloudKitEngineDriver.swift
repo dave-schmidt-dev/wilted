@@ -223,7 +223,7 @@ actor CloudKitRecordFetchCoordinator {
     }
 }
 
-/// The production driver. It does not expose CKSyncEngine to WiltedSync or tests.
+/// The production driver. It does not expose CKSyncEngine to higher layers or tests.
 ///
 /// The state serialization is fixed when the engine is constructed. CKSyncEngine
 /// resets its live state for account-change events; other recovery that

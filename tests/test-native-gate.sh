@@ -163,8 +163,8 @@ assert_wiltedkit_sync_contract() {
   assert_contains 'leg_cloudsync_tests' "$gate"
   assert_validation_contains "local cache_key='native-cloudsync-tests'"
   assert_validation_contains 'run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package"'
-  assert_validation_contains 'CloudSync named adapter case was not observed'
-  assert_validation_contains 'CloudSync named send case was not observed'
+  assert_validation_contains 'CloudSync named zone bootstrap generation case was not observed'
+  assert_validation_contains 'CloudSync named account ownership case was not observed'
   staging="$repo_root/scripts/lib/native-gate-staging.sh"; assert_contains 'source "$repo_root/scripts/lib/native-gate-staging.sh"' "$gate"
   assert_contains 'cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"' "$staging"
   assert_contains 'cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"' "$staging"

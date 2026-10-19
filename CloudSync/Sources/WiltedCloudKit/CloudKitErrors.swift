@@ -1,6 +1,5 @@
 import CloudKit
 import Foundation
-import WiltedSync
 
 /// Failures at the CloudKit boundary. The neutral sync layer never sees CloudKit types.
 public enum CloudKitSyncError: Error, Equatable, Sendable {
@@ -52,22 +51,8 @@ extension CloudKitSyncError {
             if error.code == .serverRecordChanged { return .serverRecordChanged }
             return .cloudKit(code: error.code.rawValue, message: error.localizedDescription)
         }
-        if let error = error as? WiltedSyncError, error == .missingEngineState {
-            return .stateCorrupt
-        }
         if (error as NSError).code == NSUserCancelledError { return .cancelled }
         return .cloudKit(code: (error as NSError).code, message: error.localizedDescription)
-    }
-}
-
-/// A successful send can acknowledge records while returning per-record failures.
-public struct CloudKitSendDisposition: Equatable, Sendable {
-    public let acknowledged: [WiltedRecordID]
-    public let failures: [WiltedRecordID: CloudKitSyncError]
-
-    public init(acknowledged: [WiltedRecordID] = [], failures: [WiltedRecordID: CloudKitSyncError] = [:]) {
-        self.acknowledged = acknowledged
-        self.failures = failures
     }
 }
 

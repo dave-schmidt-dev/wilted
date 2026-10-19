@@ -489,12 +489,12 @@ leg_cloudsync_tests() {
   local test_status="${PIPESTATUS[0]}"
   set -e
   if [[ "$test_status" -eq 0 ]]; then
-    if ! grep -Fq 'all CloudKit field types map round trip through a valid article' "$tmp_root/cloudsync-tests.xctest.log"; then
-      printf '%s\n' 'native.error CloudSync named adapter case was not observed in the test log' >&2
+    if ! grep -Fq 'zone bootstrap cancellation cannot publish a stale save generation' "$tmp_root/cloudsync-tests.xctest.log"; then
+      printf '%s\n' 'native.error CloudSync named zone bootstrap generation case was not observed in the test log' >&2
       return 1
     fi
-    if ! grep -Fq 'transport send returns partial acknowledgement and server conflict envelope' "$tmp_root/cloudsync-tests.xctest.log"; then
-      printf '%s\n' 'native.error CloudSync named send case was not observed in the test log' >&2
+    if ! grep -Fq 'a first sign-in with no recorded owner adopts the current owner token' "$tmp_root/cloudsync-tests.xctest.log"; then
+      printf '%s\n' 'native.error CloudSync named account ownership case was not observed in the test log' >&2
       return 1
     fi
   fi

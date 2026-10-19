@@ -16,14 +16,6 @@ public extension CloudKitZoneBootstrap {
     nonisolated var zoneID: CKRecordZone.ID? { nil }
 }
 
-/// A deterministic offline bootstrap used by injected drivers and tests.
-public struct NoopCloudKitZoneBootstrap: CloudKitZoneBootstrap {
-    public init() {}
-    public func ensureZone() async throws {}
-    public func cancel() async {}
-    public func invalidate() async {}
-}
-
 /// Actor-isolated state machine for a one-time zone save.
 ///
 /// The operation is injected so cancellation and account/zone invalidation can
