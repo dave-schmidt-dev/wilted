@@ -16,6 +16,10 @@ struct WiltedMacApp: App {
         let arguments = ProcessInfo.processInfo.arguments
         let model = Self.makeLaunchModel(arguments: arguments)
         _model = State(initialValue: model)
+        // Tests and fixtures are excluded because they have their own temporary state and their own archive instances.
+        if !WiltedMacModel.hostsTests && !WiltedMacModel.isFixtureLaunch(arguments: arguments) {
+            WiltedMacLogArchive.startForLaunch(stateDirectory: model.libraryURL.deletingLastPathComponent())
+        }
         WiltedMacAppDelegate.windowLifecycleTrace = WiltedMacTerminationJournal.windowLifecycleTraceForLaunch(
             arguments: arguments,
             isFixture: WiltedMacModel.isFixtureLaunch(arguments: arguments) && !WiltedMacModel.hostsTests

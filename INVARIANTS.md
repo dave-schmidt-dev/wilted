@@ -257,7 +257,13 @@ gate_test: test-gate.sh
 threshold: 3
 rationale: Association reads compare creation dates as canonical decoded instants at existing Timestamp serialization precision. Equivalent whole-second Z/.000Z forms match; submillisecond distinctions absent from the recorded instant are not source-generation proof. Recorded-instant changes and raw ID, feed and membership mismatches refuse while retaining raw state. Source dates, capture encoding and schemas remain unchanged. Enforced by `testFractionalAssociationSurvivesApplyReadReopenAndReversalWithoutChangingRawCreationDates`, `testRecordedMillisecondComparisonNormalizesWholeSecondFormsAndRejectsDifferentRecordedInstants`, `testAssociationStillRefusesChangedCanonicalCreationDateFeedMembershipAndRawID` and `testAppliedAssociationAcceptsOnlySubmillisecondSourceChangesWithinTheRecordedInstant`.
 
-### W-INV-038 — The phone's unsent intents survive a relaunch and are sent once
+### W-INV-038 — The Mac warning log file holds only public values
+area: ["WiltedMac/WiltedMacLogArchive.swift", "WiltedMacTests/WiltedMacLogArchiveTests.swift"]
+gate_test: test-gate.sh
+threshold: 3
+rationale: The Mac app archives its own error- and fault-level unified-log entries (warnings arrive as error) from `com.zerodelta.wilted` subsystems into a 1 MiB file with three backups. Lines are rebuilt from message components, never `composedMessage`, which shows default-private strings in clear in-process. A string or data argument appears only when its log call marks it public; private, sensitive and default-private values render `<private>`. Lines are single-line and at most 4096 bytes, and each entry is written once across passes, including entries that reach the store up to 60 s late. Enforced by the `WiltedMacLogArchiveTests` privacy-rule, level-filter, size-cap, rotation, trim-on-rotate, once-per-entry, mid-pass-failure, short-write rollback, late-entry, NaN-entry and real-store round-trip tests.
+
+### W-INV-039 — The phone's unsent intents survive a relaunch and are sent once
 area: ["WiltediOS/Library/LibraryIntentOutbox.swift", "WiltediOS/Library/LibraryAppModel+Outbox.swift", "WiltediOS/Library/LibraryAppModel+Decisions.swift", "WiltediOS/Library/LibraryAppModel+Media.swift", "WiltediOS/Siri/LibraryVoiceTarget.swift", "WiltediOSTests/LibraryIntentOutboxTests.swift"]
 gate_test: test-gate.sh
 threshold: 3
