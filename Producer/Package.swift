@@ -6,7 +6,6 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "WiltedProducer", targets: ["WiltedProducer"]),
-        .executable(name: "wilted-podcast-import", targets: ["wilted-podcast-import"]),
     ],
     dependencies: [
         .package(path: "../WiltedKit"),
@@ -18,13 +17,6 @@ let package = Package(
                 .product(name: "WiltedCatalog", package: "WiltedKit"),
                 .product(name: "WiltedDomain", package: "WiltedKit"),
                 .product(name: "WiltedLibrary", package: "WiltedKit"),
-            ]
-        ),
-        .executableTarget(
-            name: "wilted-podcast-import",
-            dependencies: [
-                "WiltedProducer",
-                .product(name: "WiltedDomain", package: "WiltedKit"),
             ]
         ),
         .testTarget(

@@ -137,7 +137,6 @@ from wilted_worker.gpu_admission import _speech_rpc_with_progress
 from wilted_worker.gpu_admission import prepare_ad_model_lock
 from wilted_worker.nomination import _CallBudgetBackend
 from wilted_worker.nomination import _experimental_speculative_cuts
-from wilted_worker.nomination import detect_nominated_ad_spans
 from wilted_worker.prompts import AD_POD_CONTINUATION_PROMPT
 from wilted_worker.prompts import BOUNDARY_SEGMENT_TAIL_PROMPT
 from wilted_worker.prompts import COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT

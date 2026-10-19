@@ -367,10 +367,7 @@ extension WiltedMacModel {
                     try await accountGated.run { _ = try await (rawTransport as? CloudKitLibraryTransport)?.discoverPeers() }
                 }
             },
-            onDeviceRecords: { [weak self] records in
-                await importer.handle(records)
-                await MainActor.run { self?.updatePhonePositions(from: records) }
-            }, maintenance: inboundMaintenance,
+            onDeviceRecords: { records in await importer.handle(records) }, maintenance: inboundMaintenance,
             beforePollerStart: { await previousShutdown?.value },
             onRoundFinished: { [weak self] error in await MainActor.run { self?.recordLibraryCheck(error) } }
         )
@@ -452,7 +449,6 @@ extension WiltedMacModel {
         libraryThrottle = nil
         libraryAccountStatus = nil
         librarySyncActivity = WiltedMacLibrarySyncActivity()
-        phonePositions = [:]
     }
 
     func waitForLibrarySyncShutdown() async { await librarySyncShutdown?.value }

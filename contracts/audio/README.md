@@ -1,7 +1,8 @@
 # Audio budget evidence
 
 `evidence/2026-08-17-audio-budget-sizing.json` is the exact JSON stdout from a
-fresh `audio-contract-probe --sizing` run for 5, 30, and 90 minutes. It records
+fresh `audio-contract-probe --sizing` run for 5, 30, and 90 minutes (the probe
+was retired on 2026-10-19; it stays in git history). It records
 the measured hashes, durations, encoded bytes, 90-minute measurement, and the
 configured 96 kbps reference used to derive the app-owned 80,000,000-byte
 per-revision policy.

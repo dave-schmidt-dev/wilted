@@ -144,7 +144,6 @@ Explicitly excluded from the active Mac milestone: automatic classification, rad
 | `TASKS.md` | Pending implementation and qualification queue. |
 | `LICENSE` | MIT license. |
 | `contracts/` | Domain, CloudKit, and audio contracts with checked-in fixtures and evidence. |
-| `Probes/` | Credential-free speech, extraction, persistence, audio, and signed-runtime probes. |
 | `Producer/Workers/adcorpus/` | Hand-labelled ground truth for the ad detector: labels and cache pointers only, no podcast prose or audio. |
 | `Producer/Workers/wilted_pipeline.py` | Stable executable protocol boundary for one preparation request. |
 | `Producer/Workers/wilted_worker/` | Focused Python implementation modules behind the worker entry point. |

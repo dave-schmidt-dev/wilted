@@ -44,7 +44,7 @@ struct ArticleExtractionTests {
 
     private func fixture(_ name: String) throws -> Data {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        return try Data(contentsOf: root.appending(path: "Probes/ArticleExtractionProbe/Fixtures/\(name)"))
+        return try Data(contentsOf: root.appending(path: "Producer/Tests/Fixtures/ArticleExtraction/\(name)"))
     }
 }
 

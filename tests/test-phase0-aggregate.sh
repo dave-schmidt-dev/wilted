@@ -23,7 +23,6 @@ while read -r leg_name leg_script; do
   expected_legs+=("$leg_name")
   listed_scripts+=("$leg_script")
 done <"$legs_list"
-expected_legs+=("test-signed-speech-runtime")
 
 expected_count="${#expected_legs[@]}"
 
@@ -93,12 +92,11 @@ assert_contains 'test-temp-leaks test-temp-leaks.sh' "$legs_list"
 assert_contains 'python3 "$bounded_runner" --timeout-seconds "$phase0_leg_timeout_seconds" --' "$phase0_script"
 assert_contains 'trap '\''cleanup_phase0; exit 129'\'' HUP' "$phase0_script"
 assert_contains 'test-simulator-cleanup test-simulator-cleanup.sh' "$legs_list"
-assert_contains 'run_leg_sync "test-signed-speech-runtime" "$repo_root/tests/test-signed-speech-runtime.sh"' "$phase0_script"
 
-# Every tests/test-*.sh runs in some gate: from the list, as phase0's one
-# serial leg, or from the Makefile's validate-inner. A listed script that is
+# Every tests/test-*.sh runs in some gate: from the list, as this meta-test,
+# or from the Makefile's validate-inner. A listed script that is
 # missing fails here rather than silently dropping its leg.
-run_elsewhere=(test-signed-speech-runtime.sh test-phase0-aggregate.sh test-native-gate.sh
+run_elsewhere=(test-phase0-aggregate.sh test-native-gate.sh
   test-native-gate-watch.sh test-carplay-config.sh)
 for listed in "${listed_scripts[@]}"; do
   [[ -f "$repo_root/tests/$listed" ]] || {
@@ -106,7 +104,7 @@ for listed in "${listed_scripts[@]}"; do
     exit 1
   }
 done
-for elsewhere in "${run_elsewhere[@]:2}"; do
+for elsewhere in "${run_elsewhere[@]:1}"; do
   assert_contains "bash tests/$elsewhere" "$repo_root/Makefile"
 done
 for script in "$repo_root"/tests/test-*.sh; do

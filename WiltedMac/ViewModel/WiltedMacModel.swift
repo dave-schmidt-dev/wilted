@@ -307,8 +307,6 @@ final class WiltedMacModel {
     var libraryAccountStatus: WiltedMacLibraryAccountStatus?
     /// The library publisher's and inbound poller's own results on this Mac (Task 5.2).
     var librarySyncActivity = WiltedMacLibrarySyncActivity()
-    /// Episodes whose newest listen was on the phone, from the latest device records.
-    var phonePositions: [ItemID: WiltedMacPhonePosition] = [:]
     /// Podcast feeds Wilted follows, newest subscription first.
     var subscriptions: [WiltedMacSubscription] = []
     /// Per-feed optimistic names survive reloads until their tracked writer settles.

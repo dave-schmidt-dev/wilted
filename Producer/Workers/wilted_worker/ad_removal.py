@@ -33,7 +33,7 @@ from .constants import COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
 from .cue_timing import _near_empty_nominations, build_effective_cut_map, build_keep_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
 from .boundary_review import reject_programme_conflicts
 from .interval_geometry import interval_contains, intervals_overlap
-from .nomination import _CallBudgetBackend, _experimental_speculative_cuts, detect_nominated_ad_spans
+from .nomination import _CallBudgetBackend, _experimental_speculative_cuts
 from .reporting import DiscardedRuns, WorkerError
 from .span_bounds import enforce_total_ad_share_ceiling, recover_adjacent_ad_pod_continuations, reject_implausible_ad_spans
 from .sponsor_evidence import explicit_sponsor_anchor_ids, explicit_sponsor_opening_pattern, sponsor_anchor_is_covered
@@ -45,7 +45,6 @@ def analyze_ad_detections(
     segments,
     total_seconds: float,
     *,
-    pod_share_bound: float | None = None,
     experimental_candidates=(),
     experimental_max_additional_model_calls: int = 0,
 ) -> AdAnalysis:
@@ -54,11 +53,6 @@ def analyze_ad_detections(
     The caller owns model construction, GPU admission, and closing. This makes
     the exact live path replayable with a supplied backend and duration, while
     retaining the archive as the sole classifier and recovery implementation.
-
-    `pod_share_bound` is the optional proportional bound on a single nominated
-    pod, passed through to `detect_nominated_ad_spans`. It is `None` in
-    production because no corpus case can justify a value; the seam exists so
-    a bound can be supplied and measured the day a short-episode case lands.
     """
     auditing_backend = backend if isinstance(backend, AuditingBackend) else AuditingBackend(
         backend, ads_module, len(segments)
@@ -74,13 +68,7 @@ def analyze_ad_detections(
     ads_logger.addHandler(discarded)
     ads_logger.setLevel(logging.INFO)
     try:
-        detections = detect_nominated_ad_spans(
-            ads_module,
-            auditing_backend,
-            segments,
-            total_seconds,
-            pod_share_bound=pod_share_bound,
-        )
+        detections = ads_module.detect_ads(segments, auditing_backend)
     finally:
         ads_logger.removeHandler(discarded)
         ads_logger.setLevel(previous_level)

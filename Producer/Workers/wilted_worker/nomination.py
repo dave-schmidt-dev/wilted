@@ -19,7 +19,6 @@ import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from . import reporting as _worker_reporting
 from .commercial_preservation import _commercial_preservation_review
 from .prompts import EXPERIMENTAL_NOMINATION_PROMPT
 from .reporting import WorkerError
@@ -121,40 +120,3 @@ def _experimental_speculative_cuts(
     audit.speculative_cuts = tuple(speculative)
     audit.experimental_requests = budget.calls
     return audit
-
-def detect_nominated_ad_spans(
-    ads_module, backend, segments, total_seconds, *, pod_share_bound=None
-):
-    """Call the vendored detector and enforce an optional proportional pod bound.
-
-    The archive's pod recovery has no proportional guard of its own. Its
-    bracket bound is a fixed ten minutes written for a two-hour show, so on a
-    short episode a single pod can swallow most of the programme -- the
-    recorded TechCrunch overcut is exactly that shape (`gaps`, id
-    `techcrunch-short-episode-overcut`). The worker holds no value it can
-    defend for a share bound: the corpus carries three hand-labelled episodes,
-    all tuning inputs, and the short-episode input that would calibrate one is
-    gone, so replay evidence alone cannot establish its safety.
-
-    The bound is therefore a caller-supplied parameter and nothing in this
-    module reads a constant for it. `None` -- the production default -- applies
-    no bound at all and returns the detector's own output untouched. When a
-    bound is supplied, a nominated span whose share of the episode exceeds it
-    is dropped uncut, the same conservative direction as every other ceiling:
-    an advertisement left in is an annoyance, programme removed is gone.
-    """
-    detections = ads_module.detect_ads(segments, backend)
-    if pod_share_bound is None or not 0 < float(total_seconds) < float("inf"):
-        return detections
-    bounded = []
-    for ad in detections:
-        share = (float(ad.end_s) - float(ad.start_s)) / float(total_seconds)
-        if share > pod_share_bound:
-            _worker_reporting.progress(
-                "ads.detect.pod.rejected",
-                f"{float(ad.start_s):.3f}-{float(ad.end_s):.3f} is {share:.0%} of the episode, "
-                f"past the {pod_share_bound:.0%} nominated-pod bound",
-            )
-            continue
-        bounded.append(ad)
-    return bounded

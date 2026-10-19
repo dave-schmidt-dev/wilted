@@ -305,9 +305,6 @@ done
 
 collect_parallel_legs
 
-run_leg_sync "test-signed-speech-runtime" "$repo_root/tests/test-signed-speech-runtime.sh" \
-  --harness "$repo_root/Probes/SignedSpeechRuntimeProbe/fake-speech-socket-harness.py"
-
 verify_parent_temp_audit
 
 print_leg_status "phase0.complete failed_legs=${failed_legs} total_legs=${total_legs}"
