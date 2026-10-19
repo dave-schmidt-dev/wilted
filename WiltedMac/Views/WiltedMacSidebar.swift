@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WiltedProducer
 
 /// The navigation column: destinations, and the waiting totals beneath them.
 ///
@@ -172,8 +173,8 @@ struct WiltedMacSidebarRow: View {
     var title: String?
     /// An icon override for rows whose destination type is not enough to identify them.
     var symbolName: String? = nil
-    /// A short subtitle shown beneath the name in the labelled sidebar.
-    var detail: String? = nil
+    /// A playlist's kind, tagged beneath its name in the labelled sidebar.
+    var playlistKind: PlaylistKind? = nil
     let mode: WiltedMacSidebarMode
     let isSelected: Bool
     let textScale: WiltedTheme.TextScale
@@ -182,8 +183,8 @@ struct WiltedMacSidebarRow: View {
 
     private var accessibilityDescription: String {
         let name = title ?? destination.title
-        guard let detail else { return name }
-        return "\(name), \(detail) playlist"
+        guard let playlistKind else { return name }
+        return "\(name), \(playlistKind.displayName) playlist"
     }
 
     var body: some View {
@@ -203,18 +204,15 @@ struct WiltedMacSidebarRow: View {
                     .frame(width: WiltedTheme.scaled(20, scale: textScale))
                     .accessibilityHidden(true)
                 if mode == .full {
-                    if let detail {
-                        VStack(alignment: .leading, spacing: 2) {
+                    if let playlistKind {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(title ?? destination.title)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .foregroundStyle(
                                     WiltedMacSidebarStyle.titleColor(isSelected: isSelected, scheme: colorScheme)
                                 )
-                            Text(detail)
-                                .wiltedFont(.caption)
-                                .lineLimit(1)
-                                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            WiltedMacPlaylistKindTag(kind: playlistKind)
                         }
                         .layoutPriority(1)
                     } else {

@@ -412,6 +412,12 @@ PY
   printf '{}\n' >"$capture_dir/frame.json"
   printf 'walkthrough.capture.root=%s\n' "$capture_dir"
 else
+  # Report the test host's environment keys so the harness can check what the scheme carries.
+  python3 - "$scratch_root/record-root/Wilted.xcodeproj/xcshareddata/xcschemes/WiltedMac.xcscheme" >"$FAKE_PARENT_MARKER.env" <<'PY'
+import sys, xml.etree.ElementTree as ET
+env = ET.parse(sys.argv[1]).getroot().find('TestAction/EnvironmentVariables')
+print(' '.join(sorted(x.get('key', '') for x in env)))
+PY
   capture_dir="$scratch_root/record-root/WiltedMacTests/__Snapshots__/WiltedPixelSnapshotTests"
   mkdir -p "$capture_dir"
   printf 'png\n' >"$capture_dir/fake.png"
@@ -450,7 +456,8 @@ run_capture_case() {
   local kind="$1" mode="$2" expected="$3" keep="${4:-0}"
   local parent="$fixture_root/capture-$kind-$mode-parent" marker="$fixture_root/capture-$kind-$mode-marker"
   local child="$fixture_root/capture-$kind-$mode-child" output="$fixture_root/capture-$kind-$mode.log" entry actual
-  local daemon_pid="" daemon_report="$capture_healthy_report"
+  local daemon_pid="" daemon_report="$capture_healthy_report" force=0 force_env
+  [[ "$mode" != force ]] || force=1
   [[ "$mode" != healthy && "$mode" != wedged ]] || daemon_pid=66575
   [[ "$mode" != wedged ]] || daemon_report="$repo_root/tests/fixtures/testmanagerd-wedged-sample.txt"
   mkdir -p "$parent"
@@ -460,13 +467,21 @@ run_capture_case() {
   env WILTED_BOUNDED_ENTRY=0 PATH="$capture_bin:$PATH" TMPDIR="$parent" FAKE_CAPTURE_KIND="$kind" FAKE_XCODE_MODE="$mode" \
     FAKE_PARENT_MARKER="$marker" FAKE_CHILD_MARKER="$child" WILTED_CAPTURE_KEEP="$keep" \
     FAKE_TESTMANAGERD_PID="$daemon_pid" FAKE_SAMPLE_REPORT="$daemon_report" \
-    WILTED_TEST_RUNNER_TIMEOUT_SECONDS=5 bash "$entry" >"$output" 2>&1
+    WILTED_FORCE_RECORD_SNAPSHOTS="$force" WILTED_TEST_RUNNER_TIMEOUT_SECONDS=5 bash "$entry" >"$output" 2>&1
   actual=$?
   set -e
   [[ "$actual" -eq "$expected" ]] || { echo "capture $kind/$mode status=$actual expected=$expected" >&2; cat "$output" >&2; exit 1; }
   assert_capture_temp_empty "$parent"
-  if [[ "$mode" == success || "$mode" == fail || "$mode" == healthy ]]; then
+  if [[ "$mode" == success || "$mode" == fail || "$mode" == healthy || "$mode" == force ]]; then
     [[ -s "$marker" ]] || { echo "capture $kind/$mode never reached fake xcodebuild" >&2; exit 1; }
+  fi
+  # Record mode keeps a baseline within tolerance; only an explicit force may replace it.
+  if [[ "$kind" == snapshot && ( "$mode" == success || "$mode" == force ) ]]; then
+    force_env="$(cat "$marker.env")"
+    [[ " $force_env " == *" WILTED_RECORD_SNAPSHOTS "* ]] || { echo "capture snapshot/$mode lost record mode: $force_env" >&2; exit 1; }
+    local forced=0
+    [[ " $force_env " != *" WILTED_FORCE_RECORD_SNAPSHOTS "* ]] || forced=1
+    [[ "$forced" == "$force" ]] || { echo "capture snapshot/$mode force record reached host=$forced, asked=$force" >&2; exit 1; }
   fi
   if [[ "$mode" == healthy ]] && ! grep -Fq 'native.testmanagerd.sample pid=66575' "$output"; then
     echo "capture $kind never sampled a present testmanagerd" >&2; cat "$output" >&2; exit 1
@@ -484,6 +499,7 @@ run_capture_case() {
 }
 
 run_capture_case snapshot success 0
+run_capture_case snapshot force 0
 run_capture_case snapshot fail 37
 run_capture_case walkthrough success 0 1
 run_capture_case walkthrough fail 37

@@ -8,7 +8,8 @@ import SwiftUI
 /// Where each one belongs: the larder is the Larder, the cutting board is
 /// Prep, the food processor is a preparation in progress, and the produce is
 /// the produce -- lettuce for an article, cabbage for an episode, broccoli for
-/// a feed.
+/// a feed. A playlist is a basket when its items were picked by hand and a
+/// colander when its rules strain the Larder for it.
 public enum WiltedSymbol: String, CaseIterable, Sendable {
     case larder = "wilted.larder"
     case prep = "wilted.prep"
@@ -16,6 +17,8 @@ public enum WiltedSymbol: String, CaseIterable, Sendable {
     case lettuce = "wilted.lettuce"
     case cabbage = "wilted.cabbage"
     case broccoli = "wilted.broccoli"
+    case basket = "wilted.basket"
+    case colander = "wilted.colander"
 
     /// Every custom symbol's name starts with this; nothing in SF Symbols does.
     public static let prefix = "wilted."

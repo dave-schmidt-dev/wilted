@@ -31,8 +31,7 @@ extension WiltedMacSidebar {
             ? WiltedTheme.scaled(20, scale: model.textScale) : 0
         return WiltedMacSidebarRow(
             destination: .playlist(playlist.id), title: playlist.name,
-            symbolName: playlist.kind == .manual ? "list.bullet" : "sparkles",
-            detail: playlist.kind == .manual ? "Manual" : "Smart", mode: mode,
+            symbolName: playlist.kind.symbol.rawValue, playlistKind: playlist.kind, mode: mode,
             isSelected: model.selectedNavigation == .playlist(playlist.id), textScale: model.textScale
         ) { onSelect(.playlist(playlist.id)) }
         .padding(.trailing, statusSlotWidth)
@@ -91,7 +90,7 @@ extension WiltedMacSidebar {
     }
 }
 
-/// New Playlist: manual or automatic. Used in the sidebar header, the rail and the Larder's
+/// New Playlist: manual or smart. Used in the sidebar header, the rail and the Larder's
 /// Add to Playlist menu.
 struct WiltedMacNewPlaylistMenu: View {
     enum Style { case icon }
@@ -102,7 +101,7 @@ struct WiltedMacNewPlaylistMenu: View {
     var body: some View {
         Menu {
             Button("New Playlist") { Task { await model.createPlaylist(kind: .manual) } }
-            Button("New Automatic Playlist") { Task { await model.createPlaylist(kind: .automatic) } }
+            Button("New Smart Playlist") { Task { await model.createPlaylist(kind: .automatic) } }
         } label: {
             Image(systemName: "plus")
                 .foregroundStyle(WiltedMacSidebarStyle.iconColor(isSelected: false, scheme: colorScheme))

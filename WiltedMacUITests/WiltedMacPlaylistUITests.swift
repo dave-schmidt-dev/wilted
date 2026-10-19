@@ -248,7 +248,7 @@ extension WiltedMacEpisodeInfoUITests {
         try requireControl(menu, name: "Sidebar New Playlist", timeout: 10)
         XCTAssertEqual(menu.label, "add", "the captured sidebar New Playlist menu is the visible plus")
         try clickVerified(menu, in: app, name: "New Playlist", label: "add")
-        let item = app.menuItems["New Automatic Playlist"]
+        let item = app.menuItems["New Smart Playlist"]
         try requireControl(item, name: "New Automatic Playlist menu item")
         item.click()
         return try XCTUnwrap(newPlaylistID(app))

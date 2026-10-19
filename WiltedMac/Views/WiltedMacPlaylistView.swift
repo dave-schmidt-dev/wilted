@@ -113,9 +113,7 @@ struct WiltedMacPlaylistView: View {
             .disabled(!items.contains(where: model.canPlayPlaylistItem))
             .accessibilityLabel("Play \(playlist.name)")
             .accessibilityIdentifier("wilted-playlist-play")
-            Text(playlist.kind == .manual ? "Manual playlist" : "Automatic playlist")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            WiltedMacPlaylistKindTag(kind: playlist.kind)
             if let operation = model.playlistOperation(playlist.id) {
                 HStack(spacing: WiltedTheme.Spacing.xSmall) {
                     ProgressView().controlSize(.small)

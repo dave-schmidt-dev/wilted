@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import XCTest
 import WiltedDomain
+import WiltedProducer
 @testable import WiltedMac
 
 /// The Mac redesign's pure logic: when the Larder gets two panes, what a row
@@ -428,6 +429,22 @@ final class WiltedMacRedesignTests: XCTestCase {
         XCTAssertEqual(WiltedMacSidebarStyle.iconToken(isSelected: false), .secondaryText)
         XCTAssertEqual(WiltedMacSidebarStyle.titleToken(isSelected: true), .primaryText)
         XCTAssertEqual(WiltedMacSidebarStyle.titleToken(isSelected: false), .secondaryText)
+    }
+
+    /// A playlist's kind once shared the unselected name's colour and differed only in size, so
+    /// "Tech" over "Smart" read as one label. Each tag now sits on its own fill, Smart's colour
+    /// is not the name's, and the two kinds differ by fill and icon as well as by word.
+    func testPlaylistKindTagsStandApartFromTheNameAndEachOther() {
+        let smart = WiltedMacSidebarStyle.kindTag(.automatic)
+        let manual = WiltedMacSidebarStyle.kindTag(.manual)
+        XCTAssertGreaterThan(smart.fillOpacity, 0)
+        XCTAssertGreaterThan(manual.fillOpacity, 0)
+        XCTAssertNotEqual(smart.fill, manual.fill)
+        XCTAssertNotEqual(smart.text, WiltedMacSidebarStyle.titleToken(isSelected: false))
+        XCTAssertEqual(PlaylistKind.automatic.displayName, "Smart")
+        XCTAssertEqual(PlaylistKind.manual.displayName, "Manual")
+        XCTAssertEqual(PlaylistKind.manual.symbol, .basket)
+        XCTAssertEqual(PlaylistKind.automatic.symbol, .colander)
     }
     // MARK: Parity with iOS
 

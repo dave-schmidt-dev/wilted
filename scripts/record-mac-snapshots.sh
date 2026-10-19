@@ -17,6 +17,7 @@ set -Eeuo pipefail
 #
 # Usage: scripts/record-mac-snapshots.sh [test-method ...]
 #        (default: every method in WiltedPixelSnapshotTests)
+#        WILTED_FORCE_RECORD_SNAPSHOTS=1 rewrites even baselines within tolerance.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/test-runner.sh
@@ -75,7 +76,13 @@ scheme="$root/Wilted.xcodeproj/xcshareddata/xcschemes/WiltedMac.xcscheme"
 test_tmp_parent="$tmp_root/xctest-temp"
 mkdir -p "$test_tmp_parent"
 test_tmp_parent="$(cd -P "$test_tmp_parent" && pwd)"
-wilted_mac_test_scheme_configure "$scheme" "$test_tmp_parent" WILTED_RECORD_SNAPSHOTS=1
+# Record mode keeps a baseline that still matches 99% of its pixels, so a small
+# change (a label becoming a tag) would leave the old image. Force replaces it.
+record_env=(WILTED_RECORD_SNAPSHOTS=1)
+if [[ "${WILTED_FORCE_RECORD_SNAPSHOTS:-0}" == "1" ]]; then
+  record_env+=(WILTED_FORCE_RECORD_SNAPSHOTS=1)
+fi
+wilted_mac_test_scheme_configure "$scheme" "$test_tmp_parent" "${record_env[@]}"
 
 declare -a only=()
 if [[ $# -gt 0 ]]; then
