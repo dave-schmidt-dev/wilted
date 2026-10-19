@@ -24,7 +24,7 @@ from wilted.ads import (
     COARSE_CONFIDENCE_CEILING,
     COARSE_CONFIDENCE_FLOOR,
     AdSegment,
-    _chunk_segments,
+    _chunk_segment_ids,
     _CoarseAdRun,
     _compute_keep_segments,
     _id_response_format,
@@ -103,7 +103,7 @@ def _mock_backend(responses: list[str]) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# _chunk_segments
+# _chunk_segment_ids
 # ---------------------------------------------------------------------------
 
 
@@ -120,10 +120,11 @@ class TestChunkSegments:
                 (1200.0, 1500.0, "seg5"),  # 20-25 min
             ]
         )
-        chunks = _chunk_segments(segs, chunk_minutes=10.0, overlap_minutes=2.0)
+        chunks = _chunk_segment_ids(segs, chunk_minutes=10.0, overlap_minutes=2.0)
 
         # With 10-min chunks, 2-min overlap -> 8-min step (480s)
         # Windows: [0,600], [480,1080], [960,1560], [1440,2040]
+        assert chunks == [[0, 1], [1, 2, 3], [3, 4], [4]]
         assert len(chunks) == 4
 
         # First chunk covers 0-600s: seg1, seg2
@@ -143,13 +144,13 @@ class TestChunkSegments:
                 (60.0, 120.0, "world"),
             ]
         )
-        chunks = _chunk_segments(segs, chunk_minutes=10.0, overlap_minutes=2.0)
+        chunks = _chunk_segment_ids(segs, chunk_minutes=10.0, overlap_minutes=2.0)
         assert len(chunks) == 1
         assert len(chunks[0]) == 2
 
     def test_empty_segments_returns_empty(self):
         """Empty input returns empty output."""
-        assert _chunk_segments([], chunk_minutes=10.0, overlap_minutes=2.0) == []
+        assert _chunk_segment_ids([], chunk_minutes=10.0, overlap_minutes=2.0) == []
 
 
 # ---------------------------------------------------------------------------

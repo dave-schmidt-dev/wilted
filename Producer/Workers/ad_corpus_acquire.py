@@ -73,13 +73,6 @@ def _key(path: Path) -> str:
     return unicodedata.normalize("NFC", str(path)).casefold()
 
 
-def _deepest_existing(path: Path) -> Path:
-    probe = path
-    while not probe.exists() and probe != probe.parent:
-        probe = probe.parent
-    return probe
-
-
 def resolved(path: Path | str) -> Path:
     """Real path with symlinks and `..` resolved, whether or not it exists yet."""
     return Path(os.path.realpath(os.path.expanduser(str(path))))

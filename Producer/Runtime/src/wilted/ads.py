@@ -190,13 +190,6 @@ remains inside the ad unless program discussion has clearly resumed. Do not incl
 discussion in the ad. Return only the strict JSON object {"content_start_id": ID}, with no prose or
 Markdown."""
 
-_PROMO_DETECT_SYSTEM_PROMPT = """\
-You are a content filter. Identify promotional paragraphs in this article.
-Promotional content includes: newsletter signup pitches, "related articles" sections, \
-author bio/social media plugs, affiliate disclaimers, and "subscribe for more" calls to action.
-Return a JSON object: {"promo_indices": [0, 5, 12]} listing the 0-based paragraph indices \
-that are promotional. If none, return {"promo_indices": []}."""
-
 _VALID_LABELS = {"sponsor_read", "self_promo", "ad_break", "newsletter_pitch"}
 
 # The coarse path's confidence band.
@@ -817,25 +810,6 @@ def _parse_preroll_content_response(response: str, minimum_id: int, window_max: 
 # ---------------------------------------------------------------------------
 # Helpers — chunking
 # ---------------------------------------------------------------------------
-
-
-def _chunk_segments(
-    segments: list[TranscriptSegment],
-    chunk_minutes: float,
-    overlap_minutes: float,
-) -> list[list[TranscriptSegment]]:
-    """Split transcript segments into overlapping time-based chunks.
-
-    Args:
-        segments: Ordered list of transcript segments.
-        chunk_minutes: Duration of each chunk window in minutes.
-        overlap_minutes: Overlap between consecutive windows in minutes.
-
-    Returns:
-        List of segment groups, one per chunk window.
-    """
-    chunk_id_groups = _chunk_segment_ids(segments, chunk_minutes, overlap_minutes)
-    return [[segments[segment_id] for segment_id in chunk_ids] for chunk_ids in chunk_id_groups]
 
 
 def _chunk_segment_ids(
