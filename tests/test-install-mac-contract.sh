@@ -129,11 +129,17 @@ printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$fake_bin/xcodegen"
 printf '%s\n' '#!/usr/bin/env bash' \
     'printf "%s\\n" "$@" >"$WILTED_TEST_ARGV"' \
     'configuration=unset' \
-    'while (( $# > 0 )); do [[ "$1" == -configuration ]] && configuration="$2"; shift; done' \
+    'source_commit=""' \
+    'while (( $# > 0 )); do' \
+    '  [[ "$1" == -configuration ]] && configuration="$2"' \
+    '  [[ "$1" == WILTED_SOURCE_COMMIT=* ]] && source_commit="${1#WILTED_SOURCE_COMMIT=}"' \
+    '  shift' \
+    'done' \
     'app="$WILTED_TEST_DERIVED/Build/Products/$configuration/WiltedMac.app"' \
     'mkdir -p "$app/Contents"' \
     '[[ "${WILTED_TEST_NO_PROFILE:-0}" == 1 ]] || : >"$app/Contents/embedded.provisionprofile"' \
     '/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.zerodelta.wilted.mac" "$app/Contents/Info.plist" >/dev/null' \
+    '/usr/libexec/PlistBuddy -c "Add :WiltedSourceCommit string $source_commit" "$app/Contents/Info.plist" >/dev/null' \
     >"$fake_bin/xcodebuild"
 printf '%s\n' '#!/usr/bin/env bash' \
     'shift' \
@@ -215,9 +221,14 @@ fi
 # 5. Swift source contract: one pure selection decides the engine; no env-only gate.
 grep -Fq 'struct WiltedMacLibraryRuntimeSelection' "$selection_source" \
     && pass 'the runtime selection is a named policy type' || fail 'runtime selection type missing'
-grep -Fq 'libraryRuntimeSelection().engine' "$bootstrap_source" \
-    && pass 'store bootstrap picks the engine from the runtime selection' \
-    || fail 'store bootstrap does not consult the runtime selection'
+grep -Fq 'selection.engine == .libraryPublisher' "$sync_source" \
+    && pass 'library sync starts only when the runtime selection names the publisher' \
+    || fail 'library sync start does not consult the runtime selection'
+if grep -Fq 'SyncLifecycle' "$bootstrap_source" "$sync_source"; then
+    fail 'a second sync engine is still started beside the library publisher'
+else
+    pass 'the library publisher is the only sync engine'
+fi
 if grep -Fq 'WiltedMacLibraryPublisher.isEnabled()' "$bootstrap_source" "$sync_source"; then
     fail 'an env-only publisher gate still decides the engine'
 else
