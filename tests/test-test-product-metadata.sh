@@ -77,7 +77,8 @@ cache, _lock = module.cache_paths(module.checkout_root(sys.argv[1]), "xcode", "n
 print(cache)
 PY
 )"
-[[ "$cache_root" == "$repo_root/.build/xcode/native-macos-ui-tests" ]] || fail "Mac UI cache resolves outside the checkout: $cache_root"
+# The helper resolves symlinks; a checkout under $TMPDIR is /var -> /private/var.
+[[ "$cache_root" == "$(cd -P "$repo_root" && pwd)/.build/xcode/native-macos-ui-tests" ]] || fail "Mac UI cache resolves outside the checkout: $cache_root"
 pass 'Mac UI products resolve inside the checkout-owned .build/xcode/native-macos-ui-tests cache'
 
 # 4. Synthetic owned products.
