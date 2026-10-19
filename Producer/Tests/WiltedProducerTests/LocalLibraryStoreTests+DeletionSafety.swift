@@ -257,8 +257,8 @@ extension LocalLibraryStoreTests {
 
     // MARK: - Fixture
 
-    /// Tables a cascade must leave whole: history, articles and their tombstones.
-    private static let survivingTables: Set<String> = ["preparations", "articles", "tombstones"]
+    /// Tables a cascade must leave whole: history and articles.
+    private static let survivingTables: Set<String> = ["preparations", "articles"]
 
     private struct CascadeFixture {
         let url: URL
@@ -347,10 +347,9 @@ extension LocalLibraryStoreTests {
             "artwork": try rows(LocalLibrarySchemaV6Models.PodcastArtworkRecord.self) { $0.id },
             "revisions": try rows(LocalLibrarySchemaV3Models.RevisionRecord.self) { "\($0.itemID)|\($0.id)" },
             "transcripts": try rows(LocalLibrarySchemaV7Models.TranscriptRecord.self) { "\($0.itemID)|\($0.id)" },
-            "playback": try rows(LocalLibrarySchemaV3Models.PlaybackRecord.self) { "\($0.id)|\($0.positionSeconds)" },
+            "playback": try rows(LocalLibrarySchemaV21Models.PlaybackRecord.self) { "\($0.id)|\($0.positionSeconds)" },
             "preparations": try rows(LocalLibrarySchemaV3Models.PreparationRecord.self) { $0.id },
             "articles": try rows(LocalLibrarySchemaV17Models.ArticleRecord.self) { "\($0.id)|\($0.isRemoved)" },
-            "tombstones": try rows(LocalLibrarySchemaV3Models.TombstoneRecord.self) { $0.id },
         ])
     }
 

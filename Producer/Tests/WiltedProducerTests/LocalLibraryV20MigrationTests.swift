@@ -57,14 +57,16 @@ extension LocalLibraryStoreTests {
         let store = try LocalLibraryStore(url: url)
         let version = await store.schemaVersion
         let backup = await store.migrationBackupURL
-        XCTAssertEqual(version, .v20)
+        XCTAssertEqual(version, .current)
         let retained = try XCTUnwrap(backup)
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: retained), .known(19))
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(20))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(LocalLibrarySchemaVersion.current.rawValue))
         let after = try LocalLibraryStore.tableRowCounts(at: url)
-        for (table, count) in before { XCTAssertEqual(after[table], count, table) }
+        for (table, count) in before where !LocalLibraryStore.retiredTables.contains(table) {
+            XCTAssertEqual(after[table], count, table)
+        }
         try autoreleasepool {
-            let schema = Schema(versionedSchema: LocalLibrarySchemaV20.self)
+            let schema = Schema(versionedSchema: LocalLibraryCurrentSchema.self)
             let container = try ModelContainer(for: schema,
                 configurations: [ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)])
             let context = ModelContext(container)
@@ -122,7 +124,7 @@ extension LocalLibraryStoreTests {
         try checkpointSyntheticV19Fixture(url)
         let original = try Data(contentsOf: url)
         let hooks = LocalLibraryOpenHooks(afterMigration: {
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(20))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(LocalLibrarySchemaVersion.current.rawValue))
             throw InjectedMigrationFailure()
         })
         var retained: URL?
@@ -141,6 +143,6 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: retainedURL), .known(19))
         let recovered = try LocalLibraryStore(url: url)
         let version = await recovered.schemaVersion
-        XCTAssertEqual(version, .v20)
+        XCTAssertEqual(version, .current)
     }
 }

@@ -150,13 +150,13 @@ extension LocalLibraryStore {
 
         podcastLibrarySnapshotFetchCount += 1
         var playbackStates: [String: PlaybackState] = [:]
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>()) {
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>()) {
             guard let itemID = try? ItemID(rawValue: record.itemID), let revisionID = try? RevisionID(rawValue: record.revisionID),
                   let state = try? PlaybackState(
                       itemID: itemID, revisionID: revisionID, sessionID: record.sessionID, sequence: record.sequence,
                       positionSeconds: record.positionSeconds, durationSeconds: record.durationSeconds, completed: record.completed,
                       intent: PlaybackIntent(rawValue: record.intent) ?? .progress, deviceID: record.deviceID,
-                      encodedCloudKitRecordSystemFields: record.encodedCloudKitRecordSystemFields, updatedAt: Timestamp(record.updatedAt)
+                      updatedAt: Timestamp(record.updatedAt)
                   ) else { continue }
             playbackStates["\(record.itemID)|\(record.revisionID)"] = state
         }

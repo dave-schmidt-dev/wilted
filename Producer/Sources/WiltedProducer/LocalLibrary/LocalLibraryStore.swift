@@ -79,7 +79,7 @@ public actor LocalLibraryStore {
                                       articleCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV17Models.ArticleRecord>()),
                                       revisionCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()),
                                       preparationCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()),
-                                      playbackCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>()),
+                                      playbackCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>()),
                                       transcriptCount: try context.fetchCount(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>()))
     }
 }

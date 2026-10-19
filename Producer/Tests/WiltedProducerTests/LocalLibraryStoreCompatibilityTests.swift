@@ -192,7 +192,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         let url = directory.appendingPathComponent("library.sqlite")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Keep the newer build's connection open so its sidecars are live.
-        let schema = Schema(versionedSchema: FutureLocalLibrarySchemaV21.self)
+        let schema = Schema(versionedSchema: FutureLocalLibrarySchemaV22.self)
         let futureWriter = try ModelContainer(for: schema, configurations: [
             ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none),
         ])
@@ -205,7 +205,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         XCTAssertGreaterThan(walBytes?.intValue ?? 0, 0, "the newer store's latest commit is still in its WAL")
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-shm"))
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url),
-                       .unrecognized("store matches no schema from V1 through V20"))
+                       .unrecognized("store matches no schema from V1 through V\(LocalLibrarySchemaVersion.current.rawValue)"))
         let before = try Self.directorySnapshot(directory)
 
         for migrate in [true, false] {
@@ -245,11 +245,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         let playback = try await store.playbackState(for: values.article.itemID, revisionID: values.articleRevision.revisionID)
         let preparation = try await store.preparationJournal(for: values.preparation.requestID)
         let syncState = try await store.syncState(for: values.syncState.key)
-        let context = ModelContext(store.container)
-        let tombstone = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.TombstoneRecord>())
-            .first { $0.id == values.tombstone.id }
-        let repositoryState = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RepositoryStateRecord>())
-            .first { $0.key == "private-zone" }
+        let tables = try LocalLibraryStore.tableRowCounts(at: await store.url)
         let feed = try await store.podcastFeed(for: values.feed.itemID)
         let episode = try await store.podcastEpisode(for: values.episode.itemID)
         let dismissedEpisode = try await store.podcastEpisode(for: values.dismissedEpisode.itemID)
@@ -279,14 +275,10 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         XCTAssertEqual(playback, values.playback)
         XCTAssertEqual(preparation, [values.preparation])
         XCTAssertEqual(syncState, values.syncState)
-        XCTAssertEqual(tombstone?.id, values.tombstone.id)
-        XCTAssertEqual(tombstone?.itemID, values.tombstone.itemID.rawValue)
-        XCTAssertEqual(tombstone?.generationID, values.tombstone.generationID)
-        XCTAssertEqual(tombstone?.requestedAt, values.tombstone.requestedAt.date)
-        XCTAssertEqual(tombstone?.remoteAcknowledged, values.tombstone.remoteAcknowledged)
-        XCTAssertEqual(repositoryState?.stateData, Data(
-            #"{"protectedRecordIDs":[],"conflictedRecordIDs":[],"remoteAcknowledgedRecordIDs":[],"records":[],"conflictServerRecords":[],"pendingChanges":[],"tombstones":[]}"#.utf8
-        ))
+        // The fixture's retired tombstone and repository-state rows go with their V21-dropped tables.
+        XCTAssertEqual(try LocalLibraryStore.tableRowCounts(at: fixtureURL)["ZTOMBSTONERECORD"], 1)
+        XCTAssertEqual(try LocalLibraryStore.tableRowCounts(at: fixtureURL)["ZREPOSITORYSTATERECORD"], 1)
+        for table in LocalLibraryStore.retiredTables { XCTAssertNil(tables[table], "\(table) is dropped") }
         XCTAssertEqual(feed, values.feed)
         XCTAssertEqual(episode, values.episode)
         XCTAssertEqual(dismissedEpisode, values.dismissedEpisode)
@@ -387,7 +379,6 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
             articleMediaURL: URL(fileURLWithPath: "/tmp/fixture-article.m4a"), transcript: transcript,
             playback: playback, preparation: preparation,
             syncState: LocalLibrarySyncState(key: "fixture-zone", engineState: Data([0x11, 0x22]), lastFetchAt: timestamp, lastSendAt: timestamp),
-            tombstone: LocalLibraryTombstone(id: "fixture-tombstone", itemID: article.itemID, generationID: "fixture-generation", requestedAt: timestamp),
             feed: feed, episode: activeEpisode, dismissedEpisode: dismissedEpisode,
             subscription: PodcastSubscription(feedID: feedID, subscribedAt: timestamp),
             download: try PodcastDownload(
@@ -425,7 +416,6 @@ private struct FixtureValues {
     let playback: PlaybackState
     let preparation: PreparationJournalEntry
     let syncState: LocalLibrarySyncState
-    let tombstone: LocalLibraryTombstone
     let feed: PodcastFeed
     let episode: PodcastEpisode
     let dismissedEpisode: PodcastEpisode
@@ -482,8 +472,8 @@ extension LocalLibraryStoreCompatibilityTests {
     init(id: String) { self.id = id }
 }
 
-enum FutureLocalLibrarySchemaV21: VersionedSchema {
-    static let versionIdentifier = Schema.Version(21, 0, 0)
+enum FutureLocalLibrarySchemaV22: VersionedSchema {
+    static let versionIdentifier = Schema.Version(22, 0, 0)
     static var models: [any PersistentModel.Type] { LocalLibraryCurrentSchema.models + [FutureSchemaRecord.self] }
 }
 

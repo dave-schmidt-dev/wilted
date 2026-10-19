@@ -295,11 +295,6 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(inspection.preparationCount, 1)
         XCTAssertEqual(inspection.playbackCount, 1)
         let syncState = try await migrated.syncState(for: "private-zone")
-        let context = ModelContext(migrated.container)
-        let tombstone = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.TombstoneRecord>())
-            .first { $0.id == "v5-tombstone" }
-        let repositoryState = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RepositoryStateRecord>())
-            .first { $0.key == "private-zone" }
         let transcript = try await migrated.transcript(for: item.itemID, revisionID: rev.revisionID)
         let journal = try await migrated.preparationJournal(for: "v5-request")
         let loadedPlayback = try await migrated.playbackState(for: item.itemID, revisionID: rev.revisionID)
@@ -318,8 +313,6 @@ extension LocalLibraryStoreTests {
                                                     terminalResult: try PreparationTerminalResult(outcome: .succeeded, revisionID: rev.revisionID),
                                                     emittedAt: expectedUpdatedAt)
         let expectedJournal = PreparationJournalEntry(id: "v5-prep", itemID: item.itemID, requestID: "v5-request", status: expectedStatus)
-        let expectedTombstone = LocalLibraryTombstone(id: "v5-tombstone", itemID: item.itemID,
-                                                      generationID: "v5-generation", requestedAt: expectedUpdatedAt)
         let migratedArticle = try await migrated.article(for: item.itemID)
         let migratedRevision = try await migrated.readyRevision(for: item.itemID)
         XCTAssertEqual(migratedArticle, item)
@@ -328,14 +321,10 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(loadedPlayback, expectedPlayback)
         XCTAssertEqual(transcript, expectedTranscript)
         XCTAssertEqual(journal, [expectedJournal])
-        XCTAssertEqual(tombstone?.id, expectedTombstone.id)
-        XCTAssertEqual(tombstone?.itemID, expectedTombstone.itemID.rawValue)
-        XCTAssertEqual(tombstone?.generationID, expectedTombstone.generationID)
-        XCTAssertEqual(tombstone?.requestedAt, expectedTombstone.requestedAt.date)
-        XCTAssertEqual(tombstone?.remoteAcknowledged, expectedTombstone.remoteAcknowledged)
         XCTAssertEqual(syncState, LocalLibrarySyncState(key: "private-zone", engineState: Data([5]),
                                                          lastFetchAt: expectedUpdatedAt, lastSendAt: expectedUpdatedAt))
-        XCTAssertEqual(repositoryState?.stateData, Data("{}".utf8))
+        let tables = try LocalLibraryStore.tableRowCounts(at: url)
+        for table in LocalLibraryStore.retiredTables { XCTAssertNil(tables[table], "\(table) is dropped by V21") }
     }
 
 }

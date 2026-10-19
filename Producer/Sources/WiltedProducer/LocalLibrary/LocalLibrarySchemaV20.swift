@@ -50,7 +50,3 @@ enum LocalLibraryV20MigrationPlan: SchemaMigrationPlan {
         ]
     }
 }
-
-typealias LocalLibraryCurrentSchema = LocalLibrarySchemaV20
-typealias LocalLibraryCurrentMigrationPlan = LocalLibraryV20MigrationPlan
-typealias LocalLibraryCurrentSubscriptionRecord = LocalLibrarySchemaV18Models.PodcastSubscriptionRecord

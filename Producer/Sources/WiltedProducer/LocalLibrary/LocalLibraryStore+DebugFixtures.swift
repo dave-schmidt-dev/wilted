@@ -44,10 +44,6 @@ extension LocalLibraryStore {
             PreparationJournalEntry(id: "v5-prep", itemID: playback.itemID, requestID: "v5-request", status: status)))
         context.insert(LocalLibrarySchemaV3Models.SyncStateRecord(
             LocalLibrarySyncState(key: "private-zone", engineState: Data([5]), lastFetchAt: playback.updatedAt, lastSendAt: playback.updatedAt)))
-        context.insert(LocalLibrarySchemaV3Models.TombstoneRecord(
-            LocalLibraryTombstone(id: "v5-tombstone", itemID: playback.itemID, generationID: "v5-generation", requestedAt: playback.updatedAt)))
-        context.insert(LocalLibrarySchemaV3Models.RepositoryStateRecord(
-            stateData: Data("{}".utf8)))
         try context.save()
     }
 

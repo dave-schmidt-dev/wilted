@@ -444,7 +444,7 @@ extension LocalLibraryStore {
         let existingListeningIDs = Set(
             try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>()).map(\.id)
         )
-        let playbackRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        let playbackRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
         let readyRevisions = try newestReadyRevisionsByItemID(in: context)
         for episodeRecord in episodes {
             guard let episodeID = try? ItemID(rawValue: episodeRecord.id),

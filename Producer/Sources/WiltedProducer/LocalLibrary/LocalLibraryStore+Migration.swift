@@ -155,15 +155,19 @@ extension LocalLibraryStore {
         return result
     }
 
+    /// Entity tables a released schema deliberately dropped with their rows:
+    /// V21 retired the legacy sync engine's tombstones and repository state.
+    nonisolated static let retiredTables: Set<String> = ["ZTOMBSTONERECORD", "ZREPOSITORYSTATERECORD"]
+
     /// Every entity table that held rows before a migration must still exist
     /// afterwards with the same row count; a missing populated table is data
     /// loss. An empty table that vanishes loses nothing, so it does not refuse
     /// the open -- refusing would strand the owner's store over a table that
-    /// never mattered. New tables are fine.
+    /// never mattered. A `retiredTables` entry may vanish whole. New tables are fine.
     nonisolated static func verifyRowCounts(_ before: [String: Int], preserved after: [String: Int]) throws {
         for (table, count) in before.sorted(by: { $0.key < $1.key }) {
             guard let migrated = after[table] else {
-                guard count == 0 else {
+                guard count == 0 || retiredTables.contains(table) else {
                     throw LocalLibraryStoreError.migrationPreflightFailed(
                         "table \(table) had \(count) rows before migration and is missing after"
                     )

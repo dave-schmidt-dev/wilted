@@ -33,7 +33,9 @@ final class LocalLibraryFeedAutomationTests: XCTestCase {
             XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: copied),
                            .known(LocalLibrarySchemaVersion.current.rawValue))
             let after = try LocalLibraryStore.tableRowCounts(at: copied)
-            for (table, count) in before { XCTAssertEqual(after[table], count, "\(name): \(table)") }
+            for (table, count) in before where !LocalLibraryStore.retiredTables.contains(table) {
+                XCTAssertEqual(after[table], count, "\(name): \(table)")
+            }
         }
     }
 

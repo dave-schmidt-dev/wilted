@@ -86,7 +86,7 @@ let primitiveTypes: Set<String> = ["string", "boolean", "number", "integer", "ob
 let expectedObjectFields: [String: Set<String>] = [
     "Article": ["itemID", "canonicalURL", "title", "source", "author", "publishedTime", "createdAt", "isDeleted"],
     "AudioRevision": ["itemID", "revisionID", "durationSeconds", "byteCount", "contentHash", "mediaType", "createdAt", "schemaVersion", "readiness"],
-    "PlaybackState": ["itemID", "revisionID", "sessionID", "sequence", "positionSeconds", "durationSeconds", "completed", "intent", "deviceID", "encodedCloudKitRecordSystemFields", "updatedAt"],
+    "PlaybackState": ["itemID", "revisionID", "sessionID", "sequence", "positionSeconds", "durationSeconds", "completed", "intent", "deviceID", "updatedAt"],
     "PreparationTerminalResult": ["outcome", "revisionID", "error"],
     "PreparationStatus": ["stage", "detail", "fraction", "cancellable", "terminal", "terminalResult", "emittedAt"],
     "ArticleRequest": ["requestID", "sourceURL", "timeoutSeconds", "statusIntervalSeconds"],
@@ -168,7 +168,7 @@ func validateSchema(_ schema: JSON) throws -> (JSON, JSON) {
         _ = try bool(type["nullable"], "schema.types.\(typeName).nullable")
         switch kind {
         case "object":
-            let allowed: Set<String> = ["kind", "required", "nullable", "fields", "conditions", "durabilityRule", "mergeRule", "persistenceRule", "streamRule", "stream"]
+            let allowed: Set<String> = ["kind", "required", "nullable", "fields", "conditions", "durabilityRule", "mergeRule", "streamRule", "stream"]
             try exactKeys(type, allowed.intersection(Set(type.keys)).union(["kind", "required", "nullable", "fields"]), "schema.types.\(typeName)")
             let fields = try object(type["fields"], "schema.types.\(typeName).fields")
             guard !fields.isEmpty else { try fail("schema.types.\(typeName).fields must not be empty") }
@@ -219,26 +219,6 @@ func validateSchema(_ schema: JSON) throws -> (JSON, JSON) {
     for value in readinessValues { _ = try stringArray(allowedTransitions[value], "schema.transitions.AudioRevision.readiness.allowed.\(value)") }
     _ = try stringArray(readiness["immutableFields"], "schema.transitions.AudioRevision.readiness.immutableFields")
     _ = try nonEmptyString(readiness["publicationRule"], "schema.transitions.AudioRevision.readiness.publicationRule")
-
-    let playbackFields = try object(try object(types["PlaybackState"], "schema.types.PlaybackState")["fields"], "schema.types.PlaybackState.fields")
-    let cloudKitFields = try object(playbackFields["encodedCloudKitRecordSystemFields"], "schema.types.PlaybackState.fields.encodedCloudKitRecordSystemFields")
-    guard try bool(cloudKitFields["required"], "schema.types.PlaybackState.fields.encodedCloudKitRecordSystemFields.required") == false,
-          try bool(cloudKitFields["nullable"], "schema.types.PlaybackState.fields.encodedCloudKitRecordSystemFields.nullable") == true else {
-        try fail("encoded CloudKit system fields must be optional and nullable for create")
-    }
-    let persistenceRule = try object(try object(types["PlaybackState"], "schema.types.PlaybackState")["persistenceRule"], "schema.types.PlaybackState.persistenceRule")
-    try exactKeys(persistenceRule, ["field", "create", "updateDeleteConflictSave"], "schema.types.PlaybackState.persistenceRule")
-    guard try nonEmptyString(persistenceRule["field"], "schema.types.PlaybackState.persistenceRule.field") == "encodedCloudKitRecordSystemFields" else { try fail("playback persistence rule names the wrong causal field") }
-    let createRule = try object(persistenceRule["create"], "schema.types.PlaybackState.persistenceRule.create")
-    let updateRule = try object(persistenceRule["updateDeleteConflictSave"], "schema.types.PlaybackState.persistenceRule.updateDeleteConflictSave")
-    try exactKeys(createRule, ["required", "nullable"], "schema.types.PlaybackState.persistenceRule.create")
-    try exactKeys(updateRule, ["required", "nullable"], "schema.types.PlaybackState.persistenceRule.updateDeleteConflictSave")
-    guard try bool(createRule["required"], "schema.types.PlaybackState.persistenceRule.create.required") == false,
-          try bool(createRule["nullable"], "schema.types.PlaybackState.persistenceRule.create.nullable") == true,
-          try bool(updateRule["required"], "schema.types.PlaybackState.persistenceRule.updateDeleteConflictSave.required") == true,
-          try bool(updateRule["nullable"], "schema.types.PlaybackState.persistenceRule.updateDeleteConflictSave.nullable") == false else {
-        try fail("playback persistence rule must distinguish create from update/delete saves")
-    }
 
     let merge = try object(schema["merge"], "schema.merge")
     try exactKeys(merge, ["canonicalRecord", "causalBoundary", "rules"], "schema.merge")

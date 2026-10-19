@@ -19,7 +19,7 @@ extension LocalLibraryStore {
     @discardableResult
     public func save(playback state: PlaybackState) throws -> PlaybackSaveOutcome {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
         let id = "\(state.itemID.rawValue)|\(state.revisionID.rawValue)"
         let existingRecord = records.first(where: { $0.id == id })
         if existingRecord == nil, try !playbackOwnerExists(state, in: context) { return .skippedMissingItem }
@@ -27,11 +27,8 @@ extension LocalLibraryStore {
             existing.sessionID = state.sessionID; existing.sequence = state.sequence; existing.positionSeconds = state.positionSeconds
             existing.durationSeconds = state.durationSeconds; existing.completed = state.completed; existing.intent = state.intent.rawValue
             existing.deviceID = state.deviceID
-            if let systemFields = state.encodedCloudKitRecordSystemFields {
-                existing.encodedCloudKitRecordSystemFields = systemFields
-            }
             existing.updatedAt = state.updatedAt.date
-        } else { context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(state)) }
+        } else { context.insert(LocalLibrarySchemaV21Models.PlaybackRecord(state)) }
         try context.save()
         return .saved
     }
@@ -44,7 +41,7 @@ extension LocalLibraryStore {
     @discardableResult
     public func save(playback: PlaybackState, listening: PodcastListeningState) throws -> PlaybackSaveOutcome {
         let context = ModelContext(container)
-        let playbackRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        let playbackRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
         let playbackID = "\(playback.itemID.rawValue)|\(playback.revisionID.rawValue)"
         let existingRecord = playbackRecords.first(where: { $0.id == playbackID })
         if existingRecord == nil, try !playbackOwnerExists(playback, in: context) { return .skippedMissingItem }
@@ -52,11 +49,8 @@ extension LocalLibraryStore {
             existing.sessionID = playback.sessionID; existing.sequence = playback.sequence; existing.positionSeconds = playback.positionSeconds
             existing.durationSeconds = playback.durationSeconds; existing.completed = playback.completed; existing.intent = playback.intent.rawValue
             existing.deviceID = playback.deviceID
-            if let systemFields = playback.encodedCloudKitRecordSystemFields {
-                existing.encodedCloudKitRecordSystemFields = systemFields
-            }
             existing.updatedAt = playback.updatedAt.date
-        } else { context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(playback)) }
+        } else { context.insert(LocalLibrarySchemaV21Models.PlaybackRecord(playback)) }
 
         let listeningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastListeningRecord>())
         if let existing = listeningRecords.first(where: { $0.id == listening.episodeID.rawValue }) {
@@ -90,11 +84,11 @@ extension LocalLibraryStore {
 
     public func playbackState(for itemID: ItemID, revisionID: RevisionID) throws -> PlaybackState? {
         let context = ModelContext(container)
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>()).first(where: { $0.itemID == itemID.rawValue && $0.revisionID == revisionID.rawValue }) else { return nil }
+        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>()).first(where: { $0.itemID == itemID.rawValue && $0.revisionID == revisionID.rawValue }) else { return nil }
         return try PlaybackState(itemID: itemID, revisionID: revisionID, sessionID: record.sessionID, sequence: record.sequence,
                                  positionSeconds: record.positionSeconds, durationSeconds: record.durationSeconds, completed: record.completed,
                                  intent: PlaybackIntent(rawValue: record.intent) ?? .progress, deviceID: record.deviceID,
-                                 encodedCloudKitRecordSystemFields: record.encodedCloudKitRecordSystemFields, updatedAt: Timestamp(record.updatedAt))
+                                 updatedAt: Timestamp(record.updatedAt))
     }
 
     // MARK: Sync state

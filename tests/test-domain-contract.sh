@@ -50,17 +50,6 @@ if swift "$root_dir/scripts/validate-domain-contract.swift" "$readiness_schema" 
 fi
 echo "PASS negative mutation: non-ready revision readiness rejected"
 
-# Create-time playback records must not require CloudKit system fields.
-cloudkit_schema="$tmp_dir/cloudkit-schema.json"
-cp "$schema" "$cloudkit_schema"
-sed -i.bak 's/"encodedCloudKitRecordSystemFields": {"type": "string", "required": false/"encodedCloudKitRecordSystemFields": {"type": "string", "required": true/' "$cloudkit_schema"
-rm -f "$cloudkit_schema.bak"
-if swift "$root_dir/scripts/validate-domain-contract.swift" "$cloudkit_schema" "$fixtures" >/dev/null 2>&1; then
-    echo "error: domain validator accepted required create-time CloudKit fields" >&2
-    exit 1
-fi
-echo "PASS negative mutation: create-time CloudKit fields remain optional"
-
 # Tagged producer streams must declare exactly one terminal message.
 stream_schema="$tmp_dir/stream-schema.json"
 cp "$schema" "$stream_schema"

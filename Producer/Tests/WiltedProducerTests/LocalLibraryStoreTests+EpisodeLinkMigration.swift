@@ -81,7 +81,7 @@ final class LocalLibraryEpisodeLinkTests: XCTestCase {
         for table in ["ZAUDIOBOOKRECORD", "ZPLAYLISTRECORD", "ZPLAYLISTENTRYRECORD", "ZPLAYLISTRULERECORD"] {
             XCTAssertEqual(after.removeValue(forKey: table), 0, "the V17 table \(table) starts empty")
         }
-        for (table, count) in before {
+        for (table, count) in before where !LocalLibraryStore.retiredTables.contains(table) {
             XCTAssertEqual(after[table], count, "pre-existing table \(table) keeps its exact row count")
         }
         for (table, count) in after where before[table] == nil {

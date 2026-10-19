@@ -118,7 +118,7 @@ extension LocalLibraryStore {
             where record.itemID == revision.itemID.rawValue && supersededIDs.contains(record.revisionID) {
                 context.delete(record)
             }
-            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+            for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
             where record.itemID == revision.itemID.rawValue && supersededIDs.contains(record.revisionID) {
                 context.delete(record)
             }
@@ -188,12 +188,12 @@ extension LocalLibraryStore {
         where record.itemID == revision.itemID.rawValue && record.revisionID == superseded.rawValue {
             context.delete(record)
         }
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PlaybackRecord>())
+        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
         where record.itemID == revision.itemID.rawValue && record.revisionID == superseded.rawValue {
             context.delete(record)
         }
         if let playback {
-            context.insert(LocalLibrarySchemaV3Models.PlaybackRecord(playback))
+            context.insert(LocalLibrarySchemaV21Models.PlaybackRecord(playback))
         }
 
         let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())

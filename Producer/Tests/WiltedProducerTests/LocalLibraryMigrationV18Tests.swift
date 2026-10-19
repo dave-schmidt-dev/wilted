@@ -39,7 +39,7 @@ final class LocalLibraryMigrationV18Tests: XCTestCase {
                        "opening a frozen V17 store must migrate to current")
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url),
                        .known(LocalLibrarySchemaVersion.current.rawValue))
-        var expectedCounts = before
+        var expectedCounts = before.filter { !LocalLibraryStore.retiredTables.contains($0.key) }
         // Opening the library initializes these two empty statistics singleton tables.
         expectedCounts["ZLIFETIMESTATISTICSSUMMARYRECORD"] = 1
         expectedCounts["ZLIFETIMESTATISTICSTRACKINGRECORD"] = 1

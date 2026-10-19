@@ -75,7 +75,6 @@ enum RemotePositionRules {
             sessionID: rewind ? newSessionID() : persisted.sessionID,
             sequence: rewind ? 1 : max(1, persisted.sequence + 1),
             positionSeconds: request.positionSeconds, durationSeconds: persisted.durationSeconds, completed: false,
-            intent: rewind ? .rewind : persisted.intent, deviceID: deviceID,
-            encodedCloudKitRecordSystemFields: persisted.encodedCloudKitRecordSystemFields, updatedAt: stamp)
+            intent: rewind ? .rewind : persisted.intent, deviceID: deviceID, updatedAt: stamp)
     }
 }

@@ -483,7 +483,6 @@ public struct PlaybackState: Codable, Equatable, Sendable {
     public let completed: Bool
     public let intent: PlaybackIntent
     public let deviceID: String
-    public let encodedCloudKitRecordSystemFields: Data?
     public let updatedAt: Timestamp
 
     public init(
@@ -496,7 +495,6 @@ public struct PlaybackState: Codable, Equatable, Sendable {
         completed: Bool,
         intent: PlaybackIntent,
         deviceID: String,
-        encodedCloudKitRecordSystemFields: Data? = nil,
         updatedAt: Timestamp
     ) throws {
         try validateToken(sessionID, field: "sessionID")
@@ -517,13 +515,12 @@ public struct PlaybackState: Codable, Equatable, Sendable {
         self.completed = completed
         self.intent = intent
         self.deviceID = deviceID
-        self.encodedCloudKitRecordSystemFields = encodedCloudKitRecordSystemFields
         self.updatedAt = updatedAt
     }
 
     private enum CodingKeys: CodingKey {
         case itemID, revisionID, sessionID, sequence, positionSeconds, durationSeconds, completed, intent, deviceID
-        case encodedCloudKitRecordSystemFields, updatedAt
+        case updatedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -538,7 +535,6 @@ public struct PlaybackState: Codable, Equatable, Sendable {
             completed: container.decode(Bool.self, forKey: .completed),
             intent: container.decode(PlaybackIntent.self, forKey: .intent),
             deviceID: container.decode(String.self, forKey: .deviceID),
-            encodedCloudKitRecordSystemFields: container.decodeIfPresent(Data.self, forKey: .encodedCloudKitRecordSystemFields),
             updatedAt: container.decode(Timestamp.self, forKey: .updatedAt)
         )
     }

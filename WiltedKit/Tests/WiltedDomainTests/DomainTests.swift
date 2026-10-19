@@ -387,6 +387,18 @@ final class DomainTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(AudioRevision.self, from: JSONSerialization.data(withJSONObject: object)))
     }
 
+    /// Payloads written while the retired sync engine still stored CloudKit
+    /// system fields keep decoding; new payloads no longer carry the key.
+    func testPlaybackStateIgnoresRetiredSystemFieldsKey() throws {
+        let state = try makePlayback(sequence: 2, position: 40, completed: true, intent: .rewind)
+        let encoded = try JSONEncoder().encode(state)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(object["encodedCloudKitRecordSystemFields"])
+        object["encodedCloudKitRecordSystemFields"] = Data([0xCA, 0xFE]).base64EncodedString()
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertEqual(try JSONDecoder().decode(PlaybackState.self, from: legacy), state)
+    }
+
     func testPlaybackMergeProtectsMonotonicProgressAndCompletion() throws {
         let current = try makePlayback(sequence: 2, position: 100, completed: true)
         let backward = try makePlayback(sequence: 3, position: 90, completed: true)

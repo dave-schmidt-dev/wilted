@@ -82,7 +82,7 @@ private enum LocalLibrarySchemaV1Models {
             sessionID = state.sessionID; sequence = state.sequence
             positionSeconds = state.positionSeconds; durationSeconds = state.durationSeconds
             completed = state.completed; intent = state.intent.rawValue; deviceID = state.deviceID
-            encodedCloudKitRecordSystemFields = state.encodedCloudKitRecordSystemFields
+            encodedCloudKitRecordSystemFields = nil
             updatedAt = state.updatedAt.date; self.schemaVersion = schemaVersion
         }
     }
@@ -164,7 +164,7 @@ enum LocalLibrarySchemaV2Models {
             sessionID = state.sessionID; sequence = state.sequence
             positionSeconds = state.positionSeconds; durationSeconds = state.durationSeconds
             completed = state.completed; intent = state.intent.rawValue; deviceID = state.deviceID
-            encodedCloudKitRecordSystemFields = state.encodedCloudKitRecordSystemFields
+            encodedCloudKitRecordSystemFields = nil
             updatedAt = state.updatedAt.date; self.schemaVersion = schemaVersion
         }
     }
@@ -271,7 +271,7 @@ internal enum LocalLibrarySchemaV3Models {
             sessionID = state.sessionID; sequence = state.sequence
             positionSeconds = state.positionSeconds; durationSeconds = state.durationSeconds
             completed = state.completed; intent = state.intent.rawValue; deviceID = state.deviceID
-            encodedCloudKitRecordSystemFields = state.encodedCloudKitRecordSystemFields
+            encodedCloudKitRecordSystemFields = nil
             encodedCloudKitRecordChangeTag = nil
             updatedAt = state.updatedAt.date; self.schemaVersion = schemaVersion
         }
