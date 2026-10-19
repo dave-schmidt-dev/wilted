@@ -79,6 +79,14 @@ class BuildWithCacheTests(unittest.TestCase):
             "if '--emit-bytes' in args:\n"
             "    sys.stdout.write('x' * 2000000)\n"
             "    sys.stdout.flush()\n"
+            "if os.environ.get('BUILD_CACHE_TEST_DETRITUS') == 'always':\n"
+            "    marker_path = (args[args.index('-derivedDataPath') + 1] "
+            "if '-derivedDataPath' in args else name)\n"
+            "    sys.stderr.write(marker_path + ': resource fork, Finder information, "
+            "or similar detritus not allowed\\n')\n"
+            "    sys.stderr.flush()\n"
+            "    raise SystemExit(int(args[args.index('--exit-code') + 1]) "
+            "if '--exit-code' in args else 65)\n"
             "if '--exit-code' in args:\n"
             "    raise SystemExit(int(args[args.index('--exit-code') + 1]))\n",
             encoding="utf-8",
@@ -550,6 +558,70 @@ class BuildWithCacheTests(unittest.TestCase):
             if first.poll() is None:
                 first.terminate()
                 first.communicate(timeout=5)
+
+    def test_xcode_detritus_retries_once_then_fails(self) -> None:
+        key = f"native-test-xcode-detritus-{os.getpid()}"
+        cache = ROOT / ".build/xcode" / key
+        self.track_fixture_cache("xcode", key)
+        (cache / "Build").mkdir(parents=True)
+        self.env["BUILD_CACHE_TEST_DETRITUS"] = "always"
+
+        result = self.run_helper(
+            "run", "xcode", key, "--", "xcodebuild", "-scheme", "Sample",
+            "--exit-code", "65",
+        )
+
+        self.assertEqual(result.returncode, 65, result.stderr)
+        events = [event.split("\t") for event in self.read_events()]
+        self.assertEqual(len(events), 2)
+        for event in events:
+            self.assertEqual(event[:3], ["xcodebuild", "-derivedDataPath", str(cache)])
+        self.assertEqual(result.stderr.count("native.xattr.retry attempt=2"), 1)
+        self.assertIn(
+            f"native.xattr.clear start reason=pre-build path={cache / 'Build'}",
+            result.stderr,
+        )
+        self.assertIn(
+            f"native.xattr.clear start reason=detritus path={cache / 'Build'}",
+            result.stderr,
+        )
+
+    def test_xcode_plain_failure_is_not_retried(self) -> None:
+        key = f"native-test-xcode-plain-{os.getpid()}"
+        self.track_fixture_cache("xcode", key)
+        result = self.run_helper(
+            "run", "xcode", key, "--", "xcodebuild", "-scheme", "Sample",
+            "--exit-code", "3",
+        )
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(len(self.read_events()), 1)
+        self.assertNotIn("native.xattr.retry", result.stderr)
+
+    def test_xattr_clear_root_scopes_xcode_to_build(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_with_cache_xattr_root_test", HELPER,
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cache = self.temp_path / "scope-cache"
+        self.assertEqual(module.xattr_clear_root("swiftpm", cache), cache)
+        self.assertEqual(module.xattr_clear_root("xcode", cache), cache / "Build")
+
+        key = f"native-test-xcode-cold-{os.getpid()}-{time.time_ns()}"
+        cold_cache = ROOT / ".build/xcode" / key
+        self.track_fixture_cache("xcode", key)
+        result = self.run_helper("run", "xcode", key, "--", "xcodebuild")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"native.xattr.clear skipped reason=pre-build "
+            f"path={cold_cache / 'Build'}",
+            result.stderr,
+        )
 
     def test_installer_xcode_labels_share_a_lock(self) -> None:
         first = subprocess.Popen(

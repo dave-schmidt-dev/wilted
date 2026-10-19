@@ -124,6 +124,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 - The Mac no longer fails to open a library that needs an upgrade when another Wilted process holds the store for a moment; the upgrade check waits up to 5 seconds for the lock.
+- An Xcode build through `build-with-cache.py run xcode` now clears File Provider metadata from its cache's `Build` tree first and, when CodeSign still reports resource-fork detritus, clears again and retries once (`native.xattr.retry`), as `run swiftpm` already did.
 - After a crash, force quit or failed preparation, the Mac's next launch removes the leftover prepared episode copy, worker render file and article or audiobook encode temp, so the full-size audio they held no longer fills the disk; committed audio and anything the library names are never touched.
 - A crashed or stopped preparation worker now says why: the "produced no result" error carries the worker's last stderr lines, a worker failure names its innermost frame, and summary failures name the exception class without transcript text.
 - Cancelling or timing out a preparation stops the worker's ffmpeg children and lets the worker clean up its temporary output, instead of leaving them rendering.
