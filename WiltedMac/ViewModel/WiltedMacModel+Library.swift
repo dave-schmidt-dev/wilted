@@ -77,41 +77,6 @@ extension WiltedMacModel {
     }
 #endif
 
-    /// Fixture launches share the daily driver's bundle identifier, so they
-    /// get their own defaults domain, emptied on first use: a UI test must
-    /// neither inherit the owner's choices nor leave its own behind. The
-    /// suite is named by process and model, so Mac test hosts running in
-    /// sibling worktrees at the same time cannot wipe each other's state.
-    static func fixturePreferences(suiteName: String = fixturePreferencesSuiteName()) -> UserDefaults {
-        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
-        defaults.removePersistentDomain(forName: suiteName)
-        return defaults
-    }
-
-    static let fixturePreferencesSuitePrefix = "com.zerodelta.wilted.mac.ui-fixture"
-
-    static func fixturePreferencesSuiteName() -> String {
-        "\(fixturePreferencesSuitePrefix).\(ProcessInfo.processInfo.processIdentifier).\(UUID().uuidString)"
-    }
-
-    /// Removes the suites (and their plists) of fixture processes that are gone. A suite whose owner
-    /// is live, or whose owner cannot be told, is left alone.
-    static func sweepStaleFixturePreferenceSuites(
-        in directory: URL? = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Preferences", isDirectory: true)
-    ) {
-        guard let directory,
-              let entries = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
-        let prefix = fixturePreferencesSuitePrefix + "."
-        for entry in entries where entry.hasPrefix(prefix) && entry.hasSuffix(".plist") {
-            let suite = String(entry.dropLast(".plist".count))
-            guard let owner = suite.dropFirst(prefix.count).split(separator: ".").first.flatMap({ Int32($0) }),
-                  owner > 0, kill(owner, 0) != 0, errno == ESRCH else { continue }
-            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
-            try? FileManager.default.removeItem(at: directory.appendingPathComponent(entry))
-        }
-    }
-
     func logicalRepresentativeID(_ id: String) -> String {
         let association = episodeAssociations[id]
         return association?.isSupported == true ? association!.representativeID.rawValue : id

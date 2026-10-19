@@ -97,6 +97,9 @@ cleanup() {
   local status=$?
   trap - EXIT INT TERM HUP
   wilted_temp_cleanup_native_gate "$tmp_root" "$inherited_tmp" "$native_audit_root" "$native_audit_parent" || true
+  if [[ "$native_self_test" != "1" ]]; then
+    python3 "$repo_root/scripts/sweep-test-preferences.py" || true
+  fi
   tmp_root=""; native_audit_root=""
   # A parse error or unplanned exit before the verdict leaves $? at 0.
   if [[ "$status" -eq 0 && "$native_verdict_reached" -ne 1 ]]; then

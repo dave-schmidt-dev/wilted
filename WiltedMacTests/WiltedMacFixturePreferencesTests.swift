@@ -73,4 +73,52 @@ final class WiltedMacFixturePreferencesTests: XCTestCase {
         let remaining = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
         XCTAssertEqual(remaining, [names[1] + ".plist", names[2] + ".plist"])
     }
+
+    func testOwnerIsLiveRejectsAReusedPID() throws {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        XCTAssertTrue(WiltedMacModel.preferenceSuiteOwnerIsLive(ownPID, created: Date()))
+        XCTAssertFalse(WiltedMacModel.preferenceSuiteOwnerIsLive(ownPID, created: Date(timeIntervalSince1970: 0)))
+
+        let gone = Process()
+        gone.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try gone.run()
+        gone.waitUntilExit()
+        XCTAssertFalse(WiltedMacModel.preferenceSuiteOwnerIsLive(gone.processIdentifier, created: Date()))
+
+        XCTAssertTrue(WiltedMacModel.preferenceSuiteOwnerIsLive(ownPID, created: nil))
+    }
+
+    func testFixtureSweepRemovesASuiteWhosePIDWasReused() throws {
+        let directory = wiltedTemporaryDirectory("fixture-prefs-reused-pid")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let prefix = WiltedMacModel.fixturePreferencesSuitePrefix
+        let backdated = "\(prefix).1.\(UUID().uuidString).plist"
+        let fresh = "\(prefix).1.\(UUID().uuidString).plist"
+        let backdatedURL = directory.appendingPathComponent(backdated)
+        let freshURL = directory.appendingPathComponent(fresh)
+        try Data().write(to: backdatedURL)
+        try Data().write(to: freshURL)
+        try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 0)], ofItemAtPath: backdatedURL.path)
+
+        WiltedMacModel.sweepStaleFixturePreferenceSuites(in: directory)
+        let remaining = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        XCTAssertEqual(remaining, [fresh])
+    }
+
+    func testTestHostSweepRemovesASuiteWhosePIDWasReused() throws {
+        let directory = wiltedTemporaryDirectory("test-host-prefs-reused-pid")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let prefix = WiltedMacTestPreferences.suitePrefix
+        let backdated = "\(prefix).ephemeral.1.\(UUID().uuidString).plist"
+        let fresh = "\(prefix).ephemeral.1.\(UUID().uuidString).plist"
+        let backdatedURL = directory.appendingPathComponent(backdated)
+        let freshURL = directory.appendingPathComponent(fresh)
+        try Data().write(to: backdatedURL)
+        try Data().write(to: freshURL)
+        try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 0)], ofItemAtPath: backdatedURL.path)
+
+        WiltedMacTestPreferences.sweepExitedHostSuites(in: directory)
+        let remaining = Set(try FileManager.default.contentsOfDirectory(atPath: directory.path))
+        XCTAssertEqual(remaining, [fresh])
+    }
 }

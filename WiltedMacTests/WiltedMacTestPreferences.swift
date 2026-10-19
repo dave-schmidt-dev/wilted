@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+@testable import WiltedMac
 
 /// The defaults domain unit tests hand `WiltedMacModel`.
 ///
@@ -34,9 +35,9 @@ enum WiltedMacTestPreferences {
     /// `removeAll` deletes each plist when its test finishes, but `cfprefsd`
     /// can write an empty one back afterwards and a killed host never gets
     /// there; over 90,000 had piled up in `~/Library/Preferences`. Every name
-    /// carries its creator's PID, so a later host can tell an exited host's
-    /// leftovers from a running one's. Capped so one launch never spends long
-    /// on a backlog.
+    /// carries its creator's PID, checked against process start time so a
+    /// reused PID cannot protect an exited host's leftovers. Capped so one
+    /// launch never spends long on a backlog.
     @discardableResult
     static func sweepExitedHostSuites(in directory: URL? = nil, limit: Int = 5_000) -> Int {
         guard let directory = directory ?? preferencesDirectory,
@@ -44,8 +45,11 @@ enum WiltedMacTestPreferences {
         let ownPID = ProcessInfo.processInfo.processIdentifier
         var removed = 0
         for entry in entries where removed < limit {
-            guard let pid = creatorPID(ofPlist: entry), pid != ownPID, !isRunning(pid) else { continue }
-            if (try? FileManager.default.removeItem(at: directory.appendingPathComponent(entry))) != nil {
+            guard let pid = creatorPID(ofPlist: entry), pid != ownPID else { continue }
+            let fileURL = directory.appendingPathComponent(entry)
+            let created = (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.creationDate] as? Date
+            guard !WiltedMacModel.preferenceSuiteOwnerIsLive(pid, created: created) else { continue }
+            if (try? FileManager.default.removeItem(at: fileURL)) != nil {
                 removed += 1
             }
         }
@@ -59,11 +63,6 @@ enum WiltedMacTestPreferences {
         guard parts.count >= 2, UUID(uuidString: String(parts[parts.count - 1])) != nil,
               let pid = pid_t(parts[parts.count - 2]), pid > 0 else { return nil }
         return pid
-    }
-
-    /// `EPERM` means the process exists but belongs to someone else.
-    private static func isRunning(_ pid: pid_t) -> Bool {
-        kill(pid, 0) == 0 || errno != ESRCH
     }
 
     private static var preferencesDirectory: URL? {
