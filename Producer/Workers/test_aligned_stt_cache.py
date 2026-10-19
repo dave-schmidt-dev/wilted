@@ -32,6 +32,7 @@ from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
+from worker_test_support import wp
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
 from wilted_worker import ad_audit as _worker_ad_audit
@@ -94,10 +95,11 @@ class AlignedSTTCacheTests(unittest.TestCase):
             return [FakeSegment(0, 1, "detector words")]
 
         transcribe.transcribe_audio = transcribe_audio
-        self.run_pipeline()
-        self.assertEqual(calls, ["detector-v1"])
-        cached = json.loads(self.cache_path().read_text())
-        self.assertEqual(cached["model"], "detector-v1")
+        request = {**self.request, "alignedTranscriptModel": wp.ALIGNED_STT_MODEL}
+        self.run_pipeline(request)
+        self.assertEqual(calls, [wp.ALIGNED_STT_MODEL])
+        cached = json.loads(self.cache_path(request).read_text())
+        self.assertEqual(cached["model"], wp.ALIGNED_STT_MODEL)
         self.assertEqual(cached["sourceHash"], "sha256:source-one")
 
         # A new daemon double has no valid answer. A cache hit must therefore
@@ -105,14 +107,20 @@ class AlignedSTTCacheTests(unittest.TestCase):
         # `.start_s`, and `.end_s` for the detector rather than return JSON.
         install_fake_wilted()
         install_fake_ads(FakeLLM())
+        request.update({
+            "protocolVersion": 2, "removeAds": True,
+            "outputPath": str(Path(self.temporary.name) / "prepared.mp3"),
+        })
         with mock.patch.object(_worker_ad_removal, "detect_and_cut") as detector:
-            self.request["removeAds"] = True
             with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                    mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
                     mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()):
                 # The detector is not reached because this stub prevents the
                 # production cut path; its input is still observable below.
-                detector.return_value = (self.audio, [], [])
-                self.run_pipeline()
+                detector.return_value = (
+                    self.audio, [], [], [], wp.serialize_ad_audit(_worker_ad_audit.AdAnalysisAudit())
+                )
+                self.run_pipeline(request)
         segment = detector.call_args.args[3][0]
         self.assertEqual((segment.text, segment.start_s, segment.end_s), ("detector words", 0.0, 1.0))
 
@@ -199,20 +207,25 @@ class AlignedSTTCacheTests(unittest.TestCase):
 
     def test_detector_failure_keeps_the_completed_cache_without_returning_success(self):
         install_fake_wilted()
+        request = {
+            **self.request, "protocolVersion": 2, "removeAds": True,
+            "alignedTranscriptModel": wp.ALIGNED_STT_MODEL,
+            "outputPath": str(Path(self.temporary.name) / "prepared.mp3"),
+        }
         wp._store_cached_aligned_segments(
-            self.request, self.request["sourceHash"], self.request["alignedTranscriptModel"],
+            request, request["sourceHash"], request["alignedTranscriptModel"],
             [FakeSegment(0, 1, "cached")],
         )
-        self.request["removeAds"] = True
         install_fake_ads(FakeLLM())
         with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
                 mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
                 mock.patch.object(_worker_ad_removal, "detect_and_cut", side_effect=wp.WorkerError("ads-down", "detector unavailable")), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
             with self.assertRaises(wp.WorkerError) as raised:
-                wp.run(self.request)
+                wp.run(request)
         self.assertEqual(raised.exception.code, "ads-down")
-        self.assertTrue(self.cache_path().exists())
+        self.assertTrue(self.cache_path(request).exists())
 
     def test_out_of_order_transcription_is_still_cached(self):
         # Chunked speech-to-text stitches 120-second windows and emits a few

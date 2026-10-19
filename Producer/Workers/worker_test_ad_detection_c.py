@@ -32,6 +32,7 @@ from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
+from worker_test_support import synthetic_render
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
 from wilted_worker import ad_audit as _worker_ad_audit
@@ -46,11 +47,14 @@ class AdDetectionMixinC:
     def test_a_model_that_cannot_load_is_reported_by_name(self):
         llm = FakeLLM(fail_load=FileNotFoundError("GGUF model file not found: /models/default.gguf"))
         install_fake_ads(llm)
-        with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
+        with redirect_stderr(io.StringIO()), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-            wp.detect_and_cut(self.request, self.audio, [], self.segments)
-        self.assertEqual(raised.exception.code, "ads-model-unavailable")
-        self.assertIn("/models/default.gguf", str(raised.exception))
+            path, spans, keeps, raw, audit = wp.detect_and_cut(
+                self.request, self.audio, [], self.segments
+            )
+        self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+        self.assertIn("/models/default.gguf", audit["incompleteError"])
+        self.assertTrue(audit["warning"].startswith("original audio includes ads:"))
         # A half-constructed backend still holds whatever it allocated.
         self.assertTrue(llm.closed)
 
@@ -65,16 +69,27 @@ class AdDetectionMixinC:
         llm = FakeLLM(preroll_program_start_id=-1, preroll_program_id=-1)
         install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=459.0):
-            path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "prepared.mp3"
+            request = {**self.request, "outputPath": str(output)}
+            with redirect_stderr(stream), synthetic_render(459.0):
+                path, spans, keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], segments
+                )
         self.assertEqual(
-            (path, [(span["startSeconds"], span["endSeconds"]) for span in spans], keeps),
-            (self.audio, [(6.72, 250.0)], []),
+            (path, [(span["startSeconds"], span["endSeconds"]) for span in spans]),
+            (output, [(6.72, 250.0)]),
+        )
+        self.assertEqual(raw, spans)
+        self.assertEqual(
+            [(keep.start_s, keep.end_s) for keep in keeps],
+            [(0.0, 6.72), (250.0, 459.0)],
         )
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
         self.assertNotIn("ads.detect.span.rejected", stages)
         self.assertNotIn("ads.detect.refused", stages)
-        self.assertIn("ads.cut.refused", stages)
+        self.assertIn("ads.cut.complete", stages)
+        self.assertNotIn("ads.cut.refused", stages)
 
     def test_a_bracketed_pod_continuation_is_held_without_losing_programme_audio(self):
         # The reviewer reaches the separate closing read, not the first
@@ -108,7 +123,7 @@ class AdDetectionMixinC:
                         side_effect=lambda _source, output, _keeps: output.write_bytes(b"prepared"),
                     ):
                 _path, spans, _keeps, _raw, audit = wp.detect_and_cut(
-                    request, self.audio, [], segments, with_report=True
+                    request, self.audio, [], segments
                 )
 
         self.assertEqual(
@@ -134,8 +149,10 @@ class AdDetectionMixinC:
         install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
         stream = io.StringIO()
         with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=459.0):
-            path, spans, keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
-        self.assertEqual((path, spans, keeps), (self.audio, [], []))
+            path, spans, keeps, raw, _audit = wp.detect_and_cut(
+                self.request, self.audio, [], segments
+            )
+        self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
         self.assertIn("ads.detect.span.resize.skipped", stages)
         self.assertIn("ads.detect.span.rejected", stages)
@@ -186,7 +203,7 @@ class AdDetectionMixinC:
                         side_effect=lambda _source, output, _keeps: output.write_bytes(b"prepared"),
                     ):
                 _path, spans, _keeps, _raw, audit = wp.detect_and_cut(
-                    request, self.audio, [], segments, with_report=True
+                    request, self.audio, [], segments
                 )
         return spans, audit, [json.loads(line) for line in stream.getvalue().splitlines()]
 
@@ -436,10 +453,18 @@ class AdDetectionMixinC:
         llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=-1, boundary_starts_program=False)
         install_fake_ads(llm, detections=[FakeAd(0.0, 456.88, label="sponsor_read")])
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=563.17):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.OVERSIZED)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "prepared.mp3"
+            request = {**self.request, "outputPath": str(output)}
+            with redirect_stderr(stream), synthetic_render(563.17):
+                path, spans, keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], self.OVERSIZED
+                )
+        self.assertEqual(path, output)
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 180.0,
                                   "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
+        self.assertEqual(raw, spans)
+        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(180.0, 563.17)])
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
         self.assertIn("ads.detect.span.resized", stages)
         self.assertNotIn("ads.detect.span.rejected", stages)
@@ -447,10 +472,18 @@ class AdDetectionMixinC:
     def test_an_opening_the_detector_already_claimed_is_not_reviewed_again(self):
         llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
         install_fake_ads(llm, detections=[FakeAd(0.0, 51.9)])
-        with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "prepared.mp3"
+            request = {**self.request, "outputPath": str(output)}
+            with redirect_stderr(io.StringIO()), synthetic_render(200.0):
+                path, spans, keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], self.PREROLL
+                )
+        self.assertEqual(path, output)
         self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 51.9,
                                   "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
+        self.assertEqual(raw, spans)
+        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(51.9, 200.0)])
         self.assertEqual([r for r in llm.requests if r.get("field") == "program_start_id"], [])
 
     def test_an_unanswered_opening_review_never_cuts(self):
@@ -458,7 +491,9 @@ class AdDetectionMixinC:
         install_fake_ads(llm)
         stream = io.StringIO()
         with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+            _path, spans, _keeps, _raw, _audit = wp.detect_and_cut(
+                self.request, self.audio, [], self.PREROLL
+            )
         # `answer` is the detector's own "[]", which is not an ID object: a
         # malformed completion leaves the audio alone rather than guessing.
         self.assertEqual(spans, [])

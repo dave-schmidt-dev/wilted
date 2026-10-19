@@ -18,12 +18,10 @@ import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
-from unittest import mock
 from wilted_worker import ad_audit as _worker_ad_audit
 from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import commercial_recovery as _worker_commercial_recovery
 from wilted_worker import commercial_seeds as _worker_commercial_seeds
-from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import edge_recovery as _worker_edge_recovery
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
@@ -32,11 +30,11 @@ from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
+from worker_test_support import synthetic_render
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
 from wilted_worker import ad_audit as _worker_ad_audit
 from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
@@ -64,9 +62,13 @@ class AdKindContractTests(unittest.TestCase):
     def cut(self, detections, total=100.0):
         llm = FakeLLM(answer='{"carries_program": false}')
         install_fake_ads(llm, detections=list(detections))
-        with redirect_stderr(io.StringIO()), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=total):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        with tempfile.TemporaryDirectory() as directory:
+            request = {**self.request, "outputPath": str(Path(directory) / "prepared.mp3")}
+            with redirect_stderr(io.StringIO()), synthetic_render(total):
+                _path, spans, _keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], self.segments
+                )
+        self.assertEqual(raw, spans)
         return spans
 
     def test_each_detector_label_keeps_its_value_and_gains_a_kind(self):
@@ -182,9 +184,13 @@ class AdKindContractTests(unittest.TestCase):
         ])
         self.assertEqual(len(merged), 1)
         install_fake_ads(llm, detections=merged)
-        with redirect_stderr(io.StringIO()), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=100.0):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.segments)
+        with tempfile.TemporaryDirectory() as directory:
+            request = {**self.request, "outputPath": str(Path(directory) / "prepared.mp3")}
+            with redirect_stderr(io.StringIO()), synthetic_render(100.0):
+                _path, spans, _keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], self.segments
+                )
+        self.assertEqual(raw, spans)
         self.assertEqual(len(spans), 1)
         self.assertEqual(
             (spans[0]["startSeconds"], spans[0]["endSeconds"]), (0.0, 20.0)
@@ -206,8 +212,14 @@ class AdKindContractTests(unittest.TestCase):
             for index in range(20)
         ]
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=810.0):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "prepared.mp3"
+            request = {**self.request, "outputPath": str(output)}
+            with redirect_stderr(stream), synthetic_render(810.0):
+                path, spans, keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], segments
+                )
+        self.assertEqual(path, output)
         credits = [span for span in spans if span["kind"] == "credits"]
         self.assertEqual(len(credits), 1)
         self.assertEqual(
@@ -215,6 +227,8 @@ class AdKindContractTests(unittest.TestCase):
             (760.0, 810.0, "ad_break"),
         )
         self.assertEqual(credits[0]["disposition"], "acceptable-cut")
+        self.assertEqual(raw, spans)
+        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(0.0, 760.0)])
 
     def test_the_test_taxonomy_matches_the_vendored_module(self):
         # The real module cannot be imported in this gate -- it imports the

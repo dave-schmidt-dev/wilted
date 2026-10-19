@@ -30,7 +30,7 @@ from . import tail_recovery as _worker_tail_recovery
 from .ad_audit import AdAnalysis, AdAnalysisAudit, AuditingBackend, DeclinedCommercialEvidenceSeed, uncertain_ad_analysis, expected_backend_unavailable
 from .ad_runtime_adaptations import install_context_aware_overlap_resolution, install_legacy_sponsor_opening_compatibility, install_produced_disclaimer_evidence, install_proportional_render_budget
 from .constants import COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
-from .cue_timing import _near_empty_nominations, build_effective_cut_map, build_keep_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
+from .cue_timing import _near_empty_nominations, build_effective_cut_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
 from .boundary_review import reject_programme_conflicts
 from .interval_geometry import interval_contains, intervals_overlap
 from .nomination import _CallBudgetBackend, _experimental_speculative_cuts
@@ -286,14 +286,15 @@ def _ad_kind_fields(ads_module, kinds) -> dict:
     # placement is required, leaving programme in is not.
     return {"kind": ads_module.AD_KIND_PAID, "kinds": list(kinds), "disposition": "must-cut"}
 
-def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None,
-                   with_report: bool = False):
+def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None):
     """Detect ads and rewrite the audio without them.
 
-    Returns `(output_path, ad_spans, keep_intervals)`, or the same three plus
-    `(raw_nominations, audit)` when `with_report`. `output_path` is the input
-    path when nothing was cut, and `keep_intervals` is empty in that case,
-    which is the signal that cue timing still matches the file.
+    Returns `(output_path, ad_spans, keep_intervals, raw_nominations, audit)`.
+    `output_path` is the input path when nothing was cut, and `keep_intervals`
+    is empty in that case, which is the signal that cue timing still matches
+    the file. `audit` is the serialized detector evidence for every run that
+    analyzed the transcript; it is `None` only when there were no segments to
+    analyze.
     """
     from wilted import ads as ads_module
     from wilted import llm as llm_module
@@ -301,7 +302,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     if not segments:
         # No audit exists because no analysis ran. Reporting one anyway is how
         # "nothing was examined" would come to read as "nothing was found".
-        return (audio_path, [], [], [], None) if with_report else (audio_path, [], [])
+        return audio_path, [], [], [], None
 
     model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
     model_lock = model_lock or _worker_gpu_admission.prepare_ad_model_lock(model, aligned_stt=False)
@@ -324,8 +325,6 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                     pass
             if not expected_backend_unavailable(error):
                 raise
-            if not with_report:
-                raise WorkerError("ads-model-unavailable", f"{type(error).__name__}: {error}") from error
             reason = f"ad-detection model unavailable: {type(error).__name__}: {error}"
             warning = f"original audio includes ads: {reason}"
             _worker_reporting.progress("ads.uncertain", warning)
@@ -335,7 +334,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         try:
             counting = AuditingBackend(backend, ads_module, len(segments))
         except WorkerError as error:
-            if with_report and error.code == "ads-audit-contract-unavailable":
+            if error.code == "ads-audit-contract-unavailable":
                 if backend is not None:
                     try:
                         backend.close()
@@ -360,7 +359,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                 analysis = analyze_ad_detections(ads_module, counting, segments, total)
                 detections = list(analysis.detections)
             except WorkerError as error:
-                if with_report and error.code in {
+                if error.code in {
                     "ads-classification-unresolved",
                     "ads-classification-incomplete",
                     "ads-recovery-audit-failed",
@@ -386,15 +385,13 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                     for span in analysis.audit.held_spans)
                 or unresolved_seeds
             ):
-                # Without a report there is no audit to carry the warning, but
-                # an unresolved span still keeps the whole original.
+                # An unresolved span keeps the whole original and carries its
+                # reason in the report.
                 analysis = uncertain_ad_analysis(
                     counting, segments, "ad review could not safely resolve all proposed commercial spans",
                     held_spans=analysis.audit.held_spans, proposed_detections=detections, audit=analysis.audit,
                 )
-                if with_report:
-                    return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
-                return audio_path, [], []
+                return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
         finally:
             try:
                 backend.close()
@@ -403,9 +400,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     _worker_reporting.progress("ads.detect.calls", f"{counting.calls} requests, {counting.failures} failed")
     if not detections:
         _worker_reporting.progress("ads.detect.complete", "0 spans")
-        if with_report:
-            return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
-        return audio_path, [], []
+        return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
 
     raw_nominations = []
     for ad in detections:
@@ -419,12 +414,8 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     _worker_reporting.progress("ads.detect.complete", f"{len(raw_nominations)} spans")
 
     try:
-        if with_report:
-            _, keeps = build_effective_cut_map(detections, total)
-            keep_segments = [(keep.start_s, keep.end_s) for keep in keeps]
-        else:
-            keep_segments = ads_module._compute_keep_segments(total, detections, 0.5)  # noqa: SLF001
-            keeps = build_keep_map(keep_segments)
+        _, keeps = build_effective_cut_map(detections, total)
+        keep_segments = [(keep.start_s, keep.end_s) for keep in keeps]
     except WorkerError as error:
         if error.code == "cut-unsafe":
             reason = f"ad cut unsafe: {error}"
@@ -432,9 +423,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             _worker_reporting.progress("ads.uncertain", warning)
             analysis.audit.incomplete_error = reason
             analysis.audit.warning = warning
-            if with_report:
-                return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit)
-            return audio_path, [], []
+            return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit)
         raise
 
     if not keeps:
@@ -446,28 +435,15 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         _worker_reporting.progress("ads.uncertain", warning)
         analysis.audit.incomplete_error = reason
         analysis.audit.warning = warning
-        if with_report:
-            return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit)
-        return audio_path, raw_nominations, []
+        return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit)
 
     output_path = Path(request["outputPath"])
     if output_path.resolve() == audio_path.resolve():
         raise WorkerError("cut-output-alias", "prepared output must not replace its input in place")
     _worker_reporting.progress("ads.cut.start", f"{len(keep_segments)} keep spans")
-    # The three-value form is retained for the archive-adapter unit tests.
-    # Production always asks for the report and takes the accurate path below.
-    if not with_report:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        ads_module.cut_ads(audio_path, detections, output_path)
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            output_path.unlink(missing_ok=True)
-            return audio_path, raw_nominations, []
-        return output_path, raw_nominations, keeps
     render_keep_segments(audio_path, output_path, keeps)
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise WorkerError("cut-output-empty", "ffmpeg produced no playable audio")
     effective = effective_ad_spans(ads_module, raw_nominations, keeps, total)
     _worker_reporting.progress("ads.cut.complete", f"{output_path.stat().st_size} bytes")
-    if with_report:
-        return output_path, effective, keeps, raw_nominations, serialize_ad_audit(analysis.audit)
-    return output_path, effective, keeps
+    return output_path, effective, keeps, raw_nominations, serialize_ad_audit(analysis.audit)

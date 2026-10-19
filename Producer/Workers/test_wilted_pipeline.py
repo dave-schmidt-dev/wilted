@@ -2,18 +2,14 @@
 from __future__ import annotations
 import ast
 import contextlib
-import importlib.util
-import inspect
 import io
 import json
-import logging
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import types
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -189,18 +185,40 @@ class RunTests(unittest.TestCase):
 
     def test_a_misaligned_transcript_never_reaches_the_ad_detector(self):
         # Cutting from a transcript that describes a different rendering is
-        # the destructive half of this defect: with no transcription allowed
-        # the episode keeps its audio rather than losing conversation to it.
-        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]})
-        detect = mock.patch.object(_worker_ad_removal, "detect_and_cut", side_effect=AssertionError("a misaligned transcript drove the cut"))
-        with detect as detector, redirect_stderr(io.StringIO()), mock.patch.object(
-            _worker_ad_audit, "preflight_ad_removal"
-        ), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=3700.0):
-            result = wp.run({"audioPath": str(self.audio), "removeAds": True,
-                             "transcriptPolicy": "noLocalSTT", "publishedTranscript": self.PUBLISHED})
-        detector.assert_not_called()
+        # the destructive half of this defect. Protocol 2 ignores a published
+        # transcript for removal and transcribes the downloaded audio, so the
+        # detector must see the aligned words, never the misaligned published
+        # ones.
+        install_fake_wilted(
+            {"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]},
+            transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "aligned words")]},
+        )
+        install_fake_ads(FakeLLM())
+        with tempfile.TemporaryDirectory(prefix="wilted-misaligned-") as directory, \
+                redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
+                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock",
+                                  return_value=contextlib.nullcontext()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=3700.0), \
+                mock.patch.object(_worker_ad_removal, "detect_and_cut") as detector:
+            detector.return_value = (
+                self.audio, [], [], [], wp.serialize_ad_audit(_worker_ad_audit.AdAnalysisAudit())
+            )
+            result = wp.run({
+                "protocolVersion": 2,
+                "audioPath": str(self.audio),
+                "outputPath": str(Path(directory) / "prepared.mp3"),
+                "removeAds": True,
+                "publishedTranscript": self.PUBLISHED,
+                "readableTranscript": False,
+            })
+        detector.assert_called_once()
+        detected_segments = detector.call_args.args[3]
+        self.assertEqual([segment.text for segment in detected_segments], ["aligned words"])
         self.assertFalse(result["audioChanged"])
-        self.assertEqual(result["timing"], "none")
+        self.assertEqual(result["timing"], "aligned")
+        self.assertEqual(result["report"]["outcome"], "noAds")
 
     def test_show_notes_correct_the_transcript_before_it_is_returned(self):
         install_fake_wilted({"vtt": [FakeSegment(0, 2, "leo laporte"), FakeSegment(2, 4, "on twit dot t v")]})
@@ -668,7 +686,7 @@ class ActualParserUncertaintyTests(unittest.TestCase):
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=500.0), \
                 self.assertRaisesRegex(TypeError, "intentional parser implementation defect"):
             wp.detect_and_cut({"outputPath": "/tmp/not-rendered-defect.mp3"}, audio, [],
-                              [FakeSegment(0, 2, "programme")], with_report=True)
+                              [FakeSegment(0, 2, "programme")])
         self.assertTrue(llm.closed)
 
     def test_unresolved_seed_or_share_refusal_keeps_whole_original_despite_independent_confirmed_ad(self):
