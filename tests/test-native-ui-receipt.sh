@@ -114,6 +114,24 @@ assert_passes 'reason=surface-unchanged'
 commit_change docs/note.txt 'docs only' 'change docs only'
 assert_passes "receipt=$head_commit"
 
+# Producer paths outside the Swift package surface still install.
+for path in Producer/Workers/worker.py Producer/Runtime/src/module.py Producer/Tests/SomeTests.swift; do
+  mkdir -p "$fixture/$(dirname "$path")"
+  commit_change "$path" changed 'change Producer path outside the Mac UI surface'
+  assert_passes "receipt=$head_commit"
+done
+
+# The Swift package sources and manifest remain on the Mac UI surface.
+mkdir -p "$fixture/Producer/Sources"
+commit_change Producer/Sources/Feature.swift changed 'change Producer sources'
+assert_blocked 'changed=Producer/Sources/Feature.swift'
+git -C "$fixture" reset -q --hard "$head_commit"
+assert_passes 'reason=surface-unchanged'
+mkdir -p "$fixture/Producer"
+commit_change Producer/Package.swift changed 'change Producer manifest'
+assert_blocked 'changed=Producer/Package.swift'
+git -C "$fixture" reset -q --hard "$head_commit"
+
 # New surface commits, staged edits, unstaged edits and untracked files all block.
 commit_change WiltedMac/surface.txt again 'change Mac UI after receipt'
 assert_blocked 'stale-receipt'

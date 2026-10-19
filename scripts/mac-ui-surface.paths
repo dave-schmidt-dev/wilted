@@ -6,8 +6,10 @@ WiltedMacTests/
 WiltedMac/
 # Shared views and resources compiled into the Mac application.
 Shared/
-# Podcast storage, preparation, and playback loaded by Mac journeys.
-Producer/
+# Podcast storage, preparation, and playback loaded by Mac journeys: the Swift
+# package the app links. Workers, Runtime and package tests are not loaded by any journey.
+Producer/Sources/
+Producer/Package.swift
 # Domain and sync packages linked into the Mac application.
 WiltedKit/
 # CloudKit package linked into Mac startup and sync journeys.
