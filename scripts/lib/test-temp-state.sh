@@ -107,6 +107,78 @@ _wilted_full_run_owned_audit() {
   [[ "$canonical" == "$expected_parent" ]]
 }
 
+_wilted_full_run_trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+# Read a lock's owner record into wilted_full_run_lock_pid and
+# wilted_full_run_lock_started. Legacy locks carry only a bare first-line pid
+# and therefore have no start time; malformed or vanished records fail.
+_wilted_full_run_read_owner() {
+  local file="$1" content="" first="" line="" pid="" started=""
+  wilted_full_run_lock_pid=""
+  wilted_full_run_lock_started=""
+  [[ -f "$file" ]] || return 1
+  content="$(cat "$file" 2>/dev/null)" || return 1
+  first="${content%%$'\n'*}"
+  if [[ "$first" =~ ^[1-9][0-9]*$ ]]; then
+    wilted_full_run_lock_pid="$first"
+    wilted_full_run_lock_started=""
+    return 0
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      pid=*) pid="${line#pid=}" ;;
+      started=*) started="${line#started=}" ;;
+    esac
+  done <<<"$content"
+  pid="$(_wilted_full_run_trim "$pid")"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  wilted_full_run_lock_pid="$pid"
+  wilted_full_run_lock_started="$(_wilted_full_run_trim "$started")"
+  return 0
+}
+
+# Print a lock directory's age in seconds; fail when stat cannot report it.
+_wilted_full_run_lock_age() {
+  local lock="$1" mtime="" now=""
+  if mtime="$(stat -f %m "$lock" 2>/dev/null)" && [[ "$mtime" =~ ^[0-9]+$ ]]; then
+    :
+  elif mtime="$(stat -c %Y "$lock" 2>/dev/null)" && [[ "$mtime" =~ ^[0-9]+$ ]]; then
+    :
+  else
+    return 1
+  fi
+  now="$(date +%s)" || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$(( now - mtime ))"
+}
+
+# Best-effort owner and lock age for wait/timeout lines: never fatal.
+_wilted_full_run_lock_snapshot() {
+  local lock="$1" age=""
+  wilted_full_run_wait_owner="unknown"
+  wilted_full_run_wait_age="unknown"
+  if [[ ! -e "$lock/pid" ]]; then
+    wilted_full_run_wait_owner="none"
+  elif _wilted_full_run_read_owner "$lock/pid"; then
+    wilted_full_run_wait_owner="$wilted_full_run_lock_pid"
+  fi
+  if age="$(_wilted_full_run_lock_age "$lock" 2>/dev/null)"; then
+    wilted_full_run_wait_age="${age}s"
+  fi
+}
+
+_wilted_full_run_abandon_lock() {
+  local lock="$1" recovery="$2"
+  mv "$lock" "$recovery/abandoned" 2>/dev/null || [[ ! -e "$lock" ]] || return 1
+  rm -rf -- "$recovery/abandoned" || return 1
+  rmdir "$recovery"
+}
+
 _wilted_full_run_worker() {
   # This body is launched asynchronously below, which provides its subshell.
   # An additional function subshell would hide its trapped PID from the caller.
@@ -122,10 +194,23 @@ _wilted_full_run_worker() {
   wilted_full_run_build=""
   wilted_full_run_lock=""
   wilted_full_run_runner=""
-  wilted_full_run_attempt=0
   wilted_full_run_lock_pid=""
+  wilted_full_run_lock_started=""
   wilted_full_run_lock_probe=""
   wilted_full_run_lock_status=0
+  wilted_full_run_lock_age=""
+  wilted_full_run_lock_stale_reason=""
+  # The owner writes its record immediately after mkdir, so a record-less lock
+  # older than this belongs to a killed owner rather than a live one.
+  wilted_full_run_lock_grace=10
+  wilted_full_run_lock_timeout=5400
+  wilted_full_run_owner_pid=""
+  wilted_full_run_owner_started=""
+  wilted_full_run_wait_started=0
+  wilted_full_run_wait_elapsed=0
+  wilted_full_run_wait_next=0
+  wilted_full_run_wait_owner=""
+  wilted_full_run_wait_age=""
   wilted_full_run_supervisor=""
   wilted_full_run_lock_owned=0
   wilted_full_run_recovery_owned=0
@@ -184,7 +269,23 @@ _wilted_full_run_worker() {
   [[ "$wilted_full_run_build" == "$wilted_full_run_repo/.build" ]] || exit 1
   wilted_full_run_lock="$wilted_full_run_build/full-run.lock"
   wilted_full_run_recovery="$wilted_full_run_lock.recovery"
+  # Bash 3.2 has no BASHPID; this reports this worker, even for a background call.
+  wilted_full_run_owner_pid="$(exec sh -c 'echo "$PPID"')"
+  wilted_full_run_owner_started="$(LC_ALL=C TZ=UTC0 /bin/ps -o lstart= -p "$wilted_full_run_owner_pid" 2>/dev/null)" || wilted_full_run_owner_started=""
+  wilted_full_run_owner_started="$(_wilted_full_run_trim "$wilted_full_run_owner_started")"
+  if [[ -z "$wilted_full_run_owner_started" ]]; then
+    printf 'temp.full-run.error reason=owner-identity-unavailable\n' >&2
+    exit 1
+  fi
   until mkdir "$wilted_full_run_lock" 2>/dev/null; do
+    if [[ -n "${WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS:-}" ]]; then
+      [[ "$WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || exit 2
+      wilted_full_run_lock_timeout="$WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS"
+    fi
+    if [[ "$wilted_full_run_wait_started" == 0 ]]; then
+      wilted_full_run_wait_started="$(date +%s)"
+      wilted_full_run_wait_next=0
+    fi
     # Serialize stale recovery and re-read the owner under that guard. Two
     # observers of a dead PID must not delete a newly acquired live lock.
     if mkdir "$wilted_full_run_recovery" 2>/dev/null; then
@@ -196,34 +297,59 @@ _wilted_full_run_worker() {
         wilted_full_run_recovery_owned=0
         continue
       fi
+      wilted_full_run_lock_stale_reason=""
       if [[ -f "$wilted_full_run_lock/pid" ]]; then
-        wilted_full_run_lock_pid="$(cat "$wilted_full_run_lock/pid" 2>/dev/null)" || [[ ! -e "$wilted_full_run_lock/pid" ]] || exit 1
-        [[ "$wilted_full_run_lock_pid" =~ ^[1-9][0-9]*$ ]] || exit 1
-        if wilted_full_run_lock_probe="$(ps -o pid= -p "$wilted_full_run_lock_pid" 2>&1)"; then wilted_full_run_lock_status=0; else wilted_full_run_lock_status=$?; fi
+        _wilted_full_run_read_owner "$wilted_full_run_lock/pid" || exit 1
+        if wilted_full_run_lock_probe="$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$wilted_full_run_lock_pid" 2>&1)"; then wilted_full_run_lock_status=0; else wilted_full_run_lock_status=$?; fi
         if (( wilted_full_run_lock_status == 1 )); then
           # Gone already means an unguarded release (guard stuck past its 5 s bound) beat us to it.
-          mv "$wilted_full_run_lock" "$wilted_full_run_recovery/abandoned" 2>/dev/null || [[ ! -e "$wilted_full_run_lock" ]] || exit 1
-          rm -rf -- "$wilted_full_run_recovery/abandoned" || exit 1
-          rmdir "$wilted_full_run_recovery" || exit 1
-          wilted_full_run_recovery_owned=0
-          continue
+          wilted_full_run_lock_stale_reason="owner-exited"
+        elif (( wilted_full_run_lock_status != 0 )); then
+          exit 1
+        elif [[ -z "$wilted_full_run_lock_probe" ]]; then
+          exit 1
+        elif [[ -n "$wilted_full_run_lock_started" ]]; then
+          wilted_full_run_lock_probe="$(_wilted_full_run_trim "$wilted_full_run_lock_probe")"
+          if [[ "$wilted_full_run_lock_probe" != "$wilted_full_run_lock_started" ]]; then
+            wilted_full_run_lock_stale_reason="recycled-pid"
+          fi
         fi
-        [[ "$wilted_full_run_lock_status" -eq 0 && -n "$wilted_full_run_lock_probe" ]] || exit 1
+      elif wilted_full_run_lock_age="$(_wilted_full_run_lock_age "$wilted_full_run_lock" 2>/dev/null)"; then
+        if (( wilted_full_run_lock_age >= wilted_full_run_lock_grace )); then
+          wilted_full_run_lock_stale_reason="no-owner-record"
+        fi
+      fi
+      if [[ -n "$wilted_full_run_lock_stale_reason" ]]; then
+        if [[ "$wilted_full_run_lock_stale_reason" == "no-owner-record" ]]; then
+          printf 'temp.full-run.stale reason=no-owner-record lock_age=%ss\n' "$wilted_full_run_lock_age" >&2
+        else
+          printf 'temp.full-run.stale reason=%s owner_pid=%s\n' "$wilted_full_run_lock_stale_reason" "$wilted_full_run_lock_pid" >&2
+        fi
+        _wilted_full_run_abandon_lock "$wilted_full_run_lock" "$wilted_full_run_recovery" || exit 1
+        wilted_full_run_recovery_owned=0
+        continue
       fi
       rmdir "$wilted_full_run_recovery"
       wilted_full_run_recovery_owned=0
     fi
-    (( wilted_full_run_attempt += 1 ))
-    if [[ -n "${WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS:-}" ]]; then
-      [[ "$WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || exit 2
-      (( wilted_full_run_attempt <= WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS )) || exit 1
+    wilted_full_run_wait_elapsed=$(( $(date +%s) - wilted_full_run_wait_started ))
+    _wilted_full_run_lock_snapshot "$wilted_full_run_lock"
+    if (( wilted_full_run_wait_elapsed >= wilted_full_run_lock_timeout )); then
+      printf 'temp.full-run.timeout waited=%ss owner_pid=%s lock_age=%s limit=%ss remedy="wait for the run holding .build/full-run.lock or raise WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS"\n' \
+        "$wilted_full_run_wait_elapsed" "$wilted_full_run_wait_owner" "$wilted_full_run_wait_age" "$wilted_full_run_lock_timeout" >&2
+      exit 1
     fi
-    (( wilted_full_run_attempt % 10 == 0 )) && printf 'temp.full-run.wait seconds=%s\n' "$wilted_full_run_attempt" >&2
+    if (( wilted_full_run_wait_elapsed == 0 || wilted_full_run_wait_elapsed >= wilted_full_run_wait_next )); then
+      printf 'temp.full-run.wait seconds=%s owner_pid=%s lock_age=%s limit=%ss raise=WILTED_FULL_RUN_LOCK_TIMEOUT_SECONDS\n' \
+        "$wilted_full_run_wait_elapsed" "$wilted_full_run_wait_owner" "$wilted_full_run_wait_age" "$wilted_full_run_lock_timeout" >&2
+      wilted_full_run_wait_next=$(( wilted_full_run_wait_elapsed + 10 ))
+    fi
     sleep 1
   done
   wilted_full_run_lock_owned=1
-  # Bash 3.2 has no BASHPID; this reports this worker, even for a background call.
-  (exec sh -c 'echo "$PPID"') >"$wilted_full_run_lock/pid"
+  # Write the record atomically so an observer never reads an empty pid file.
+  printf 'pid=%s\nstarted=%s\n' "$wilted_full_run_owner_pid" "$wilted_full_run_owner_started" >"$wilted_full_run_lock/pid.tmp" || exit 1
+  mv -f "$wilted_full_run_lock/pid.tmp" "$wilted_full_run_lock/pid" || exit 1
   wilted_full_run_audit_parent="$(cd -P "$wilted_full_run_repo/.logs" 2>/dev/null && pwd)" || exit 1
   wilted_full_run_audit="$(mktemp -d "$wilted_full_run_audit_parent/full-run-temp-audit.XXXXXX")" || exit 1
   wilted_full_run_audit="$(cd -P "$wilted_full_run_audit" 2>/dev/null && pwd)" || exit 1

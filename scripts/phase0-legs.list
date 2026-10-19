@@ -19,6 +19,7 @@ test-source-stamp test-source-stamp.sh
 test-temp-sweep test-temp-sweep.sh
 test-storage-retention test-storage-retention.sh
 test-temp-leaks test-temp-leaks.sh
+test-full-run-lock test-full-run-lock.sh
 test-git-hooks test-git-hooks.sh
 test-simulator-cleanup test-simulator-cleanup.sh
 test-native-ui-receipt test-native-ui-receipt.sh
