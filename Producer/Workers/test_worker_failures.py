@@ -1,6 +1,7 @@
 """Tests for worker failure modes and termination handling."""
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,9 @@ finally:
         self.assertFalse(temp_path.exists())
 
     def test_main_installs_sigterm_handler(self):
+        work = tempfile.TemporaryDirectory(prefix="wilted-sigterm-handler-")
+        self.addCleanup(work.cleanup)
+        request = json.dumps({"workDir": work.name})
         worker_dir = WORKER_PATH.parent
         child_code = f"""
 import io
@@ -70,7 +74,7 @@ from unittest.mock import patch
 sys.path.insert(0, {str(worker_dir)!r})
 import wilted_pipeline
 
-with patch("sys.stdin", io.StringIO("{{}}")), patch("sys.stdout", io.StringIO()):
+with patch("sys.stdin", io.StringIO({request!r})), patch("sys.stdout", io.StringIO()):
     wilted_pipeline.main()
 
 handler = signal.getsignal(signal.SIGTERM)

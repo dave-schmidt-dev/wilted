@@ -413,6 +413,7 @@ class TranscriptSummaryTests(unittest.TestCase):
         capability = types.ModuleType("wilted.execution_capability")
         capability.execution_capability_scope = lambda **_kwargs: contextlib.nullcontext()
         request = self.request("PRIVATE TRANSCRIPT")
+        request["workDir"] = self.directory.name
         with mock.patch.dict(sys.modules, {"wilted.execution_capability": capability}), \
                 mock.patch.object(wp, "run", side_effect=RuntimeError("secret-diagnostic-details")), \
                 mock.patch.object(sys, "stdin", io.StringIO(json.dumps(request))), \
@@ -429,7 +430,8 @@ class TranscriptSummaryTests(unittest.TestCase):
     def test_main_worker_failed_names_traceback_frame_and_keeps_prefix(self):
         capability = types.ModuleType("wilted.execution_capability")
         capability.execution_capability_scope = lambda **_kwargs: contextlib.nullcontext()
-        request = {"operation": "prepare", "audioPath": "/nonexistent/test/audio.mp3"}
+        request = {"operation": "prepare", "audioPath": "/nonexistent/test/audio.mp3",
+                   "workDir": self.directory.name}
 
         def innermost_failing_frame(_request):
             raise ValueError("invalid parameter value")
