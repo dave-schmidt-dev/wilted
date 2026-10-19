@@ -87,7 +87,10 @@ generation-exact slices.
 **Bound**: per item, rows read are at most window (64) + newest generation + anchored
 batch (32) + Ready-proving generation + markers. A generation's size is set by one
 pipeline run's events, so the bound does not grow with the number of retained
-generations. `preparationMaintenanceRowsRead` counts every row the pass reads; tests
+generations. Each complete-generation read is capped at 4,096 rows so a corrupt or
+externally written prefix cannot materialise without bound; the newest-generation search
+reads at most two generations (the ticket's and the highest window key) before it stops.
+`preparationMaintenanceRowsRead` counts every row the pass reads; tests
 assert it is identical at history depth D and 2D.
 
 **Storage caveat (decision for David, no change made)**: these are bounded in rows

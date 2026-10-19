@@ -34,6 +34,10 @@ public actor LocalLibraryStore {
     /// unrelated journal history.
     var preparationJournalLookupRowsRead = 0
 
+    /// Number of journal rows materialized by preparation history maintenance.
+    /// Test-only: proves invalidation reads do not grow with retained depth.
+    var preparationMaintenanceRowsRead = 0
+
     /// Whether a summary rebuild is running; only one may run at a time.
     var lifetimeStatisticsRebuildRunning = false
 
