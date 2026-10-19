@@ -8,7 +8,8 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 root=''
 trap 'if [[ -n "$root" ]]; then rm -rf "$root"; fi' EXIT
-root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-ios-meta.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-ios-meta.XXXXXX")"; wilted_temp_mark_owned "$root"
 trap 'exit 130' INT
 trap 'exit 143' TERM
 fail() { printf 'record-meta.fail %s\n' "$*" >&2; exit 1; }
@@ -16,6 +17,7 @@ fixture="$root/repo"
 snapshots=WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests
 mkdir -p "$fixture/scripts/lib" "$fixture/$snapshots" "$root/bin" "$root/scratch"
 cp "$repo_root/scripts/record-ios-snapshots.sh" "$fixture/scripts/"
+cp "$repo_root/scripts/lib/test-temp-state.sh" "$fixture/scripts/lib/"
 cp "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift" "$fixture/WiltediOSUITests/"
 printf '%s\n' fixture >"$fixture/project.yml"
 for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltedWatch WiltedWatchTests; do mkdir -p "$fixture/$directory"; done

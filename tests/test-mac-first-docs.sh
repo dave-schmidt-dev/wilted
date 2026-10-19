@@ -10,7 +10,8 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 checker="$repo_root/scripts/assert-mac-first-docs.sh"
-scratch="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-mac-first-docs.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+scratch="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-mac-first-docs.XXXXXX")"; wilted_temp_mark_owned "$scratch"
 cleanup() { rm -rf "$scratch"; }
 trap cleanup EXIT
 trap 'exit 130' INT

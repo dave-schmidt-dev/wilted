@@ -17,7 +17,8 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 audit="$root/scripts/audit-walkthrough.sh"
 report="$root/docs/2026-09-22-mac-daily-driver-walkthrough.html"
-tmp="$(mktemp -d -t wilted-walkthrough-tests.XXXXXX)"
+source "$root/scripts/lib/test-temp-state.sh"
+tmp="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-walkthrough-tests.XXXXXX")"; wilted_temp_mark_owned "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 
 [[ -f "$report" ]] || { printf 'missing walkthrough: %s\n' "$report" >&2; exit 1; }

@@ -22,5 +22,33 @@ assert not module.violations(Path("sample.sh"), "echo $TMPDIR/new")
 assert module.selected(Path("scripts/build.sh"))
 assert module.selected(Path("docs/README.md"))
 assert not module.selected(Path("tests/test_fixture.py"))
+# Built in pieces so this file never trips the rule it tests.
+MK = "mk" + "temp"
+OWNED = '"${TMPDIR:?TMPDIR must be set}/wilted-a.XXXXXX"'
+escapes = [
+    f'x="$({MK} -t wilted-a.XXXXXX)"',
+    f'x="$({MK} -d -t a.XXXXXX)"',
+    f'x="$({MK} -dt a.XXXXXX)"',
+    f'x="$({MK} -q -t a)"',
+    f'x="$({MK})"',
+    f'x="$({MK} -d)"',
+    f'{MK} -d {OWNED}',
+    f'x="$({MK} {OWNED})"; wilted_temp_mark_owned "$x"',
+]
+for line in escapes:
+    assert module.violations(Path("tests/test-x.sh"), line), line
+assert module.violations(Path("Makefile"), f"\t@d=$$({MK} -t a)")
+anchored = [
+    f'x="$({MK} -d {OWNED})"; wilted_temp_mark_owned "$x"',
+    f'x="$({MK} "$work_dir/output.XXXXXX")"',
+    f'x="$({MK} -d "${{root%/}}/sizing.XXXXXX")" || fail',
+    f'# {MK} -t is the escape this rule rejects',
+    f'{MK}_tail=1',
+    f'echo "{MK}-only"',
+]
+for line in anchored:
+    assert not module.violations(Path("tests/test-x.sh"), line), line
+assert not module.violations(Path("CHANGELOG.md"), f"replaced {MK} -t with anchored templates")
+assert not module.violations(Path("scripts/x.py"), f"{MK} -t a")
 print("no-global-tmp tests: OK")
 PY

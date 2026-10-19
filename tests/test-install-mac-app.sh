@@ -32,7 +32,8 @@ pass() { printf 'install-identity.ok %s\n' "$*" >&2; }
 # shellcheck source=../scripts/lib/app-identity.sh
 source "$library"
 
-tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-install-identity.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-install-identity.XXXXXX")"; wilted_temp_mark_owned "$tmp_root"
 owner_pid=''
 cleanup() {
     if [[ -n "$owner_pid" ]]; then

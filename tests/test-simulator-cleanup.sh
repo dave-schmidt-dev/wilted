@@ -6,7 +6,8 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
   wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
 fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tmp="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-sim-test.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-sim-test.XXXXXX")"; wilted_temp_mark_owned "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 bin="$tmp/bin"
 mkdir -p "$bin"
@@ -163,6 +164,7 @@ cp "$repo_root/scripts/build-with-cache.py" "$recorder_repo/scripts/build-with-c
 cp "$repo_root/scripts/run-bounded.py" "$recorder_repo/scripts/run-bounded.py"
 cp "$repo_root/scripts/select-ios-simulator.py" "$recorder_repo/scripts/select-ios-simulator.py"
 cp "$repo_root/scripts/lib/simctl_gate_lib.sh" "$recorder_repo/scripts/lib/simctl_gate_lib.sh"
+cp "$repo_root/scripts/lib/test-temp-state.sh" "$recorder_repo/scripts/lib/test-temp-state.sh"
 recorder_state="$tmp/recorder.json"
 recorder_events="$tmp/recorder.events"
 cp "$tmp/selector.json" "$recorder_state"

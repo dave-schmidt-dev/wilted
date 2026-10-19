@@ -26,7 +26,8 @@ for wrapper in "$root/app/release-status" "$root/app/release-testflight"; do
   }
 done
 
-temporary_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-release-bridge.XXXXXX")"
+source "$root/scripts/lib/test-temp-state.sh"
+temporary_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-release-bridge.XXXXXX")"; wilted_temp_mark_owned "$temporary_root"
 trap 'rm -rf "$temporary_root"' EXIT
 cp "$bridge" "$temporary_root/bridge.py"
 chmod 700 "$temporary_root/bridge.py"

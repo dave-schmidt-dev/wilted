@@ -33,3 +33,5 @@ test-attended-nested-signature test-attended-nested-signature.sh
 test-test-product-metadata test-test-product-metadata.sh
 test-record-ios-snapshots test-record-ios-snapshots.sh
 test-audio-budget-evidence test-audio-budget-evidence.sh
+test-temp-attribution test-temp-attribution.sh
+test-worktree-setup test-worktree-setup.sh

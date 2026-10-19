@@ -34,7 +34,8 @@ fail() {
 
 pass() { printf 'install-contract.ok %s\n' "$*" >&2; }
 
-tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-install-contract.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-install-contract.XXXXXX")"; wilted_temp_mark_owned "$tmp_root"
 cleanup() { [[ -d "$tmp_root" ]] && rm -rf "$tmp_root"; }
 trap cleanup EXIT
 

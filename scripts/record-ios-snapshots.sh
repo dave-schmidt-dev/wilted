@@ -19,7 +19,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_cache="$repo_root/scripts/build-with-cache.py"
 tmp_root=''
 trap 'if [[ -n "$tmp_root" ]]; then rm -rf "$tmp_root"; fi' EXIT
-tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-ios-snapshots.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-record-ios-snapshots.XXXXXX")"; wilted_temp_mark_owned "$tmp_root"
 # shellcheck source=lib/simctl_gate_lib.sh
 source "$repo_root/scripts/lib/simctl_gate_lib.sh"
 

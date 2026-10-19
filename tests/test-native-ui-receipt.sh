@@ -8,7 +8,8 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-temp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-ui-receipt.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+temp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-ui-receipt.XXXXXX")"; wilted_temp_mark_owned "$temp_root"
 trap 'rm -rf "$temp_root"' EXIT
 fixture="$temp_root/repo"
 mkdir -p "$fixture/scripts/lib" "$fixture/WiltedMac" "$fixture/docs" "$temp_root/bin"

@@ -16,7 +16,8 @@ gate="$repo_root/scripts/test-gate.sh"
 # shellcheck source=../scripts/lib/temp-sweep.sh
 source "$repo_root/scripts/lib/temp-sweep.sh"
 wilted_sweep_stale_temp_dirs
-tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate-legs.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-native-gate-legs.XXXXXX")"; wilted_temp_mark_owned "$tmp_dir"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 # Usage: run_case <label> <output file> [env assignments...]; echoes the exit status.

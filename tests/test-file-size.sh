@@ -8,7 +8,8 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-file-size.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-file-size.XXXXXX")"; wilted_temp_mark_owned "$tmp_dir"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 checker_output=""

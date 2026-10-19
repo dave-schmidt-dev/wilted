@@ -119,7 +119,8 @@ for script in "$repo_root"/tests/test-*.sh; do
   fi
 done
 
-tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0-agg.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-phase0-agg.XXXXXX")"; wilted_temp_mark_owned "$tmp_dir"
 phase_owned_pids=""
 cleanup_phase0_fixture() {
   local pid

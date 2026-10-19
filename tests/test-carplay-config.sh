@@ -50,7 +50,12 @@ if plutil -p WiltediOSIntents/WiltediOSIntentsProduction.entitlements | grep -Fq
 fi
 grep -Fq 'WiltediOSIntents.appex' <<<"$ios_block" && grep -Fq '!= "Release"' <<<"$ios_block" \
   || fail 'Release must drop the Intents extension (Production has no Siri entitlement)'
-python3 - "$repo_root" <<'PY_EMBED'
+# make validate runs this outside any gate root, so nest the fixtures' temp dirs in a
+# marked root: a sibling gate's audit then attributes them to this live run.
+source "$repo_root/scripts/lib/test-temp-state.sh"
+embed_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-carplay-config.XXXXXX")"; wilted_temp_mark_owned "$embed_root"
+trap 'rm -rf "$embed_root"' EXIT
+TMPDIR="$embed_root" python3 - "$repo_root" <<'PY_EMBED'
 import os
 from pathlib import Path
 import subprocess

@@ -21,7 +21,8 @@ failures=0
 fail() { printf 'attended-library-sync.fail %s\n' "$*" >&2; failures=$((failures + 1)); }
 pass() { printf 'attended-library-sync.ok %s\n' "$*" >&2; }
 
-tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-attended-sync.XXXXXX")"
+source "$repo_root/scripts/lib/test-temp-state.sh"
+tmp_root="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-attended-sync.XXXXXX")"; wilted_temp_mark_owned "$tmp_root"
 cleanup() { [[ -d "$tmp_root" ]] && rm -rf "$tmp_root"; }
 trap cleanup EXIT
 
