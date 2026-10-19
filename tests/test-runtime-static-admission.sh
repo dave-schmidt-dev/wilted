@@ -102,6 +102,38 @@ class StaticAdmissionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('All checks passed', result.stdout)
 
+    def test_root_lint_covers_workers_scripts_app_and_tests(self):
+        project = self.root / 'root-project'
+        runtime = project / 'Producer/Runtime'
+        runtime.mkdir(parents=True)
+        shutil.copyfile(ROOT / 'Makefile', project / 'Makefile')
+        shutil.copyfile(ROOT / 'ruff.toml', project / 'ruff.toml')
+        shutil.copyfile(ROOT / 'Producer/Runtime/Makefile', runtime / 'Makefile')
+        (runtime / 'pyproject.toml').write_text('[tool.ruff]\n')
+        (runtime / 'vulture_allowlist.py').write_text('')
+        paths = ('Producer/Workers/wilted_worker', 'scripts', 'app', 'tests')
+        for name in paths:
+            (project / name).mkdir(parents=True)
+            (project / name / 'clean_module.py').write_text('value = 1\n')
+        def lint():
+            return subprocess.run(['make', 'lint', 'UV_PROJECT_ENVIRONMENT=' + str(self.venv)],
+                                  cwd=project, env=self.env, text=True, capture_output=True, timeout=30)
+        result = lint()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.hook.exists())
+        for name in paths:
+            probe = project / name / 'undefined_probe.py'
+            probe.write_text('print(undefined_probe_name)\n')
+            result = lint()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('F821', result.stdout)
+            self.assertIn(f'{name}/undefined_probe.py', result.stdout)
+            probe.unlink()
+        (project / 'Producer/Workers/wilted_worker/clean_module.py').write_text('import os\n')
+        result = lint()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.hook.exists())
+
     def test_makefile_pin_overrides_exported_environment(self):
         env = dict(self.env, UV_PROJECT_ENVIRONMENT='/nonexistent/elsewhere')
         for target in ('lint', 'deadcode'):

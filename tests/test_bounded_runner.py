@@ -123,7 +123,7 @@ class BoundedRunnerTests(unittest.TestCase):
         def live_groups() -> set[int]:
             return {
                 group for pid, identity in self.fixture_identities.items()
-                if (current := self._process_identity(pid)) == identity
+                if self._process_identity(pid) == identity
                 for group in (identity[1],)
             }
 

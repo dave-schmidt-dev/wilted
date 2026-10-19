@@ -3,8 +3,10 @@
 # The runtime venv every target shares (Producer/Runtime/Makefile pins the same path).
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/Producer/Runtime/.venv
 
+# Python outside Producer/Runtime is linted by the root ruff.toml.
 lint:
 	@$(MAKE) -C Producer/Runtime lint
+	"$(UV_PROJECT_ENVIRONMENT)/bin/ruff" check Producer/Workers/wilted_worker scripts app tests
 
 deadcode:
 	@$(MAKE) -C Producer/Runtime deadcode
