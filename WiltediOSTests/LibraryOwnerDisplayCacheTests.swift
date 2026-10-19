@@ -251,16 +251,13 @@ final class LibraryOwnerDisplayCacheTests: XCTestCase {
         await transport.replaceOffers(negatives)
         online.startMediaRequest(entryID: id("old"))
         online.startMediaRequest(entryID: id("new"))
-        for _ in 0..<400 {
-            if online.mediaState(for: id("old")) == .notPrepared && online.mediaState(for: id("new")) == .notPrepared { break }
-            await Task.yield()
+        // A fixed yield count ran out under a loaded gate; wait on the clock like the sibling tests.
+        try await eventually("both negative offers") {
+            online.mediaState(for: self.id("old")) == .notPrepared && online.mediaState(for: self.id("new")) == .notPrepared
         }
         XCTAssertEqual(online.mediaState(for: id("old")), .notPrepared)
         XCTAssertEqual(online.mediaState(for: id("new")), .notPrepared)
-        for _ in 0..<400 {
-            if await store.state().displayPreparedIDs?.isEmpty == true { break }
-            await Task.yield()
-        }
+        try await eventually("both durable display removals") { await store.state().displayPreparedIDs?.isEmpty == true }
         let saved = await store.state()
         XCTAssertEqual(saved.displayPreparedIDs, [])
         let cold = model(OwnerCacheTransport(batch: try batch(), failFetch: true))
