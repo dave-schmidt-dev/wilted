@@ -10,7 +10,7 @@ fi
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 validator="$root_dir/scripts/validate-audio-budget-evidence.swift"
 evidence="$root_dir/contracts/audio/evidence/2026-08-17-audio-budget-sizing.json"
-schema="$root_dir/contracts/cloudkit/schema.json"
+schema="$root_dir/contracts/audio/publication-budget.json"
 tmp_dir="$(mktemp -d -t wilted-audio-budget-evidence.XXXXXX)"
 trap 'rm -rf "$tmp_dir"' EXIT
 

@@ -6,7 +6,10 @@ the measured hashes, durations, encoded bytes, 90-minute measurement, and the
 configured 96 kbps reference used to derive the app-owned 80,000,000-byte
 per-revision policy.
 
-Validate the evidence against the CloudKit policy with:
+`publication-budget.json` records the app-owned audio publication budget policy
+(`maxRevisionAssetBytes` and `maxOwnedAssetBytes`).
+
+Validate the evidence against the publication budget policy with:
 
 ```sh
 bash tests/test-audio-budget-evidence.sh

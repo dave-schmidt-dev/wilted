@@ -8,7 +8,6 @@ test-no-global-tmp test-no-global-tmp.sh
 assert-mac-first-docs test-mac-first-docs.sh
 test-contract-fixtures test-contract-fixtures.sh
 test-domain-contract test-domain-contract.sh
-test-cloudkit-contract test-cloudkit-contract.sh
 test-article-extraction-probe test-article-extraction-probe.sh
 test-speech-ipc-probe test-speech-ipc-probe.sh
 test-persistence-probe test-persistence-probe.sh

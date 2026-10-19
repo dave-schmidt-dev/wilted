@@ -1,0 +1,5 @@
+{
+  "maxRevisionAssetBytes": 80000000,
+  "maxOwnedAssetBytes": 800000000,
+  "note": "App-owned audio publication policy, not a CloudKit service limit."
+}

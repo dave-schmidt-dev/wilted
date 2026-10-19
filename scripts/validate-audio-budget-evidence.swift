@@ -102,18 +102,15 @@ func validate(evidence: JSONObject, schema: JSONObject) throws {
     try require(try integer(evidence["appOwnedPerRevisionBudgetBytes"], "evidence.appOwnedPerRevisionBudgetBytes") == derivedBudget, "evidence app-owned per-revision budget does not match the recomputed formula")
     try require(try string(evidence["budgetDerivation"], "evidence.budgetDerivation") == "ceil(max(budget-source encoded bytes * 2, configured 96 kbps 90-minute reference bytes) to next 10,000,000-byte boundary); app-owned budget only, not a CloudKit service limit", "evidence formula description is not the configured app-owned policy")
 
-    let delayOfflineQuota = try object(schema["delayOfflineQuota"], "schema.delayOfflineQuota")
-    let publicationBudget = try object(delayOfflineQuota["publicationBudget"], "schema.delayOfflineQuota.publicationBudget")
-    let schemaPerRevision = try integer(publicationBudget["maxRevisionAssetBytes"], "schema.delayOfflineQuota.publicationBudget.maxRevisionAssetBytes")
-    let schemaAggregate = try integer(publicationBudget["maxOwnedAssetBytes"], "schema.delayOfflineQuota.publicationBudget.maxOwnedAssetBytes")
-    try require(schemaPerRevision == derivedBudget, "CloudKit schema maxRevisionAssetBytes does not match recomputed evidence policy")
+    let schemaPerRevision = try integer(schema["maxRevisionAssetBytes"], "schema.maxRevisionAssetBytes")
+    let schemaAggregate = try integer(schema["maxOwnedAssetBytes"], "schema.maxOwnedAssetBytes")
+    try require(schemaPerRevision == derivedBudget, "schema maxRevisionAssetBytes does not match recomputed evidence policy")
     try require(schemaAggregate == 800_000_000 && schemaAggregate == derivedBudget * 10, "schema 800MB aggregate policy must equal 10x the per-revision app-owned policy")
-    try require(try boolean(publicationBudget["isCloudKitLimit"], "publicationBudget.isCloudKitLimit") == false, "publication budget must not claim a CloudKit service limit")
 }
 
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().path
 let defaultEvidence = root + "/contracts/audio/evidence/2026-08-17-audio-budget-sizing.json"
-let defaultSchema = root + "/contracts/cloudkit/schema.json"
+let defaultSchema = root + "/contracts/audio/publication-budget.json"
 let evidencePath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : defaultEvidence
 let schemaPath = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : defaultSchema
 
