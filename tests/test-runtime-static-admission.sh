@@ -16,7 +16,7 @@ import tempfile
 import unittest
 
 ROOT = Path(sys.argv[1])
-ENVIRONMENT = Path.home() / '.venvs/wilted'
+ENVIRONMENT = ROOT / 'Producer/Runtime/.venv'
 
 class StaticAdmissionTests(unittest.TestCase):
     def setUp(self):
@@ -101,6 +101,20 @@ class StaticAdmissionTests(unittest.TestCase):
         result = self.make('lint')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('All checks passed', result.stdout)
+
+    def test_makefile_pin_overrides_exported_environment(self):
+        env = dict(self.env, UV_PROJECT_ENVIRONMENT='/nonexistent/elsewhere')
+        for target in ('lint', 'deadcode'):
+            result = subprocess.run(['make', '-n', target], cwd=ROOT / 'Producer/Runtime',
+                                    env=env, text=True, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(str(ROOT / 'Producer/Runtime/.venv'), result.stdout)
+            self.assertNotIn('/nonexistent/elsewhere', result.stdout)
+        env.pop('WILTED_PIPELINE_PYTHON', None)
+        result = subprocess.run(['make', '-n', 'ad-corpus-replay'], cwd=ROOT,
+                                env=env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(str(ROOT / 'Producer/Runtime/.venv') + '/bin/python', result.stdout)
 
 unittest.main(argv=['runtime-static-admission'], verbosity=2)
 PY

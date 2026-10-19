@@ -34,7 +34,7 @@ readonly MINIMUM_TESTS=190
 
 [[ -d "$runtime_root" ]] || { printf 'missing runtime: %s\n' "$runtime_root" >&2; exit 1; }
 [[ -x "$python_bin" ]] || {
-  printf 'missing runtime virtualenv: %s\nCreate it with: cd Producer/Runtime && uv sync --group dev\n' \
+  printf 'missing runtime virtualenv: %s\nCreate it with: make worktree-setup\n' \
     "$python_bin" >&2
   exit 1
 }
@@ -51,7 +51,7 @@ printf '%s\n' 'stage=preparation-runtime-lint.start' >&2
 # what `make deadcode` and the pre-commit hook check.
 for tool_path in "$ruff_bin" "$vulture_bin"; do
   [[ -x "$tool_path" ]] || {
-    printf 'missing dev tool: %s\nCreate it with: cd Producer/Runtime && uv sync --group dev\n' \
+    printf 'missing dev tool: %s\nCreate it with: make worktree-setup\n' \
       "$tool_path" >&2
     exit 1
   }

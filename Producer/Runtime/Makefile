@@ -1,9 +1,11 @@
 .PHONY: lint deadcode test test-unit test-integration validate install-hooks
 
-# Keep the project venv outside iCloud (~/Documents is iCloud-synced). iCloud sets the
-# macOS UF_HIDDEN flag on .venv contents, and Python 3.13's site module silently skips
-# hidden .pth files — which breaks the editable install. See HISTORY.md.
-export UV_PROJECT_ENVIRONMENT := $(HOME)/.venvs/wilted
+# One venv per checkout: the same one the app, the gate legs and
+# `make worktree-setup` use. The `:=` deliberately overrides an exported
+# UV_PROJECT_ENVIRONMENT so a shell setting cannot split the environments.
+# The iCloud hidden-flag concern is guarded by tests/test_edge_cases.py in the
+# preparation-runtime leg.
+export UV_PROJECT_ENVIRONMENT := $(CURDIR)/.venv
 
 # Static checkers reuse installed tools without loading unrelated runtime editables.
 lint:

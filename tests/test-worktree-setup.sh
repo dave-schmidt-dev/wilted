@@ -31,13 +31,16 @@ uv_stub="$fixture/uv"
 cat >"$uv_stub" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$UV_LOG"
+printf 'env=%s\n' "${UV_PROJECT_ENVIRONMENT:-unset}" >>"$UV_LOG"
 project="${*: -1}"
-mkdir -p "$project/.venv/bin"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FAKE_STATE_DIR"\n' >"$project/.venv/bin/python"
-chmod +x "$project/.venv/bin/python"
+venv="${UV_PROJECT_ENVIRONMENT:-$project/.venv}"
+mkdir -p "$venv/bin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FAKE_STATE_DIR"\n' >"$venv/bin/python"
+chmod +x "$venv/bin/python"
 STUB
 chmod +x "$uv_stub"
 export WILTED_UV="$uv_stub" UV_LOG="$fixture/uv.log" FAKE_STATE_DIR="$projects/speech-stack/.state"
+export UV_PROJECT_ENVIRONMENT="$fixture/elsewhere-venv"
 
 run_setup() {
   local checkout="$1" log="$2"
@@ -51,6 +54,9 @@ for name in speech-stack apple_developer; do
   [[ "$(readlink "$main/.claude/worktrees/$name")" == "$projects/$name" ]] || fail "$name links somewhere else"
 done
 grep -qx "sync --locked --project $worktree/Producer/Runtime" "$UV_LOG" || fail "uv was not asked for a locked sync: $(cat "$UV_LOG")"
+[[ -x "$worktree/Producer/Runtime/.venv/bin/python" ]] || fail 'fresh worktree did not get its own venv interpreter'
+[[ ! -e "$fixture/elsewhere-venv" ]] || fail 'setup synced the inherited UV_PROJECT_ENVIRONMENT'
+grep -qx "env=$worktree/Producer/Runtime/.venv" "$UV_LOG" || fail "uv did not see the checkout venv: $(cat "$UV_LOG")"
 grep -q 'ready:' "$fixture/fresh.log" || fail 'fresh setup did not report ready'
 
 printf '%s\n' 'test.stage=idempotent-rerun' >&2
