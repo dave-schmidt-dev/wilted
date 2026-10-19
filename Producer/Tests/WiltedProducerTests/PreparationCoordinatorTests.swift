@@ -253,6 +253,87 @@ struct PreparationCoordinatorTests {
         #expect(secondStatuses.last?.stage == .cancelled)
         #expect(try fixture.candidateFiles().isEmpty)
     }
+
+    @Test func overBudgetArticleFailsBeforeSynthesisAndIsNotRetryable() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let wordCount = Int(
+            PreparationCoordinator.maximumSpeechSeconds * PreparationCoordinator.budgetEstimateWordsPerSecond
+        ) + 1_000
+        let body = Array(repeating: "word", count: wordCount).joined(separator: " ")
+        let synthesisCalls = SynthesisCallCounter()
+        let coordinator = fixture.coordinator(
+            body: body,
+            synthesis: { _ in
+                await synthesisCalls.record()
+                return SpeechSynthesisResult(requestID: "fixture", samples: [0, 0.1, -0.1], sampleRate: 24_000)
+            },
+            assembly: { _, _, _, _ in
+                Issue.record("Assembly must not run for an article over the speech budget")
+                throw TestPreparationError.saveFailed
+            }
+        )
+
+        let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+
+        let expectedError = ArticleSpeechBudgetError.tooLong(
+            estimatedSeconds: PreparationCoordinator.estimatedSpeechSeconds(body),
+            limitSeconds: PreparationCoordinator.maximumSpeechSeconds
+        )
+        let expectedMessage = try #require(expectedError.errorDescription)
+        #expect(await synthesisCalls.count == 0)
+        #expect(statuses.map(\.stage) == [.preparing, .extracting, .failed])
+        #expect(statuses.filter(\.terminal).count == 1)
+        #expect(statuses.last?.terminalResult?.error?.code == .unsupported)
+        #expect(statuses.last?.terminalResult?.error?.retryable == false)
+        #expect(statuses.last?.terminalResult?.error?.message == expectedMessage)
+        #expect(statuses.last?.terminalResult?.error?.message.contains("too long") == true)
+        #expect(try fixture.candidateFiles().isEmpty)
+    }
+
+    @Test func articleAtTheEstimateLimitStillSynthesizes() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let wordCount = Int(
+            PreparationCoordinator.maximumSpeechSeconds * PreparationCoordinator.budgetEstimateWordsPerSecond
+        )
+        let body = Array(repeating: "word", count: wordCount).joined(separator: " ")
+        let synthesisCalls = SynthesisCallCounter()
+        let coordinator = fixture.coordinator(
+            body: body,
+            synthesis: { _ in
+                await synthesisCalls.record()
+                return SpeechSynthesisResult(requestID: "fixture", samples: [0, 0.1, -0.1], sampleRate: 24_000)
+            },
+            assembly: { _, itemID, destination, _ in
+                try Data("candidate".utf8).write(to: destination)
+                return try assemblyResult(itemID: itemID, mediaURL: destination)
+            }
+        )
+
+        let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+
+        #expect(await synthesisCalls.count == 1)
+        #expect(statuses.last?.stage == .completed)
+        #expect(statuses.last?.terminalResult?.outcome == .succeeded)
+    }
+
+    @Test func encodedOutputOverBudgetIsTerminalNotRetryable() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let coordinator = fixture.coordinator(assembly: { _, _, destination, _ in
+            try Data("candidate".utf8).write(to: destination)
+            throw AudioAssemblerError.outputTooLarge(90_000_000)
+        })
+
+        let statuses = await collect((await coordinator.start(url: fixture.articleURL)).statuses)
+
+        #expect(statuses.last?.stage == .failed)
+        #expect(statuses.filter(\.terminal).count == 1)
+        #expect(statuses.last?.terminalResult?.error?.retryable == false)
+        #expect(statuses.last?.terminalResult?.error?.message.contains("too long") == true)
+        #expect(try fixture.candidateFiles().isEmpty)
+    }
 }
 
 private enum TestPreparationError: Error { case saveFailed, timedOut }

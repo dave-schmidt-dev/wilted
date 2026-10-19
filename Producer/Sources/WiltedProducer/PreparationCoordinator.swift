@@ -20,6 +20,25 @@ public struct PreparationRun: Sendable {
     public func cancel() async { await cancellation() }
 }
 
+/// Refuses an article whose speech could not fit one revision's audio budget,
+/// decided from its text before any synthesis is paid for.
+public enum ArticleSpeechBudgetError: Error, Equatable, LocalizedError, Sendable {
+    case tooLong(estimatedSeconds: Double, limitSeconds: Double)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .tooLong(estimatedSeconds, limitSeconds):
+            let estimatedHours = estimatedSeconds / 3_600
+            let limitHours = limitSeconds / 3_600
+            return String(
+                format: "This article is too long for Wilted to read aloud: it would run about %.1f hours, "
+                    + "and one article's audio is limited to about %.1f hours.",
+                estimatedHours, limitHours
+            )
+        }
+    }
+}
+
 /// Owns one preparation at a time and emits exactly one terminal status.
 public actor PreparationCoordinator {
     typealias ExtractionOperation = @Sendable (URL) async throws -> ExtractedArticle
@@ -39,6 +58,23 @@ public actor PreparationCoordinator {
     /// tighter so a wedged daemon still fails visibly, and the value is sent as the
     /// request timeout so both sides police the same number.
     public static let defaultSpeechOperationTimeout: TimeInterval = 120
+
+    /// The longest speech one revision's audio budget can hold, derived from the
+    /// assembler's byte cap and AAC bit rate instead of restated as a literal.
+    static let maximumSpeechSeconds: Double =
+        Double(AudioAssembler.maxRevisionAssetBytes) * 8 / Double(AudioAssembler.bitRate)
+
+    /// Deliberately much faster than measured speech: Kokoro (voice af_heart, speed
+    /// 1.0) averaged about 2.5 words a second on speech-stack's benchmark article
+    /// (570 words, 225.3 s). Assuming 4 words a second means the pre-check refuses
+    /// only text that cannot fit; the assembler's byte check remains the backstop
+    /// for anything it lets through.
+    static let budgetEstimateWordsPerSecond = 4.0
+
+    /// Estimates how long the text would take to speak at the budget-estimate pace.
+    static func estimatedSpeechSeconds(_ text: String) -> Double {
+        Double(text.split(whereSeparator: \.isWhitespace).count) / budgetEstimateWordsPerSecond
+    }
 
     private let store: LocalLibraryStore
     private let mediaDirectory: URL
@@ -170,6 +206,13 @@ public actor PreparationCoordinator {
                 await emitter.emit(.completed, "Ready to play", fraction: 1, terminal: terminal)
                 await finishRun(runID: runID, candidateURL: candidateURL, candidateCommitted: candidateCommitted, emitter: emitter)
                 return
+            }
+
+            let estimatedSeconds = Self.estimatedSpeechSeconds(extracted.body)
+            guard estimatedSeconds <= Self.maximumSpeechSeconds else {
+                throw ArticleSpeechBudgetError.tooLong(
+                    estimatedSeconds: estimatedSeconds, limitSeconds: Self.maximumSpeechSeconds
+                )
             }
 
             await emitter.emit(.synthesizing, "Generating speech", fraction: 0.4)
@@ -393,6 +436,7 @@ private func mapError(_ error: Error) -> ProducerErrorCode {
     case ArticleExtractionError.invalidURL: .invalidRequest
     case ArticleExtractionError.unsupported: .unsupported
     case is ArticleExtractionError: .extractionFailed
+    case ArticleSpeechBudgetError.tooLong: .unsupported
     case SpeechIPCError.timeout: .timedOut
     case SpeechIPCError.daemon, SpeechIPCError.systemCall: .speechUnavailable
     case SpeechIPCError.unexpectedFrame, SpeechIPCError.invalidControlJSON: .protocolMismatch
@@ -402,6 +446,14 @@ private func mapError(_ error: Error) -> ProducerErrorCode {
 }
 
 private func userMessage(_ error: Error) -> String {
+    if case AudioAssemblerError.outputTooLarge = error {
+        let limitHours = PreparationCoordinator.maximumSpeechSeconds / 3_600
+        return String(
+            format: "This article is too long for Wilted to read aloud: its audio is over the "
+                + "per-article limit of about %.1f hours.",
+            limitHours
+        )
+    }
     if let storeError = error as? LocalLibraryStoreError,
        case .immutableRevision = storeError {
         return "This article's audio already exists with different content."
@@ -412,6 +464,8 @@ private func userMessage(_ error: Error) -> String {
 private func isRetryable(_ error: Error) -> Bool {
     switch error {
     case ArticleExtractionError.invalidURL, ArticleExtractionError.unsupported: false
+    case ArticleSpeechBudgetError.tooLong: false
+    case AudioAssemblerError.outputTooLarge: false
     default: true
     }
 }
