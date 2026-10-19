@@ -321,7 +321,8 @@ extension WiltedMacIntentApplierTests {
             transport: InMemoryLibraryTransport(deviceID: "mac-test", server: server),
             debounce: .milliseconds(20)))
         var outcomes: [String: IntentOutcome] = [:]
-        for _ in 0..<200 where outcomes.count < entries.count {
+        let firstDeadline = ContinuousClock.now + .seconds(30)
+        while outcomes.count < entries.count, ContinuousClock.now < firstDeadline {
             try await Task.sleep(for: .milliseconds(50))
             outcomes = Dictionary(uniqueKeysWithValues: try await phone.intentOutcomes().map { ($0.intentID, $0) })
         }
@@ -350,11 +351,14 @@ extension WiltedMacIntentApplierTests {
         }
         // The incoming poll runs every 30 seconds. Explicit Sync now drives
         // the real poller instead of making replay depend on that timer.
+        // Sync now joins a round already in flight, and under load the startup round can still be
+        // finishing after it read the inbox, before these replays were sent: ask until one reads them.
         let controller = try XCTUnwrap(rig.model.librarySyncController)
-        await controller.syncNow().value
-        for _ in 0..<200 where outcomes.count < 7 {
-            try await Task.sleep(for: .milliseconds(50))
+        let replayDeadline = ContinuousClock.now + .seconds(30)
+        while outcomes.count < 7, ContinuousClock.now < replayDeadline {
+            await controller.syncNow().value
             outcomes = Dictionary(uniqueKeysWithValues: try await phone.intentOutcomes().map { ($0.intentID, $0) })
+            if outcomes.count < 7 { try await Task.sleep(for: .milliseconds(50)) }
         }
         for (index, entry) in entries.prefix(3).enumerated() {
             XCTAssertEqual(outcomes["terminal-replay-\(index)"]?.disposition, .applied)
