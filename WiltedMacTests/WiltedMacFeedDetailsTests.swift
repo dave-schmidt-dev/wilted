@@ -138,7 +138,9 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
             WiltedMacFeedDetailsView(model: model, board: board, subscription: subscription),
             size: CGSize(width: 900, height: 1_000)
         ).joined(separator: " ")
-        XCTAssertTrue(details.contains(failure), "actual safe startup error should be visible: \(details)")
+        // OCR can drop a sentence's closing period, so match the message without it.
+        let visibleFailure = failure.hasSuffix(".") ? String(failure.dropLast()) : failure
+        XCTAssertTrue(details.contains(visibleFailure), "actual safe startup error should be visible: \(details)")
         XCTAssertTrue(details.contains("Retry settings"), details)
     }
 
