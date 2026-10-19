@@ -44,6 +44,28 @@ xcode_test_leg() {
   local cache_key="native-$label" project udid="" xcode_status=0
   local only_testing_args=(-only-testing:"$target")
   for target in "$@"; do only_testing_args+=(-only-testing:"$target"); done
+  local unit_prefix="" unit_selectors="" entry
+  if [[ "$label" == "macos-unit-tests" && -n "${WILTED_MAC_UNIT_SELECTORS+x}" ]]; then
+    unit_prefix='WiltedMacTests'
+    unit_selectors="$WILTED_MAC_UNIT_SELECTORS"
+  elif [[ "$label" == "ios-unit-tests" && -n "${WILTED_IOS_UNIT_SELECTORS+x}" ]]; then
+    unit_prefix='WiltediOSTests'
+    unit_selectors="$WILTED_IOS_UNIT_SELECTORS"
+  fi
+  if [[ -n "$unit_prefix" ]]; then
+    local unit_entries=()
+    IFS=',' read -r -a unit_entries <<<"$unit_selectors"
+    only_testing_args=()
+    for entry in "${unit_entries[@]}"; do
+      only_testing_args+=(-only-testing:"$unit_prefix/$entry")
+    done
+  fi
+  local iteration_args=()
+  if [[ "$label" == "macos-unit-tests" && -n "${WILTED_MAC_UNIT_ITERATIONS+x}" ]]; then
+    iteration_args=(-test-iterations "$WILTED_MAC_UNIT_ITERATIONS")
+  elif [[ "$label" == "ios-unit-tests" && -n "${WILTED_IOS_UNIT_ITERATIONS+x}" ]]; then
+    iteration_args=(-test-iterations "$WILTED_IOS_UNIT_ITERATIONS")
+  fi
   require_tool xcodebuild; require_tool jq; require_tool xmllint
   assert_test_sources "$label" "$source_dir" || return 1
   # Before any copy, build or trap: a wedged host daemon fails here instead of after the test budget.
@@ -86,7 +108,7 @@ xcode_test_leg() {
   local test_command=(env WILTED_TEST_TIMEOUT_SECONDS="${xcode_build_and_test_timeout_seconds:-$xcode_test_timeout_seconds}" \
     WILTED_WORK_PHASE=build-and-test \
     python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test \
-    "${common[@]}" -collect-test-diagnostics never -resultBundlePath "$tmp_root/$label.xcresult")
+    "${common[@]}" ${iteration_args[@]+"${iteration_args[@]}"} -collect-test-diagnostics never -resultBundlePath "$tmp_root/$label.xcresult")
   if [[ "$destination" == *'id='* ]]; then
     udid="${destination##*id=}"
     wilted_gate_simulator_session "$udid" "${test_command[@]}" &

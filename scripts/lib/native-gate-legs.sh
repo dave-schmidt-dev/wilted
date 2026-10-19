@@ -75,15 +75,42 @@ wilted_gate_run_legs() {
   wilted_gate_parallel_collect
 }
 
+# True when a unit selector or iteration setting makes this run a diagnostic.
+wilted_unit_test_filter_active() {
+  [[ -n "${WILTED_MAC_UNIT_SELECTORS+x}" ||
+    -n "${WILTED_MAC_UNIT_ITERATIONS+x}" ||
+    -n "${WILTED_IOS_UNIT_SELECTORS+x}" ||
+    -n "${WILTED_IOS_UNIT_ITERATIONS+x}" ]]
+}
+
 # Suffix for the native.passed line of a filtered run.
 wilted_gate_legs_suffix() {
-  [[ -n "${WILTED_GATE_LEGS+x}" ]] || return 0
-  printf ' filtered=%s' "${#skipped_leg_names[@]}"
+  if [[ -n "${WILTED_GATE_LEGS+x}" ]] || wilted_unit_test_filter_active; then
+    printf ' filtered=%s' "${#skipped_leg_names[@]}"
+  fi
+  return 0
 }
 
 # Names the filter and the skipped legs, and says no receipt can come from it.
 wilted_gate_legs_summary() {
-  [[ -n "${WILTED_GATE_LEGS+x}" ]] || return 0
-  printf 'native.filtered selected=%s skipped=%s receipt=never\n' \
-    "$WILTED_GATE_LEGS" "${skipped_leg_names[*]:-none}" >&2
+  if [[ -n "${WILTED_GATE_LEGS+x}" ]]; then
+    printf 'native.filtered selected=%s skipped=%s receipt=never\n' \
+      "$WILTED_GATE_LEGS" "${skipped_leg_names[*]:-none}" >&2
+  fi
+  local leg selectors iterations
+  for leg in macos-unit-tests ios-unit-tests; do
+    selectors="" iterations=""
+    if [[ "$leg" == "macos-unit-tests" ]]; then
+      [[ -n "${WILTED_MAC_UNIT_SELECTORS+x}${WILTED_MAC_UNIT_ITERATIONS+x}" ]] || continue
+      selectors="${WILTED_MAC_UNIT_SELECTORS:-all}"
+      iterations="${WILTED_MAC_UNIT_ITERATIONS:-1}"
+    else
+      [[ -n "${WILTED_IOS_UNIT_SELECTORS+x}${WILTED_IOS_UNIT_ITERATIONS+x}" ]] || continue
+      selectors="${WILTED_IOS_UNIT_SELECTORS:-all}"
+      iterations="${WILTED_IOS_UNIT_ITERATIONS:-1}"
+    fi
+    printf 'native.filtered.tests leg=%s selectors=%s iterations=%s receipt=never\n' \
+      "$leg" "$selectors" "$iterations" >&2
+  done
+  return 0
 }
