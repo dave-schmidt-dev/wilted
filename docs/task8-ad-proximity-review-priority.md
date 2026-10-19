@@ -16,8 +16,8 @@ does. Neither is strong enough to build a review signal on.
 
 1. **After-side proximity finds nothing new.** The continuation's own reach (`after-sponsor-read-continuation-reach`)
    reached 0 of 8 missed ads, and widening it to any anchor label (`after-90`) still reached 0 while flagging 180 s of
-   programme across 2 intervals. Whatever sits just after a confirmed read is either already handled by the continuation
-   or is programme.
+   programme across 2 intervals. Nothing labelled as a missed ad sits just after a stored cut; the rest of what those
+   windows flagged (270.2 s and 450.2 s) is unlabelled.
 2. **Before-side proximity concentrates missed ads, on very little evidence.** `before-90` reached 3 of 8 missed ads, but
    through only 2 of its 10 windows, in 2 different cases. Of its labelled flagged time, 110.2 s was missed ad against
    249.3 s of programme and 10.3 s of acceptable cut: labelled precision 0.298 against a 0.054 base rate, a 5.5x lift.
@@ -126,7 +126,7 @@ doubles and a patched renderer; the fifth scores a stored preparation with no en
 4. **Nearby genuine programme.** The read with programme on both sides. Every programme second is kept, and every
    flagged second of `before-90`, `after-90` and the continuation reach is programme: all false positives.
 5. **Old prepared provenance.** No engine run. A stored older preparation (`adSegments` 60-70 s, an older
-   `pipelineFingerprint`, no `report`) is turned into anchors and a cut and scored with `detect_and_cut`, transcription
+   `pipelineFingerprint`, no `report`) is turned into anchors and a cut and scored, with `detect_and_cut`, transcription
    and rendering all patched to fail if called. `after-90` reaches the missed 70-80 s spot without reprocessing anything.
 
 For every engine fixture the test also checks that computing review windows leaves `ad_spans` and `keeps` unchanged
