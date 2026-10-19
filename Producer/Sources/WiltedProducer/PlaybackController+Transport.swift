@@ -269,6 +269,7 @@ extension PlaybackController {
     /// exact playhead and whether it was playing are captured before reload.
     public func recoverFromRouteChange() async throws {
         guard let mediaURL, let loadedItemID = itemID else { throw PlaybackControllerError.noLoadedRevision }
+        endOutputLossWatch()
         let wasPlaying = backend.isPlaying || isPlaying
         let position = livePositionSeconds
         backend.stop()
@@ -288,6 +289,7 @@ extension PlaybackController {
         seekOwner: SeekOwnership? = nil
     ) async throws -> UInt64 {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
+        endOutputLossWatch()
         stageSpeedInterval(endingAt: livePositionSeconds)
         let wasPlaying = backend.isPlaying || isPlaying
         if reloadBackend {

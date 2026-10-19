@@ -137,4 +137,19 @@ final class MacAudioRouteLossObserverTests: XCTestCase {
         XCTAssertTrue(hardware.active.isEmpty)
         XCTAssertEqual(hardware.additions, hardware.removals)
     }
+
+    func testDeviceAvailabilityTreatsDeadMissingAndUnreadableDevicesAsGone() {
+        let hardware = RouteHardware()
+        let observer = MacAudioRouteLossObserver(hardware: hardware)
+        XCTAssertTrue(observer.start {})
+        defer { observer.stop() }
+        XCTAssertTrue(observer.isDeviceAvailable(10))
+        hardware.alive = 0
+        XCTAssertFalse(observer.isDeviceAvailable(10))
+        XCTAssertFalse(observer.isDeviceAvailable(kAudioObjectUnknown))
+
+        hardware.alive = 1
+        hardware.failedRead = kAudioDevicePropertyDeviceIsAlive
+        XCTAssertFalse(observer.isDeviceAvailable(10), "a failed read counts as gone")
+    }
 }

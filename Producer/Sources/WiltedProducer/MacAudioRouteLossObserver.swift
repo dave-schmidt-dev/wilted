@@ -25,10 +25,13 @@ public protocol MacAudioRouteSource: AnyObject, Sendable {
     func start(changed: @escaping @MainActor () -> Void) -> Bool
     func currentRoute() -> MacAudioRoute?
     func stop()
+    /// Whether `device` is still alive and present. A failed read is gone.
+    func isDeviceAvailable(_ device: UInt32) -> Bool
 }
 
 public extension MacAudioRouteSource {
     var monitoringAvailable: Bool { true }
+    func isDeviceAvailable(_ device: UInt32) -> Bool { true }
 }
 
 struct MacAudioRouteProperty: Hashable, Sendable {
@@ -103,6 +106,13 @@ public final class MacAudioRouteLossObserver: MacAudioRouteSource {
         let jackValue = hasJack ? hardware.read(jack) : nil
         guard (!hasSource || sourceValue != nil), (!hasJack || jackValue != nil) else { return nil }
         return MacAudioRoute(device: id, source: sourceValue, jackConnected: jackValue.map { $0 != 0 }, alive: live != 0)
+    }
+
+    public func isDeviceAvailable(_ device: UInt32) -> Bool {
+        guard device != kAudioObjectUnknown else { return false }
+        let alive = property(device, kAudioDevicePropertyDeviceIsAlive)
+        guard hardware.has(alive), let value = hardware.read(alive) else { return false }
+        return value != 0
     }
 
     public func stop() {

@@ -532,6 +532,10 @@ extension WiltedMacModel {
                 deviceID: "mac"
             )
         }
+        // Pause when the speakers or headphones go away, as the iPhone does.
+        // Fixtures and test hosts never register CoreAudio listeners.
+        if !fixtureMode, !Self.hostsTests { playback?.enableOutputLossPause() }
+        playback?.onOutputLostPause = { [weak self] in self?.refreshPlaybackReadout() }
         playback?.automaticPodcastQueueAdvancePredicate = { [weak self] itemID in
             // Books retain their existing queue completion policy. Podcasts use Ready order.
             self?.episodes.first(where: { $0.id == itemID.rawValue })?.isAudiobook == true

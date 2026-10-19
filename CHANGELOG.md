@@ -65,6 +65,7 @@ All notable changes to this project are documented in this file.
 - Episodes now keep their own web page address from the feed's item link: it is read when a feed loads, stored in the library (store schema V15, migrated with the usual backup), and published in the library sync so the phone can offer it. Relative, non-web, credentialed or self-referential links are ignored.
 
 ### Changed
+- The Mac pauses when its speakers or headphones go away (unplugged, disconnected, or the output device vanishes), saves the position and stays paused, as the iPhone does. Switching to another output that is still connected keeps playing.
 - Preparation journals keep one row per heartbeat stage instead of one per tick, and a worker-unavailable or malformed-response error keeps its one-line detail.
 - Removing an article writes its deleted flag and drops its playlist entry in one save; it no longer queues a sync tombstone, and removing an already removed article changes nothing.
 - Mac episode listings now share Larder sorting and factual episode details across Feeds, playlists, History, and rule previews; playlists show Manual/Smart indicators, and Play uses the displayed ready-item order.

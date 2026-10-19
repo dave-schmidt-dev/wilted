@@ -130,7 +130,9 @@ public final class PlaybackController {
     private var clampedDefaultRate: Float = 1
     public internal(set) var positionSeconds: TimeInterval = 0
     public private(set) var durationSeconds: TimeInterval = 0
-    public internal(set) var isPlaying = false
+    public internal(set) var isPlaying = false {
+        didSet { outputLossPlayingChanged() }
+    }
     /// The playhead as the audio engine reports it right now.
     ///
     /// `positionSeconds` is checkpoint state: it moves only when something
@@ -185,6 +187,12 @@ public final class PlaybackController {
     @ObservationIgnored var explicitHoldSerial: UInt64 = 0 {
         didSet { interruptionUserPaused() }
     }
+    /// Output-route loss pause (`PlaybackController+OutputLoss.swift`). Off until
+    /// the app enables it, so fixtures never register CoreAudio listeners.
+    @ObservationIgnored public var onOutputLostPause: (@MainActor () -> Void)?
+    @ObservationIgnored var outputLossSource: (any MacAudioRouteSource)?
+    @ObservationIgnored var outputLossBaseline: MacAudioRoute?
+    @ObservationIgnored var outputLossWatching = false
     @ObservationIgnored var loadedBackendGeneration: UInt64? {
         didSet { commandGeneration &+= 1 }
     }
@@ -243,6 +251,7 @@ public final class PlaybackController {
     func loadRevision(
         _ revision: AudioRevision, mediaURL: URL, expectedGeneration: UInt64? = nil, isPodcast: Bool = false
     ) async throws -> UInt64 {
+        endOutputLossWatch()
         // Admit the outgoing attempt's measured time before it is replaced, so
         // switching items never leaves more than the crash-tail bound unsaved.
         // A statistics failure must not block loading; the amount stays pending.

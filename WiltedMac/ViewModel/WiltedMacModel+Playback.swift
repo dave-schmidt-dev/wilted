@@ -305,12 +305,15 @@ extension WiltedMacModel {
         controller.episodeEligibilityPredicate = old.episodeEligibilityPredicate
         controller.defaultRate = old.defaultRate
         controller.automaticPodcastQueueAdvancePredicate = old.automaticPodcastQueueAdvancePredicate
+        controller.onOutputLostPause = old.onOutputLostPause
         // The replaced controller must not call back into the model again.
         old.backend.stop()
         old.podcastStateHandler = nil
         old.playbackDidFinishHandler = nil
         old.podcastCompletionHandler = nil
         old.podcastNaturalCompletionHandlerFactory = nil
+        old.disableOutputLossPause()
+        old.onOutputLostPause = nil
         playback = controller
     }
 #endif

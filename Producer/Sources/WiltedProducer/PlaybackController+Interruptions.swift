@@ -372,7 +372,7 @@ extension PlaybackController {
         return current == baseline
     }
 
-    private func routeChanged(_ engine: PlaybackInterruptions) {
+    func routeChanged(_ engine: PlaybackInterruptions) {
         if let route = engine.seekRoute, engine.routeSource?.currentRoute() != route {
             engine.seekRouteInvalidations &+= 1
         }
@@ -385,9 +385,10 @@ extension PlaybackController {
     }
 
     /// Also covers a failed read after restore, when the reducer has already become idle.
-    private func cancelForRouteLoss(_ engine: PlaybackInterruptions) {
+    func cancelForRouteLoss(_ engine: PlaybackInterruptions) {
         let checkpoint = engine.heldCheckpoint
         let generation = commandGeneration
+        let outputLossPause = outputLossPrepareHoldRouteLoss(engine)
         engine.speechToken &+= 1
         engine.watchdog?.cancel()
         isPlaying = false
@@ -406,6 +407,7 @@ extension PlaybackController {
         guard interruptions === engine, commandGeneration == generation else { return }
         releaseHold()
         meterListening()
+        outputLossCompleteHoldRouteLoss(outputLossPause)
     }
 
     // MARK: Ticks and pause points
