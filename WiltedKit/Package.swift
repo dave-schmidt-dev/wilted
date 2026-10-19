@@ -10,17 +10,13 @@ let package = Package(
     ],
     products: [
         .library(name: "WiltedDomain", targets: ["WiltedDomain"]),
-        .library(name: "WiltedSync", targets: ["WiltedSync"]),
         .library(name: "WiltedLibrary", targets: ["WiltedLibrary"]),
-        .library(name: "WiltedSyncTesting", targets: ["WiltedSyncTesting"]),
         .library(name: "WiltedCatalog", targets: ["WiltedCatalog"]),
         .library(name: "WiltedWeather", targets: ["WiltedWeather"]),
     ],
     targets: [
         .target(name: "WiltedDomain"),
-        .target(name: "WiltedSync", dependencies: ["WiltedDomain"]),
         .target(name: "WiltedLibrary", dependencies: ["WiltedDomain"]),
-        .target(name: "WiltedSyncTesting", dependencies: ["WiltedSync"]),
         .target(name: "WiltedCatalog"),
         .target(name: "WiltedWeather", dependencies: ["WiltedLibrary"]),
         .testTarget(
@@ -37,11 +33,6 @@ let package = Package(
         .testTarget(
             name: "WiltedLibraryTests",
             dependencies: ["WiltedDomain", "WiltedLibrary"]
-        ),
-        .testTarget(
-            name: "WiltedSyncTests",
-            dependencies: ["WiltedDomain", "WiltedSync", "WiltedSyncTesting"],
-            resources: [.copy("Fixtures")]
         ),
     ]
 )

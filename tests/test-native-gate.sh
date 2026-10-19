@@ -153,13 +153,9 @@ assert_block_contains 'owned-host-matched=1' "$cleanup_proof"
 assert_block_contains 'foreign-peer-preserved=1' "$cleanup_proof"
 
 assert_wiltedkit_sync_contract() {
-  assert_contains 'WiltedSyncTests' "$gate"
-  assert_contains 'assert_test_sources wiltedsync-tests' "$gate"
-  assert_contains 'WiltedSync authoritative fixture drift' "$gate"
-  assert_contains 'native.sync-fixture.parity' "$gate"
-  assert_contains 'authoritative publish fixture decodes all records and round trips exactly' "$gate"
-  assert_contains 'fake delay emits visible status before completion' "$gate"
-  assert_contains 'remote deletions apply incrementally, cascade items, and preserve protected work' "$gate"
+  assert_contains 'assert_test_sources wiltedkit-tests' "$gate"
+  assert_contains 'testFixtureManifestPinsAllAuthoritativeCopies' "$gate"
+  assert_contains 'testPublishDecodeFixture' "$gate"
   assert_contains 'leg_cloudsync_tests' "$gate"
   assert_validation_contains "local cache_key='native-cloudsync-tests'"
   assert_validation_contains 'run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package"'

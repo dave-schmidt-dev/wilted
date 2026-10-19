@@ -195,9 +195,8 @@ public enum LibraryTransportError: Error, Equatable, Sendable {
 }
 
 /// Backend-neutral library transport. CloudKit and hosted backends conform; the in-memory
-/// transport is the reference. Commit semantics equal `SyncTransport`: fetched and sent
-/// tokens are provisional until the caller commits them, only after the store has durably
-/// applied the result.
+/// transport is the reference. Fetched and sent tokens are provisional until the caller
+/// commits them, only after the store has durably applied the result.
 public protocol LibraryTransport: Sendable {
     /// Generation captured by in-flight work; adapters bump it when ownership changes so
     /// stale results cannot be committed.

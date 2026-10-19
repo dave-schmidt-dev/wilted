@@ -59,11 +59,10 @@ class XcodeLifecycleTests(fixture.XcodeFixture, unittest.TestCase):
         for name in ['leg_wiltedkit_tests', 'leg_wiltedproducer_tests']:
             match = re.search(r'^' + name + r'\(\) \{\n.*?^\}', source, re.MULTILINE | re.DOTALL)
             self.assertIsNotNone(match); functions.append(match.group())
-        for directory in ['WiltedKit/Tests/WiltedDomainTests/Fixtures', 'WiltedKit/Tests/WiltedSyncTests/Fixtures',
-                          'Producer/Tests', 'contracts/fixtures', 'contracts/cloudkit/fixtures']:
+        for directory in ['WiltedKit/Tests/WiltedDomainTests/Fixtures',
+                          'Producer/Tests', 'contracts/fixtures']:
             (self.root / directory).mkdir(parents=True, exist_ok=True)
-        for relative in ['contracts/fixtures/sample.json', 'WiltedKit/Tests/WiltedDomainTests/Fixtures/sample.json',
-                         'contracts/cloudkit/fixtures/01-valid-publish-decode.json', 'WiltedKit/Tests/WiltedSyncTests/Fixtures/01-valid-publish-decode.json']:
+        for relative in ['contracts/fixtures/sample.json', 'WiltedKit/Tests/WiltedDomainTests/Fixtures/sample.json']:
             (self.root / relative).write_text('{}')
         harness = self.root / 'package-leg.sh'
         harness.write_text("""#!/bin/bash
@@ -75,7 +74,7 @@ build_cache_path() { printf '%s\\n' "$FAKE_REPO/cache"; }
 run_with_build_cache() { echo build >>"$FAKE_EVENTS"; return "$FAKE_BUILD_STATUS"; }
 run_package_xctest_bundles() {
  echo cached >>"$FAKE_EVENTS"
- printf '%s\\n' 'authoritative publish fixture decodes all records and round trips exactly' 'fake delay emits visible status before completion' 'remote deletions apply incrementally, cascade items, and preserve protected work' >"$3"
+ printf '%s\\n' 'testFixtureManifestPinsAllAuthoritativeCopies' 'testPublishDecodeFixture' >"$3"
  return "$FAKE_XCTEST_STATUS"
 }
 """ + '\n'.join(functions) + '\nresult=0; if "$1"; then result=0; else result=$?; fi; exit "$result"\n')

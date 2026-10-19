@@ -47,8 +47,6 @@ targets:
       - package: WiltedKit
         product: WiltedDomain
       - package: WiltedKit
-        product: WiltedSync
-      - package: WiltedKit
         product: WiltedLibrary
       - package: WiltedCloudKit
         product: WiltedCloudKit
@@ -131,8 +129,6 @@ targets:
     dependencies:
       - package: WiltedKit
         product: WiltedDomain
-      - package: WiltedKit
-        product: WiltedSync
       - package: WiltedKit
         product: WiltedLibrary
       - package: WiltedKit
@@ -376,8 +372,6 @@ targets:
       - package: WiltedKit
         product: WiltedDomain
       - package: WiltedKit
-        product: WiltedSync
-      - package: WiltedKit
         product: WiltedLibrary
       - package: WiltedKit
         product: WiltedCatalog
@@ -408,8 +402,6 @@ targets:
       - target: WiltediOS
       - package: WiltedKit
         product: WiltedDomain
-      - package: WiltedKit
-        product: WiltedSync
       - package: WiltedKit
         product: WiltedLibrary
       - package: WiltedKit

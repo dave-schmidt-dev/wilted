@@ -34,10 +34,10 @@ public struct LibrarySyncStatus: Sendable, Equatable {
     }
 }
 
-/// Drives fetch, reconcile, commit and send against a transport and a store, with the
-/// same commit discipline as `SyncCoordinator`: work is validated against the operation
-/// generation before it is committed, the store cursor and the transport's committed
-/// token advance only after the store commit succeeds, and conflicted records are held.
+/// Drives fetch, reconcile, commit and send against a transport and a store: work is
+/// validated against the operation generation before it is committed, the store cursor
+/// and the transport's committed token advance only after the store commit succeeds,
+/// and conflicted records are held.
 public actor LibraryReconciler {
     /// Maximum stage/commit attempts for one fetched batch after local mutation races.
     public static let maximumStaleStageAttempts = 3

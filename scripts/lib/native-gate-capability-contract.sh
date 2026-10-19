@@ -78,7 +78,6 @@ assert_capability_source_contract() {
     '    path: CloudSync' \
     '  WiltedPlayback:' \
     '    path: Playback' \
-    '        product: WiltedSync' \
     '        product: WiltedCloudKit'; do
     assert_contains "$wiring" "$project"
   done

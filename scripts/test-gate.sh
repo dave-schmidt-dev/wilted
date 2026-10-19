@@ -457,8 +457,6 @@ leg_wiltedkit_tests() {
   local cache_path
   local authoritative="$repo_root/contracts/fixtures"
   local copied="$package/Tests/WiltedDomainTests/Fixtures"
-  local sync_authoritative="$repo_root/contracts/cloudkit/fixtures/01-valid-publish-decode.json"
-  local sync_copied="$package/Tests/WiltedSyncTests/Fixtures/01-valid-publish-decode.json"
   [[ -d "$package" ]] || fail "missing WiltedKit package: $package"
   [[ -d "$authoritative" && -d "$copied" ]] || fail 'missing authoritative or WiltedKit fixture directory'
   if ! diff -u <(find "$authoritative" -maxdepth 1 -type f -name '*.json' -exec basename {} \; | sort) \
@@ -470,14 +468,8 @@ leg_wiltedkit_tests() {
     cmp -s "$authoritative/$fixture" "$copied/$fixture" ||
       fail "WiltedKit fixture drift: $fixture"
   done < <(find "$authoritative" -maxdepth 1 -type f -name '*.json' -exec basename {} \; | sort)
-  [[ -f "$sync_authoritative" && -f "$sync_copied" ]] || fail 'missing authoritative or copied sync fixture'
-  cmp -s "$sync_authoritative" "$sync_copied" || fail 'WiltedSync authoritative fixture drift'
-  printf 'native.sync-fixture.parity file=%s\n' "$(basename "$sync_authoritative")"
   printf 'native.fixtures.parity count=%s\n' "$(find "$authoritative" -maxdepth 1 -type f -name '*.json' | wc -l | tr -d ' ')"
   assert_test_sources wiltedkit-tests "$package/Tests"
-  # Keep the sync-core suite in the package leg's executed test bundle; a
-  # generic domain source count must not allow this target to disappear.
-  assert_test_sources wiltedsync-tests "$package/Tests/WiltedSyncTests"
   require_tool swift
   require_tool xcrun
   cache_path="$(build_cache_path swiftpm "$cache_key")"
@@ -491,12 +483,10 @@ leg_wiltedkit_tests() {
   set -e
   if [[ "$xctest_status" -eq 0 ]]; then
     [[ -s "$tmp_root/wiltedkit-tests.xctest.log" ]] || fail 'WiltedKit XCTest log is empty'
-    grep -Fq 'authoritative publish fixture decodes all records and round trips exactly' "$tmp_root/wiltedkit-tests.xctest.log" ||
-      fail 'WiltedSyncTests fixture case was not observed in the XCTest log'
-    grep -Fq 'fake delay emits visible status before completion' "$tmp_root/wiltedkit-tests.xctest.log" ||
-      fail 'WiltedSyncTests liveness case was not observed in the XCTest log'
-    grep -Fq 'remote deletions apply incrementally, cascade items, and preserve protected work' "$tmp_root/wiltedkit-tests.xctest.log" ||
-      fail 'WiltedSyncTests deletion case was not observed in the XCTest log'
+    grep -Fq 'testFixtureManifestPinsAllAuthoritativeCopies' "$tmp_root/wiltedkit-tests.xctest.log" ||
+      fail 'testFixtureManifestPinsAllAuthoritativeCopies was not observed in the XCTest log'
+    grep -Fq 'testPublishDecodeFixture' "$tmp_root/wiltedkit-tests.xctest.log" ||
+      fail 'testPublishDecodeFixture was not observed in the XCTest log'
   fi
   return "$xctest_status"
 }
