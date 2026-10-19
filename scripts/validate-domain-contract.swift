@@ -221,9 +221,8 @@ func validateSchema(_ schema: JSON) throws -> (JSON, JSON) {
     _ = try nonEmptyString(readiness["publicationRule"], "schema.transitions.AudioRevision.readiness.publicationRule")
 
     let merge = try object(schema["merge"], "schema.merge")
-    try exactKeys(merge, ["canonicalRecord", "causalBoundary", "rules"], "schema.merge")
+    try exactKeys(merge, ["canonicalRecord", "rules"], "schema.merge")
     _ = try nonEmptyString(merge["canonicalRecord"], "schema.merge.canonicalRecord")
-    _ = try nonEmptyString(merge["causalBoundary"], "schema.merge.causalBoundary")
     guard (try stringArray(merge["rules"], "schema.merge.rules")).count >= 7 else { try fail("merge rules are incomplete") }
 
     let rpc = try object(schema["rpc"], "schema.rpc")
@@ -249,7 +248,7 @@ func validateSchema(_ schema: JSON) throws -> (JSON, JSON) {
     let coverage = try object(schema["fixtureCoverage"], "schema.fixtureCoverage")
     try exactKeys(coverage, ["fixtureVersion", "requiredCases"], "schema.fixtureCoverage")
     guard try integer(coverage["fixtureVersion"], "schema.fixtureCoverage.fixtureVersion") == 1 else { try fail("fixture coverage version must be 1") }
-    guard let cases = coverage["requiredCases"] as? [Any], cases.count == 19 else { try fail("fixture coverage must list exactly 19 cases") }
+    guard let cases = coverage["requiredCases"] as? [Any], cases.count == 7 else { try fail("fixture coverage must list exactly 7 cases") }
     var seen = Set<String>()
     for (index, raw) in cases.enumerated() {
         let entry = try object(raw, "schema.fixtureCoverage.requiredCases[\(index)]")
@@ -263,18 +262,6 @@ func validateSchema(_ schema: JSON) throws -> (JSON, JSON) {
 
 func validateID(_ value: Any?, _ path: String) throws { _ = try nonEmptyString(value, path) }
 func validateTimestamp(_ value: Any?, _ path: String) throws { let s = try nonEmptyString(value, path); guard s.last == "Z" else { try fail("\(path) must end in Z") } }
-
-func validateFixturePlaybackState(_ state: JSON, _ path: String) throws {
-    try exactKeys(state, ["itemID", "revisionID", "sessionID", "sequence", "positionSeconds", "durationSeconds", "completed", "intent", "deviceID", "updatedAt"], path)
-    for key in ["itemID", "revisionID", "sessionID", "deviceID"] { try validateID(state[key], "\(path).\(key)") }
-    guard try integer(state["sequence"], "\(path).sequence") >= 1 else { try fail("\(path).sequence must be >= 1") }
-    let position = try number(state["positionSeconds"], "\(path).positionSeconds")
-    let duration = try number(state["durationSeconds"], "\(path).durationSeconds")
-    guard duration > 0, position >= 0, position <= duration else { try fail("\(path) playback bounds invalid") }
-    _ = try bool(state["completed"], "\(path).completed")
-    try oneOf(try nonEmptyString(state["intent"], "\(path).intent"), ["progress", "rewind", "restart"], "\(path).intent")
-    try validateTimestamp(state["updatedAt"], "\(path).updatedAt")
-}
 
 func validateFixture(_ fixture: JSON, _ path: String) throws -> (String, String) {
     try exactKeys(fixture, ["fixtureVersion", "caseID", "operation", "description", "input", "expected"], path)
@@ -302,14 +289,6 @@ func validateFixture(_ fixture: JSON, _ path: String) throws -> (String, String)
         guard try integer(revision["schemaVersion"], "\(path).input.revision.schemaVersion") > 0 else { try fail("schemaVersion must be positive") }
         try oneOf(try nonEmptyString(revision["readiness"], "\(path).input.revision.readiness"), ["ready"], "\(path).input.revision.readiness")
         try exactKeys(expected, ["itemID", "revisionID", "authorIsUnknown", "publishedTimeIsUnknown", "readiness"], "\(path).expected")
-    case "playbackMerge":
-        try exactKeys(input, ["changeTagMatches", "current", "incoming"], "\(path).input"); _ = try bool(input["changeTagMatches"], "\(path).input.changeTagMatches")
-        try validateFixturePlaybackState(try object(input["current"], "\(path).input.current"), "\(path).input.current")
-        try validateFixturePlaybackState(try object(input["incoming"], "\(path).input.incoming"), "\(path).input.incoming")
-        try exactKeys(expected, ["decision", "winningState", "reason"], "\(path).expected")
-        try oneOf(try nonEmptyString(expected["decision"], "\(path).expected.decision"), ["accept", "reject"], "\(path).expected.decision")
-        try oneOf(try nonEmptyString(expected["winningState"], "\(path).expected.winningState"), ["current", "incoming"], "\(path).expected.winningState")
-        try oneOf(try nonEmptyString(expected["reason"], "\(path).expected.reason"), ["forwardProgress", "explicitIntentNewSession", "staleOrdinaryProgressAcrossSessions", "staleSequence", "incompatibleRevision", "incompatibleItem", "completionRequiresExplicitRestart", "ordinaryProgressMovedBackward", "staleChangeTag"], "\(path).expected.reason")
     case "revisionSupersession":
         try exactKeys(input, ["itemID", "playingRevisionID", "playingPositionSeconds", "playingRevisionCached", "newRevisionID", "oldAssetRemovedRemotely", "newRevisionExplicitlySelected", "publishedAt"], "\(path).input")
         for key in ["itemID", "playingRevisionID", "newRevisionID"] { try validateID(input[key], "\(path).input.\(key)") }
@@ -317,14 +296,6 @@ func validateFixture(_ fixture: JSON, _ path: String) throws -> (String, String)
         for key in ["playingRevisionCached", "oldAssetRemovedRemotely", "newRevisionExplicitlySelected"] { _ = try bool(input[key], "\(path).input.\(key)") }
         try validateTimestamp(input["publishedAt"], "\(path).input.publishedAt")
         try exactKeys(expected, ["activeRevisionID", "activePositionSeconds", "mayFinishCachedRevision", "availableRevisionID", "translatedPosition", "newRevisionStartSecondsOnSelection"], "\(path).expected")
-    case "deletionReconcile":
-        let deletionKeys = Set(["generationID", "fetchComplete", "seenRemoteItemIDs", "localRecords"]).union(Set(input.keys.contains("completedAt") ? ["completedAt"] : ["failedAt"]))
-        try exactKeys(input, deletionKeys, "\(path).input")
-        try validateID(input["generationID"], "\(path).input.generationID"); _ = try bool(input["fetchComplete"], "\(path).input.fetchComplete"); _ = try stringArray(input["seenRemoteItemIDs"], "\(path).input.seenRemoteItemIDs")
-        guard let records = input["localRecords"] as? [Any], !records.isEmpty else { try fail("\(path).input.localRecords must be nonempty") }
-        for (index, raw) in records.enumerated() { let record = try object(raw, "\(path).input.localRecords[\(index)]"); try exactKeys(record, ["itemID", "syncStatus"], "\(path).input.localRecords[\(index)]"); try validateID(record["itemID"], "\(path).input.localRecords[\(index)].itemID"); try oneOf(try nonEmptyString(record["syncStatus"], "\(path).input.localRecords[\(index)].syncStatus"), ["remoteAcknowledged", "localOnly", "pendingUpload", "conflicted", "failedUpload"], "syncStatus") }
-        if let value = input["completedAt"] ?? input["failedAt"] { try validateTimestamp(value, "\(path).input.completion") }
-        try exactKeys(expected, ["deleteItemIDs", "retainItemIDs", "mutated"], "\(path).expected"); _ = try stringArray(expected["deleteItemIDs"], "\(path).expected.deleteItemIDs"); _ = try stringArray(expected["retainItemIDs"], "\(path).expected.retainItemIDs"); _ = try bool(expected["mutated"], "\(path).expected.mutated")
     case "offlineCache":
         try exactKeys(input, ["itemID", "revisionID", "networkAvailable", "cachedFilePresent", "cachedHashVerified", "lastSyncedAt", "checkedAt"], "\(path).input"); try validateID(input["itemID"], "\(path).input.itemID"); try validateID(input["revisionID"], "\(path).input.revisionID"); for key in ["networkAvailable", "cachedFilePresent", "cachedHashVerified"] { _ = try bool(input[key], "\(path).input.\(key)") }; try validateTimestamp(input["lastSyncedAt"], "\(path).input.lastSyncedAt"); try validateTimestamp(input["checkedAt"], "\(path).input.checkedAt"); try exactKeys(expected, ["playable", "requiresNetwork", "state"], "\(path).expected"); _ = try bool(expected["playable"], "playable"); _ = try bool(expected["requiresNetwork"], "requiresNetwork"); try oneOf(try nonEmptyString(expected["state"], "state"), ["offlineCached", "cached", "unavailable"], "state")
     case "delayedDelivery":

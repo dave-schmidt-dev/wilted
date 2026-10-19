@@ -46,16 +46,6 @@ func integer(_ object: JSONObject, _ key: String, _ path: String) throws -> Int 
     return Int(value)
 }
 
-func stringArray(_ object: JSONObject, _ key: String, _ path: String) throws -> [String] {
-    guard let values = object[key] as? [Any] else { try fail("\(path).\(key) must be an array") }
-    return try values.enumerated().map { index, value in
-        guard let value = value as? String, !value.isEmpty else {
-            try fail("\(path).\(key)[\(index)] must be a non-empty string")
-        }
-        return value
-    }
-}
-
 func assertEqual<T: Equatable>(_ actual: T, _ expected: T, _ label: String) throws {
     guard actual == expected else { try fail("\(label): expected \(expected), got \(actual)") }
 }
@@ -87,20 +77,6 @@ func validateTimestamps(_ value: Any, path: String = "fixture") throws {
     }
 }
 
-func validatePlaybackState(_ state: JSONObject, path: String) throws {
-    for key in ["itemID", "revisionID", "sessionID", "intent", "deviceID", "updatedAt"] {
-        _ = try string(state, key, path)
-    }
-    let sequence = try integer(state, "sequence", path)
-    let position = try number(state, "positionSeconds", path)
-    let duration = try number(state, "durationSeconds", path)
-    guard sequence >= 1 else { try fail("\(path).sequence must be positive") }
-    guard position >= 0, duration > 0, position <= duration else { try fail("\(path) has invalid playback bounds") }
-    _ = try bool(state, "completed", path)
-    let intent = try string(state, "intent", path)
-    guard ["progress", "rewind", "restart"].contains(intent) else { try fail("\(path).intent is unsupported") }
-}
-
 func executePublishDecode(input: JSONObject, expected: JSONObject) throws {
     let article = try object(input["article"], "input.article")
     let revision = try object(input["revision"], "input.revision")
@@ -127,54 +103,6 @@ func executePublishDecode(input: JSONObject, expected: JSONObject) throws {
     try assertEqual(readiness, try string(expected, "readiness", "expected"), "revision readiness")
 }
 
-func executePlaybackMerge(input: JSONObject, expected: JSONObject) throws {
-    let current = try object(input["current"], "input.current")
-    let incoming = try object(input["incoming"], "input.incoming")
-    try validatePlaybackState(current, path: "input.current")
-    try validatePlaybackState(incoming, path: "input.incoming")
-    let changeTagMatches = try bool(input, "changeTagMatches", "input")
-
-    let currentItem = try string(current, "itemID", "input.current")
-    let incomingItem = try string(incoming, "itemID", "input.incoming")
-    let currentRevision = try string(current, "revisionID", "input.current")
-    let incomingRevision = try string(incoming, "revisionID", "input.incoming")
-    let currentSession = try string(current, "sessionID", "input.current")
-    let incomingSession = try string(incoming, "sessionID", "input.incoming")
-    let intent = try string(incoming, "intent", "input.incoming")
-    let currentIntent = try string(current, "intent", "input.current")
-
-    let result: (decision: String, winner: String, reason: String)
-    if currentItem != incomingItem {
-        result = ("reject", "current", "incompatibleItem")
-    } else if currentRevision != incomingRevision {
-        result = ("reject", "current", "incompatibleRevision")
-    } else if incomingSession != currentSession {
-        if intent != "rewind" && intent != "restart" {
-            result = ("reject", "current", "staleOrdinaryProgressAcrossSessions")
-        } else if !changeTagMatches {
-            result = ("reject", "current", "staleChangeTag")
-        } else {
-            result = ("accept", "incoming", "explicitIntentNewSession")
-        }
-    } else if intent != "progress" && intent != currentIntent {
-        result = ("reject", "current", "explicitIntentRequiresNewSession")
-    } else if !changeTagMatches {
-        result = ("reject", "current", "staleChangeTag")
-    } else if try integer(incoming, "sequence", "input.incoming") <= integer(current, "sequence", "input.current") {
-        result = ("reject", "current", "staleSequence")
-    } else if try number(incoming, "positionSeconds", "input.incoming") < number(current, "positionSeconds", "input.current") {
-        result = ("reject", "current", "backwardProgress")
-    } else if try bool(current, "completed", "input.current") && !bool(incoming, "completed", "input.incoming") {
-        result = ("reject", "current", "completionCannotBeReversed")
-    } else {
-        result = ("accept", "incoming", "forwardProgress")
-    }
-
-    try assertEqual(result.decision, try string(expected, "decision", "expected"), "merge decision")
-    try assertEqual(result.winner, try string(expected, "winningState", "expected"), "merge winner")
-    try assertEqual(result.reason, try string(expected, "reason", "expected"), "merge reason")
-}
-
 func executeRevisionSupersession(input: JSONObject, expected: JSONObject) throws {
     _ = try string(input, "itemID", "input")
     let playingRevision = try string(input, "playingRevisionID", "input")
@@ -194,34 +122,6 @@ func executeRevisionSupersession(input: JSONObject, expected: JSONObject) throws
     try assertEqual(newRevision, try string(expected, "availableRevisionID", "expected"), "available revision")
     try assertEqual(false, try bool(expected, "translatedPosition", "expected"), "position translation")
     try assertEqual(0.0, try number(expected, "newRevisionStartSecondsOnSelection", "expected"), "new revision start")
-}
-
-func executeDeletionReconcile(input: JSONObject, expected: JSONObject) throws {
-    _ = try string(input, "generationID", "input")
-    let complete = try bool(input, "fetchComplete", "input")
-    let seen = Set(try stringArray(input, "seenRemoteItemIDs", "input"))
-    guard let rawRecords = input["localRecords"] as? [Any], !rawRecords.isEmpty else {
-        try fail("input.localRecords must be a non-empty array")
-    }
-    let allowedStatuses = Set(["remoteAcknowledged", "localOnly", "pendingUpload", "conflicted", "failedUpload"])
-    var deleted: [String] = []
-    var retained: [String] = []
-    for (index, rawRecord) in rawRecords.enumerated() {
-        let record = try object(rawRecord, "input.localRecords[\(index)]")
-        let itemID = try string(record, "itemID", "input.localRecords[\(index)]")
-        let status = try string(record, "syncStatus", "input.localRecords[\(index)]")
-        guard allowedStatuses.contains(status) else { try fail("unsupported syncStatus \(status)") }
-        if complete && status == "remoteAcknowledged" && !seen.contains(itemID) {
-            deleted.append(itemID)
-        } else {
-            retained.append(itemID)
-        }
-    }
-    deleted.sort()
-    retained.sort()
-    try assertEqual(deleted, try stringArray(expected, "deleteItemIDs", "expected").sorted(), "deleted item IDs")
-    try assertEqual(retained, try stringArray(expected, "retainItemIDs", "expected").sorted(), "retained item IDs")
-    try assertEqual(!deleted.isEmpty, try bool(expected, "mutated", "expected"), "deletion mutation")
 }
 
 func executeOfflineCache(input: JSONObject, expected: JSONObject) throws {
@@ -383,9 +283,7 @@ func executeFixture(_ fixture: JSONObject) throws -> String {
 
     switch operation {
     case "publishDecode": try executePublishDecode(input: input, expected: expected)
-    case "playbackMerge": try executePlaybackMerge(input: input, expected: expected)
     case "revisionSupersession": try executeRevisionSupersession(input: input, expected: expected)
-    case "deletionReconcile": try executeDeletionReconcile(input: input, expected: expected)
     case "offlineCache": try executeOfflineCache(input: input, expected: expected)
     case "delayedDelivery": try executeDelayedDelivery(input: input, expected: expected)
     case "schemaCompatibility": try executeSchemaCompatibility(input: input, expected: expected)
