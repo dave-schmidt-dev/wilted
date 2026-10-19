@@ -42,6 +42,35 @@ struct ArticleExtractionTests {
         }
     }
 
+    @Test func acceptsLongArticleThatMentionsWallPhrasesDeepInTheBody() async throws {
+        let sentence = "The garden stayed quiet through the long afternoon while the wind moved slowly across the empty fields."
+        let prose = Array(repeating: "<p>\(sentence)</p>", count: 40).joined()
+        let html = """
+        <html><head><title>Privacy Settings in Practice</title></head><body><main>
+        \(prose)
+        <p>Subscribe to continue reading our coverage.</p>
+        <p>Become a member to support independent writing.</p>
+        <p>Adjust privacy settings at any time using Manage choices.</p>
+        </main></body></html>
+        """
+        let url = try #require(URL(string: "https://example.test/articles/long"))
+        let result = try await NativeArticleExtractor().extract(url, html: Data(html.utf8))
+        #expect(result.title == "Privacy Settings in Practice")
+        #expect(result.body.contains("Subscribe to continue"))
+        #expect(result.body.contains("Become a member"))
+        #expect(result.body.contains("privacy settings"))
+        #expect(result.body.contains("Manage choices"))
+    }
+
+    @Test func refusesShortWallStubsEvenWithoutFixtures() async throws {
+        let html = "<html><head><title>Members only</title></head><body><main><p>A few words before Subscribe to continue reading</p></main></body></html>"
+        let url = try #require(URL(string: "https://example.test/paywall-stub"))
+        do {
+            _ = try await NativeArticleExtractor().extract(url, html: Data(html.utf8))
+            Issue.record("Expected paywall result")
+        } catch let error as ArticleExtractionError { #expect(error == .unsupported("paywall")) }
+    }
+
     private func fixture(_ name: String) throws -> Data {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return try Data(contentsOf: root.appending(path: "Producer/Tests/Fixtures/ArticleExtraction/\(name)"))

@@ -78,6 +78,8 @@ public struct URLSessionArticleLoader: ArticleLoading, Sendable {
 
 public struct NativeArticleExtractor: Sendable {
     public static let maximumHTMLBytes = 5 * 1_024 * 1_024
+    /// Wall pages are short stubs, so phrase checks apply only to bodies at or under this many words.
+    static let wallPhraseMaximumWords = 300
     private let loader: any ArticleLoading
 
     public init(loader: any ArticleLoading = URLSessionArticleLoader()) { self.loader = loader }
@@ -122,16 +124,19 @@ public struct NativeArticleExtractor: Sendable {
             ?? capture(#"(?is)<body\b[^>]*>(.*?)</body\s*>"#, in: document)
             ?? document
         let body = normalize(renderText(fragment))
+        let wordCount = body?.split(whereSeparator: \.isWhitespace).count ?? 0
         let lower = (body ?? "").lowercased()
         let fullText = normalize(decodeEntities(stripTags(document)))?.lowercased() ?? ""
         if document.range(of: #"(?is)<(?:div|main)\b[^>]*id\s*=\s*[\"'](?:app|root)[\"'][^>]*>\s*</(?:div|main)\s*>"#, options: .regularExpression) != nil,
            document.range(of: #"(?is)<script\b"#, options: .regularExpression) != nil,
            body == nil { throw ArticleExtractionError.unsupported("JavaScript required") }
-        if fullText.contains("privacy settings") && fullText.contains("manage choices") {
-            throw ArticleExtractionError.unsupported("consent wall")
-        }
-        if lower.contains("subscribe to continue") || lower.contains("become a member") {
-            throw ArticleExtractionError.unsupported("paywall")
+        if wordCount <= Self.wallPhraseMaximumWords {
+            if fullText.contains("privacy settings") && fullText.contains("manage choices") {
+                throw ArticleExtractionError.unsupported("consent wall")
+            }
+            if lower.contains("subscribe to continue") || lower.contains("become a member") {
+                throw ArticleExtractionError.unsupported("paywall")
+            }
         }
         guard let title, let body else { throw ArticleExtractionError.emptyContent }
         let canonicalString = capture(#"(?is)<link\b[^>]*rel\s*=\s*[\"']canonical[\"'][^>]*href\s*=\s*[\"']([^\"']+)[\"']"#, in: document)
