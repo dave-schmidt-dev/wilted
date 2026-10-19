@@ -151,6 +151,8 @@ Explicitly excluded from the active Mac milestone: automatic classification, rad
 | `Producer/Sources/WiltedProducer/LocalLibrary/` | Versioned SwiftData library store split into 23 focused core, type, schema, and behavior files. |
 | `Producer/Sources/WiltedProducer/Preparation/` | Focused Swift preparation pipeline types, IPC runner, response handling, and commit behavior. |
 | `Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests*.swift` | Fourteen LocalLibraryStore behavior test files. |
+| `Producer/Tests/WiltedProducerTests/PlaybackControllerTests*.swift` | One shared XCTest class with behavior extensions for completion, failed loads, queue navigation and eligibility, transport, statistics and interruptions; SwiftPM discovers every extension. |
+| `Producer/Runtime/tests/test_ads*.py`, `ads_test_support.py` | Ad-classification, voting, boundary, recovery and audio regressions with shared synthetic fixtures; `conftest.py` includes every ad test module in the unit tier. |
 | `WiltedMacTests/WiltedMacModelTests*.swift`, `WiltedMacTests/WiltedMacModelTestDoubles.swift` | Twenty-eight Mac model test and test-double files. |
 | `WiltediOS/Library/LibraryRuntime.swift` | Process-wide library model, player and settings (`LibraryRuntime.shared`), started without any iPhone window scene; the phone Larder, CarPlay and Siri all use it. |
 | `WiltediOS/Library/LibraryOwnPositionStore.swift` | The phone's own last position per episode, persisted (readable while locked) so offline resume does not start at 0. |

@@ -4,7 +4,12 @@ import pytest
 
 _TEST_MARKERS = {
     "test_ads.py": ("unit",),
+    "test_ads_audio.py": ("unit",),
+    "test_ads_boundaries.py": ("unit",),
+    "test_ads_classification.py": ("unit",),
     "test_ads_cut_guard.py": ("unit",),
+    "test_ads_recovery.py": ("unit",),
+    "test_ads_voting.py": ("unit",),
     "test_cache.py": ("integration",),
     "test_edge_cases.py": ("integration",),
     "test_execution_capability.py": ("integration",),
