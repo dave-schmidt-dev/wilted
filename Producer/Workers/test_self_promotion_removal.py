@@ -4,6 +4,8 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import sys
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -220,7 +222,22 @@ class SelfPromotionRemovalTests(unittest.TestCase):
         )
         self.assertEqual(len(analysis_off.detections), 0)
 
+    def _stand_in_wilted(self):
+        """Give `detect_and_cut` its `wilted` imports, whatever ran before.
+
+        Other modules leave a stand-in `wilted` without `llm` in `sys.modules`
+        (`test_wilted_pipeline`), and the real package is importable only with
+        the runtime on the path.
+        """
+        llm = types.ModuleType("wilted.llm")
+        llm.create_backend, llm.DEFAULT_GGUF_MODEL = None, "model.gguf"
+        package = types.ModuleType("wilted")
+        package.__path__ = []
+        package.ads, package.llm = self.ads, llm
+        return mock.patch.dict(sys.modules, {"wilted": package, "wilted.ads": self.ads, "wilted.llm": llm})
+
     def test_detect_and_cut_flag_parsing(self):
+        self.enterContext(self._stand_in_wilted())
         segments = [self.Segment(0.0, 10.0, "content passage")]
         test_cases = [
             (True, True),
