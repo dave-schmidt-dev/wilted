@@ -1,12 +1,12 @@
 import XCTest
 
 @MainActor
-extension WiltedMacEpisodeInfoUITests {
+extension WiltedMacJourneyUITests {
     /// Discovery of a manual playlist from a Larder row, the rename that
     /// updates beside the title while its write is pending, the established
     /// player path with the labelled Share options panel, and a confirmed
     /// delete that falls back to the Larder without touching the episode.
-    func testManualPlaylistDiscoveryRenameDeleteAndShare() throws {
+    func test07ManualPlaylistDiscoveryRenameDeleteAndShare() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-playlist-write-delay"])
         let episodeID = try keepFixtureEpisode(app)
         try openLarderForEpisode(app, id: episodeID)
@@ -55,24 +55,23 @@ extension WiltedMacEpisodeInfoUITests {
         XCTAssertTrue(pageSaving.waitForNonExistence(timeout: 10), "the rename's durable write settles")
         try waitForPlaylistWriteAcknowledgments(2)
 
-        // The durable store keeps the playlist, its entry and its name across a
-        // relaunch of the same owned fixture directory.
-        try relaunchFixture(app)
+        // That the rename and its entry survive a relaunch is proved headlessly
+        // (`WiltedMacPlaylistRelaunchTests`), so this run keeps its one launch.
         let sidebarRow = app.descendants(matching: .any)["wilted-navigation-playlist:\(playlistID)"]
-        XCTAssertTrue(sidebarRow.waitForExistence(timeout: 10), "the created playlist survives a relaunch")
+        XCTAssertTrue(sidebarRow.waitForExistence(timeout: 10), "the renamed playlist keeps its sidebar row")
         // The row names its kind for VoiceOver, as `WiltedMacSidebarRow` describes it.
         XCTAssertEqual(sidebarRow.label, "\(name), Manual playlist")
+        // Leave the playlist first, so selecting it again is the row click's doing.
+        try openLarderForEpisode(app, id: episodeID)
         // The row's centre falls between the name and its kind tag, so this
         // click also proves the whole row, not just its drawn text, selects.
         sidebarRow.click()
-        XCTAssertTrue(title.waitForExistence(timeout: 10), "the renamed playlist heading survives relaunch")
+        XCTAssertTrue(rename.waitForExistence(timeout: 10), "the sidebar row selects the playlist page")
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "the renamed playlist heading is on its page")
         XCTAssertTrue(words(title).contains(name))
         XCTAssertTrue(app.buttons["wilted-playlist-show-notes-\(episodeID)"].waitForExistence(timeout: 10),
-                      "the durable playlist keeps the kept entry")
+                      "the playlist keeps the kept entry")
 
-        // A fixture relaunch rebuilds the Larder queue from Keep, so the
-        // established fixture path re-keeps the same episode before playing.
-        XCTAssertEqual(try keepFixtureEpisode(app), episodeID)
         // Delete before playback: the active episode moves to Now Playing, so
         // the waiting-row retention check belongs before that transition.
         sidebarRow.click()
@@ -115,7 +114,7 @@ extension WiltedMacEpisodeInfoUITests {
     /// The automatic editor: copied rules, a grouped formula with its live
     /// preview, an unknown reference that clears both, a preview title's exact
     /// notes, and a save whose pending and completion states are visible.
-    func testAutomaticPlaylistFormulaPreviewAndSave() throws {
+    func test08AutomaticPlaylistFormulaPreviewAndSave() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-playlist-write-delay"])
         let episodeID = try keepFixtureEpisode(app)
         let playlistID = try createAutomaticPlaylist(app)
@@ -354,19 +353,6 @@ extension WiltedMacEpisodeInfoUITests {
     private func releasePlaylistWrite(_ number: Int) throws {
         let root = try XCTUnwrap(latestFixtureRoot)
         try Data().write(to: root.appendingPathComponent("playlist-ui-write-release-\(number)"), options: .atomic)
-    }
-
-    /// Relaunches the same fixture over its own state directory.
-    private func relaunchFixture(_ app: XCUIApplication) throws {
-        app.terminate()
-        app.launch()
-        try WiltedMacUITestApplicationLaunch.reopenFixture(app)
-        app.activate()
-        if !app.wait(for: .runningForeground, timeout: 10) {
-            app.activate()
-            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-        }
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
     }
 
     /// The delayed fixture hook counts each playlist write it held open; this

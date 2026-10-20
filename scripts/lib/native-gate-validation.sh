@@ -296,8 +296,8 @@ result_bundle_summary_passed() {
 
 validate_mac_ui_selector() {
   local selector="$1"
-  if [[ ! "$selector" =~ ^WiltedMacUITests/(WiltedMacSmokeUITests|WiltedMacSidebarChromeUITests|WiltedMacEpisodeInfoUITests)/test[A-Za-z0-9_]+$ ]]; then
-    fail 'WILTED_MAC_UI_SELECTOR must name one registered Smoke, SidebarChrome, or EpisodeInfo test method'
+  if [[ ! "$selector" =~ ^WiltedMacUITests/WiltedMacJourneyUITests/test[A-Za-z0-9_]+$ ]]; then
+    fail 'WILTED_MAC_UI_SELECTOR must name one WiltedMacJourneyUITests test method'
     return 1
   fi
 }
@@ -346,7 +346,8 @@ validate_unit_test_environment() {
 # The default Mac UI floor is read from the suite rather than pinned, so it
 # follows journeys as they are added, merged, or retired (INVARIANTS.md
 # W-INV-012) while a run that executes fewer tests than the suite declares
-# still fails.
+# still fails. Every journey is a `WiltedMacJourneyUITests` method; these are
+# the files that hold them.
 mac_ui_declared_test_count() {
   local count source source_count
   count=0
@@ -380,28 +381,35 @@ expected_test_count_floor() {
 }
 
 assert_mac_ui_selector_floor_contract() {
-  local focused='WiltedMacUITests/WiltedMacSmokeUITests/testFocusedSelector'
-  grep -q 'testCommandQuitDrainsRepliesOnceAndExits' \
+  local focused='WiltedMacUITests/WiltedMacJourneyUITests/testFocusedSelector'
+  # Quit ends the one shared launch, so it must stay the last journey by name.
+  grep -Eq '^[[:space:]]*func[[:space:]]+test09CommandQuitDrainsRepliesOnceAndExits\(' \
     "$repo_root/WiltedMacUITests/WiltedMacQuitUITests.swift" ||
-    fail 'command quit drain journey must stay registered'
+    fail 'command quit drain journey must stay registered as the last journey'
+  local source last_journey
+  last_journey="$(for source in WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests WiltedMacEpisodeInfoUITests WiltedMacPlaylistUITests; do
+    grep -hoE '^[[:space:]]*func[[:space:]]+test[A-Za-z0-9_]+' "$repo_root/WiltedMacUITests/$source.swift"
+  done | awk '{print $2}' | LC_ALL=C sort | tail -n 1)"
+  [[ "$last_journey" == 'test09CommandQuitDrainsRepliesOnceAndExits' ]] ||
+    fail "the Quit journey must sort after every other journey; $last_journey sorts last"
 
-  local chrome='WiltedMacUITests/WiltedMacSidebarChromeUITests/testCollapsedSidebarKeepsContentBelowWindowControls'
+  local chrome='WiltedMacUITests/WiltedMacJourneyUITests/test03CollapsedSidebarKeepsContentBelowWindowControls'
   [[ "$(WILTED_MAC_UI_SELECTOR="$chrome" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
     fail 'focused SidebarChrome selector must require exactly one test'
-  grep -q 'testCollapsedSidebarKeepsContentBelowWindowControls' \
+  grep -q 'test03CollapsedSidebarKeepsContentBelowWindowControls' \
     "$repo_root/WiltedMacUITests/WiltedMacSidebarChromeUITests.swift" ||
     fail 'collapsed sidebar native window chrome journey must stay registered'
-  local episode_info='WiltedMacUITests/WiltedMacEpisodeInfoUITests/testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer'
+  local episode_info='WiltedMacUITests/WiltedMacJourneyUITests/test06EpisodeInfoJourneyAcrossFeedsHistoryAndPlayer'
   [[ "$(WILTED_MAC_UI_SELECTOR="$episode_info" expected_test_count_floor macos-ui-tests)" == "1" ]] ||
     fail 'focused EpisodeInfo selector must require exactly one test'
-  grep -Eq '^[[:space:]]*func[[:space:]]+testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer\(' \
+  grep -Eq '^[[:space:]]*func[[:space:]]+test06EpisodeInfoJourneyAcrossFeedsHistoryAndPlayer\(' \
     "$repo_root/WiltedMacUITests/WiltedMacEpisodeInfoUITests.swift" ||
     fail 'saved episode info native journey must stay registered'
   # The playlist owner-feedback journeys raise the declared Mac UI floor from
   # seven to nine; the two retry journeys stay unpinned.
   for method in \
-    testManualPlaylistDiscoveryRenameDeleteAndShare \
-    testAutomaticPlaylistFormulaPreviewAndSave; do
+    test07ManualPlaylistDiscoveryRenameDeleteAndShare \
+    test08AutomaticPlaylistFormulaPreviewAndSave; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" \
       "$repo_root/WiltedMacUITests/WiltedMacPlaylistUITests.swift" ||
       fail "playlist owner-feedback native journey must stay registered: $method"
@@ -419,7 +427,7 @@ assert_mac_ui_selector_floor_contract() {
     fail 'the off-peak Prepare now journey must stay in the Mac journey tests'
   # `fail` exits, so the rejecting probe runs in a subshell: the contract is
   # that an invalid selector must not SUCCEED here, not that it must return.
-  if ( WILTED_MAC_UI_SELECTOR='WiltedMacUITests/OtherTests/testNope' \
+  if ( WILTED_MAC_UI_SELECTOR='WiltedMacUITests/WiltedMacSmokeUITests/testNope' \
     expected_test_count_floor macos-ui-tests ) >/dev/null 2>&1; then
     fail 'invalid Mac UI selector lowered the test-count floor'
   fi

@@ -1,12 +1,8 @@
 import XCTest
 
 @MainActor
-final class WiltedMacEpisodeInfoUITests: XCTestCase {
-    var latestFixtureRoot: URL?
-    let savedNotes = "A walk through the machines that keep the field office quiet."
-    private let savedTranscript = "Welcome back to Field Notes. Today, the machines that keep the office quiet."
-
-    func testTranscriptRetryReadsAgainAndShowsSavedText() throws {
+extension WiltedMacJourneyUITests {
+    func test04TranscriptRetryReadsAgainAndShowsSavedText() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-transcript-read-fails-once"])
         let id = openFeedsNotes(app)
         let notes = element(app, "wilted-feeds-notes-text-\(id)")
@@ -34,7 +30,7 @@ final class WiltedMacEpisodeInfoUITests: XCTestCase {
         closePopover(app, prefix: "wilted-feeds", id: id)
     }
 
-    func testByIDRetryLoadsNotesAfterFailure() throws {
+    func test05ByIDRetryLoadsNotesAfterFailure() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-info-read-fails-once"])
         let id = openFeedsNotes(app)
         XCTAssertTrue(element(app, "wilted-feeds-notes-text-\(id)").waitForExistence(timeout: 10))
@@ -65,7 +61,7 @@ final class WiltedMacEpisodeInfoUITests: XCTestCase {
         closePopover(app, prefix: "wilted-feed-history", id: id)
     }
 
-    func testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer() throws {
+    func test06EpisodeInfoJourneyAcrossFeedsHistoryAndPlayer() throws {
         let app = try launchFixture()
         let feeds = element(app, "wilted-navigation-feeds")
         XCTAssertTrue(feeds.waitForExistence(timeout: 10))
@@ -98,7 +94,6 @@ final class WiltedMacEpisodeInfoUITests: XCTestCase {
         // Retirement removed the playable revision. A fresh, owned fixture
         // gives the player a prepared episode without assuming Restore also
         // reacquires media from the synthetic feed's unreachable URL.
-        app.terminate()
         let playing = try launchFixture()
         let playingFeeds = element(playing, "wilted-navigation-feeds")
         XCTAssertTrue(playingFeeds.waitForExistence(timeout: 10))
@@ -193,50 +188,10 @@ final class WiltedMacEpisodeInfoUITests: XCTestCase {
         XCTAssertEqual(counts["transcript"] as? Int, transcript)
     }
 
-    func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
-        app.descendants(matching: .any)[identifier]
-    }
-
-    func words(_ element: XCUIElement) -> String {
-        ([element] + element.staticTexts.allElementsBoundByIndex).map {
-            [$0.label, $0.value as? String ?? ""].joined(separator: " ")
-        }.joined(separator: " ")
-    }
-
-    func attachWindow(_ app: XCUIApplication, name: String) {
-        guard app.windows.firstMatch.exists else { return }
-        let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
-    }
-
     func launchFixture(extraArguments: [String] = []) throws -> XCUIApplication {
-        let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-episode-info-ui-test")
-        let app = XCUIApplication()
-        addTeardownBlock { [weak self, app, root] in
-            if (self?.testRun?.totalFailureCount ?? 0) > 0 {
-                self?.attachWindow(app, name: "Episode info failure")
-            }
-            app.terminate()
-            try WiltedMacUITemporaryState.removeFixtureRoot(root)
-        }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        latestFixtureRoot = root
-        app.launchArguments = [
-            "-ApplePersistenceIgnoreState", "YES", "--wilted-ui-fixture-ready",
-            "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared",
+        try openFixture([
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-prepared",
             "--wilted-ui-fixture-window-width", "1400",
-            "--wilted-ui-fixture-state-directory", root.path,
-        ] + extraArguments
-        app.launch()
-        try WiltedMacUITestApplicationLaunch.reopenFixture(app)
-        app.activate()
-        if !app.wait(for: .runningForeground, timeout: 10) {
-            app.activate()
-            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-        }
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
-        return app
+        ] + extraArguments, prefix: "wilted-episode-info-ui-test")
     }
 }

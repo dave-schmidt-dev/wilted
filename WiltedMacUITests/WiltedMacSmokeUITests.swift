@@ -1,17 +1,15 @@
 import XCTest
 
 @MainActor
-final class WiltedMacSmokeUITests: XCTestCase {
-    private var fixtureStateDirectory: URL?
-    private var launchedFixtureApps: [XCUIApplication] = []
+extension WiltedMacJourneyUITests {
     /// Absorbs:
     /// - testEachDestinationExclusivelyOccupiesTheDetailRegion
     /// - testSidebarListsDestinationsOnlyAndNotTheArticleList (sidebar assertion only)
     /// - testFeedsPageOwnsSubscribingAndTheLarderAsksForAnArticle
     /// - testLarderArticleRowOffersRemoval
     /// - testFeedsPageListsPodcastFeedsWithPerFeedControls
-    func testIntakeJourneyAcrossLarderFeedsAndSettings() {
-        let app = launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-window-width", "900"])
+    func test01IntakeJourneyAcrossLarderFeedsAndSettings() throws {
+        let app = try launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-window-width", "900"])
 
         let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
         let navLarder = app.descendants(matching: .any)["wilted-navigation-larder"]
@@ -244,8 +242,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
     /// - testLarderSearchFiltersAndTheFeedsRestorePath
     /// - testUnpreparedEpisodeHasNoListeningActionAndTheLarderOwnsItsStep
     /// - the Feeds show-notes popover
-    func testEpisodeDecisionJourneyFromFeedsToLarder() {
-        let app = launch(arguments: [
+    func test02EpisodeDecisionJourneyFromFeedsToLarder() throws {
+        let app = try launch(arguments: [
             "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts",
             "--wilted-ui-fixture-download-failure",
             "--wilted-ui-fixture-window-width", "1200"
@@ -364,9 +362,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertTrue(larderRow.waitForExistence(timeout: 5))
 
         // The same journey ends with a wide playing fixture to exercise the side pane.
-        app.terminate()
-        let playing = launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
-                                         "--wilted-ui-fixture-window-width", "1400"])
+        let playing = try launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
+                                             "--wilted-ui-fixture-window-width", "1400"])
         let itemTitle = playing.descendants(matching: .any)["wilted-player-item-title"]
         XCTAssertTrue(itemTitle.waitForExistence(timeout: 10), "the actual playing item is visible in the side pane")
         XCTAssertGreaterThan(itemTitle.frame.minX, playing.windows.firstMatch.frame.midX,
@@ -407,9 +404,6 @@ final class WiltedMacSmokeUITests: XCTestCase {
         XCTAssertFalse(restartItem.exists, "restart does not open the More menu")
     }
 
-    /// The words an element shows. macOS puts a Text's words in its value, not
-    /// its label, and a Text with links can hand each run to a child, so the
-    /// element and its static-text descendants are read together.
     /// Presses the removal dialog's destructive button: by identifier, or by
     /// its label where the dialog does not carry identifiers through.
     private func confirmRemoval(in app: XCUIApplication, label: String) {
@@ -426,88 +420,8 @@ final class WiltedMacSmokeUITests: XCTestCase {
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    /// Diagnostics are limited to the synthetic fixture window.
-    private func attachFixtureWindowIfAvailable(_ app: XCUIApplication) {
-        let window = app.windows.firstMatch
-        guard window.exists else { return }
-        let hierarchy = XCTAttachment(string: window.debugDescription)
-        hierarchy.name = "Fixture window hierarchy"
-        hierarchy.lifetime = .keepAlways
-        add(hierarchy)
-        let image = XCTAttachment(screenshot: window.screenshot())
-        image.name = "Fixture window"
-        image.lifetime = .keepAlways
-        add(image)
-    }
-
-    /// Attaches only the fixed lifecycle trace from this fixture's owned state root.
-    private func attachFixtureWindowLifecycleTrace(stage: String) {
-        guard let fixtureStateDirectory else { return }
-        let trace = fixtureStateDirectory.appendingPathComponent(
-            "ns-window-lifecycle.jsonl", isDirectory: false
-        )
-        let contents = (try? String(contentsOf: trace, encoding: .utf8))
-            ?? "No native window lifecycle records were written."
-        let attachment = XCTAttachment(string: contents)
-        attachment.name = "Fixture native window lifecycle - \(stage)"
-        attachment.lifetime = .keepAlways
-        add(attachment)
-    }
-
-    private func launch(arguments: [String]) -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"] + arguments + [
-            "--wilted-ui-fixture-state-directory", fixtureRoot().path,
-            "--wilted-ui-fixture-window-trace",
-        ]
-        app.launch()
-        launchedFixtureApps.append(app)
-        do {
-            try WiltedMacUITestApplicationLaunch.reopenFixture(app)
-        } catch {
-            XCTFail("Fixture LaunchServices identity/reopen failed: \(error)")
-            fatalError("Fixture reopen was refused")
-        }
-        app.activate()
-        // Match the Chrome journey activation pattern; foreground and window
-        // readiness remain separate checks while this launch hypothesis is qualified.
-        if !app.wait(for: .runningForeground, timeout: 10) {
-            app.activate()
-            guard app.wait(for: .runningForeground, timeout: 10) else {
-                attachFixtureWindowLifecycleTrace(stage: "foreground readiness failure")
-                attachFixtureWindowIfAvailable(app)
-                XCTFail("Fixture app did not reach runningForeground; observed state: \(app.state)")
-                fatalError("Fixture app did not become frontmost")
-            }
-        }
-        guard app.windows.firstMatch.waitForExistence(timeout: 10) else {
-            attachFixtureWindowLifecycleTrace(stage: "window readiness failure")
-            attachFixtureWindowIfAvailable(app)
-            XCTFail("Fixture app did not present a window; observed state: \(app.state)")
-            fatalError("Fixture app window is unavailable")
-        }
-        attachFixtureWindowLifecycleTrace(stage: "window ready")
-        return app
-    }
-
-    private func fixtureRoot() -> URL {
-        if let fixtureStateDirectory { return fixtureStateDirectory }
-        do {
-            let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-ui-test")
-            addTeardownBlock { [weak self, root] in
-                if (self?.testRun?.totalFailureCount ?? 0) > 0 {
-                    self?.launchedFixtureApps.forEach { self?.attachFixtureWindowIfAvailable($0) }
-                }
-                self?.launchedFixtureApps.forEach { $0.terminate() }
-                try WiltedMacUITemporaryState.removeFixtureRoot(root)
-            }
-            // Register removal before creating the fixture root.
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-            fixtureStateDirectory = root
-            return root
-        } catch {
-            XCTFail("Could not create owned UI fixture root: \(error)")
-            fatalError("The UI test runner temporary directory is unavailable")
-        }
+    /// A fresh Smoke fixture, traced so a window that never appears says why.
+    private func launch(arguments: [String]) throws -> XCUIApplication {
+        try openFixture(arguments + ["--wilted-ui-fixture-window-trace"], prefix: "wilted-ui-test")
     }
 }
