@@ -81,7 +81,7 @@ rationale: CloudKit is a transfer service, not the source of truth or a real-tim
 area: ["WiltedKit/**", "WiltedMacTests/**", "WiltediOSTests/**", "CloudSync/**", "Playback/**", "Producer/Tests/Fixtures/**", "Producer/Tests/WiltedProducerTests/LocalLibraryStoreTests*.swift"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: Publish, decode, merge, completion, deletion, version mismatch, offline cache, partial failure, delayed delivery, typed account transitions, and deterministic account-change interleavings use shared fixtures so Mac and iOS cannot silently diverge.
+rationale: Publish, decode, revision supersession, version mismatch, offline cache, partial preparation failure, terminal timeouts, delayed delivery, typed account transitions, and deterministic account-change interleavings use shared fixtures so Mac and iOS cannot silently diverge. The live rules for adopting another device's playback position are pinned by `RemotePositionRulesTests`, not by fixtures.
 
 ### W-INV-009 — Release evidence remains separated
 area: ["README.md", "TASKS.md", "WiltedMac/**", "WiltediOS/**"]
