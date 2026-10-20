@@ -69,6 +69,7 @@ All notable changes to this project are documented in this file.
 - Episodes now keep their own web page address from the feed's item link: it is read when a feed loads, stored in the library (store schema V15, migrated with the usual backup), and published in the library sync so the phone can offer it. Relative, non-web, credentialed or self-referential links are ignored.
 
 ### Changed
+- Preparation journals keep bounded reasons, original timings and exact cue numbers for unresolved ad reviews, without storing model replies.
 - The Mac skips launch-time preparation fingerprints when no saved invalidation rule or explicit override needs one. Feed settings start loading before the Feeds page opens and become usable one complete feed at a time.
 - Durable intent and media bookkeeping keeps a successfully replaced file authoritative if the final folder sync fails, records the warning and retries that sync without rewriting the landed outcome.
 - Cutting an episode into many pieces is much faster: the cut now reads the original audio once instead of once per kept piece (450 pieces of a 30-minute episode took 7.5 s instead of over 9 minutes), and the audio it produces is unchanged.
