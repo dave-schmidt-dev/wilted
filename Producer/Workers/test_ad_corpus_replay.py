@@ -42,6 +42,22 @@ from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import transcript_sources as _worker_transcript_sources
 
+class AnalysisCall(tuple):
+    """An 'analyze' recording preserving the 5-tuple shape while exposing kwargs."""
+
+    kwargs: dict
+
+    def __new__(cls, segments, total, backend, ads_module, kwargs):
+        inst = super().__new__(cls, ("analyze", segments, total, backend, ads_module))
+        inst.kwargs = dict(kwargs)
+        return inst
+
+    def __getitem__(self, item):
+        if item == 5:
+            return self.kwargs
+        return super().__getitem__(item)
+
+
 class AdCorpusReplayWiringTests(unittest.TestCase):
     """The replay path, with the model stubbed out.
 
@@ -166,7 +182,7 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         self.use_runtime(self.fake_runtime())
 
         def recorder(ads_module, backend, segments, total, **kwargs):
-            calls.append(("analyze", segments, total, backend, ads_module))
+            calls.append(AnalysisCall(segments, total, backend, ads_module, kwargs))
             if analyze is not None:
                 return analyze()
             return wp.AdAnalysis(tuple(Ad(*span) for span in detections), wp.AdAnalysisAudit())
@@ -234,11 +250,15 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
                 return case
         self.fail("the Waveform case is no longer in the corpus")
 
-    def replay(self, case, detections=(), analyze=None, cache=None, store=None):
+    def replay(self, case, detections=(), analyze=None, cache=None, store=None,
+               remove_self_promotion=None):
         cache = cache if cache is not None else self.cache_for(case)
         store = store if store is not None else self.empty_store()
         self.install_stubs(detections, analyze)
-        return self.corpus.replay_spans(case, cache=cache, store=store)
+        replay_kwargs = {}
+        if remove_self_promotion is not None:
+            replay_kwargs["remove_self_promotion"] = remove_self_promotion
+        return self.corpus.replay_spans(case, cache=cache, store=store, **replay_kwargs)
 
     def analyzed(self):
         return next(call for call in self.calls if call[0] == "analyze")
@@ -375,7 +395,7 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         # nobody can attribute.
         stderr = io.StringIO()
         with mock.patch.object(self.corpus, "replay_spans",
-                               lambda case, *, cache, store: None), \
+                               lambda case, *, cache, store, **kwargs: None), \
                 redirect_stderr(stderr):
             results = self.corpus.run(
                 "replay", library=Path("/nowhere"), cache=Path("/nowhere"),
@@ -437,3 +457,199 @@ class AdCorpusReplayWiringTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(self.corpus.main(
                 ["--mode", "replay", "--cache", str(empty), "--store", str(store), "--strict"]), 1)
+
+    def test_case_without_self_promotion_replays_with_no_kwargs(self):
+        # A case without the flag makes today's call unchanged, passing no kwargs.
+        case = self.waveform()
+        self.assertNotIn("removeSelfPromotion", case)
+        self.replay(case)
+        call = self.analyzed()
+        self.assertEqual(call.kwargs, {})
+
+    def test_case_with_self_promotion_replays_with_kwarg(self):
+        # Feeds opting into self-promotion removal pass the kwarg through.
+        case = dict(self.waveform(), removeSelfPromotion=True)
+        self.replay(case, remove_self_promotion=True)
+        call = self.analyzed()
+        self.assertEqual(call.kwargs, {"remove_self_promotion": True})
+
+    def test_self_promotion_cli_overrides_case_manifest_setting(self):
+        # --self-promotion off overrides a case's true; on overrides an absent field.
+        # `run` reads cases from a manifest file, so the opted-in case has to be
+        # on disk: a dict handed to `cache_for` alone would leave the manifest's
+        # own case (no field) in play and pass without testing the override.
+        case_with_flag = dict(self.waveform(), removeSelfPromotion=True)
+        cache_with_flag = self.cache_for(case_with_flag)
+        manifest_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, manifest_dir, True)
+        manifest_with_flag = manifest_dir / "manifest.json"
+        manifest_with_flag.write_text(json.dumps({"cases": [case_with_flag]}), encoding="utf-8")
+        for setting, expected in (("manifest", {"remove_self_promotion": True}), ("off", {})):
+            with self.subTest(setting=setting):
+                self.calls.clear()
+                self.install_stubs()
+                with redirect_stderr(io.StringIO()):
+                    self.corpus.run(
+                        "replay", library=Path("/nowhere"), cache=cache_with_flag,
+                        store=self.empty_store(), manifest=manifest_with_flag, self_promotion=setting,
+                    )
+                self.assertEqual(self.analyzed().kwargs, expected)
+
+        self.calls.clear()
+        case_without_flag = self.waveform()
+        cache_without_flag = self.cache_for(case_without_flag)
+        self.install_stubs()
+        with redirect_stderr(io.StringIO()):
+            self.corpus.run(
+                "replay", library=Path("/nowhere"), cache=cache_without_flag,
+                store=self.empty_store(), self_promotion="on",
+            )
+        call = self.analyzed()
+        self.assertEqual(call.kwargs, {"remove_self_promotion": True})
+
+    def test_non_boolean_self_promotion_does_not_turn_flag_on(self):
+        # Only the JSON boolean true turns it on; strings and numbers stay off.
+        for non_bool in ("true", 1, "yes", 1.0, [True]):
+            with self.subTest(value=non_bool):
+                self.calls.clear()
+                case = dict(self.waveform(), removeSelfPromotion=non_bool)
+                self.assertFalse(self.corpus.effective_self_promotion(case))
+                self.replay(case)
+                call = self.analyzed()
+                self.assertEqual(call.kwargs, {})
+
+    def test_label_if_self_promotion_kept_scored_conditionally(self):
+        # House promotion spans pass when self-promotion removal is off and fail when on.
+        case = {
+            "id": "promo-case",
+            "show": "Promo Show",
+            "audioDurationSeconds": 60.0,
+            "expected": [{
+                "start": 10.0,
+                "end": 30.0,
+                "label": "must-cut",
+                "labelIfSelfPromotionKept": "acceptable-cut",
+                "why": "network cross-promotion",
+            }],
+        }
+        case_off = self.corpus.resolve_case_labels(case, remove_self_promotion=False)
+        verdict_off = self.corpus.score_case(case_off, produced=[])
+        self.assertTrue(verdict_off.passed)
+        self.assertEqual(verdict_off.spans[0].label, "acceptable-cut")
+
+        case_on = self.corpus.resolve_case_labels(case, remove_self_promotion=True)
+        verdict_on = self.corpus.score_case(case_on, produced=[])
+        self.assertFalse(verdict_on.passed)
+        self.assertEqual(verdict_on.spans[0].label, "must-cut")
+        self.assertIn("left 20.0s of advertising", verdict_on.reason)
+
+    def test_case_flag_filters_and_unknown_id_exits_two_without_work(self):
+        # --case runs only the named cases in manifest order; unknown ID exits 2 without running replay.
+        empty = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, empty, True)
+        store = empty / "adcorpus-inputs"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = self.corpus.main([
+                "--mode", "replay",
+                "--cache", str(empty),
+                "--store", str(store),
+                "--case", "waveform-two-preroll-sponsor-reads",
+            ])
+        self.assertEqual(code, 0)
+        replayed = [line for line in stderr.getvalue().splitlines() if line.startswith("ad-corpus: replaying")]
+        self.assertEqual(replayed, ["ad-corpus: replaying waveform-two-preroll-sponsor-reads"])
+
+        # Multiple cases run in manifest order even if specified out of order
+        all_cases = self.corpus.load_manifest()["cases"]
+        first_id = all_cases[0]["id"]
+        second_id = all_cases[1]["id"]
+        stderr = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            code = self.corpus.main([
+                "--mode", "replay",
+                "--cache", str(empty),
+                "--store", str(store),
+                "--case", second_id,
+                "--case", first_id,
+            ])
+        self.assertEqual(code, 0)
+        replayed = [line.split()[-1] for line in stderr.getvalue().splitlines() if line.startswith("ad-corpus: replaying")]
+        self.assertEqual(replayed, [first_id, second_id])
+
+        # Unknown ID exits 2 naming it without replaying anything
+        self.install_stubs()
+        self.calls.clear()
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as caught:
+                self.corpus.main([
+                    "--mode", "replay",
+                    "--cache", str(empty),
+                    "--store", str(store),
+                    "--case", "not-a-manifest-case-id",
+                ])
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("not-a-manifest-case-id", stderr.getvalue())
+        self.assertEqual(self.calls, [], "an unknown case id must not begin model or replay work")
+
+    def test_flag_on_replay_and_a_preparation_make_the_same_analysis_call(self):
+        # Feeds opting into self-promotion removal produce identical calls across replay and preparation.
+        case = dict(self.waveform(), removeSelfPromotion=True)
+        self.replay(case, remove_self_promotion=True)
+        replay_call = self.analyzed()
+
+        self.calls.clear()
+        segments = list(replay_call[1])
+        with mock.patch.object(_worker_cue_timing, "probe_duration", lambda _path: replay_call[2]), \
+                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", lambda *_a, **_k: None), \
+                mock.patch.object(_worker_ad_removal, "analyze_ad_detections", wp.analyze_ad_detections), \
+                redirect_stderr(io.StringIO()):
+            wp.detect_and_cut({"removeSelfPromotion": True}, Path("/nowhere/in.m4a"), [], segments)
+        live_call = self.analyzed()
+
+        self.assertEqual(live_call[4], replay_call[4], "a different detector module")
+        self.assertEqual([(s.start_s, s.end_s, s.text) for s in live_call[1]],
+                         [(s.start_s, s.end_s, s.text) for s in replay_call[1]])
+        self.assertEqual(live_call[2], replay_call[2])
+        self.assertEqual(live_call.kwargs, replay_call.kwargs)
+        self.assertEqual(live_call.kwargs, {"remove_self_promotion": True})
+
+    def test_report_and_json_reflect_self_promotion_state(self):
+        # A flag-on case adds the indicator line in text and true in JSON; recorded mode stays on the case field.
+        case_on = self.corpus.CaseVerdict(
+            case_id="case-on", show="Show 1", passed=True, reason="ok",
+            remove_self_promotion=True,
+        )
+        case_off = self.corpus.CaseVerdict(
+            case_id="case-off", show="Show 2", passed=True, reason="ok",
+            remove_self_promotion=False,
+        )
+        text = self.corpus.report([case_on, case_off])
+        self.assertIn("      self-promotion removal: on", text)
+        lines = text.splitlines()
+        on_idx = lines.index("PASS  case-on  (Show 1)")
+        self.assertEqual(lines[on_idx + 2], "      self-promotion removal: on")
+        off_idx = lines.index("PASS  case-off  (Show 2)")
+        self.assertNotEqual(lines[off_idx + 2], "      self-promotion removal: on")
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            with mock.patch.object(self.corpus, "run", lambda *a, **k: [case_on, case_off]):
+                self.corpus.main(["--json"])
+        payload = json.loads(stdout.getvalue())
+        self.assertTrue(payload[0]["removeSelfPromotion"])
+        self.assertFalse(payload[1]["removeSelfPromotion"])
+
+        # Recorded mode ignores CLI self-promotion setting and uses case's own field
+        manifest_cases = self.corpus.load_manifest()["cases"]
+        aidb_case = next(c for c in manifest_cases if c["id"] == "aidb-team-agents-house-promotion-and-four-spot-pod")
+        with mock.patch.object(self.corpus, "recorded_spans", lambda case, *, library: []):
+            results = self.corpus.run(
+                "recorded", library=Path("/nowhere"), cache=Path("/nowhere"),
+                store=Path("/nowhere"), self_promotion="off", cases=[aidb_case["id"]],
+            )
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].remove_self_promotion)
+        self.assertFalse(results[0].passed)

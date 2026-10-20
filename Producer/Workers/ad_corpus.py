@@ -155,6 +155,7 @@ class CaseVerdict:
     # badly. A corpus that quietly shrinks to what a machine happens to hold is
     # the failure this distinction exists to prevent.
     unrunnable: bool = False
+    remove_self_promotion: bool = False
 
 
 class ReplayRefused(RuntimeError):
@@ -207,6 +208,38 @@ def _invalid_interval(span: Span, total: float | None) -> str | None:
     if total is not None and span.start >= total:
         return f"starts after the {total:.1f}s episode ends"
     return None
+
+
+def effective_self_promotion(case: dict, setting: str = "manifest") -> bool:
+    """Whether self-promotion removal is active for this case under the run setting.
+
+    Only the JSON boolean true turns it on from the manifest; an explicit CLI 'on'
+    or 'off' overrides what the case declared.
+    """
+    if setting == "on":
+        return True
+    if setting == "off":
+        return False
+    if setting != "manifest":
+        raise ValueError(f"unknown self-promotion setting {setting!r}")
+    return case.get("removeSelfPromotion") is True
+
+
+def resolve_case_labels(case: dict, *, remove_self_promotion: bool) -> dict:
+    """A shallow copy of `case` with expected labels adjusted for self-promotion state.
+
+    When self-promotion removal is off, house-promotion spans fall back to
+    `labelIfSelfPromotionKept` so keeping them is not scored as a failure.
+    """
+    if remove_self_promotion:
+        return case
+    expected = [
+        dict(entry, label=entry["labelIfSelfPromotionKept"])
+        if "labelIfSelfPromotionKept" in entry and entry["labelIfSelfPromotionKept"] is not None
+        else entry
+        for entry in case.get("expected", ())
+    ]
+    return dict(case, expected=expected)
 
 
 def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
@@ -421,7 +454,13 @@ def runtime_sources() -> Path:
     return Path(override) if override else DEFAULT_RUNTIME_SOURCES
 
 
-def replay_spans(case: dict, *, cache: Path, store: Path = DEFAULT_AD_CORPUS_INPUTS):
+def replay_spans(
+    case: dict,
+    *,
+    cache: Path,
+    store: Path = DEFAULT_AD_CORPUS_INPUTS,
+    remove_self_promotion: bool = False,
+):
     """Re-run the live detector over this case's resolved segments.
 
     Returns the spans it produced and the serialized audit that travels with
@@ -494,7 +533,12 @@ def replay_spans(case: dict, *, cache: Path, store: Path = DEFAULT_AD_CORPUS_INP
             # Handed the raw backend, exactly as `detect_and_cut` hands its own:
             # the audit wrapper is built inside, so the replay cannot wrap it
             # differently from the run it is reproducing.
-            analysis = wp.analyze_ad_detections(ads_module, backend, aligned, total)
+            if remove_self_promotion:
+                analysis = wp.analyze_ad_detections(
+                    ads_module, backend, aligned, total, remove_self_promotion=True
+                )
+            else:
+                analysis = wp.analyze_ad_detections(ads_module, backend, aligned, total)
         except wp.WorkerError as error:
             raise ReplayRefused(error.code, str(error)) from error
         finally:
@@ -506,9 +550,22 @@ def replay_spans(case: dict, *, cache: Path, store: Path = DEFAULT_AD_CORPUS_INP
 
 
 def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPUS_INPUTS,
-        manifest: Path = MANIFEST, strict: bool = False) -> list[CaseVerdict]:
+        manifest: Path = MANIFEST, strict: bool = False,
+        self_promotion: str = "manifest", cases: list[str] | None = None) -> list[CaseVerdict]:
     results: list[CaseVerdict] = []
-    for case in load_manifest(manifest)["cases"]:
+    manifest_cases = load_manifest(manifest)["cases"]
+    if cases is not None:
+        selected_ids = set(cases)
+        manifest_cases = [c for c in manifest_cases if c["id"] in selected_ids]
+    for case in manifest_cases:
+        # Recorded mode scores whatever the library already committed, so the CLI
+        # flag does not change what was run; it resolves labels against the case's
+        # own manifest setting. Replay respects the CLI override.
+        effective_flag = (
+            case.get("removeSelfPromotion") is True
+            if mode == "recorded"
+            else effective_self_promotion(case, self_promotion)
+        )
         if mode == "replay":
             # A replay loads a four-gigabyte model and spends minutes per case,
             # and the only thing it emits meanwhile is the detector's own
@@ -521,6 +578,13 @@ def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPU
         try:
             if mode == "recorded":
                 produced = recorded_spans(case, library=library)
+            elif effective_flag:
+                # The keyword travels only when on, as in `detect_and_cut`, and
+                # the setting is resolved here rather than read from the case
+                # inside `replay_spans`, so `--self-promotion off` overrides a
+                # case that opts in.
+                replayed = replay_spans(case, cache=cache, store=store, remove_self_promotion=True)
+                produced, audit = replayed if replayed is not None else (None, None)
             else:
                 replayed = replay_spans(case, cache=cache, store=store)
                 produced, audit = replayed if replayed is not None else (None, None)
@@ -531,6 +595,7 @@ def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPU
             results.append(CaseVerdict(
                 case_id=case["id"], show=case["show"], passed=False,
                 reason=f"the worker refused this analysis -- {refusal}",
+                remove_self_promotion=effective_flag,
             ))
             continue
         if produced is None:
@@ -550,10 +615,13 @@ def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPU
                 # cases a machine happens to hold is how a fix gets called good.
                 passed=not strict, skipped=not strict, unrunnable=unrunnable,
                 reason=missing if strict else missing + " (skipped)",
+                remove_self_promotion=effective_flag,
             ))
             continue
-        verdict = score_case(case, produced)
+        resolved_case = resolve_case_labels(case, remove_self_promotion=effective_flag)
+        verdict = score_case(resolved_case, produced)
         verdict.audit = audit
+        verdict.remove_self_promotion = effective_flag
         results.append(verdict)
     return results
 
@@ -612,6 +680,8 @@ def report(results: list[CaseVerdict]) -> str:
             mark = "PASS" if result.passed else "FAIL"
         lines.append(f"{mark}  {result.case_id}  ({result.show})")
         lines.append(f"      {result.reason}")
+        if result.remove_self_promotion:
+            lines.append("      self-promotion removal: on")
         for span in result.spans:
             flag = " " if span.passed else "!"
             lines.append(
@@ -660,7 +730,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strict", action="store_true",
                         help="require every case to run; a missing input fails rather than skips")
     parser.add_argument("--json", action="store_true", help="machine-readable verdicts")
+    parser.add_argument("--self-promotion", choices=("manifest", "on", "off"), default="manifest",
+                        help="remove the show's own promotion: manifest (each case's field), on, or off")
+    parser.add_argument("--case", action="append", default=None, metavar="ID",
+                        help="run only the named case, in manifest order (repeatable)")
     args = parser.parse_args(argv)
+
+    if args.case:
+        known_ids = {c["id"] for c in load_manifest()["cases"]}
+        for case_id in args.case:
+            if case_id not in known_ids:
+                parser.error(f"unknown case {case_id!r}")
 
     if args.adopt is not None:
         adopted, unsatisfied = adopt(args.adopt, store=args.store)
@@ -677,11 +757,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if unsatisfied else 0
 
     results = run(args.mode, library=args.library, cache=args.cache, store=args.store,
-                  strict=args.strict)
+                  strict=args.strict, self_promotion=args.self_promotion, cases=args.case)
     if args.json:
         print(json.dumps([{
             "case": r.case_id, "passed": r.passed, "skipped": r.skipped,
             "unrunnable": r.unrunnable, "reason": r.reason,
+            "removeSelfPromotion": r.remove_self_promotion,
             "keepLossSeconds": round(r.keep_loss_seconds, 3),
             "unknownCutSeconds": round(r.unknown_cut_seconds, 3),
             "labelledCoverage": round(r.labelled_coverage, 4),
