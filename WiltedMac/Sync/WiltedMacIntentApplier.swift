@@ -83,14 +83,23 @@ actor WiltedMacIntentOutcomeBook {
         var entries: [String: Entry]
     }
 
+    /// Writes the book's bytes to its file and reports whether the folder sync is certain.
+    typealias Writer = @Sendable (Data, URL) throws -> DurableFile.ReplacementResult
+
     private let fileURL: URL?
     private let now: @Sendable () -> Date
+    private let writeBytes: Writer
     private var entries: [String: Entry] = [:]
 
-    /// `fileURL` nil keeps the book in memory only (tests).
-    init(fileURL: URL?, now: @escaping @Sendable () -> Date = { Date() }) {
+    /// `fileURL` nil keeps the book in memory only (tests). `write` is replaced only by tests
+    /// that inject a failed save.
+    init(
+        fileURL: URL?, now: @escaping @Sendable () -> Date = { Date() },
+        write: @escaping Writer = { try DurableFile.replace($0, to: $1) }
+    ) {
         self.fileURL = fileURL
         self.now = now
+        self.writeBytes = write
         if let fileURL, let data = try? Data(contentsOf: fileURL) {
             if let stored = try? JSONDecoder().decode(Stored.self, from: data) {
                 entries = stored.entries
@@ -108,21 +117,28 @@ actor WiltedMacIntentOutcomeBook {
     func entry(for intentID: String) -> Entry? { entries[intentID] }
 
     func save(_ outcome: IntentOutcome, published: Bool) throws {
-        try write(entries.merging([outcome.intentID: Entry(outcome: outcome, published: published)]) { _, new in new })
+        try persist(entries.merging([outcome.intentID: Entry(outcome: outcome, published: published)]) { _, new in new })
     }
 
     func markPublished(_ intentID: String) throws {
         guard var entry = entries[intentID], !entry.published else { return }
         entry.published = true
-        try write(entries.merging([intentID: entry]) { _, new in new })
+        try persist(entries.merging([intentID: entry]) { _, new in new })
     }
 
-    private func write(_ next: [String: Entry]) throws {
+    /// Saves the book and adopts `next` whenever the replacement landed. A directory sync that
+    /// stays uncertain after the primitive's retry is logged: the outcome is on disk for a clean
+    /// restart, and a power loss may lose it, but it is not a failed save.
+    private func persist(_ next: [String: Entry]) throws {
         let cutoff = now().addingTimeInterval(-Self.retention)
         let kept = next.filter { $0.value.outcome.decidedAt > cutoff }
         if let fileURL {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try DurableFile.write(JSONEncoder().encode(Stored(entries: kept)), to: fileURL)
+            let data = try JSONEncoder().encode(Stored(entries: kept))
+            let result = try writeBytes(data, fileURL)
+            if case let .replacedDirectorySyncUncertain(failure) = result {
+                applierLog.warning("Intent outcome book landed but its folder sync is uncertain: \(failure.description, privacy: .public)")
+            }
         }
         entries = kept
     }

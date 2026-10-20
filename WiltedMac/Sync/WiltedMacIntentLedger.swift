@@ -18,8 +18,8 @@ actor WiltedMacIntentLedger {
         var recorded: [String: Date]
     }
 
-    /// Writes the ledger's bytes durably to its file.
-    typealias Writer = @Sendable (Data, URL) throws -> Void
+    /// Writes the ledger's bytes to its file and reports whether the folder sync is certain.
+    typealias Writer = @Sendable (Data, URL) throws -> DurableFile.ReplacementResult
 
     private let fileURL: URL?
     private let now: @Sendable () -> Date
@@ -30,7 +30,7 @@ actor WiltedMacIntentLedger {
     /// that inject a failed save.
     init(
         fileURL: URL?, now: @escaping @Sendable () -> Date = { Date() },
-        write: @escaping Writer = { try DurableFile.write($0, to: $1) }
+        write: @escaping Writer = { try DurableFile.replace($0, to: $1) }
     ) {
         self.fileURL = fileURL
         self.now = now
@@ -79,25 +79,19 @@ actor WiltedMacIntentLedger {
         return dropped
     }
 
-    /// Writes `entries`, and succeeds whenever the file now holds them. A durable write renames
-    /// the new file into place before it syncs the folder, so a failed folder sync leaves the
-    /// entries on disk, where a restarted ledger reads them; reporting that as a failure would
-    /// leave an id recorded that its caller never applies. The save is retried once to sync the
-    /// folder again, and every later save syncs it too.
+    /// Writes `entries`, and succeeds whenever the replacement landed. A durable replacement
+    /// renames the new file into place before it syncs the folder. When both folder-sync attempts
+    /// fail the file still holds the entries, where a restarted ledger reads them; reporting that
+    /// as a failure would leave an id recorded that its caller never applies. The write primitive
+    /// retries the folder sync once without rewriting the bytes; the uncertainty and its cause are
+    /// logged, and the next save writes again.
     private func persist(_ entries: [String: Date]) throws {
         guard let fileURL else { return }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(Stored(recorded: entries))
-        do {
-            try write(data, fileURL)
-        } catch {
-            guard (try? Data(contentsOf: fileURL)) == data else { throw error }
-            ledgerLog.warning("Intent ledger was saved but its folder sync failed: \(String(describing: error), privacy: .public)")
-            do {
-                try write(data, fileURL)
-            } catch {
-                ledgerLog.warning("Intent ledger folder sync failed again; the next save retries it: \(String(describing: error), privacy: .public)")
-            }
+        let result = try write(data, fileURL)
+        if case let .replacedDirectorySyncUncertain(failure) = result {
+            ledgerLog.warning("Intent ledger landed but its folder sync is uncertain: \(failure.description, privacy: .public)")
         }
     }
 }
