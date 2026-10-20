@@ -18,14 +18,23 @@ actor WiltedMacIntentLedger {
         var recorded: [String: Date]
     }
 
+    /// Writes the ledger's bytes durably to its file.
+    typealias Writer = @Sendable (Data, URL) throws -> Void
+
     private let fileURL: URL?
     private let now: @Sendable () -> Date
+    private let write: Writer
     private var recorded: [String: Date] = [:]
 
-    /// `fileURL` nil keeps the ledger in memory only (tests).
-    init(fileURL: URL?, now: @escaping @Sendable () -> Date = { Date() }) {
+    /// `fileURL` nil keeps the ledger in memory only (tests). `write` is replaced only by tests
+    /// that inject a failed save.
+    init(
+        fileURL: URL?, now: @escaping @Sendable () -> Date = { Date() },
+        write: @escaping Writer = { try DurableFile.write($0, to: $1) }
+    ) {
         self.fileURL = fileURL
         self.now = now
+        self.write = write
         if let fileURL, let data = try? Data(contentsOf: fileURL) {
             if let stored = try? JSONDecoder().decode(Stored.self, from: data) {
                 recorded = stored.recorded
@@ -45,7 +54,8 @@ actor WiltedMacIntentLedger {
     func contains(_ id: String) -> Bool { recorded[id] != nil }
 
     /// Records `id` durably and returns true when it was new. Throws, leaving the id
-    /// unrecorded, when the write fails: the caller must then not apply the intent.
+    /// unrecorded, only when the id did not reach the file: the caller must then not apply the
+    /// intent, and a later call records it afresh.
     func recordIfNew(_ id: String) throws -> Bool {
         guard recorded[id] == nil else { return false }
         let pruned = recorded.filter { $0.value <= now().addingTimeInterval(-Self.retention) }.keys
@@ -69,9 +79,25 @@ actor WiltedMacIntentLedger {
         return dropped
     }
 
+    /// Writes `entries`, and succeeds whenever the file now holds them. A durable write renames
+    /// the new file into place before it syncs the folder, so a failed folder sync leaves the
+    /// entries on disk, where a restarted ledger reads them; reporting that as a failure would
+    /// leave an id recorded that its caller never applies. The save is retried once to sync the
+    /// folder again, and every later save syncs it too.
     private func persist(_ entries: [String: Date]) throws {
         guard let fileURL else { return }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try DurableFile.write(JSONEncoder().encode(Stored(recorded: entries)), to: fileURL)
+        let data = try JSONEncoder().encode(Stored(recorded: entries))
+        do {
+            try write(data, fileURL)
+        } catch {
+            guard (try? Data(contentsOf: fileURL)) == data else { throw error }
+            ledgerLog.warning("Intent ledger was saved but its folder sync failed: \(String(describing: error), privacy: .public)")
+            do {
+                try write(data, fileURL)
+            } catch {
+                ledgerLog.warning("Intent ledger folder sync failed again; the next save retries it: \(String(describing: error), privacy: .public)")
+            }
+        }
     }
 }
