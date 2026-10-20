@@ -397,6 +397,23 @@ _TRAILING_DISCLAIMER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Mirrored from POSTROLL_CLEAN_BREAK_SECONDS in Producer/Workers/wilted_worker/constants.py
+# (same value, same meaning; the runtime cannot import the worker).
+_PROGRAMME_PAUSE_SECONDS = 2.0
+
+# Mirrored from EXPLICIT_SPONSOR_TOP_LEVEL_DOMAINS in wilted_worker/constants.py.
+_EXPLICIT_SPONSOR_TOP_LEVEL_DOMAINS = (
+    r"com|net|org|edu|gov|co|io|ai|app|dev|tv|fm|gg|me|us|uk|ca|de|shop|store|"
+    r"club|live|life|news|blog|page|site|town|studio|media|games|show|xyz|link"
+)
+_DESTINATION_BRAND_RE = re.compile(
+    rf"\b([a-z0-9][a-z0-9-]{{2,}})(?:(?:\.|\s+dot\s+)(?:{_EXPLICIT_SPONSOR_TOP_LEVEL_DOMAINS})|\s+com)\b",
+    re.IGNORECASE,
+)
+_BRAND_STOPLIST = frozenset({"dot", "www", "http", "https", "slash", "the", "and", "our", "your"})
+
+_SHOW_IDENTITY_RE = re.compile(r"\bis an? (?:[\w'-]+ ){0,3}(?:podcast|show)\b", re.IGNORECASE)
+
 
 def _parse_ad_response(response: str, expected_ids: list[int]) -> list[tuple[int, bool, str | None]]:
     """Validate compact ad-only decisions and infer all omitted IDs as content.
@@ -531,19 +548,17 @@ def _has_house_promotion_cue(coarse_run: _CoarseAdRun, segments: list[Transcript
 def _trim_self_promo_run_edges(
     coarse_run: _CoarseAdRun, segments: list[TranscriptSegment]
 ) -> _CoarseAdRun | None:
-    """Drop leading and trailing cues without promotional cues from a self_promo run."""
-    def _cue_has_evidence(text: str) -> bool:
-        return (
-            any(pattern.search(text) for pattern in _HOUSE_PROMOTION_CUES)
-            or any(pattern.search(text) for pattern in _SPARSE_PROMO_CUES)
-            or _has_sparse_call_to_action(text)
+    """Drop leading and trailing show identity lines lacking house promotion cues."""
+    def _is_show_identity_without_house_cue(text: str) -> bool:
+        return bool(_SHOW_IDENTITY_RE.search(text)) and not any(
+            pattern.search(text) for pattern in _HOUSE_PROMOTION_CUES
         )
 
     start_id = coarse_run.start_id
     end_id = coarse_run.end_id
-    while start_id <= end_id and not _cue_has_evidence(segments[start_id].text):
+    while start_id <= end_id and _is_show_identity_without_house_cue(segments[start_id].text):
         start_id += 1
-    while end_id >= start_id and not _cue_has_evidence(segments[end_id].text):
+    while end_id >= start_id and _is_show_identity_without_house_cue(segments[end_id].text):
         end_id -= 1
 
     if start_id > end_id:
@@ -748,7 +763,7 @@ def _recover_explicit_sponsor_pods(
         context_runs = [run for run in positive_runs if run.start_id <= window_max and run.end_id >= anchor_id]
         if not context_runs:
             continue
-        claimed_ranges.extend((min(anchor_id, run.start_id), run.end_id) for run in context_runs)
+        claimed_ranges.extend((anchor_id, run.end_id) for run in context_runs)
         transcript_text = _render_segments_bounded(
             context_ids,
             segments,
@@ -1102,8 +1117,38 @@ def detect_ads(
 
     coarse_runs = _resolve_overlaps(raw_classifications, segments)
     eligible_runs = [run for run in coarse_runs if run.confidence >= confidence_threshold]
-    promo_evidenced_runs: list[_CoarseAdRun] = []
+    bracketed_pods = _recover_bracketed_ad_pods(segments, backend, eligible_runs)
+    anchor_pods, claimed_anchor_ranges = _recover_explicit_sponsor_pods(segments, backend, eligible_runs)
+    recovered_pods = [*bracketed_pods, *anchor_pods]
+    recovered_ranges = [(pod.start_s, pod.end_s) for pod in recovered_pods]
+
+    # An anchor claims only from itself onward: its verifier never reads the
+    # cues before it, so a run that starts earlier keeps that prefix as an
+    # ordinary run, subject to the same gates and boundary checks.
+    candidate_runs: list[tuple[_CoarseAdRun, bool]] = []
     for run in eligible_runs:
+        overlapping_claims = [
+            (c_start, c_end)
+            for c_start, c_end in claimed_anchor_ranges
+            if run.start_id <= c_end and run.end_id >= c_start
+        ]
+        if not overlapping_claims:
+            candidate_runs.append((run, False))
+        elif any(c_start <= run.start_id <= c_end for c_start, c_end in overlapping_claims):
+            continue
+        else:
+            first_claim_start = min(c_start for c_start, _ in overlapping_claims)
+            prefix = _CoarseAdRun(run.start_id, first_claim_start - 1, run.confidence, run.label)
+            logger.info(
+                "Verifying run %d-%d before sponsor anchor at %d",
+                prefix.start_id,
+                prefix.end_id,
+                first_claim_start,
+            )
+            candidate_runs.append((prefix, True))
+
+    verified_runs: list[AdSegment] = []
+    for run, is_prefix in candidate_runs:
         if remove_self_promotion:
             if run.label == "self_promo":
                 trimmed = _trim_self_promo_run_edges(run, segments)
@@ -1128,21 +1173,20 @@ def detect_ads(
             if coarse_size <= 2 and not _has_sparse_promo_evidence(run, segments):
                 logger.info("Discarding sparse ad run %d-%d without promotional evidence", run.start_id, run.end_id)
                 continue
-        promo_evidenced_runs.append(run)
-    bracketed_pods = _recover_bracketed_ad_pods(segments, backend, eligible_runs)
-    anchor_pods, claimed_anchor_ranges = _recover_explicit_sponsor_pods(segments, backend, eligible_runs)
-    recovered_pods = [*bracketed_pods, *anchor_pods]
-    recovered_ranges = [(pod.start_s, pod.end_s) for pod in recovered_pods]
-    verified_runs: list[AdSegment] = []
-    for run in promo_evidenced_runs:
-        overlaps_recovery = any(
-            segments[run.start_id].start_s <= end_s and segments[run.end_id].end_s >= start_s
-            for start_s, end_s in recovered_ranges
-        )
-        claimed_by_anchor = any(
-            run.start_id <= end_id and run.end_id >= start_id for start_id, end_id in claimed_anchor_ranges
-        )
-        if overlaps_recovery or claimed_by_anchor:
+
+        # A prefix ends where the pod recovered from its anchor begins, so it
+        # only yields to a pod it actually overlaps; touching is not overlap.
+        if is_prefix:
+            overlaps_recovery = any(
+                segments[run.start_id].start_s < end_s and segments[run.end_id].end_s > start_s
+                for start_s, end_s in recovered_ranges
+            )
+        else:
+            overlaps_recovery = any(
+                segments[run.start_id].start_s <= end_s and segments[run.end_id].end_s >= start_s
+                for start_s, end_s in recovered_ranges
+            )
+        if overlaps_recovery:
             continue
         verified = _verify_ad_boundaries(run, segments, backend)
         if verified is not None:
@@ -1444,6 +1488,34 @@ def _verify_ad_boundaries(
         if _probe_boundary_candidate(candidate_id, verified_start, "left", segments, backend) is not True:
             break
         verified_start = candidate_id
+
+    for k in range(coarse_run.start_id, verified_start, -1):
+        pause = segments[k].start_s - segments[k - 1].end_s
+        if pause >= _PROGRAMME_PAUSE_SECONDS:
+            logger.info(
+                "Left extension of run %d-%d stopped at a %.1f s pause before ID %d",
+                coarse_run.start_id,
+                coarse_run.end_id,
+                pause,
+                k,
+            )
+            verified_start = k
+            break
+
+    c = verified_start - 1
+    if c >= 0 and segments[verified_start].start_s - segments[c].end_s < 0.5:
+        if c == 0 or segments[c].start_s - segments[c - 1].end_s >= _PROGRAMME_PAUSE_SECONDS:
+            if not any(pattern.search(segments[c].text) for pattern in _HOUSEKEEPING_CUES):
+                brands = set()
+                scan_limit = min(verified_start + 1, coarse_run.end_id)
+                for seg_id in range(verified_start, scan_limit + 1):
+                    for m in _DESTINATION_BRAND_RE.finditer(segments[seg_id].text):
+                        brand = m.group(1).lower()
+                        if brand not in _BRAND_STOPLIST:
+                            brands.add(brand)
+                if any(re.search(rf"\b{re.escape(b)}\b", segments[c].text, re.IGNORECASE) for b in brands):
+                    logger.info("Joined brand opener %d to ad run %d-%d", c, coarse_run.start_id, coarse_run.end_id)
+                    verified_start = c
 
     verified_end = coarse_run.end_id
     coarse_size = coarse_run.end_id - coarse_run.start_id + 1
