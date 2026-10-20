@@ -369,6 +369,12 @@ final class WiltedMacModel {
     /// a store that will not open.
     let statisticsOperations: WiltedMacStatisticsOperations
     private let invalidationRules: [PodcastPreparationInvalidationRule]
+    /// Whether launch invalidation has anything to evaluate. A rule can
+    /// condemn a preparation; an explicit override substitutes the whole
+    /// invalidator, so the launch must still resolve a fingerprint for it.
+    /// With neither, there is no comparison to make and startup must not hash
+    /// the worker and Python trees.
+    let requiresLaunchFingerprintResolution: Bool
     let retainedArtifactPresenter: (URL) -> Void
     var startupAttemptCount = 0
     var startupTask: Task<Void, Never>?
@@ -583,6 +589,8 @@ final class WiltedMacModel {
         self.pipelineFingerprint = pipelineFingerprint
         self.pipelineFingerprintResolution = pipelineFingerprintResolution ?? { pipelineFingerprint }
         self.invalidationRules = invalidationRules
+        self.requiresLaunchFingerprintResolution =
+            !invalidationRules.isEmpty || staleInvalidationOverride != nil
         self.statisticsOperations = statisticsOperations
         let rules = invalidationRules
         self.invalidateStalePreparations = staleInvalidationOverride ?? { store, fingerprint in

@@ -72,23 +72,31 @@ extension WiltedMacModel {
             announceStartupStep(.retiringFinishedEpisodes)
             try await configuredStore.retireCompletedEpisodesMissingRetirement()
             let invalidation: PodcastPreparationInvalidationResult
-            // The step is announced before the await, so the readout names
-            // fingerprinting while resolution is still in flight rather than
-            // after it finishes.
-            announceStartupStep(.checkingPreparationFingerprint)
-            if let fingerprint = await pipelineFingerprintResolution() {
-                do {
-                    invalidation = try await invalidateStalePreparations(configuredStore, fingerprint)
-                } catch {
-                    // The store opened and the library is intact; only the
-                    // stale-preparation pass failed, and that is its own
-                    // condition rather than "could not open your larder".
-                    throw WiltedMacStaleInvalidationFailure(underlying: error)
+            if requiresLaunchFingerprintResolution {
+                // The step is announced before the await, so the readout names
+                // fingerprinting while resolution is still in flight rather than
+                // after it finishes.
+                announceStartupStep(.checkingPreparationFingerprint)
+                if let fingerprint = await pipelineFingerprintResolution() {
+                    do {
+                        invalidation = try await invalidateStalePreparations(configuredStore, fingerprint)
+                    } catch {
+                        // The store opened and the library is intact; only the
+                        // stale-preparation pass failed, and that is its own
+                        // condition rather than "could not open your larder".
+                        throw WiltedMacStaleInvalidationFailure(underlying: error)
+                    }
+                } else {
+                    // Missing or unreadable pipeline sources are not evidence of a
+                    // semantic change. Preserve every preparation until a complete
+                    // fingerprint can be resolved on a later launch.
+                    invalidation = PodcastPreparationInvalidationResult()
                 }
             } else {
-                // Missing or unreadable pipeline sources are not evidence of a
-                // semantic change. Preserve every preparation until a complete
-                // fingerprint can be resolved on a later launch.
+                // No rule can condemn a preparation and no invalidator was
+                // substituted, so there is no comparison to make. Opening the
+                // library must not hash the worker and Python trees for an
+                // empty rule set.
                 invalidation = PodcastPreparationInvalidationResult()
             }
             // Before the library is read, so the rows derive from a journal
