@@ -276,9 +276,17 @@ class AuditingBackend(CountingBackend):
             match = re.match(r"Candidate ID to resolve: (\d+)\n", user_content)
             review_ids = (int(match.group(1)),) if match else ()
         forwarded = self._prompt_overrides.get(system_prompt, system_prompt)
+        prior_capacity_error = self.context_capacity_error
         try:
             response, tokens = super().generate(forwarded, user_content, response_format=response_format)
         except Exception as error:
+            # Over-capacity classifier requests are retried and halved by the
+            # detector; if a split fails to recover, unresolved_ids
+            # (ads-classification-unresolved) and missing coverage
+            # (ads-classification-incomplete) checks in analyze_ad_detections
+            # keep the original audio safe without latching context_capacity_error.
+            if classification and is_context_capacity_error(error):
+                self.context_capacity_error = prior_capacity_error
             if not expected_backend_unavailable(error):
                 self.unexpected_error = error
             self.commercial_review_states.update({segment_id: "unresolved" for segment_id in review_ids})
