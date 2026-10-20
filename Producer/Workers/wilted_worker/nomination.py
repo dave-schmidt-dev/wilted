@@ -44,11 +44,21 @@ class _CallBudgetBackend:
         self.limit = limit
         self.calls = 0
 
-    def generate(self, system_prompt, user_content, *, response_format=None):
+    def generate(self, system_prompt, user_content, *, response_format=None, prepared_prompt=None):
         if self.calls >= self.limit:
             raise WorkerError("ads-experimental-budget-exhausted", "experimental model-call budget exhausted")
         self.calls += 1
-        return self.backend.generate(system_prompt, user_content, response_format=response_format)
+        kwargs = {"response_format": response_format}
+        if prepared_prompt is not None:
+            kwargs["prepared_prompt"] = prepared_prompt
+        return self.backend.generate(system_prompt, user_content, **kwargs)
+
+    def measure_prompt(self, system_prompt, user_content, *, response_format=None):
+        """Forward a non-inference budget query without spending the call quota."""
+        measure = getattr(self.backend, "measure_prompt", None)
+        if not callable(measure):
+            raise ValueError("backend cannot measure the loaded chat prompt budget")
+        return measure(system_prompt, user_content, response_format=response_format)
 
 def _experimental_speculative_cuts(
     audit: AdAnalysisAudit,

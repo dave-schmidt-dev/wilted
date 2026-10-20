@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from .gguf_summary import PreparedSummary
+    from .gguf_summary import PreparedPrompt, PreparedSummary
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +241,8 @@ class GgufBackend:
         logger.info("GGUF model loaded in %.1fs: %s", elapsed, self.model_path)
 
     def generate(
-        self, system_prompt: str, user_content: str, *, response_format: dict[str, Any] | None = None
+        self, system_prompt: str, user_content: str, *, response_format: dict[str, Any] | None = None,
+        prepared_prompt: PreparedPrompt | None = None,
     ) -> tuple[str, int]:
         """Generate a response from the loaded GGUF model.
 
@@ -253,6 +254,20 @@ class GgufBackend:
         """
         if self._llm is None:
             raise RuntimeError("Model not loaded. Call load() first.")
+
+        if prepared_prompt is not None:
+            from .gguf_summary import PreparedPrompt, generate_prepared_prompt, response_format_snapshot
+
+            if (not isinstance(prepared_prompt, PreparedPrompt)
+                    or prepared_prompt._system_prompt != system_prompt
+                    or prepared_prompt._user_content != user_content
+                    or prepared_prompt._response_format_json != response_format_snapshot(response_format)
+                    or prepared_prompt.output_reserve != self.max_tokens
+                    or prepared_prompt._generation_config != (self.temperature, self.seed)):
+                raise ValueError("Prepared prompt does not match the generation request")
+            return generate_prepared_prompt(
+                self._llm, prepared_prompt, temperature=self.temperature, seed=self.seed
+            )
 
         start = time.monotonic()
         completion_args: dict[str, Any] = {
@@ -281,6 +296,19 @@ class GgufBackend:
         )
 
         return response, token_count
+
+    def measure_prompt(
+        self, system_prompt: str, user_content: str, *, response_format: dict[str, Any] | None = None
+    ) -> PreparedPrompt:
+        """Measure a non-inference chat prompt against the loaded model's actual budget."""
+        from dataclasses import replace
+
+        from .gguf_summary import measure_prompt
+
+        prepared = measure_prompt(
+            self._llm, system_prompt, user_content, self.max_tokens, response_format=response_format
+        )
+        return replace(prepared, _generation_config=(self.temperature, self.seed))
 
     def prepare_summary(self, system_prompt: str, user_content: str) -> PreparedSummary:
         """Prepare a summary prompt with exact chat/context/output token budgets."""

@@ -139,12 +139,18 @@ class AuditedDetectorAdapterTests(AuditedDetectorAdapterMixinB, unittest.TestCas
         return response
 
     def analysis(self, detector, responses, *, auto_cover=True, total_seconds=100.0, **kwargs):
-        class Backend:
+        class Backend(FakeLLM):
             def __init__(inner):
+                super().__init__()
+                inner.load()
                 inner.responses = iter(responses)
                 inner.calls = []
 
-            def generate(inner, prompt, content, *, response_format=None):
+            def generate(inner, prompt, content, *, response_format=None, prepared_prompt=None):
+                if prepared_prompt is not None:
+                    expected = (prompt, content, json.dumps(response_format or {}, sort_keys=True))
+                    if prepared_prompt.request_key != expected:
+                        raise ValueError("scripted prepared request mismatch")
                 inner.calls.append((prompt, content))
                 if prompt == "classify" and content == AuditedDetectorAdapterTests.rendered([0, 1, 2]):
                     return '{"ads":[]}', 1

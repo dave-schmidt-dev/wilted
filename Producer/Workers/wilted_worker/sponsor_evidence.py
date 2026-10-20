@@ -204,13 +204,15 @@ host introduction, or discussion does not. Return only strict JSON {{"include": 
 
 def _commercial_recovery_context(
     ads_module, segments, first: int, last: int, total_seconds: float,
-    *, flank_limit: int | None = None,
+    *, flank_limit: int | None = None, fit=None,
 ):
     """Return a bounded whole-envelope context, or raise before model work.
 
     The caller supplies the complete proposed cut, never merely the evidence
     that nominated it.  This keeps an editorial cue between two commercial
-    phrases visible to the independent preservation review.
+    phrases visible to the independent preservation review.  ``fit`` measures
+    every request shape that review can send; only optional whole-cue flanks
+    shrink, never the proposed cut or the one programme cue on each side.
     """
     candidate_ids = tuple(range(first, last + 1))
     if (not candidate_ids or not 0 <= first <= last < len(segments)
@@ -236,30 +238,40 @@ def _commercial_recovery_context(
     if (len(context_ids) > COMMERCIAL_RECOVERY_CONTEXT_IDS
             or (first > 0 and context_ids[0] >= first) or context_ids[-1] <= last):
         raise ValueError("commercial envelope lacks programme context on both sides")
+
+    def render():
+        return "\n".join(
+            ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
+            + (segments[segment_id].text or "")
+            for segment_id in context_ids
+        )
+
     # This review authorizes every byte in the proposed cut, so the archive's
     # head/tail truncation is unsafe here: it can hide programme in the middle
     # of one long cue.  Keep the complete envelope whole and shrink the
-    # programme flanks one ID at a time until the request fits; only an
-    # envelope that cannot fit with one programme ID on each side is declined.
-    rendered = "\n".join(
-        ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
-        + (segments[segment_id].text or "")
-        for segment_id in context_ids
-    )
-    while (
-        len(rendered) > COMMERCIAL_RECOVERY_CONTEXT_CHARS
-        and (left_extra > 1 or right_extra > 1)
-    ):
+    # programme flanks one ID at a time until the character and measured
+    # prompt budgets both fit; only an envelope that cannot fit with one
+    # programme ID on each side is declined.
+    rendered = render()
+    while True:
+        detail = ""
+        if len(rendered) > COMMERCIAL_RECOVERY_CONTEXT_CHARS:
+            fits = False
+        elif fit is None:
+            fits = True
+        else:
+            measured = fit(context_ids, rendered)
+            fits, detail = measured if isinstance(measured, tuple) else (measured, "")
+        if fits:
+            break
+        if left_extra <= 1 and right_extra <= 1:
+            if len(rendered) > COMMERCIAL_RECOVERY_CONTEXT_CHARS:
+                raise ValueError("complete commercial envelope exceeds the rendering budget")
+            raise ValueError(f"complete commercial envelope exceeds the measured prompt budget: {detail}")
         if left_extra > right_extra:
             left_extra -= 1
         else:
             right_extra -= 1
         context_ids = tuple(range(first - left_extra, last + right_extra + 1))
-        rendered = "\n".join(
-            ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
-            + (segments[segment_id].text or "")
-            for segment_id in context_ids
-        )
-    if len(rendered) > COMMERCIAL_RECOVERY_CONTEXT_CHARS:
-        raise ValueError("complete commercial envelope exceeds the rendering budget")
+        rendered = render()
     return candidate_ids, context_ids, rendered

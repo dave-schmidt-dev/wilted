@@ -211,11 +211,11 @@ class ContextCapacityRecoveryTests(unittest.TestCase):
         original_generate = llm.generate
         failed = []
 
-        def generate(prompt, content, *, response_format=None):
+        def generate(prompt, content, *, response_format=None, prepared_prompt=None):
             if prompt == ads._AD_DETECT_SYSTEM_PROMPT and not failed:
                 failed.append(prompt)
                 raise ValueError(message)
-            return original_generate(prompt, content, response_format=response_format)
+            return original_generate(prompt, content, response_format=response_format, prepared_prompt=prepared_prompt)
 
         llm.generate = generate
 

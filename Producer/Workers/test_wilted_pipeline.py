@@ -740,11 +740,11 @@ class ContextCapacityFallbackTests(unittest.TestCase):
         ads = install_fake_ads(llm)
         original_generate = llm.generate
         failed = []
-        def generate(prompt, content, *, response_format=None):
+        def generate(prompt, content, *, response_format=None, prepared_prompt=None):
             if prompt == _worker_ad_audit.prompts.COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT and not failed:
                 failed.append(prompt)
                 raise ValueError(message)
-            return original_generate(prompt, content, response_format=response_format)
+            return original_generate(prompt, content, response_format=response_format, prepared_prompt=prepared_prompt)
         llm.generate = generate
         def detector(_segments, backend):
             rendered = "\n".join(f"[ID {index}] {segment.text}" for index, segment in enumerate(segments))
