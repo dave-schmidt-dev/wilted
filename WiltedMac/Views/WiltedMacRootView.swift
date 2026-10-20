@@ -73,6 +73,14 @@ struct WiltedMacRootView: View {
                 .onChange(of: proxy.size.width, initial: true) { _, width in windowWidth = width }
         }
         .frame(minWidth: WiltedMacShellLayout.windowMinimumWidth(scale: model.textScale))
+        .task(id: model.subscriptions.map(\.id)) {
+            // Feeds used to start this load on its first visit. The window's
+            // board now loads with the ready window, in the background, so the
+            // first visit already has complete settings. Hosted tests render
+            // this root and must not open the owner's store.
+            guard !WiltedMacModel.hostsTests else { return }
+            await feedPolicyBoard.reload()
+        }
     }
 
     private var sidebarColumnWidth: CGFloat {

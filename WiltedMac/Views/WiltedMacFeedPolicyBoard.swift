@@ -12,9 +12,10 @@ import WiltedProducer
 /// The model keeps no copy of a feed's policy, so this board holds the loaded
 /// values for the views. A choice shows at once and is written in order; the
 /// board never edits a value it has not loaded, so a failed read cannot be
-/// overwritten with defaults. Reload reads into a temporary snapshot and only
-/// replaces the last committed values after every read succeeds. `reload()`
-/// and `settle()` are awaitable so callers do not race reads or writes.
+/// overwritten with defaults. Reload publishes each feed only after its policy,
+/// rules, article and news state are all read, so a slow later feed never hides
+/// settings that are already known or makes them unavailable. `reload()` and
+/// `settle()` are awaitable so callers do not race reads or writes.
 @MainActor @Observable
 final class WiltedMacFeedPolicyBoard {
     private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "FeedPolicy")
@@ -85,7 +86,9 @@ final class WiltedMacFeedPolicyBoard {
     }
 
     /// Reads every subscription's policy and match rules from the store.
-    /// A failed or unavailable read remains visible so no default can look like saved capacity.
+    /// Each feed becomes editable only once its whole read succeeds, and is
+    /// published then rather than after every later feed. A failed or
+    /// unavailable read remains visible so no default can look like saved capacity.
     func reload() async {
         let reloadID = UUID()
         activeReloadID = reloadID
@@ -97,28 +100,7 @@ final class WiltedMacFeedPolicyBoard {
             await settle()
             let readRevision = mutationRevision
             await reloadReadHookForTesting?()
-            var loaded: [String: FeedAutomationPolicy] = [:]
-            var loadedRules: [String: EpisodeMatchRules] = [:]
-            for subscription in model.subscriptions {
-                guard isActiveReload(reloadID) else { return }
-                let feedID: ItemID
-                do {
-                    feedID = try ItemID(rawValue: subscription.id)
-                } catch {
-                    throw LoadError.invalidFeedIdentifier(subscription.title)
-                }
-                do {
-                    loaded[subscription.id] = try await store.feedAutomationPolicy(for: feedID)
-                    try await afterFeedPolicyReadHookForTesting?(subscription.id)
-                    loadedRules[subscription.id] = try await store.episodeMatchRules(for: feedID)
-                } catch let error as CancellationError {
-                    throw error
-                } catch {
-                    if Task.isCancelled { throw CancellationError() }
-                    Self.log.error("feed settings read failed: \(LogSafeError.describe(error), privacy: .public)")
-                    throw LoadError.feedRead(subscription.title)
-                }
-            }
+            guard isActiveReload(reloadID) else { return }
             let articleFeeds: [ArticleFeed]
             do {
                 articleFeeds = try await store.articleFeeds()
@@ -142,18 +124,59 @@ final class WiltedMacFeedPolicyBoard {
                     throw LoadError.articleRead
                 }
             }
+            let loadedArticleFeedIDs = Set(articleFeeds.map(\.itemID.rawValue))
+            var publishedFeed = false
+            for subscription in model.subscriptions {
+                guard isActiveReload(reloadID) else { return }
+                let feedID: ItemID
+                do {
+                    feedID = try ItemID(rawValue: subscription.id)
+                } catch {
+                    throw LoadError.invalidFeedIdentifier(subscription.title)
+                }
+                let policy: FeedAutomationPolicy
+                let feedRules: EpisodeMatchRules
+                do {
+                    policy = try await store.feedAutomationPolicy(for: feedID)
+                    try await afterFeedPolicyReadHookForTesting?(subscription.id)
+                    feedRules = try await store.episodeMatchRules(for: feedID)
+                } catch let error as CancellationError {
+                    throw error
+                } catch {
+                    if Task.isCancelled { throw CancellationError() }
+                    Self.log.error("feed settings read failed: \(LogSafeError.describe(error), privacy: .public)")
+                    throw LoadError.feedRead(subscription.title)
+                }
+                guard isActiveReload(reloadID) else { return }
+                guard mutationRevision == readRevision else {
+                    // A write landed during this read. Its optimistic value and durable write win;
+                    // start a fresh read after the write settles instead of publishing stale data.
+                    await reload()
+                    return
+                }
+                // Article and news state were read completely above, so this
+                // feed's controls now have every value they show.
+                policies[subscription.id] = policy
+                rules[subscription.id] = feedRules
+                articleFeedIDs = loadedArticleFeedIDs
+                newsFeedIDs = news
+                publishedFeed = true
+            }
             await settle()
             guard isActiveReload(reloadID) else { return }
             guard mutationRevision == readRevision else {
-                // A write landed during this read. Its optimistic value and durable write win;
-                // start a fresh read after the write settles instead of publishing stale data.
                 await reload()
                 return
             }
-            policies = loaded
-            rules = loadedRules
-            articleFeedIDs = Set(articleFeeds.map(\.itemID.rawValue))
-            newsFeedIDs = news
+            if !publishedFeed {
+                articleFeedIDs = loadedArticleFeedIDs
+                newsFeedIDs = news
+            }
+            // The previous reload replaced the whole snapshot, so a removed
+            // subscription must not leave its last policy behind.
+            let currentFeedIDs = Set(model.subscriptions.map(\.id))
+            policies = policies.filter { currentFeedIDs.contains($0.key) }
+            rules = rules.filter { currentFeedIDs.contains($0.key) }
             loadState = .loaded
         } catch is CancellationError {
             guard activeReloadID == reloadID else { return }
