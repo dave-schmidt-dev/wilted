@@ -405,7 +405,8 @@ extension WiltedMacModel {
     /// with the reason, which puts it on Prep beside a retry, where every
     /// other failure goes.
     private func closeInterruptedPreparationRuns(in store: LocalLibraryStore) async {
-        guard let runs = try? await store.preparationRuns() else { return }
+        // The display cap must not hide an older live run from recovery.
+        guard let runs = try? await store.preparationRuns(limit: Int.max) else { return }
         for run in runs where !run.isTerminal {
             if run.entries.first?.status.attempt != nil,
                (try? await store.closeInactivePreparationRun(run, at: Timestamp(Date()),

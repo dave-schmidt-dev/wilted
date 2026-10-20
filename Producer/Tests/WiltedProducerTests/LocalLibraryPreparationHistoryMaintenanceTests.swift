@@ -58,10 +58,11 @@ extension LocalLibraryStoreTests {
     private func insertPreparation(
         _ context: ModelContext, id: String, itemID: ItemID, requestID: String,
         stage: PreparationStage, at date: Date, attempt: PreparationAttemptIdentity?,
-        evidence: PreparationEvidence? = nil, terminal: PreparationTerminalResult? = nil
+        evidence: PreparationEvidence? = nil, terminal: PreparationTerminalResult? = nil,
+        timeline: PreparationStatus.PreparationTimeline? = nil
     ) throws {
         let status = try PreparationStatus(stage: stage, detail: "history \(id)", cancellable: terminal == nil,
-            terminalResult: terminal, emittedAt: Timestamp(date), evidence: evidence, attempt: attempt)
+            terminalResult: terminal, emittedAt: Timestamp(date), evidence: evidence, timeline: timeline, attempt: attempt)
         context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(PreparationJournalEntry(
             id: id, itemID: itemID, requestID: requestID, status: status)))
     }
@@ -74,7 +75,7 @@ extension LocalLibraryStoreTests {
     }
 
     private func makeBuriedPreparationHistory(
-        depth: Int, name: String
+        depth: Int, name: String, timeline: PreparationStatus.PreparationTimeline? = nil
     ) async throws -> PreparationHistoryFixture {
         let fixture = try await makePreparationHistoryStore(name)
         let context = ModelContext(fixture.store.container)
@@ -90,7 +91,7 @@ extension LocalLibraryStoreTests {
         try insertPreparation(context, id: readyPrefix + "terminal", itemID: fixture.itemID,
             requestID: fixture.requestID, stage: .completed, at: fixture.base.addingTimeInterval(2),
             attempt: ready, terminal: try PreparationTerminalResult(
-                outcome: .succeeded, revisionID: fixture.revision.revisionID))
+                outcome: .succeeded, revisionID: fixture.revision.revisionID), timeline: timeline)
         let failureEvidence = try PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: [
             "fingerprint": "new-failure-pipeline",
             "sourceRevisionID": fixture.revision.revisionID.rawValue, "sourceHash": fixture.hash
@@ -116,6 +117,27 @@ extension LocalLibraryStoreTests {
             subjectID: fixture.itemID.rawValue, requestSequence: depth + 1, to: .running,
             at: Timestamp(fixture.base.addingTimeInterval(10 * Double(depth + 1))))
         return fixture
+    }
+
+    func testPreparationTimelineFindsReadyProofBuriedUnderRetainedFailures() async throws {
+        let timeline = try PreparationStatus.PreparationTimeline(
+            removed: [.init(originalStartSeconds: 0.5, originalEndSeconds: 1, label: "Ad", confidence: 1)],
+            kept: [.init(originalStartSeconds: 0, originalEndSeconds: 0.5, outputStartSeconds: 0),
+                   .init(originalStartSeconds: 1, originalEndSeconds: 3, outputStartSeconds: 0.5)])
+        var rowsRead: [Int] = []
+        for depth in [100, 200] {
+            let fixture = try await makeBuriedPreparationHistory(
+                depth: depth, name: "buried-timeline-\(depth)", timeline: timeline)
+            defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
+            let found = try await fixture.store.latestPreparationTimeline(
+                for: fixture.itemID, revisionID: fixture.revision.revisionID)
+            XCTAssertEqual(found, timeline)
+            rowsRead.append(await fixture.store.preparationMaintenanceRowsRead)
+            let wrong = try await fixture.store.latestPreparationTimeline(
+                for: fixture.itemID, revisionID: try RevisionID(rawValue: "another-revision"))
+            XCTAssertNil(wrong)
+        }
+        XCTAssertEqual(rowsRead[0], rowsRead[1], "materialized journal rows must not grow with retained failures")
     }
 
     func testPreparationHistoryFindsReadyProofBuriedUnderRetainedFailures() async throws {

@@ -454,8 +454,8 @@ extension LocalLibraryStore {
     ///
     /// `preparationRuns()` decodes every journalled status in the library,
     /// which is the wrong shape for a lookup the player performs each time it
-    /// loads a transcript. Only the terminal statuses of this item are
-    /// decoded, and only a successful one carries a timeline.
+    /// loads a transcript. A bounded recent scan handles the usual case;
+    /// the current outcome anchors an older Ready-proving generation on a miss.
     ///
     /// The revision is part of the question rather than a detail of the
     /// answer. Cutting an episode changes its bytes and therefore its
@@ -485,13 +485,29 @@ extension LocalLibraryStore {
                   let timeline = status.timeline else { continue }
             return timeline
         }
+        let outcomeID = raw + "|" + revisionID.rawValue
+        var outcomeQuery = FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>(
+            predicate: #Predicate { $0.id == outcomeID }
+        )
+        outcomeQuery.fetchLimit = 1
+        guard let outcome = try context.fetch(outcomeQuery).first,
+              outcome.eligibility == PodcastPreparationEligibility.current.rawValue else { return nil }
+        let generations = try maintenanceCandidateGenerations(
+            for: itemID, ticketAttempt: nil, readyRevisionID: revisionID.rawValue,
+            currentOutcomeProducedAt: outcome.producedAt, in: context, decoder: decoder)
+        for generation in generations {
+            for entry in generation.entries.reversed() where entry.status.terminal {
+                guard let result = entry.status.terminalResult, result.outcome == .succeeded,
+                      result.revisionID == revisionID, let timeline = entry.status.timeline else { continue }
+                return timeline
+            }
+        }
         return nil
     }
 
     /// A ceiling on the newest-first scan above. An item that has been
-    /// prepared repeatedly still finds its last success within a few rows,
-    /// and a library whose journal was never pruned should not turn one
-    /// transcript load into a full-table decode.
+    /// prepared repeatedly normally finds its last success within a few rows;
+    /// older Ready proof uses the separately bounded maintenance lookup.
     private static let maximumTimelineLookupRecords = 64
 
 }

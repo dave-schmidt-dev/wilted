@@ -20,7 +20,7 @@ behaviour); retention (pruning) is a proposal for David to decide.
   newest acknowledged generation; journal generations never exceed it, because
   `record(preparation:)` only accepts rows for the ticket's running generation.
 
-## Where maintenance reads history today
+## Original read shapes, before bounded maintenance
 
 | Read | Caller | Shape |
 |---|---|---|
@@ -28,15 +28,18 @@ behaviour); retention (pruning) is a proposal for David to decide.
 | `requiresForcedRedownload(for:)` | Every podcast transfer (`PodcastDownloadCoordinator`) | Full-table fetch to test one exact request id. |
 | `markForcedRedownloadCompleted(for:currentFingerprint:)` | After a forced download (`WiltedMacModel+Downloads.swift`) | Full-table fetch to find one item's markers. |
 
-Out of scope for this lane, recorded as follow-ups:
+Follow-up read gaps corrected separately on 2026-10-20, without pruning or a schema change:
 
-- `preparationRuns(limit:)` / `allPreparationRunSummaries` decode every journal row in the
-  library, then cap at 200 runs. The bootstrap closer `closeInterruptedPreparationRuns`
-  (Mac target) depends on it, so a non-terminal run older than the newest 200 runs is
-  never closed. Prep's display and the Larder snapshot use the same read.
-- `latestPreparationTimeline(for:revisionID:)` scans the newest 64 rows of the item. A
-  Ready-proving success buried under more than 64 newer failure rows loses its timeline
-  (cut markers disappear from the player). The anchored lookup below would fix it.
+- `preparationRuns(limit:)` / `allPreparationRunSummaries` already decode every journal
+  row before applying the display limit. Bootstrap now explicitly requests all runs
+  through the existing API, so more than 200 newer terminal runs cannot hide a live one.
+  Prep's default display limit remains 200; no additional journal scan was introduced.
+- `latestPreparationTimeline(for:revisionID:)` keeps its newest-64-row fast path. On a
+  miss it fetches the exact current outcome and reuses the bounded Ready-generation
+  lookup below, retaining revision matching and legacy recent-history behavior.
+
+Still outside the corrected read gaps:
+
 - `invalidateStalePodcastPreparations` also scans `outcomes` once per selected generation
   (`outcomes.first`), which is O(items x outcomes). Library-sized, not history-sized.
 

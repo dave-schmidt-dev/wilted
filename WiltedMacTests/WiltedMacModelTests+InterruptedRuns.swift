@@ -56,12 +56,29 @@ extension WiltedMacModelTests {
                                           emittedAt: created)
         ))
 
+        // More recent terminal runs must not hide an older interrupted run
+        // behind Prep's 200-run display limit.
+        for index in 1...201 {
+            let recent = try await episode("finished-\(index)")
+            let request = PodcastPreparationPipeline.requestID(for: recent)
+            try await store.record(preparation: PreparationJournalEntry(
+                id: request + "|terminal", itemID: recent, requestID: request,
+                status: try PreparationStatus(stage: .completed, detail: "Prepared.", cancellable: false,
+                    terminalResult: try PreparationTerminalResult(outcome: .succeeded,
+                        revisionID: try RevisionID(rawValue: "rev-" + String(repeating: "a", count: 64))),
+                    emittedAt: Timestamp(created.date.addingTimeInterval(Double(index + 1))))
+            ))
+        }
+        let displayed = try await store.preparationRuns()
+        XCTAssertEqual(displayed.count, 200)
+        XCTAssertFalse(displayed.contains { $0.requestID == interruptedRequest })
+
         let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory,
                                    preferences: WiltedMacTestPreferences.ephemeral())
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
 
-        let runs = Dictionary(uniqueKeysWithValues: try await store.preparationRuns().map { ($0.requestID, $0) })
+        let runs = Dictionary(uniqueKeysWithValues: try await store.preparationRuns(limit: Int.max).map { ($0.requestID, $0) })
         let closed = try XCTUnwrap(runs[interruptedRequest])
         XCTAssertTrue(closed.isTerminal, "a run no process is running must not stay live across a launch")
         XCTAssertEqual(closed.outcome, .failed)
