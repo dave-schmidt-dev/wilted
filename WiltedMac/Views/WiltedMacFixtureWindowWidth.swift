@@ -16,6 +16,16 @@ enum WiltedMacFixtureWindowWidth {
         CGSize(width: requestedWidth, height: max(minimumFixtureContentHeight, max(current.height, minimumHeight)))
     }
 
+    /// Fits the resized fixture frame inside its intended screen's visible area.
+    static func fittedFrame(_ proposed: CGRect, inside visible: CGRect) -> CGRect {
+        var frame = proposed
+        frame.size.width = min(frame.width, visible.width)
+        frame.size.height = min(frame.height, visible.height)
+        frame.origin.x = max(visible.minX, min(frame.minX, visible.maxX - frame.width))
+        frame.origin.y = max(visible.minY, min(frame.minY, visible.maxY - frame.height))
+        return frame
+    }
+
     /// The requested content width, or nil when the launch is not a fixture
     /// launch or names no usable number.
     static func width(arguments: [String]) -> CGFloat? {
@@ -58,13 +68,10 @@ struct WiltedMacFixtureWindowSizer: NSViewRepresentable {
                     minimumHeight: window.contentMinSize.height
                 )
                 window.setContentSize(size)
-                // And onto the screen: a restored window can hang off the
-                // bottom, which hides the part of it a capture is meant to show.
-                if let visible = window.screen?.visibleFrame {
-                    var frame = window.frame
-                    frame.size.height = min(frame.height, visible.height)
-                    frame.origin.y = max(visible.minY, min(frame.minY, visible.maxY - frame.height))
-                    window.setFrame(frame, display: true)
+                // Keep the resized fixture wholly on the intended primary screen,
+                // including when a wider fixture reuses the same window's origin.
+                if let visible = NSScreen.screens.first?.visibleFrame {
+                    window.setFrame(WiltedMacFixtureWindowWidth.fittedFrame(window.frame, inside: visible), display: true)
                 }
             }
         }

@@ -142,6 +142,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Mac UI fixture windows stay wholly on the primary screen after switching to a wider fixture, keeping player controls reachable during the single-launch test run.
 - After a relaunch, account verification obeys iCloud's shared retry wait; an unavailable account check keeps the saved library unverified until a later successful check.
 - Ad removal keeps the recovered cuts when a long transcript needs a second, smaller classifier check.
 - Sponsor spots at the edges of an ad break are retained in the cut rather than left in the audio.

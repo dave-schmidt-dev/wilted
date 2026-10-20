@@ -180,6 +180,42 @@ final class WiltedMacRedesignTests: XCTestCase {
         }
     }
 
+    func testFixtureFrameFitContainsTheRecordedWideWindow() {
+        let visible = CGRect(x: 0, y: 0, width: 1728, height: 1084)
+        let proposed = CGRect(x: 414, y: 200, width: 1400, height: 640)
+        let fitted = WiltedMacFixtureWindowWidth.fittedFrame(proposed, inside: visible)
+        XCTAssertEqual(fitted, CGRect(x: 328, y: 200, width: 1400, height: 640),
+                       "the retained UI failure overflowed the primary screen by 86 pixels")
+        XCTAssertTrue(visible.contains(fitted), "the whole fixture, including its player controls, remains visible")
+    }
+
+    func testFixtureFrameFitPreservesAlreadyVisibleWidthsAndHeight() {
+        let visible = CGRect(x: 0, y: 0, width: 1728, height: 1084)
+        for width in [CGFloat(900), 1200] {
+            let frame = CGRect(x: 414, y: 60, width: width, height: 844)
+            XCTAssertEqual(WiltedMacFixtureWindowWidth.fittedFrame(frame, inside: visible), frame)
+        }
+    }
+
+    func testFixtureFrameFitHandlesOversizeAndOffsetVisibleAreas() {
+        let cases: [(CGRect, CGRect, CGRect)] = [
+            (CGRect(x: -1600, y: -450, width: 2000, height: 1400),
+             CGRect(x: -1440, y: -300, width: 1440, height: 1000),
+             CGRect(x: -1440, y: -300, width: 1440, height: 1000)),
+            (CGRect(x: 1430, y: 900, width: 400, height: 200),
+             CGRect(x: 100, y: 50, width: 1728, height: 1084),
+             CGRect(x: 1428, y: 900, width: 400, height: 200)),
+            (CGRect(x: -5, y: -20, width: 900, height: 640),
+             CGRect(x: 100, y: 50, width: 1728, height: 1084),
+             CGRect(x: 100, y: 50, width: 900, height: 640))
+        ]
+        for (proposed, visible, expected) in cases {
+            let fitted = WiltedMacFixtureWindowWidth.fittedFrame(proposed, inside: visible)
+            XCTAssertEqual(fitted, expected)
+            XCTAssertTrue(visible.contains(fitted))
+        }
+    }
+
     // MARK: Watermark
 
     func testPhoneWatermarkKeepsItsSize() {
