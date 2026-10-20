@@ -2,25 +2,11 @@ import XCTest
 
 /// One attended journey checks native window chrome across collapse transitions.
 @MainActor
-final class WiltedMacSidebarChromeUITests: XCTestCase {
-    func testCollapsedSidebarKeepsContentBelowWindowControls() throws {
-        let app = XCUIApplication()
-        let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-ui-chrome")
-        addTeardownBlock { [weak self] in
-            if (self?.testRun?.totalFailureCount ?? 0) > 0 { self?.attachFixtureWindowIfAvailable(app) }
-            app.terminate()
-            try WiltedMacUITemporaryState.removeFixtureRoot(root)
-        }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        app.launchArguments = [
-            "-ApplePersistenceIgnoreState", "YES", "--wilted-ui-fixture-ready",
-            "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-window-width", "1400",
-            "--wilted-ui-fixture-state-directory", root.path,
-        ]
-        app.launch()
-        try WiltedMacUITestApplicationLaunch.reopenFixture(app)
-        app.activate()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+extension WiltedMacJourneyUITests {
+    func test03CollapsedSidebarKeepsContentBelowWindowControls() throws {
+        let app = try openFixture([
+            "--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts", "--wilted-ui-fixture-window-width", "1400",
+        ], prefix: "wilted-ui-chrome")
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10))
         let toggle = app.buttons["wilted-sidebar-toggle"]
@@ -55,19 +41,4 @@ final class WiltedMacSidebarChromeUITests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed)
         }
     }
-
-    /// Diagnostics are limited to the synthetic fixture window.
-    private func attachFixtureWindowIfAvailable(_ app: XCUIApplication) {
-        let window = app.windows.firstMatch
-        guard window.exists else { return }
-        let hierarchy = XCTAttachment(string: window.debugDescription)
-        hierarchy.name = "Fixture window hierarchy"
-        hierarchy.lifetime = .keepAlways
-        add(hierarchy)
-        let image = XCTAttachment(screenshot: window.screenshot())
-        image.name = "Fixture window"
-        image.lifetime = .keepAlways
-        add(image)
-    }
-
 }

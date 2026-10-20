@@ -22,8 +22,9 @@ extension WiltedMacModel {
 
     /// Explicit native-test failures leave ordinary fixture and live reads unchanged.
     func fixtureEpisodeInfoSource(
-        id: String, showTitle: String?, arguments: [String] = ProcessInfo.processInfo.arguments
+        id: String, showTitle: String?, arguments: [String]? = nil
     ) -> WiltedMacEpisodeInfoSource? {
+        let arguments = arguments ?? launchArguments
         let failInfo = arguments.contains("--wilted-ui-fixture-info-read-fails-once")
         let failTranscript = arguments.contains("--wilted-ui-fixture-transcript-read-fails-once")
         guard fixtureMode, failInfo || failTranscript else { return nil }

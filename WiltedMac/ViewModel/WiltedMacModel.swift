@@ -264,6 +264,10 @@ final class WiltedMacModel {
     var audioRouteFault = false
 
     let fixtureMode: Bool
+    /// The arguments this model was built from. A fixture session can build a
+    /// later model inside the same process, so fixture reads use these rather
+    /// than the process's own launch arguments.
+    let launchArguments: [String]
 
 #if canImport(WiltedProducer)
     /// Explicit fixture failures survive SwiftUI rebuilding their source closures.
@@ -533,6 +537,7 @@ final class WiltedMacModel {
          preferences: UserDefaults) {
         let usesFixtureMode = Self.isFixtureLaunch(arguments: arguments)
         fixtureMode = usesFixtureMode
+        launchArguments = arguments
         self.nowPlayingSink = nowPlayingSink
         self.remoteCommandSource = remoteCommandSource
         // Required rather than defaulted to `.standard`: the unit-test host is

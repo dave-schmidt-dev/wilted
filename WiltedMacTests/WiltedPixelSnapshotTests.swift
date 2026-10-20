@@ -94,7 +94,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
     /// this suite and was only caught in attended acceptance.
     ///
     /// Sidebar behavior is therefore owned by the Mac XCUITest suite, which
-    /// drives the real app: `testIntakeJourneyAcrossLarderFeedsAndSettings`. This test
+    /// drives the real app: `test01IntakeJourneyAcrossLarderFeedsAndSettings`. This test
     /// asserts only what the pixel path can honestly see, and pins the
     /// detail-region origin so a future change cannot quietly shrink these
     /// back to the card canvas where even the detail region was cropped.

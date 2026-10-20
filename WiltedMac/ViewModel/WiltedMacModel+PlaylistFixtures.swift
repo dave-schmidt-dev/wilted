@@ -24,9 +24,8 @@ extension WiltedMacModel {
     /// the real store write, which still decides success; nothing here fakes it.
     /// A launch without the flag, or one whose directory is not the owned
     /// fixture root, leaves the static hook and every normal path untouched.
-    func installDelayedPlaylistWriteFixtureIfRequested(
-        arguments: [String] = ProcessInfo.processInfo.arguments
-    ) {
+    func installDelayedPlaylistWriteFixtureIfRequested(arguments: [String]? = nil) {
+        let arguments = arguments ?? launchArguments
         guard fixtureMode, arguments.contains(Self.playlistWriteDelayFlag),
               let root = Self.fixtureStateDirectoryOverride(arguments: arguments) else { return }
         let canonical = root.standardizedFileURL

@@ -186,7 +186,7 @@ struct WiltedMacRootView: View {
         .wiltedTransparentToolbar()
         .background(WiltedWindowTitleHider())
         .background {
-            if let width = WiltedMacFixtureWindowWidth.width(arguments: ProcessInfo.processInfo.arguments) {
+            if let width = WiltedMacFixtureWindowWidth.width(arguments: model.launchArguments) {
                 WiltedMacFixtureWindowSizer(width: width)
             }
         }

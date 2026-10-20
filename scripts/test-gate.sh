@@ -586,7 +586,10 @@ leg_macos_ui_tests() {
   fi
   # Before the build: a wedged host daemon fails here instead of after the test budget.
   if ! wilted_testmanagerd_preflight; then return 1; fi
-  wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$WILTED_TEMP_LEG_WORK" || fail "could not bind $label XCTest to its owned temp parent"
+  local ui_launch_ledger="$WILTED_TEMP_LEG_WORK/wilted-ui-app-launches.jsonl"
+  rm -f "$ui_launch_ledger"
+  wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/WiltedMac.xcscheme" "$WILTED_TEMP_LEG_WORK" \
+    "WILTED_UI_LAUNCH_LEDGER=$ui_launch_ledger" || fail "could not bind $label XCTest to its owned temp parent"
   label_data="$(build_cache_path xcode "$cache_key")"
   # Build pre-actions execute under the cache helper's lock, before Xcode
   # copies/signs products. Clear only our staged inputs and owned product tree;
@@ -696,7 +699,10 @@ PYMETADATA
     -parallel-testing-enabled NO \
     -quiet &
   WILTED_ACTIVE_SUPERVISOR_PID=$!
-  wait_macos_ui_supervisor
+  local ui_status=0
+  wait_macos_ui_supervisor || ui_status=$?
+  wilted_mac_ui_report_launches "$ui_launch_ledger" ||{ [[ "$ui_status" -ne 0 ]] || ui_status=1; }
+  return "$ui_status"
 }
 
 leg_ios_ui_tests() {

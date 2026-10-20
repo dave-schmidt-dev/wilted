@@ -241,26 +241,44 @@ assert_macos_ui_leg_is_executed() {
   assert_contains '  macos-ui-tests' "$gate"
   assert_validation_contains 'macos-ui-tests) mac_ui_declared_test_count ;;'
   assert_validation_contains 'WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests WiltedMacEpisodeInfoUITests WiltedMacPlaylistUITests'
-  assert_validation_contains 'WiltedMacSmokeUITests|WiltedMacSidebarChromeUITests|WiltedMacEpisodeInfoUITests'
-  assert_validation_contains 'WiltedMacUITests/WiltedMacEpisodeInfoUITests/testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer'
+  assert_validation_contains '^WiltedMacUITests/WiltedMacJourneyUITests/test[A-Za-z0-9_]+$'
+  assert_validation_contains 'WiltedMacUITests/WiltedMacJourneyUITests/test06EpisodeInfoJourneyAcrossFeedsHistoryAndPlayer'
   assert_validation_contains 'focused EpisodeInfo selector must require exactly one test'
   assert_validation_contains 'saved episode info native journey must stay registered'
-  assert_contains 'func testEpisodeInfoJourneyAcrossFeedsHistoryAndPlayer' "$repo_root/WiltedMacUITests/WiltedMacEpisodeInfoUITests.swift"
-  assert_validation_contains 'testManualPlaylistDiscoveryRenameDeleteAndShare'
-  assert_validation_contains 'testAutomaticPlaylistFormulaPreviewAndSave'
+  assert_contains 'func test06EpisodeInfoJourneyAcrossFeedsHistoryAndPlayer' "$repo_root/WiltedMacUITests/WiltedMacEpisodeInfoUITests.swift"
+  assert_validation_contains 'test07ManualPlaylistDiscoveryRenameDeleteAndShare'
+  assert_validation_contains 'test08AutomaticPlaylistFormulaPreviewAndSave'
   assert_validation_contains 'playlist owner-feedback native journey must stay registered'
-  assert_contains 'func testManualPlaylistDiscoveryRenameDeleteAndShare' "$repo_root/WiltedMacUITests/WiltedMacPlaylistUITests.swift"
-  assert_contains 'func testAutomaticPlaylistFormulaPreviewAndSave' "$repo_root/WiltedMacUITests/WiltedMacPlaylistUITests.swift"
-  assert_validation_contains 'testCommandQuitDrainsRepliesOnceAndExits'
-  assert_contains 'func testCommandQuitDrainsRepliesOnceAndExits' "$repo_root/WiltedMacUITests/WiltedMacQuitUITests.swift"
-  assert_validation_contains 'testCollapsedSidebarKeepsContentBelowWindowControls'
-  assert_contains 'func testCollapsedSidebarKeepsContentBelowWindowControls' "$repo_root/WiltedMacUITests/WiltedMacSidebarChromeUITests.swift"
+  assert_contains 'func test07ManualPlaylistDiscoveryRenameDeleteAndShare' "$repo_root/WiltedMacUITests/WiltedMacPlaylistUITests.swift"
+  assert_contains 'func test08AutomaticPlaylistFormulaPreviewAndSave' "$repo_root/WiltedMacUITests/WiltedMacPlaylistUITests.swift"
+  assert_validation_contains 'test09CommandQuitDrainsRepliesOnceAndExits'
+  assert_validation_contains 'the Quit journey must sort after every other journey'
+  assert_contains 'func test09CommandQuitDrainsRepliesOnceAndExits' "$repo_root/WiltedMacUITests/WiltedMacQuitUITests.swift"
+  assert_validation_contains 'test03CollapsedSidebarKeepsContentBelowWindowControls'
+  assert_contains 'func test03CollapsedSidebarKeepsContentBelowWindowControls' "$repo_root/WiltedMacUITests/WiltedMacSidebarChromeUITests.swift"
+  # One launch per run: every journey shares the app, and the gate counts launches.
+  assert_contains 'final class WiltedMacJourneyUITests: XCTestCase' "$repo_root/WiltedMacUITests/WiltedMacJourneyUITests.swift"
+  assert_contains 'WILTED_UI_LAUNCH_LEDGER=$ui_launch_ledger' "$gate"
+  assert_contains 'wilted_mac_ui_report_launches "$ui_launch_ledger"' "$gate"
+  local ledger="$tmp_dir/ui-launches.jsonl" report="$tmp_dir/ui-launches.out"
+  printf '%s\n' '{"event":"launch"}' '{"event":"switch"}' '{"event":"switch"}' >"$ledger"
+  wilted_mac_ui_report_launches "$ledger" >"$report" 2>&1 || { printf 'assertion failed: %s\n' 'one launch must pass the launch count' >&2; exit 1; }
+  assert_contains 'native.macos-ui.app-launches count=1 switches=2' "$report"
+  [[ ! -e "$ledger" ]] || { printf 'assertion failed: %s\n' 'the launch count must remove its ledger' >&2; exit 1; }
+  printf '%s\n' '{"event":"launch"}' '{"event":"launch"}' >"$ledger"
+  ! wilted_mac_ui_report_launches "$ledger" >"$report" 2>&1 || { printf 'assertion failed: %s\n' 'a second launch must fail the launch count' >&2; exit 1; }
+  assert_contains 'launched the app 2 times' "$report"
+  ! wilted_mac_ui_report_launches "$ledger" >"$report" 2>&1 || { printf 'assertion failed: %s\n' 'an absent ledger must fail the launch count' >&2; exit 1; }
+  assert_contains 'count=unknown ledger=absent' "$report"
+  printf '%s\n' '{"event":"switch"}' >"$ledger"
+  ! wilted_mac_ui_report_launches "$ledger" >"$report" 2>&1 || { printf 'assertion failed: %s\n' 'zero launches must fail the launch count' >&2; exit 1; }
+  assert_contains 'count=0 switches=1' "$report"
 
   # A floor is a minimum, so a named journey can vanish while an unrelated new
   # test holds the count up. The gate asserts this one by identifier too.
   assert_validation_contains 'testLarderOverridesAnOffPeakDeferralWithPrepareNow'
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
-  for method in testIntakeJourneyAcrossLarderFeedsAndSettings testEpisodeDecisionJourneyFromFeedsToLarder; do
+  for method in test01IntakeJourneyAcrossLarderFeedsAndSettings test02EpisodeDecisionJourneyFromFeedsToLarder; do
     assert_contains "$method" "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift"
   done
   # The other journeys run headless in the Mac unit leg.

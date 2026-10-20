@@ -6,7 +6,9 @@ import WiltedProducer
 @main
 struct WiltedMacApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var model: WiltedMacModel
+    @State private var host: WiltedMacModelHost
+    /// The window's model. A UI-test fixture session may swap it; nothing else does.
+    private var model: WiltedMacModel { host.model }
     @FocusedValue(\.wiltedLarderSearchFocus) private var focusLarderSearch: (() -> Void)?
     /// Owns `applicationShouldTerminate`, so a normal quit drains local work
     /// before the process exits (see `WiltedMacTerminationCoordinator`).
@@ -15,7 +17,8 @@ struct WiltedMacApp: App {
     init() {
         let arguments = ProcessInfo.processInfo.arguments
         let model = Self.makeLaunchModel(arguments: arguments)
-        _model = State(initialValue: model)
+        let host = WiltedMacModelHost(model: model)
+        _host = State(initialValue: host)
         // Tests and fixtures are excluded because they have their own temporary state and their own archive instances.
         if !WiltedMacModel.hostsTests && !WiltedMacModel.isFixtureLaunch(arguments: arguments) {
             WiltedMacLogArchive.startForLaunch(stateDirectory: model.libraryURL.deletingLastPathComponent())
@@ -27,6 +30,9 @@ struct WiltedMacApp: App {
         WiltedMacAppDelegate.installTermination(
             for: model, arguments: arguments, hostsTests: WiltedMacModel.hostsTests
         )
+#if DEBUG
+        WiltedMacFixtureSession.startIfRequested(arguments: arguments, host: host)
+#endif
     }
 
     /// Builds the model used by the app composition root. Keeping this small
@@ -106,6 +112,9 @@ struct WiltedMacApp: App {
         let _ = Self.recordFixtureSceneEvaluation()
         WindowGroup {
             WiltedMacRootView(model: model)
+                // A fixture switch is a fresh launch to the view tree: no
+                // selection, sheet or sizing survives from the previous model.
+                .id(host.generation)
                 // Scene phase reports that the windows went away, which is
                 // not the same event as quitting and must not stop the audio.
                 // A normal quit already drained in `applicationShouldTerminate`;

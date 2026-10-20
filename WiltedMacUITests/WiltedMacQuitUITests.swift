@@ -5,30 +5,20 @@ import XCTest
 /// The isolated child-process tests in `WiltedMacTerminationTests` cover the
 /// same quit routing headlessly with a directed quit event.
 @MainActor
-final class WiltedMacQuitUITests: XCTestCase {
-    func testCommandQuitDrainsRepliesOnceAndExits() throws {
-        let root = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-ui-quit")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        let app = XCUIApplication()
-        addTeardownBlock { [weak self, root] in
-            if (self?.testRun?.totalFailureCount ?? 0) > 0 { self?.attachFixtureWindowIfAvailable(app) }
-            if app.state != .notRunning { app.terminate() }
-            try WiltedMacUITemporaryState.removeFixtureRoot(root)
-        }
-        let journal = root.appendingPathComponent("termination.jsonl")
-        let state = root.appendingPathComponent("state", isDirectory: true)
-        app.launchArguments = [
-            "-ApplePersistenceIgnoreState", "YES",
+extension WiltedMacJourneyUITests {
+    /// Last in the suite: it ends the one shared app process.
+    func test09CommandQuitDrainsRepliesOnceAndExits() throws {
+        // The journal sits in a root of its own, so the quit fixture's state
+        // root holds only what the app wrote.
+        let journalRoot = try WiltedMacUITemporaryState.fixtureRoot(prefix: "wilted-ui-quit")
+        try FileManager.default.createDirectory(at: journalRoot, withIntermediateDirectories: false)
+        addTeardownBlock { try WiltedMacUITemporaryState.removeFixtureRoot(journalRoot) }
+        let journal = journalRoot.appendingPathComponent("termination.jsonl")
+        let app = try openFixture([
             "--wilted-ui-fixture-playing",
             "--wilted-ui-fixture-window-width", "1200",
-            "--wilted-ui-fixture-state-directory", state.path,
             "--wilted-termination-journal", journal.path,
-        ]
-        app.launch()
-        try WiltedMacUITestApplicationLaunch.reopenFixture(app)
-        app.activate()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "the fixture became foreground")
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "the fixture window appeared")
+        ], prefix: "wilted-ui-quit-state")
         XCTAssertTrue(waitFor(timeout: 30) { Self.events(journal).contains { $0["event"] == "ready" } },
                       "the fixture reported ready")
 
@@ -41,20 +31,6 @@ final class WiltedMacQuitUITests: XCTestCase {
         let playhead = try XCTUnwrap(events.last { $0["event"] == "playhead" })
         XCTAssertEqual(Double(playhead["position"] ?? ""), 37, "the drained playhead is the fixture's seek")
         XCTAssertGreaterThanOrEqual(Int(playhead["playedMilliseconds"] ?? "") ?? 0, 1_400)
-    }
-
-    /// Diagnostics are limited to the synthetic fixture window.
-    private func attachFixtureWindowIfAvailable(_ app: XCUIApplication) {
-        let window = app.windows.firstMatch
-        guard window.exists else { return }
-        let hierarchy = XCTAttachment(string: window.debugDescription)
-        hierarchy.name = "Fixture window hierarchy"
-        hierarchy.lifetime = .keepAlways
-        add(hierarchy)
-        let image = XCTAttachment(screenshot: window.screenshot())
-        image.name = "Fixture window"
-        image.lifetime = .keepAlways
-        add(image)
     }
 
     private func waitFor(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {

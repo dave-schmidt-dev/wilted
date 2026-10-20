@@ -436,6 +436,10 @@ extension WiltedMacAppDelegate {
     /// A fixture launch with a journal records instead of showing an alert.
     static func installTermination(for model: WiltedMacModel, arguments: [String], hostsTests: Bool) {
         guard !hostsTests else { return }
+        // A fixture session installs again for each fixture it switches to;
+        // nothing from the previous fixture's quit path may survive that.
+        fixtureOwner = nil
+        onLaunch = nil
         guard let journal = WiltedMacTerminationJournal.forLaunch(
             arguments: arguments, isFixture: WiltedMacModel.isFixtureLaunch(arguments: arguments)
         ) else {
