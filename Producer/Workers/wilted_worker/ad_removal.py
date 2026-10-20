@@ -25,6 +25,7 @@ from . import cue_timing as _worker_cue_timing
 from . import edge_recovery as _worker_edge_recovery
 from . import gpu_admission as _worker_gpu_admission
 from . import reporting as _worker_reporting
+from . import silence_trim as _worker_silence_trim
 from . import span_bounds as _worker_span_bounds
 from . import tail_recovery as _worker_tail_recovery
 from .ad_audit import AdAnalysis, AdAnalysisAudit, AuditingBackend, DeclinedCommercialEvidenceSeed, uncertain_ad_analysis, expected_backend_unavailable
@@ -456,9 +457,12 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     if output_path.resolve() == audio_path.resolve():
         raise WorkerError("cut-output-alias", "prepared output must not replace its input in place")
     _worker_reporting.progress("ads.cut.start", f"{len(keep_segments)} keep spans")
-    render_keep_segments(audio_path, output_path, keeps)
+    # Long pauses come out of the rendered map only. The ad spans below stay
+    # the complement of the ad-only map, so silence never counts as an ad.
+    rendered = _worker_silence_trim.trimmed_keeps(audio_path, keeps)
+    render_keep_segments(audio_path, output_path, rendered)
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise WorkerError("cut-output-empty", "ffmpeg produced no playable audio")
     effective = effective_ad_spans(ads_module, raw_nominations, keeps, total)
     _worker_reporting.progress("ads.cut.complete", f"{output_path.stat().st_size} bytes")
-    return output_path, effective, keeps, raw_nominations, serialize_ad_audit(analysis.audit)
+    return output_path, effective, rendered, raw_nominations, serialize_ad_audit(analysis.audit)

@@ -10,6 +10,7 @@ final class JournalWrites: @unchecked Sendable {
     /// Stages the worker re-emits on a timer, listed from the worker sources:
     /// - "ads.model.wait" (gpu_admission.py)
     /// - "ads.cut.render.progress" (cue_timing.py)
+    /// - "audio.silence.detect.progress" (silence_trim.py)
     /// - "transcript.glossary.progress" (glossary.py)
     /// - "summary.wait" (transcript_summary.py)
     /// - "summary.model.verify" (transcript_summary.py)
@@ -18,6 +19,7 @@ final class JournalWrites: @unchecked Sendable {
     static let heartbeatStages: Set<String> = [
         "ads.model.wait",
         "ads.cut.render.progress",
+        "audio.silence.detect.progress",
         "transcript.glossary.progress",
         "summary.wait",
         "summary.model.verify",

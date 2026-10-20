@@ -85,7 +85,7 @@ class UncertainAdDetectionTests(unittest.TestCase):
                          detections=[FakeAd(100, 120)])
         with tempfile.TemporaryDirectory() as directory, redirect_stderr(io.StringIO()), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=lambda path: 480.0 if ".rendering-" in path.name else 500.0), \
-                mock.patch.object(_worker_cue_timing, "_run_render_with_progress", side_effect=lambda command, **_kwargs: Path(command[-1]).write_bytes(b"synthetic")):
+                mock.patch.object(_worker_cue_timing, "_run_render_with_progress", side_effect=lambda command, **_kwargs: Path(command[-1]).write_bytes(b"synthetic") if "-filter_complex" in command else ""):
             request = {**self.request, "outputPath": str(Path(directory, "cut.mp3"))}
             path, spans, keeps, raw, audit = wp.detect_and_cut(request, self.audio, [], segments)
         self.assertNotEqual(path, self.audio)
