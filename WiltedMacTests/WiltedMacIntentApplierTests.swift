@@ -1,9 +1,9 @@
 import Foundation
 import WiltedDomain
 import WiltedLibrary
-import WiltedProducer
 import XCTest
 @testable import WiltedMac
+@testable import WiltedProducer
 
 /// Records what the applier asked of the model and answers from a scripted state.
 @MainActor
@@ -42,6 +42,36 @@ final class FakeDecisionHost: WiltedMacDecisionHost {
     }
 }
 
+/// Writes the outcome book through the central replacement primitive, failing the folder sync of
+/// chosen saves or throwing before the rename, as the old byte read-back could not distinguish.
+private final class ScriptedOutcomeWriter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var saves = 0
+    private let uncertainSaves: Set<Int>
+    private let failingSave: Int?
+
+    init(uncertainSaves: Set<Int> = [], failingBeforeRename save: Int? = nil) {
+        self.uncertainSaves = uncertainSaves
+        failingSave = save
+    }
+
+    var calls: Int { lock.withLock { saves } }
+
+    var write: WiltedMacIntentOutcomeBook.Writer {
+        { [self] data, url in
+            let save = lock.withLock { () -> Int in
+                saves += 1
+                return saves
+            }
+            if save == failingSave { throw POSIXError(.ENOSPC) }
+            guard uncertainSaves.contains(save) else { return try DurableFile.replace(data, to: url) }
+            return try DurableFile.$directorySyncInterceptor.withValue({ _ in throw POSIXError(.EIO) }) {
+                try DurableFile.replace(data, to: url)
+            }
+        }
+    }
+}
+
 @MainActor
 final class WiltedMacIntentApplierTests: XCTestCase {
     private let phone = "iphone"
@@ -57,6 +87,7 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         var host: FakeDecisionHost
         var server: InMemoryLibraryServer
         var applier: WiltedMacIntentApplier
+        var book: WiltedMacIntentOutcomeBook
         var appliedCount: Counter
     }
 
@@ -64,19 +95,26 @@ final class WiltedMacIntentApplierTests: XCTestCase {
 
     private func rig(
         host: FakeDecisionHost = FakeDecisionHost(), directory: URL? = nil, server: InMemoryLibraryServer? = nil,
-        writer: String? = nil
+        writer: String? = nil, bookWrite: WiltedMacIntentOutcomeBook.Writer? = nil
     ) -> Rig {
         let server = server ?? InMemoryLibraryServer(writerDeviceID: mac)
         let counter = Counter()
         let at = clock
+        let bookURL = directory?.appendingPathComponent("book.json")
+        let book: WiltedMacIntentOutcomeBook
+        if let bookWrite {
+            book = WiltedMacIntentOutcomeBook(fileURL: bookURL, now: { at }, write: bookWrite)
+        } else {
+            book = WiltedMacIntentOutcomeBook(fileURL: bookURL, now: { at })
+        }
         let applier = WiltedMacIntentApplier(
             host: host,
             ledger: WiltedMacIntentLedger(fileURL: directory?.appendingPathComponent("ledger.json"), now: { at }),
-            book: WiltedMacIntentOutcomeBook(fileURL: directory?.appendingPathComponent("book.json"), now: { at }),
+            book: book,
             transport: InMemoryLibraryTransport(deviceID: writer ?? mac, server: server), now: { at },
             onApplied: { counter.value += 1 }
         )
-        return Rig(host: host, server: server, applier: applier, appliedCount: counter)
+        return Rig(host: host, server: server, applier: applier, book: book, appliedCount: counter)
     }
 
     private func outcomes(_ rig: Rig) async throws -> [IntentOutcome] {
@@ -420,6 +458,87 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         let published = try await outcomes(online)
         XCTAssertEqual(published.map(\.intentID), ["k-4"])
         XCTAssertEqual(published.first?.disposition, .applied)
+    }
+
+    func testAnUncertainOutcomeSaveKeepsAppliedAcrossRetryAndRestartAndRunsTheHostOnce() async throws {
+        let directory = wiltedTemporaryDirectory("intent-applier-uncertain-save")
+        let server = InMemoryLibraryServer(writerDeviceID: mac)
+        let writer = ScriptedOutcomeWriter(uncertainSaves: [1, 2])
+        let first = rig(directory: directory, server: server, bookWrite: writer.write)
+        first.host.states[ids[0]] = .live(queued: false, started: false)
+        let keep = try intent(.keep(entryID: ids[0]), id: "k-uncertain")
+
+        try await first.applier.apply(keep)
+
+        XCTAssertEqual(first.host.calls, ["keep item-a"])
+        XCTAssertEqual(first.appliedCount.value, 1)
+        XCTAssertEqual(writer.calls, 2, "the applied save and its published mark both landed with an uncertain folder sync")
+        let savedEntry = await first.book.entry(for: "k-uncertain")
+        XCTAssertEqual(savedEntry?.outcome.disposition, .applied)
+        XCTAssertEqual(savedEntry?.published, true)
+        let published = try await outcomes(first)
+        XCTAssertEqual(published.map(\.intentID), ["k-uncertain"])
+        XCTAssertEqual(published.first?.disposition, .applied)
+
+        try await first.applier.apply(keep)
+        XCTAssertEqual(first.host.calls, ["keep item-a"], "the saved outcome is not applied again")
+        XCTAssertEqual(writer.calls, 2, "a published outcome needs no further save")
+
+        let restarted = rig(directory: directory, server: server)
+        restarted.host.states[ids[0]] = .live(queued: false, started: false)
+        let restartedEntry = await restarted.book.entry(for: "k-uncertain")
+        XCTAssertEqual(restartedEntry?.published, true, "the landed published mark survives a restart")
+        try await restarted.applier.apply(keep)
+
+        XCTAssertEqual(restarted.host.calls, [], "a restarted book holds the applied outcome")
+        XCTAssertEqual(restarted.appliedCount.value, 0)
+        let restartedOutcomes = try await outcomes(restarted)
+        XCTAssertEqual(restartedOutcomes.count, 1)
+    }
+
+    func testAnUncertainOutcomeSaveIsRepublishedAfterAnOfflinePublishWithoutApplyingAgain() async throws {
+        let directory = wiltedTemporaryDirectory("intent-applier-uncertain-offline")
+        let server = InMemoryLibraryServer(writerDeviceID: mac)
+        let writer = ScriptedOutcomeWriter(uncertainSaves: [1])
+        let offline = rig(directory: directory, server: server, writer: "not-the-writer", bookWrite: writer.write)
+        offline.host.states[ids[0]] = .live(queued: false, started: false)
+        let keep = try intent(.keep(entryID: ids[0]), id: "k-uncertain-offline")
+
+        do {
+            try await offline.applier.apply(keep)
+            XCTFail("a failed publish must surface so the sink retries")
+        } catch {}
+
+        XCTAssertEqual(offline.host.calls, ["keep item-a"])
+        XCTAssertEqual(writer.calls, 1, "the landed outcome is saved unpublished; the publish failed")
+        let offlineOutcomes = try await outcomes(offline)
+        XCTAssertTrue(offlineOutcomes.isEmpty)
+
+        let online = rig(directory: directory, server: server)
+        try await online.applier.apply(keep)
+
+        XCTAssertEqual(online.host.calls, [], "the retry republishes the saved outcome; it does not apply again")
+        let published = try await outcomes(online)
+        XCTAssertEqual(published.map(\.intentID), ["k-uncertain-offline"])
+        XCTAssertEqual(published.first?.disposition, .applied)
+    }
+
+    func testAnOutcomeSaveThatFailsBeforeTheRenameStillPropagates() async throws {
+        let directory = wiltedTemporaryDirectory("intent-applier-before-rename")
+        let writer = ScriptedOutcomeWriter(failingBeforeRename: 1)
+        let r = rig(directory: directory, bookWrite: writer.write)
+        r.host.states[ids[0]] = .live(queued: false, started: false)
+        let keep = try intent(.keep(entryID: ids[0]), id: "k-before-rename")
+
+        do {
+            try await r.applier.apply(keep)
+            XCTFail("a save that never reached the file must throw")
+        } catch {}
+
+        XCTAssertEqual(r.host.calls, ["keep item-a"])
+        XCTAssertEqual(r.appliedCount.value, 0, "the republish trigger waits for a landed outcome")
+        let saved = await r.book.entry(for: "k-before-rename")
+        XCTAssertNil(saved)
     }
 
     func testAnIntentBegunButNeverAnsweredIsRejectedNotReapplied() async throws {

@@ -1,13 +1,14 @@
 import Foundation
 import WiltedDomain
 import WiltedLibrary
-import WiltedProducer
 import XCTest
 @testable import WiltedMac
+@testable import WiltedProducer
 
-/// A ledger writer that fails its first `failing` saves. By default each failing save is written
-/// through `DurableFile` and then throws, as when the folder sync after the rename fails; with
-/// `beforeRename` it throws before anything reaches the file.
+/// A ledger writer that reports its first `failing` saves as a failed folder sync. By default it
+/// writes through the central replacement primitive with a real failed directory sync, so the
+/// bytes land and the result is uncertain; with `beforeRename` it throws before anything reaches
+/// the file.
 private final class FlakyLedgerWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var failuresLeft: Int
@@ -30,8 +31,10 @@ private final class FlakyLedgerWriter: @unchecked Sendable {
                 return true
             }
             if fails && beforeRename { throw POSIXError(.ENOSPC) }
-            try DurableFile.write(data, to: url)
-            if fails { throw POSIXError(.EIO) }
+            guard fails else { return try DurableFile.replace(data, to: url) }
+            return try DurableFile.$directorySyncInterceptor.withValue({ _ in throw POSIXError(.EIO) }) {
+                try DurableFile.replace(data, to: url)
+            }
         }
     }
 }
@@ -75,7 +78,7 @@ final class WiltedMacIntentLedgerTests: XCTestCase {
         let server = InMemoryLibraryServer(writerDeviceID: mac)
         let entry = try ItemID(rawValue: "item-a")
         let keep = try LibraryIntent(id: "k-sync", deviceID: phone, createdAt: clock, action: .keep(entryID: entry))
-        // Every folder sync fails in the first process, including the ledger's retry.
+        // Every folder sync fails in the first process, including the primitive's single retry.
         let flaky = FlakyLedgerWriter(failing: .max)
         let first = process(directory, server: server, entry: entry, write: flaky.write)
 
@@ -88,7 +91,7 @@ final class WiltedMacIntentLedgerTests: XCTestCase {
         try await first.applier.apply(keep)
 
         XCTAssertEqual(first.host.calls, ["keep item-a"], "the saved id is applied, once")
-        XCTAssertEqual(flaky.calls, 2, "the save is retried once to sync the folder again")
+        XCTAssertEqual(flaky.calls, 1, "the replacement primitive retries the folder sync without rewriting the ledger")
         let answered = try await outcomes(server)
         XCTAssertEqual(answered.map(\.intentID), ["k-sync"])
         XCTAssertEqual(answered.first?.disposition, .applied)

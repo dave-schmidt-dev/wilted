@@ -35,6 +35,8 @@ actor WiltedMacMediaService {
 
     /// Told each stage of a media request after `received`, so the requesting device can show it.
     typealias RequestReporter = @Sendable (LibraryIntent, LibraryMediaRequestStatus.Stage, String?) async -> Void
+    /// Writes the accounting bytes to its file and reports whether the folder sync is certain.
+    typealias AccountingWriter = @Sendable (Data, URL) throws -> DurableFile.ReplacementResult
 
     struct AssetKey: Hashable, Codable, Sendable {
         var entryID: String
@@ -63,6 +65,7 @@ actor WiltedMacMediaService {
     private let source: any WiltedMacReadyAudioSource
     private let transport: any LibraryTransport
     private let accountingURL: URL?
+    private let accountingWrite: AccountingWriter
     private let now: @Sendable () -> Date
     private let uploadRetryDelay: Duration
     private let sleep: @Sendable (Duration) async throws -> Void
@@ -83,17 +86,20 @@ actor WiltedMacMediaService {
     ///   - uploadRetryDelay: the wait before retrying an upload that failed once.
     ///   - sleep: how that wait passes. Tests replace it so a retry costs no real time.
     ///   - reportRequest: told `sending`, `answered` or `failed` for each media request it serves.
+    ///   - accountingWrite: writes the accounting bytes; tests replace it to fail the folder sync.
     init(
         source: any WiltedMacReadyAudioSource, transport: any LibraryTransport, accountingURL: URL?,
         now: @escaping @Sendable () -> Date = { Date() },
         uploadRetryDelay: Duration = WiltedMacMediaService.defaultUploadRetryDelay,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        reportRequest: RequestReporter? = nil
+        reportRequest: RequestReporter? = nil,
+        accountingWrite: @escaping AccountingWriter = { try DurableFile.replace($0, to: $1) }
     ) {
         self.reportRequest = reportRequest
         self.source = source
         self.transport = transport
         self.accountingURL = accountingURL
+        self.accountingWrite = accountingWrite
         self.now = now
         self.uploadRetryDelay = uploadRetryDelay
         self.sleep = sleep
@@ -479,7 +485,11 @@ actor WiltedMacMediaService {
         guard let accountingURL else { return }
         try FileManager.default.createDirectory(at: accountingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let stored = Stored(records: records.values.sorted { ($0.key.entryID, $0.key.revisionID) < ($1.key.entryID, $1.key.revisionID) }, published: published, transcripts: publishedTranscripts)
-        try DurableFile.write(JSONEncoder().encode(stored), to: accountingURL)
+        let data = try JSONEncoder().encode(stored)
+        let result = try accountingWrite(data, accountingURL)
+        if case let .replacedDirectorySyncUncertain(failure) = result {
+            mediaLog.warning("Media accounting landed but its folder sync is uncertain: \(failure.description, privacy: .public)")
+        }
     }
 
     private static func fileSize(_ url: URL) -> Int64? {
