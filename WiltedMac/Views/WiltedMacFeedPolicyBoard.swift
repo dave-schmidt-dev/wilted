@@ -26,6 +26,8 @@ final class WiltedMacFeedPolicyBoard {
     /// The feeds that list posts rather than audio, and which of them the reader treats as news.
     private(set) var articleFeedIDs: Set<String> = []
     private(set) var newsFeedIDs: Set<String> = []
+    /// The podcast feeds whose preparation also removes the show's own promotion.
+    private(set) var selfPromotionFeedIDs: Set<String> = []
     @ObservationIgnored private var rules: [String: EpisodeMatchRules] = [:]
     @ObservationIgnored private var editors: [String: WiltedMacFeedRulesEditor] = [:]
     @ObservationIgnored private var writeChain: Task<Void, Never>?
@@ -61,6 +63,7 @@ final class WiltedMacFeedPolicyBoard {
 
     init(model: WiltedMacModel) {
         self.model = model
+        selfPromotionFeedIDs = Set(WiltedMacSelfPromotionPreference(preferences: model.preferences).feedIDs)
     }
 
     var loadFailureMessage: String? {
@@ -266,6 +269,21 @@ final class WiltedMacFeedPolicyBoard {
                 if stored == true { newsFeedIDs.insert(feedID) } else { newsFeedIDs.remove(feedID) }
             }
         }
+    }
+
+    // MARK: Own promotion
+
+    func removesSelfPromotion(_ feedID: String) -> Bool { selfPromotionFeedIDs.contains(feedID) }
+
+    /// Saves whether preparation also removes this podcast feed's own promotion, in the
+    /// Mac's preferences. Returns false, changing nothing, for a feed that is not loaded or
+    /// lists articles.
+    @discardableResult
+    func setRemoveSelfPromotion(_ value: Bool, for feedID: String) -> Bool {
+        guard isLoaded(feedID), !isArticleFeed(feedID) else { return false }
+        WiltedMacSelfPromotionPreference(preferences: model.preferences).set(feedID: feedID, enabled: value)
+        if value { selfPromotionFeedIDs.insert(feedID) } else { selfPromotionFeedIDs.remove(feedID) }
+        return true
     }
 
     /// Fills the board without a store, so a preview or snapshot can render a given state.

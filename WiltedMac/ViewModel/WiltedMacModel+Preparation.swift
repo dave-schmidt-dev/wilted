@@ -156,7 +156,7 @@ extension WiltedMacModel {
     func prepareEpisode(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
         removeDeferredAutomaticPreparation(episode.id)
-        _ = prepareEpisode(episode, policySnapshot: Self.preparationPolicySnapshot(from: automationSettings))
+        _ = prepareEpisode(episode, policySnapshot: preparationPolicySnapshot(for: episode))
 #endif
     }
 

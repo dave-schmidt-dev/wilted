@@ -248,6 +248,10 @@ public enum PodcastTranscriptPolicy: String, Codable, Equatable, Sendable {
 public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
     public let transcriptPolicy: PodcastTranscriptPolicy
     public let removeAds: Bool
+    /// Whether the show's own promotion (its sponsor roll call, ad-free or
+    /// Patreon pitches, events and webinars) is cut as well. Off by default:
+    /// the detector otherwise keeps self-promotion as programme.
+    public let removeSelfPromotion: Bool
 
     public static let defaultValue = PodcastPreparationPolicySnapshot(
         transcriptPolicy: .bestAvailable,
@@ -256,9 +260,32 @@ public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
 
     public init(
         transcriptPolicy: PodcastTranscriptPolicy,
-        removeAds: Bool
+        removeAds: Bool,
+        removeSelfPromotion: Bool = false
     ) {
         self.transcriptPolicy = transcriptPolicy
         self.removeAds = removeAds
+        self.removeSelfPromotion = removeSelfPromotion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case transcriptPolicy, removeAds, removeSelfPromotion
+    }
+
+    /// Snapshots stored before the option existed carry no key and read as off.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        transcriptPolicy = try container.decode(PodcastTranscriptPolicy.self, forKey: .transcriptPolicy)
+        removeAds = try container.decode(Bool.self, forKey: .removeAds)
+        removeSelfPromotion = try container.decodeIfPresent(Bool.self, forKey: .removeSelfPromotion) ?? false
+    }
+
+    /// The key is written only when on, so every snapshot without the option
+    /// encodes to the same bytes it did before the option existed.
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(transcriptPolicy, forKey: .transcriptPolicy)
+        try container.encode(removeAds, forKey: .removeAds)
+        if removeSelfPromotion { try container.encode(true, forKey: .removeSelfPromotion) }
     }
 }

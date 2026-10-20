@@ -339,6 +339,8 @@ public actor PodcastPreparationPipeline {
             if let fingerprint = Self.semanticFingerprintResolution {
                 request["pipelineFingerprint"] = fingerprint
             }
+            // Sent only when on, so every other feed's request is unchanged.
+            if policy.removeSelfPromotion { request["removeSelfPromotion"] = true }
             if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
                let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
                 request["publishedTranscript"] = published

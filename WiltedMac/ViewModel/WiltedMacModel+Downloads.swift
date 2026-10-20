@@ -365,28 +365,11 @@ extension WiltedMacModel {
         Self.persistDeferredAutomaticPreparations(deferredAutomaticPreparations, to: preferences)
     }
 
-    /// Maps the settings visible when a job is admitted into the worker's
-    /// immutable request shape.
-    static func preparationPolicySnapshot(
-        from settings: WiltedAutomationSettings
-    ) -> PodcastPreparationPolicySnapshot {
-        let transcriptPolicy: PodcastTranscriptPolicy
-        switch settings.transcriptPolicy {
-        case .bestAvailable: transcriptPolicy = .bestAvailable
-        case .alwaysTranscribe: transcriptPolicy = .alwaysTranscribe
-        case .noLocalSTT: transcriptPolicy = .noLocalSTT
-        }
-        return PodcastPreparationPolicySnapshot(
-            transcriptPolicy: transcriptPolicy,
-            removeAds: settings.removeAds
-        )
-    }
-
     /// Starts, defers, or skips preparation for an automatically downloaded
     /// episode. Manual preparation deliberately does not pass through here.
     func admitAutomaticPreparation(for episode: WiltedMacEpisode, at date: Date) {
         let settings = automationSettings
-        let snapshot = Self.preparationPolicySnapshot(from: settings)
+        let snapshot = Self.preparationPolicySnapshot(from: settings, feedID: episode.feedID, preferences: preferences)
         switch WiltedAutomationCoordinator.preparationPlan(
             processingPolicy: settings.processingPolicy, at: date
         ) {
