@@ -2,7 +2,6 @@ import CryptoKit
 import Foundation
 import SwiftUI
 import UIKit
-import Vision
 import WiltedDomain
 import WiltedLibrary
 import XCTest
@@ -34,7 +33,7 @@ final class LibraryLarderTests: XCTestCase {
     private func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
     private func ids(_ rows: [LibraryRow]) -> [String] { rows.map(\.id.rawValue) }
 
-    private func row(
+    func row(
         _ raw: String, title: String? = nil, show: String = "Show", published: TimeInterval = 1_000,
         duration: Double? = 600, summary: String = ""
     ) -> LibraryRow {
@@ -444,154 +443,4 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertEqual(LibraryChapterNavigator(chapters: []).previousStart(from: 10), 0)
     }
 
-    // MARK: phone row progress
-
-    func testPhoneRowShowsTimeLeftProgressAndPlayedLikeTheCarRows() {
-        let r = row("a", show: "Alpha", published: 0, duration: 600)
-        let date = r.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
-        let started = EpisodeProgress(positionSeconds: 150, lastPlayedAt: Date(timeIntervalSince1970: 5))
-        XCTAssertEqual(r.showAndDurationText(), "Alpha - 10:00", "line two keeps only the show and the duration")
-        XCTAssertEqual(r.publicationDateText, date, "line three is the date alone")
-        XCTAssertEqual(LibraryRowView.listeningStatus(row: r, progress: nil, completed: false), "New")
-        XCTAssertEqual(LibraryRowView.listeningStatus(row: r, progress: started, completed: false), "07:30 left")
-        XCTAssertNil(LibraryRowView.listeningStatus(row: r, progress: started, completed: true),
-                     "Played remains the separate completion label")
-        XCTAssertEqual(CarEpisodeList.fraction(started, duration: 600), 0.25)
-        // The car row carries the same time left for the same data.
-        XCTAssertTrue(CarEpisodeList.detail(r, progress: started).hasSuffix("07:30 left"))
-        let untimed = row("b", duration: nil)
-        let untimedDate = untimed.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
-        XCTAssertEqual(untimed.showAndDurationText(), "Show - Unknown")
-        XCTAssertEqual(untimed.publicationDateText, untimedDate)
-        XCTAssertNil(LibraryRowView.listeningStatus(row: untimed, progress: started, completed: false))
-        XCTAssertNil(CarEpisodeList.fraction(started, duration: nil))
-
-        XCTAssertEqual(LibraryRowView.listeningStatus(
-            row: r, progress: EpisodeProgress(positionSeconds: 900, lastPlayedAt: started.lastPlayedAt), completed: false),
-            "00:00 left", "remaining time clamps at the end")
-        var invalid = r
-        invalid.durationSeconds = .infinity
-        XCTAssertNil(LibraryRowView.listeningStatus(row: invalid, progress: nil, completed: false))
-        invalid.durationSeconds = .nan
-        XCTAssertNil(LibraryRowView.listeningStatus(row: invalid, progress: nil, completed: false))
-    }
-    func testLongShowMetadataKeepsWholeDateAtPhoneWidths() throws {
-        try assertFactualMetadata(showsShowName: true)
-    }
-
-    func testGroupedMetadataKeepsWholeDurationAndDate() throws {
-        try assertFactualMetadata(showsShowName: false)
-    }
-
-    private func assertFactualMetadata(showsShowName: Bool) throws {
-        let episode = row("long-show", title: "Metadata layout",
-            show: "An exceptionally long program name that keeps going across the entire metadata line",
-            published: 1_700_000_000, duration: 600)
-        let expectedDate = LibraryDateFormat.day(episode.publishedAt)
-        for width: CGFloat in [320, 390] {
-            for scheme in [ColorScheme.light, .dark] {
-                let capture = try PhoneLayoutCapture(
-                    LibraryRowView(row: episode, media: .onPhone, onPlay: {}, showsShowName: showsShowName),
-                    width: width, scheme: scheme)
-                XCTAssertNotNil(capture.paintedLine(containing: expectedDate),
-                    "The complete date must be rendered, not a clipped prefix: \(capture.text)")
-                XCTAssertNotNil(capture.paintedLine(containing: "10:00"), "Total duration remains visible: \(capture.text)")
-                let attachment = XCTAttachment(image: capture.image)
-                attachment.name = "larder-date-\(showsShowName ? "ungrouped" : "grouped")-\(Int(width))-\(scheme == .dark ? "dark" : "light")"
-                attachment.lifetime = .keepAlways
-                add(attachment)
-            }
-        }
-    }
-
-    func testPodcastLarderRowsRenderAtPhoneWidthInLightAndDark() throws {
-        let published = Date(timeIntervalSince1970: 1790942400)
-        let episode = row("render-podcast", title: "A practical guide to everyday listening",
-                          show: "Everyday Listening", published: published.timeIntervalSince1970,
-                          duration: 600)
-        let partial = EpisodeProgress(positionSeconds: 150, lastPlayedAt: published)
-        for scheme in [ColorScheme.light, .dark] {
-            for started in [false, true] {
-                let content = LibraryRowView(row: episode, media: .onPhone, onPlay: {},
-                                             progress: started ? partial : nil)
-                    .padding(16)
-                    .frame(width: 390)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: scheme))
-                    .background(WiltedTheme.color(.page, scheme: scheme))
-                    .environment(\.colorScheme, scheme)
-                    .environment(\.locale, Locale(identifier: "en_US"))
-                let renderer = ImageRenderer(content: content)
-                renderer.scale = 1
-                let image = try XCTUnwrap(renderer.uiImage, "the shipping podcast row must render")
-                XCTAssertEqual(image.size.width, 390, accuracy: 0.1)
-                XCTAssertGreaterThan(image.size.height, 44)
-                XCTAssertNotNil(image.cgImage)
-                let attachment = XCTAttachment(image: image)
-                attachment.name = "larder-podcast-row-\(scheme == .dark ? "dark" : "light")-\(started ? "partial" : "new")"
-                attachment.lifetime = .keepAlways
-                add(attachment)
-            }
-        }
-    }
-
-}
-
-/// Native rendering and text bounds of synthetic shipping content, not a copied UI.
-@MainActor
-struct PhoneLayoutCapture {
-    let image: UIImage
-    private let lines: [VNRecognizedTextObservation]
-    var text: [String] { lines.compactMap { $0.topCandidates(1).first?.string } }
-
-    init<Content: View>(_ content: Content, width: CGFloat, scheme: ColorScheme) throws {
-        let renderer = ImageRenderer(content: content.padding(16).frame(width: width).clipped()
-            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: scheme))
-            .background(WiltedTheme.color(.page, scheme: scheme))
-            .environment(\.colorScheme, scheme).environment(\.locale, Locale(identifier: "en_US")))
-        renderer.scale = 2
-        image = try XCTUnwrap(renderer.uiImage)
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["en-US"]
-        request.usesLanguageCorrection = false
-        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage), options: [:]).perform([request])
-        lines = request.results ?? []
-        XCTAssertEqual(image.size.width, width, accuracy: 0.1)
-    }
-
-    /// The recognized tokens regrouped into painted lines, top to bottom. Vision may split one painted line,
-    /// such as a date standing alone, into several observations, so tokens whose vertical centres agree
-    /// are joined left to right.
-    var paintedLines: [(text: String, box: CGRect)] {
-        let tokens = lines.compactMap { observation in
-            observation.topCandidates(1).first.map { (text: $0.string, box: observation.boundingBox) }
-        }.sorted { $0.box.midY > $1.box.midY }
-        var groups: [[(text: String, box: CGRect)]] = []
-        for token in tokens {
-            if let first = groups.last?.first, abs(first.box.midY - token.box.midY) < token.box.height / 2 {
-                groups[groups.count - 1].append(token)
-            } else {
-                groups.append([token])
-            }
-        }
-        return groups.map { group in
-            let ordered = group.sorted { $0.box.minX < $1.box.minX }
-            return (ordered.map(\.text).joined(separator: " "), ordered.dropFirst().reduce(ordered[0].box) { $0.union($1.box) })
-        }
-    }
-
-    /// The painted line holding `value` whole (ignoring case, spaces and punctuation), if any.
-    func paintedLine(containing value: String) -> (text: String, box: CGRect)? {
-        func compact(_ text: String) -> String { text.lowercased().filter { $0.isLetter || $0.isNumber } }
-        return paintedLines.first { compact($0.text).contains(compact(value)) }
-    }
-
-    func line(containing value: String) -> CGRect? {
-        func compact(_ text: String) -> String {
-            text.lowercased().filter { $0.isLetter || $0.isNumber }
-        }
-        return lines.first { observation in
-            observation.topCandidates(1).first.map { compact($0.string).contains(compact(value)) } ?? false
-        }?.boundingBox
-    }
 }
