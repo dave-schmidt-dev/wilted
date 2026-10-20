@@ -112,6 +112,22 @@ public struct ThrottledLibraryTransport: LibraryTransport {
         try await gate.run { try await inner.removeTranscript(entryID: entryID) }
     }
 
+    public func announceDevice(_ announcement: LibraryDeviceAnnouncement) async throws {
+        try await gate.run { try await inner.announceDevice(announcement) }
+    }
+
+    public func fetchDeviceDirectory() async throws -> LibraryDeviceDirectory? {
+        try await gate.run { try await inner.fetchDeviceDirectory() }
+    }
+
+    public func publishDeviceLink(_ link: LibraryDeviceLink) async throws {
+        try await gate.run { try await inner.publishDeviceLink(link) }
+    }
+
+    public func fetchDeviceLink() async throws -> LibraryDeviceLink? {
+        try await gate.run { try await inner.fetchDeviceLink() }
+    }
+
     public func commitFetchedState(_ token: LibraryChangeToken?) async throws {
         try await inner.commitFetchedState(token)
     }

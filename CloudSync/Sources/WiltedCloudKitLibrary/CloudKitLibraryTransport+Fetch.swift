@@ -105,8 +105,11 @@ extension CloudKitLibraryTransport {
                 case let .outcomeIndex(index):
                     serverRecords[name] = record
                     peers.note(device: index.deviceID)
-                case .stats, .bulletins:
+                case .stats, .bulletins, .deviceLink:
                     serverRecords[name] = record
+                case let .deviceDirectory(directory):
+                    serverRecords[name] = record
+                    directory.devices.forEach { peers.note(device: $0.deviceID) }
                 case let .publication(value):
                     if fetchAcc.publication == nil || value.publishedAt > fetchAcc.publication!.publishedAt {
                         fetchAcc.publication = value

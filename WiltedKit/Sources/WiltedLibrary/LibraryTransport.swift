@@ -159,6 +159,11 @@ public struct LibraryPollOptions: OptionSet, Sendable {
     public static let offers = LibraryPollOptions(rawValue: 1 << 2)
     /// The Mac's answers to this device's intents (the phone).
     public static let outcomes = LibraryPollOptions(rawValue: 1 << 3)
+    /// The follower devices that have announced themselves (the Mac). A device it introduces has
+    /// its intents read in the same poll.
+    public static let deviceDirectory = LibraryPollOptions(rawValue: 1 << 4)
+    /// The Mac's side of the handshake with this device (the phone).
+    public static let deviceLink = LibraryPollOptions(rawValue: 1 << 5)
 }
 
 /// The parts of an inbound poll that were asked for; the others stay nil or empty.
@@ -167,15 +172,23 @@ public struct LibraryPollResult: Sendable, Equatable {
     public var records: LibraryDeviceRecords?
     public var offers: [LibraryMediaOffer]?
     public var outcomes: [IntentOutcome]?
+    public var directory: LibraryDeviceDirectory?
+    /// True when `.deviceLink` was read, so a nil `deviceLink` means the Mac has not linked this device.
+    public var deviceLinkRead = false
+    public var deviceLink: LibraryDeviceLink?
 
     public init(
         intents: [LibraryIntent] = [], records: LibraryDeviceRecords? = nil,
-        offers: [LibraryMediaOffer]? = nil, outcomes: [IntentOutcome]? = nil
+        offers: [LibraryMediaOffer]? = nil, outcomes: [IntentOutcome]? = nil,
+        directory: LibraryDeviceDirectory? = nil, deviceLinkRead: Bool = false, deviceLink: LibraryDeviceLink? = nil
     ) {
         self.intents = intents
         self.records = records
         self.offers = offers
         self.outcomes = outcomes
+        self.directory = directory
+        self.deviceLinkRead = deviceLinkRead
+        self.deviceLink = deviceLink
     }
 }
 
@@ -250,6 +263,14 @@ public protocol LibraryTransport: Sendable {
     func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript?
     /// Mac only: withdraws the transcript for `entryID`, alongside its audio.
     func removeTranscript(entryID: ItemID) async throws
+    /// Follower only: adds this device to the device directory, so the Mac polls it from its next round.
+    func announceDevice(_ announcement: LibraryDeviceAnnouncement) async throws
+    /// The device directory, or nil before any follower has announced. Read by name.
+    func fetchDeviceDirectory() async throws -> LibraryDeviceDirectory?
+    /// Mac only: writes its side of the handshake with `link.deviceID`, merged into the server copy.
+    func publishDeviceLink(_ link: LibraryDeviceLink) async throws
+    /// The Mac's link with this device, or nil until the Mac has linked it. Read by name.
+    func fetchDeviceLink() async throws -> LibraryDeviceLink?
     func commitFetchedState(_ token: LibraryChangeToken?) async throws
     func commitSentState(_ token: LibraryChangeToken?) async throws
 }
@@ -266,6 +287,11 @@ public extension LibraryTransport {
         if options.contains(.deviceRecords) { result.records = try await fetchDeviceRecords() }
         if options.contains(.offers) { result.offers = try await mediaOffers() }
         if options.contains(.outcomes) { result.outcomes = try await intentOutcomes() }
+        if options.contains(.deviceDirectory) { result.directory = try await fetchDeviceDirectory() }
+        if options.contains(.deviceLink) {
+            result.deviceLink = try await fetchDeviceLink()
+            result.deviceLinkRead = true
+        }
         return result
     }
     func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
@@ -297,6 +323,14 @@ public extension LibraryTransport {
     }
     func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? { nil }
     func removeTranscript(entryID: ItemID) async throws {}
+    func announceDevice(_ announcement: LibraryDeviceAnnouncement) async throws {
+        throw LibraryTransportError.transport("device announcements are not supported by this transport")
+    }
+    func fetchDeviceDirectory() async throws -> LibraryDeviceDirectory? { nil }
+    func publishDeviceLink(_ link: LibraryDeviceLink) async throws {
+        throw LibraryTransportError.transport("device links are not supported by this transport")
+    }
+    func fetchDeviceLink() async throws -> LibraryDeviceLink? { nil }
     func commitFetchedState(_ token: LibraryChangeToken?) async throws {}
     func commitSentState(_ token: LibraryChangeToken?) async throws {}
 }

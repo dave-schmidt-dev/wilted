@@ -17,6 +17,8 @@ public actor InMemoryLibraryServer {
     private var manualNow: Date?
     private var stats: LibraryStats?
     private var bulletins: LibraryBulletins?
+    private var directory: LibraryDeviceDirectory?
+    private var links: [String: LibraryDeviceLink] = [:]
     private var publication: LibraryPublication?
     private var transcripts: [ItemID: LibraryTranscript] = [:]
     private var mediaOffers: [ItemID: LibraryMediaOffer] = [:]
@@ -148,6 +150,24 @@ public actor InMemoryLibraryServer {
     }
 
     func currentBulletins() -> LibraryBulletins? { bulletins }
+
+    func announce(_ announcement: LibraryDeviceAnnouncement, from deviceID: String) throws {
+        guard deviceID != writerDeviceID, announcement.deviceID == deviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may only announce itself, and only as a follower")
+        }
+        directory = (directory ?? LibraryDeviceDirectory()).merging(announcement)
+    }
+
+    func currentDirectory() -> LibraryDeviceDirectory? { directory }
+
+    func publishLink(_ link: LibraryDeviceLink, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not write device links")
+        }
+        links[link.deviceID] = link.updating(nil, server: links[link.deviceID], now: manualNow ?? Date())
+    }
+
+    func link(for deviceID: String) -> LibraryDeviceLink? { links[deviceID] }
 
     func publishPublication(_ value: LibraryPublication, from deviceID: String) throws {
         guard deviceID == writerDeviceID, value.writerDeviceID == deviceID else {
@@ -309,6 +329,18 @@ public actor InMemoryLibraryTransport: LibraryTransport {
     }
 
     public func fetchBulletins() async throws -> LibraryBulletins? { await server.currentBulletins() }
+
+    public func announceDevice(_ announcement: LibraryDeviceAnnouncement) async throws {
+        try await server.announce(announcement, from: deviceID)
+    }
+
+    public func fetchDeviceDirectory() async throws -> LibraryDeviceDirectory? { await server.currentDirectory() }
+
+    public func publishDeviceLink(_ link: LibraryDeviceLink) async throws {
+        try await server.publishLink(link, from: deviceID)
+    }
+
+    public func fetchDeviceLink() async throws -> LibraryDeviceLink? { await server.link(for: deviceID) }
 
     public func publishPublication(_ publication: LibraryPublication) async throws {
         let started = generation

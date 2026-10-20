@@ -31,10 +31,13 @@ extension CloudKitLibraryTransport {
     /// Everything a sync round reads from the zone, by name, in as few requests as the names allow.
     ///
     /// The first request holds every name that is known up front: the intent and outcome indexes,
-    /// the offer index and each device's now-playing and progress records. A second request exists
-    /// only when the first named something new (intents or outcomes not cached yet, the offers the
-    /// index lists, progress for an entry a now-playing record just introduced). An idle round is
-    /// therefore one request. Names that do not exist cost nothing extra, since they ride along.
+    /// the offer index, the device directory and this device's link, and each device's now-playing
+    /// and progress records. A second request exists only when the first named something new
+    /// (intents or outcomes not cached yet, the offers the index lists, progress for an entry a
+    /// now-playing record just introduced, the intent index of a device the directory just
+    /// introduced). A third exists only on the round a new device's index first names intents, so
+    /// its waiting request is read in that same round. An idle round is therefore one request.
+    /// Names that do not exist cost nothing extra, since they ride along.
     public func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
         let devices = peers.devices.union([deviceID]).sorted()
         var first: [CKRecord.ID] = []
@@ -47,6 +50,8 @@ extension CloudKitLibraryTransport {
         }
         if options.contains(.outcomes) { first += devices.compactMap { try? mapper.recordID(outcomeIndexFor: $0) } }
         if options.contains(.offers) { first.append(mapper.offerIndexRecordID) }
+        if options.contains(.deviceDirectory) { first.append(mapper.deviceDirectoryRecordID) }
+        if options.contains(.deviceLink), let id = try? mapper.recordID(deviceLinkFor: deviceID) { first.append(id) }
         var asked = Set<String>()
         func unasked(_ ids: [CKRecord.ID]) -> [CKRecord.ID] { ids.filter { asked.insert($0.recordName).inserted } }
         if options.contains(.deviceRecords) { first += playbackNames(devices: devices, nowPlaying: true) }
@@ -57,6 +62,9 @@ extension CloudKitLibraryTransport {
         var wantedOutcomes: [(name: String, deviceID: String, id: String)] = []
         var offerEntries: [ItemID]?
         var sawOwnIntentIndex = false
+        var directory: LibraryDeviceDirectory?
+        var link: LibraryDeviceLink?
+        var introduced: [String] = []
 
         func absorb(_ records: [CKRecord]) {
             for record in records {
@@ -83,6 +91,13 @@ extension CloudKitLibraryTransport {
                         record: value, serverModifiedAt: record.modificationDate ?? .distantPast))
                 case let .intent(value)?: intentCache[record.recordID.recordName] = value
                 case let .outcome(value)?: outcomeCache[record.recordID.recordName] = value
+                case let .deviceDirectory(value)?:
+                    directory = value
+                    for device in value.devices where !peers.devices.contains(device.deviceID) && device.deviceID != deviceID {
+                        introduced.append(device.deviceID)
+                        peers.note(device: device.deviceID)
+                    }
+                case let .deviceLink(value)? where value.deviceID == deviceID: link = value
                 default: break
                 }
             }
@@ -93,6 +108,7 @@ extension CloudKitLibraryTransport {
         if asksOwnIntentIndex, !sawOwnIntentIndex { ownIntentIndexMissing = true }
 
         var second: [CKRecord.ID] = []
+        if options.contains(.intents) { second += introduced.compactMap { try? mapper.recordID(intentIndexFor: $0) } }
         second += wantedIntents.filter { intentCache[$0.name] == nil }
             .compactMap { try? mapper.recordID(intentID: $0.id, deviceID: $0.deviceID) }
         second += wantedOutcomes.filter { outcomeCache[$0.name] == nil }
@@ -107,8 +123,19 @@ extension CloudKitLibraryTransport {
             absorb(found.filter { !offerNames.contains($0.recordID.recordName) })
             // The progress just fetched may name entries only a now-playing record introduced.
         }
+        // A device the directory just introduced: its index named intents nobody has read yet.
+        if !introduced.isEmpty {
+            let third = unasked(wantedIntents.filter { intentCache[$0.name] == nil }
+                .compactMap { try? mapper.recordID(intentID: $0.id, deviceID: $0.deviceID) })
+            if !third.isEmpty { absorb(try await fetchPresent(third)) }
+        }
 
         var result = LibraryPollResult()
+        result.directory = directory
+        if options.contains(.deviceLink) {
+            result.deviceLinkRead = true
+            result.deviceLink = link
+        }
         if options.contains(.intents) {
             result.intents = wantedIntents.compactMap { intentCache[$0.name] }
                 .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }

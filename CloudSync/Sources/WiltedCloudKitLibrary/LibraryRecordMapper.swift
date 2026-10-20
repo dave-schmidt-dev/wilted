@@ -29,6 +29,11 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
     case publication = "LibraryPublicationRecord"
     /// The Mac's bulletin channel (`LibraryBulletins`); one record, only the library writer writes it.
     case bulletins = "LibraryBulletinsRecord"
+    /// The follower devices that have announced themselves (`LibraryDeviceDirectory`); one record,
+    /// the only one every follower writes, each write merged into the server copy.
+    case deviceDirectory = "LibraryDeviceDirectoryRecord"
+    /// The Mac's side of the handshake with one device (`LibraryDeviceLink`); only the library writer writes it.
+    case deviceLink = "LibraryDeviceLinkRecord"
 
     /// Record-name prefix. Names for device-written records embed the device id, so each
     /// record has exactly one writer and two devices can never collide on a name.
@@ -49,6 +54,8 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
         case .stats: "stats:"
         case .publication: "publication:"
         case .bulletins: "bulletins:"
+        case .deviceDirectory: "devicedirectory:"
+        case .deviceLink: "devicelink:"
         }
     }
 }
@@ -80,6 +87,8 @@ public enum LibraryDecodedRecord: Sendable, Equatable {
     case stats(LibraryStats)
     case publication(LibraryPublication)
     case bulletins(LibraryBulletins)
+    case deviceDirectory(LibraryDeviceDirectory)
+    case deviceLink(LibraryDeviceLink)
     case skipped(recordType: String)
 }
 
@@ -153,6 +162,13 @@ public struct LibraryRecordMapper: Sendable {
     public var statsRecordID: CKRecord.ID { CKRecord.ID(recordName: LibraryRecordType.stats.namePrefix + "library", zoneID: zoneID) }
 
     public func recordID(intentIndexFor deviceID: String) throws -> CKRecord.ID { try id(.intentIndex, [deviceID]) }
+
+    /// The single device directory record, read by name.
+    public var deviceDirectoryRecordID: CKRecord.ID {
+        CKRecord.ID(recordName: LibraryRecordType.deviceDirectory.namePrefix + "library", zoneID: zoneID)
+    }
+
+    public func recordID(deviceLinkFor deviceID: String) throws -> CKRecord.ID { try id(.deviceLink, [deviceID]) }
 
     public func recordID(outcome: IntentOutcome) throws -> CKRecord.ID { try id(.outcome, [outcome.deviceID, outcome.intentID]) }
 
@@ -237,6 +253,14 @@ public struct LibraryRecordMapper: Sendable {
 
     public func record(bulletins: LibraryBulletins, existing: CKRecord? = nil) throws -> CKRecord {
         try save(.bulletins, bulletinsRecordID, bulletins, existing)
+    }
+
+    public func record(deviceDirectory: LibraryDeviceDirectory, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.deviceDirectory, deviceDirectoryRecordID, deviceDirectory, existing)
+    }
+
+    public func record(deviceLink: LibraryDeviceLink, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.deviceLink, recordID(deviceLinkFor: deviceLink.deviceID), deviceLink, existing)
     }
 
     public func record(publication: LibraryPublication, existing: CKRecord? = nil) throws -> CKRecord {
@@ -326,6 +350,14 @@ public struct LibraryRecordMapper: Sendable {
                 let value = try Self.decoder.decode(LibraryBulletins.self, from: data)
                 try expect(name, bulletinsRecordID)
                 return .bulletins(value)
+            case .deviceDirectory:
+                let value = try Self.decoder.decode(LibraryDeviceDirectory.self, from: data)
+                try expect(name, deviceDirectoryRecordID)
+                return .deviceDirectory(value)
+            case .deviceLink:
+                let value = try Self.decoder.decode(LibraryDeviceLink.self, from: data)
+                try expect(name, recordID(deviceLinkFor: value.deviceID))
+                return .deviceLink(value)
             case .stats:
                 let value = try Self.decoder.decode(LibraryStats.self, from: data)
                 try expect(name, statsRecordID)
