@@ -184,11 +184,18 @@ actor WiltedMacMediaService {
         self.now = now
         self.uploadRetryDelay = uploadRetryDelay
         self.sleep = sleep
-        if let accountingURL, let data = try? Data(contentsOf: accountingURL),
-           let stored = try? JSONDecoder().decode(Stored.self, from: data) {
-            records = Dictionary(stored.records.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last })
-            published = stored.published
-            publishedTranscripts = stored.transcripts ?? [:]
+        if let accountingURL, let data = try? Data(contentsOf: accountingURL) {
+            if let stored = try? JSONDecoder().decode(Stored.self, from: data) {
+                records = Dictionary(stored.records.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last })
+                published = stored.published
+                publishedTranscripts = stored.transcripts ?? [:]
+            } else {
+                // Unreadable accounting is set aside, not overwritten, and the service starts empty.
+                let aside = accountingURL.appendingPathExtension("corrupt")
+                try? FileManager.default.removeItem(at: aside)
+                try? FileManager.default.moveItem(at: accountingURL, to: aside)
+                mediaLog.error("Media accounting was unreadable and was set aside")
+            }
         }
     }
 
@@ -519,7 +526,7 @@ actor WiltedMacMediaService {
         guard let accountingURL else { return }
         try FileManager.default.createDirectory(at: accountingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let stored = Stored(records: records.values.sorted { ($0.key.entryID, $0.key.revisionID) < ($1.key.entryID, $1.key.revisionID) }, published: published, transcripts: publishedTranscripts)
-        try JSONEncoder().encode(stored).write(to: accountingURL, options: .atomic)
+        try DurableFile.write(JSONEncoder().encode(stored), to: accountingURL)
     }
 
     private static func fileSize(_ url: URL) -> Int64? {

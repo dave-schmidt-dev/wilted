@@ -287,10 +287,17 @@ struct PodcastDownloadCoordinatorTests {
             transport: EventTransport(fixture.successEvents, counter: counter),
             mediaValidator: StubValidator(result: .success(12)), now: { Date(timeIntervalSince1970: 1_700_000_100) }
         )
-        let first = try await coordinator.download(episodeID: fixture.episodeID)
+        let flushes = DurableFileEventRecorder()
+        let first = try await DurableFile.$observer.withValue({ event in flushes.append(event) }) {
+            try await coordinator.download(episodeID: fixture.episodeID)
+        }
         let repeatedProgress = ProgressRecorder()
         let second = try await coordinator.download(episodeID: fixture.episodeID) { repeatedProgress.append($0) }
         #expect(first == second)
+        let snapshots = flushes.fullSyncSnapshots
+        #expect(snapshots.count == 1)
+        #expect(snapshots.first?.url != first.mediaURL)
+        #expect(snapshots.first?.exists == true)
         #expect(await counter.value == 1)
         #expect(repeatedProgress.values.contains { $0.stage == .verifying && $0.bytesReceived == 6 })
         #expect(try Data(contentsOf: first.mediaURL) == fixture.body)
