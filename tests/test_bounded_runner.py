@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import signal
 import select
@@ -19,6 +20,17 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run-bounded.py"
 PYTHON = sys.executable
+
+
+def load_runner(name: str):
+    """Import a fresh copy of the runner so a test can patch its module globals."""
+    spec = importlib.util.spec_from_file_location(name, RUNNER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 FIXTURE = """
 import os, sys, time
@@ -315,13 +327,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertTrue(marker.exists(), result.stderr)
 
     def test_process_inspection_failure_is_bounded_and_nonzero(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded")
         started = time.monotonic()
         with mock.patch.object(module, "process_table", side_effect=OSError("blocked")):
             result = module.run(5, [PYTHON, "-c", "import time; time.sleep(.5)"])
@@ -329,13 +335,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 2)
 
     def test_slow_watchdog_cleanup_does_not_fail_successful_child(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_watchdog_wait", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_watchdog_wait")
         # A successful child and completed supervisor cleanup. The watchdog's single
         # cleanup inspection takes nearly its allowed ps timeout, without real sleeps.
         child = mock.Mock(pid=12345, returncode=0)
@@ -364,13 +364,7 @@ class BoundedRunnerTests(unittest.TestCase):
         watcher.kill.assert_not_called()
 
     def test_watchdog_cleanup_deadline_kills_and_reaps_owned_session(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_watchdog_deadline", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_watchdog_deadline")
         watcher = mock.Mock(pid=12346)
         watcher.wait.side_effect = [subprocess.TimeoutExpired("watchdog", 1), -signal.SIGKILL]
         with (
@@ -389,13 +383,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self._check_watchdog_cleanup_failure("reap")
 
     def _check_watchdog_cleanup_failure(self, failure: str) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_watchdog_" + failure, RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_watchdog_" + failure)
         child = mock.Mock(pid=12345, returncode=0)
         child.poll.return_value = 0
         watcher = mock.Mock(pid=12346, returncode=0)
@@ -432,13 +420,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertTrue(any(call.args[0].startswith(diagnostic) for call in emit.call_args_list))
 
     def test_watchdog_wait_reports_heartbeat_and_nonzero_exit(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_watchdog_progress", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_watchdog_progress")
         watcher = mock.Mock(returncode=125)
         elapsed = 0.0
 
@@ -461,13 +443,7 @@ class BoundedRunnerTests(unittest.TestCase):
         emit.assert_any_call("watchdog-cleanup-failed status=125")
 
     def test_owned_groups_exclude_zombies_and_reused_pids(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_owned_groups", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_owned_groups")
         tree = module.OwnedTree(10, "parent-start")
         tree.known.update({
             20: "nested-leader-start",
@@ -488,13 +464,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertEqual(tree.owned_groups(table), [20])
 
     def test_post_identity_inspection_failure_still_tears_down(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_post_identity", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_post_identity")
         original = module.process_table
         calls = 0
 
@@ -513,13 +483,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 4)
 
     def test_transient_inspection_timeouts_are_skipped_then_bounded(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_slow_ps", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_slow_ps")
         original = module.process_table
         calls = 0
         release = self.path / "inspection-resumed.release"
@@ -558,13 +522,7 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 4)
 
     def test_process_table_timeout_reaps_its_probe(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_probe", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_probe")
         probes: list[subprocess.Popen[bytes]] = []
         original = module.subprocess.Popen
 
@@ -665,13 +623,7 @@ sys.exit(module.run(3, [sys.executable, fixture, ready, release, 'success']))
         self.assert_dead(descendant)
 
     def test_original_signal_environment_reaches_child_and_is_restored(self) -> None:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("run_bounded_signal_state", RUNNER)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        module = load_runner("run_bounded_signal_state")
         managed = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
         saved_handlers = {sig: signal.getsignal(sig) for sig in managed}
         saved_mask = signal.pthread_sigmask(signal.SIG_SETMASK, {signal.SIGUSR1})
