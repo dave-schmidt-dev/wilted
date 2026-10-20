@@ -95,11 +95,11 @@ extension LibraryAppModel {
         return eligible.first ?? id
     }
 
-    func associatedStartPosition(_ id: ItemID, revision: RevisionID) async -> Double? {
+    func associatedStartPosition(_ id: ItemID, revision: RevisionID, walked: [ItemID: CachedMedia]? = nil) async -> Double? {
         guard let group = episodeGroup(id) else { return resumeStart(for: id, cachedRevision: revision) }
         let candidates = group.memberIDs.flatMap { [checkpoints[$0], handoffState.ownPositions[$0]].compactMap { $0 } }
         guard !candidates.isEmpty else { return 0 }
-        let inventory = await continuationInventory()
+        let inventory = await continuationInventory(walked: walked)
         let target = HandoffResolver.resumeTarget(observed: candidates, localDeviceID: "",
             entries: Array(decisionContent.entries.values), localRevision: { $0 == id ? inventory.revisions[$0] : nil },
             mediaOffer: { inventory.offers[$0] }, now: now(), clockOffset: handoffState.clockOffset,
@@ -108,10 +108,13 @@ extension LibraryAppModel {
         return resume.positionSeconds
     }
 
-    /// Only currently admitted cached proof participates in alias position translation.
-    func continuationInventory() async -> (revisions: [ItemID: RevisionID], offers: [ItemID: LibraryMediaOffer]) {
+    /// Only currently admitted cached proof participates in alias position translation. `walked` is an
+    /// inventory the caller already read; its proofs are still checked against the current ledger.
+    func continuationInventory(walked: [ItemID: CachedMedia]? = nil) async
+        -> (revisions: [ItemID: RevisionID], offers: [ItemID: LibraryMediaOffer]) {
         guard let context = await mediaContext() else { return ([:], [:]) }
-        let cached = await mediaCache.cachedEntries()
+        let cached: [ItemID: CachedMedia]
+        if let walked { cached = walked } else { cached = await mediaCache.cachedEntries() }
         var revisions: [ItemID: RevisionID] = [:]
         var offers = tickState.offers
         for (id, candidate) in cached {

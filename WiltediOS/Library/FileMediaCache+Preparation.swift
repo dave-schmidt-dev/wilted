@@ -114,6 +114,7 @@ extension FileMediaCache {
         let old = ledger.revocations[entryID.rawValue] ?? 0
         if old == UInt64.max { ledger.ownerEpoch = UUID(); ledger.revocations = [:] }
         else { ledger.revocations[entryID.rawValue] = old + 1 }
+        verificationMemo.forget(root.appendingPathComponent(entryID.rawValue, isDirectory: true))
         try persist(ledger)
     }
 
@@ -136,14 +137,28 @@ extension FileMediaCache {
         return proof
     }
 
+    /// The proof and ledger are re-read on every call; only the full-file hash of an unchanged file
+    /// already verified in this process is taken from `verificationMemo`. A refusal forgets the file.
     func verifies(_ cached: CachedMedia) async -> Bool {
+        let passed = await passesVerification(cached)
+        if !passed { verificationMemo.forget(cached.url) }
+        return passed
+    }
+
+    private func passesVerification(_ cached: CachedMedia) async -> Bool {
         guard let proof = cached.preparation,
               validPreparation(at: cached.url, entryID: proof.offer.entryID) == proof,
               cached.revisionID == proof.offer.revisionID, cached.byteCount == proof.offer.byteCount,
               let identity = cached.fileIdentity() else { return false }
+        let check = MediaVerificationMemo.Check(file: identity, contentHash: proof.offer.contentHash,
+                                                byteCount: cached.byteCount, generation: cacheGeneration)
+        if verificationMemo.admits(check) { return true }
+        let mark = verificationMemo.changes
         let valid = await byteVerifier(cached.url, cached.byteCount, proof.offer.contentHash)
-        return valid && cached.fileIdentity() == identity
-            && validPreparation(at: cached.url, entryID: proof.offer.entryID) == proof
+        guard valid, cached.fileIdentity() == identity,
+              validPreparation(at: cached.url, entryID: proof.offer.entryID) == proof else { return false }
+        if check.generation == cacheGeneration { verificationMemo.record(check, ifUnchangedSince: mark) }
+        return true
     }
 
     func cachedFile(for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async -> URL? {
@@ -162,7 +177,10 @@ extension FileMediaCache {
         }
         if let existing = await cachedFile(for: offer, admission: admission) {
             guard current(admission) else { throw CocoaError(.fileWriteUnknown) }
-            if verifiedFile.standardizedFileURL != existing.standardizedFileURL { try? fileManager.removeItem(at: verifiedFile) }
+            if verifiedFile.standardizedFileURL != existing.standardizedFileURL {
+                verificationMemo.forget(verifiedFile)
+                try? fileManager.removeItem(at: verifiedFile)
+            }
             return existing
         }
         guard current(admission), let identity = sourceIdentity(verifiedFile) else { throw CocoaError(.fileReadCorruptFile) }
@@ -190,6 +208,8 @@ extension FileMediaCache {
             guard regularFile(marker) else { throw CocoaError(.fileWriteInvalidFileName) }
             try fileManager.removeItem(at: marker)
         }
+        // A replaced file is verified again before it plays; the adoption hash does not seed the memo.
+        verificationMemo.forget(destination)
         guard Darwin.rename(verifiedFile.path, destination.path) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
@@ -200,9 +220,6 @@ extension FileMediaCache {
     }
 
     private func sourceIdentity(_ url: URL) -> CachedMedia.FileIdentity? {
-        guard regularFile(url), let values = try? fileManager.attributesOfItem(atPath: url.path),
-              let inode = values[.systemFileNumber] as? NSNumber,
-              let size = values[.size] as? NSNumber, let modified = values[.modificationDate] as? Date else { return nil }
-        return CachedMedia.FileIdentity(inode: inode.uint64Value, size: size.int64Value, modified: modified)
+        regularFile(url) ? CachedMedia.FileIdentity(regularFileAt: url) : nil
     }
 }

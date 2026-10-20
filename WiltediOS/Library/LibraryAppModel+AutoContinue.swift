@@ -16,13 +16,16 @@ extension LibraryAppModel {
         guard let player = handoffState.player, let completion = player.naturalCompletion(after: endedID) else { return }
         playedOut[endedID] = now().addingTimeInterval(handoffState.clockOffset)
         handoffState.unpublished[endedID] = (completion.duration, now())
-        await rememberOwnPosition(endedID, position: completion.duration)
+        // One cache walk serves the final position and the advance's candidate snapshot; each
+        // candidate's own start still looks the file up afresh.
+        let walked = await mediaCache.cachedEntries()
+        await rememberOwnPosition(endedID, position: completion.duration, walked: walked)
         // The completion was accepted above, before the first await, so it stays durable even
         // when a command arrives while the final position was being remembered: the Mac is still
         // told the episode played out. Only the advance is cancelled, and `autoContinue` does
         // that on its own.
         Task { await markPlayedOut(endedID) }
-        if autoPlayNext { await autoContinue(after: endedID, completion: completion) }
+        if autoPlayNext { await autoContinue(after: endedID, completion: completion, walked: walked) }
     }
 
     /// Tells the Mac an episode played to its end, so it records the completion (W-INV-011). The saved
@@ -50,7 +53,9 @@ extension LibraryAppModel {
         await autoContinue(after: endedID, completion: completion)
     }
 
-    private func autoContinue(after endedID: ItemID, completion: LibraryPlayer.NaturalCompletion) async {
+    private func autoContinue(
+        after endedID: ItemID, completion: LibraryPlayer.NaturalCompletion, walked: [ItemID: CachedMedia]? = nil
+    ) async {
         guard let player = handoffState.player, player.owns(completion) else { return }
         refreshProgress()
         let forward = handoffState.forwardSequenceIDs
@@ -58,7 +63,8 @@ extension LibraryAppModel {
         let suffixIDs = forward[forward.index(after: endedIndex)...]
         guard !suffixIDs.isEmpty else { return }
 
-        let cached = await mediaCache.cachedEntries()
+        let cached: [ItemID: CachedMedia]
+        if let walked { cached = walked } else { cached = await mediaCache.cachedEntries() }
         guard let player = handoffState.player, player.owns(completion) else { return }
 
         let queuedByID = Dictionary(uniqueKeysWithValues: logicalQueued.map { ($0.id, $0) })

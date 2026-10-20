@@ -311,12 +311,16 @@ extension LibraryAppModel {
 
     /// Keeps this phone's own last position current between device-record fetches, so returning to
     /// an episode after playing another one resumes here rather than at an older record. `stale`
-    /// is asked again after the lookups, so a write that a newer one overtook is dropped.
-    func rememberOwnPosition(_ entryID: ItemID, position: Double, unless stale: () -> Bool = { false }) async {
+    /// is asked again after the lookups, so a write that a newer one overtook is dropped. `walked`
+    /// is a cache inventory the caller already read, so the revision lookup does not walk again.
+    func rememberOwnPosition(_ entryID: ItemID, position: Double, walked: [ItemID: CachedMedia]? = nil,
+                             unless stale: () -> Bool = { false }) async {
         // The highest epoch this phone knows for the entry, so its own position outranks an older
         // Mac record when the phone resumes offline.
         let epoch = max(await coordinator.epoch ?? 0, checkpoints[entryID]?.record.epoch ?? 0)
-        guard let revision = await mediaCache.cachedEntries()[entryID]?.revisionID, !stale(),
+        let cached: CachedMedia?
+        if let walked { cached = walked[entryID] } else { cached = await mediaCache.cachedEntries()[entryID] }
+        guard let revision = cached?.revisionID, !stale(),
               let record = try? DevicePlaybackPosition(
                   deviceID: deviceID, entryID: entryID, revision: revision, positionSeconds: max(0, position),
                   isPlaying: false, epoch: epoch, publishedAt: now()) else { return }

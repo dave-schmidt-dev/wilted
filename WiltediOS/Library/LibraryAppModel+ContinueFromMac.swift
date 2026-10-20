@@ -44,23 +44,28 @@ extension LibraryAppModel {
         let token = beginExternalStart()
         handoffState.continueInFlight = true
         defer { handoffState.continueInFlight = false }
-        guard var plan = await freshPlan() else { continuation = nil; return }
-        if case let .needsAudio(entryID, revision, source) = plan {
+        guard var planned = await freshPlan() else { continuation = nil; return }
+        if case let .needsAudio(entryID, revision, source) = planned.plan {
             guard await fetchAudio(entryID, revision: revision, source: source) else { return }
             guard let replanned = await freshPlan() else { continuation = nil; return }
-            plan = replanned
+            planned = replanned
         }
+        let plan = planned.plan
         switch plan {
         case let .ready(entryID, position, rate, _, _, source):
-            guard let cached = await verifiedCachedMedia(entryID, token: token) else { return }
-            let inventory = await continuationInventory()
+            // The record fetch in the plan supplies this position and rate, so it stays first. The
+            // plan's own cache walk then serves the verification and the resume check.
+            guard let cached = await verifiedCachedMedia(entryID, token: token, walked: planned.walked) else { return }
+            let inventory = await continuationInventory(walked: planned.walked)
             let target = HandoffResolver.resumeTarget(observed: [source], localDeviceID: deviceID,
                 entries: Array(decisionContent.entries.values), localRevision: { inventory.revisions[$0] },
                 mediaOffer: { inventory.offers[$0] }, now: now(), clockOffset: handoffState.clockOffset,
                 durationSeconds: { self.entryDurations[$0] })
             guard case let .resume(resume) = target, resume.entryID == entryID,
                   resume.revision == cached.revisionID else { handoffMessage = Self.offerMismatchReason; return }
-            guard let final = await verifiedCachedMedia(entryID, token: token), final == cached else { return }
+            // Re-admit the file verified above: every fence runs again, with no walk or second hash.
+            guard let final = await verifiedCachedMedia(entryID, token: token, walked: [entryID: cached]),
+                  final == cached else { return }
             let entry = decisionContent.entries[logicalEntryID(entryID)]
             let item = LibraryPlayer.Item(
                 entryID: entryID, title: entry?.title ?? "Episode",
@@ -87,16 +92,19 @@ extension LibraryAppModel {
         }
     }
 
-    private func freshPlan() async -> LibraryContinuation? {
+    /// The plan from freshly fetched device records, with the cache walk it was planned against.
+    private func freshPlan() async -> (plan: LibraryContinuation, walked: [ItemID: CachedMedia])? {
         guard let records = try? await transport.fetchDeviceRecords() else {
             handoffMessage = "Could not read the Mac's playback. Check your connection."
             return nil
         }
-        let inventory = await continuationInventory()
-        return LibraryContinuationPlanner.plan(
+        let walked = await mediaCache.cachedEntries()
+        let inventory = await continuationInventory(walked: walked)
+        guard let plan = LibraryContinuationPlanner.plan(
             records: records, deviceID: deviceID, cachedRevisions: inventory.revisions, durations: entryDurations,
             now: now(), clockOffset: handoffState.clockOffset,
-            entries: Array(decisionContent.entries.values), mediaOffers: inventory.offers)
+            entries: Array(decisionContent.entries.values), mediaOffers: inventory.offers) else { return nil }
+        return (plan, walked)
     }
 
     /// Requests the audio and waits for it. Returns false when it did not arrive on the phone or

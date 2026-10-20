@@ -67,6 +67,38 @@ extension LibraryAppModel {
             && cached.url.pathExtension == FileMediaCache.fileExtension(for: offer.mediaType)
     }
 
+    /// One final local boundary for row starts, Continue and retained system playback.
+    /// Exact owner-bound preparation remains usable offline until a semantic withdrawal is observed.
+    ///
+    /// `walked` is a cache inventory the same action already read, so it is not walked again. Passing
+    /// only an earlier result (`[entryID: cached]`) re-admits that exact file after an await: every
+    /// fence below still runs, and the cache's memo spares a second hash of unchanged bytes.
+    func verifiedCachedMedia(_ entryID: ItemID, token: UInt64, walked: [ItemID: CachedMedia]? = nil) async -> CachedMedia? {
+        LibraryPlaybackTrace.shared.record(.admissionBegan, token: token)
+        defer { LibraryPlaybackTrace.shared.record(.admissionSettled, token: token) }
+        guard let context = await mediaContext() else { return nil }
+        let identity = context.storeIdentity
+        guard let entry = decisionContent.entries[entryID] else { return nil }
+        func current() -> Bool {
+            commandState.token == token && !accountQuarantined && playbackStoreIdentity == identity
+                && decisionContent.entries[entryID] == entry
+                && queued.contains { $0.id == entryID } && media[entryID] == .onPhone
+        }
+        let generation = await transport.operationGeneration()
+        guard current() else { return nil }
+        let found: CachedMedia?
+        if let walked { found = walked[entryID] } else { found = await mediaCache.cachedEntries()[entryID] }
+        guard current(), let cached = found, cachedProofMatches(cached, entryID: entryID, context: context),
+              let identityBefore = cached.fileIdentity(),
+              await mediaContextIsCurrent(context, entryID: entryID) else { return nil }
+        guard await mediaCache.verifies(cached), current() else { return nil }
+        let currentGeneration = await transport.operationGeneration()
+        guard await mediaContextIsCurrent(context, entryID: entryID), current(),
+              currentGeneration == generation, cached.fileIdentity() == identityBefore,
+              cachedProofMatches(cached, entryID: entryID, context: context) else { return nil }
+        return cached
+    }
+
     /// Inventory permission checks ledger epochs without hashing every cached episode.
     func cachedPreparationIsCurrent(_ cached: CachedMedia, entryID: ItemID, context: LibraryMediaContext) async -> Bool {
         guard cachedProofMatches(cached, entryID: entryID, context: context), let proof = cached.preparation,
