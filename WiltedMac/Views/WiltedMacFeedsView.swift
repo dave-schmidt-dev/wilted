@@ -365,9 +365,8 @@ struct WiltedMacFeedsView: View {
         .wiltedCard(colorScheme)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(WiltedScreenCopy.feedsIdentifier)
-        // The board keeps each feed's stored policy across visits. Each visit, and each change to
-        // the list of feeds, refreshes it in the background; reload publishes only when it finishes.
-        .task(id: model.subscriptions.map(\.id)) { await policyBoard.reload() }
+        // The window's board keeps each feed's stored policy across visits and starts its
+        // background refresh when subscriptions exist, including subscription-list changes.
     }
 
     /// What one feed currently contributes, in words rather than a bare count,
