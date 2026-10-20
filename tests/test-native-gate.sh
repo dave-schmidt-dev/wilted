@@ -740,6 +740,7 @@ assert_validation_contains 'iOS pixel snapshot method membership must remain exa
 assert_validation_contains 'iOS pixel test does not verify painted date and Storage geometry'
 assert_contains 'VNRecognizeTextRequest()' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'value.frame.minY, label.frame.maxY' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
-assert_contains 'assertPaintedLine("Nov 14, 2023", frame: metadata.frame)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
+assert_contains 'assertPaintedLine("Nov 14, 2023", frame: date.frame)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
+assert_contains 'XCTAssertGreaterThanOrEqual(date.frame.minY, metadata.frame.maxY - 1,' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 
 printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed; the retained failure bundle is untouched)'
