@@ -58,6 +58,8 @@ protocol LibraryMediaCache: MediaCacheStore {
     func cachedEntries() async -> [ItemID: CachedMedia]
     /// Physical canonical audio size by entry; conveys no playback permission.
     func storedAudioByteCounts() async -> [ItemID: Int64]
+    /// Deletes audio that can never play again; returns the entries that lost a revision.
+    func reclaimUnplayableAudio(keeping kept: Set<ItemID>) async -> Set<ItemID>
     func verifies(_ cached: CachedMedia) async -> Bool
 
     /// The transcript stored beside the audio for exactly this revision, or nil.
@@ -196,7 +198,7 @@ actor FileMediaCache: LibraryMediaCache {
             .appendingPathComponent(String(name), isDirectory: false)
     }
 
-    private func subdirectories(of url: URL) -> [URL] {
+    func subdirectories(of url: URL) -> [URL] {
         let children = (try? fileManager.contentsOfDirectory(
             at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         return children.filter { safeDirectory($0) }

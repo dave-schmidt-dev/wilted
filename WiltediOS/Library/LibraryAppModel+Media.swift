@@ -167,6 +167,14 @@ extension LibraryAppModel {
             handoffState.player?.invalidateLoadedItem()
             return
         }
+        // Audio that can never play again (no proof, or revoked) is deleted so Storage only
+        // counts what the phone can use; requests, revocations and the loaded item are spared.
+        let spared = Set(mediaRuns.keys).union(mediaRevocations)
+            .union([handoffState.player?.item?.entryID].compactMap { $0 })
+        let reclaimed = await mediaCache.reclaimUnplayableAudio(keeping: spared)
+        if !reclaimed.isEmpty {
+            mediaLog.notice("Deleted unplayable audio for \(reclaimed.count, privacy: .public) episodes")
+        }
         let inventory = await mediaCache.cachedEntries()
         guard await mediaContextIsCurrent(context) else { return }
         var cached: [ItemID: CachedMedia] = [:]

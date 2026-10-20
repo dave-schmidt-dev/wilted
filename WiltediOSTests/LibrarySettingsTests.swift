@@ -313,6 +313,21 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertNil(afterClear)
     }
 
+    func testLoadingDeletesUnplayableAudioSoStorageCountsOnlyPlayableEpisodes() async throws {
+        let root = scratch.appendingPathComponent("stranded-cache")
+        let cache = FileMediaCache(rootURL: root)
+        try await cacheEpisode(cache, "a", bytes: 1_000)
+        let stranded = try LibraryMediaReclaimTests.legacy(in: root, "old", revision: "rev-old", bytes: [1, 2, 3])
+        let before = await cache.storedAudioByteCounts()
+        XCTAssertEqual(before.count, 2, "a pre-certification download is counted but cannot play")
+
+        let model = try await makeModel(cache: cache)
+        let summary = await model.cacheSummary()
+        XCTAssertEqual(summary, LibraryCacheSummary(episodeCount: 1, byteCount: 1_000))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stranded.path))
+        XCTAssertEqual(model.mediaState(for: id("a")), .onPhone)
+    }
+
     func testRemoveAllKeepsTheEpisodePlayingNow() async throws {
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         try await cacheEpisode(cache, "a", bytes: 1_000)
