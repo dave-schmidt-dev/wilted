@@ -47,10 +47,19 @@ extension CloudKitSyncError {
         if error is CancellationError { return .cancelled }
         if let error = error as? CKError {
             if error.code == .serverRecordChanged { return .serverRecordChanged }
-            return .cloudKit(code: error.code.rawValue, message: error.localizedDescription)
+            return .cloudKit(code: error.code.rawValue, message: message(for: error))
         }
         if (error as NSError).code == NSUserCancelledError { return .cancelled }
         return .cloudKit(code: (error as NSError).code, message: error.localizedDescription)
+    }
+
+    /// The description, with the server's requested wait when CloudKit gave one. The enum keeps only
+    /// the code and this text, and `TransportPressureClassifier` reads the wait back from it, so a
+    /// dropped wait left the gate on its own short backoff while the server asked for minutes.
+    static func message(for error: CKError) -> String {
+        let text = error.localizedDescription
+        guard let seconds = error.retryAfterSeconds, !text.contains("Retry after") else { return text }
+        return "\(text) Retry after \(Int(seconds.rounded(.up))) seconds"
     }
 }
 

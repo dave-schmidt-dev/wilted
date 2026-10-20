@@ -205,7 +205,7 @@ final class TransportGateTests: XCTestCase {
         XCTAssertNil(log.all.last ?? nil)
     }
 
-    func testFailedProbesBackOffLongerAndSuccessResetsTheCount() async {
+    func testFailedProbesBackOffLongerAndAQuietSpellResetsTheCount() async {
         let clock = TestClock()
         let gate = gate(clock)
         let calls = Counter()
@@ -219,10 +219,35 @@ final class TransportGateTests: XCTestCase {
         XCTAssertEqual(gaps, [5, 10, 20])
         let recovered = await attempt(gate, calls: calls)
         XCTAssertNil(recovered)
+        clock.advance(TransportGate.quietWindow(afterWait: 20))
         _ = await attempt(gate, calls: calls, failing: limited)
         let restarted = await gate.state
-        XCTAssertEqual(restarted?.consecutiveFailures, 1)
+        XCTAssertEqual(restarted?.consecutiveFailures, 1, "pressure after a quiet spell starts the count over")
         XCTAssertEqual(restarted?.retryAt.timeIntervalSince(clock.now), 5)
+    }
+
+    /// A round's first call succeeds and a later one is refused, round after round. The success must not
+    /// reset the count, or the gate closes for 5 s every time and the device never stops asking.
+    func testPressureSoonAfterASuccessfulProbeKeepsBackingOff() async {
+        let clock = TestClock()
+        let gate = gate(clock)
+        let calls = Counter()
+        var gaps: [TimeInterval] = []
+        for _ in 0..<4 {
+            _ = await attempt(gate, calls: calls, failing: limited)
+            let state = await gate.state
+            gaps.append(state!.retryAt.timeIntervalSince(clock.now))
+            clock.advance(gaps.last! + 0.1)
+            let probe = await attempt(gate, calls: calls)
+            XCTAssertNil(probe, "the round's first call goes through and reopens the gate")
+            clock.advance(0.5)
+        }
+        XCTAssertEqual(gaps, [5, 10, 20, 40])
+    }
+
+    func testTheQuietWindowIsARoundOrTheLastWait() {
+        XCTAssertEqual(TransportGate.quietWindow(afterWait: 5), SyncCadence.tickInterval)
+        XCTAssertEqual(TransportGate.quietWindow(afterWait: 300), 300)
     }
 
     func testWhileAProbeIsInFlightOtherCallersStillWait() async {
