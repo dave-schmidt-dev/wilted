@@ -625,6 +625,17 @@ class BuildWithCacheTests(unittest.TestCase):
         )
 
     def test_installer_xcode_labels_share_a_lock(self) -> None:
+        # Exercise installer labels without borrowing the live installer cache.
+        fixture = self.temp_path / "installer-fixture"
+        scripts = fixture / "scripts"
+        scripts.mkdir(parents=True)
+        helper = scripts / "build-with-cache.py"
+        shutil.copy(HELPER, helper)
+        shutil.copy(ROOT / "scripts/run-bounded.py", scripts / "run-bounded.py")
+        with mock.patch.dict(globals(), HELPER=helper, ROOT=fixture):
+            self.assert_installer_xcode_labels_share_a_lock()
+
+    def assert_installer_xcode_labels_share_a_lock(self) -> None:
         first = subprocess.Popen(
             [PYTHON, str(HELPER), "run", "xcode", "first", "--", "xcodebuild",
              "--sleep-seconds", "1.3"],
@@ -635,7 +646,11 @@ class BuildWithCacheTests(unittest.TestCase):
             deadline = time.monotonic() + 5
             while not self.read_events() and time.monotonic() < deadline:
                 time.sleep(0.02)
-            self.assertTrue(self.read_events(), "first fake Xcode build did not start")
+            if not self.read_events():
+                if first.poll() is None:
+                    first.terminate()
+                _, first_stderr = first.communicate(timeout=5)
+                self.fail(f"first fake Xcode build did not start: {first_stderr}")
             second = self.run_helper(
                 "run", "xcode", "second", "--", "xcodebuild", timeout=8
             )
