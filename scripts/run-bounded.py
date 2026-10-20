@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -34,11 +35,14 @@ MAX_SLOW_INSPECTIONS = 6
 INSPECTION_INTERVAL_SECONDS = 1.0
 HEARTBEAT_SECONDS = 15.0
 # One in-flight observation plus cleanup's initial, TERM-wait, pre-KILL,
-# KILL-wait and final scans. Each grace loop can overshoot by one probe
-# and poll; each probe can spend two grace waits terminating/reaping ps.
+# KILL-wait and final scans, which share MAX_SLOW_INSPECTIONS - 1 retried slow
+# scans. Each grace loop can overshoot by one probe and poll; each probe can
+# spend two grace waits terminating/reaping ps. A cleanup that still fails
+# closed waits one more grace period between its group signals.
 WATCHDOG_WAIT_SECONDS = (
-    6 * (PS_TIMEOUT_SECONDS + 2 * GRACE_SECONDS)
+    (5 + MAX_SLOW_INSPECTIONS) * (PS_TIMEOUT_SECONDS + 2 * GRACE_SECONDS)
     + 2 * (GRACE_SECONDS + POLL_SECONDS)
+    + GRACE_SECONDS
     + INSPECTION_INTERVAL_SECONDS
 )
 PROCESS_TABLE_COMMAND = ["/bin/ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart="]
@@ -93,6 +97,29 @@ def process_table() -> dict[int, Process]:
     return processes
 
 
+class SlowScans:
+    """Retry ps scans that time out on a busy host, up to MAX_SLOW_INSPECTIONS.
+
+    The count is cumulative for one instance, so the several scans of one cleanup
+    share one bound instead of each getting its own allowance. Any other
+    inspection error propagates at once.
+    """
+
+    def __init__(self, site: str) -> None:
+        self.site = site
+        self.count = 0
+
+    def retry(self, inspect: Callable[[], dict[int, Process]]) -> dict[int, Process]:
+        while True:
+            try:
+                return inspect()
+            except subprocess.TimeoutExpired as error:
+                self.count += 1
+                if self.count >= MAX_SLOW_INSPECTIONS:
+                    raise
+                emit(f"{self.site}-inspection-slow count={self.count}: {error}")
+
+
 class OwnedTree:
     """Track only descendants observed from a known process identity."""
 
@@ -141,9 +168,13 @@ class OwnedTree:
         return sorted(live)
 
     def cleanup(self, grace_seconds: float = GRACE_SECONDS) -> bool:
-        """Signal observed owned PIDs, rescanning so reparented children remain owned."""
+        """Signal observed owned PIDs, rescanning so reparented children remain owned.
+
+        Slow scans are retried within MAX_SLOW_INSPECTIONS.
+        """
+        slow = SlowScans("cleanup")
         try:
-            table = self.scan()
+            table = slow.retry(self.scan)
             for pgid in self.owned_groups(table):
                 self.signal_group(pgid, signal.SIGTERM)
             for pid in self.live(table):
@@ -156,11 +187,11 @@ class OwnedTree:
                     return False
             deadline = time.monotonic() + grace_seconds
             while time.monotonic() < deadline:
-                table = self.scan()
+                table = slow.retry(self.scan)
                 if not self.live(table):
                     return True
                 time.sleep(POLL_SECONDS)
-            table = self.scan()
+            table = slow.retry(self.scan)
             for pgid in self.owned_groups(table):
                 self.signal_group(pgid, signal.SIGKILL)
             for pid in self.live(table):
@@ -173,11 +204,11 @@ class OwnedTree:
                     return False
             deadline = time.monotonic() + grace_seconds
             while time.monotonic() < deadline:
-                table = self.scan()
+                table = slow.retry(self.scan)
                 if not self.live(table):
                     return True
                 time.sleep(POLL_SECONDS)
-            remaining = self.live(self.scan())
+            remaining = self.live(slow.retry(self.scan))
             if remaining:
                 emit(f"cleanup-incomplete pids={','.join(map(str, remaining))}")
                 return False
@@ -233,9 +264,17 @@ class OwnedTree:
             pass
 
 
-def leader_start(pid: int) -> str | None:
+def leader_start(pid: int, retry_slow: bool = True) -> str | None:
+    """Return the leader's identity, retrying slow scans unless this is the watchdog.
+
+    The supervisor retries scans that time out on a busy host; the watchdog's
+    late lookup after its supervisor is gone makes one attempt, because an
+    empty identity still cleans by process group and its wait budget has no
+    room for retries.
+    """
     try:
-        process = process_table().get(pid)
+        table = SlowScans("identity").retry(process_table) if retry_slow else process_table()
+        process = table.get(pid)
     except (OSError, subprocess.SubprocessError):
         return None
     return process.start if process else None
@@ -317,7 +356,7 @@ def watchdog(startup_fd: int, control_fd: int) -> int:
             emit(f"watchdog-identity-read-failed: {error}")
             return EXIT_CLEANUP_FAILED
     if start is None:
-        start = leader_start(leader_pid)
+        start = leader_start(leader_pid, retry_slow=False)
     if start is None:
         emit(f"watchdog-identity-unavailable pid={leader_pid}")
         start = ""

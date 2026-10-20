@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from test_bounded_runner import BoundedRunnerTests
+from test_bounded_runner_slow_ps import SlowProcessScanTests
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "build-with-cache.py"
