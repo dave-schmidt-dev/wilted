@@ -429,6 +429,330 @@
       ],
       "transcriptEndSeconds": 574.52,
       "audioDurationSeconds": 575.086
+    },
+    {
+      "id": "aidb-team-agents-house-promotion-and-four-spot-pod",
+      "itemID": "item-36d64eeaa0f6113802056e9f3204389f6becd02eae278a856d1997b184b125d7",
+      "show": "The AI Daily Brief",
+      "sourceHash": "sha256:4c98e43db5b188e6700a5dddac71fd3f5a3c4d570d774b50790a0ac6522135a4",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 135,
+      "removeSelfPromotion": true,
+      "intentionalCondition": "A pre-recorded operator episode with the show's heaviest house promotion: after the cold open and the tagline come a sponsor roll call with an ad-free subscription pitch, a webinar plug and two training-cohort plugs (cues 3-7), then a four-spot mid-roll pod with no break into it: a produced study spot that never names itself as an ad, a spot whose only call to action is a spelled-out web address split across two cues, an investment spot ending in a spoken disclaimer, and a read introduced by the show itself. The recorded run refused to cut anything and delivered the original audio.",
+      "reportedBy": "David, 2026-10-20, asking for an option to remove The AI Daily Brief's own promotion: he hears the show's own promotion and produced sponsor spots that should have been removed, and said that although house promotion is normally left in, this show is so heavy on it that he does not want to hear any of it. Preparation run recorded in ZPREPARATIONRECORD for this itemID at 2026-10-15 16:28:42Z ended with original audio and ads: ad review could not safely resolve all proposed commercial spans.",
+      "provenance": {
+        "labelledBy": "Labelled by reading the aligned transcript cue by cue on 2026-10-20. David reported the show as a whole, not these timestamps, and was not asked to listen to any boundary.",
+        "labelledOn": "2026-10-20",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 135 cues, pinned from adcorpus-snapshot-2026-10-20.",
+        "labelSource": "Read from cue edges. Cues 0-2 are the cold open and the tagline. Cues 3-7 are house promotion; cue 7 closes on the one-line lead into the conversation. Cues 31-41 are the mid-roll pod: 31-32 the study spot, 33-36 the code-base spot ending on its web address (cue 36 is the address's last word alone), 37-39 the investment spot and its disclaimer, 40-41 the show-introduced read. Cues 115-117 are the co-host pointing to the show's own programmes inside the conversation."
+      },
+      "expected": [
+        {
+          "start": 0.16,
+          "end": 56.48,
+          "label": "must-keep",
+          "why": "Cues 0-2, the cold open and the show's tagline. Programme."
+        },
+        {
+          "start": 69.68,
+          "end": 89.84,
+          "label": "must-cut",
+          "labelIfSelfPromotionKept": "acceptable-cut",
+          "why": "Cues 3, a sponsor roll call with an ad-free subscription pitch. The show's own promotion, not advertising: must-cut for this feed because David asked for all of it removed, and acceptable-cut when the option is off, per house-promotion-is-not-advertising."
+        },
+        {
+          "start": 89.84,
+          "end": 130.04,
+          "label": "must-cut",
+          "labelIfSelfPromotionKept": "acceptable-cut",
+          "why": "Cues 4-5, a plug for a free webinar with a call to register. Cue 4 opens with one sentence saying this episode is pre-recorded, then turns to the plug for the rest of the cue; unlike cue 4 of aidb-model-testing-webinar-recording, which only describes its episode, this cue is mostly promotion. The show's own promotion, not advertising: must-cut for this feed because David asked for all of it removed, and acceptable-cut when the option is off, per house-promotion-is-not-advertising."
+        },
+        {
+          "start": 130.04,
+          "end": 165.8,
+          "label": "must-cut",
+          "labelIfSelfPromotionKept": "acceptable-cut",
+          "why": "Cues 6-7, plugs for two training cohorts and their start dates, closing on the one-line lead into the conversation. The show's own promotion, not advertising: must-cut for this feed because David asked for all of it removed, and acceptable-cut when the option is off, per house-promotion-is-not-advertising."
+        },
+        {
+          "start": 167.4,
+          "end": 579.32,
+          "label": "must-keep",
+          "why": "Cues 8-30, the conversation up to the mid-roll."
+        },
+        {
+          "start": 583.64,
+          "end": 618.92,
+          "label": "must-cut",
+          "why": "Cues 31-32, a produced study spot that never names itself as an ad. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 618.92,
+          "end": 671.12,
+          "label": "must-cut",
+          "why": "Cues 33-36, a code-base spot whose only destination is its web address, the last word of it a cue of its own. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 671.12,
+          "end": 725.28,
+          "label": "must-cut",
+          "why": "Cues 37-39, an investment spot ending in its spoken disclaimer. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 725.28,
+          "end": 761.72,
+          "label": "must-cut",
+          "why": "Cues 40-41, a sponsor read the show introduces. Last spot of the pod."
+        },
+        {
+          "start": 765.32,
+          "end": 2175.44,
+          "label": "must-keep",
+          "why": "Cues 42-114, the conversation after the mid-roll."
+        },
+        {
+          "start": 2175.44,
+          "end": 2235.88,
+          "label": "acceptable-cut",
+          "why": "Cues 115-117, the co-host pointing listeners to the show's own training programmes inside the conversation, with the episode recap before it in cue 115 and the closing discussion after it in cue 117. The show's own promotion, but in mixed cues, so cutting it costs programme on both edges; neither outcome is scored."
+        },
+        {
+          "start": 2235.88,
+          "end": 2496.6,
+          "label": "must-keep",
+          "why": "Cues 118-134, the closing discussion and sign-off."
+        }
+      ],
+      "recorded": [],
+      "transcriptEndSeconds": 2496.6,
+      "audioDurationSeconds": 2508.219501
+    },
+    {
+      "id": "aidb-business-ai-users-pod-opening-missed",
+      "itemID": "item-c4f619f1124a30cffb1565d233894ae74369b51892ab4bfcaa7725723e584263",
+      "show": "The AI Daily Brief",
+      "sourceHash": "sha256:dd43ab22eba64e28839d8d1a796218f1b078811d64a6fc1632633f421df75a26",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 76,
+      "removeSelfPromotion": true,
+      "intentionalCondition": "A headlines-then-main-episode show. A one-cue roll call follows the tagline (cue 2), and a four-spot pod sits between the headlines and the main episode (cues 37-47). The pod opens on the same produced study spot as the other cases, with no break and no sponsor naming. The recorded run cut from its second cue to the end of the pod, so the opening 20 s of the first spot played.",
+      "reportedBy": "David, 2026-10-20, asking for an option to remove The AI Daily Brief's own promotion: he hears the show's own promotion and produced sponsor spots that should have been removed, and said that although house promotion is normally left in, this show is so heavy on it that he does not want to hear any of it. Preparation run recorded in ZPREPARATIONRECORD for this itemID at 2026-10-15 16:16:46Z removed 683.36-843.48.",
+      "provenance": {
+        "labelledBy": "Labelled by reading the aligned transcript cue by cue on 2026-10-20. David reported the show as a whole, not these timestamps, and was not asked to listen to any boundary.",
+        "labelledOn": "2026-10-20",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 76 cues, pinned from adcorpus-snapshot-2026-10-20.",
+        "labelSource": "Read from cue edges. Cues 0-1 are the cold open and tagline, cue 2 the roll call. Cue 36 ends the headlines with the hand-off to the main episode. Cues 37-38 are the study spot, 39-43 a training-platform spot ending in its spelled-out address (cues 42-43 are its last letters alone), 44-46 the investment spot and disclaimer, 47-49 a note-taking spot."
+      },
+      "expected": [
+        {
+          "start": 0.4,
+          "end": 30.56,
+          "label": "must-keep",
+          "why": "Cues 0-1, the cold open and the show's tagline. Programme."
+        },
+        {
+          "start": 37.6,
+          "end": 54.8,
+          "label": "must-cut",
+          "labelIfSelfPromotionKept": "acceptable-cut",
+          "why": "Cues 2, a sponsor roll call with an ad-free subscription pitch. The show's own promotion, not advertising: must-cut for this feed because David asked for all of it removed, and acceptable-cut when the option is off, per house-promotion-is-not-advertising."
+        },
+        {
+          "start": 56.08,
+          "end": 658.64,
+          "label": "must-keep",
+          "why": "Cues 3-36, the headlines and their hand-off to the main episode."
+        },
+        {
+          "start": 663.36,
+          "end": 698.64,
+          "label": "must-cut",
+          "why": "Cues 37-38, the produced study spot. The recorded run left 663.36-683.36, its opening. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 698.64,
+          "end": 748.4,
+          "label": "must-cut",
+          "why": "Cues 39-43, a training-platform spot ending in its spelled-out address. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 748.4,
+          "end": 803.16,
+          "label": "must-cut",
+          "why": "Cues 44-46, the investment spot and its disclaimer. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 803.16,
+          "end": 845.16,
+          "label": "must-cut",
+          "why": "Cues 47-49, a note-taking spot. Last spot of the pod."
+        },
+        {
+          "start": 850.12,
+          "end": 1358.32,
+          "label": "must-keep",
+          "why": "Cues 50-75, the main episode."
+        }
+      ],
+      "recorded": [
+        {
+          "start": 683.36,
+          "end": 843.48,
+          "confidence": 0.775,
+          "label": "self_promo"
+        }
+      ],
+      "transcriptEndSeconds": 1358.32,
+      "audioDurationSeconds": 1373.205
+    },
+    {
+      "id": "aidb-personal-agents-pod-cut-into-programme",
+      "itemID": "item-33c5257222da65912ab69c36d05bf6f634c421c30ddb85bf5b917babfc717087",
+      "show": "The AI Daily Brief",
+      "sourceHash": "sha256:b7f7f4fdb4adbf87878ba2310d2863873d47ed6b85c630538eb6e4a37e183d24",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 80,
+      "removeSelfPromotion": true,
+      "intentionalCondition": "The tagline is a cue of its own directly before the roll call (cues 2 and 3), the case where widening a house-promotion cut onto its neighbour would remove programme. The mid-roll pod (cues 36-47) ends on a web address whose last word is a 0.16 s cue of its own. The recorded run started its cut inside the programme cue before the pod.",
+      "reportedBy": "David, 2026-10-20, asking for an option to remove The AI Daily Brief's own promotion: he hears the show's own promotion and produced sponsor spots that should have been removed, and said that although house promotion is normally left in, this show is so heavy on it that he does not want to hear any of it. Preparation run recorded in ZPREPARATIONRECORD for this itemID at 2026-10-20 01:37:28Z removed 655.04-843.4, starting at the programme cue 35.",
+      "provenance": {
+        "labelledBy": "Labelled by reading the aligned transcript cue by cue on 2026-10-20. David reported the show as a whole, not these timestamps, and was not asked to listen to any boundary.",
+        "labelledOn": "2026-10-20",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 80 cues, pinned from adcorpus-snapshot-2026-10-20.",
+        "labelSource": "Read from cue edges. Cues 0-1 are the cold open, cue 2 the tagline alone, cue 3 the roll call. Cue 35 is programme. Cues 36-37 are an engineering-firm spot, 38-40 the investment spot and disclaimer, 41-43 a note-taking spot, 44-47 a code-base spot ending in its address."
+      },
+      "expected": [
+        {
+          "start": 0.32,
+          "end": 39.76,
+          "label": "must-keep",
+          "why": "Cues 0-2, the cold open and the show's tagline, which is its own cue."
+        },
+        {
+          "start": 46.32,
+          "end": 64.08,
+          "label": "must-cut",
+          "labelIfSelfPromotionKept": "acceptable-cut",
+          "why": "Cues 3, a sponsor roll call with an ad-free subscription pitch. The show's own promotion, not advertising: must-cut for this feed because David asked for all of it removed, and acceptable-cut when the option is off, per house-promotion-is-not-advertising."
+        },
+        {
+          "start": 65.36,
+          "end": 668.08,
+          "label": "must-keep",
+          "why": "Cues 4-35. The recorded run removed 655.04-668.08, the whole of cue 35."
+        },
+        {
+          "start": 672.64,
+          "end": 702.16,
+          "label": "must-cut",
+          "why": "Cues 36-37, an engineering-firm spot. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 702.16,
+          "end": 756.6,
+          "label": "must-cut",
+          "why": "Cues 38-40, the investment spot and its disclaimer. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 756.6,
+          "end": 799.64,
+          "label": "must-cut",
+          "why": "Cues 41-43, a note-taking spot. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 799.64,
+          "end": 844.12,
+          "label": "must-cut",
+          "why": "Cues 44-47, a code-base spot ending in its web address, whose last word is a 0.16s cue of its own. Last spot of the pod."
+        },
+        {
+          "start": 849.08,
+          "end": 1456.04,
+          "label": "must-keep",
+          "why": "Cues 48-79, the rest of the episode."
+        }
+      ],
+      "recorded": [
+        {
+          "start": 655.04,
+          "end": 843.4,
+          "confidence": 0.775,
+          "label": "self_promo"
+        }
+      ],
+      "transcriptEndSeconds": 1456.04,
+      "audioDurationSeconds": 1471.147
+    },
+    {
+      "id": "aidb-model-testing-webinar-recording",
+      "itemID": "item-e38de83355ea4904690c730cbdf713ea3275a84d28db1f8183917fb527c0b49b",
+      "show": "The AI Daily Brief",
+      "sourceHash": "sha256:9e98500d499cc4681b7db4790fddb50422a0ddcd7e36707a3a4426fc7bd1ae9a",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 163,
+      "removeSelfPromotion": true,
+      "intentionalCondition": "The episode is itself a recording of the show's webinar, and the host says so right after the roll call (cue 4). That framing is programme even though it names the webinar, so a cut that treats every webinar mention as promotion removes it. The four-spot pod (cues 69-78) sits mid-webinar with no break. The recorded run refused to cut anything and delivered the original audio.",
+      "reportedBy": "David, 2026-10-20, asking for an option to remove The AI Daily Brief's own promotion: he hears the show's own promotion and produced sponsor spots that should have been removed, and said that although house promotion is normally left in, this show is so heavy on it that he does not want to hear any of it. Preparation run recorded in ZPREPARATIONRECORD for this itemID at 2026-10-20 01:56:05Z ended with original audio and ads: ad review could not safely resolve all proposed commercial spans.",
+      "provenance": {
+        "labelledBy": "Labelled by reading the aligned transcript cue by cue on 2026-10-20. David reported the show as a whole, not these timestamps, and was not asked to listen to any boundary.",
+        "labelledOn": "2026-10-20",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 163 cues, pinned from adcorpus-snapshot-2026-10-20.",
+        "labelSource": "Read from cue edges. Cues 0-2 are the cold open and tagline, cue 3 the roll call with an ad-free pitch, closing on the lead into cue 4, which describes this episode as the webinar recording. Cues 69-70 are the study spot, 71-72 an engineering-firm spot, 73-75 the investment spot and disclaimer, 76-78 a code-base spot ending in its spelled-out address."
+      },
+      "expected": [
+        {
+          "start": 0.56,
+          "end": 50.32,
+          "label": "must-keep",
+          "why": "Cues 0-2, the cold open and the show's tagline. Programme."
+        },
+        {
+          "start": 63.04,
+          "end": 83.12,
+          "label": "must-cut",
+          "labelIfSelfPromotionKept": "acceptable-cut",
+          "why": "Cues 3, a sponsor roll call with an ad-free subscription pitch. The show's own promotion, not advertising: must-cut for this feed because David asked for all of it removed, and acceptable-cut when the option is off, per house-promotion-is-not-advertising."
+        },
+        {
+          "start": 83.12,
+          "end": 1319.44,
+          "label": "must-keep",
+          "why": "Cues 4-68. Cue 4 says this episode is a recording of the show's webinar: it describes the episode, it does not promote anything."
+        },
+        {
+          "start": 1322.96,
+          "end": 1358.56,
+          "label": "must-cut",
+          "why": "Cues 69-70, the produced study spot. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 1358.56,
+          "end": 1388.28,
+          "label": "must-cut",
+          "why": "Cues 71-72, an engineering-firm spot. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 1388.28,
+          "end": 1440.28,
+          "label": "must-cut",
+          "why": "Cues 73-75, the investment spot and its disclaimer. Labelled up to the next spot's first cue, so a cut that removes each spot on its own cue edges still leaves nothing unlabelled and a pod-wide cut leaves no remnant."
+        },
+        {
+          "start": 1440.28,
+          "end": 1490.72,
+          "label": "must-cut",
+          "why": "Cues 76-78, a code-base spot ending in its spelled-out address. Last spot of the pod."
+        },
+        {
+          "start": 1495.92,
+          "end": 2978.32,
+          "label": "must-keep",
+          "why": "Cues 79-162, the rest of the webinar and the sign-off."
+        }
+      ],
+      "recorded": [],
+      "transcriptEndSeconds": 2978.32,
+      "audioDurationSeconds": 2989.94068
     }
   ],
   "decisions": [
@@ -451,6 +775,16 @@
       "applies": "A replay reads the pinned store first and falls back to the aligned-STT cache only when the pinned copy is absent; `ad-corpus-adopt SOURCE=<cache snapshot>` copies every manifest-named entry into ~/Library/Application Support/Wilted/adcorpus-inputs/ and reports each case it cannot satisfy. The store lives outside the repository because these are third-party copyrighted transcripts.",
       "closes": "corpus-inputs-evicted-from-preparation-cache",
       "context": "The preparation cache is a 32-entry least-recently-used working set, not a corpus store. All three original cases' inputs -- sha256:38166909883bb20ba662299aa4a63df7590e8eea5960b2616b46dfaab40f08b5, sha256:6089921a9f668de9a384cd71450f7e70ee279d600cfcd82d42d686874ec4d469, and sha256:6664deea61754c68ceef94bb66b22fee6cc212c9629dbe19966ed95241517d2a -- were evicted before the 2026-09-17 replay, which returned 0/3 with 'no cached transcript'."
+    },
+    {
+      "id": "aidb-own-promotion-removed-by-feed-option",
+      "decided": "2026-10-20",
+      "by": "David",
+      "question": "Should The AI Daily Brief's own promotion be removed?",
+      "decision": "Yes, for that show only: \"i know normally we leave self promotion in, but the AI Daily Brief is so heavy on it that I don't want to hear any of it\". It is a per-feed option, so house-promotion-is-not-advertising still holds everywhere else.",
+      "applies": "A case for such a feed sets removeSelfPromotion true and labels the show's own promotion must-cut with labelIfSelfPromotionKept acceptable-cut, so a replay with the option off still scores it neither way.",
+      "closes": "No gap. It is why the four AI Daily Brief cases carry removeSelfPromotion.",
+      "context": "The show opens most episodes with a sponsor roll call, an ad-free subscription pitch and plugs for its webinars and training cohorts, and the detector keeps all of it by design."
     }
   ],
   "gaps": [

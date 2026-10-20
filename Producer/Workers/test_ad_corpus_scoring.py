@@ -371,13 +371,17 @@ class AdCorpusManifestTests(unittest.TestCase):
                     for start, end in recorded
                 ):
                     reproduced.append((case["id"], *pod))
-        # Fourteen labelled pods across six cases as of 2026-09-23. The count is a
+        # Twenty-two labelled pods across ten cases as of 2026-10-20. The count is a
         # tripwire for a case being added or relabelled without anyone rereading
         # this measurement. The Planet Money case added four pods; its recorded
         # run reproduced the three it cut and missed the mid-roll pod it left whole.
         # The TechCrunch Alexa case added two and reproduced neither: its opening
         # cut ran on through three headlines and its closing cut started late.
-        self.assertEqual(len(pods), 14)
+        # The four AI Daily Brief cases (2026-10-20) added two each, the show's
+        # own promotion and the mid-roll pod, and reproduced none: two runs
+        # refused to cut at all and the other two started their pod cut late
+        # in one case and inside the programme before it in the other.
+        self.assertEqual(len(pods), 22)
         self.assertEqual(
             [(round(start, 2), round(end, 2)) for _case_id, start, end in reproduced],
             [(2729.8, 2917.96), (5278.64, 5339.76),
@@ -396,7 +400,14 @@ class AdCorpusManifestTests(unittest.TestCase):
             values = sorted({entry["confidence"] for entry in case["recorded"]} - {1.0})
             if values:
                 graded[case["id"]] = values
-        self.assertEqual(graded, {"techcrunch-alexa-postroll-left-its-opening": [0.7667, 0.9]})
+        # The two AI Daily Brief runs that cut anything (2026-10-15 and
+        # 2026-10-20) both report 0.775: one for a cut that was right as far as
+        # it went, the other for one that removed 13s of programme.
+        self.assertEqual(graded, {
+            "techcrunch-alexa-postroll-left-its-opening": [0.7667, 0.9],
+            "aidb-business-ai-users-pod-opening-missed": [0.775],
+            "aidb-personal-agents-pod-cut-into-programme": [0.775],
+        })
 
     def test_every_remaining_gap_names_the_input_that_would_close_it(self):
         # The inventory is only actionable if a reader knows what to go and
