@@ -55,7 +55,7 @@ final class LibraryLocalStateTests: XCTestCase {
             mediaType: "audio/mp4", durationSeconds: 60))
         _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer, owner: "fixture-owner")
 
-        // A later launch with no network: nothing is fetched, yet the row and "On phone" are there.
+        // A later launch with no network: nothing is fetched, yet the row and "Downloaded" are there.
         let offline = LibraryAppModel(
             transport: UnavailableLibraryTransport(reason: "no signal"), store: store, deviceID: "phone",
             mediaCache: cache, preferences: defaults())

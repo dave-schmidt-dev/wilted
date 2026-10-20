@@ -58,7 +58,7 @@ struct LibraryAddStatus: Equatable, Sendable {
 }
 
 extension LibraryAppModel {
-    static let updateMacText = "Update Wilted on your Mac to add from iPhone"
+    static func updateMacText(deviceKind: String) -> String { "Update Wilted on your Mac to add from \(deviceKind)" }
     static let macCheckFailedText = "Wilted could not check your Mac. Try again in a moment."
     static let invalidAddLinkText = "Only https links without a login can be added."
 
@@ -71,7 +71,7 @@ extension LibraryAppModel {
     var addCapabilityNotice: String? {
         if macAddCheckFailed { return Self.macCheckFailedText }
         guard let actions = macAddActions else { return nil }
-        return actions.isSuperset(of: ["subscribe", "addArticle"]) ? nil : Self.updateMacText
+        return actions.isSuperset(of: ["subscribe", "addArticle"]) ? nil : Self.updateMacText(deviceKind: deviceKind)
     }
 
     /// False only when the Mac is known not to apply `request`; unknown stays tappable, and the tap checks.
@@ -103,12 +103,12 @@ extension LibraryAppModel {
                 symbol: "checkmark.circle")
         case let .rejected(reason):
             return LibraryAddStatus(
-                text: Self.addRejectionText(reason), tone: .failure, symbol: "exclamationmark.triangle")
+                text: Self.addRejectionText(reason, deviceKind: deviceKind), tone: .failure, symbol: "exclamationmark.triangle")
         }
     }
 
     /// The Mac's reasons for the add intents, in words. Anything else is an opaque refusal.
-    static func addRejectionText(_ reason: String?) -> String {
+    static func addRejectionText(_ reason: String?, deviceKind: String) -> String {
         switch reason {
         case "alreadyFollowed": "Your Mac already follows this podcast."
         case "alreadyAdded": "Your Mac already has this article."
@@ -116,7 +116,7 @@ extension LibraryAppModel {
         case "isAFeed": "That link is a podcast feed. Add it as a podcast instead."
         case "noAudio": "That feed has no audio episodes, so your Mac did not add it."
         case IntentOutcome.reasonFailed: "Your Mac could not add it. Try again in a moment."
-        case IntentOutcome.reasonUnsupportedAction: updateMacText
+        case IntentOutcome.reasonUnsupportedAction: updateMacText(deviceKind: deviceKind)
         case IntentOutcome.reasonExpired: "Your Mac did not see this in time. Send it again."
         default: "Your Mac declined it."
         }
@@ -156,7 +156,7 @@ extension LibraryAppModel {
         }
         if !canAdd(request) || macAddActions == nil || macAddCheckFailed { await loadAddCapability() }
         guard macAddActions?.contains(request.actionName) == true else {
-            addNotice = macAddCheckFailed ? Self.macCheckFailedText : Self.updateMacText
+            addNotice = macAddCheckFailed ? Self.macCheckFailedText : Self.updateMacText(deviceKind: deviceKind)
             return
         }
         guard !adds.contains(where: { $0.isAwaitingAnswer && $0.intent.action == intent.action }) else { return }

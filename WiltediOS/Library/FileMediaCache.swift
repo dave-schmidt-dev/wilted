@@ -48,7 +48,7 @@ struct CachedMedia: Equatable, Sendable {
     }
 }
 
-/// A `MediaCacheStore` that can also say what it holds, so the Larder can show "On phone"
+/// A `MediaCacheStore` that can also say what it holds, so the Larder can show "Downloaded"
 /// after the Mac has withdrawn its offer and without asking the network.
 protocol LibraryMediaCache: MediaCacheStore {
     func bindOwner(ownerToken: String?, libraryScope: String, held: Bool) async throws

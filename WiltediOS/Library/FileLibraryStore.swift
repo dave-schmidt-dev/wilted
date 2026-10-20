@@ -257,7 +257,7 @@ actor FileLibraryStore: LibraryStore {
         return incoming
     }
 
-    func enqueue(_ change: LibraryChange) throws { throw LibraryTransportError.ownershipViolation("The iPhone does not edit the library") }
+    func enqueue(_ change: LibraryChange) throws { throw LibraryTransportError.ownershipViolation("Only the Mac edits the library") }
     func acknowledge(_ result: LibraryPushResult, sent: [PendingLibraryChange]) throws {}
     func resolveConflict(_ key: LibraryRecordKey, keepLocal: Bool) throws {}
 

@@ -74,7 +74,7 @@ struct LibrarySettingsView: View {
             Toggle("Auto-play next episode", isOn: $settings.autoPlayNext)
                 .wiltedFont(.utility)
                 .accessibilityIdentifier("wilted-library-settings-auto-play-next")
-            Toggle("Speak interruptions on this iPhone", isOn: $speaksInterruptions)
+            Toggle(LibrarySettingsFormat.speakInterruptionsLabel(deviceKind: model.deviceKind), isOn: $speaksInterruptions)
                 .wiltedFont(.utility)
                 .accessibilityIdentifier("wilted-library-settings-speak-interruptions")
             iconRow("gauge.with.dots.needle.67percent", "Default speed") {
@@ -158,7 +158,7 @@ struct LibrarySettingsView: View {
     }
 
     private var statisticsCard: some View {
-        StatisticsCard(stats: model.phoneStats)
+        StatisticsCard(stats: model.phoneStats, deviceKind: model.deviceKind)
     }
 
     private var aboutCard: some View {
@@ -318,7 +318,7 @@ struct LibraryStorageSummaryView: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             LibrarySettingsIconRow(symbol: "internaldrive", label: "Downloaded audio") {
                 SettingsInfoButton(
-                    text: "Removes the phone's copies only. Episodes stay in the Larder to fetch again from the Mac.",
+                    text: "Removes downloaded audio only. Episodes stay in the Larder to fetch again from the Mac.",
                     identifier: "wilted-library-settings-storage-info")
                 Spacer(minLength: 0)
             }
@@ -389,13 +389,14 @@ private struct SettingsInfoButton: View {
     }
 }
 
-/// This phone's lifetime totals. Observes the store itself, since the model does not republish it.
+/// This device's lifetime totals. Observes the store itself, since the model does not republish it.
 private struct StatisticsCard: View {
     @ObservedObject var stats: LibraryPhoneStatsStore
+    let deviceKind: String
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        WiltedSettingsCard(title: LibrarySettingsFormat.phoneStatisticsTitle) {
+        WiltedSettingsCard(title: LibrarySettingsFormat.statisticsTitle(deviceKind: deviceKind)) {
             ForEach(LibrarySettingsFormat.phoneStatRows(stats.stats), id: \.identifier) { stat in
                 HStack(spacing: WiltedTheme.Spacing.medium) {
                     Image(symbol: stat.symbol)

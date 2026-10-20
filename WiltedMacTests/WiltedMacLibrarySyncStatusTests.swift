@@ -155,11 +155,11 @@ final class WiltedMacLibrarySyncStatusTests: XCTestCase {
         XCTAssertEqual(status(activity).headline, "1 library change waiting to send")
         activity.recordSend(acknowledged: 1, unsent: 0, at: noon)
         let time = noon.formatted(date: .omitted, time: .shortened)
-        XCTAssertEqual(status(activity).headline, "Local changes sent at \(time). Phone fetch is separate.")
+        XCTAssertEqual(status(activity).headline, "Local changes sent at \(time). Devices fetch separately.")
         activity.recordSend(acknowledged: 0, unsent: 0, at: noon.addingTimeInterval(30))
         XCTAssertEqual(activity.lastSentAt, noon, "an idle pass is not a send")
         activity.recordCheck(succeeded: false, at: noon)
-        XCTAssertEqual(status(activity).headline, "Reading phone changes failed. The next sync round retries.")
+        XCTAssertEqual(status(activity).headline, "Reading device changes failed. The next sync round retries.")
         activity.recordCheck(succeeded: true, at: noon)
         XCTAssertEqual(status(activity).phase, .sent)
     }

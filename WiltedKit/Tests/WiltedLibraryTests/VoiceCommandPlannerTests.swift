@@ -50,7 +50,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         )
         let plan = VoiceCommandPlanner.plan(.playNext(show: "tech crunch daily"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "No TechCrunch Daily episodes are on your phone.")
+        XCTAssertEqual(plan.dialog, "No TechCrunch Daily episodes are downloaded.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -82,7 +82,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         )
         let plan = VoiceCommandPlanner.plan(.playNext(show: "daily"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "That was the last The Daily episode on your phone.")
+        XCTAssertEqual(plan.dialog, "That was the last downloaded episode of The Daily.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -126,7 +126,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         )
         let plan = VoiceCommandPlanner.plan(.playNext(show: nil), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "No episodes are on your phone.")
+        XCTAssertEqual(plan.dialog, "No episodes are downloaded.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -156,7 +156,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         )
         let plan = VoiceCommandPlanner.plan(.playNext(show: nil), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "That was the last episode on your phone.")
+        XCTAssertEqual(plan.dialog, "That was the last downloaded episode.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -404,7 +404,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let snapshot = VoiceSnapshot(downloaded: [], knownShowTitles: [], nowPlaying: nil)
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "No episodes are on your phone.")
+        XCTAssertEqual(plan.dialog, "No episodes are downloaded.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -413,7 +413,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let snapshot = VoiceSnapshot(downloaded: [ep1], knownShowTitles: [], nowPlaying: nil)
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "1 episode on your phone: Ep 1.")
+        XCTAssertEqual(plan.dialog, "1 episode downloaded: Ep 1.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -423,7 +423,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let snapshot = VoiceSnapshot(downloaded: [ep1, ep2], knownShowTitles: [], nowPlaying: nil)
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "2 episodes on your phone: Ep 1, Ep 2.")
+        XCTAssertEqual(plan.dialog, "2 episodes downloaded: Ep 1, Ep 2.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -434,7 +434,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let snapshot = VoiceSnapshot(downloaded: [ep1, ep2, ep3], knownShowTitles: [], nowPlaying: nil)
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "3 episodes on your phone: Ep 1, Ep 2, Ep 3.")
+        XCTAssertEqual(plan.dialog, "3 episodes downloaded: Ep 1, Ep 2, Ep 3.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -446,7 +446,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let snapshot = VoiceSnapshot(downloaded: [ep1, ep2, ep3, ep4], knownShowTitles: [], nowPlaying: nil)
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "4 episodes on your phone: Ep 1, Ep 2, Ep 3, and 1 more.")
+        XCTAssertEqual(plan.dialog, "4 episodes downloaded: Ep 1, Ep 2, Ep 3, and 1 more.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 
@@ -459,7 +459,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let snapshot = VoiceSnapshot(downloaded: [ep1, ep2, ep3, ep4, ep5], knownShowTitles: [], nowPlaying: nil)
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
-        XCTAssertEqual(plan.dialog, "5 episodes on your phone: Ep 1, Ep 2, Ep 3, and 2 more.")
+        XCTAssertEqual(plan.dialog, "5 episodes downloaded: Ep 1, Ep 2, Ep 3, and 2 more.")
         XCTAssertFalse(plan.needsConfirmation)
     }
 }

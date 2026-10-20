@@ -98,7 +98,7 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         await send.value
         let headline = model.librarySyncStatus.headline
         XCTAssertTrue(headline.hasPrefix("Local changes sent at "), headline)
-        XCTAssertTrue(headline.hasSuffix("Phone fetch is separate."), headline)
+        XCTAssertTrue(headline.hasSuffix("Devices fetch separately."), headline)
         XCTAssertNotEqual(
             WiltedMacLibrarySyncStatus.timeLabel(model.librarySyncActivity.lastSentAt), "Not yet this launch")
 

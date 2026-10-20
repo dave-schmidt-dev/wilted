@@ -26,8 +26,8 @@ enum LibraryContinuation: Equatable, Sendable {
 
 /// Pure decision for the Continue banner. No I/O, so it is testable without a player.
 enum LibraryContinuationPlanner {
-    static let mismatchReason = "This phone has a different version of the episode than the Mac is playing. "
-        + "Remove it from the phone, then get the Mac's version."
+    static let mismatchReason = "The download is a different version of the episode than the Mac is playing. "
+        + "Delete the download, then get the Mac's version."
 
     /// Nil when no other device has playback, or this device's own record already outranks it
     /// (the phone was the last to play, so the Mac's older checkpoint is not something to continue).

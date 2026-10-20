@@ -31,7 +31,7 @@ extension LibraryAppModel {
 
     var publicationVerified: Bool { !accountQuarantined && lastSynchronizedAt != nil }
     var publicationSummary: String { WiltedPublicationAge.summary(lastObservedPublication?.publishedAt, verified: publicationVerified, now: now()) }
-    var publicationDetail: String { WiltedPublicationAge.detail(lastObservedPublication?.publishedAt) }
+    var publicationDetail: String { WiltedPublicationAge.detail(lastObservedPublication?.publishedAt, deviceKind: deviceKind) }
     var publicationQualifier: String? {
         WiltedPublicationAge.qualifier(verified: publicationVerified, pending: hasPendingRefresh,
             failed: errorMessage != nil, held: accountQuarantined)
@@ -40,7 +40,7 @@ extension LibraryAppModel {
         LibrarySettingsFormat.sync(
             isRefreshing: isRefreshing, quarantined: accountQuarantined, error: errorMessage,
             lastRefresh: lastSynchronizedAt, throttleNotice: throttleNotice,
-            throttleRetrying: throttleRetrying)
+            throttleRetrying: throttleRetrying, deviceKind: deviceKind)
     }
 
     /// The one sync status the Larder shows, or nil when there is nothing to say.

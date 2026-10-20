@@ -11,13 +11,13 @@ enum LibraryFilter: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .all: "All"
-        case .onPhone: "On phone"
+        case .onPhone: "Downloaded"
         case .available: "Available"
         }
     }
 }
 
-/// Which kind of item the Larder shows. Persisted beside the On phone / Available filter; the Mac
+/// Which kind of item the Larder shows. Persisted beside the Downloaded / Available filter; the Mac
 /// has the same four choices. A kind this build does not know appears under All only, never under
 /// a specific choice, and a stored value it does not know reads as All.
 enum LibraryKindFilter: String, CaseIterable, Identifiable, Sendable {

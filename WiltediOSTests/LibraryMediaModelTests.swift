@@ -535,11 +535,11 @@ final class LibraryMediaModelTests: XCTestCase {
 
     func testEveryStateSpellsItselfOutWithoutRelyingOnColor() {
         let start = Date(timeIntervalSince1970: 0)
-        XCTAssertEqual(LibraryMediaState.available.statusText(), "Not on phone")
+        XCTAssertEqual(LibraryMediaState.available.statusText(), "Not downloaded")
         XCTAssertEqual(LibraryMediaState.requested(since: start).statusText(elapsed: 5), "Sent to Mac · 00:05")
         XCTAssertTrue(LibraryMediaState.downloading(bytes: 1, total: 2, since: start).statusText().hasPrefix("Downloading"))
         XCTAssertEqual(LibraryMediaState.verifying.statusText(), "Verifying")
-        XCTAssertEqual(LibraryMediaState.onPhone.statusText(), "On phone")
+        XCTAssertEqual(LibraryMediaState.onPhone.statusText(), "Downloaded")
         XCTAssertEqual(LibraryMediaState.failed("x").statusText(), "Failed: x")
         XCTAssertEqual(LibraryMediaState.notPrepared.statusText(), "Not prepared on Mac")
         let retrying = LibraryMediaState.requested(since: start, retry: LibraryMediaRetry(attempt: 3, attempts: 3))
@@ -567,9 +567,9 @@ final class LibraryMediaModelTests: XCTestCase {
         let byCause = MediaFetchFailure.allCases.map { LibraryAppModel.text(for: $0) }
         XCTAssertEqual(Set(byCause).count, MediaFetchFailure.allCases.count, "each cause has its own sentence")
         XCTAssertEqual(LibraryAppModel.text(for: .deliveryFailed(MediaFetchFailure.offline.rawValue)),
-                       "The phone could not reach iCloud. Check the connection and try again.")
+                       "Could not reach iCloud. Check the connection and try again.")
         XCTAssertEqual(LibraryAppModel.text(for: .deliveryFailed(MediaFetchFailure.tooLarge.rawValue)),
-                       "The episode is too large to send to the phone.")
+                       "The episode is too large to download.")
     }
 
     func testLegacyReadyOfferCannotDownloadOrPromoteToOnPhone() async throws {

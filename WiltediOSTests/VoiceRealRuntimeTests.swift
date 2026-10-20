@@ -191,7 +191,7 @@ final class VoiceRealRuntimeTests: XCTestCase {
     func testWhatsPlayingAndListDownloadedSpeakFromTheRealLibrary() async throws {
         let rig = try await coldRuntime(episodes: library, onPhone: ["ep-a", "ep-c"])
         let listed = try await VoiceCommandRunner.run(.listDownloaded, on: await VoiceRuntime.target()) { _ in }
-        XCTAssertEqual(listed, "2 episodes on your phone: Gold Rush, Tide Pools.")
+        XCTAssertEqual(listed, "2 episodes downloaded: Gold Rush, Tide Pools.")
         let idle = try await VoiceCommandRunner.run(.whatsPlaying, on: await VoiceRuntime.target()) { _ in }
         XCTAssertEqual(idle, "Nothing is playing.")
 

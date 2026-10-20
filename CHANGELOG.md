@@ -67,6 +67,7 @@ All notable changes to this project are documented in this file.
 - Episodes now keep their own web page address from the feed's item link: it is read when a feed loads, stored in the library (store schema V15, migrated with the usual backup), and published in the library sync so the phone can offer it. Relative, non-web, credentialed or self-referential links are ignored.
 
 ### Changed
+- Wording now fits whichever device you use: the iPad app says "this iPad" (Settings, the playing line, the Add update message), the Mac says "your devices" where it means every linked iPhone or iPad, downloaded audio is labelled "Downloaded" instead of "On phone", and Siri says an episode "isn't downloaded". CarPlay and the Apple Watch still say iPhone.
 - iPhone Larder rows now show the Mac's three info lines: the title on one line, "Feed - duration" (the feed gives way first and the duration is never cut), and the publication date on its own line, which VoiceOver reads after the feed and duration.
 - Mac playlists: the Manual or Smart under a playlist's name is now a coloured tag (Smart in green, Manual in grey) so it no longer reads as part of the name, and the icons are Wilted's own basket (manual) and colander (smart). The playlist page shows the same tag, and New Playlist offers New Smart Playlist.
 - The Mac pauses when its speakers or headphones go away (unplugged, disconnected, or the output device vanishes), saves the position and stays paused, as the iPhone does. Switching to another output that is still connected keeps playing.

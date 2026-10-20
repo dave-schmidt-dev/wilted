@@ -42,15 +42,25 @@ public enum WiltedPublicationAge {
     public static func macSidebarSummary(
         _ publishedAt: Date?, verified: Bool, held: Bool, now: Date = Date()
     ) -> String {
-        guard verified, !held, let publishedAt, publishedAt <= now else { return "iPhone sync status unknown" }
+        guard verified, !held, let publishedAt, publishedAt <= now else { return "Device sync status unknown" }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
-        return "Sent to iPhone \(formatter.localizedString(for: publishedAt, relativeTo: now))"
+        return "Sent to devices \(formatter.localizedString(for: publishedAt, relativeTo: now))"
     }
 
-    public static func detail(_ publishedAt: Date?) -> String {
+    /// The publication time as an iPhone or iPad reads it; `deviceKind` is "iPad" or "iPhone".
+    public static func detail(_ publishedAt: Date?, deviceKind: String) -> String {
+        detail(publishedAt, unproven: "this \(deviceKind) has")
+    }
+
+    /// The publication time as the Mac reads it: it says nothing about any device's copy.
+    public static func macDetail(_ publishedAt: Date?) -> String {
+        detail(publishedAt, unproven: "your devices have")
+    }
+
+    private static func detail(_ publishedAt: Date?, unproven: String) -> String {
         guard let publishedAt else { return "No account-associated Mac publication time is saved." }
-        return "Mac publication: \(publishedAt.formatted(date: .abbreviated, time: .standard)). Author evidence does not prove this phone has the same library."
+        return "Mac publication: \(publishedAt.formatted(date: .abbreviated, time: .standard)). Author evidence does not prove \(unproven) the same library."
     }
     public static func qualifier(verified: Bool, pending: Bool, failed: Bool, held: Bool) -> String? {
         if held { return "Saved library · account review required." }
