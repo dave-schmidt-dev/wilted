@@ -152,13 +152,17 @@ extension WiltedMacModel {
                 return
             }
             self.preparationRun = run
+            var terminalError: ProducerError?
             for await status in run.statuses {
                 guard !Task.isCancelled, self.articlePreparationGeneration == generation else {
                     await run.cancel()
                     return
                 }
                 self.update(status)
-                if status.terminal { break }
+                if status.terminal {
+                    terminalError = status.terminalResult?.error
+                    break
+                }
             }
             // Present the moment a terminal status is observed, whenever
             // extraction reached the canonical URL first -- including a
@@ -181,18 +185,21 @@ extension WiltedMacModel {
                     resolvedItemID: resolvedItemID
                 )
             default:
-                // The failure detail already carries whatever the status
-                // stream reported; no `ProducerError` is available at this
-                // boundary to classify further, so this is conservatively
-                // `.retryable` -- unlike a podcast run, there is no bounded
-                // in-process retry upstream of this ticket at all, so
-                // marking it terminal would only ever hide a retry option
-                // the reader could otherwise take from the Larder.
+                // The coordinator classifies the failure it reports. One it
+                // calls not retryable (an article too long for the audio
+                // budget, a paywall, an invalid address) would only fail the
+                // same way again, so the ticket records it terminal. A run
+                // that ended without a classified error stays `.retryable`:
+                // there is no bounded in-process retry upstream of this
+                // ticket, so marking it terminal would only hide a retry the
+                // reader could otherwise take from the Larder.
+                let failureKind: PodcastDownloadFailureKind =
+                    terminalError?.retryable == false ? .terminal : .retryable
                 await self.recordWorkTicketTransition(
                     kind: .articlePreparation, subjectID: preparedItemID.rawValue,
                     requestSequence: requestSequence, state: .failed,
                     resolvedItemID: resolvedItemID,
-                    failureKind: PodcastDownloadFailureKind.retryable.rawValue,
+                    failureKind: failureKind.rawValue,
                     lastFailureMessage: self.preparation?.detail
                 )
             }
