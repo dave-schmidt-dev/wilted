@@ -6,10 +6,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-26-0'
 TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro'
 UDID = '11111111-1111-1111-1111-111111111111'
+# Backstop for event-driven waits: far above the whole file's runtime under load, below the 1800 s phase0 leg budget.
+SAFETY_SECONDS = 900
 
 class XcodeFixture:
     """Copy canonical helpers and provision fake tools inside an owned temp root."""
@@ -98,6 +101,12 @@ if 'test' in args:
  time.sleep(float(os.environ.get('FAKE_BUILD_DELAY','0')))
  with open(os.environ['FAKE_EVENTS'],'a') as f:f.write('build end\\n')
 with open(os.environ['FAKE_EVENTS'],'a') as f: f.write(phase+' start\\n')
+if phase=='test' and os.environ.get('FAKE_TEST_GATE'):
+ gate=Path(os.environ['FAKE_TEST_GATE']); deadline=time.monotonic()+900
+ while not gate.exists():
+  if time.monotonic()>=deadline:
+   print('fake xcodebuild: timed out waiting for FAKE_TEST_GATE:', gate, file=sys.stderr); raise SystemExit(97)
+  time.sleep(0.05)
 if phase=='test' and os.environ.get('FAKE_MANAGED_PARENT'):
  import json,subprocess
  parent=Path(os.environ['FAKE_MANAGED_PARENT']);root=parent / 'wilted-mac-test-from-host';root.mkdir()
@@ -112,6 +121,11 @@ raise SystemExit(int(os.environ.get('FAKE_TEST_STATUS','0')) if phase=='test' el
         for p in self.bin.iterdir(): p.chmod(0o755)
         self.wedged_report = (self.repository_root / 'tests/fixtures/testmanagerd-wedged-sample.txt').read_text()
     def tearDown(self): self.temp.cleanup()
+    def wait_for(self, predicate, what, deadline):
+        """Poll until an observed event holds; fail at the safety deadline instead of falling through."""
+        while not predicate():
+            if time.monotonic() >= deadline: self.fail('timed out waiting for ' + what)
+            time.sleep(.05)
     def invoke(self, *args, env=None, timeout=60):
         return subprocess.run(args, env=env or self.env, text=True, capture_output=True, timeout=timeout)
     def select(self):
