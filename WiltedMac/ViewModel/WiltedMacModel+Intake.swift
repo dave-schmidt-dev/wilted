@@ -462,6 +462,8 @@ extension WiltedMacModel {
                     let outgoingCurrentID = queueState?.currentEpisodeID
                         ?? self.currentPodcastEpisodeID.flatMap { try? ItemID(rawValue: $0) }
                     if let outgoingCurrentID, playback.itemID == outgoingCurrentID, playback.revisionID != nil {
+                        // A queued lane write lands first, so the two never overlap.
+                        await self.joinPlaybackCheckpoints()
                         try await playback.checkpoint()
                         self.playbackCommands.trace.record(.outgoingCheckpointCalled, token: command.token)
                     }

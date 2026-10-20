@@ -86,6 +86,10 @@ struct WiltedMacPlaybackCommandState {
     var pending: WiltedMacPlaybackPending?
     var failure: WiltedMacPlaybackFailure?
     var tail: Task<Void, Never>?
+    /// Pause and seek checkpoints, written off the command tail.
+    var checkpoints = WiltedMacPlaybackCheckpointLane()
+    /// A scrub's target and its seek command's token, until that command settles.
+    var shownSeek: (token: UInt64, seconds: TimeInterval)?
     var recoveryScope: WiltedMacPlaybackRecoveryScope?
     /// The owed automatic advance (an episode ending, Mark finished); nil
     /// once claimed, superseded or cancelled by Pause.
@@ -225,6 +229,7 @@ extension WiltedMacModel {
 
     private func settlePlaybackCommand(_ command: WiltedMacPlaybackCommand) {
         if playbackCommands.pending?.command.token == command.token { playbackCommands.pending = nil }
+        if playbackCommands.shownSeek?.token == command.token { playbackCommands.shownSeek = nil }
         if command.kind == .recover {
             audioRouteRecoveryInFlight = playbackCommands.pending?.command.kind == .recover
         }
@@ -272,7 +277,8 @@ extension WiltedMacModel {
     /// effect, sync, transcript or store work, and the press is answered at
     /// once: no pending state. As a command it still supersedes a pending
     /// start, so that start never reaches the backend, and it is honoured
-    /// with nothing loaded yet. Only the durable checkpoint waits its turn.
+    /// with nothing loaded yet. The durable checkpoint goes on the
+    /// checkpoint lane, off the command tail, so a resume never waits on it.
     func pausePlayback() {
         // An explicit Pause also means "do not move on to the next episode".
         if let owed = playbackCommands.automaticAdvance { playbackCommands.pausedAdvance = owed }
@@ -280,23 +286,23 @@ extension WiltedMacModel {
         guard let playback else { return }
         let startPending = playbackCommands.pending?.command.kind.startsAudio == true
         guard startPending || playback.liveIsPlaying || isPlaying else { return }
-        issuePlaybackCommand(.pause, pending: nil,
-                             failureMessage: WiltedMacPlaybackCopy.pauseNotSaved) { [weak self] _ in
+        let loadedAtPress = playback.revisionID != nil
+        let command = issuePlaybackCommand(.pause, pending: nil) { [weak self] issued in
             guard let self else { return }
-            defer { self.isPlaying = playback.liveIsPlaying }
-            guard playback.revisionID != nil else { return }
-            try await playback.checkpoint()
-            self.refreshPlaybackReadout()
-            self.refreshLifetimeStatisticsAfterPlayback()
+            self.isPlaying = playback.liveIsPlaying
+            // A selection that was still loading at the press has landed.
+            if !loadedAtPress { self.enqueuePlaybackCheckpoint(reporting: .init(
+                token: issued.token, message: WiltedMacPlaybackCopy.pauseNotSaved)) }
         }
         // Nothing loaded yet means nothing is audible; the superseded
         // selection will not start it.
-        if playback.revisionID != nil {
+        if loadedAtPress {
             // Cannot throw here: its only error is `noLoadedRevision`, and the
             // controller sets `revisionID` with its loaded revision in one
             // synchronous step of a load and never clears either.
             try? playback.pauseAudio()
             refreshPlaybackReadout()
+            enqueuePlaybackCheckpoint(reporting: .init(token: command.token, message: WiltedMacPlaybackCopy.pauseNotSaved))
         } else {
             isPlaying = playback.liveIsPlaying
         }
@@ -348,23 +354,6 @@ extension WiltedMacModel {
         isPlaying = playback.isPlaying
         refreshPlaybackReadout()
         refreshLifetimeStatisticsAfterPlayback()
-    }
-
-    /// A seek or scrub. Superseding a pending start cancels that start, so
-    /// the result is paused at the new position rather than playing.
-    func seekPlayback(publishesJump: Bool = false,
-                      _ move: @escaping @MainActor (PlaybackController) async throws -> Void) {
-        guard let playback else { return }
-        let cancelsStart = playbackCommands.pending?.command.kind.startsAudio == true
-        issuePlaybackCommand(.seek, pending: nil) { [weak self] _ in
-            guard let self else { return }
-            if cancelsStart, playback.liveIsPlaying { try await playback.pause() }
-            try await move(playback)
-            self.isPlaying = playback.isPlaying
-            self.refreshPlaybackReadout()
-            if publishesJump { self.publishNowPlaying(force: true) }
-            self.refreshLifetimeStatisticsAfterPlayback()
-        }
     }
 
     /// Starts a new playback session and publishes its durable checkpoint.

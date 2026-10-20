@@ -359,7 +359,7 @@ extension WiltedMacModel {
     /// Jumps playback to a transcript line the listener picked.
     func seekToTranscriptCue(_ cue: WiltedMacTranscriptCue) {
 #if canImport(WiltedProducer)
-        seekPlayback { try await $0.seek(to: cue.startSeconds) }
+        seekPlayback { _ in cue.startSeconds }
 #endif
     }
 
@@ -379,7 +379,7 @@ extension WiltedMacModel {
     }
 
     func seek(by seconds: TimeInterval) {
-        seekPlayback { try await $0.seek(by: seconds) }
+        seekPlayback { $0.livePositionSeconds + seconds }
     }
 
     func navigatePodcastQueue(previous: Bool) {

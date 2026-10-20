@@ -218,6 +218,8 @@ public final class PlaybackController {
     /// idle checkpoint, such as the one taken when the app goes to the background, would look
     /// newer than a position another device saved in the meantime.
     var lastWritten: (sessionID: String, position: TimeInterval, completed: Bool, intent: PlaybackIntent, at: Date)?
+    /// Test seam: runs inside `checkpoint()` after its state is taken and before the store write.
+    @ObservationIgnored public var checkpointWriteGateForTesting: (@MainActor () async -> Void)?
     /// Measured lifetime totals (played and manually skipped time) for the
     /// loaded attempt, plus amounts still waiting to be admitted to the store.
     @ObservationIgnored var lifetimeMeter = PlaybackLifetimeMeter()

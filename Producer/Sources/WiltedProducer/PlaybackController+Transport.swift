@@ -209,7 +209,9 @@ extension PlaybackController {
 
     /// Moves directly to a bounded media time. Backward movement starts a new
     /// causal playback run so a delayed completion from the old run is stale.
-    public func seek(to value: TimeInterval) async throws {
+    /// With `checkpointing: false` the move makes no store write, so a caller
+    /// that answers a person first can write the checkpoint behind it.
+    public func seek(to value: TimeInterval, checkpointing: Bool = true) async throws {
         guard currentRevision != nil else { throw PlaybackControllerError.noLoadedRevision }
         guard value.isFinite else { throw PlaybackControllerError.invalidSeek(value) }
         let current = livePositionSeconds
@@ -241,7 +243,7 @@ extension PlaybackController {
             }
             targetApplied = true
             updateSeekIntent(owner, generation: generation)
-            try await checkpoint()
+            if checkpointing { try await checkpoint() }
         } catch is CancellationError where !ownsSeek(owner, generation: generation) {
             // A newer transport command supersedes forward and backward seeks alike.
             return

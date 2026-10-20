@@ -32,6 +32,8 @@ final class WiltedMacPlaybackStatisticsTests: XCTestCase {
 
         model.pausePlayback()
         await model.waitForPlaybackOperationForTesting()
+        // The pause's refresh follows its checkpoint, which is off the command tail.
+        await model.joinPlaybackCheckpoints()
         await model.waitForLifetimeStatisticsRefreshForTesting()
 
         let calls = await counter.calls

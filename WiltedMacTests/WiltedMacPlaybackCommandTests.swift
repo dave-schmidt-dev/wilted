@@ -113,7 +113,8 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
 
         model.pausePlayback()
         await model.waitForPlaybackOperationForTesting()
-        for _ in 0..<100 where model.subscriptionWriteTasks.isEmpty { await Task.yield() }
+        // The pause's refresh is queued once its checkpoint lands, off the command tail.
+        await model.joinPlaybackCheckpoints()
         let token = try XCTUnwrap(model.lifetimeStatisticsRefreshTailToken)
         let writer = try XCTUnwrap(model.subscriptionWriteTasks[token])
         var didClose = false

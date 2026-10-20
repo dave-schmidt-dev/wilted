@@ -74,6 +74,7 @@ extension PlaybackController {
             deviceID: deviceID,
             updatedAt: Timestamp(stamp)
         )
+        await checkpointWriteGateForTesting?()
         try await store.save(playback: state)
         lastWritten = (state.sessionID, state.positionSeconds, state.completed, state.intent, stamp)
         stageSpeedInterval(endingAt: positionSeconds)
