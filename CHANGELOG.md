@@ -130,6 +130,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Ad removal no longer gives up on a sponsor spot just because the show's transcript lines are long: the review keeps the whole spot and trims the surrounding show text to fit, instead of refusing. This hit 7 of 11 recent AI Daily Brief episodes.
 - Mac: clicking the middle of a playlist in the sidebar, between its name and its Smart or Manual tag, opens it again; only the name and tag answered clicks.
 - A new iPhone or iPad is linked by the Mac in its next sync round, not after the Mac's half-hourly scan: each device announces itself once, the Mac links it, and the Mac Sync card lists every linked device with the episodes it is sending or has queued for it. The Mac also reports each download request back to the device as it reads, sends, answers or fails it, and a request sent while the Mac is uploading another episode is now read in the next round instead of waiting for that upload to finish.
 - The iPhone deletes downloaded audio it can never play again (downloads from before preparation proofs, and episodes removed from the Larder) the next time it opens, so Settings > Storage no longer counts episodes that the On phone filter does not show.

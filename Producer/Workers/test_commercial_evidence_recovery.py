@@ -29,6 +29,7 @@ from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import span_bounds as _worker_span_bounds
+from wilted_worker import sponsor_evidence as _worker_sponsor_evidence
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
@@ -127,6 +128,74 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
             any(request.get("schema", {}).get("properties", {}).get("ad_ids")
                 for request in llm.requests)
         )
+
+    @staticmethod
+    def uniform_segments(count, text, *, step=20.0):
+        return [
+            FakeSegment(index * step, index * step + step, text)
+            for index in range(count)
+        ]
+
+    def test_long_segments_shrink_flanks_instead_of_refusing_review(self):
+        segments = self.uniform_segments(80, "podcast words " * 24)
+        ads = install_fake_ads(FakeLLM())
+        candidate_ids, context_ids, rendered = (
+            _worker_sponsor_evidence._commercial_recovery_context(
+                ads, segments, 40, 43, 1600.0
+            )
+        )
+        self.assertEqual(candidate_ids, (40, 41, 42, 43))
+        self.assertLessEqual(len(rendered), wp.COMMERCIAL_RECOVERY_CONTEXT_CHARS)
+        self.assertTrue(set(candidate_ids).issubset(context_ids))
+        self.assertLess(context_ids[0], 40)
+        self.assertGreater(context_ids[-1], 43)
+
+    def test_long_segments_shrink_the_larger_flank_first(self):
+        segments = self.uniform_segments(80, "podcast words " * 24)
+        ads = install_fake_ads(FakeLLM())
+        _candidate_ids, context_ids, _rendered = (
+            _worker_sponsor_evidence._commercial_recovery_context(
+                ads, segments, 40, 43, 1600.0
+            )
+        )
+        left_flank = 40 - context_ids[0]
+        right_flank = context_ids[-1] - 43
+        self.assertLessEqual(abs(left_flank - right_flank), 1)
+        self.assertGreaterEqual(min(left_flank, right_flank), 1)
+
+    def test_envelope_that_cannot_fit_with_one_flank_id_still_refuses(self):
+        segments = self.uniform_segments(42, "podcast words " * 24, step=10.0)
+        ads = install_fake_ads(FakeLLM())
+        with self.assertRaisesRegex(
+            ValueError, "complete commercial envelope exceeds the rendering budget"
+        ):
+            _worker_sponsor_evidence._commercial_recovery_context(
+                ads, segments, 1, 40, 10000.0
+            )
+
+    def test_short_segments_keep_the_full_bounded_context(self):
+        segments = self.uniform_segments(80, "short passage")
+        ads = install_fake_ads(FakeLLM())
+        candidate_ids, context_ids, rendered = (
+            _worker_sponsor_evidence._commercial_recovery_context(
+                ads, segments, 40, 43, 1600.0
+            )
+        )
+        self.assertEqual(candidate_ids, (40, 41, 42, 43))
+        self.assertEqual(
+            context_ids,
+            tuple(
+                range(
+                    10,
+                    10 + _worker_sponsor_evidence.COMMERCIAL_RECOVERY_CONTEXT_IDS,
+                )
+            ),
+        )
+        self.assertEqual(
+            len(context_ids),
+            _worker_sponsor_evidence.COMMERCIAL_RECOVERY_CONTEXT_IDS,
+        )
+        self.assertLessEqual(len(rendered), wp.COMMERCIAL_RECOVERY_CONTEXT_CHARS)
 
     def test_long_host_read_is_not_lost_to_the_context_id_bound(self):
         segments = [FakeSegment(0.0, 2.0, "the programme discusses its topic")]

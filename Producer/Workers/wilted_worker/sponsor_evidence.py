@@ -238,13 +238,28 @@ def _commercial_recovery_context(
         raise ValueError("commercial envelope lacks programme context on both sides")
     # This review authorizes every byte in the proposed cut, so the archive's
     # head/tail truncation is unsafe here: it can hide programme in the middle
-    # of one long cue.  Decline the candidate unless the complete envelope and
-    # both programme flanks fit the hard request cap.
+    # of one long cue.  Keep the complete envelope whole and shrink the
+    # programme flanks one ID at a time until the request fits; only an
+    # envelope that cannot fit with one programme ID on each side is declined.
     rendered = "\n".join(
         ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
         + (segments[segment_id].text or "")
         for segment_id in context_ids
     )
+    while (
+        len(rendered) > COMMERCIAL_RECOVERY_CONTEXT_CHARS
+        and (left_extra > 1 or right_extra > 1)
+    ):
+        if left_extra > right_extra:
+            left_extra -= 1
+        else:
+            right_extra -= 1
+        context_ids = tuple(range(first - left_extra, last + right_extra + 1))
+        rendered = "\n".join(
+            ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
+            + (segments[segment_id].text or "")
+            for segment_id in context_ids
+        )
     if len(rendered) > COMMERCIAL_RECOVERY_CONTEXT_CHARS:
         raise ValueError("complete commercial envelope exceeds the rendering budget")
     return candidate_ids, context_ids, rendered
