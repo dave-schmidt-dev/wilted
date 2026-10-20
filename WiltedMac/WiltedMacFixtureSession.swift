@@ -40,7 +40,7 @@ final class WiltedMacModelHost {
 final class WiltedMacFixtureSession {
     static let argument = "--wilted-ui-fixture-session"
     static let ledgerVariable = "WILTED_UI_LAUNCH_LEDGER"
-    private static let ledgerFilename = "wilted-ui-app-launches.jsonl"
+    static let ledgerFilename = "wilted-ui-app-launches.jsonl"
     private static let logger = Logger(subsystem: "com.zerodelta.wilted.mac", category: "FixtureSession")
     /// The one session of this process; nil for every launch that did not ask.
     private static var current: WiltedMacFixtureSession?
@@ -77,15 +77,20 @@ final class WiltedMacFixtureSession {
     }
 
     /// The runner's ledger: an absolute path to the fixed filename inside an
-    /// existing canonical directory, or nil.
-    private static func ledgerForLaunch() -> URL? {
-        guard let path = ProcessInfo.processInfo.environment[ledgerVariable], path.hasPrefix("/") else { return nil }
+    /// existing canonical directory, or nil. The gate passes a `realpath`
+    /// parent (`/private/var/...`), which Foundation's symlink resolution
+    /// would shorten to `/var/...`, so the parent is compared with realpath(3).
+    static func ledgerForLaunch(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        guard let path = environment[ledgerVariable], path.hasPrefix("/") else { return nil }
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        let parent = url.deletingLastPathComponent()
+        let parent = url.deletingLastPathComponent().path
         var isDirectory: ObjCBool = false
         guard url.lastPathComponent == ledgerFilename,
-              parent == parent.resolvingSymlinksInPath().standardizedFileURL,
-              FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+              let resolved = realpath(parent, nil)
+        else { return nil }
+        defer { free(resolved) }
+        guard String(cString: resolved) == parent,
+              FileManager.default.fileExists(atPath: parent, isDirectory: &isDirectory),
               isDirectory.boolValue
         else { return nil }
         return url

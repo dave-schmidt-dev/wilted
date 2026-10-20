@@ -433,18 +433,20 @@ PY
 # The Mac fixture app appends one `launch` line per process and one `switch`
 # line per journey to this ledger (WiltedMacFixtureSession), so the run log
 # proves how often a UI run took the screen. Every journey shares one launch;
-# a second launch fails the leg. Reads and then removes the ledger.
+# a second launch fails the leg, and so does a run that left no count, since
+# the gate always names the ledger. Reads and then removes the ledger.
 wilted_mac_ui_report_launches() {
   local ledger="$1" launches switches
   if [[ ! -f "$ledger" ]]; then
     printf '%s\n' 'native.macos-ui.app-launches count=unknown ledger=absent'
-    return 0
+    printf '%s\n' 'native.error the Mac UI run left no launch ledger, so its launch count is unproven' >&2
+    return 1
   fi
   launches="$(grep -c '"event":"launch"' "$ledger" || true)"
   switches="$(grep -c '"event":"switch"' "$ledger" || true)"
   rm -f "$ledger"
   printf 'native.macos-ui.app-launches count=%s switches=%s\n' "$launches" "$switches"
-  if [[ "$launches" -gt 1 ]]; then
+  if [[ "$launches" -ne 1 ]]; then
     printf 'native.error the Mac UI run launched the app %s times; one launch serves every journey\n' "$launches" >&2
     return 1
   fi

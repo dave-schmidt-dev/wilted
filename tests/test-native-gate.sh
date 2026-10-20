@@ -268,8 +268,11 @@ assert_macos_ui_leg_is_executed() {
   printf '%s\n' '{"event":"launch"}' '{"event":"launch"}' >"$ledger"
   ! wilted_mac_ui_report_launches "$ledger" >"$report" 2>&1 || { printf 'assertion failed: %s\n' 'a second launch must fail the launch count' >&2; exit 1; }
   assert_contains 'launched the app 2 times' "$report"
-  wilted_mac_ui_report_launches "$ledger" >"$report" 2>&1 || { printf 'assertion failed: %s\n' 'an absent ledger must not fail the launch count' >&2; exit 1; }
+  ! wilted_mac_ui_report_launches "$ledger" >"$report" 2>&1 || { printf 'assertion failed: %s\n' 'an absent ledger must fail the launch count' >&2; exit 1; }
   assert_contains 'count=unknown ledger=absent' "$report"
+  printf '%s\n' '{"event":"switch"}' >"$ledger"
+  ! wilted_mac_ui_report_launches "$ledger" >"$report" 2>&1 || { printf 'assertion failed: %s\n' 'zero launches must fail the launch count' >&2; exit 1; }
+  assert_contains 'count=0 switches=1' "$report"
 
   # A floor is a minimum, so a named journey can vanish while an unrelated new
   # test holds the count up. The gate asserts this one by identifier too.
