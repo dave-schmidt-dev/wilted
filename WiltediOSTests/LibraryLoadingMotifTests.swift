@@ -28,7 +28,7 @@ final class LibraryLoadingMotifTests: XCTestCase {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("WiltediOS/Library/LibraryListView.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(source.contains("if !model.localStateLoaded"))
+        XCTAssertTrue(source.contains("if !model.larderReady"), "the saved rows show while the audio is checked (W-INV-040)")
         XCTAssertTrue(source.contains("WiltedLoadingMotif()"))
         XCTAssertEqual(source.components(separatedBy: "Text(\"Opening your larder…\")").count - 1, 1)
         XCTAssertTrue(source.contains(".task { await runtime.start() }"))

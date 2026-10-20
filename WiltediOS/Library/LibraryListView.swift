@@ -54,7 +54,7 @@ struct LibraryRoot: View {
 
     var body: some View {
         Group {
-            if !model.localStateLoaded {
+            if !model.larderReady {
                 VStack(spacing: WiltedTheme.Spacing.medium) {
                     WiltedLoadingMotif()
                     Text("Opening your larder…").wiltedFont(.body)
@@ -217,7 +217,7 @@ struct LibraryListView: View {
             row: row, media: model.mediaState(for: row.id),
             isPlaying: model.sameLogicalEpisode(playingID, row.id),
             onMedia: { model.performMediaAction($0, entryID: row.id) },
-            canRequestAudio: model.deviceLinked,
+            canRequestAudio: model.canRequestAudio,
             onPlay: onPlay.map { play in { play(row) } },
             decisionStatus: model.decisionStatus(for: row.id),
             onDecision: { model.performDecision($0, entryID: row.id) },
@@ -251,7 +251,7 @@ struct LibraryListView: View {
         guard !row.isPreparationOnly else { return [] }
         return LibrarySwipe.trailing(
             media: model.mediaState(for: row.id), isPlaying: model.sameLogicalEpisode(playingID, row.id),
-            canRequest: model.deviceLinked)
+            canRequest: model.canRequestAudio)
     }
 
     /// What VoiceOver can do to a row by name: open it, plus every swipe action, through the same

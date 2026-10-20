@@ -142,7 +142,7 @@ struct LibraryEpisodeDetailView: View {
                 row: row, media: model.mediaState(for: row.id),
                 isPlaying: model.sameLogicalEpisode(playingID, row.id),
                 onMedia: { model.performMediaAction($0, entryID: row.id) },
-                canRequestAudio: model.deviceLinked,
+                canRequestAudio: model.canRequestAudio,
                 onPlay: onPlay.map { play in { play(row) } },
                 decisionActions: model.decisionActions(for: row),
                 decisionStatus: model.decisionStatus(for: row.id),

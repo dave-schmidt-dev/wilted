@@ -263,8 +263,8 @@ final class LibraryAppModel: ObservableObject {
         await pullToRefresh()
     }
 
-    /// Shows the persisted library and the audio already on the phone without any network call, so a
-    /// launch with no signal still lists and plays what is downloaded. `start()` follows with the sync.
+    /// Shows the persisted library, then the audio already on the phone, with no network call: a launch with no
+    /// signal still lists and plays what is downloaded (W-INV-040). `start()`'s sync then sends acknowledgements.
     func loadLocalState() async {
         let saved = await store.state()
         verifyOutboxOwner(saved.ownerToken)
@@ -285,7 +285,7 @@ final class LibraryAppModel: ObservableObject {
             if checkpoints.isEmpty { checkpoints = handoffState.savedCheckpoints }
         }
         rebuildRows()
-        await refreshMediaFromCache()
+        await refreshMediaFromCache(acknowledging: false)
         localStateLoaded = true
     }
 

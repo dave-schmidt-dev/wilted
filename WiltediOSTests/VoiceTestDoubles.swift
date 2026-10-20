@@ -121,10 +121,12 @@ final class RecordingTarget: VoiceCommandTarget {
 // MARK: - Race and failure doubles
 
 /// A media cache that can hold one `cachedEntries()` answer mid-await, so a test can start playback
-/// from somewhere else (CarPlay, the phone) in the window between Siri's check and its start.
+/// from somewhere else (CarPlay, the phone) in the window between Siri's check and its start. It can
+/// also hold one `remove(entryID:)`, so a test can look at the row while the delete is under way.
 actor GatedMediaCache: LibraryMediaCache {
     private let base: FileMediaCache
     private var armed = false
+    private var removal: (armed: Bool, failing: Bool) = (false, false)
     private(set) var isHeld = false
     private var waiting: CheckedContinuation<Void, Never>?
 
@@ -132,6 +134,10 @@ actor GatedMediaCache: LibraryMediaCache {
 
     /// The next `cachedEntries()` reads the cache, then waits for `release()`.
     func arm() { armed = true }
+
+    /// The next `remove(entryID:)` waits for `release()`, then deletes; with `failing` it throws instead and
+    /// the audio stays.
+    func armRemoval(failing: Bool = false) { removal = (true, failing) }
 
     func release() {
         waiting?.resume()
@@ -166,7 +172,15 @@ actor GatedMediaCache: LibraryMediaCache {
     func adopt(verifiedFile: URL, for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async throws -> URL {
         try await base.adopt(verifiedFile: verifiedFile, for: offer, admission: admission)
     }
-    func remove(entryID: ItemID) async throws { try await base.remove(entryID: entryID) }
+    func remove(entryID: ItemID) async throws {
+        guard removal.armed else { return try await base.remove(entryID: entryID) }
+        let failing = removal.failing
+        removal = (false, false)
+        isHeld = true
+        await withCheckedContinuation { waiting = $0 }
+        if failing { throw CocoaError(.fileWriteNoPermission) }
+        try await base.remove(entryID: entryID)
+    }
     func cachedTranscript(entryID: ItemID, revisionID: RevisionID) async -> LibraryTranscript? {
         await base.cachedTranscript(entryID: entryID, revisionID: revisionID)
     }
