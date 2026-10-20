@@ -140,50 +140,41 @@ extension LocalLibraryStore {
     ) throws -> PodcastPreparationInvalidationResult {
         let context = ModelContext(container)
         let decoder = JSONDecoder()
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
-        // Historical bodies are never decoded wholesale. If an older Ready generation
-        // falls outside the bounded request window, pass 2 conservatively redownloads.
-        let requestIDs = Set(records.lazy.filter { $0.requestID.hasPrefix("podcast-prepare|") }.map(\.requestID))
-        var podcastRecords: [LocalLibrarySchemaV3Models.PreparationRecord] = []
-        for requestID in requestIDs {
-            var query = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
-                predicate: #Predicate { $0.requestID == requestID },
-                sortBy: [SortDescriptor(\.emittedAt, order: .reverse)]
-            )
-            query.fetchLimit = 256
-            podcastRecords += try context.fetch(query)
-        }
-        let grouped = Dictionary(grouping: podcastRecords) { row in
-            let attempt = (try? decoder.decode(PreparationStatus.self, from: row.statusData))?.attempt
-            return row.requestID + (attempt.map { "|" + $0.key } ?? "|legacy")
-        }
+        let markers = try maintenanceInvalidationMarkers(in: context)
         let downloads = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         let downloadByEpisode = Dictionary(uniqueKeysWithValues: downloads.map { ($0.episodeID, $0) })
         let outcomes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
         let readyRevisions = try newestReadyRevisionsByItemID(in: context)
+        let preparationKind = WorkTicketKind.podcastPreparation.rawValue
+        let tickets = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(predicate: #Predicate { $0.kind == preparationKind }))
+        let ticketAttempts: [String: PreparationAttemptIdentity] = Dictionary(tickets.compactMap { ticket in
+            (try? PreparationAttemptIdentity(requestSequence: ticket.requestSequence,
+                                             attemptCount: ticket.attemptCount)).map { (ticket.subjectID, $0) }
+        }, uniquingKeysWith: { first, _ in first })
         // Selection closures capture value-only identity, never SwiftData rows.
         var currentOutcomeKeys = Set<String>()
+        var currentOutcomeProducedAt: [String: Date] = [:]
         for outcome in outcomes where outcome.eligibility == PodcastPreparationEligibility.current.rawValue {
             currentOutcomeKeys.insert(outcome.episodeID + "|" + outcome.revisionID)
+            currentOutcomeProducedAt[outcome.episodeID + "|" + outcome.revisionID] = outcome.producedAt
         }
         var resetIDs = Set<ItemID>()
         var forcedIDs = Set<ItemID>()
         var currentIDs = Set<ItemID>()
         var reconciledIDs = Set<ItemID>()
         var mutated = false
-
+        // Each item's candidates come from bounded, generation-exact reads, not a history window.
         typealias Generation = (rows: [LocalLibrarySchemaV3Models.PreparationRecord], entries: [PreparationJournalEntry], itemID: ItemID)
         var generationsByItemID: [ItemID: [Generation]] = [:]
-        for rows in grouped.values {
-            var entries: [PreparationJournalEntry] = []
-            for record in rows {
-                guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
-                      let itemID = try? ItemID(rawValue: record.itemID) else { continue }
-                entries.append(PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status))
-            }
-            entries.sort(by: preparationEntryPrecedes)
-            guard let itemID = entries.last?.itemID else { continue }
-            generationsByItemID[itemID, default: []].append((rows, entries, itemID))
+        let itemRaws: Set<String> = Set(ticketAttempts.keys).union(downloads.map(\.episodeID)).union(outcomes.map(\.episodeID)).union(markers.map(\.itemID))
+        for raw in itemRaws.sorted() {
+            guard let itemID = try? ItemID(rawValue: raw) else { continue }
+            let readyID = readyRevisions[raw]?.revisionID.rawValue
+            let producedAt = readyID.flatMap { currentOutcomeProducedAt[raw + "|" + $0] }
+            let generations = try maintenanceCandidateGenerations(
+                for: itemID, ticketAttempt: ticketAttempts[raw], readyRevisionID: readyID,
+                currentOutcomeProducedAt: producedAt, in: context, decoder: decoder)
+            if !generations.isEmpty { generationsByItemID[itemID] = generations }
         }
         func newerGeneration(_ lhs: Generation, _ rhs: Generation) -> Bool {
             let left = lhs.entries.first?.status.attempt
@@ -218,7 +209,6 @@ extension LocalLibraryStore {
             }
             if let chosen { selected.append(chosen) }
         }
-
         for generation in selected {
             let rows = generation.rows
             let entries = generation.entries
@@ -295,7 +285,7 @@ extension LocalLibraryStore {
             let needsRedownload = rule.consequence == .forceRedownload || !sourceIntact || successorReplacedSource
 
             for record in rows { context.delete(record) }
-            for marker in records where marker.itemID == itemID.rawValue
+            for marker in markers where marker.itemID == itemID.rawValue
                 && (marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
                     || marker.requestID.hasPrefix(Self.resetPreparationRequestPrefix)) {
                 context.delete(marker)
@@ -308,7 +298,7 @@ extension LocalLibraryStore {
             }
             try writeInvalidationMarker(
                 for: itemID, ruleID: rule.id, needsRedownload: needsRedownload,
-                currentFingerprint: currentFingerprint, existingMarkers: records, in: context
+                currentFingerprint: currentFingerprint, existingMarkers: markers, in: context
             )
             if needsRedownload { forcedIDs.insert(itemID) } else { resetIDs.insert(itemID) }
         }
@@ -347,12 +337,11 @@ extension LocalLibraryStore {
             reconciledIDs.insert(itemID)
             try writeInvalidationMarker(
                 for: itemID, ruleID: rule.id, needsRedownload: needsRedownload,
-                currentFingerprint: currentFingerprint, existingMarkers: records, in: context
+                currentFingerprint: currentFingerprint, existingMarkers: markers, in: context
             )
             if needsRedownload { forcedIDs.insert(itemID) } else { resetIDs.insert(itemID) }
         }
-
-        for marker in records where marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix) {
+        for marker in markers where marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix) {
             guard let itemID = try? ItemID(rawValue: marker.itemID) else { continue }
             guard !reconciledIDs.contains(itemID) else { continue }
             if currentIDs.contains(itemID) {
@@ -362,7 +351,7 @@ extension LocalLibraryStore {
                 forcedIDs.insert(itemID)
             }
         }
-        for marker in records where marker.requestID.hasPrefix(Self.resetPreparationRequestPrefix) {
+        for marker in markers where marker.requestID.hasPrefix(Self.resetPreparationRequestPrefix) {
             guard let itemID = try? ItemID(rawValue: marker.itemID) else { continue }
             guard !reconciledIDs.contains(itemID) else { continue }
             if currentIDs.contains(itemID) {
@@ -406,14 +395,24 @@ extension LocalLibraryStore {
         currentFingerprint: String
     ) throws {
         let context = ModelContext(container)
-        let rows = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
         let forcedRequestID = Self.forcedRedownloadRequestPrefix + episodeID.rawValue
-        guard rows.contains(where: { $0.requestID == forcedRequestID }) else { return }
-        for row in rows where row.itemID == episodeID.rawValue
-            && (row.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix)
-                || row.requestID.hasPrefix(Self.resetPreparationRequestPrefix)) {
-            context.delete(row)
-        }
+        var markerQuery = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+            predicate: #Predicate { $0.requestID == forcedRequestID }
+        )
+        markerQuery.fetchLimit = 1
+        let markers = try context.fetch(markerQuery)
+        preparationMaintenanceRowsRead += markers.count
+        guard !markers.isEmpty else { return }
+        let itemID = episodeID.rawValue
+        let forced = Self.forcedRedownloadRequestPrefix
+        let reset = Self.resetPreparationRequestPrefix
+        let rows = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+            predicate: #Predicate {
+                $0.itemID == itemID && ($0.requestID.starts(with: forced) || $0.requestID.starts(with: reset))
+            }
+        ))
+        preparationMaintenanceRowsRead += rows.count
+        for row in rows { context.delete(row) }
         let resetRequestID = Self.resetPreparationRequestPrefix + episodeID.rawValue
         let evidence = try PreparationEvidence(kind: "podcast-pipeline-invalidation", fields: [
             "fingerprint": currentFingerprint,
@@ -442,8 +441,13 @@ extension LocalLibraryStore {
     public func requiresForcedRedownload(for episodeID: ItemID) throws -> Bool {
         let context = ModelContext(container)
         let requestID = Self.forcedRedownloadRequestPrefix + episodeID.rawValue
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
-            .contains { $0.requestID == requestID }
+        var query = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+            predicate: #Predicate { $0.requestID == requestID }
+        )
+        query.fetchLimit = 1
+        let rows = try context.fetch(query)
+        preparationMaintenanceRowsRead += rows.count
+        return !rows.isEmpty
     }
 
     /// What the preparation that produced this revision removed.
