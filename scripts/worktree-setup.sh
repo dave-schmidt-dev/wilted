@@ -47,12 +47,14 @@ for name in "${siblings[@]}"; do
   fi
 done
 
-say "syncing Producer/Runtime/.venv from uv.lock (uv reports progress below)"
+# An inherited value would sync a different venv than the one the gate and app use.
+export UV_PROJECT_ENVIRONMENT="$repo_root/Producer/Runtime/.venv"
+say "syncing $UV_PROJECT_ENVIRONMENT from uv.lock (uv reports progress below)"
 "$uv_bin" sync --locked --project "$repo_root/Producer/Runtime"
 
 expected_state="$projects_root/speech-stack/.state"
 say "checking that the speech stack's GPU lock resolves to $expected_state"
-state_dir="$(env -u SPEECH_STACK_STATE_DIR "$repo_root/Producer/Runtime/.venv/bin/python" \
+state_dir="$(env -u SPEECH_STACK_STATE_DIR "$UV_PROJECT_ENVIRONMENT/bin/python" \
   -c 'from speech_stack import isolated; print(isolated.state_dir())')" \
   || fail 'the runtime venv cannot import speech_stack'
 [[ "$state_dir" == "$expected_state" ]] \

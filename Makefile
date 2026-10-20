@@ -1,7 +1,12 @@
 .PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
 
+# The runtime venv every target shares (Producer/Runtime/Makefile pins the same path).
+export UV_PROJECT_ENVIRONMENT := $(CURDIR)/Producer/Runtime/.venv
+
+# Python outside Producer/Runtime is linted by the root ruff.toml.
 lint:
 	@$(MAKE) -C Producer/Runtime lint
+	"$(UV_PROJECT_ENVIRONMENT)/bin/ruff" check Producer/Workers/wilted_worker scripts app tests
 
 deadcode:
 	@$(MAKE) -C Producer/Runtime deadcode
@@ -123,7 +128,7 @@ ad-corpus-adopt:
 # The runtime's own interpreter, not the system one, and resolved from the same
 # variable Swift resolves it from (see `PodcastPreparationPipeline.Configuration
 # .resolved`): the model bindings the detector imports live in that virtualenv
-# and nowhere else. Populate it with `uv sync --project Producer/Runtime --locked`.
+# and nowhere else. Populate it with `make worktree-setup`.
 ad-corpus-replay:
-	@"$${WILTED_PIPELINE_PYTHON:-Producer/Runtime/.venv/bin/python}" \
+	@"$${WILTED_PIPELINE_PYTHON:-$(UV_PROJECT_ENVIRONMENT)/bin/python}" \
 		Producer/Workers/ad_corpus.py --mode replay --strict

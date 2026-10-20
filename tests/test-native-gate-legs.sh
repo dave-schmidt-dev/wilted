@@ -363,6 +363,7 @@ wilted_stop_active_supervisor() { return 0; }
 wilted_wait_active_supervisor() { wait "$WILTED_ACTIVE_SUPERVISOR_PID"; }
 gate_ui_test_lock() { printf '%s\n' "$@" >"$record_argv"; }
 wilted_gate_simulator_session() { printf '%s\n' "$@" >"$record_argv"; }
+run_with_build_cache() { printf '%s\n' "$@" >"$tmp_root/build-argv-$label.txt"; }
 # shellcheck source=/dev/null
 source "$repo_root/scripts/lib/native-gate-xcode.sh"
 wilted_testmanagerd_preflight() { :; }
@@ -410,6 +411,12 @@ assert_unit_argv "$mac_argv" WiltedMacTests
 ios_argv="$(run_xcode_harness ios-unit-tests WiltediOS 'platform=iOS Simulator,id=FAKE' WiltediOSTests filtered \
   'WILTED_IOS_UNIT_SELECTORS=Foo/testBar,Baz' 'WILTED_IOS_UNIT_ITERATIONS=3')"
 assert_unit_argv "$ios_argv" WiltediOSTests
+# The iOS leg builds first with the same selection; iterations apply only to the test run.
+ios_build_argv="$(dirname "$ios_argv")/build-argv-ios-unit-tests.txt"
+assert_contains 'build-for-testing' "$ios_build_argv"
+assert_contains '-only-testing:WiltediOSTests/Foo/testBar' "$ios_build_argv"
+assert_absent '-test-iterations' "$ios_build_argv"
+assert_contains 'test-without-building' "$ios_argv"
 mac_unfiltered_argv="$(run_xcode_harness macos-unit-tests WiltedMac platform=macOS WiltedMacTests unfiltered)"
 assert_contains '-only-testing:WiltedMacTests' "$mac_unfiltered_argv"
 assert_absent '-test-iterations' "$mac_unfiltered_argv"

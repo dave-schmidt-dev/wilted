@@ -118,6 +118,33 @@ raise SystemExit(int(os.environ.get('FAKE_TEST_STATUS','0')) if phase=='test' el
         result = self.invoke('bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'select', str(self.root), RUNTIME, TYPE)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
+    def write_ios_leg_script(self):
+        project = self.root / 'generated/Project.xcodeproj'
+        schemes = project / 'xcshareddata/xcschemes'
+        schemes.mkdir(parents=True, exist_ok=True)
+        (schemes / 'WiltediOS.xcscheme').write_text('<Scheme><TestAction /></Scheme>')
+        script = self.root / 'leg.sh'
+        script.write_text('''#!/bin/bash
+set -Eeuo pipefail
+repo_root="$1"; tmp_root="$repo_root"; native_project="$repo_root/generated/Project.xcodeproj"
+build_with_cache="$repo_root/scripts/build-with-cache.py"
+xcode_test_timeout_seconds=3; WILTED_TEMP_LEG_WORK="$repo_root"; integration_root="$repo_root"
+source "$repo_root/scripts/lib/test-runner.sh"
+source "$repo_root/scripts/lib/mac-test-parent.sh"
+source "$repo_root/scripts/lib/native-gate-simulator.sh"
+source "$repo_root/scripts/lib/native-gate-xcode.sh"
+require_tool() { :; }
+assert_test_sources() { :; }
+build_cache_path() { python3 "$build_with_cache" path "$@"; }
+find_project() { printf '%s\\n' "$native_project"; }
+status() { printf '%s\\n' "$1" >&2; }
+run_with_build_cache() {
+ local kind="$1" key="$2"; shift 2
+ WILTED_TEST_TIMEOUT_SECONDS=10 WILTED_WORK_PHASE=build python3 "$build_with_cache" run "$kind" "$key" -- "$@"
+}
+xcode_test_leg ios-unit-tests "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1111-1111-1111-111111111111" WiltediOSTests
+''')
+        return script
     def session(self, env=None, key="native-ios-unit-tests"):
         return self.invoke('bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'run', str(self.root), UDID,
                            sys.executable, str(self.root / 'scripts/build-with-cache.py'), 'run', 'xcode', key,

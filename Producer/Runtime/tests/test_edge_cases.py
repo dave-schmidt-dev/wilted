@@ -10,12 +10,12 @@ import wilted
 class TestEditableInstallResolves:
     """Regression guard for BUG-3 (iCloud UF_HIDDEN flag breaking .pth files).
 
-    The venv now lives at ~/.venvs/wilted (outside iCloud) so Python 3.13's
-    site.py never encounters hidden .pth files.  These fast, in-process checks
+    The venv lives at Producer/Runtime/.venv.  iCloud can set UF_HIDDEN on files
+    under ~/Documents, and Python 3.13+ skips hidden .pth files, so these fast,
+    in-process checks fail fast if that ever breaks the editable install.  They
     verify the package resolves correctly through the editable install path and
-    that key public sub-modules are importable.  If the venv regresses (e.g.
-    someone moves it back inside ~/Documents/), these tests catch it immediately
-    without needing to run the real CLI entry point.
+    that key public sub-modules are importable, without running the real CLI
+    entry point.
     """
 
     def test_wilted_package_importable(self):

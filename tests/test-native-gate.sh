@@ -325,7 +325,7 @@ assert_snapshot_contract() {
   assert_contains 'trap cleanup EXIT' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS:-600' "$gate"
-  # One xcodebuild test both builds and tests, so it gets both budgets (cold-cache kills at 600 s).
+  # The Mac unit leg's one xcodebuild test both builds and tests, so it gets both budgets (cold-cache kills at 600 s).
   assert_contains 'WILTED_XCODE_BUILD_AND_TEST_TIMEOUT_SECONDS:-1200' "$gate"
   assert_contains 'WILTED_TEST_TIMEOUT_SECONDS="${xcode_build_and_test_timeout_seconds:-$xcode_test_timeout_seconds}"' "$native_gate_xcode"
   assert_contains 'WILTED_NATIVE_LEG_TIMEOUT_SECONDS' "$gate"
@@ -333,9 +333,18 @@ assert_snapshot_contract() {
   assert_contains 'WILTED_TEST_TIMEOUT_SECONDS="$timeout_seconds"' "$gate"
   assert_contains 'WILTED_WORK_PHASE=build-and-test' "$native_gate_xcode"
   assert_absent 'elapsed_seconds >= xcode_test_timeout_seconds' "$native_gate_xcode"
-  assert_contains 'xcodebuild test ' "$native_gate_xcode"
-  assert_absent 'xcodebuild build-for-testing' "$native_gate_xcode"
-  assert_absent 'xcodebuild test-without-building' "$native_gate_xcode"
+  # The Mac unit leg keeps build and test in one host-UI transaction (its hosts share a
+  # bundle identifier); simulator legs build before taking the lane and host-UI locks.
+  simulator_branch="$(sed -n "/destination\" == \*'id='\*/,/^  else\$/p" "$native_gate_xcode")"
+  mac_unit_branch="$(sed -n '/^  else$/,/gate_ui_test_lock --label/p' "$native_gate_xcode")"
+  assert_block_contains 'xcodebuild test \' "$mac_unit_branch"
+  [[ "$mac_unit_branch" != *build-for-testing* && "$mac_unit_branch" != *test-without-building* ]] \
+    || { printf '%s\n' 'assertion failed: Mac unit leg split build from test' >&2; exit 1; }
+  assert_block_contains 'run_with_build_cache xcode "$cache_key" xcodebuild build-for-testing' "$simulator_branch"
+  assert_block_contains 'WILTED_WORK_PHASE=test' "$simulator_branch"
+  assert_block_contains 'xcodebuild test-without-building' "$simulator_branch"
+  [[ "${simulator_branch%%build-for-testing*}" != *wilted_gate_simulator_session* ]] \
+    || { printf '%s\n' 'assertion failed: iOS build runs inside the simulator session' >&2; exit 1; }
 
   # The Mac result-bundle floor proves the four snapshot methods are included
   # in the executed target count, rather than merely present in source.

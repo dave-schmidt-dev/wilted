@@ -19,10 +19,14 @@ import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import TYPE_CHECKING
 from .commercial_preservation import _commercial_preservation_review
 from .prompts import EXPERIMENTAL_NOMINATION_PROMPT
 from .reporting import WorkerError
 from .review_formats import _experimental_id_response_format, _parse_experimental_ids
+
+if TYPE_CHECKING:
+    from .ad_audit import AdAnalysisAudit, AuditingBackend
 
 EXPERIMENTAL_CONTEXT_IDS = 9
 

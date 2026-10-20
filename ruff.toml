@@ -1,0 +1,12 @@
+# Lint scope for Python outside Producer/Runtime: `make lint` runs it over the
+# worker package, the gate and tooling scripts, the release tooling and the gate
+# test helpers. Files under Producer/Runtime use that project's stricter
+# [tool.ruff] instead, because ruff applies the closest configuration file.
+target-version = "py312"
+
+[lint]
+select = ["F", "E9"]
+# The wilted_worker modules were split out of wilted_pipeline.py and each kept
+# the parent's full import header; removing those unused imports is its own
+# cleanup. Every other pyflakes rule applies.
+ignore = ["F401"]
