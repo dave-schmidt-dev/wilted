@@ -181,7 +181,9 @@ class SelfPromotionRemovalTests(unittest.TestCase):
         label_map = {1: "self_promo"}
         backend = ScriptedBackend(label_map, self.ads)
         dets = self.ads.detect_ads(cues, backend, remove_self_promotion=True)
-        self.assertEqual(dets, [])
+        # The tagline is dropped; the unlabelled roll call (sponsors, ad-free,
+        # Patreon) is seeded on its own and cut alone.
+        self.assertEqual([(d.start_s, d.end_s) for d in dets], [(50.0, 70.0)])
 
     def test_detector_adjacent_tagline_trimmed_when_on(self):
         cues, _ = self.make_fixture()

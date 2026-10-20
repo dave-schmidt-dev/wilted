@@ -342,6 +342,8 @@ _HOUSE_PROMOTION_CUES = (
     re.compile(r"\bsubscribe\b", re.IGNORECASE),
     re.compile(r"\bregister\b", re.IGNORECASE),
 )
+# The first three entries (Patreon, ad-free, sponsor roll call) are the strong house cues.
+_HOUSE_PROMOTION_STRONG_CUES = _HOUSE_PROMOTION_CUES[:3]
 
 _SPARSE_CTA_VERB = re.compile(r"\b(?:visit|try|switch|sign up|download)\b", re.IGNORECASE)
 _SPARSE_CTA_CONTEXT = re.compile(
@@ -543,6 +545,28 @@ def _has_house_promotion_cue(coarse_run: _CoarseAdRun, segments: list[Transcript
     """Return whether a coarse run contains a house-promotion cue."""
     text = " ".join(segments[segment_id].text for segment_id in range(coarse_run.start_id, coarse_run.end_id + 1))
     return any(pattern.search(text) for pattern in _HOUSE_PROMOTION_CUES)
+
+
+def _house_roll_call(text: str) -> bool:
+    """Return whether text matches at least two distinct house cues, at least one strong."""
+    return (
+        sum(bool(pattern.search(text)) for pattern in _HOUSE_PROMOTION_CUES) >= 2
+        and any(pattern.search(text) for pattern in _HOUSE_PROMOTION_STRONG_CUES)
+    )
+
+
+def _house_extent_end(run_end_id: int, segments: list[TranscriptSegment]) -> int:
+    """Return the last contiguous cue matching at least one house promotion cue."""
+    cur_id = run_end_id
+    while cur_id + 1 < len(segments):
+        cur = segments[cur_id]
+        nxt = segments[cur_id + 1]
+        if nxt.start_s - cur.end_s >= _PROGRAMME_PAUSE_SECONDS:
+            break
+        if not any(pattern.search(nxt.text) for pattern in _HOUSE_PROMOTION_CUES):
+            break
+        cur_id += 1
+    return cur_id
 
 
 def _trim_self_promo_run_edges(
@@ -1147,6 +1171,18 @@ def detect_ads(
             )
             candidate_runs.append((prefix, True))
 
+    if remove_self_promotion:
+        # A roll call the classifier missed is seeded after the recoveries ran,
+        # so anchors and bracketed pods only ever claim the classifier's runs.
+        covered = {k for run in eligible_runs for k in range(run.start_id, run.end_id + 1)}
+        seeds = [i for i, segment in enumerate(segments) if i not in covered and _house_roll_call(segment.text)]
+        for i in seeds:
+            logger.info("Seeding house roll call %d", i)
+            seed = _CoarseAdRun(i, i, max(confidence_threshold, COARSE_CONFIDENCE_FLOOR), "self_promo")
+            candidate_runs.append((seed, False))
+        if seeds:
+            candidate_runs.sort(key=lambda item: item[0].start_id)
+
     verified_runs: list[AdSegment] = []
     for run, is_prefix in candidate_runs:
         if remove_self_promotion:
@@ -1188,7 +1224,12 @@ def detect_ads(
             )
         if overlaps_recovery:
             continue
-        verified = _verify_ad_boundaries(run, segments, backend)
+        if remove_self_promotion and any(
+            _house_roll_call(segments[k].text) for k in range(run.start_id, run.end_id + 1)
+        ):
+            verified = _verify_ad_boundaries(run, segments, backend, house_roll_call=True)
+        else:
+            verified = _verify_ad_boundaries(run, segments, backend)
         if verified is not None:
             verified_runs.append(verified)
     return _merge_adjacent(sorted([*verified_runs, *recovered_pods], key=lambda pod: pod.start_s))
@@ -1466,7 +1507,11 @@ def _last_meaningful_ad_end(content_start_id: int, minimum_ad_id: int, segments:
 
 
 def _verify_ad_boundaries(
-    coarse_run: _CoarseAdRun, segments: list[TranscriptSegment], backend: LLMBackend
+    coarse_run: _CoarseAdRun,
+    segments: list[TranscriptSegment],
+    backend: LLMBackend,
+    *,
+    house_roll_call: bool = False,
 ) -> AdSegment | None:
     """Conservatively expand one coarse run through immediate-neighbor probes."""
     preroll_content_start = _verify_preroll_content_start(coarse_run, segments, backend)
@@ -1522,8 +1567,33 @@ def _verify_ad_boundaries(
     if coarse_size <= 2 and verified_end + 1 < len(segments):
         content_start_id = _verify_sparse_content_start(coarse_run, verified_start, segments, backend)
         if content_start_id is None:
-            return None
-        verified_end = content_start_id - 1
+            if house_roll_call:
+                verified_end = coarse_run.end_id
+                logger.info(
+                    "House promotion run %d-%d kept to its own cues after the content-start verifier failed",
+                    coarse_run.start_id,
+                    coarse_run.end_id,
+                )
+            else:
+                return None
+        elif house_roll_call:
+            # The clamp only ever shortens the verifier's answer and the fallback
+            # cuts only the roll-call cue itself, so neither cuts more programme than
+            # the verifier alone would; the only new cut is a cue that names the
+            # show's sponsors or its ad-free / Patreon offer.
+            house_extent_end = _house_extent_end(coarse_run.end_id, segments)
+            raw_end = content_start_id - 1
+            verified_end = min(raw_end, house_extent_end)
+            if verified_end < raw_end:
+                logger.info(
+                    "House promotion run %d-%d ends at its last house cue %d, not %d",
+                    coarse_run.start_id,
+                    coarse_run.end_id,
+                    verified_end,
+                    raw_end,
+                )
+        else:
+            verified_end = content_start_id - 1
 
     return AdSegment(
         _refine_ad_start_from_tokens(segments[verified_start]),
