@@ -281,4 +281,97 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(try preparationHistoryRowCount(
             in: fixture.store.container, requestID: fixture.requestID), 100)
     }
+
+    func testPreparationRecoveryProjectionIsEmptyAndReadsNoRowsWithoutMarkers() async throws {
+        let fixture = try await makePreparationHistoryStore("recovery-empty")
+        defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
+        let before = await fixture.store.preparationMaintenanceRowsRead
+        let projection = try await fixture.store.pendingPreparationRecoveryIDs()
+        let after = await fixture.store.preparationMaintenanceRowsRead
+        XCTAssertEqual(projection, PodcastPreparationInvalidationResult())
+        XCTAssertEqual(after - before, 0, "an empty marker query reads no journal rows")
+        XCTAssertEqual(try preparationHistoryRowCount(
+            in: fixture.store.container, requestID: fixture.requestID), 0)
+    }
+
+    func testPreparationRecoveryProjectionDeduplicatesSortsAndLetsForcedWinWithoutWritingMarkers() async throws {
+        let fixture = try await makePreparationHistoryDownload("recovery-projection")
+        defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
+        let first = fixture.itemID
+        let second = try ItemID(rawValue: fixture.itemID.rawValue + "b")
+        let third = try ItemID(rawValue: fixture.itemID.rawValue + "c")
+        let context = ModelContext(fixture.store.container)
+        let markerResult = try PreparationTerminalResult(outcome: .failed,
+            error: try ProducerError(code: .failed, message: "marker", retryable: true))
+        let forced = LocalLibraryStore.forcedRedownloadRequestPrefix
+        let reset = LocalLibraryStore.resetPreparationRequestPrefix
+        // Inserted in reverse order, with duplicate reset markers for `first`,
+        // so deterministic sorting and deduplication are observable.
+        try insertPreparation(context, id: reset + third.rawValue + "|marker", itemID: third,
+            requestID: reset + third.rawValue, stage: .failed, at: fixture.base, attempt: nil,
+            terminal: markerResult)
+        try insertPreparation(context, id: forced + second.rawValue + "|marker", itemID: second,
+            requestID: forced + second.rawValue, stage: .failed, at: fixture.base, attempt: nil,
+            terminal: markerResult)
+        for suffix in ["a", "b"] {
+            try insertPreparation(context, id: reset + first.rawValue + "|marker-\(suffix)", itemID: first,
+                requestID: reset + first.rawValue, stage: .failed, at: fixture.base, attempt: nil,
+                terminal: markerResult)
+        }
+        try insertPreparation(context, id: forced + first.rawValue + "|marker", itemID: first,
+            requestID: forced + first.rawValue, stage: .failed, at: fixture.base, attempt: nil,
+            terminal: markerResult)
+        try context.save()
+
+        func markerSnapshot() throws -> [String: String] {
+            let readContext = ModelContext(fixture.store.container)
+            let rows = try readContext.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
+            return Dictionary(uniqueKeysWithValues: rows.map { row in
+                (row.id, "\(row.itemID)|\(row.requestID)|\(row.statusData.base64EncodedString())")
+            })
+        }
+
+        let before = try markerSnapshot()
+        let firstProjection = try await fixture.store.pendingPreparationRecoveryIDs()
+        let secondProjection = try await fixture.store.pendingPreparationRecoveryIDs()
+        XCTAssertEqual(firstProjection.resetEpisodeIDs, [third])
+        XCTAssertEqual(firstProjection.forcedRedownloadEpisodeIDs, [first, second])
+        XCTAssertEqual(secondProjection, firstProjection, "projection order is deterministic")
+        XCTAssertEqual(try markerSnapshot(), before, "a projection never rewrites or clears markers")
+    }
+
+    func testPreparationRecoveryProjectionSkipsMalformedIDsWithoutReadingJournalHistory() async throws {
+        let fixture = try await makePreparationHistoryDownload("recovery-malformed")
+        defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
+        let context = ModelContext(fixture.store.container)
+        for ordinal in 1...100 {
+            try insertPreparation(context, id: fixture.requestID + "|extracting#\(ordinal)",
+                itemID: fixture.itemID, requestID: fixture.requestID, stage: .extracting,
+                at: fixture.base.addingTimeInterval(Double(ordinal)), attempt: nil)
+        }
+        let forcedRequestID = LocalLibraryStore.forcedRedownloadRequestPrefix + fixture.itemID.rawValue
+        let resetRequestID = LocalLibraryStore.resetPreparationRequestPrefix + fixture.itemID.rawValue
+        let markerResult = try PreparationTerminalResult(outcome: .failed,
+            error: try ProducerError(code: .failed, message: "marker", retryable: true))
+        try insertPreparation(context, id: forcedRequestID + "|marker", itemID: fixture.itemID,
+            requestID: forcedRequestID, stage: .failed, at: fixture.base, attempt: nil, terminal: markerResult)
+        try insertPreparation(context, id: resetRequestID + "|marker", itemID: fixture.itemID,
+            requestID: resetRequestID, stage: .preparing, at: fixture.base, attempt: nil)
+        try context.save()
+        let markers = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+            predicate: #Predicate { $0.requestID == forcedRequestID || $0.requestID == resetRequestID }))
+        XCTAssertEqual(markers.count, 2)
+        for marker in markers { marker.itemID = "not an item id" }
+        try context.save()
+
+        let before = await fixture.store.preparationMaintenanceRowsRead
+        let projection = try await fixture.store.pendingPreparationRecoveryIDs()
+        let after = await fixture.store.preparationMaintenanceRowsRead
+        XCTAssertEqual(projection, PodcastPreparationInvalidationResult(),
+                       "a malformed marker names no episode to recover")
+        XCTAssertEqual(after - before, 2,
+                       "only the two marker rows are read, not the unrelated 100-row journal")
+        XCTAssertEqual(try preparationHistoryRowCount(
+            in: fixture.store.container, requestID: fixture.requestID), 100)
+    }
 }

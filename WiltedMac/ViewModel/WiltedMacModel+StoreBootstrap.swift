@@ -94,10 +94,13 @@ extension WiltedMacModel {
                 }
             } else {
                 // No rule can condemn a preparation and no invalidator was
-                // substituted, so there is no comparison to make. Opening the
-                // library must not hash the worker and Python trees for an
-                // empty rule set.
-                invalidation = PodcastPreparationInvalidationResult()
+                // substituted, so there is no comparison to make and opening
+                // the library must not hash the worker and Python trees for an
+                // empty rule set. Markers an earlier launch already wrote are
+                // scheduling state, though: this launch still has to admit
+                // their recovery. Project them without resolving a fingerprint
+                // or deciding anything again.
+                invalidation = try await configuredStore.pendingPreparationRecoveryIDs()
             }
             // Before the library is read, so the rows derive from a journal
             // that tells the truth about what is running: nothing, yet.

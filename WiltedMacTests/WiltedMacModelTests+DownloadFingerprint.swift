@@ -12,6 +12,8 @@ extension WiltedMacModelTests {
         let resolver = DownloadCheckpointResolver(value: "download-resolved", gate: released,
                                                    entered: { entered.fulfill() })
         let fixture = try await checkpointDownloadFixture("delayed", resolver: resolver)
+        let callsAfterLaunch = await resolver.calls
+        XCTAssertEqual(callsAfterLaunch, 0, "launch has no rule and no override, so it resolves nothing")
         fixture.model.downloadEpisode(fixture.episode)
         await fulfillment(of: [entered], timeout: 5)
         let pending = try await fixture.store.requiresForcedRedownload(for: fixture.id)
@@ -21,7 +23,7 @@ extension WiltedMacModelTests {
         await fixture.model.waitForPodcastOperations()
         try await assertCheckpointDownload(fixture, fingerprint: "download-resolved")
         let calls = await resolver.calls
-        XCTAssertEqual(calls, 2, "bootstrap nil and exactly one download resolution")
+        XCTAssertEqual(calls, 1, "exactly one download resolution")
         try await fixture.model.close()
     }
 
@@ -29,24 +31,28 @@ extension WiltedMacModelTests {
         let resolver = DownloadCheckpointResolver(value: "must-not-win")
         let fixture = try await checkpointDownloadFixture("explicit", resolver: resolver,
                                                          explicitFingerprint: "explicit-download")
+        let callsAfterLaunch = await resolver.calls
+        XCTAssertEqual(callsAfterLaunch, 0, "launch has no rule and no override, so it resolves nothing")
         fixture.model.downloadEpisode(fixture.episode)
         await fixture.model.waitForPodcastOperations()
         try await assertCheckpointDownload(fixture, fingerprint: "explicit-download")
         let calls = await resolver.calls
-        XCTAssertEqual(calls, 1, "explicit fingerprint bypasses download resolution after bootstrap")
+        XCTAssertEqual(calls, 0, "the explicit fingerprint bypasses download resolution")
         try await fixture.model.close()
     }
 
     func testDownloadCheckpointNilResolverKeepsForcedMarkerAndVerifiedBytes() async throws {
         let resolver = DownloadCheckpointResolver(value: nil)
         let fixture = try await checkpointDownloadFixture("nil", resolver: resolver)
+        let callsAfterLaunch = await resolver.calls
+        XCTAssertEqual(callsAfterLaunch, 0, "launch has no rule and no override, so it resolves nothing")
         fixture.model.downloadEpisode(fixture.episode)
         await fixture.model.waitForPodcastOperations()
         try await assertCheckpointDownload(fixture, fingerprint: nil)
         let message = try XCTUnwrap(fixture.model.podcastOperationMessage)
         XCTAssertTrue(message.contains("recovery checkpoint could not be saved"))
         let calls = await resolver.calls
-        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(calls, 1)
         try await fixture.model.close()
     }
 
@@ -143,7 +149,8 @@ extension WiltedMacModelTests {
 
 }
 
-/// Separates the bootstrap nil response from the controlled download resolution.
+/// A download-time fingerprint resolution whose gate makes the checkpoint's
+/// commit boundary observable.
 private actor DownloadCheckpointResolver {
     private(set) var calls = 0
     private let value: String?
@@ -159,7 +166,6 @@ private actor DownloadCheckpointResolver {
 
     func resolve() async -> String? {
         calls += 1
-        if calls == 1 { return nil }
         entered()
         await gate?.wait()
         return value
