@@ -27,7 +27,6 @@ from .constants import (
     SILENCE_KEPT_PAUSE_S,
     SILENCE_MAX_KEEP_INTERVALS,
     SILENCE_MIN_KEEP_S,
-    SILENCE_MIN_TRIM_S,
     SILENCE_NOISE_FLOOR_DB,
 )
 from .cue_timing import KeepInterval, build_keep_map
@@ -116,7 +115,7 @@ def plan_trims(keeps: list[KeepInterval], silences) -> list[KeepInterval]:
         at_start, at_end = start <= SILENCE_EDGE_TOLERANCE_S, end >= total - SILENCE_EDGE_TOLERANCE_S
         if at_start or at_end:
             chosen.append((0.0 if at_start else start, total if at_end else end))
-        elif end - start - SILENCE_KEPT_PAUSE_S >= SILENCE_MIN_TRIM_S:
+        elif end - start > SILENCE_KEPT_PAUSE_S:
             interior.append((start + half, end - half))
     starts = [keep.output_start_s for keep in keeps]
     budget = SILENCE_MAX_KEEP_INTERVALS - len(keeps)

@@ -19,7 +19,7 @@ public actor PodcastPreparationPipeline {
     /// Manually bumped when the semantic preparation behavior changes. This is
     /// deliberately independent of the app or UI build number so a launch can
     /// identify old preparation results without invalidating unrelated work.
-    public static let semanticVersion = "podcast-preparation-v10"
+    public static let semanticVersion = "podcast-preparation-v11"
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
     /// but `speech-stack` is still an editable dependency resolved outside it,

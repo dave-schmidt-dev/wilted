@@ -224,9 +224,6 @@ SILENCE_KEPT_PAUSE_S = 0.5
 # halves of a pause that an ad cut joins together are both seen.
 SILENCE_DETECT_MIN_S = 0.25
 
-# A trim that would remove less than this is not worth a cut point.
-SILENCE_MIN_TRIM_S = 0.1
-
 # Silence this close to the start or end of the prepared audio, or to the next
 # silence, is treated as touching it.
 SILENCE_EDGE_TOLERANCE_S = 0.05

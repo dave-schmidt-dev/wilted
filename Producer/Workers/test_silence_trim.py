@@ -135,8 +135,17 @@ class SilencePlanTests(SilenceTrimTestCase):
     def test_short_pauses_and_a_quiet_map_are_left_alone(self):
         whole = build_keep_map([(0.0, 30.0)])
         self.assertIs(silence_trim.plan_trims(whole, []), whole)
-        # 0.55 s would only lose 0.05 s, under the smallest worthwhile trim.
-        self.assertIs(silence_trim.plan_trims(whole, [(10.0, 10.55)]), whole)
+        self.assertIs(silence_trim.plan_trims(whole, [(10.0, 10.5)]), whole)
+
+    def test_every_interior_pause_over_half_a_second_is_trimmed_within_the_map_budget(self):
+        for duration in (0.5001, 0.51, 0.55, 0.6):
+            with self.subTest(duration=duration):
+                whole = build_keep_map([(0.0, 30.0)])
+                keeps = silence_trim.plan_trims(whole, [(10.0, 10.0 + duration)])
+                self.assertEqual(len(keeps), 2)
+                self.assertAlmostEqual(keeps[0].end_s, 10.25)
+                self.assertAlmostEqual(keeps[1].start_s, 10.0 + duration - 0.25)
+                self.assertAlmostEqual(sum(keep.duration_s for keep in keeps), 30.0 - duration + 0.5)
 
     def test_a_pause_split_by_an_ad_cut_is_measured_whole(self):
         keeps = silence_trim.plan_trims(build_keep_map([(0.0, 20.0), (40.0, 60.0)]), AD_SILENCES)
