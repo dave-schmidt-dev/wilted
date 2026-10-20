@@ -201,6 +201,31 @@ final class LibraryDeviceLinkTests: XCTestCase {
         XCTAssertEqual(rig.probe.announcements.map(\.deviceID), ["phone"], "the Mac must learn of the device")
     }
 
+    func testFailedRelaunchOwnerProbeKeepsTheSavedOwnerUnverified() async throws {
+        let rig = try makeRig()
+        defer { rig.model.throttleRetryTask?.cancel() }
+        rig.probe.ownerUncheckedUntilAsked = true
+        rig.probe.ownerChecksFail = true
+        try await rig.macLinksPhone()
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.ownerChecks, 1)
+        XCTAssertTrue(rig.probe.ownerUncheckedUntilAsked)
+        XCTAssertFalse(rig.model.deviceLinked, "a failed account check cannot admit the saved library's round")
+        XCTAssertEqual(rig.probe.announceAttempts, 0)
+
+        rig.probe.ownerChecksFail = false
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.ownerChecks, 1, "the next round must still respect the pressure wait")
+        XCTAssertFalse(rig.model.deviceLinked)
+        let closure = await rig.model.throttleGate.state
+        XCTAssertEqual(closure?.kind, .rateLimited)
+
+        rig.clock.advance(SyncCadence.backoffBase + 1)
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.ownerChecks, 2)
+        XCTAssertTrue(rig.model.deviceLinked, "a later successful owner check still recovers the link")
+    }
+
     func testAnUnlinkedPhoneStillAnnouncesWhenTheRoundsOfferStepEndsItEarly() async throws {
         let rig = try makeRig()
         await rig.store.refuseOffers()

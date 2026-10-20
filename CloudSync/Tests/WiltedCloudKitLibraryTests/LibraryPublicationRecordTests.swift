@@ -7,6 +7,69 @@ import XCTest
 @testable import WiltedCloudKitLibrary
 
 final class LibraryPublicationRecordTests: XCTestCase {
+    func testExplicitOwnerProbePressureClosesSharedGateAndLeavesOwnerUnverified() async throws {
+        let probes = FactoryLog()
+        let driver = ScriptedDriver(identity: {
+            _ = probes.record(nil)
+            throw CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 42.0])
+        })
+        let transport = try cloudEndpoint(driver, owner: "owner")
+        let now = Date(timeIntervalSince1970: 10_000)
+        let gate = TransportGate(clock: { now })
+        let wrapped = ThrottledLibraryTransport(wrapping: transport, gate: gate)
+        do { try await wrapped.verifyOwner(); XCTFail("resolver pressure must propagate to the shared gate") }
+        catch { XCTAssertEqual(TransportPressureClassifier.classify(error), .init(kind: .rateLimited, retryAfter: 42)) }
+        let state = await gate.state
+        XCTAssertEqual(state?.retryAt, now.addingTimeInterval(42))
+        XCTAssertEqual(state?.consecutiveFailures, 1)
+        let owner = await wrapped.verifiedOwnerToken()
+        XCTAssertNil(owner, "a saved owner is not proof after a failed probe")
+        do { try await wrapped.verifyOwner(); XCTFail("the later probe must observe the same backoff") }
+        catch { XCTAssertTrue(error is TransportThrottled) }
+        XCTAssertEqual(probes.states.count, 1, "a closed gate must not call the CloudKit resolver again")
+    }
+
+    func testExplicitOwnerProbeConfirmsSavedOwnerWithoutFetch() async throws {
+        let driver = ScriptedDriver(identity: { .init(currentOwnerToken: "owner") })
+        let transport = try cloudEndpoint(driver, owner: "owner")
+        try await transport.verifyOwner()
+        let owner = await transport.verifiedOwnerToken()
+        XCTAssertEqual(owner, "owner")
+        let quarantined = await transport.isQuarantined()
+        XCTAssertFalse(quarantined)
+    }
+
+    func testExplicitOwnerProbeRejectsResetWhileIdentityReadIsHeld() async throws {
+        let barrier = OwnerProbeBarrier()
+        let driver = ScriptedDriver(identity: {
+            await barrier.hold()
+            return .init(currentOwnerToken: "owner")
+        })
+        let transport = try cloudEndpoint(driver, owner: "owner")
+        let task = Task { try await transport.verifyOwner() }
+        await barrier.waitUntilHeld()
+        await transport.resetAfterAccountChange()
+        await barrier.release()
+        do { try await task.value; XCTFail("a reset must reject the older probe") }
+        catch { XCTAssertEqual(error as? LibraryTransportError, .superseded) }
+        let owner = await transport.verifiedOwnerToken()
+        XCTAssertNil(owner)
+    }
+
+    func testExplicitOwnerProbeQuarantinesADifferentAccount() async throws {
+        let driver = ScriptedDriver(identity: { .init(currentOwnerToken: "different") })
+        let transport = try cloudEndpoint(driver, owner: "saved-owner")
+        let before = await transport.operationGeneration()
+        do { try await transport.verifyOwner(); XCTFail("a different account cannot verify the saved owner") }
+        catch { XCTAssertEqual(error as? CloudKitSyncError, .accountChanged) }
+        let owner = await transport.verifiedOwnerToken()
+        let quarantined = await transport.isQuarantined()
+        let generation = await transport.operationGeneration()
+        XCTAssertNil(owner)
+        XCTAssertTrue(quarantined)
+        XCTAssertGreaterThan(generation, before)
+    }
+
     func testResetDuringZoneWaitPreventsBatchPlaybackFromQueuingOldCallerRecords() async throws {
         let barrier = OwnerProbeBarrier()
         let driver = ScriptedDriver(send: { throw CKError(.networkFailure) }, zone: { await barrier.hold() })

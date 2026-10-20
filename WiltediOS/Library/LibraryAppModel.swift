@@ -367,7 +367,8 @@ final class LibraryAppModel: ObservableObject {
         // until something checks it; the first check below would otherwise stop every round of this launch.
         // A check that finds another account moves the generation, so this round still stops.
         if await roundStore.state().ownerToken != nil, await transport.verifiedOwnerToken() == nil {
-            await transport.verifyOwner()
+            do { try await transport.verifyOwner() }
+            catch { return } // A refusal cannot qualify the saved owner or continue this round.
         }
         var reportedStop = false
         func current() async -> Bool {

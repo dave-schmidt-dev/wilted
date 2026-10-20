@@ -19,7 +19,7 @@ public struct ThrottledLibraryTransport: LibraryTransport {
 
     public func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     public func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
-    public func verifyOwner() async { await inner.verifyOwner() }
+    public func verifyOwner() async throws { try await gate.run { try await inner.verifyOwner() } }
 
     public func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
         try await gate.run { try await inner.fetchChanges(since: token) }

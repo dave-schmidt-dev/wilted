@@ -38,6 +38,7 @@ final class HandshakeProbe: @unchecked Sendable {
     private var linkReads = 0
     private var ownerUnchecked = false
     private var ownerCheckCount = 0
+    private var ownerCheckFails = false
 
     var readMode: Read { get { lock.withLock { read } } set { lock.withLock { read = newValue } } }
     var announcementsFail: Bool { get { lock.withLock { announceFails } } set { lock.withLock { announceFails = newValue } } }
@@ -47,7 +48,16 @@ final class HandshakeProbe: @unchecked Sendable {
     }
     /// Account checks the phone asked for.
     var ownerChecks: Int { lock.withLock { ownerCheckCount } }
-    func noteOwnerCheck() { lock.withLock { ownerCheckCount += 1; ownerUnchecked = false } }
+    var ownerChecksFail: Bool {
+        get { lock.withLock { ownerCheckFails } } set { lock.withLock { ownerCheckFails = newValue } }
+    }
+    func noteOwnerCheck() throws {
+        try lock.withLock {
+            ownerCheckCount += 1
+            if ownerCheckFails { throw NSError(domain: "CKErrorDomain", code: 7) }
+            ownerUnchecked = false
+        }
+    }
     /// Announcements that reached the server.
     var announcements: [LibraryDeviceAnnouncement] { lock.withLock { sent } }
     /// Every announce call, whether it worked or not.
@@ -71,7 +81,7 @@ struct HandshakeTransport: LibraryTransport {
     func verifiedOwnerToken() async -> String? {
         probe.ownerUncheckedUntilAsked ? nil : await inner.verifiedOwnerToken()
     }
-    func verifyOwner() async { probe.noteOwnerCheck() }
+    func verifyOwner() async throws { try probe.noteOwnerCheck() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }

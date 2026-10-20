@@ -218,8 +218,8 @@ public protocol LibraryTransport: Sendable {
     func verifiedOwnerToken() async -> String?
     /// Checks the signed-in account now, so `verifiedOwnerToken` reflects this launch before any fetch.
     /// A relaunched engine restores its state without an account event, so nothing else checks first.
-    /// A failure leaves the owner unverified.
-    func verifyOwner() async
+    /// A failure leaves the owner unverified and propagates to the shared server-pressure gate.
+    func verifyOwner() async throws
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult
     /// Idempotent by `LibraryIntent.id`.
@@ -282,7 +282,7 @@ public protocol LibraryTransport: Sendable {
 public extension LibraryTransport {
     func operationGeneration() async -> UInt64 { 0 }
     func verifiedOwnerToken() async -> String? { nil }
-    func verifyOwner() async {}
+    func verifyOwner() async throws {}
     func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
         for item in records { try await publish(item.record, as: item.channel) }
     }

@@ -1050,6 +1050,14 @@
           "note": "Acquired by Producer/Workers/ad_corpus_acquire.py from the public feed into a scratch directory with the worker's own transcription and alignment; the entry is not yet pinned because `ad_corpus.adopt` reads `cases`, not `gaps`."
         }
       ]
+    },
+    {
+      "id": "weekly-show-2026-09-30-birdie-box-opening",
+      "show": "The Weekly Show with Jon Stewart",
+      "kind": "judgement",
+      "reported": "The September 30, 2026 episode Blue Wave on the Prairie? with Josh Turek started with a Birdie Box advertisement. Its saved audit detected opening advertising at 0-114.56 seconds but retained the whole original after other commercial evidence remained unresolved; the exact historical reason was not retained.",
+      "missing": "The exact 80,287,705-byte historical original disappeared after a read-only baseline replay and its raw aligned-STT cache is unavailable. Retained cues include later glossary edits and cannot reconstruct that original alignment. The anonymous public copy has different bytes and is 83.827125 seconds shorter; its fresh replay is a different input, retained whole because closing evidence remained unresolved.",
+      "closes": "Recover the exact original audio and original aligned input, then hand-label the opening commercial and bounded programme around it before scoring a candidate. Engine v10 fixes a reproduced commercial request-context overflow and retains bounded diagnostic reasons under synthetic tests; neither those checks nor a different public rendering proves this historical copy repaired. Never reuse the old 114.56-second boundary as a label for the new rendering."
     }
   ]
 }

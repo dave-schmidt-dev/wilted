@@ -91,11 +91,11 @@ public actor CloudKitLibraryTransport: LibraryTransport {
 
     public func operationGeneration() async -> UInt64 { operationGenerationValue }
     public func verifiedOwnerToken() async -> String? { observedOwnerToken }
-    public func verifyOwner() async {
+    public func verifyOwner() async throws {
         await acquire()
         defer { release() }
         do { try await observeCurrentOwner(generation: operationGenerationValue) }
-        catch { log.notice("Could not check the library's account yet: \((error as NSError).domain, privacy: .public) \((error as NSError).code, privacy: .public)") }
+        catch { throw failure(error) }
     }
     public func isQuarantined() -> Bool { quarantined }
 

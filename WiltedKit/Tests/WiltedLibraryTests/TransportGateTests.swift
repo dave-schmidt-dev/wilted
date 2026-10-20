@@ -62,6 +62,8 @@ final class TransportPressureClassifierTests: XCTestCase {
 /// Uses the same concrete actor forwarding shape as the phone's scripted media transport.
 private struct ConcreteOwnerForwardingTransport: LibraryTransport {
     let inner: InMemoryLibraryTransport
+    var ownerChecks: Counter? = nil
+    func verifyOwner() async { ownerChecks?.bump() }
     func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
@@ -75,6 +77,19 @@ private struct ConcreteOwnerForwardingTransport: LibraryTransport {
 }
 
 final class TransportGateTests: XCTestCase {
+    func testClosedGateRefusesOwnerProbeBeforeCallingInnerTransport() async throws {
+        let clock = TestClock()
+        let gate = gate(clock)
+        _ = await attempt(gate, calls: Counter(), failing: limited)
+        let checks = Counter()
+        let inner = InMemoryLibraryTransport(deviceID: "phone", server: InMemoryLibraryServer(writerDeviceID: "mac"))
+        let wrapped = ThrottledLibraryTransport(
+            wrapping: ConcreteOwnerForwardingTransport(inner: inner, ownerChecks: checks), gate: gate)
+        do { try await wrapped.verifyOwner(); XCTFail("closed gate admitted an owner probe") }
+        catch { XCTAssertTrue(error is TransportThrottled) }
+        XCTAssertEqual(checks.count, 0, "an owner resolver must share the server backoff")
+    }
+
     func testConcreteOwnerForwardingPreservesIdentityAndInvalidationGeneration() async {
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
         let inner = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "configured-owner")

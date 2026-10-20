@@ -142,6 +142,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- After a relaunch, account verification obeys iCloud's shared retry wait; an unavailable account check keeps the saved library unverified until a later successful check.
 - Ad removal keeps the recovered cuts when a long transcript needs a second, smaller classifier check.
 - Sponsor spots at the edges of an ad break are retained in the cut rather than left in the audio.
 - iPhone, iPad and Mac: "iCloud is rate limiting sync" now clears. Before, a retry whose first request went through restarted the wait at 5 s even when the next request was refused, so a device asked again every 5 s and kept iCloud limiting it. The wait now keeps doubling until requests go through for a full sync round, and it honours the wait iCloud asks for.
