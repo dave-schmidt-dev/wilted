@@ -95,28 +95,35 @@ extension WiltedMacModel {
         by sort: WiltedMacLarderSort
     ) -> [String] {
         guard sort != .custom else { return ids }
+        // Every Larder render reads this, so each id's key is built once
+        // rather than scanning `episodes` twice per comparison. The first row
+        // for an id wins, as the scan it replaces did.
+        let wanted = Set(ids)
+        let rows = Dictionary(episodes.lazy.filter { wanted.contains($0.id) }.map { ($0.id, $0) },
+                              uniquingKeysWith: { first, _ in first })
+        let keys = rows.mapValues(WiltedMacEpisodeListOrder.key(for:))
         // The episode playing now keeps its place, because the reader is in
         // the middle of it. Every other row sorts around it: the old code
         // pinned the prefix before the current row and sorted only the rows
         // after it, so entries before the current index never moved.
         guard let currentID = currentPodcastEpisodeID,
               let currentIndex = ids.firstIndex(of: currentID) else {
-            return ids.sorted { larderSortPrecedes($0, $1, by: sort) }
+            return ids.sorted { larderSortPrecedes($0, $1, keys: keys, by: sort) }
         }
         var rest = ids
         rest.remove(at: currentIndex)
-        let sorted = rest.sorted { larderSortPrecedes($0, $1, by: sort) }
+        let sorted = rest.sorted { larderSortPrecedes($0, $1, keys: keys, by: sort) }
         var result = sorted
         result.insert(currentID, at: min(currentIndex, result.count))
         return result
     }
 
-    private func larderSortPrecedes(_ lhsID: String, _ rhsID: String, by sort: WiltedMacLarderSort) -> Bool {
-        let lhs = episodes.first(where: { $0.id == lhsID })
-        let rhs = episodes.first(where: { $0.id == rhsID })
-        let leftKey = lhs.map(WiltedMacEpisodeListOrder.key(for:))
+    private func larderSortPrecedes(
+        _ lhsID: String, _ rhsID: String, keys: [String: LibraryEpisodeOrdering.Key], by sort: WiltedMacLarderSort
+    ) -> Bool {
+        let leftKey = keys[lhsID]
             ?? LibraryEpisodeOrdering.Key(id: lhsID, title: "", durationSeconds: nil, publishedAt: nil)
-        let rightKey = rhs.map(WiltedMacEpisodeListOrder.key(for:))
+        let rightKey = keys[rhsID]
             ?? LibraryEpisodeOrdering.Key(id: rhsID, title: "", durationSeconds: nil, publishedAt: nil)
         return LibraryEpisodeOrdering.precedes(
             leftKey, rightKey,

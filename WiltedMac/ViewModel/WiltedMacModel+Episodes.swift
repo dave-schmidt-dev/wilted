@@ -226,7 +226,11 @@ extension WiltedMacModel {
 #endif
         let preparedBefore = Set(episodes.filter { $0.preparationState.isPrepared }.map(\.id))
         let knownBefore = Set(episodes.map(\.id))
-        episodes = Self.applyingRunningPreparations(to: loaded, from: episodes, running: running)
+        // A clicked download is Queued before its durable record exists.
+        let preparing = Self.applyingRunningPreparations(to: loaded, from: episodes, running: running)
+        episodes = Self.applyingInFlightDownloads(
+            to: preparing, from: episodes, inFlight: Set(podcastDownloadTasks.keys)
+        )
         var candidates = Self.episodeIDsNewlyPrepared(in: episodes, preparedBefore: preparedBefore,
                                                       knownBefore: knownBefore)
         // An admission whose durable write raised is retried on the next

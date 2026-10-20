@@ -52,6 +52,7 @@ extension WiltedMacModel {
         }
         updateEpisode(episode.id) { $0.downloadState = .queued }
         podcastOperationMessage = "Queued \(episode.title) for download."
+        let progressThrottle = WiltedMacDownloadProgressThrottle()
         podcastDownloadTasks[episode.id] = Task { [weak self] in
             guard let self else { throw CancellationError() }
             // One place to clear the task-table entry, run on every exit
@@ -128,14 +129,17 @@ extension WiltedMacModel {
                     interruptedForTermination: { [weak self] in
                         await self?.downloadWasInterruptedForTermination(episode.id) == true
                     }
-                ) { progress in
-                    Task { @MainActor [weak self] in
-                        guard self?.updateActiveEpisodeDownload(
-                            episode.id,
-                            received: progress.bytesReceived,
-                            expected: progress.expectedByteCount
-                        ) == true else { return }
-                        self?.podcastOperationMessage = "Downloading \(episode.title)…"
+                ) { report in
+                    // Every chunk reports; only what the window can render is sent on.
+                    progressThrottle.submit(report) { progress in
+                        Task { @MainActor [weak self] in
+                            guard self?.updateActiveEpisodeDownload(
+                                episode.id,
+                                received: progress.bytesReceived,
+                                expected: progress.expectedByteCount
+                            ) == true else { return }
+                            self?.podcastOperationMessage = "Downloading \(episode.title)…"
+                        }
                     }
                 }
                 let resolvedFingerprint: String?
