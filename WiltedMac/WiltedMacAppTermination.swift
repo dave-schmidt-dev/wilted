@@ -348,6 +348,11 @@ extension WiltedMacModel: WiltedMacTerminationDraining {
     func drainLocalWorkForTermination() async throws {
         stopAdmittingWorkForTermination()
         try await flushPlaybackForTermination()
+#if canImport(WiltedProducer)
+        // A natural end retires its episode after the successor starts; a
+        // quit right after that start still writes the retirement here.
+        await drainLibraryFollowUpsForTermination()
+#endif
         try await cancelAndAwaitDownloadsForTermination()
     }
 

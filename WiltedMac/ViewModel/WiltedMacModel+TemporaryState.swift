@@ -327,6 +327,9 @@ extension WiltedMacModel {
             await fixtureInstall?.value
             await articleFixtureInstall?.value
             await playbackOperation?.value
+#if canImport(WiltedProducer)
+            await libraryFollowUps.drain()
+#endif
             await completionRecovery?.value
             await completionExpiry?.value
             await larderAddition?.value
