@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from wilted.gguf_summary import PromptBudgetExceeded
 from wilted.llm import GgufBackend
 
 pytestmark = pytest.mark.unit
@@ -15,6 +16,7 @@ TEMPLATE = "{{ bos_token }}{% for m in messages %}<{{ m.role }}>{{ m.content }}{
 class FakeModel:
     def __init__(self, *, context=4096, template=TEMPLATE):
         self.metadata = {"tokenizer.chat_template": template}
+        self.verbose = False
         self._model = SimpleNamespace(token_get_text=lambda token: {1: "<bos>", 2: "<eos>"}[token])
         self.chat_handler = object()
         self.chat_format = "existing-ad-handler"
@@ -213,6 +215,151 @@ def test_reserve_boundary_stop_is_valid_and_length_is_not(backend):
     backend._llm.finish_reason = "length"
     with pytest.raises(ValueError, match="finish"):
         backend.generate_summary(prepared)
+
+
+def test_prepared_commercial_matches_installed_formatter_and_grammar(backend):
+    from llama_cpp.llama_chat_format import Jinja2ChatFormatter, chat_formatter_to_chat_completion_handler
+
+    backend._llm.metadata["tokenizer.chat_template"] = (
+        TEMPLATE + "{% if response_format %}<schema>unexpected</schema>{% endif %}"
+    )
+    schema = {"type": "json_object", "schema": {"type": "object"}}
+    prepared = backend.measure_prompt("system", "text", response_format=schema)
+    assert b"<schema>" not in backend._llm.token_calls[-1][0]
+    formatter = Jinja2ChatFormatter(backend._llm.metadata["tokenizer.chat_template"],
+                                   "<eos>", "<bos>", stop_token_ids=[2])
+    handler = chat_formatter_to_chat_completion_handler(formatter)
+    handler(llama=backend._llm, messages=[{"role": "system", "content": "system"},
+            {"role": "user", "content": "text"}], max_tokens=backend.max_tokens,
+            temperature=backend.temperature, seed=backend.seed, stream=False, response_format=schema)
+    ordinary = backend._llm.completions[-1]
+    assert backend.generate("system", "text", response_format=schema, prepared_prompt=prepared) == (
+        "Whole transcript summary", 3
+    )
+    actual = backend._llm.completions[-1]
+    assert tuple(actual["prompt"]) == tuple(ordinary["prompt"]) == prepared._tokens
+    assert actual["grammar"] is not None
+    assert actual["max_tokens"] == backend.max_tokens
+
+
+def test_measured_budget_uses_actual_tokens_and_unchanged_output_reserve(backend):
+    plain = backend.measure_prompt("s", "u")
+    backend._llm.context = plain.token_count + backend.max_tokens
+    schema = {"type": "json_object", "schema": {"type": "object"}}
+    measured = backend.measure_prompt("s", "u", response_format=schema)
+    assert measured.token_count == plain.token_count
+    assert measured.output_reserve == backend.max_tokens
+    backend._llm.context -= 1
+    with pytest.raises(PromptBudgetExceeded) as raised:
+        backend.measure_prompt("s", "u", response_format=schema)
+    assert raised.value.token_count == plain.token_count
+    assert raised.value.context_size == backend._llm.context
+    assert raised.value.output_reserve == backend.max_tokens
+    assert backend._llm.completions == []
+
+
+def test_prepared_commercial_renders_once_and_is_single_use(backend, monkeypatch):
+    from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+
+    times = iter(["first-render", "second-render"])
+    monkeypatch.setattr(Jinja2ChatFormatter, "strftime_now", staticmethod(lambda _: next(times)))
+    backend._llm.metadata["tokenizer.chat_template"] = TEMPLATE + "{{ strftime_now('%S') }}"
+    prepared = backend.measure_prompt("system", "text")
+    first_prompt = backend._llm.token_calls[-1][0]
+    assert first_prompt.endswith(b"first-render")
+    backend.generate("system", "text", prepared_prompt=prepared)
+    assert tuple(backend._llm.completions[-1]["prompt"]) == prepared._tokens
+    assert next(times) == "second-render"
+    with pytest.raises(ValueError, match="consumed"):
+        backend.generate("system", "text", prepared_prompt=prepared)
+    assert len(backend._llm.completions) == 1
+
+
+@pytest.mark.parametrize("changed", ["model", "context", "reserve", "template", "handler", "seed", "temperature",
+                                     "system", "user", "format", "tokens"])
+def test_stale_prepared_commercial_rejected_before_inference(backend, changed):
+    schema = {"type": "json_object", "schema": {"type": "object"}}
+    prepared = backend.measure_prompt("system", "text", response_format=schema)
+    original_model = backend._llm
+    system, user = "system", "text"
+    if changed == "model":
+        backend._llm = FakeModel()
+    elif changed == "context":
+        backend._llm.context += 1
+    elif changed == "reserve":
+        backend.max_tokens += 1
+    elif changed == "template":
+        backend._llm.metadata["tokenizer.chat_template"] += "changed"
+    elif changed == "handler":
+        backend._llm.chat_handler = object()
+    elif changed == "seed":
+        backend.seed += 1
+    elif changed == "temperature":
+        backend.temperature += 0.1
+    elif changed == "system":
+        system = "different system"
+    elif changed == "user":
+        user = "different text"
+    elif changed == "format":
+        schema["schema"]["description"] = "changed after preparation"
+    else:
+        prepared = replace(prepared, _tokens=prepared._tokens + (999,))
+    with pytest.raises(ValueError):
+        backend.generate(system, user, response_format=schema, prepared_prompt=prepared)
+    assert original_model.completions == []
+    assert backend._llm.completions == []
+
+
+def test_prepared_commercial_consumption_is_atomic(backend):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    prepared = backend.measure_prompt("system", "text")
+    barrier = Barrier(2)
+    def generate(_):
+        barrier.wait(timeout=5)
+        try:
+            backend.generate("system", "text", prepared_prompt=prepared)
+            return "generated"
+        except ValueError as error:
+            assert "consumed" in str(error)
+            return "refused"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(generate, range(2))) == ["generated", "refused"]
+    assert len(backend._llm.completions) == 1
+
+
+def test_ordinary_generation_keeps_existing_arguments(backend):
+    calls = []
+    def ordinary(**kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": "ordinary response"}}],
+                "usage": {"completion_tokens": 2}}
+    backend._llm.create_chat_completion = ordinary
+    schema = {"type": "json_object"}
+    assert backend.generate("system", "text", response_format=schema) == ("ordinary response", 2)
+    assert calls == [{"messages": [{"role": "system", "content": "system"},
+                                  {"role": "user", "content": "text"}],
+                      "max_tokens": backend.max_tokens, "temperature": backend.temperature,
+                      "seed": backend.seed, "response_format": schema}]
+    assert backend._llm.completions == []
+
+
+def test_measure_prompt_keeps_summary_generation_and_reserve_unchanged(backend):
+    handler, chat_format = backend._llm.chat_handler, backend._llm.chat_format
+    measured = backend.measure_prompt("Summarize", "whole transcript")
+    prepared = backend.prepare_summary("Summarize", "whole transcript")
+    assert (measured.token_count, measured.context_size, measured.output_reserve) == (
+        prepared.token_count, prepared.context_size, prepared.output_reserve
+    )
+    assert backend._llm.chat_handler is handler
+    assert backend._llm.chat_format == chat_format
+    assert backend.generate_summary(prepared) == ("Whole transcript summary", 3)
+    assert backend._llm.completions[-1]["max_tokens"] == backend.max_tokens
+    backend.max_tokens = 0
+    with pytest.raises(ValueError, match="reserve"):
+        backend.measure_prompt("s", "u")
+    assert len(backend._llm.completions) == 1
 
 
 def test_prepared_value_is_frozen_and_does_not_retain_closed_model(backend):

@@ -58,10 +58,13 @@ class CountingBackend:
         self.unexpected_error: Exception | None = None
         self.context_capacity_error: ValueError | None = None
 
-    def generate(self, system_prompt: str, user_content: str, *, response_format=None):
+    def generate(self, system_prompt: str, user_content: str, *, response_format=None, prepared_prompt=None):
         self.calls += 1
         try:
-            return self._backend.generate(system_prompt, user_content, response_format=response_format)
+            kwargs = {"response_format": response_format}
+            if prepared_prompt is not None:
+                kwargs["prepared_prompt"] = prepared_prompt
+            return self._backend.generate(system_prompt, user_content, **kwargs)
         except Exception as error:
             self.failures += 1
             self.last_error = error
@@ -70,6 +73,13 @@ class CountingBackend:
             if not expected_backend_unavailable(error):
                 self.unexpected_error = error
             raise
+
+    def measure_prompt(self, system_prompt: str, user_content: str, *, response_format=None):
+        """Query the inner backend's measured budget without counting a model call."""
+        measure = getattr(self._backend, "measure_prompt", None)
+        if not callable(measure):
+            raise ValueError("backend cannot measure the loaded chat prompt budget")
+        return measure(system_prompt, user_content, response_format=response_format)
 
     @property
     def mostly_failed(self) -> bool:
@@ -241,7 +251,7 @@ class AuditingBackend(CountingBackend):
         self.contract_errors.append(detail)
         raise WorkerError("ads-audit-contract-unavailable", detail)
 
-    def generate(self, system_prompt: str, user_content: str, *, response_format=None):
+    def generate(self, system_prompt: str, user_content: str, *, response_format=None, prepared_prompt=None):
         rendered_ids = _rendered_global_ids(user_content)
         classification = system_prompt in self._classification_prompts
         schema_matches = response_format == self._classification_response_format
@@ -278,7 +288,10 @@ class AuditingBackend(CountingBackend):
         forwarded = self._prompt_overrides.get(system_prompt, system_prompt)
         prior_capacity_error = self.context_capacity_error
         try:
-            response, tokens = super().generate(forwarded, user_content, response_format=response_format)
+            kwargs = {"response_format": response_format}
+            if prepared_prompt is not None:
+                kwargs["prepared_prompt"] = prepared_prompt
+            response, tokens = super().generate(forwarded, user_content, **kwargs)
         except Exception as error:
             # Over-capacity classifier requests are retried and halved by the
             # detector; if a split fails to recover, unresolved_ids
@@ -325,6 +338,11 @@ class AuditingBackend(CountingBackend):
             elif system_prompt == self._correction_prompt:
                 self._pending = None
         return response, tokens
+
+    def measure_prompt(self, system_prompt: str, user_content: str, *, response_format=None):
+        """Measure the same forwarded prompt the audited generate path would send."""
+        forwarded = self._prompt_overrides.get(system_prompt, system_prompt)
+        return super().measure_prompt(forwarded, user_content, response_format=response_format)
 
     def audit(self, detections, segments) -> AdAnalysisAudit:
         """Summarize observed coverage; never infer the archive's private drop reason."""
