@@ -32,7 +32,7 @@ PRODUCT = "wilted-ios"
 BUNDLE_ID = "com.zerodelta.wilted.ios"
 INTERNAL_GROUP_NAME = "Wilted Internal Testers"
 API_BASE = "https://api.appstoreconnect.apple.com/v1"
-OPERATIONS = frozenset({"app-registration", "identity-allocation", "build-lookup", "upload", "processing", "compliance", "tester-group", "assignment-reconcile", "assignment", "device-health", "notification"})
+OPERATIONS = frozenset({"app-registration", "development-profile-device", "identity-allocation", "build-lookup", "upload", "processing", "compliance", "tester-group", "assignment-reconcile", "assignment", "device-health", "notification"})
 _CANDIDATE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _POSITIVE = re.compile(r"^[1-9][0-9]*$")
@@ -55,6 +55,8 @@ def evidence_path(operation: str, candidate: str | None) -> Path:
         return ROOT / ".release-state" / "evidence" / "app-registration.json"
     if operation == "identity-allocation":
         return ROOT / ".release-state" / "evidence" / "allocate-identity.json"
+    if operation == "development-profile-device":
+        return ROOT / ".release-state" / "evidence" / "development-profile-device.json"
     if candidate is None or not _CANDIDATE.fullmatch(candidate):
         raise ValueError("candidate-identity-invalid")
     return ROOT / ".release-state" / "evidence" / candidate / f"{operation}.json"
@@ -160,6 +162,27 @@ def request_empty(path: str, bearer: str, *, method: str, body: Mapping[str, Any
         raise ASCError(f"app-store-connect-http-{error.code}") from error
     except (TimeoutError, urllib.error.URLError) as error:
         raise ASCError("app-store-connect-network-failed") from error
+
+
+def _profile_request(bearer: str) -> Callable[[str, str, Mapping[str, Any] | None], Mapping[str, Any]]:
+    """Adapt the JSON helpers to wilted_device_profile's request shape; DELETE returns 204."""
+
+    def request(method: str, path: str, body: Mapping[str, Any] | None) -> Mapping[str, Any]:
+        if method != "DELETE":
+            return request_json(path, bearer, method=method, body=body)
+        deletion = urllib.request.Request(f"{API_BASE}{path}", method="DELETE")
+        deletion.add_header("Authorization", f"Bearer {bearer}")
+        try:
+            with urllib.request.urlopen(deletion, timeout=30) as response:
+                if response.status != 204:
+                    raise ASCError("app-store-connect-delete-failed")
+        except urllib.error.HTTPError as error:
+            raise ASCError(f"app-store-connect-http-{error.code}") from error
+        except (TimeoutError, urllib.error.URLError) as error:
+            raise ASCError("app-store-connect-network-failed") from error
+        return {}
+
+    return request
 
 
 def _one_app(payload: Mapping[str, Any]) -> str:
@@ -952,9 +975,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate")
     parser.add_argument("--marketing-version")
     parser.add_argument("--build-number")
+    parser.add_argument("--device-udid")
     args = parser.parse_args(argv)
     if args.product != PRODUCT:
         return blocked(args.operation, args.candidate, "product-identity-mismatch")
+    if args.operation == "development-profile-device":
+        if args.candidate is not None or args.device_udid is None:
+            return blocked(args.operation, None, "development-profile-device-takes-only-a-device-udid")
+        try:
+            import wilted_device_profile  # imported here so every other operation stays standalone
+
+            proof = wilted_device_profile.add_device(args.device_udid, _profile_request(token()), install_dir=Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles")
+            path = evidence_path(args.operation, None)
+            write_json(path, {"proofVersion": "1.0.0", "operationClass": args.operation, **proof, "observedAt": now()})
+        except (ASCError, ImportError, KeyError, OSError, ValueError) as error:
+            return blocked(args.operation, None, str(error))
+        print(json.dumps({"operation": args.operation, "result": proof["result"], "proofPath": str(path.relative_to(ROOT))}, sort_keys=True))
+        return 0
     if args.operation == "app-registration":
         if args.candidate is not None:
             return blocked(args.operation, args.candidate, "app-registration-does-not-accept-candidate")

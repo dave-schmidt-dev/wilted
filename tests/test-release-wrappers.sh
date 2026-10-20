@@ -16,6 +16,7 @@ bridge="$root/app/wilted_app_store_connect_bridge.py"
 cd "$root"
 python3 -m unittest tests.test_release_archive_ios
 python3 -m unittest app.test_release_stage_readiness
+python3 -m unittest app.test_wilted_device_profile
 python3 "$root/tests/test_wilted_release_bridge.py"
 
 for wrapper in "$root/app/release-status" "$root/app/release-testflight"; do
