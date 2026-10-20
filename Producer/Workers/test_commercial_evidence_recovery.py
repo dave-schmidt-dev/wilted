@@ -500,3 +500,65 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         self.assertIsNone(preserved)
         self.assertIn("intersects the proposed cut at IDs 2", details["ads.detect.recovery.skipped"])
         self.assertFalse(any(wp.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT == p for p in llm.request_prompts))
+
+    def test_destination_only_cue_near_a_cta_seed_is_nominated(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(10.0, 20.0, "visit acme dot com and get started"),
+            FakeSegment(20.0, 40.0, "the programme continues"),
+            FakeSegment(50.0, 60.0, "blitzy dot com"),
+            FakeSegment(60.0, 70.0, "programme after"),
+        ]
+        self.assertEqual(
+            wp.commercial_evidence_seed_ids(segments, []),
+            ((1,), (3,)),
+        )
+
+    def test_destination_only_cue_far_from_any_seed_is_not_nominated(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(10.0, 20.0, "visit acme dot com and get started"),
+            FakeSegment(20.0, 30.0, "the programme continues"),
+            FakeSegment(320.0, 330.0, "blitzy dot com"),
+            FakeSegment(330.0, 340.0, "programme after"),
+        ]
+        self.assertEqual(
+            wp.commercial_evidence_seed_ids(segments, []),
+            ((1,),),
+        )
+
+    def test_destination_only_cue_next_to_an_existing_detection_is_nominated(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme before"),
+            FakeSegment(10.0, 20.0, "the programme continues"),
+            FakeSegment(30.0, 40.0, "blitzy dot com"),
+            FakeSegment(40.0, 50.0, "programme after"),
+        ]
+        self.assertEqual(
+            wp.commercial_evidence_seed_ids(segments, [FakeAd(0.0, 20.0)]),
+            ((2,),),
+        )
+
+    def test_primary_seed_windows_fill_the_candidate_cap_before_neighbours(self):
+        programme = "programme discussion continues"
+        primary = "visit acme dot com and get started"
+        neighbour = "blitzy dot com"
+        segments = [
+            FakeSegment(0.0, 10.0, programme),
+            FakeSegment(10.0, 20.0, primary),
+            FakeSegment(20.0, 30.0, programme),
+            FakeSegment(30.0, 40.0, neighbour),
+            FakeSegment(40.0, 50.0, programme),
+            FakeSegment(50.0, 60.0, primary),
+            FakeSegment(60.0, 70.0, programme),
+            FakeSegment(70.0, 80.0, primary),
+            FakeSegment(80.0, 90.0, programme),
+            FakeSegment(90.0, 100.0, neighbour),
+            FakeSegment(100.0, 110.0, programme),
+            FakeSegment(110.0, 120.0, primary),
+            FakeSegment(120.0, 130.0, programme),
+        ]
+        self.assertEqual(
+            wp.commercial_evidence_seed_ids(segments, []),
+            ((1,), (5,), (7,), (11,)),
+        )

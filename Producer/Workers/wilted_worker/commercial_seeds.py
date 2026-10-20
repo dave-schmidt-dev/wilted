@@ -21,7 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
 from .commercial_preservation import _commercial_envelope_preserved, _evidence_is_covered, recovered_confidence
-from .constants import COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_IDS, COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS, COMMERCIAL_RECOVERY_MAX_CANDIDATES, COMMERCIAL_SPARSE_CONTEXT_FLANK_IDS, COMMERCIAL_SPARSE_GAP_MIN_SECONDS, COMMERCIAL_SPARSE_MAX_ENVELOPE_SECONDS, COMMERCIAL_SPARSE_MAX_SECONDS, COMMERCIAL_SPARSE_TRANSITION_MAX_CHARS, COMMERCIAL_SPARSE_TRANSITION_MAX_SECONDS, EXPLICIT_SPONSOR_CTA_RE
+from .constants import COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_IDS, COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS, COMMERCIAL_RECOVERY_MAX_CANDIDATE_SECONDS, COMMERCIAL_RECOVERY_MAX_CANDIDATES, COMMERCIAL_SPARSE_CONTEXT_FLANK_IDS, COMMERCIAL_SPARSE_GAP_MIN_SECONDS, COMMERCIAL_SPARSE_MAX_ENVELOPE_SECONDS, COMMERCIAL_SPARSE_MAX_SECONDS, COMMERCIAL_SPARSE_TRANSITION_MAX_CHARS, COMMERCIAL_SPARSE_TRANSITION_MAX_SECONDS, EXPLICIT_SPONSOR_CTA_RE
 from .interval_geometry import interval_contains, intervals_overlap
 from .sponsor_evidence import explicit_sponsor_destination_seen
 
@@ -31,6 +31,10 @@ def commercial_evidence_seed_ids(segments, detections):
     These are nominations only.  The archive's all-content classifications are
     intentionally not reinterpreted here, and any cue already covered by an
     archive detection is excluded rather than extended by this recovery.
+
+    A destination without a call to action is also a nomination when it sits
+    beside a primary seed or an existing cut: produced spots may sign off with
+    only a domain.  Such neighbour seeds never stand alone far from either.
     """
     seeds = []
     for first in range(len(segments)):
@@ -64,16 +68,85 @@ def commercial_evidence_seed_ids(segments, detections):
             )
             seeds.append(evidence_ids)
             break
+    # A produced spot can end with only a destination ("blitzy dot com").  Run
+    # the same bounded search for destination-only windows, but nominate one
+    # only when it sits close to a primary seed or an existing detection.
+    neighbour_seeds = []
+    for first in range(len(segments)):
+        if _evidence_is_covered(first, segments, detections):
+            continue
+        last_limit = min(len(segments), first + COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_IDS)
+        window = []
+        for segment_id in range(first, last_limit):
+            if _evidence_is_covered(segment_id, segments, detections):
+                break
+            if float(segments[segment_id].start_s) - float(segments[first].start_s) > COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS:
+                break
+            window.append(segment_id)
+            evidence_windows = []
+            for sub_first in range(len(window)):
+                for sub_last in range(sub_first, len(window)):
+                    evidence_ids = tuple(window[sub_first:sub_last + 1])
+                    joined = " ".join(segments[item].text or "" for item in evidence_ids)
+                    if (EXPLICIT_SPONSOR_CTA_RE.search(joined) is None
+                            and explicit_sponsor_destination_seen(joined)):
+                        evidence_windows.append(evidence_ids)
+            if not evidence_windows:
+                continue
+            neighbour_seeds.append(min(
+                evidence_windows,
+                key=lambda ids: (len(ids), ids[0], ids[-1]),
+            ))
+            break
+    anchors = [
+        (float(segments[ids[0]].start_s), float(segments[ids[-1]].end_s))
+        for ids in seeds
+    ]
+    anchors.extend((float(ad.start_s), float(ad.end_s)) for ad in detections)
+    neighbour_seeds = [
+        ids for ids in neighbour_seeds
+        if any(
+            _neighbour_seed_is_near(
+                float(segments[ids[0]].start_s),
+                float(segments[ids[-1]].end_s),
+                anchor_start,
+                anchor_end,
+            )
+            for anchor_start, anchor_end in anchors
+        )
+    ]
     # Adjacent scans naturally rediscover the same CTA/destination pair.  Join
     # intersecting seed windows before inference so one commercial observation
     # consumes at most one nomination/preservation pair.
+    primary_seeds = set(seeds)
     merged = []
-    for seed in sorted(set(seeds), key=lambda ids: (ids[0], ids[-1])):
+    merged_has_primary = []
+    for seed in sorted(primary_seeds | set(neighbour_seeds), key=lambda ids: (ids[0], ids[-1])):
         if merged and seed[0] <= merged[-1][-1] + 1:
             merged[-1] = tuple(range(merged[-1][0], max(merged[-1][-1], seed[-1]) + 1))
+            merged_has_primary[-1] = merged_has_primary[-1] or seed in primary_seeds
         else:
             merged.append(seed)
-    return tuple(merged[:COMMERCIAL_RECOVERY_MAX_CANDIDATES])
+            merged_has_primary.append(seed in primary_seeds)
+    primary_windows = [
+        ids for ids, has_primary in zip(merged, merged_has_primary) if has_primary
+    ]
+    neighbour_windows = [
+        ids for ids, has_primary in zip(merged, merged_has_primary) if not has_primary
+    ]
+    selected = primary_windows[:COMMERCIAL_RECOVERY_MAX_CANDIDATES]
+    selected.extend(
+        neighbour_windows[:COMMERCIAL_RECOVERY_MAX_CANDIDATES - len(selected)]
+    )
+    return tuple(sorted(selected, key=lambda ids: (ids[0], ids[-1])))
+
+def _neighbour_seed_is_near(neighbour_start, neighbour_end, anchor_start, anchor_end):
+    """Return whether one evidence window is within the neighbour bound of another."""
+    if intervals_overlap(neighbour_start, neighbour_end, anchor_start, anchor_end):
+        return True
+    if neighbour_start >= anchor_end:
+        return neighbour_start - anchor_end <= COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS
+    return anchor_start - neighbour_end <= COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS
 
 def recover_commercial_evidence_reads(ads_module, backend, segments, detections, total_seconds):
     """Recover unanchored host reads only from reviewed CTA/destination evidence."""
@@ -237,10 +310,37 @@ def recover_sparse_commercial_reads(
             and abs(end_s - float(original.end_s)) <= 0.01
         ):
             continue
-        if any(
-            ad is not original and intervals_overlap(float(ad.start_s), float(ad.end_s), start_s, end_s)
-            for ad in recovered
-        ):
+        overlapping = [
+            ad for ad in recovered
+            if ad is not original
+            and intervals_overlap(float(ad.start_s), float(ad.end_s), start_s, end_s)
+        ]
+        if overlapping:
+            union_start = min(start_s, *(float(ad.start_s) for ad in overlapping))
+            union_end = max(end_s, *(float(ad.end_s) for ad in overlapping))
+            if original is not None:
+                union_start = min(union_start, float(original.start_s))
+                union_end = max(union_end, float(original.end_s))
+            if union_end - union_start <= COMMERCIAL_RECOVERY_MAX_CANDIDATE_SECONDS:
+                merged_ads = [*overlapping]
+                if original is not None:
+                    merged_ads.append(original)
+                removed = {id(ad) for ad in merged_ads}
+                recovered[:] = [ad for ad in recovered if id(ad) not in removed]
+                confidence = min(
+                    recovered_confidence(2, 3),
+                    *(float(ad.confidence) for ad in merged_ads),
+                )
+                labels = {ad.label for ad in merged_ads}
+                label = labels.pop() if len(labels) == 1 else "sponsor_read"
+                recovered.append(ads_module.AdSegment(
+                    union_start, union_end, confidence, label
+                ))
+                _worker_reporting.progress(
+                    "ads.detect.sparse.merged",
+                    f"ID {segment_id} merged verified commercial {union_start:.3f}-{union_end:.3f}",
+                )
+                continue
             _worker_reporting.progress("ads.detect.sparse.skipped", f"proposal overlaps another cut at ID {segment_id}")
             continue
         confidence = recovered_confidence(2, 3)
