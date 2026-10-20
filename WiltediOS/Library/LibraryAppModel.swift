@@ -363,14 +363,18 @@ final class LibraryAppModel: ObservableObject {
         let priorQueue = Set(decisionContent.queue.map(\.entryID))
         let roundStore = store, roundReconciler = reconciler
         let generation = await transport.operationGeneration()
+        var reportedStop = false
         func current() async -> Bool {
             let liveGeneration = await transport.operationGeneration()
             let state = await roundStore.state()
             let owner = await transport.verifiedOwnerToken()
             let finalGeneration = await transport.operationGeneration()
-            return !Task.isCancelled && liveGeneration == generation && finalGeneration == generation
-                && (state.ownerToken == nil || state.ownerToken == owner) && !state.reviewHold && !accountQuarantined
-                && ObjectIdentifier(store as AnyObject) == ObjectIdentifier(roundStore as AnyObject)
+            let stop = LibraryRoundStop.check(
+                cancelled: Task.isCancelled, generationMatches: liveGeneration == generation && finalGeneration == generation,
+                savedOwner: state.ownerToken, verifiedOwner: owner, reviewHold: state.reviewHold, quarantined: accountQuarantined,
+                sameStore: ObjectIdentifier(store as AnyObject) == ObjectIdentifier(roundStore as AnyObject))
+            if let stop, !reportedStop { reportedStop = true; stop.log() }
+            return stop == nil
         }
         guard await current() else { return }
         if plan.readsState && plan.readsOffers {
@@ -454,7 +458,10 @@ final class LibraryAppModel: ObservableObject {
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
         await resolveAdds(outcomes: polled?.outcomes ?? [])
         guard await current() else { return }
-        if let failure { errorMessage = failure is TransportThrottled ? nil : Self.message(for: failure) }
+        if let failure {
+            if !(failure is TransportThrottled) { LibraryRoundStop.logFailure(failure) }
+            errorMessage = failure is TransportThrottled ? nil : Self.message(for: failure)
+        }
         else if plan.readsState { errorMessage = nil; lastSynchronizedAt = now() }
         // A quiet offer-only success cannot clear an unresolved library-state failure.
     }
