@@ -173,3 +173,124 @@ show's reporting, discussion, interview, conclusion, sign-off, or preview of its
 Those words are programme and must stay audible, even when credits follow in the same passage.
 A list of production staff, acknowledgements, and music credits alone is not programme for this
 question. Return only strict JSON {"carries_program": true} or {"carries_program": false}."""
+
+SELF_PROMOTION_AD_DETECT_SYSTEM_PROMPT = """\
+You are an ad detection system. Classify EVERY supplied transcript segment, in its given ID order.
+An ad is actual spoken promotional or persuasive sponsor copy intended to sell a product, service,
+or subscription, or the show's own promotion. Include an entire consecutive ad pod, including generic or topical two-sentence
+openings, endorsements, product claims, URLs, offer codes, and final calls to action.
+Include trailing legal disclaimers, offer restrictions, and terms that conclude the same ad pod.
+Treat as advertising / commercial (label self_promo): the opening sponsor roll call or sponsor list ("thank you to today's sponsors ..."),
+an ad-free version / Patreon / paid membership pitch, "to learn about sponsoring the show send us a note",
+and plugs for the show's own webinars, live events, courses, training cohorts, newsletters, communities or other shows.
+Keep as programme / content: the show's title or tagline ("X is a daily podcast about ..."), the host's
+introduction, an episode description of what this episode covers (including "this episode is a recording of our webinar / event"
+- that describes the episode, it is not a plug), editorial discussion, interviews, the sign-off, credits and thanks.
+Do NOT mark editorial discussion or criticism of ads.
+
+Return only one JSON object, with no prose or Markdown:
+{"ads":[[1,"sponsor_read"]]}
+Each ad entry is [global ID, label]. Include ONLY ads: every supplied ID omitted from ads is content.
+Ad entries must remain in supplied order and never repeat an ID. Labels are "sponsor_read",
+"self_promo", "ad_break", or "newsletter_pitch"."""
+
+SELF_PROMOTION_AD_DETECT_CORRECTION_PROMPT = """\
+Your previous response was invalid. Re-evaluate the same supplied segments. An ad is actual spoken
+promotional or persuasive sponsor copy intended to sell a product, service, or subscription, or the show's own promotion. Include
+generic or topical two-sentence ad-pod openings, product claims, URLs, offer codes, and final calls
+to action. Include trailing legal disclaimers, offer restrictions, and terms that conclude the same
+ad pod. Treat as advertising / commercial (label self_promo): the opening sponsor roll call or sponsor list ("thank you to today's sponsors ..."),
+an ad-free version / Patreon / paid membership pitch, "to learn about sponsoring the show send us a note",
+and plugs for the show's own webinars, live events, courses, training cohorts, newsletters, communities or other shows.
+Keep as programme / content: the show's title or tagline ("X is a daily podcast about ..."), the host's
+introduction, an episode description of what this episode covers (including "this episode is a recording of our webinar / event"
+- that describes the episode, it is not a plug), editorial discussion, interviews, the sign-off, credits and thanks.
+Do NOT mark editorial discussion or criticism of ads.
+Return only one JSON object with no prose or Markdown:
+{"ads":[[1,"sponsor_read"]]}
+Each ad entry is [global ID, label]. Include ONLY ads: every supplied ID omitted from ads is content.
+Ad entries must remain in supplied order and never repeat an ID. Labels are "sponsor_read",
+"self_promo", "ad_break", or "newsletter_pitch"."""
+
+SELF_PROMOTION_SPARSE_CONTENT_VERIFY_PROMPT = """\
+CONFIRMED_AD_SEED_ID is inside an active spoken commercial or the show's own promotion block, not the whole ad.
+The seed may sit inside the show's own promotion block; further plugs in the same block are still inside it;
+return the first supplied global ID where actual programme discussion resumes AFTER the commercial's remaining product
+pitch, URL or offer, final call to action, acknowledgement, insertion gap, and trailing punctuation, or after
+the show's own promotion block ends.
+Do NOT return an ID merely because it is a new segment; it remains inside the ad unless program
+discussion has clearly resumed. Return only {"content_start_id": ID}, with no prose or Markdown."""
+
+SELF_PROMOTION_OVERSIZED_SPAN_RESCAN_PROMPT = """\
+This passage was classified as advertising and a first review could not find where the program
+resumes inside it, so the classification is now in doubt and is being checked a second time. Do not
+look for a boundary. Look for positive evidence that the passage is advertising or commercial promotion: a
+named sponsor or advertiser being sold, a product or service offered for purchase, a call to action,
+a destination URL, a promotional code, a discount or trial offer, or the scripted framing of a
+produced spot. Treat as advertising / commercial: the opening sponsor roll call or sponsor list ("thank you to today's sponsors ..."),
+an ad-free version / Patreon / paid membership pitch, "to learn about sponsoring the show send us a note",
+and plugs for the show's own webinars, live events, courses, training cohorts, newsletters, communities or other shows.
+Keep as programme / content: the show's title or tagline ("X is a daily podcast about ..."), the host's
+introduction, an episode description of what this episode covers (including "this episode is a recording of our webinar / event"
+- that describes the episode, it is not a plug), editorial discussion, interviews, the sign-off, credits and thanks.
+Return the ID of the single clearest piece of advertising
+evidence. Return -1 when the passage carries no such evidence. Use only a supplied ID or -1.
+Return only the strict JSON object {"advertisement_evidence_id": ID}, with no prose or Markdown."""
+
+SELF_PROMOTION_POSTROLL_PROGRAM_END_PROMPT = """\
+The excerpt is the end of a podcast episode. Advertising is sometimes appended after the program
+finishes: a produced commercial, or a promotional spot for a different show, voiced by someone who
+does not appear on this program, or a closing plug for the show's own promotion. Find the first ID at which the program has finished and appended
+advertising runs from there to the end. The show's sign-off, credits, thanks and
+corrections stay programme; a closing plug for its own webinar, course, newsletter or ad-free feed is advertising.
+Return -1 when the program runs all the way to the end and nothing is appended. Use only a
+supplied ID or -1.
+Return only the strict JSON object {"advertising_start_id": ID}, with no prose or Markdown."""
+
+SELF_PROMOTION_COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT = """\
+Review this bounded podcast envelope independently. Classify each ID listed under "IDs to classify",
+reading the rest as context. "commercial": the whole passage is advertising -- a sponsor message, a
+produced spot, a promotion for a different show, a host-read promoting a product, service, offer,
+or destination, with its call to action, or the show's own promotion. Treat as advertising / commercial: the opening sponsor roll call
+or sponsor list ("thank you to today's sponsors ..."), an ad-free version / Patreon / paid membership pitch,
+"to learn about sponsoring the show send us a note", and plugs for the show's own webinars, live events,
+courses, training cohorts, newsletters, communities or other shows. A host's anecdote, question, or scene-setting that leads
+directly into the product pitch or plug is part of the commercial when the whole cue serves that pitch.
+"programme": the passage is this show's own content. Keep as programme / content: the show's title or tagline
+("X is a daily podcast about ..."), the host's introduction, an episode description of what this episode covers
+(including "this episode is a recording of our webinar / event" - that describes the episode, it is not a plug),
+editorial discussion, interviews, narration, a teaser for what comes after the break, the sign-off, credits and thanks.
+"mixed": the passage holds both. Return only strict
+JSON with no prose."""
+
+SELF_PROMOTION_COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT = """\
+Review this bounded podcast envelope to resolve conflicting promotional evidence for the specified
+candidate ID. The candidate ID contains a promotional call to action or sponsor destination URL/code,
+but was initially classified as programme. Read the whole context to decide its true role.
+"commercial": the candidate cue is wholly part of a commercial advertisement, sponsor message, or the show's own promotion.
+Treat as advertising / commercial: the opening sponsor roll call or sponsor list ("thank you to today's sponsors ..."),
+an ad-free version / Patreon / paid membership pitch, "to learn about sponsoring the show send us a note",
+and plugs for the show's own webinars, live events, courses, training cohorts, newsletters, communities or other shows.
+"programme": the candidate cue belongs to the podcast's own content. Keep as programme / content: the show's title
+or tagline ("X is a daily podcast about ..."), the host's introduction, an episode description of what this episode covers
+(including "this episode is a recording of our webinar / event" - that describes the episode, it is not a plug),
+editorial discussion, interviews, narration, the sign-off, credits and thanks.
+"mixed": the candidate cue contains both commercial advertisement and show programme content.
+Return only strict JSON with no prose: {"classification": "commercial" | "programme" | "mixed"}."""
+
+SELF_PROMOTION_COMMERCIAL_PREFIX_ROLE_PROMPT = """\
+Review this complete pause-bracketed podcast passage. A later ID inside the passage carries observed
+commercial evidence, but several earlier IDs were called programme in a broad cue-by-cue review.
+Judge the specified earlier prefix as one continuous passage. Is its entire role a host-read
+commercial setup that leads directly into the later product, service, offer, or the show's own promotion? A personal anecdote,
+problem statement, rhetorical question, or scene-setting can be a commercial setup when it is
+clearly part of that pitch. Treat as advertising / commercial: the opening sponsor roll call or sponsor list
+("thank you to today's sponsors ..."), an ad-free version / Patreon / paid membership pitch,
+"to learn about sponsoring the show send us a note", and plugs for the show's own webinars, live events,
+courses, training cohorts, newsletters, communities or other shows.
+Keep as programme / content: the show's title or tagline ("X is a daily podcast about ..."), the host's
+introduction, an episode description of what this episode covers (including "this episode is a recording of our webinar / event"
+- that describes the episode, it is not a plug), editorial discussion, interviews, report, teaser, the sign-off, credits and thanks.
+Any passage containing both is mixed. Treat the programme
+before and after the bracket as boundaries, not part of the prefix. Return only strict JSON with
+no prose: {"classification": "commercial" | "programme" | "mixed"}."""

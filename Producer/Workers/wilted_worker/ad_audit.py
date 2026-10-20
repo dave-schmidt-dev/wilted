@@ -192,10 +192,21 @@ def _worker_owned_prompts() -> frozenset:
 class AuditingBackend(CountingBackend):
     """Observe archive classification requests while leaving its retry policy intact."""
 
-    def __init__(self, backend, ads_module, segment_count: int | None = None):
+    def __init__(
+        self,
+        backend,
+        ads_module,
+        segment_count: int | None = None,
+        *,
+        prompt_overrides: dict[str, str] | None = None,
+    ):
         super().__init__(backend)
         self._ads_module = ads_module
         self._segment_count = segment_count
+        # Original prompt text -> the variant actually sent to the model. Every
+        # check in `generate` stays on the original, so lineages and review
+        # states are recorded exactly as without overrides.
+        self._prompt_overrides: dict[str, str] = dict(prompt_overrides or {})
         self.lineages: list[_ClassificationLineage] = []
         self._pending: _ClassificationLineage | None = None
         self.contract_errors: list[str] = []
@@ -214,6 +225,11 @@ class AuditingBackend(CountingBackend):
         self._correction_prompt = prompts[1]
         self._classification_response_format = response_format
         self._worker_prompts = _worker_owned_prompts()
+
+    @property
+    def removes_self_promotion(self) -> bool:
+        """Whether this backend sends the self-promotion-aware prompt variants."""
+        return bool(self._prompt_overrides)
 
     def bind_segment_count(self, segment_count: int) -> None:
         """Bind rendered IDs to the transcript domain before detection begins."""
@@ -259,8 +275,9 @@ class AuditingBackend(CountingBackend):
         elif system_prompt == prompts.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT:
             match = re.match(r"Candidate ID to resolve: (\d+)\n", user_content)
             review_ids = (int(match.group(1)),) if match else ()
+        forwarded = self._prompt_overrides.get(system_prompt, system_prompt)
         try:
-            response, tokens = super().generate(system_prompt, user_content, response_format=response_format)
+            response, tokens = super().generate(forwarded, user_content, response_format=response_format)
         except Exception as error:
             if not expected_backend_unavailable(error):
                 self.unexpected_error = error

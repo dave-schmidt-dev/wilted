@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from wilted_worker import ad_removal as _worker_ad_removal
+from wilted_worker import prompts as _worker_prompts
 from wilted_worker import reporting as _worker_reporting
 from worker_test_support import *  # noqa: F403
 from worker_test_support import load_runtime_ads, wp
@@ -24,7 +25,13 @@ class ScriptedBackend:
 
     def generate(self, system_prompt: str, content: str, *, response_format=None):
         self.calls.append((system_prompt, content, response_format))
-        if system_prompt in (self.ads._AD_DETECT_SYSTEM_PROMPT, self.ads._AD_DETECT_CORRECTION_PROMPT):
+        if system_prompt in (
+            self.ads._AD_DETECT_SYSTEM_PROMPT,
+            self.ads._AD_DETECT_CORRECTION_PROMPT,
+            # A flag-on analysis forwards the variants in their place.
+            _worker_prompts.SELF_PROMOTION_AD_DETECT_SYSTEM_PROMPT,
+            _worker_prompts.SELF_PROMOTION_AD_DETECT_CORRECTION_PROMPT,
+        ):
             found_ids = [int(m) for m in re.findall(r"\[ID (\d+)\]", content)]
             ads_list = [
                 [seg_id, self.label_map[seg_id]]

@@ -24,6 +24,7 @@ from . import commercial_seeds as _worker_commercial_seeds
 from . import cue_timing as _worker_cue_timing
 from . import edge_recovery as _worker_edge_recovery
 from . import gpu_admission as _worker_gpu_admission
+from . import prompts
 from . import reporting as _worker_reporting
 from . import span_bounds as _worker_span_bounds
 from . import tail_recovery as _worker_tail_recovery
@@ -38,6 +39,32 @@ from .reporting import DiscardedRuns, WorkerError
 from .span_bounds import enforce_total_ad_share_ceiling, recover_adjacent_ad_pod_continuations, reject_implausible_ad_spans
 from .sponsor_evidence import explicit_sponsor_anchor_ids, explicit_sponsor_opening_pattern, sponsor_anchor_is_covered
 from .tail_recovery import trim_straddling_span_tails
+
+def self_promotion_prompt_overrides(ads_module) -> dict[str, str]:
+    """Map original detection and review prompts to self-promotion-aware variants."""
+    overrides: dict[str, str] = {}
+    archive_candidates = (
+        ("_AD_DETECT_SYSTEM_PROMPT", prompts.SELF_PROMOTION_AD_DETECT_SYSTEM_PROMPT),
+        ("_AD_DETECT_CORRECTION_PROMPT", prompts.SELF_PROMOTION_AD_DETECT_CORRECTION_PROMPT),
+        ("_SPARSE_CONTENT_VERIFY_SYSTEM_PROMPT", prompts.SELF_PROMOTION_SPARSE_CONTENT_VERIFY_PROMPT),
+    )
+    for attr, variant in archive_candidates:
+        orig = getattr(ads_module, attr, None)
+        if isinstance(orig, str) and orig:
+            overrides[orig] = variant
+
+    worker_candidates = (
+        (prompts.OVERSIZED_SPAN_RESCAN_PROMPT, prompts.SELF_PROMOTION_OVERSIZED_SPAN_RESCAN_PROMPT),
+        (prompts.POSTROLL_PROGRAM_END_PROMPT, prompts.SELF_PROMOTION_POSTROLL_PROGRAM_END_PROMPT),
+        (prompts.COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT, prompts.SELF_PROMOTION_COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT),
+        (prompts.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT, prompts.SELF_PROMOTION_COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT),
+        (prompts.COMMERCIAL_PREFIX_ROLE_PROMPT, prompts.SELF_PROMOTION_COMMERCIAL_PREFIX_ROLE_PROMPT),
+    )
+    for orig, variant in worker_candidates:
+        if isinstance(orig, str) and orig:
+            overrides[orig] = variant
+
+    return overrides
 
 def analyze_ad_detections(
     ads_module,
@@ -55,9 +82,21 @@ def analyze_ad_detections(
     the exact live path replayable with a supplied backend and duration, while
     retaining the archive as the sole classifier and recovery implementation.
     """
-    auditing_backend = backend if isinstance(backend, AuditingBackend) else AuditingBackend(
-        backend, ads_module, len(segments)
-    )
+    if isinstance(backend, AuditingBackend):
+        if backend.removes_self_promotion != remove_self_promotion:
+            raise WorkerError(
+                "ads-audit-contract-unavailable",
+                "audit backend prompt mode does not match the self-promotion flag",
+            )
+        auditing_backend = backend
+    else:
+        overrides = self_promotion_prompt_overrides(ads_module) if remove_self_promotion else None
+        auditing_backend = AuditingBackend(
+            backend,
+            ads_module,
+            len(segments),
+            prompt_overrides=overrides,
+        )
     auditing_backend.bind_segment_count(len(segments))
     install_legacy_sponsor_opening_compatibility(ads_module)
     install_produced_disclaimer_evidence(ads_module)
@@ -335,8 +374,17 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             audit = AdAnalysisAudit(model_failures=1, incomplete_error=reason, warning=warning)
             return audio_path, [], [], [], serialize_ad_audit(audit)
 
+        remove_self_promotion = request.get("removeSelfPromotion") is True
         try:
-            counting = AuditingBackend(backend, ads_module, len(segments))
+            if remove_self_promotion:
+                counting = AuditingBackend(
+                    backend,
+                    ads_module,
+                    len(segments),
+                    prompt_overrides=self_promotion_prompt_overrides(ads_module),
+                )
+            else:
+                counting = AuditingBackend(backend, ads_module, len(segments))
         except WorkerError as error:
             if error.code == "ads-audit-contract-unavailable":
                 if backend is not None:
@@ -352,7 +400,6 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             raise
 
         try:
-            remove_self_promotion = request.get("removeSelfPromotion") is True
             if remove_self_promotion:
                 _worker_reporting.progress(
                     "ads.detect.self_promotion",
