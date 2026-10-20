@@ -19,7 +19,7 @@ from wilted_worker import prompts as _worker_prompts
 from wilted_worker.reporting import WorkerError
 from worker_test_fake_ads import FakeAd, install_fake_ads
 from worker_test_fake_llm import FakeLLM
-from worker_test_support import FakeSegment, REPO_ROOT, install_fake_wilted, load_runtime_ads, wp
+from worker_test_support import FakeSegment, REPO_ROOT, install_fake_wilted, load_runtime_ads, synthetic_render, wp
 
 
 class CapacityScriptedBackend:
@@ -237,30 +237,18 @@ class ContextCapacityRecoveryTests(unittest.TestCase):
         detector._covers_classifier = True
         ads.detect_ads = detector
 
-        rendered_files: dict[str, float] = {}
-
-        def fake_render(command, **_kwargs):
-            out = Path(command[-1])
-            out.write_bytes(b"synthetic cut audio")
-            filters = command[command.index("-filter_complex") + 1]
-            rendered_files[out.name] = sum(
-                float(end) - float(start)
-                for start, end in re.findall(r"atrim=start=([0-9.]+):end=([0-9.]+)", filters)
-            )
-
-        def fake_probe(path):
-            return rendered_files.get(Path(path).name, 500.0)
-
-        render_mock = mock.MagicMock(side_effect=fake_render)
         no_gpu = contextlib.nullcontext()
 
         with tempfile.TemporaryDirectory() as scratch:
             out_path = Path(scratch, "rendered-output.mp3")
             with redirect_stderr(io.StringIO()), \
                     mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                    mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=fake_probe), \
+                    synthetic_render(500.0), \
                     mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=no_gpu), \
-                    mock.patch.object(_worker_cue_timing, "_run_render_with_progress", render_mock):
+                    mock.patch.object(
+                        _worker_cue_timing, "_run_render_with_progress",
+                        wraps=_worker_cue_timing._run_render_with_progress
+                    ) as render_mock:
                 result = wp.run({
                     "protocolVersion": 2,
                     "audioPath": str(audio),
@@ -273,7 +261,9 @@ class ContextCapacityRecoveryTests(unittest.TestCase):
         self.assertNotEqual(result["report"]["outcome"], "uncertain")
         self.assertEqual(result["report"]["outcome"], "cut")
         self.assertNotIn("original audio includes ads", result.get("warning") or "")
-        render_mock.assert_called_once()
+        self.assertEqual(
+            sum("-filter_complex" in call.args[0] for call in render_mock.call_args_list), 1
+        )
 
 
 if __name__ == "__main__":
