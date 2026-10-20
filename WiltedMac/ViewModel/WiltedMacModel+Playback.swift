@@ -321,10 +321,16 @@ extension WiltedMacModel {
     func waitForPlaybackOperationForTesting() async {
 #if canImport(WiltedProducer)
         // A command issued while an earlier one ran extends the tail, so
-        // drain until the tail stops moving.
-        while let task = playbackOperationTask {
-            await task.value
-            if playbackOperationTask == task { break }
+        // drain until the tail stops moving. A natural end's library
+        // follow-up runs after its start, so drain that lane too.
+        while true {
+            while let task = playbackOperationTask {
+                await task.value
+                if playbackOperationTask == task { break }
+            }
+            let settled = playbackOperationTask
+            await libraryFollowUps.drain()
+            if playbackOperationTask == settled { break }
         }
 #endif
     }

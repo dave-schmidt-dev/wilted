@@ -561,28 +561,18 @@ extension WiltedMacModel {
         playback?.podcastStateHandler = { [weak self] itemID, fault in
             self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
         }
-        // Retire every durable podcast completion. The Mac owns natural-end
-        // selection through the finish callback below; this handler does not
-        // mutate queue membership while the controller is checkpointing.
+        // Retire every durable podcast completion, once. A natural end's
+        // retirement waits behind the successor's start (`libraryFollowUps`);
+        // this handler does not mutate queue membership while the controller
+        // is checkpointing.
         playback?.podcastCompletionHandler = { [weak self] episodeID in
-            Task { [weak self] in
-                guard let self else { return }
-                _ = await self.completeAndRetire(episodeID)
-                await self.reloadLibraryRows()
-            }
+            self?.retireDurablePodcastCompletion(episodeID)
         }
         // The controller's Mac policy stops at every natural podcast end so
         // the model can choose the first Ready row, including earlier entries.
         // Playlist and non-podcast completion remain guarded by the model.
         playback?.podcastNaturalCompletionHandlerFactory = { [weak self] itemID in
-            guard let self, self.isPodcastPlayback, !self.playlistSessionIsCurrent,
-                  self.episodes.first(where: { $0.id == itemID.rawValue })?.isAudiobook != true else { return nil }
-            let advance = self.beginAutomaticAdvance()
-            let keepsFinishedOnPause = self.isLarderQueuePlayback
-            return { [weak self] in
-                self?.continueNaturalPodcastEnd(finishedID: itemID.rawValue, advance: advance,
-                                               keepsFinishedOnPause: keepsFinishedOnPause)
-            }
+            self?.naturalPodcastEndHandler(for: itemID)
         }
         playback?.playbackDidFinishHandler = { [weak self] in
             guard let self else { return }
