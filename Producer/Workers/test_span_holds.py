@@ -51,7 +51,6 @@ class HeldSeedFallbackTests(unittest.TestCase):
             result = ad_removal.detect_and_cut(
                 {"outputPath": str(output)}, audio, [], segments,
                 model_lock=contextlib.nullcontext(),
-                with_report=True,
             )
         return audio, output, result, render_call
 
@@ -160,7 +159,7 @@ class SpanCeilingTests(unittest.TestCase):
         self.assertEqual([(span.start_s, span.end_s, span.reason) for span in held],
                          [(0.0, 30.0, "boundary-review-unresolved")])
 
-    def test_an_unresolved_hold_keeps_the_original_without_a_report(self):
+    def test_an_unresolved_hold_keeps_the_original_and_reports_why(self):
         with tempfile.TemporaryDirectory() as scratch:
             audio = Path(scratch) / "source.mp3"
             audio.write_bytes(b"original audio")
@@ -180,7 +179,8 @@ class SpanCeilingTests(unittest.TestCase):
                     [FakeSegment(0.0, 600.0, "one full programme cue")],
                     model_lock=contextlib.nullcontext(),
                 )
-        self.assertEqual(result, (audio, [], []))
+        self.assertEqual(result[:4], (audio, [], [], []))
+        self.assertIn("could not safely resolve", result[4]["incompleteError"])
         render.assert_not_called()
 
     def test_existing_single_span_and_total_share_ceilings_still_hold(self):

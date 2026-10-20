@@ -198,19 +198,17 @@ def run(request: dict) -> dict:
         raise WorkerError("invalid-request", f"unknown transcriptPolicy: {transcript_policy}")
 
     remove_ads = request.get("removeAds", True)
-    strict_v2 = requested_version == PROTOCOL_VERSION
-    if strict_v2 and remove_ads and transcript_policy == "noLocalSTT":
+    if remove_ads and requested_version != PROTOCOL_VERSION:
+        raise WorkerError("protocol-version-required", f"ad removal requires protocolVersion {PROTOCOL_VERSION}")
+    if remove_ads and transcript_policy == "noLocalSTT":
         raise WorkerError("aligned-stt-required", "ad removal requires audio-aligned Parakeet timing; noLocalSTT forbids it")
     if remove_ads:
-        if strict_v2 and "outputPath" not in request:
+        if "outputPath" not in request:
             raise WorkerError("cut-output-missing", "ad removal requires a distinct outputPath")
-        if strict_v2 and Path(request["outputPath"]).resolve() == audio_path.resolve():
+        if Path(request["outputPath"]).resolve() == audio_path.resolve():
             raise WorkerError("cut-output-alias", "prepared output must not alias the downloaded audio")
-        if strict_v2:
-            _worker_ad_audit.preflight_cut_tools()
-        else:
-            _worker_ad_audit.preflight_ad_removal(request)
-        if strict_v2 and request.get("alignedTranscriptModel", ALIGNED_STT_MODEL) != ALIGNED_STT_MODEL:
+        _worker_ad_audit.preflight_cut_tools()
+        if request.get("alignedTranscriptModel", ALIGNED_STT_MODEL) != ALIGNED_STT_MODEL:
             raise WorkerError("aligned-stt-model-required", f"ad removal requires {ALIGNED_STT_MODEL}")
 
     cues: list[dict] = []
@@ -221,7 +219,7 @@ def run(request: dict) -> dict:
 
     # A removal request must be timed from this exact downloaded audio. Do not
     # fetch or parse publisher cues which are guaranteed not to drive it.
-    published = request.get("publishedTranscript") if allow_published_transcript and not (remove_ads and strict_v2) else None
+    published = request.get("publishedTranscript") if allow_published_transcript and not remove_ads else None
     if published:
         _worker_reporting.progress("transcript.published.parse", published.get("mediaType", ""))
         # Sorted for the same reason speech-to-text is: a feed's own file is no
@@ -242,8 +240,8 @@ def run(request: dict) -> dict:
             language = published.get("languageCode") or language
             _worker_reporting.progress("transcript.published.accepted", f"{len(cues)} cues")
 
-    if ((remove_ads and strict_v2) or not cues) and allow_speech_to_text:
-        aligned_model = (ALIGNED_STT_MODEL if remove_ads and strict_v2
+    if (remove_ads or not cues) and allow_speech_to_text:
+        aligned_model = (ALIGNED_STT_MODEL if remove_ads
                          else (request.get("alignedTranscriptModel") or ALIGNED_STT_MODEL))
         source_hash = request.get("sourceHash")
         try:
@@ -254,14 +252,14 @@ def run(request: dict) -> dict:
                 segments = _worker_transcript_sources.transcribe_with_daemon(audio_path, aligned_model)
                 if isinstance(source_hash, str) and source_hash and isinstance(aligned_model, str) and aligned_model:
                     _store_cached_aligned_segments(request, source_hash, aligned_model, segments)
-            if remove_ads and strict_v2:
+            if remove_ads:
                 segments = validate_aligned_segments(segments, audio_duration)
             cues = segments_to_cues(segments)
             timing = "aligned"
         except Exception as error:  # noqa: BLE001 - a failed tier falls through
             segments = None
             _worker_reporting.progress("transcript.stt.failed", f"{type(error).__name__}: {error}")
-            if remove_ads and strict_v2:
+            if remove_ads:
                 if isinstance(error, WorkerError):
                     raise
                 raise WorkerError("aligned-stt-unavailable", f"ad removal requires aligned speech-to-text: {type(error).__name__}: {error}") from error
@@ -269,45 +267,37 @@ def run(request: dict) -> dict:
         _worker_reporting.progress("transcript.absent", "no published or aligned transcript")
 
     output_path, ad_spans, keeps, raw_nominations, ad_audit = audio_path, [], [], [], None
-    if remove_ads and (strict_v2 or segments):
-        if not segments or (strict_v2 and timing != "aligned"):
-            if strict_v2:
-                raise WorkerError("aligned-stt-required", "ad removal requires valid audio-aligned speech-to-text")
-            remove_ads = False
-        else:
-            from wilted import llm as llm_module
+    if remove_ads:
+        if not segments or timing != "aligned":
+            raise WorkerError("aligned-stt-required", "ad removal requires valid audio-aligned speech-to-text")
+        from wilted import llm as llm_module
 
-            model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
-            model_available = True
-            if strict_v2:
-                try:
-                    _worker_ad_audit.preflight_ad_removal(request)
-                except WorkerError as error:
-                    if error.code != "ads-model-missing":
-                        raise
-                    model_available = False
-                    warning = f"original audio includes ads: {error}"
-                    _worker_reporting.progress("ads.uncertain", warning)
-                    ad_audit = _worker_cue_timing.serialize_ad_audit(
-                        _worker_ad_audit.AdAnalysisAudit(incomplete_error=str(error), warning=warning)
-                    )
-            model_lock = (_worker_gpu_admission.prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
-                          if model_available else None)
-            if strict_v2 and model_available:
-                output_path, ad_spans, keeps, raw_nominations, ad_audit = _worker_ad_removal.detect_and_cut(
-                    request, audio_path, cues, segments, model_lock=model_lock, with_report=True
-                )
-            elif not strict_v2:
-                output_path, ad_spans, keeps = _worker_ad_removal.detect_and_cut(
-                    request, audio_path, cues, segments, model_lock=model_lock
-                )
-            if strict_v2 and ad_audit and (ad_audit.get("warning") or ad_audit.get("incompleteError") or ad_audit.get("unresolvedIds")):
-                if output_path.resolve() != audio_path.resolve() or ad_spans or keeps:
-                    raise WorkerError("ads-uncertain-output-invalid", "uncertain ad removal must retain the whole original audio")
-            if keeps:
-                before = len(cues)
-                cues = remap_cues(cues, keeps)
-                _worker_reporting.progress("transcript.remap", f"{before} cues to {len(cues)} on the cut timeline")
+        model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
+        model_available = True
+        try:
+            _worker_ad_audit.preflight_ad_removal(request)
+        except WorkerError as error:
+            if error.code != "ads-model-missing":
+                raise
+            model_available = False
+            warning = f"original audio includes ads: {error}"
+            _worker_reporting.progress("ads.uncertain", warning)
+            ad_audit = _worker_cue_timing.serialize_ad_audit(
+                _worker_ad_audit.AdAnalysisAudit(incomplete_error=str(error), warning=warning)
+            )
+        model_lock = (_worker_gpu_admission.prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
+                      if model_available else None)
+        if model_available:
+            output_path, ad_spans, keeps, raw_nominations, ad_audit = _worker_ad_removal.detect_and_cut(
+                request, audio_path, cues, segments, model_lock=model_lock
+            )
+        if ad_audit and (ad_audit.get("warning") or ad_audit.get("incompleteError") or ad_audit.get("unresolvedIds")):
+            if output_path.resolve() != audio_path.resolve() or ad_spans or keeps:
+                raise WorkerError("ads-uncertain-output-invalid", "uncertain ad removal must retain the whole original audio")
+        if keeps:
+            before = len(cues)
+            cues = remap_cues(cues, keeps)
+            _worker_reporting.progress("transcript.remap", f"{before} cues to {len(cues)} on the cut timeline")
 
     if cues:
         cues = polish_with_notes(request, cues)
@@ -344,9 +334,9 @@ def run(request: dict) -> dict:
     else:
         outcome = "noAds"
 
-    if strict_v2 and remove_ads and (duration is None or not duration > 0 or not duration < float("inf")):
+    if remove_ads and (duration is None or not duration > 0 or not duration < float("inf")):
         raise WorkerError("output-duration-invalid", "ad removal output has no finite measured duration")
-    if strict_v2 and remove_ads and ad_audit is None:
+    if remove_ads and ad_audit is None:
         raise WorkerError("ads-audit-missing", "ad removal produced no auditable detector evidence")
     result = {
         "ok": True,

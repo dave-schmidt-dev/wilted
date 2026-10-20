@@ -66,7 +66,8 @@ class PreflightTests(unittest.TestCase):
     def test_missing_cut_tools_fail_before_any_work(self):
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent-bin"}), redirect_stderr(io.StringIO()):
             with self.assertRaises(wp.WorkerError) as raised:
-                wp.run({"audioPath": str(self.audio), "removeAds": True})
+                wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
+                        "outputPath": str(Path(self.tools) / "output.mp3"), "removeAds": True})
         self.assertEqual(raised.exception.code, "cut-tools-missing")
         self.assertIn("ffmpeg", str(raised.exception))
         self.assertEqual(self.stt_calls, [], "speech-to-text ran without ffmpeg present")
@@ -79,12 +80,18 @@ class PreflightTests(unittest.TestCase):
 
     def test_the_default_model_is_checked_when_none_is_named(self):
         self.default_model.unlink()
-        with mock.patch.dict(os.environ, {"PATH": self.tools}), redirect_stderr(io.StringIO()):
-            with self.assertRaises(wp.WorkerError) as raised:
-                wp.run({"audioPath": str(self.audio), "removeAds": True})
-        self.assertEqual(raised.exception.code, "ads-model-missing")
-        self.assertIn(str(self.default_model), str(raised.exception))
-        self.assertEqual(self.stt_calls, [], "speech-to-text ran without a model to detect with")
+        sys.modules["wilted.transcribe"].transcribe_audio = (
+            lambda path, **_: self.stt_calls.append(path) or [FakeSegment(0, 1, "content")]
+        )
+        with mock.patch.dict(os.environ, {"PATH": self.tools}), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), \
+                redirect_stderr(io.StringIO()):
+            result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
+                             "outputPath": str(Path(self.tools) / "output.mp3"), "removeAds": True})
+        self.assertEqual(result["report"]["outcome"], "uncertain")
+        self.assertIn(str(self.default_model), result["warning"])
+        self.assertEqual(result["report"]["audit"]["modelRequests"], 0)
+        self.assertEqual(len(self.stt_calls), 1)
 
     def test_present_tools_and_a_present_default_model_pass(self):
         with mock.patch.dict(os.environ, {"PATH": self.tools}):
@@ -136,7 +143,9 @@ class PreflightTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"PATH": self.tools}), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
             wp.run({
+                "protocolVersion": 2,
                 "audioPath": str(self.audio),
+                "outputPath": str(Path(self.tools) / "output.mp3"),
                 "removeAds": True,
                 "llmModel": str(self.default_model),
             })
@@ -205,7 +214,9 @@ class PreflightTests(unittest.TestCase):
                 mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(io.StringIO()), \
                 self.assertRaises(wp.WorkerError) as raised:
             wp.run({
+                "protocolVersion": 2,
                 "audioPath": str(self.audio),
+                "outputPath": str(Path(self.tools) / "output.mp3"),
                 "removeAds": True,
                 "readableTranscript": False,
                 "llmModel": str(self.default_model),
@@ -225,36 +236,6 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "ads-model-wait-failed")
         self.assertIn("invalid speech daemon status", str(raised.exception))
         self.assertEqual(events, ["status"])
-
-    def test_published_transcript_locks_before_load_without_stt_eviction(self):
-        events = []
-        install_fake_wilted({"vtt": [FakeSegment(0, 1, "content")]})
-        install_fake_speech_stack(events=events)
-        llm = FakeLLM()
-        original_load, original_close = llm.load, llm.close
-        llm.load = lambda: events.append("ads.load") or original_load()
-        llm.close = lambda: events.append("ads.close") or original_close()
-        install_fake_ads(llm)
-        stream = io.StringIO()
-        with mock.patch.dict(os.environ, {"PATH": self.tools}), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), \
-                redirect_stderr(stream):
-            result = wp.run({
-                "audioPath": str(self.audio),
-                "removeAds": True,
-                "allowSpeechToText": False,
-                "llmModel": str(self.default_model),
-                "publishedTranscript": {
-                    "body": "WEBVTT",
-                    "mediaType": "text/vtt",
-                    "url": "https://x.test/a.vtt",
-                },
-            })
-        self.assertTrue(result["ok"])
-        self.assertEqual(events, ["status", "ads.load", "ads.close"])
-        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
-        self.assertLess(stages.index("ads.model.wait"), stages.index("ads.model.locked"))
-        self.assertLess(stages.index("ads.model.locked"), stages.index("ads.model.load"))
 
     def test_another_admitted_request_releases_drains_and_retries(self):
         events = []
@@ -410,34 +391,26 @@ class PreflightTests(unittest.TestCase):
 
     def test_model_lock_releases_after_load_inference_and_close_errors(self):
         cases = (
-            (FakeLLM(fail_load=RuntimeError("load failed")), True),
-            (FakeLLM(fail_generate=RuntimeError("inference failed")), True),
-            (FakeLLM(), False),
+            (FakeLLM(fail_load=RuntimeError("load failed")), "load failed"),
+            (FakeLLM(fail_generate=RuntimeError("inference failed")), "inference failed"),
+            (FakeLLM(), None),
         )
-        for llm, raises in cases:
-            with self.subTest(raises=raises):
+        for llm, reason in cases:
+            with self.subTest(reason=reason):
                 install_fake_ads(llm)
-                if not raises:
+                if reason is None:
                     llm.close = mock.Mock(side_effect=RuntimeError("close failed"))
                 events = []
-                if raises:
-                    with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError), \
-                            mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-                        wp.detect_and_cut(
-                            {"audioPath": str(self.audio)},
-                            self.audio,
-                            [],
-                            [FakeSegment(0, 1, "content")],
-                            model_lock=recording_model_lock(events),
-                        )
-                else:
-                    with redirect_stderr(io.StringIO()), \
-                            mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-                        wp.detect_and_cut(
-                            {"audioPath": str(self.audio)},
-                            self.audio,
-                            [],
-                            [FakeSegment(0, 1, "content")],
-                            model_lock=recording_model_lock(events),
-                        )
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
+                    path, spans, keeps, raw, audit = wp.detect_and_cut(
+                        {"audioPath": str(self.audio)},
+                        self.audio,
+                        [],
+                        [FakeSegment(0, 1, "content")],
+                        model_lock=recording_model_lock(events),
+                    )
+                self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+                if reason is not None:
+                    self.assertIn(reason, audit["incompleteError"])
                 self.assertEqual(events, ["lock.enter", "lock.exit"])

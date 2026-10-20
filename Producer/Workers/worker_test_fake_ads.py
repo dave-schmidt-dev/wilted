@@ -244,7 +244,6 @@ def install_fake_ads(llm: FakeLLM, detections=()):
         return list(detections)
 
     ads.detect_ads = detect_ads
-    ads._compute_keep_segments = lambda total, ads_found, pad: []  # noqa: SLF001
     llm_module = types.ModuleType("wilted.llm")
     llm_module.DEFAULT_GGUF_MODEL = "/models/default.gguf"
     llm_module.create_backend = lambda kind, model: llm

@@ -32,6 +32,7 @@ from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
+from worker_test_support import synthetic_render
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
 from wilted_worker import ad_audit as _worker_ad_audit
@@ -56,10 +57,15 @@ class ExplicitSponsorRecoveryTests(ExplicitSponsorRecoveryMixinB, unittest.TestC
         ads = install_fake_ads(llm)
         ads.detect_ads = lambda _segments, _backend: list(detections)
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=duration):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        with tempfile.TemporaryDirectory() as directory:
+            request = {**self.request, "outputPath": str(Path(directory) / "prepared.mp3")}
+            with redirect_stderr(stream), synthetic_render(duration):
+                self.last_result = wp.detect_and_cut(
+                    request, self.audio, [], segments
+                )
         events = [json.loads(line) for line in stream.getvalue().splitlines()]
-        return spans, events
+        self.assertEqual(self.last_result[3], self.last_result[1])
+        return self.last_result[1], events
 
     def test_unclaimed_claude_anchor_adds_and_sorts_the_fifth_span(self):
         segments = [
@@ -181,7 +187,7 @@ class ExplicitSponsorRecoveryTests(ExplicitSponsorRecoveryMixinB, unittest.TestC
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=50.0), \
                 mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
             path, spans, keeps, raw, audit = wp.detect_and_cut(
-                self.request, self.audio, [], segments, with_report=True
+                self.request, self.audio, [], segments
             )
         self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
         self.assertIn("explicit sponsor anchors", audit["incompleteError"])
@@ -195,9 +201,11 @@ class ExplicitSponsorRecoveryTests(ExplicitSponsorRecoveryMixinB, unittest.TestC
             FakeSegment(20.0, 30.0, "learn more and get started today"),
             FakeSegment(30.0, 40.0, "back to the gadget discussion"),
         ]
-        with self.assertRaises(wp.WorkerError) as raised:
-            self.detect(segments, [], content_start_id=3, duration=50.0)
-        self.assertEqual(raised.exception.code, "ads-recovery-audit-failed")
+        self.detect(segments, [], content_start_id=3, duration=50.0)
+        path, spans, keeps, raw, audit = self.last_result
+        self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+        self.assertIn("explicit sponsor anchors", audit["incompleteError"])
+        self.assertTrue(audit["warning"].startswith("original audio includes ads:"))
 
     def test_cta_and_domain_without_explicit_anchor_does_not_cut(self):
         spans, events = self.detect(
@@ -340,8 +348,13 @@ class ExplicitSponsorRecoveryTests(ExplicitSponsorRecoveryMixinB, unittest.TestC
         ads = install_fake_ads(llm)
         ads.detect_ads = lambda _segments, _backend: []
         stream = io.StringIO()
-        with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=5000.0):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        with tempfile.TemporaryDirectory() as directory:
+            request = {**self.request, "outputPath": str(Path(directory) / "prepared.mp3")}
+            with redirect_stderr(stream), synthetic_render(5000.0):
+                _path, spans, _keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], segments
+                )
+        self.assertEqual(raw, spans)
         return spans, [json.loads(line) for line in stream.getvalue().splitlines()]
 
     def test_consecutive_opening_spots_join_the_verified_anchor_to_transcript_start(self):
@@ -409,7 +422,7 @@ class UncertainAdDetectionTests(unittest.TestCase):
                         mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
                         mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
                     path, spans, keeps, raw, audit = wp.detect_and_cut(
-                        self.request, self.audio, [], self.segments, with_report=True
+                        self.request, self.audio, [], self.segments
                     )
                 self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
                 self.assertIn(reason, audit["incompleteError"])
@@ -427,7 +440,7 @@ class UncertainAdDetectionTests(unittest.TestCase):
                         mock.patch.object(_worker_ad_removal, "analyze_ad_detections", side_effect=wp.WorkerError(code, "IDs 0, 1 unresolved")), \
                         mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
                     path, spans, keeps, raw, audit = wp.detect_and_cut(
-                        self.request, self.audio, [], self.segments, with_report=True
+                        self.request, self.audio, [], self.segments
                     )
                 self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
                 self.assertIn("IDs 0, 1", audit["incompleteError"])
@@ -444,7 +457,7 @@ class UncertainAdDetectionTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             path, spans, keeps, raw, audit = wp.detect_and_cut(
-                self.request, self.audio, [], self.segments, with_report=True
+                self.request, self.audio, [], self.segments
             )
         self.assertEqual((path, spans, keeps), (self.audio, [], []))
         self.assertEqual(audit["unresolvedIds"], [0])
@@ -464,7 +477,7 @@ class UncertainAdDetectionTests(unittest.TestCase):
                 mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=lambda path: 480.0 if ".rendering-" in path.name else 500.0), \
                 mock.patch.object(_worker_cue_timing, "_run_render_with_progress", side_effect=lambda command, **_kwargs: Path(command[-1]).write_bytes(b"synthetic")):
             request = {**self.request, "outputPath": str(Path(directory, "cut.mp3"))}
-            path, spans, keeps, raw, audit = wp.detect_and_cut(request, self.audio, [], segments, with_report=True)
+            path, spans, keeps, raw, audit = wp.detect_and_cut(request, self.audio, [], segments)
         self.assertNotEqual(path, self.audio)
         self.assertEqual([(span["startSeconds"], span["endSeconds"]) for span in spans], [(100.0, 120.0)])
         self.assertTrue(keeps)
@@ -479,17 +492,17 @@ class UncertainAdDetectionTests(unittest.TestCase):
                         mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
                         mock.patch.object(_worker_ad_removal, "analyze_ad_detections", side_effect=error), \
                         self.assertRaises(type(error)):
-                    wp.detect_and_cut(self.request, self.audio, [], self.segments, with_report=True)
+                    wp.detect_and_cut(self.request, self.audio, [], self.segments)
                 install_fake_ads(FakeLLM(fail_generate=error))
                 with redirect_stderr(io.StringIO()), \
                         mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
                         self.assertRaises(type(error)):
-                    wp.detect_and_cut(self.request, self.audio, [], self.segments, with_report=True)
+                    wp.detect_and_cut(self.request, self.audio, [], self.segments)
 
     def test_audio_probe_failure_remains_fatal_in_production(self):
         install_fake_ads(FakeLLM())
         with redirect_stderr(io.StringIO()), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=RuntimeError("invalid audio")), \
                 self.assertRaisesRegex(RuntimeError, "invalid audio"):
-            wp.detect_and_cut(self.request, self.audio, [], self.segments, with_report=True)
+            wp.detect_and_cut(self.request, self.audio, [], self.segments)
 

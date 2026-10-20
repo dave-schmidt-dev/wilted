@@ -32,6 +32,7 @@ from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
+from worker_test_support import synthetic_render
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
 from wilted_worker import ad_audit as _worker_ad_audit
@@ -296,11 +297,22 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
             FakeSegment(216.0, 248.75, "this is the sponsor message"),
             FakeSegment(248.75, 252.0, "and now back to the show"),
         ]
-        with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=300.0):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "prepared.mp3"
+            request = {**self.request, "outputPath": str(output)}
+            with redirect_stderr(io.StringIO()), synthetic_render(300.0):
+                path, spans, keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], segments
+                )
+        self.assertEqual(path, output)
         self.assertEqual(
             spans,
             [{"startSeconds": 212.25, "endSeconds": 248.75, "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.97}],
+        )
+        self.assertEqual(raw, spans)
+        self.assertEqual(
+            [(keep.start_s, keep.end_s) for keep in keeps],
+            [(0.0, 212.25), (248.75, 300.0)],
         )
         # Three calls: the classifier, the resumption probe, and the tail
         # straddle probe the span-tail safeguard asks about segment 1, whose
@@ -320,5 +332,7 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
             FakeSegment(216.0, 248.75, "and now back to the show"),
         ]
         with redirect_stderr(io.StringIO()), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=300.0):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], segments)
+            _path, spans, _keeps, _raw, _audit = wp.detect_and_cut(
+                self.request, self.audio, [], segments
+            )
         self.assertEqual(spans, [])

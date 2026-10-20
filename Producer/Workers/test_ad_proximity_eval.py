@@ -1,0 +1,424 @@
+"""Tests for the ad-proximity review-priority evaluation harness.
+
+The corpus pins are frozen output from the committed manifest, so a change to
+the geometry or the labels has to be explained rather than absorbed. The
+synthetic fixtures run the real detection entry point with the shared model
+doubles: they prove review windows follow what the engine actually cut, and
+that looking at those windows never changes the cut or the keeps.
+"""
+
+from __future__ import annotations
+
+import copy
+import io
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest import mock
+
+import ad_proximity_eval as proximity
+from ad_corpus import Span, load_manifest
+from wilted_worker import ad_removal, cue_timing, transcript_sources
+from worker_test_fake_ads import FakeAd, install_fake_ads
+from worker_test_fake_llm import FakeLLM
+from worker_test_support import FakeSegment, synthetic_render, wp
+
+TOTAL_KEYS = (
+    "config", "windows", "windowsWithMissedAd", "missedAds", "missedAdsReached",
+    "programmeIntervalsFlagged", "flagged", "missedAdFlagged", "programmeFlagged",
+    "acceptableFlagged", "unlabelledFlagged", "missedAdUncut", "labelledUncut",
+    "windowPrecision", "labelledPrecision", "labelledBaseRate", "lift",
+)
+
+RECORDED_ROWS = (
+    ("after-sponsor-read-continuation-reach", 4, 0, 8, 0, 0, 270.2, 0.0, 0.0, 0.0,
+     270.2, 393.0, 7304.0, 0.0, 0.0, 0.054, 0.0),
+    ("after-90", 8, 0, 8, 0, 2, 630.2, 0.0, 180.0, 0.0, 450.2, 393.0, 7304.0,
+     0.0, 0.0, 0.054, 0.0),
+    ("before-90", 10, 2, 8, 3, 4, 733.4, 110.2, 249.3, 10.3, 363.6, 393.0,
+     7304.0, 0.2, 0.298, 0.054, 5.519),
+    ("both-30", 18, 2, 8, 2, 5, 463.6, 50.2, 125.5, 10.3, 277.6, 393.0, 7304.0,
+     0.111, 0.27, 0.054, 5.0),
+    ("both-60", 18, 2, 8, 3, 5, 913.6, 80.2, 279.3, 10.3, 543.8, 393.0, 7304.0,
+     0.111, 0.217, 0.054, 4.019),
+    ("both-90", 18, 2, 8, 3, 5, 1363.6, 110.2, 429.3, 10.3, 813.8, 393.0, 7304.0,
+     0.111, 0.2, 0.054, 3.704),
+    ("both-120", 18, 2, 8, 3, 5, 1813.6, 116.8, 579.3, 10.3, 1107.2, 393.0,
+     7304.0, 0.111, 0.165, 0.054, 3.056),
+)
+
+CONFIRMED_ROWS = (
+    ("after-sponsor-read-continuation-reach", 3, 0, 8, 0, 0, 180.2, 0.0, 0.0, 0.0,
+     180.2, 393.0, 7304.0, 0.0, 0.0, 0.054, 0.0),
+    ("after-90", 5, 0, 8, 0, 0, 360.2, 0.0, 0.0, 0.0, 360.2, 393.0, 7304.0,
+     0.0, 0.0, 0.054, 0.0),
+    ("before-90", 6, 2, 8, 3, 2, 540.0, 110.2, 98.1, 0.0, 331.7, 393.0, 7304.0,
+     0.333, 0.529, 0.054, 9.796),
+    ("both-30", 11, 2, 8, 2, 2, 300.2, 50.2, 34.3, 0.0, 215.7, 393.0, 7304.0,
+     0.182, 0.594, 0.054, 11.0),
+    ("both-60", 11, 2, 8, 3, 2, 600.2, 80.2, 68.1, 0.0, 451.9, 393.0, 7304.0,
+     0.182, 0.541, 0.054, 10.019),
+    ("both-90", 11, 2, 8, 3, 2, 900.2, 110.2, 98.1, 0.0, 691.9, 393.0, 7304.0,
+     0.182, 0.529, 0.054, 9.796),
+    ("both-120", 11, 2, 8, 3, 2, 1200.2, 116.8, 128.1, 0.0, 955.3, 393.0, 7304.0,
+     0.182, 0.477, 0.054, 8.833),
+)
+
+
+def config_named(name):
+    """Return the fixed config with this name."""
+    return next(config for config in proximity.CONFIGS if config.name == name)
+
+
+class PinnedCorpusTests(unittest.TestCase):
+    def test_the_recorded_anchor_totals_are_pinned(self):
+        expected = [dict(zip(TOTAL_KEYS, row)) for row in RECORDED_ROWS]
+        self.assertEqual(proximity.evaluate(load_manifest(), "recorded"), expected)
+
+    def test_the_label_confirmed_anchor_totals_are_pinned(self):
+        expected = [dict(zip(TOTAL_KEYS, row)) for row in CONFIRMED_ROWS]
+        self.assertEqual(
+            proximity.evaluate(load_manifest(), "label-confirmed"), expected
+        )
+
+
+class ReviewWindowTests(unittest.TestCase):
+    def test_cut_spans_are_removed_and_can_split_a_window(self):
+        config = proximity.ProximityConfig("both", 10.0, True, True, None)
+        windows = proximity.review_windows(
+            [{"start": 20.0, "end": 30.0, "label": "sponsor_read"}],
+            [Span(15.0, 17.0), Span(24.0, 26.0)],
+            60.0,
+            config,
+        )
+        self.assertEqual(
+            [(span.start, span.end) for span in windows],
+            [(10.0, 15.0), (17.0, 20.0), (30.0, 40.0)],
+        )
+
+    def test_windows_clip_at_the_start_and_the_end_of_the_episode(self):
+        config = proximity.ProximityConfig("both", 30.0, True, True, None)
+        windows = proximity.review_windows(
+            [{"start": 5.0, "end": 35.0, "label": "ad_break"}], [], 40.0, config
+        )
+        self.assertEqual(
+            [(span.start, span.end) for span in windows], [(0.0, 5.0), (35.0, 40.0)]
+        )
+
+    def test_overlapping_windows_merge(self):
+        config = proximity.ProximityConfig("both", 10.0, True, True, None)
+        windows = proximity.review_windows(
+            [
+                {"start": 20.0, "end": 25.0, "label": "ad_break"},
+                {"start": 25.0, "end": 30.0, "label": "sponsor_read"},
+            ],
+            [],
+            60.0,
+            config,
+        )
+        self.assertEqual([(span.start, span.end) for span in windows], [(10.0, 40.0)])
+
+    def test_the_label_filter_ignores_other_anchor_kinds(self):
+        config = proximity.ProximityConfig(
+            "sponsor-only", 10.0, False, True, frozenset({"sponsor_read"})
+        )
+        windows = proximity.review_windows(
+            [
+                {"start": 10.0, "end": 20.0, "label": "ad_break"},
+                {"start": 30.0, "end": 40.0, "label": "sponsor_read"},
+            ],
+            [],
+            60.0,
+            config,
+        )
+        self.assertEqual([(span.start, span.end) for span in windows], [(40.0, 50.0)])
+
+    def test_no_window_ever_overlaps_a_cut(self):
+        config = proximity.ProximityConfig("both", 20.0, True, True, None)
+        cuts = [Span(0.0, 7.0), Span(18.0, 22.0), Span(39.0, 50.0)]
+        windows = proximity.review_windows(
+            [{"start": 20.0, "end": 40.0, "label": "ad_break"}],
+            cuts,
+            55.0,
+            config,
+        )
+        for window in windows:
+            for cut in cuts:
+                self.assertEqual(window.overlap(cut), 0.0)
+
+
+class EngineFixtureTests(unittest.TestCase):
+    def setUp(self):
+        self._scratch = tempfile.TemporaryDirectory(prefix="wilted-proximity-")
+        self.addCleanup(self._scratch.cleanup)
+        # Other suites install their own `wilted` doubles. Put back whatever
+        # was loaded before this class's engine runs so the rest of the gate
+        # sees the module tree it expects.
+        self._wilted_modules = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == "wilted" or name.startswith("wilted.")
+        }
+        self.addCleanup(self._restore_wilted_modules)
+        self.root = Path(self._scratch.name)
+        self.audio = self.root / "source.mp3"
+        self.audio.write_bytes(b"synthetic source")
+        self.output = self.root / "prepared.mp3"
+
+    def _restore_wilted_modules(self):
+        for name in [name for name in sys.modules if name == "wilted" or name.startswith("wilted.")]:
+            if name not in self._wilted_modules:
+                del sys.modules[name]
+        sys.modules.update(self._wilted_modules)
+
+    @staticmethod
+    def segments(count=20):
+        return [
+            FakeSegment(float(index * 10), float(index * 10 + 10),
+                        f"invented passage {index}")
+            for index in range(count)
+        ]
+
+    @staticmethod
+    def expected(label, start, end):
+        return {"label": label, "start": start, "end": end, "why": "fixture"}
+
+    def run_engine(self, segments, detections, llm, duration):
+        install_fake_ads(llm, detections=detections)
+        request = {"audioPath": str(self.audio), "outputPath": str(self.output)}
+        with redirect_stderr(io.StringIO()), synthetic_render(duration):
+            return wp.detect_and_cut(request, self.audio, [], segments)
+
+    @staticmethod
+    def cut_spans(ad_spans):
+        return [
+            Span(float(span["startSeconds"]), float(span["endSeconds"]))
+            for span in ad_spans
+        ]
+
+    def case(self, case_id, ad_spans, expected, duration):
+        return {
+            "id": case_id,
+            "show": "Synthetic",
+            "audioDurationSeconds": duration,
+            "expected": expected,
+            "recorded": [
+                {
+                    "start": float(span["startSeconds"]),
+                    "end": float(span["endSeconds"]),
+                    "label": span["label"],
+                }
+                for span in ad_spans
+            ],
+        }
+
+    def assert_covers(self, spans, start, end):
+        covered = sum(
+            max(0.0, min(end, span.end_s) - max(start, span.start_s)) for span in spans
+        )
+        self.assertGreaterEqual(covered, end - start - 1e-9)
+
+    def assert_cut_covers(self, spans, start, end):
+        covered = sum(
+            max(0.0, min(end, span.end) - max(start, span.start)) for span in spans
+        )
+        self.assertGreaterEqual(covered, end - start - 1e-9)
+
+    def assert_windows_avoid(self, windows, cuts):
+        for window in windows:
+            for cut in cuts:
+                self.assertEqual(window.overlap(cut), 0.0)
+
+    def assert_review_is_read_only(self, case, ad_spans, keeps, duration):
+        cuts = self.cut_spans(ad_spans)
+        anchors = [
+            {"start": float(span["startSeconds"]),
+             "end": float(span["endSeconds"]), "label": span["label"]}
+            for span in ad_spans
+        ]
+        # Deep copies, so an in-place edit of a span or keep would also fail.
+        before_spans = copy.deepcopy(ad_spans)
+        before_keeps = copy.deepcopy(keeps)
+        for config in proximity.CONFIGS:
+            windows = proximity.review_windows(anchors, cuts, duration, config)
+            self.assert_windows_avoid(windows, cuts)
+            proximity.score(case, config, "recorded")
+        self.assertEqual(ad_spans, before_spans)
+        self.assertEqual(keeps, before_keeps)
+
+    def test_an_adjacent_produced_spot_after_the_read_is_cut_and_not_flagged(self):
+        segments = self.segments()
+        result = self.run_engine(
+            segments,
+            [FakeAd(50.0, 60.0, label="sponsor_read")],
+            FakeLLM(adjacent_program_start_id=7),
+            200.0,
+        )
+        _path, ad_spans, keeps, _raw, audit = result
+        cuts = self.cut_spans(ad_spans)
+        self.assertIsNone(audit["warning"])
+        self.assertEqual([(span.start, span.end) for span in cuts], [(50.0, 70.0)])
+        self.assert_cut_covers(cuts, 60.0, 70.0)
+        self.assert_covers(keeps, 0.0, 50.0)
+        self.assert_covers(keeps, 70.0, 200.0)
+        case = self.case("adjacent-after", ad_spans, [
+            self.expected("must-cut", 50.0, 60.0),
+            self.expected("must-cut", 60.0, 70.0),
+            self.expected("must-keep", 0.0, 50.0),
+            self.expected("must-keep", 70.0, 200.0),
+        ], 200.0)
+        for name in ("after-90", "after-sponsor-read-continuation-reach"):
+            result = proximity.score(case, config_named(name), "recorded")
+            self.assertEqual(result["missedAds"], 0)
+            self.assertEqual(result["missedAdFlagged"], 0.0)
+        self.assert_review_is_read_only(case, ad_spans, keeps, 200.0)
+
+    def test_an_adjacent_spot_before_the_read_survives_but_is_reached(self):
+        segments = self.segments()
+        _path, ad_spans, keeps, _raw, _audit = self.run_engine(
+            segments, [FakeAd(50.0, 60.0, label="sponsor_read")], FakeLLM(), 200.0
+        )
+        cuts = self.cut_spans(ad_spans)
+        # The engine is not told about the preceding spot, and it does not guess.
+        self.assertEqual([(span.start, span.end) for span in cuts], [(50.0, 60.0)])
+        self.assertEqual(sum(span.overlap(Span(40.0, 50.0)) for span in cuts), 0.0)
+        self.assert_covers(keeps, 60.0, 200.0)
+        case = self.case("adjacent-before", ad_spans, [
+            self.expected("must-cut", 40.0, 50.0),
+            self.expected("must-cut", 50.0, 60.0),
+            self.expected("must-keep", 0.0, 40.0),
+            self.expected("must-keep", 60.0, 200.0),
+        ], 200.0)
+        windows = proximity.review_windows(
+            case["recorded"], cuts, 200.0, config_named("before-90")
+        )
+        self.assertTrue(any(window.overlap(Span(40.0, 50.0)) > 1.0 for window in windows))
+        result = proximity.score(case, config_named("before-90"), "recorded")
+        self.assertEqual(result["missedAdsReached"], 1)
+        self.assertEqual(result["missedAdFlagged"], 10.0)
+        self.assert_review_is_read_only(case, ad_spans, keeps, 200.0)
+
+    def test_programme_between_two_spots_is_never_bridged(self):
+        segments = self.segments()
+        _path, ad_spans, keeps, _raw, _audit = self.run_engine(
+            segments, [FakeAd(50.0, 60.0, label="sponsor_read")], FakeLLM(), 200.0
+        )
+        self.assert_covers(keeps, 60.0, 120.0)
+        cuts = self.cut_spans(ad_spans)
+        case = self.case("ad-programme-ad", ad_spans, [
+            self.expected("must-cut", 50.0, 60.0),
+            self.expected("must-keep", 60.0, 120.0),
+            self.expected("must-cut", 120.0, 130.0),
+            self.expected("must-keep", 0.0, 50.0),
+            self.expected("must-keep", 130.0, 200.0),
+        ], 200.0)
+        for name in ("after-90", "after-sponsor-read-continuation-reach"):
+            config = config_named(name)
+            windows = proximity.review_windows(
+                case["recorded"], cuts, 200.0, config
+            )
+            immediate_programme = sum(
+                window.overlap(Span(60.0, 120.0)) for window in windows
+            )
+            self.assertEqual(immediate_programme, 60.0)
+            result = proximity.score(case, config, "recorded")
+            self.assertEqual(result["missedAdsReached"], 1)
+            self.assertEqual(result["missedAdFlagged"], 10.0)
+            self.assertEqual(result["programmeFlagged"], 80.0)
+        self.assert_review_is_read_only(case, ad_spans, keeps, 200.0)
+
+    def test_programme_on_both_sides_survives_and_is_the_only_thing_flagged(self):
+        segments = self.segments()
+        _path, ad_spans, keeps, _raw, _audit = self.run_engine(
+            segments, [FakeAd(50.0, 60.0, label="sponsor_read")], FakeLLM(), 200.0
+        )
+        self.assert_covers(keeps, 0.0, 50.0)
+        self.assert_covers(keeps, 60.0, 200.0)
+        case = self.case("nearby-programme", ad_spans, [
+            self.expected("must-cut", 50.0, 60.0),
+            self.expected("must-keep", 0.0, 50.0),
+            self.expected("must-keep", 60.0, 200.0),
+        ], 200.0)
+        for name in (
+            "before-90", "after-90", "after-sponsor-read-continuation-reach",
+        ):
+            result = proximity.score(case, config_named(name), "recorded")
+            self.assertEqual(result["missedAds"], 0)
+            self.assertEqual(result["missedAdFlagged"], 0.0)
+            self.assertEqual(result["unlabelledFlagged"], 0.0)
+            self.assertEqual(result["acceptableFlagged"], 0.0)
+            self.assertEqual(result["flagged"], result["programmeFlagged"])
+            self.assertGreater(result["flagged"], 0.0)
+        self.assert_review_is_read_only(case, ad_spans, keeps, 200.0)
+
+
+class OldPreparedProvenanceTests(unittest.TestCase):
+    def test_a_stored_older_preparation_is_scored_without_reprocessing(self):
+        preparation = {
+            "adSegments": [
+                {"startSeconds": 60.0, "endSeconds": 70.0, "label": "sponsor_read"},
+            ],
+            "durationSeconds": 240.0,
+            "pipelineFingerprint": "2026-08-01-legacy-engine",
+        }
+        self.assertNotIn("report", preparation)
+        anchors = [
+            {
+                "start": float(segment["startSeconds"]),
+                "end": float(segment["endSeconds"]),
+                "label": segment["label"],
+            }
+            for segment in preparation["adSegments"]
+        ]
+        case = {
+            "id": "old-prepared",
+            "show": "Synthetic",
+            "audioDurationSeconds": preparation["durationSeconds"],
+            "expected": [
+                {"label": "must-keep", "start": 0.0, "end": 60.0},
+                {"label": "must-cut", "start": 60.0, "end": 70.0},
+                {"label": "must-cut", "start": 70.0, "end": 80.0},
+                {"label": "must-keep", "start": 80.0, "end": 240.0},
+            ],
+            "recorded": anchors,
+        }
+        cut = [
+            Span(float(segment["startSeconds"]), float(segment["endSeconds"]))
+            for segment in preparation["adSegments"]
+        ]
+        failure = AssertionError("evaluation must not reprocess stored audio")
+        with mock.patch.object(ad_removal, "detect_and_cut", side_effect=failure), \
+                mock.patch.object(
+                    transcript_sources, "transcribe_with_daemon", side_effect=failure
+                ), \
+                mock.patch.object(
+                    cue_timing, "_run_render_with_progress", side_effect=failure
+                ):
+            windows = proximity.review_windows(
+                anchors, cut, 240.0, config_named("after-90")
+            )
+            result = proximity.score(
+                case, config_named("after-90"), "recorded"
+            )
+        self.assertTrue(any(window.overlap(Span(70.0, 80.0)) > 1.0 for window in windows))
+        self.assertEqual(result["missedAdsReached"], 1)
+        self.assertEqual(result["missedAdFlagged"], 10.0)
+
+
+class MainOutputTests(unittest.TestCase):
+    def test_main_prints_both_anchor_tables_and_the_window_table(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = proximity.main()
+        text = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("## Anchor set: recorded", text)
+        self.assertIn("## Anchor set: label-confirmed", text)
+        self.assertIn("## Per-window review: before-90 (recorded anchors)", text)
+        self.assertIn("| case | window | must-cut | must-keep |", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -32,6 +32,7 @@ from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
+from worker_test_support import synthetic_render
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
 from wilted_worker import ad_audit as _worker_ad_audit
@@ -68,9 +69,13 @@ class ProducedSpanConfidenceTests(unittest.TestCase):
     def produced_preroll(self, **llm_kwargs):
         llm = FakeLLM(**llm_kwargs)
         install_fake_ads(llm)
-        with redirect_stderr(io.StringIO()), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=600.0):
-            _path, spans, _keeps = wp.detect_and_cut(self.request, self.audio, [], self.PREROLL)
+        with tempfile.TemporaryDirectory() as directory:
+            request = {**self.request, "outputPath": str(Path(directory) / "prepared.mp3")}
+            with redirect_stderr(io.StringIO()), synthetic_render(600.0):
+                _path, spans, _keeps, raw, _audit = wp.detect_and_cut(
+                    request, self.audio, [], self.PREROLL
+                )
+        self.assertEqual(raw, spans)
         return spans
 
     def test_no_worker_site_passes_a_literal_confidence_for_a_produced_span(self):

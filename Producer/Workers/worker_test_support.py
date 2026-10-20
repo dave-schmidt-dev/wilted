@@ -222,6 +222,27 @@ def recording_model_lock(events):
     finally:
         events.append("lock.exit")
 
+@contextmanager
+def synthetic_render(source_duration):
+    """Stand in for ffmpeg and its duration probe on the reported cut path."""
+    rendered = {}
+
+    def render(command, **_kwargs):
+        output = Path(command[-1])
+        output.write_bytes(b"synthetic")
+        filters = command[command.index("-filter_complex") + 1]
+        rendered[output.name] = sum(
+            float(end) - float(start)
+            for start, end in re.findall(r"atrim=start=([0-9.]+):end=([0-9.]+)", filters)
+        )
+
+    def probe(path):
+        return rendered.get(Path(path).name, source_duration)
+
+    with mock.patch.object(_worker_cue_timing, "_run_render_with_progress", side_effect=render), \
+            mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=probe):
+        yield
+
 def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=None):
     """Stand in for the previous project's `wilted` package.
 
@@ -264,4 +285,4 @@ def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=Non
     install_fake_speech_stack()
     return transcribe
 
-__all__ = ['FakeSegment', 'REPO_ROOT', 'RUNTIME_ADS_PATH', 'WORKER_PACKAGE_PATH', 'WORKER_PATH', 'WORKER_SOURCES', '_WORKER_PATCH_MODULES', '_passthrough_detections', '_passthrough_reviewed_detections', '_worker_owned_prompts', 'install_fake_speech_stack', 'install_fake_wilted', 'load_ad_corpus', 'load_runtime_ads', 'load_worker', 'recording_model_lock', 'worker_namespaces', 'wp']
+__all__ = ['FakeSegment', 'REPO_ROOT', 'RUNTIME_ADS_PATH', 'WORKER_PACKAGE_PATH', 'WORKER_PATH', 'WORKER_SOURCES', '_WORKER_PATCH_MODULES', '_passthrough_detections', '_passthrough_reviewed_detections', '_worker_owned_prompts', 'install_fake_speech_stack', 'install_fake_wilted', 'load_ad_corpus', 'load_runtime_ads', 'load_worker', 'recording_model_lock', 'synthetic_render', 'worker_namespaces', 'wp']
