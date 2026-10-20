@@ -169,55 +169,60 @@ final class WiltedMacDownloadReloadTests: XCTestCase {
 
     // MARK: - Progress throttle
 
-    func testTheThrottleAdmitsAFewReportsASecondAndAlwaysTheFinalOnes() {
+    /// A second of chunks, one every 5 ms, reaches the row about four times,
+    /// and the last report it sees is the newest one.
+    func testTheThrottleSendsAFewReportsASecondEndingOnTheNewest() {
+        let reports = (0..<200).map { step in
+            (progress(.transferring, Int64(step + 1) * 400, 80_000), Double(step) * 0.005)
+        }
+
+        let sent = delivered(reports, through: WiltedMacDownloadProgressThrottle())
+
+        XCTAssertTrue((4...6).contains(sent.count), "about four a second, sent \(sent.count)")
+        XCTAssertEqual(sent.last, reports.last?.0, "the bytes the transfer reached are shown")
+    }
+
+    /// The quit tests caught this: a transfer that sends one chunk and then
+    /// waits must still show that chunk, though it came inside the interval.
+    func testAReportHeldInsideTheIntervalStillReachesTheRow() {
+        let sent = delivered([
+            (progress(.queued, 0, 8_192), 0),
+            (progress(.transferring, 0, 8_192), 0.001),
+            (progress(.transferring, 0, 8_192), 0.002),
+            (progress(.transferring, 4_096, 8_192), 0.003)
+        ], through: WiltedMacDownloadProgressThrottle())
+
+        XCTAssertEqual(sent.map(\.stage), [.queued, .transferring, .transferring])
+        XCTAssertEqual(sent.map(\.bytesReceived), [0, 0, 4_096])
+    }
+
+    /// A new stage and completion go out at once, and a held report a newer
+    /// one has already overtaken is never sent after it.
+    func testANewStageAndCompletionGoOutAtOnceAndOvertakeAHeldReport() {
         let throttle = WiltedMacDownloadProgressThrottle()
         let start = Date(timeIntervalSince1970: 1_700_000_000)
-        let total: Int64 = 100_000
-        var admitted = 0
-        // A second of chunks, one every 5 ms.
-        for step in 0..<200 {
-            let received = Int64(step) * 400
-            if throttle.admits(progress(.transferring, received, total), at: start.addingTimeInterval(Double(step) * 0.005)) {
-                admitted += 1
-            }
-        }
-        XCTAssertLessThanOrEqual(admitted, 5, "about four a second, plus the first")
-        XCTAssertGreaterThanOrEqual(admitted, 4)
 
-        let end = start.addingTimeInterval(1.5)
-        XCTAssertTrue(throttle.admits(progress(.transferring, total - 1, total), at: end))
-        XCTAssertFalse(throttle.admits(progress(.transferring, total, total), at: end.addingTimeInterval(0.01)),
-                       "the same stage inside the interval is held")
-        XCTAssertTrue(throttle.admits(progress(.validating, total, total), at: end.addingTimeInterval(0.02)),
-                      "a new stage is shown, carrying the full count")
-        XCTAssertTrue(throttle.admits(progress(.completed, total, total), at: end.addingTimeInterval(0.03)),
-                      "completion is shown")
+        XCTAssertEqual(throttle.admit(progress(.transferring, 10, nil), at: start), .now)
+        guard case .later = throttle.admit(progress(.transferring, 20, nil), at: start.addingTimeInterval(0.01)) else {
+            return XCTFail("a report inside the interval is held")
+        }
+        XCTAssertEqual(throttle.admit(progress(.transferring, 30, nil), at: start.addingTimeInterval(0.02)), .coalesced)
+        XCTAssertEqual(throttle.admit(progress(.validating, 30, nil), at: start.addingTimeInterval(0.03)), .now)
+        XCTAssertNil(throttle.takeHeld(at: start.addingTimeInterval(0.26)), "the held report was overtaken")
+        XCTAssertEqual(throttle.admit(progress(.completed, 30, nil), at: start.addingTimeInterval(0.27)), .now)
+        XCTAssertEqual(throttle.admit(progress(.completed, 30, nil), at: start.addingTimeInterval(0.28)), .now)
     }
 
     /// A feed's declared size can undercount the file. Bytes past it must not
     /// read as the end of the transfer and reopen the flood.
-    func testTheThrottleHoldsAnUndercountedTransferToTheSameRate() {
-        let throttle = WiltedMacDownloadProgressThrottle()
-        let start = Date(timeIntervalSince1970: 1_700_000_000)
-        var admitted = 0
-        for step in 0..<200 {
-            let received = Int64(step + 1) * 400
-            if throttle.admits(progress(.transferring, received, 1), at: start.addingTimeInterval(Double(step) * 0.005)) {
-                admitted += 1
-            }
+    func testAnUndercountedTransferIsHeldToTheSameRate() {
+        let reports = (0..<200).map { step in
+            (progress(.transferring, Int64(step + 1) * 400, 1), Double(step) * 0.005)
         }
-        XCTAssertLessThanOrEqual(admitted, 5)
-        XCTAssertTrue(throttle.admits(progress(.completed, 80_000, 1), at: start.addingTimeInterval(1.0)))
-    }
 
-    func testTheThrottleShowsCompletionEvenWhenTheSizeWasNeverKnown() {
-        let throttle = WiltedMacDownloadProgressThrottle()
-        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let sent = delivered(reports, through: WiltedMacDownloadProgressThrottle())
 
-        XCTAssertTrue(throttle.admits(progress(.transferring, 10, nil), at: start))
-        XCTAssertFalse(throttle.admits(progress(.transferring, 20, nil), at: start.addingTimeInterval(0.01)))
-        XCTAssertTrue(throttle.admits(progress(.completed, 20, nil), at: start.addingTimeInterval(0.02)))
-        XCTAssertTrue(throttle.admits(progress(.completed, 20, nil), at: start.addingTimeInterval(0.03)))
+        XCTAssertTrue((4...6).contains(sent.count), "sent \(sent.count)")
     }
 
     // MARK: - Fixtures
@@ -308,6 +313,32 @@ final class WiltedMacDownloadReloadTests: XCTestCase {
         var result = rest.sorted(by: precedes)
         result.insert(currentID, at: min(index, result.count))
         return result
+    }
+
+    /// Feeds reports through the throttle as the coordinator would, running
+    /// each held delivery when its time comes, and returns what was sent on.
+    private func delivered(
+        _ reports: [(PodcastDownloadProgress, TimeInterval)], through throttle: WiltedMacDownloadProgressThrottle
+    ) -> [PodcastDownloadProgress] {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var sent: [PodcastDownloadProgress] = []
+        var due: [TimeInterval] = []
+        func runDeliveries(upTo time: TimeInterval) {
+            while let next = due.first, next <= time {
+                due.removeFirst()
+                if let held = throttle.takeHeld(at: start.addingTimeInterval(next)) { sent.append(held) }
+            }
+        }
+        for (report, offset) in reports {
+            runDeliveries(upTo: offset)
+            switch throttle.admit(report, at: start.addingTimeInterval(offset)) {
+            case .now: sent.append(report)
+            case .later(let delay): due.append(offset + delay)
+            case .coalesced: break
+            }
+        }
+        runDeliveries(upTo: .infinity)
+        return sent
     }
 
     private func progress(_ stage: PodcastDownloadStage, _ received: Int64, _ expected: Int64?) -> PodcastDownloadProgress {

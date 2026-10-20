@@ -129,16 +129,17 @@ extension WiltedMacModel {
                     interruptedForTermination: { [weak self] in
                         await self?.downloadWasInterruptedForTermination(episode.id) == true
                     }
-                ) { progress in
+                ) { report in
                     // Every chunk reports; only what the window can render is sent on.
-                    guard progressThrottle.admits(progress) else { return }
-                    Task { @MainActor [weak self] in
-                        guard self?.updateActiveEpisodeDownload(
-                            episode.id,
-                            received: progress.bytesReceived,
-                            expected: progress.expectedByteCount
-                        ) == true else { return }
-                        self?.podcastOperationMessage = "Downloading \(episode.title)…"
+                    progressThrottle.submit(report) { progress in
+                        Task { @MainActor [weak self] in
+                            guard self?.updateActiveEpisodeDownload(
+                                episode.id,
+                                received: progress.bytesReceived,
+                                expected: progress.expectedByteCount
+                            ) == true else { return }
+                            self?.podcastOperationMessage = "Downloading \(episode.title)…"
+                        }
                     }
                 }
                 let resolvedFingerprint: String?
