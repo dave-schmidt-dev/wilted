@@ -395,6 +395,11 @@ private struct WiltedMacLibrarySyncCard: View {
             WiltedSettingsRow(
                 "Phone changes read", value: WiltedMacLibrarySyncStatus.timeLabel(activity.lastCheckedAt),
                 identifier: "wilted-sync-last-check")
+            // Each iPhone and iPad this Mac links as soon as it syncs, and the requests it is answering.
+            ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in
+                Divider()
+                WiltedSettingsRow(row.label, value: row.value, identifier: "wilted-sync-device")
+            }
             Text(WiltedMacLibrarySyncStatus.scopeNote)
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

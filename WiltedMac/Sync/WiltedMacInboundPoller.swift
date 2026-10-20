@@ -6,8 +6,10 @@ import WiltedLibrary
 private let pollerLog = Logger(subsystem: "com.zerodelta.wilted", category: "MacInboundPoller")
 
 /// The Mac's sync round, run by its one `SyncTick` (30 s, `SyncCadence.tickInterval`): it reads
-/// follower intents and every device's playback records as one batch (`LibraryTransport.poll`),
-/// hands the records to `onDeviceRecords` (where the Mac adopts the phone's positions), and then
+/// follower intents, every device's playback records and the device directory as one batch
+/// (`LibraryTransport.poll`), hands the whole read to `onRead` before applying the intents (the
+/// device handshake: link new devices, mark new requests received), hands the records to
+/// `onDeviceRecords` (where the Mac adopts the phone's positions), and then
 /// runs `publishRound`, the Mac's own batched writes (library state, statistics, the playing
 /// checkpoint), so a round is one read and the few writes that are due, never a request per loop.
 ///
@@ -25,12 +27,14 @@ actor WiltedMacInboundPoller {
     typealias Sleep = @Sendable (Duration) async throws -> Void
     /// The round's first error (discovery or the read), or nil when the round's reads succeeded.
     typealias RoundFinished = @Sendable ((any Error)?) async -> Void
+    typealias RoundRead = @Sendable (LibraryPollResult) async -> Void
 
     private let transport: any LibraryTransport
     private let sink: any LibraryIntentSink
     private let deviceID: String?
     private let gate: TransportGate?
     private let discover: (@Sendable () async throws -> Void)?
+    private let onRead: RoundRead?
     private let onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)?
     private let publishRound: (@Sendable () async -> Void)?
     private let maintenance: (@Sendable () async -> Void)?
@@ -49,6 +53,7 @@ actor WiltedMacInboundPoller {
     /// - Parameters:
     ///   - deviceID: this Mac, to tell its own records from a peer's when choosing how often to rescan.
     ///   - gate: the device's shared gate; a closed gate holds the whole tick until its retry time.
+    ///   - onRead: the round's read, before its intents are applied.
     ///   - publishRound: the Mac's own writes for this round, run after the reads.
     ///   - onRoundFinished: told how the round's reads went, for the Sync card.
     init(
@@ -57,6 +62,7 @@ actor WiltedMacInboundPoller {
         deviceID: String? = nil,
         gate: TransportGate? = nil,
         discover: (@Sendable () async throws -> Void)? = nil,
+        onRead: RoundRead? = nil,
         onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
         publishRound: (@Sendable () async -> Void)? = nil,
         maintenance: (@Sendable () async -> Void)? = nil,
@@ -72,6 +78,7 @@ actor WiltedMacInboundPoller {
         self.deviceID = deviceID
         self.gate = gate
         self.discover = discover
+        self.onRead = onRead
         self.onDeviceRecords = onDeviceRecords
         self.publishRound = publishRound
         self.maintenance = maintenance
@@ -152,8 +159,9 @@ actor WiltedMacInboundPoller {
             }
         }
         do {
-            let polled = try await transport.poll([.intents, .deviceRecords])
+            let polled = try await transport.poll([.intents, .deviceRecords, .deviceDirectory])
             received = polled.intents.count
+            await onRead?(polled)
             for intent in polled.intents {
                 do { try await sink.receive(intent) } catch {
                     pollerLog.error("Intent \(intent.id, privacy: .public) was not applied: \(String(describing: error), privacy: .public)")
@@ -188,6 +196,7 @@ actor WiltedMacInboundPoller {
 final class WiltedMacInboundRuntime {
     let ledger: WiltedMacIntentLedger
     let service: WiltedMacMediaService
+    let links: WiltedMacDeviceLinks
     private let transport: any LibraryTransport
     private let deviceID: String?
     private let gate: TransportGate?
@@ -197,6 +206,7 @@ final class WiltedMacInboundRuntime {
     private let beforePollerStart: (@Sendable () async -> Void)?
     private let onPollerStop: (@Sendable () async -> Void)?
     private let onRoundFinished: WiltedMacInboundPoller.RoundFinished?
+    private let now: @Sendable () -> Date
     private var startup: Task<Void, Never>?
     private var shutdown: Task<Void, Never>?
     private(set) var poller: WiltedMacInboundPoller?
@@ -213,9 +223,11 @@ final class WiltedMacInboundRuntime {
         beforePollerStart: (@Sendable () async -> Void)? = nil,
         onPollerStop: (@Sendable () async -> Void)? = nil,
         onRoundFinished: WiltedMacInboundPoller.RoundFinished? = nil,
+        onDevicesChange: WiltedMacDeviceLinks.OnChange? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.onRoundFinished = onRoundFinished
+        self.now = now
         self.transport = transport
         self.deviceID = deviceID
         self.gate = gate
@@ -225,21 +237,49 @@ final class WiltedMacInboundRuntime {
         self.beforePollerStart = beforePollerStart
         self.onPollerStop = onPollerStop
         ledger = WiltedMacIntentLedger(fileURL: directory.appendingPathComponent("intent-ledger.json"), now: now)
+        let links = WiltedMacDeviceLinks(transport: transport, macDeviceID: deviceID, now: now, onChange: onDevicesChange)
+        self.links = links
         service = WiltedMacMediaService(
             source: source, transport: transport,
-            accountingURL: directory.appendingPathComponent("media-accounting.json"), now: now
+            accountingURL: directory.appendingPathComponent("media-accounting.json"), now: now,
+            reportRequest: { intent, stage, detail in await links.record(intent, stage: stage, detail: detail) }
         )
     }
 
-    /// Records the intent id durably, then applies it; an id already recorded is skipped.
+    /// Records the intent id durably, then applies it and waits for it; an id already recorded is skipped.
     nonisolated func consume(_ intent: LibraryIntent) async {
+        await admit(intent)?.value
+    }
+
+    /// Records the intent id durably and queues it on the media service without waiting for its
+    /// upload, so the round goes on reading. Nil when the id was already recorded or could not be.
+    @discardableResult
+    nonisolated func admit(_ intent: LibraryIntent) async -> Task<Void, Never>? {
         do {
-            guard try await ledger.recordIfNew(intent.id) else { return }
+            guard try await ledger.recordIfNew(intent.id) else { return nil }
         } catch {
             pollerLog.error("Intent \(intent.id, privacy: .public) was not recorded and is not applied: \(String(describing: error), privacy: .public)")
-            return
+            return nil
         }
-        await service.handle(intent)
+        return await service.enqueue(intent)
+    }
+
+    /// The handshake half of a round, before its intents are applied: links devices from the
+    /// directory, the intents and the playback records, marks each new media request `received`,
+    /// and writes the links that changed (none in an idle round).
+    nonisolated func noteRound(_ polled: LibraryPollResult) async {
+        await links.noteDirectory(polled.directory)
+        var devices = polled.intents.map(\.deviceID)
+        if let records = polled.records { devices += (records.nowPlaying + records.progress).map(\.record.deviceID) }
+        await links.noteDevices(devices)
+        var fresh: [LibraryIntent] = []
+        let cutoff = now().addingTimeInterval(-WiltedMacMediaService.maximumIntentAge)
+        for intent in polled.intents where intent.createdAt >= cutoff {
+            guard case .requestMedia = intent.action else { continue }
+            if await !ledger.contains(intent.id) { fresh.append(intent) }
+        }
+        await links.noteReceived(fresh)
+        await links.flush()
     }
 
     /// Starts the tick; intents reach `sink`, which routes media intents to `consume`. `publishRound`
@@ -250,8 +290,10 @@ final class WiltedMacInboundRuntime {
         let service = service
         let poller = WiltedMacInboundPoller(
             transport: transport, sink: sink, deviceID: deviceID, gate: gate, discover: discover,
+            onRead: { [weak self] polled in await self?.noteRound(polled) },
             onDeviceRecords: onDeviceRecords, publishRound: publishRound,
-            maintenance: maintenance ?? { await service.sweepExpired() }, onStop: onPollerStop,
+            // Queued behind any upload rather than awaited, so a long upload never holds up a round.
+            maintenance: maintenance ?? { await service.scheduleSweep() }, onStop: onPollerStop,
             onRoundFinished: onRoundFinished
         )
         self.poller = poller
@@ -274,12 +316,16 @@ final class WiltedMacInboundRuntime {
         self.poller = nil
         let startup = startup
         startup?.cancel()
+        let service = service
         let task = Task {
             // Stop promptly, then settle a startup already suspended on an actor
             // or injected wait, and stop again to cover its last possible start.
             await poller.stop()
             await startup?.value
             await poller.stop()
+            // Rounds no longer wait on uploads and sweeps, so shutdown joins them here: they can
+            // still write accounting.
+            await service.drain()
         }
         shutdown = task
         return task

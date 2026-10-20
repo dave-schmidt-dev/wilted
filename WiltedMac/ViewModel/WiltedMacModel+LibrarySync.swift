@@ -369,7 +369,8 @@ extension WiltedMacModel {
             },
             onDeviceRecords: { records in await importer.handle(records) }, maintenance: inboundMaintenance,
             beforePollerStart: { await previousShutdown?.value },
-            onRoundFinished: { [weak self] error in await MainActor.run { self?.recordLibraryCheck(error) } }
+            onRoundFinished: { [weak self] error in await MainActor.run { self?.recordLibraryCheck(error) } },
+            onDevicesChange: { [weak self] devices in await MainActor.run { self?.recordLinkedDevices(devices) } }
         )
         // Decision intents (keep, skip, mark done, remove from Larder, restore, reorder) go to the applier, which shares
         // the media service's ledger; media intents keep their existing route.
@@ -380,7 +381,8 @@ extension WiltedMacModel {
             onApplied: { [weak self] in self?.librarySyncController?.requestPublish() }
         )
         let sink = WiltedMacLibraryIntentSink(consumer: mediaRequestConsumer ?? { intent in
-            if intent.action.isDecision { try await applier.apply(intent) } else { await inbound.consume(intent) }
+            // A media request is queued, not awaited, so its upload never holds up the round.
+            if intent.action.isDecision { try await applier.apply(intent) } else { await inbound.admit(intent) }
         })
         let publisher = WiltedMacLibraryPublisher(
             source: source, transport: resolvedTransport, sink: sink, isEnabled: true,

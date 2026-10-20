@@ -122,6 +122,12 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
     func removeTranscript(entryID: ItemID) async throws {
         try await run { try await inner.removeTranscript(entryID: entryID) }
     }
+    func announceDevice(_ announcement: LibraryDeviceAnnouncement) async throws {
+        try await run { try await inner.announceDevice(announcement) }
+    }
+    func fetchDeviceDirectory() async throws -> LibraryDeviceDirectory? { try await run { try await inner.fetchDeviceDirectory() } }
+    func publishDeviceLink(_ link: LibraryDeviceLink) async throws { try await run { try await inner.publishDeviceLink(link) } }
+    func fetchDeviceLink() async throws -> LibraryDeviceLink? { try await run { try await inner.fetchDeviceLink() } }
     func commitFetchedState(_ token: LibraryChangeToken?) async throws {
         try await run { try await inner.commitFetchedState(token) }
     }

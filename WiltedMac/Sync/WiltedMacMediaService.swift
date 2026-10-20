@@ -128,6 +128,9 @@ actor WiltedMacMediaService {
     /// The wait before the one retry of an upload that failed.
     static let defaultUploadRetryDelay: Duration = .seconds(5)
 
+    /// Told each stage of a media request after `received`, so the requesting device can show it.
+    typealias RequestReporter = @Sendable (LibraryIntent, LibraryMediaRequestStatus.Stage, String?) async -> Void
+
     struct AssetKey: Hashable, Codable, Sendable {
         var entryID: String
         var revisionID: String
@@ -167,17 +170,22 @@ actor WiltedMacMediaService {
     private var availableOffers: [String: LibraryMediaOffer] = [:]
     private var publishedTranscripts: [String: String] = [:]
     private var tail: Task<Void, Never>?
+    private var sweepQueued = false
+    private let reportRequest: RequestReporter?
     private(set) var lastFailure: String?
 
     /// - Parameters:
     ///   - uploadRetryDelay: the wait before retrying an upload that failed once.
     ///   - sleep: how that wait passes. Tests replace it so a retry costs no real time.
+    ///   - reportRequest: told `sending`, `answered` or `failed` for each media request it serves.
     init(
         source: any WiltedMacReadyAudioSource, transport: any LibraryTransport, accountingURL: URL?,
         now: @escaping @Sendable () -> Date = { Date() },
         uploadRetryDelay: Duration = WiltedMacMediaService.defaultUploadRetryDelay,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        reportRequest: RequestReporter? = nil
     ) {
+        self.reportRequest = reportRequest
         self.source = source
         self.transport = transport
         self.accountingURL = accountingURL
@@ -201,10 +209,34 @@ actor WiltedMacMediaService {
 
     // MARK: - Entry points (serialized: one upload or withdrawal at a time)
 
-    /// Applies one media intent; other intents are ignored.
+    /// Applies one media intent and waits for it; other intents are ignored.
     func handle(_ intent: LibraryIntent) async {
-        await serialized { await self.process(intent) }
+        await enqueue(intent).value
     }
+
+    /// Queues one media intent behind the work already queued and returns at once, so a sync round
+    /// never waits on an upload and a request sent during one is still read in the next round.
+    @discardableResult
+    func enqueue(_ intent: LibraryIntent) -> Task<Void, Never> {
+        chained { await self.process(intent) }
+    }
+
+    /// Queues a sweep unless one is already waiting, and returns at once.
+    func scheduleSweep() {
+        guard !sweepQueued else { return }
+        sweepQueued = true
+        chained {
+            await self.beginSweep()
+            await self.cleanup()
+        }
+    }
+
+    /// Waits for every queued request and sweep.
+    func drain() async {
+        await tail?.value
+    }
+
+    private func beginSweep() { sweepQueued = false }
 
     /// Brings the offers in line with the prepared Larder: publishes `available` for prepared
     /// queued entries that have no offer at their revision, and withdraws offers for entries that
@@ -229,13 +261,18 @@ actor WiltedMacMediaService {
     var accountedAssetCount: Int { records.count }
 
     private func serialized<T: Sendable>(_ work: @escaping @Sendable () async -> T) async -> T {
+        await chained(work).value
+    }
+
+    @discardableResult
+    private func chained<T: Sendable>(_ work: @escaping @Sendable () async -> T) -> Task<T, Never> {
         let previous = tail
         let task = Task<T, Never> {
             await previous?.value
             return await work()
         }
         tail = Task { _ = await task.value }
-        return await task.value
+        return task
     }
 
     // MARK: - Processing
@@ -247,7 +284,7 @@ actor WiltedMacMediaService {
                 mediaLog.notice("Ignored a media request for \(entryID.rawValue, privacy: .public) older than seven days")
                 return
             }
-            await serve(entryID, requester: intent.deviceID)
+            await serve(entryID, for: intent)
         case let .mediaCached(entryID, revisionID, deviceID):
             await acknowledge(entryID: entryID, revisionID: revisionID, deviceID: deviceID)
         default:
@@ -255,18 +292,22 @@ actor WiltedMacMediaService {
         }
     }
 
-    private func serve(_ entryID: ItemID, requester: String) async {
+    private func serve(_ entryID: ItemID, for intent: LibraryIntent) async {
+        let requester = intent.deviceID
         do {
             guard let ready = try await source.readyAudio(for: entryID) else {
                 try await publishNotReady(entryID, why: "no ready revision")
+                await reportRequest?(intent, .answered, "This episode is not prepared on the Mac yet.")
                 return
             }
             guard ready.byteCount <= Self.maximumByteCount else {
                 try await publishNotReady(entryID, why: "audio exceeds the size limit")
+                await reportRequest?(intent, .answered, "This episode's audio is too large to send.")
                 return
             }
             guard Self.fileSize(ready.fileURL) == ready.byteCount else {
                 try await publishNotReady(entryID, why: "the audio file is missing or changed")
+                await reportRequest?(intent, .answered, "The Mac's audio file for this episode is missing.")
                 return
             }
             let offer = try LibraryMediaOffer(
@@ -284,8 +325,10 @@ actor WiltedMacMediaService {
                 try persist()
                 await publishTranscript(for: entryID, revisionID: ready.revisionID)
                 mediaLog.notice("Audio for \(entryID.rawValue, privacy: .public) is already offered; added a requester")
+                await reportRequest?(intent, .answered, nil)
                 return
             }
+            await reportRequest?(intent, .sending, nil)
             mediaLog.notice("Uploading \(ready.byteCount, privacy: .public) bytes of audio for \(entryID.rawValue, privacy: .public)")
             let started = Date()
             try await upload(offer, from: ready.fileURL)
@@ -300,11 +343,16 @@ actor WiltedMacMediaService {
             try persist()
             await publishTranscript(for: entryID, revisionID: ready.revisionID)
             lastFailure = nil
+            await reportRequest?(intent, .answered, nil)
         } catch {
-            // No answer is published: the phone's own timeout tells the person, without claiming why.
+            // No offer is published. The device is told in plain words; the typed cause stays in
+            // this Mac's log, because the link record is synced to other devices.
             let cause = Self.typedCause(error)
             lastFailure = cause
             mediaLog.error("Media request for \(entryID.rawValue, privacy: .public) failed: \(cause, privacy: .public)")
+            if !(error is CancellationError) {
+                await reportRequest?(intent, .failed, "The Mac could not send the audio. Try again.")
+            }
         }
     }
 

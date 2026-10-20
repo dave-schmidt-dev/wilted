@@ -32,6 +32,8 @@ struct WiltedMacLibrarySyncActivity: Equatable, Sendable {
     /// Durable author evidence, kept distinct from this launch’s local send/read times.
     var publication: LibraryPublication?
     var publicationOwner: String?
+    /// The iPhones and iPads this Mac has linked this launch, with their requests in flight.
+    var devices: [WiltedMacLinkedDevice] = []
 
     mutating func recordSend(acknowledged: Int, unsent: Int?, publicationCompleted: Bool = false, at date: Date) {
         hasFinishedPass = true
@@ -176,6 +178,37 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
     static func timeLabel(_ date: Date?, now: Date = Date()) -> String {
         date.map { time($0, now: now) } ?? "Not yet this launch"
     }
+
+    /// One Sync card row per linked device: its model family (numbered when two share one) and
+    /// whether this Mac has linked it and is answering its requests.
+    struct DeviceRow: Equatable, Identifiable {
+        let id: String
+        let label: String
+        let value: String
+    }
+
+    static func deviceRows(_ devices: [WiltedMacLinkedDevice]) -> [DeviceRow] {
+        var seen: [String: Int] = [:]
+        let counts = Dictionary(devices.map { ($0.kind ?? "Device", 1) }, uniquingKeysWith: +)
+        return devices.map { device in
+            let kind = device.kind ?? "Device"
+            seen[kind, default: 0] += 1
+            let label = (counts[kind] ?? 0) > 1 ? "\(kind) \(seen[kind] ?? 1)" : kind
+            return DeviceRow(id: device.deviceID, label: label, value: deviceValue(device))
+        }
+    }
+
+    private static func deviceValue(_ device: WiltedMacLinkedDevice) -> String {
+        guard device.isLinked else { return "Linking…" }
+        let sending = device.inFlight.filter { $0.stage == .sending }.count
+        let queued = device.inFlight.count - sending
+        var parts: [String] = []
+        if sending > 0 { parts.append("sending \(episodes(sending))") }
+        if queued > 0 { parts.append("\(episodes(queued)) queued") }
+        return parts.isEmpty ? "Linked" : "Linked · \(parts.joined(separator: ", "))"
+    }
+
+    private static func episodes(_ count: Int) -> String { count == 1 ? "1 episode" : "\(count) episodes" }
 }
 
 // MARK: - UI fixture
@@ -282,6 +315,11 @@ extension WiltedMacModel {
     }
 
     /// Records one inbound round. A pause (throttle or account) is reported by its own state.
+    func recordLinkedDevices(_ devices: [WiltedMacLinkedDevice]) {
+        guard librarySyncActivity.devices != devices else { return }
+        librarySyncActivity.devices = devices
+    }
+
     func recordLibraryCheck(_ error: (any Error)?) {
         if let error, WiltedMacLibrarySyncController.isPause(error) { return }
         var next = librarySyncActivity
