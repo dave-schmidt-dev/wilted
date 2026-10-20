@@ -53,8 +53,10 @@ extension WiltedMacModel {
 /// The coordinator reports every network chunk, and each report used to queue
 /// its own main-actor task that rewrote `episodes` -- re-sorting the Larder
 /// every time -- so a few transfers together stalled the window. A report is
-/// admitted when its stage changes, when it is the completed stage or the
-/// last byte, or when `interval` has passed since the last admitted one.
+/// admitted when its stage changes, when it is the completed stage, or when
+/// `interval` has passed since the last admitted one. The byte count is no
+/// test of the end: a feed's declared size can undercount the file, and the
+/// next stage's first report carries the full count anyway.
 final class WiltedMacDownloadProgressThrottle: Sendable {
     static let interval: TimeInterval = 0.25
 
@@ -67,7 +69,6 @@ final class WiltedMacDownloadProgressThrottle: Sendable {
 
     func admits(_ progress: PodcastDownloadProgress, at moment: Date = Date()) -> Bool {
         let isFinal = progress.stage == .completed
-            || progress.expectedByteCount.map { progress.bytesReceived >= $0 } == true
         return last.withLock { last in
             if !isFinal, let previous = last, previous.stage == progress.stage,
                moment.timeIntervalSince(previous.at) < Self.interval {

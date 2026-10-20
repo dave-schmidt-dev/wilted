@@ -184,10 +184,30 @@ final class WiltedMacDownloadReloadTests: XCTestCase {
         XCTAssertLessThanOrEqual(admitted, 5, "about four a second, plus the first")
         XCTAssertGreaterThanOrEqual(admitted, 4)
 
-        let end = start.addingTimeInterval(1.0)
-        XCTAssertTrue(throttle.admits(progress(.transferring, total, total), at: end), "the last byte is shown")
-        XCTAssertTrue(throttle.admits(progress(.validating, total, total), at: end), "a new stage is shown")
-        XCTAssertTrue(throttle.admits(progress(.completed, total, total), at: end), "completion is shown")
+        let end = start.addingTimeInterval(1.5)
+        XCTAssertTrue(throttle.admits(progress(.transferring, total - 1, total), at: end))
+        XCTAssertFalse(throttle.admits(progress(.transferring, total, total), at: end.addingTimeInterval(0.01)),
+                       "the same stage inside the interval is held")
+        XCTAssertTrue(throttle.admits(progress(.validating, total, total), at: end.addingTimeInterval(0.02)),
+                      "a new stage is shown, carrying the full count")
+        XCTAssertTrue(throttle.admits(progress(.completed, total, total), at: end.addingTimeInterval(0.03)),
+                      "completion is shown")
+    }
+
+    /// A feed's declared size can undercount the file. Bytes past it must not
+    /// read as the end of the transfer and reopen the flood.
+    func testTheThrottleHoldsAnUndercountedTransferToTheSameRate() {
+        let throttle = WiltedMacDownloadProgressThrottle()
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var admitted = 0
+        for step in 0..<200 {
+            let received = Int64(step + 1) * 400
+            if throttle.admits(progress(.transferring, received, 1), at: start.addingTimeInterval(Double(step) * 0.005)) {
+                admitted += 1
+            }
+        }
+        XCTAssertLessThanOrEqual(admitted, 5)
+        XCTAssertTrue(throttle.admits(progress(.completed, 80_000, 1), at: start.addingTimeInterval(1.0)))
     }
 
     func testTheThrottleShowsCompletionEvenWhenTheSizeWasNeverKnown() {
