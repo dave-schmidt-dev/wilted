@@ -122,7 +122,7 @@ actor WiltedMacIntentOutcomeBook {
         let kept = next.filter { $0.value.outcome.decidedAt > cutoff }
         if let fileURL {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(Stored(entries: kept)).write(to: fileURL, options: .atomic)
+            try DurableFile.write(JSONEncoder().encode(Stored(entries: kept)), to: fileURL)
         }
         entries = kept
     }

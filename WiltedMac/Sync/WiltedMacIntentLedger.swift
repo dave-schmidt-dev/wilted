@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import WiltedProducer
 
 private let ledgerLog = Logger(subsystem: "com.zerodelta.wilted", category: "MacIntentLedger")
 
@@ -71,11 +72,6 @@ actor WiltedMacIntentLedger {
     private func persist(_ entries: [String: Date]) throws {
         guard let fileURL else { return }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(Stored(recorded: entries))
-        try data.write(to: fileURL, options: .atomic)
-        if let handle = try? FileHandle(forWritingTo: fileURL) {
-            try? handle.synchronize()
-            try? handle.close()
-        }
+        try DurableFile.write(JSONEncoder().encode(Stored(recorded: entries)), to: fileURL)
     }
 }
