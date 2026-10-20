@@ -85,7 +85,7 @@ final class LibraryAppModelTests: XCTestCase {
         try await macPublish("a", position: 754)
         let model = makeModel()
         await model.refresh()
-        XCTAssertEqual(model.queued.first?.checkpointText, "Paused on Mac at 12:34 (as of 22:13)")
+        XCTAssertEqual(model.queued.first?.checkpointText, "Paused on another device at 12:34 (as of 22:13)")
         XCTAssertNil(model.queued.last?.checkpointText)
         XCTAssertEqual(model.checkpoints[id("a")]?.record.positionSeconds, 754)
     }
@@ -97,7 +97,7 @@ final class LibraryAppModelTests: XCTestCase {
         try await macPublish("a", position: 999, epoch: 9, device: "phone")
         let model = makeModel()
         await model.refresh()
-        XCTAssertEqual(model.queued.first?.checkpointText, "Paused on Mac at 1:02:05 (as of 22:13)")
+        XCTAssertEqual(model.queued.first?.checkpointText, "Paused on another device at 1:02:05 (as of 22:13)")
     }
 
     func testNowPlayingRecordShowsPlayingLabel() async throws {
@@ -105,7 +105,7 @@ final class LibraryAppModelTests: XCTestCase {
         try await macPublish("a", position: 30, playing: true, channel: .nowPlaying)
         let model = makeModel()
         await model.refresh()
-        XCTAssertEqual(model.queued.first?.checkpointText, "Playing on Mac at 00:30 (as of 22:13)")
+        XCTAssertEqual(model.queued.first?.checkpointText, "Playing on another device at 00:30 (as of 22:13)")
     }
 
     func testRemovalStatesRenderAndMoveOutOfTheQueue() async throws {

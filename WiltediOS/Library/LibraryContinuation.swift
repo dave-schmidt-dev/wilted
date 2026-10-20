@@ -2,7 +2,7 @@ import Foundation
 import WiltedDomain
 import WiltedLibrary
 
-/// What "Continue from Mac" would do, decided from the device records and what the phone caches.
+/// What continuing another device's playback would do, decided from the device records and what the phone caches.
 enum LibraryContinuation: Equatable, Sendable {
     /// The same revision is on the phone: play it at `positionSeconds`.
     case ready(entryID: ItemID, positionSeconds: Double, rate: Double, wasPlaying: Bool, sourceDeviceID: String, source: ObservedPlayback)
@@ -26,7 +26,7 @@ enum LibraryContinuation: Equatable, Sendable {
 
 /// Pure decision for the Continue banner. No I/O, so it is testable without a player.
 enum LibraryContinuationPlanner {
-    static let mismatchReason = "The download is a different version of the episode than the Mac is playing. "
+    static let mismatchReason = "The download is a different version of the episode than the one playing on another device. "
         + "Delete the download, then get the Mac's version."
 
     /// Nil when no other device has playback, or this device's own record already outranks it
@@ -61,7 +61,7 @@ enum LibraryContinuationPlanner {
     }
 }
 
-/// Factual age of the Mac playback checkpoint in the server clock domain.
+/// Factual age of another device's playback checkpoint in the server clock domain.
 struct LibraryContinuationAge: Equatable {
     let seconds: TimeInterval?
     let isStale: Bool
@@ -73,13 +73,13 @@ struct LibraryContinuationAge: Equatable {
     }
 
     var text: String {
-        guard let seconds else { return "Mac playback position age uncertain." }
+        guard let seconds else { return "Playback position age uncertain." }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         formatter.dateTimeStyle = .named
         let relative = formatter.localizedString(fromTimeInterval: -seconds)
-        return "Mac playback position: \(relative)."
+        return "Playback position: \(relative)."
     }
 
-    static let staleText = "Mac playback may be out of date."
+    static let staleText = "Playback on another device may be out of date."
 }

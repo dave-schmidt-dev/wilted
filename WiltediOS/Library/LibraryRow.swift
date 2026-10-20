@@ -15,7 +15,7 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     let publishedAt: Date
     /// "Retired on Mac" or "Dismissed on Mac"; nil while the entry is live.
     let removalText: String?
-    /// "Paused on Mac at mm:ss (as of hh:mm)" from the Mac's last checkpoint for this entry.
+    /// "Paused on another device at mm:ss (as of hh:mm)" from another device's last checkpoint for this entry.
     let checkpointText: String?
     /// True when some device has started the episode and it is not completed; the only rows
     /// that offer Mark done.
@@ -252,7 +252,7 @@ enum LibraryRowBuilder {
     static func checkpointText(_ observed: ObservedPlayback, clock: LibraryClockFormat) -> String {
         let state = observed.record.isPlaying ? "Playing" : "Paused"
         let position = LibraryClockFormat.duration(observed.record.positionSeconds)
-        return "\(state) on Mac at \(position) (as of \(clock.clock(observed.serverModifiedAt)))"
+        return "\(state) on another device at \(position) (as of \(clock.clock(observed.serverModifiedAt)))"
     }
 }
 
