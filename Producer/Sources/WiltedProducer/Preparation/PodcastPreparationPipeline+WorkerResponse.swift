@@ -3,6 +3,10 @@ import CoreFoundation
 import Foundation
 import WiltedDomain
 
+private let maximumDiagnosticCandidateRecords = 8
+private let maximumDiagnosticSeedIDs = 16
+private let maximumDiagnosticFieldCharacters = 256
+
 extension PodcastPreparationPipeline {
     // MARK: Worker response
 
@@ -252,7 +256,138 @@ extension PodcastPreparationPipeline {
         if let reason = audit["incompleteError"] as? String {
             fields["incompleteError"] = String(reason.prefix(256))
         }
+        fields["heldSpans"] = heldSpanDiagnosticSummary(audit)
+        fields["declinedCommercialEvidenceSeeds"] = declinedSeedDiagnosticSummary(audit)
         return fields
+    }
+
+    /// A bounded, content-free projection of the worker's held spans.
+    ///
+    /// The reasons are the worker's fixed vocabulary rather than free text, so
+    /// an unknown one is a diagnostic omission, not something to publish. A
+    /// record is only ever emitted whole: when the character budget cannot
+    /// hold another one, the counts say so rather than clipping a number.
+    private static func heldSpanDiagnosticSummary(_ audit: [String: Any]) -> String {
+        let spans = audit["heldSpans"] as? [[String: Any]] ?? []
+        let examined = Array(spans.prefix(maximumDiagnosticCandidateRecords))
+        var records: [String] = []
+        var invalid = 0
+        for span in examined {
+            guard let reason = span["reason"] as? String,
+                  isKnownHeldReason(reason),
+                  let interval = diagnosticInterval(span) else {
+                invalid += 1
+                continue
+            }
+            records.append("\(reason)@\(diagnosticNumber(interval.0))-\(diagnosticNumber(interval.1))")
+        }
+        let countOmitted = spans.count - examined.count
+        for shown in stride(from: records.count, through: 0, by: -1) {
+            let lengthOmitted = records.count - shown
+            let summary = "total=\(spans.count);examined=\(examined.count);omittedByCount=\(countOmitted);"
+                + "invalid=\(invalid);omittedByLength=\(lengthOmitted);shown=\(shown);"
+                + "spans=[\(records.prefix(shown).joined(separator: "|"))]"
+            if summary.count <= maximumDiagnosticFieldCharacters { return summary }
+        }
+        return "total=\(spans.count);examined=\(examined.count);omittedByCount=\(countOmitted);"
+            + "invalid=\(invalid);omittedByLength=\(records.count);shown=0;spans=[]"
+    }
+
+    /// The same bounded projection for declined commercial-evidence seeds.
+    ///
+    /// These are the only audit records that carry cue identifiers. A seed
+    /// retains at most sixteen of its own IDs, and both the record and ID
+    /// omission counts are explicit so a truncated summary never reads as
+    /// complete coverage.
+    private static func declinedSeedDiagnosticSummary(_ audit: [String: Any]) -> String {
+        let seeds = audit["declinedCommercialEvidenceSeeds"] as? [[String: Any]] ?? []
+        let examined = Array(seeds.prefix(maximumDiagnosticCandidateRecords))
+        var records: [String] = []
+        var retainedIDCounts: [Int] = []
+        var extraIDCounts: [Int] = []
+        var invalid = 0
+        for seed in examined {
+            guard let reason = seed["reason"] as? String,
+                  isKnownDeclinedReason(reason),
+                  let interval = diagnosticInterval(seed),
+                  let rawIDs = seed["ids"] as? [Any], !rawIDs.isEmpty else {
+                invalid += 1
+                continue
+            }
+            var ids: [Int] = []
+            for rawID in rawIDs.prefix(maximumDiagnosticSeedIDs) {
+                guard let id = diagnosticNonnegativeInteger(rawID) else {
+                    ids.removeAll()
+                    break
+                }
+                ids.append(id)
+            }
+            guard !ids.isEmpty else {
+                invalid += 1
+                continue
+            }
+            records.append("\(reason)@\(diagnosticNumber(interval.0))-\(diagnosticNumber(interval.1))"
+                + "#\(ids.map(String.init).joined(separator: ","))")
+            retainedIDCounts.append(ids.count)
+            extraIDCounts.append(max(0, rawIDs.count - ids.count))
+        }
+        let countOmitted = seeds.count - examined.count
+        let idsCountOmitted = extraIDCounts.reduce(0, +)
+        for shown in stride(from: records.count, through: 0, by: -1) {
+            let lengthOmitted = records.count - shown
+            let idsShown = retainedIDCounts.prefix(shown).reduce(0, +)
+            let idsLengthOmitted = retainedIDCounts.dropFirst(shown).reduce(0, +)
+            let summary = "total=\(seeds.count);examined=\(examined.count);omittedByCount=\(countOmitted);"
+                + "invalid=\(invalid);omittedByLength=\(lengthOmitted);shown=\(shown);"
+                + "idsShown=\(idsShown);idsOmittedByCount=\(idsCountOmitted);"
+                + "idsOmittedByLength=\(idsLengthOmitted);"
+                + "seeds=[\(records.prefix(shown).joined(separator: "|"))]"
+            if summary.count <= maximumDiagnosticFieldCharacters { return summary }
+        }
+        return "total=\(seeds.count);examined=\(examined.count);omittedByCount=\(countOmitted);"
+            + "invalid=\(invalid);omittedByLength=\(records.count);shown=0;idsShown=0;"
+            + "idsOmittedByCount=\(idsCountOmitted);"
+            + "idsOmittedByLength=\(retainedIDCounts.reduce(0, +));seeds=[]"
+    }
+
+    private static func isKnownHeldReason(_ reason: String) -> Bool {
+        ["programme-boundary", "credits-boundary-unresolved", "programme-boundary-conflict",
+         "boundary-review-unresolved", "sponsor-prefix-programme-found", "total-share-ceiling",
+         "pod-continuation-bracket"].contains(reason)
+    }
+
+    private static func isKnownDeclinedReason(_ reason: String) -> Bool {
+        ["review-declined", "review-unresolved", "dropped-after-proposal"].contains(reason)
+    }
+
+    private static func diagnosticInterval(_ record: [String: Any]) -> (Double, Double)? {
+        guard let start = diagnosticNonnegativeDouble(record["startSeconds"]),
+              let end = diagnosticNonnegativeDouble(record["endSeconds"]),
+              end > start else { return nil }
+        return (start, end)
+    }
+
+    /// Worker numbers are external input. Booleans bridge to `NSNumber` too,
+    /// so they have to be excluded by type rather than trusted as zero or one.
+    private static func diagnosticNonnegativeDouble(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, double >= 0 else { return nil }
+        return double
+    }
+
+    private static func diagnosticNonnegativeInteger(_ value: Any) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        guard let integer = value as? Int, integer >= 0 else { return nil }
+        return integer
+    }
+
+    /// `String(Double)` is shortest-round-trip and stays compact for very
+    /// large finite values, where a fixed decimal format would blow the field.
+    private static func diagnosticNumber(_ value: Double) -> String {
+        return value == 0 ? "0.0" : String(value)
     }
 
     /// Diagnostic evidence may describe no model work, but cannot claim clean coverage.
