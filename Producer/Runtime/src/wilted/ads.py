@@ -329,6 +329,20 @@ _SELF_PROMO_HOUSEKEEPING_CUES = (
     re.compile(r"\b(?:premium|member)[ -]exclusive (?:shows?|content|episodes?)\b", re.IGNORECASE),
 )
 
+_HOUSE_PROMOTION_CUES = (
+    re.compile(r"\bpatreon\b", re.IGNORECASE),
+    re.compile(r"\bad[- ]free\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:today(?:'s|’s)\s+sponsors?|thank\s+you\s+to\s+(?:our|today(?:'s|’s))\s+sponsors?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bwebinars?\b", re.IGNORECASE),
+    re.compile(r"\bcohorts?\b", re.IGNORECASE),
+    re.compile(r"\bnewsletters?\b", re.IGNORECASE),
+    re.compile(r"\bsubscribe\b", re.IGNORECASE),
+    re.compile(r"\bregister\b", re.IGNORECASE),
+)
+
 _SPARSE_CTA_VERB = re.compile(r"\b(?:visit|try|switch|sign up|download)\b", re.IGNORECASE)
 _SPARSE_CTA_CONTEXT = re.compile(
     r"\b(?:today|now|free|trial|app|plan|code|offer|deal|website|dot[ -]?com)\b",
@@ -506,6 +520,35 @@ def _has_sparse_promo_evidence(coarse_run: _CoarseAdRun, segments: list[Transcri
     if any(pattern.search(text) for pattern in _SPARSE_PROMO_CUES):
         return True
     return _has_sparse_call_to_action(text)
+
+
+def _has_house_promotion_cue(coarse_run: _CoarseAdRun, segments: list[TranscriptSegment]) -> bool:
+    """Return whether a coarse run contains a house-promotion cue."""
+    text = " ".join(segments[segment_id].text for segment_id in range(coarse_run.start_id, coarse_run.end_id + 1))
+    return any(pattern.search(text) for pattern in _HOUSE_PROMOTION_CUES)
+
+
+def _trim_self_promo_run_edges(
+    coarse_run: _CoarseAdRun, segments: list[TranscriptSegment]
+) -> _CoarseAdRun | None:
+    """Drop leading and trailing cues without promotional cues from a self_promo run."""
+    def _cue_has_evidence(text: str) -> bool:
+        return (
+            any(pattern.search(text) for pattern in _HOUSE_PROMOTION_CUES)
+            or any(pattern.search(text) for pattern in _SPARSE_PROMO_CUES)
+            or _has_sparse_call_to_action(text)
+        )
+
+    start_id = coarse_run.start_id
+    end_id = coarse_run.end_id
+    while start_id <= end_id and not _cue_has_evidence(segments[start_id].text):
+        start_id += 1
+    while end_id >= start_id and not _cue_has_evidence(segments[end_id].text):
+        end_id -= 1
+
+    if start_id > end_id:
+        return None
+    return _CoarseAdRun(start_id, end_id, coarse_run.confidence, coarse_run.label)
 
 
 def _has_sparse_call_to_action(text: str) -> bool:
@@ -925,6 +968,8 @@ def _classify_batch(
     window_index: int,
     batch_path: str,
     transcript_text: str | None = None,
+    *,
+    remove_self_promotion: bool = False,
 ) -> list[tuple[int, bool, str | None]]:
     """Classify one batch, recursively halving invalid multi-ID responses."""
     if transcript_text is None:
@@ -935,6 +980,8 @@ def _classify_batch(
         try:
             response, _tokens = _generate_ad_classification(backend, prompt, transcript_text)
             classifications = _parse_ad_response(response, batch_ids)
+            if remove_self_promotion:
+                return classifications
             return _override_sponsor_housekeeping(classifications, segments)
         except Exception as exc:
             last_error = exc
@@ -967,8 +1014,20 @@ def _classify_batch(
         len(right_ids),
         last_error,
     )
-    return _classify_batch(left_ids, segments, backend, window_index, f"{batch_path}L") + _classify_batch(
-        right_ids, segments, backend, window_index, f"{batch_path}R"
+    return _classify_batch(
+        left_ids,
+        segments,
+        backend,
+        window_index,
+        f"{batch_path}L",
+        remove_self_promotion=remove_self_promotion,
+    ) + _classify_batch(
+        right_ids,
+        segments,
+        backend,
+        window_index,
+        f"{batch_path}R",
+        remove_self_promotion=remove_self_promotion,
     )
 
 
@@ -983,6 +1042,8 @@ def detect_ads(
     chunk_minutes: float = 10.0,
     overlap_minutes: float = 2.0,
     confidence_threshold: float = COARSE_CONFIDENCE_FLOOR,
+    *,
+    remove_self_promotion: bool = False,
 ) -> list[AdSegment]:
     """Detect advertisements in a transcript using LLM-based sliding window analysis.
 
@@ -1005,6 +1066,9 @@ def detect_ads(
             corroborated segments plus one uncorroborated averages about
             0.93, so a threshold set from the single-segment figure (0.775)
             will not filter the runs its setter expects.
+        remove_self_promotion: When True, keep self-promotion and sponsor
+            housekeeping runs (such as roll calls, webinars, cohorts, and
+            newsletters) as ad detections instead of discarding them.
 
     Returns:
         Sorted list of AdSegment detections, merged and filtered.
@@ -1029,6 +1093,7 @@ def detect_ads(
                     chunk_index,
                     str(batch_index),
                     transcript_text,
+                    remove_self_promotion=remove_self_promotion,
                 )
             )
 
@@ -1039,13 +1104,30 @@ def detect_ads(
     eligible_runs = [run for run in coarse_runs if run.confidence >= confidence_threshold]
     promo_evidenced_runs: list[_CoarseAdRun] = []
     for run in eligible_runs:
-        if _is_self_promo_housekeeping_run(run, segments):
-            logger.info("Discarding self-promo housekeeping run %d-%d", run.start_id, run.end_id)
-            continue
-        coarse_size = run.end_id - run.start_id + 1
-        if coarse_size <= 2 and not _has_sparse_promo_evidence(run, segments):
-            logger.info("Discarding sparse ad run %d-%d without promotional evidence", run.start_id, run.end_id)
-            continue
+        if remove_self_promotion:
+            if run.label == "self_promo":
+                trimmed = _trim_self_promo_run_edges(run, segments)
+                if trimmed is None:
+                    continue
+                run = trimmed
+            coarse_size = run.end_id - run.start_id + 1
+            if coarse_size <= 2:
+                has_promo = (
+                    _has_sparse_promo_evidence(run, segments) or _has_house_promotion_cue(run, segments)
+                    if run.label == "self_promo"
+                    else _has_sparse_promo_evidence(run, segments)
+                )
+                if not has_promo:
+                    logger.info("Discarding sparse ad run %d-%d without promotional evidence", run.start_id, run.end_id)
+                    continue
+        else:
+            if _is_self_promo_housekeeping_run(run, segments):
+                logger.info("Discarding self-promo housekeeping run %d-%d", run.start_id, run.end_id)
+                continue
+            coarse_size = run.end_id - run.start_id + 1
+            if coarse_size <= 2 and not _has_sparse_promo_evidence(run, segments):
+                logger.info("Discarding sparse ad run %d-%d without promotional evidence", run.start_id, run.end_id)
+                continue
         promo_evidenced_runs.append(run)
     bracketed_pods = _recover_bracketed_ad_pods(segments, backend, eligible_runs)
     anchor_pods, claimed_anchor_ranges = _recover_explicit_sponsor_pods(segments, backend, eligible_runs)

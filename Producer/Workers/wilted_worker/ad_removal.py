@@ -47,6 +47,7 @@ def analyze_ad_detections(
     *,
     experimental_candidates=(),
     experimental_max_additional_model_calls: int = 0,
+    remove_self_promotion: bool = False,
 ) -> AdAnalysis:
     """Run the archive detector and every worker safeguard with an auditable result.
 
@@ -68,7 +69,10 @@ def analyze_ad_detections(
     ads_logger.addHandler(discarded)
     ads_logger.setLevel(logging.INFO)
     try:
-        detections = ads_module.detect_ads(segments, auditing_backend)
+        if remove_self_promotion:
+            detections = ads_module.detect_ads(segments, auditing_backend, remove_self_promotion=True)
+        else:
+            detections = ads_module.detect_ads(segments, auditing_backend)
     finally:
         ads_logger.removeHandler(discarded)
         ads_logger.setLevel(previous_level)
@@ -348,6 +352,12 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             raise
 
         try:
+            remove_self_promotion = request.get("removeSelfPromotion") is True
+            if remove_self_promotion:
+                _worker_reporting.progress(
+                    "ads.detect.self_promotion",
+                    "removing the show's own promotion for this feed",
+                )
             _worker_reporting.progress("ads.detect.start", f"{len(segments)} segments")
             # Probed before the recovery passes, not after them. The closing
             # review cuts to the end of the file and sizes itself against the
@@ -356,7 +366,12 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             # never run for it. Both size guards then share this denominator.
             total = _worker_cue_timing.probe_duration(audio_path)
             try:
-                analysis = analyze_ad_detections(ads_module, counting, segments, total)
+                if remove_self_promotion:
+                    analysis = analyze_ad_detections(
+                        ads_module, counting, segments, total, remove_self_promotion=True
+                    )
+                else:
+                    analysis = analyze_ad_detections(ads_module, counting, segments, total)
                 detections = list(analysis.detections)
             except WorkerError as error:
                 if error.code in {
