@@ -450,10 +450,8 @@ final class LibraryLarderTests: XCTestCase {
         let r = row("a", show: "Alpha", published: 0, duration: 600)
         let date = r.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
         let started = EpisodeProgress(positionSeconds: 150, lastPlayedAt: Date(timeIntervalSince1970: 5))
-        let expectedFacts = "Alpha - 10:00 - \(date)"
-        XCTAssertEqual(LibraryRowView.detail(row: r, progress: started, completed: false), expectedFacts)
-        XCTAssertEqual(LibraryRowView.detail(row: r, progress: nil, completed: false), expectedFacts)
-        XCTAssertEqual(LibraryRowView.detail(row: r, progress: started, completed: true), expectedFacts)
+        XCTAssertEqual(r.showAndDurationText(), "Alpha - 10:00", "line two keeps only the show and the duration")
+        XCTAssertEqual(r.publicationDateText, date, "line three is the date alone")
         XCTAssertEqual(LibraryRowView.listeningStatus(row: r, progress: nil, completed: false), "New")
         XCTAssertEqual(LibraryRowView.listeningStatus(row: r, progress: started, completed: false), "07:30 left")
         XCTAssertNil(LibraryRowView.listeningStatus(row: r, progress: started, completed: true),
@@ -463,7 +461,8 @@ final class LibraryLarderTests: XCTestCase {
         XCTAssertTrue(CarEpisodeList.detail(r, progress: started).hasSuffix("07:30 left"))
         let untimed = row("b", duration: nil)
         let untimedDate = untimed.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
-        XCTAssertEqual(LibraryRowView.detail(row: untimed, progress: started, completed: false), "Show - Unknown - \(untimedDate)")
+        XCTAssertEqual(untimed.showAndDurationText(), "Show - Unknown")
+        XCTAssertEqual(untimed.publicationDateText, untimedDate)
         XCTAssertNil(LibraryRowView.listeningStatus(row: untimed, progress: started, completed: false))
         XCTAssertNil(CarEpisodeList.fraction(started, duration: nil))
 
@@ -494,9 +493,9 @@ final class LibraryLarderTests: XCTestCase {
                 let capture = try PhoneLayoutCapture(
                     LibraryRowView(row: episode, media: .onPhone, onPlay: {}, showsShowName: showsShowName),
                     width: width, scheme: scheme)
-                XCTAssertNotNil(capture.line(containing: expectedDate),
+                XCTAssertNotNil(capture.paintedLine(containing: expectedDate),
                     "The complete date must be rendered, not a clipped prefix: \(capture.text)")
-                XCTAssertNotNil(capture.line(containing: "10:00"), "Total duration remains visible")
+                XCTAssertNotNil(capture.paintedLine(containing: "10:00"), "Total duration remains visible: \(capture.text)")
                 let attachment = XCTAttachment(image: capture.image)
                 attachment.name = "larder-date-\(showsShowName ? "ungrouped" : "grouped")-\(Int(width))-\(scheme == .dark ? "dark" : "light")"
                 attachment.lifetime = .keepAlways
@@ -558,6 +557,33 @@ struct PhoneLayoutCapture {
         try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage), options: [:]).perform([request])
         lines = request.results ?? []
         XCTAssertEqual(image.size.width, width, accuracy: 0.1)
+    }
+
+    /// The recognized tokens regrouped into painted lines, top to bottom. Vision may split one painted line,
+    /// such as a date standing alone, into several observations, so tokens whose vertical centres agree
+    /// are joined left to right.
+    var paintedLines: [(text: String, box: CGRect)] {
+        let tokens = lines.compactMap { observation in
+            observation.topCandidates(1).first.map { (text: $0.string, box: observation.boundingBox) }
+        }.sorted { $0.box.midY > $1.box.midY }
+        var groups: [[(text: String, box: CGRect)]] = []
+        for token in tokens {
+            if let first = groups.last?.first, abs(first.box.midY - token.box.midY) < token.box.height / 2 {
+                groups[groups.count - 1].append(token)
+            } else {
+                groups.append([token])
+            }
+        }
+        return groups.map { group in
+            let ordered = group.sorted { $0.box.minX < $1.box.minX }
+            return (ordered.map(\.text).joined(separator: " "), ordered.dropFirst().reduce(ordered[0].box) { $0.union($1.box) })
+        }
+    }
+
+    /// The painted line holding `value` whole (ignoring case, spaces and punctuation), if any.
+    func paintedLine(containing value: String) -> (text: String, box: CGRect)? {
+        func compact(_ text: String) -> String { text.lowercased().filter { $0.isLetter || $0.isNumber } }
+        return paintedLines.first { compact($0.text).contains(compact(value)) }
     }
 
     func line(containing value: String) -> CGRect? {

@@ -416,7 +416,8 @@ struct LibraryRowView: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(row.title)
                     .wiltedFont(.body)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .accessibilityActions {
                         ForEach(voiceOverActions, id: \.name) { action in Button(action.name, action: action.perform) }
                     }
@@ -457,12 +458,6 @@ struct LibraryRowView: View {
         .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-row-\(row.id.rawValue)")
-    }
-
-    static func detail(
-        row: LibraryRow, progress: EpisodeProgress? = nil, completed: Bool = false, showsShowName: Bool = true
-    ) -> String {
-        row.detailText(namesShow: showsShowName)
     }
 
     /// Playback status stays separate from the factual metadata line. Nil means duration or

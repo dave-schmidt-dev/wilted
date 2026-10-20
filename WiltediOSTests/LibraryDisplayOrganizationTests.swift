@@ -137,12 +137,12 @@ final class LibraryDisplayOrganizationTests: XCTestCase {
         XCTAssertTrue(LibraryListing.organize(rows, sort: .playOrder, group: .none)[0].namesShowInRows,
                       "the untitled section names the feed on each row")
         for row in alpha.rows {
-            let detail = LibraryRowView.detail(row: row, showsShowName: false)
+            let detail = row.showAndDurationText(namesShow: false)
             XCTAssertFalse(detail.localizedCaseInsensitiveContains("Alpha"), detail)
-            XCTAssertTrue(detail.contains(row.durationText ?? "Unknown"), detail)
+            XCTAssertEqual(detail, row.durationText ?? "Unknown")
         }
         XCTAssertTrue(
-            LibraryRowView.detail(row: try XCTUnwrap(alpha.rows.first)).contains("Alpha"),
+            try XCTUnwrap(alpha.rows.first).showAndDurationText().contains("Alpha"),
             "the same row names its feed when the list is not grouped")
     }
 }

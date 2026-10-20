@@ -54,14 +54,27 @@ extension LibraryRow {
         return row
     }
 
-    /// The row's one-line metadata, "Show - duration - date". `namesShow` is false for a row under a
-    /// feed section header, which already names the show, so the line keeps only duration and date.
-    func detailText(namesShow: Bool = true) -> String {
-        let duration = durationText ?? "Unknown"
-        let date = LibraryDateFormat.day(publishedAt)
-        guard namesShow else { return "\(duration) - \(date)" }
+    /// The show as a row names it: the trimmed title, or "Show unknown" when the feed gave none.
+    var showLabel: String {
         let show = showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(show.isEmpty ? "Show unknown" : show) - \(duration) - \(date)"
+        return show.isEmpty ? "Show unknown" : show
+    }
+
+    /// The total duration as a row names it, "Unknown" when the feed gave none.
+    var durationLabel: String { durationText ?? "Unknown" }
+
+    /// Line two of a Larder row, "Show - duration". `namesShow` is false for a row under a feed section
+    /// header, which already names the show, so the line keeps only the duration.
+    func showAndDurationText(namesShow: Bool = true) -> String {
+        namesShow ? "\(showLabel) - \(durationLabel)" : durationLabel
+    }
+
+    /// Line three of a Larder row: the publication date alone, "Oct 3, 2026".
+    var publicationDateText: String { LibraryDateFormat.day(publishedAt) }
+
+    /// The row's facts as one string, "Show - duration - date", for callers that need them in a single line.
+    func detailText(namesShow: Bool = true) -> String {
+        "\(showAndDurationText(namesShow: namesShow)) - \(publicationDateText)"
     }
 }
 
@@ -243,32 +256,38 @@ enum LibraryRowBuilder {
     }
 }
 
-/// One factual metadata line. Only the show yields space to the complete duration and date.
+/// A Larder row's two factual lines under the title, as on the Mac: "Show - duration", then the
+/// publication date on its own line. Only the show yields space; the duration and the date stay whole.
+/// The lines are separate accessibility elements, so VoiceOver reads the show and duration, then the date.
 struct LibraryRowMetadataView: View {
     let row: LibraryRow
     let namesShow: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 0) {
-            if row.kind == .report {
-                Image(systemName: "newspaper").accessibilityHidden(true).padding(.trailing, 4)
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            HStack(spacing: 0) {
+                if row.kind == .report {
+                    Image(systemName: "newspaper").accessibilityHidden(true).padding(.trailing, 4)
+                }
+                if namesShow {
+                    Text(row.showLabel)
+                        .lineLimit(1).truncationMode(.tail)
+                    Text(" - ").fixedSize(horizontal: true, vertical: false)
+                }
+                Text(row.durationLabel)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
             }
-            if namesShow {
-                let show = row.showTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                Text(show.isEmpty ? "Show unknown" : show)
-                    .lineLimit(1).truncationMode(.tail)
-                Text(" - ").fixedSize(horizontal: true, vertical: false)
-            }
-            Text(row.detailText(namesShow: false))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(row.showAndDurationText(namesShow: namesShow))
+            .accessibilityIdentifier("wilted-library-meta-\(row.id.rawValue)")
+            Text(row.publicationDateText)
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .layoutPriority(1)
+                .accessibilityIdentifier("wilted-library-date-\(row.id.rawValue)")
         }
         .wiltedFont(.utility)
         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(row.detailText(namesShow: namesShow))
-        .accessibilityIdentifier("wilted-library-meta-\(row.id.rawValue)")
     }
 }

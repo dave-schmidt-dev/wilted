@@ -299,11 +299,15 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
                 try assertPaintedLine("Ada Fixture", frame: metadata.frame)
                 try assertPaintedLine("10:00", frame: metadata.frame)
             } else if screen == .larder {
-                // Frame-bound pixels prove each date, including the longer second show's row.
+                // Frame-bound pixels prove each date, painted whole on its own line below the show and
+                // duration, including the longer second show's row.
                 for episode in 1...3 {
                     let metadata = app.descendants(matching: .any)["wilted-library-meta-fixture-episode-\(episode)"].firstMatch
-                    XCTAssertTrue(metadata.exists)
-                    try assertPaintedLine("Nov 14, 2023", frame: metadata.frame)
+                    let date = app.descendants(matching: .any)["wilted-library-date-fixture-episode-\(episode)"].firstMatch
+                    XCTAssertTrue(metadata.exists && date.exists)
+                    XCTAssertGreaterThanOrEqual(date.frame.minY, metadata.frame.maxY - 1,
+                        "The date is its own line under the show and duration")
+                    try assertPaintedLine("Nov 14, 2023", frame: date.frame)
                 }
             } else {
                 let value = app.staticTexts["wilted-library-settings-cache-size"]
