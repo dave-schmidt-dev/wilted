@@ -132,10 +132,13 @@ extension PodcastPreparationPipeline {
         try? FileManager.default.removeItem(at: audioURL)
     }
 
-    private static func policyDigest(_ policy: PodcastPreparationPolicySnapshot) -> String {
+    /// Folds the self-promotion choice in only when on, so every outcome
+    /// prepared without it keeps the digest it was stored with.
+    static func policyDigest(_ policy: PodcastPreparationPolicySnapshot) -> String {
         var hasher = SHA256()
         hasher.update(data: Data(policy.transcriptPolicy.rawValue.utf8))
         hasher.update(data: Data([0, policy.removeAds ? 1 : 0]))
+        if policy.removeSelfPromotion { hasher.update(data: Data([0]) + Data("removeSelfPromotion".utf8)) }
         return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 

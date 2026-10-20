@@ -124,6 +124,7 @@ struct WiltedMacFeedPolicyContent: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feed-policy-failed")
             }
+            if !board.isArticleFeed(feedID) { selfPromotionRow }
             WiltedMacFeedRulesEntry(
                 editor: board.rulesEditor(for: feedID), subscription: subscription, isEnabled: board.isLoaded(feedID),
                 open: openRules
@@ -159,6 +160,30 @@ struct WiltedMacFeedPolicyContent: View {
             .accessibilityLabel("Treat \(subscription.title) as news")
             .accessibilityIdentifier("wilted-feed-policy-news")
         }
+    }
+
+    /// Shown only for a podcast feed. Kept out of the grid so its long label does not widen
+    /// the label column the pickers line up against.
+    private var selfPromotionRow: some View {
+        HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text("Remove the show's own promotion").wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                Text("Also cut the show's sponsor roll call, ad-free or Patreon pitches, events and webinars.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: WiltedTheme.Spacing.large)
+            Toggle("Remove the show's own promotion", isOn: Binding(
+                get: { board.removesSelfPromotion(feedID) }, set: { _ = board.setRemoveSelfPromotion($0, for: feedID) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .accessibilityLabel("Remove the show's own promotion from \(subscription.title)")
+            .accessibilityIdentifier("wilted-feed-policy-remove-self-promotion")
+        }
+        .disabled(!board.isLoaded(feedID))
     }
 
     private func overrideRow(

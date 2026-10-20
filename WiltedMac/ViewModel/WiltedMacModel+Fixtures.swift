@@ -241,7 +241,7 @@ extension WiltedMacModel {
             deferredAutomaticPreparations = [DeferredAutomaticPreparation(
                 episodeID: episodeID.rawValue,
                 processingPolicy: deferredPolicy,
-                policySnapshot: Self.preparationPolicySnapshot(from: automationSettings)
+                policySnapshot: Self.preparationPolicySnapshot(from: automationSettings, feedID: feedID.rawValue, preferences: preferences)
             )]
             preparationQueue.enter(WiltedMacWaitingPreparation(
                 id: episodeID.rawValue, title: episode.title, source: feed.title
