@@ -130,6 +130,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Mac: clicking the middle of a playlist in the sidebar, between its name and its Smart or Manual tag, opens it again; only the name and tag answered clicks.
 - A new iPhone or iPad is linked by the Mac in its next sync round, not after the Mac's half-hourly scan: each device announces itself once, the Mac links it, and the Mac Sync card lists every linked device with the episodes it is sending or has queued for it. The Mac also reports each download request back to the device as it reads, sends, answers or fails it, and a request sent while the Mac is uploading another episode is now read in the next round instead of waiting for that upload to finish.
 - The iPhone deletes downloaded audio it can never play again (downloads from before preparation proofs, and episodes removed from the Larder) the next time it opens, so Settings > Storage no longer counts episodes that the On phone filter does not show.
 - Mac: downloading several Larder episodes in a row no longer flips some of them back to Download (where clicking again did nothing), and the Larder no longer stalls while downloads report progress.

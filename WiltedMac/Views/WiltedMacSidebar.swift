@@ -227,9 +227,12 @@ struct WiltedMacSidebarRow: View {
             }
             .wiltedFont(.body)
             .frame(maxWidth: .infinity, alignment: mode == .full ? .leading : .center)
+            // On the label, not the Button: a plain button hit-tests only its
+            // label's drawn content, so the gap between a playlist's name and
+            // its kind tag (the row's centre) ignored clicks.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle())
         .listRowBackground(
             isSelected
                 ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.24)

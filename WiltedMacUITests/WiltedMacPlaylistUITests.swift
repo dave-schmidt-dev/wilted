@@ -62,6 +62,8 @@ extension WiltedMacEpisodeInfoUITests {
         XCTAssertTrue(sidebarRow.waitForExistence(timeout: 10), "the created playlist survives a relaunch")
         // The row names its kind for VoiceOver, as `WiltedMacSidebarRow` describes it.
         XCTAssertEqual(sidebarRow.label, "\(name), Manual playlist")
+        // The row's centre falls between the name and its kind tag, so this
+        // click also proves the whole row, not just its drawn text, selects.
         sidebarRow.click()
         XCTAssertTrue(title.waitForExistence(timeout: 10), "the renamed playlist heading survives relaunch")
         XCTAssertTrue(words(title).contains(name))
