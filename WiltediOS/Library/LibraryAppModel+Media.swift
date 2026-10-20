@@ -11,13 +11,32 @@ struct LibraryMediaRetry: Equatable, Sendable {
     var attempts: Int
 }
 
+/// How far the Mac has got with a request the phone sent, as the row says it.
+enum LibraryMediaRequestStage: Equatable, Sendable {
+    /// The Mac has not said anything yet.
+    case sent
+    /// The Mac read the request and has it in line behind earlier uploads.
+    case queued
+    /// The Mac is uploading the audio.
+    case sending
+
+    var text: String {
+        switch self {
+        case .sent: "Sent to Mac"
+        case .queued: "Queued on Mac"
+        case .sending: "Mac is sending"
+        }
+    }
+}
+
 /// What a Larder row shows and offers for one episode's audio.
 enum LibraryMediaState: Equatable, Sendable {
     /// Not on the phone and not requested.
     case available
-    /// The request intent is sent; the Mac has not published an offer yet. With `retry`, a download
-    /// failed for a passing reason and the next attempt starts after a short wait.
-    case requested(since: Date, retry: LibraryMediaRetry? = nil)
+    /// The request intent is sent; the Mac has not published an offer yet, and `stage` says how far it
+    /// has got. With `retry`, a download failed for a passing reason and the next attempt starts after a
+    /// short wait.
+    case requested(since: Date, retry: LibraryMediaRetry? = nil, stage: LibraryMediaRequestStage = .sent)
     case downloading(bytes: Int64, total: Int64, since: Date)
     case verifying
     /// Verified and cached on this phone.
@@ -37,7 +56,7 @@ enum LibraryMediaState: Equatable, Sendable {
     /// The moment the transfer began, for the elapsed-time readout.
     var startedAt: Date? {
         switch self {
-        case let .requested(since, _), let .downloading(_, _, since): since
+        case let .requested(since, _, _), let .downloading(_, _, since): since
         default: nil
         }
     }
@@ -52,8 +71,8 @@ enum LibraryMediaState: Equatable, Sendable {
     func statusText(elapsed: TimeInterval = 0) -> String {
         switch self {
         case .available: "Not on phone"
-        case let .requested(_, retry?): "Retrying (\(retry.attempt) of \(retry.attempts))"
-        case .requested: "Requested, waiting for Mac · \(LibraryClockFormat.duration(elapsed))"
+        case let .requested(_, retry?, _): "Retrying (\(retry.attempt) of \(retry.attempts))"
+        case let .requested(_, _, stage): "\(stage.text) · \(LibraryClockFormat.duration(elapsed))"
         case let .downloading(bytes, total, _):
             "Downloading \(Self.size(bytes)) of \(Self.size(total)) · \(LibraryClockFormat.duration(elapsed))\(Self.rateSuffix(bytes: bytes, total: total, elapsed: elapsed))"
         case .verifying: "Verifying"
@@ -87,11 +106,22 @@ enum LibraryMediaAction: Equatable, Sendable {
 }
 
 /// Waiting limits for one request. The download watchdog is `MediaFetcher`'s.
+///
+/// The Mac reports each request's stage (`LibraryDeviceLink`), and the limit depends on the stage it
+/// last reported: a request can wait a long time in line behind other uploads, so only silence is
+/// short. Every limit restarts when the stage changes.
 struct LibraryMediaTiming: Sendable {
     /// How often to look for the Mac's offer after sending the request.
     var pollInterval: Duration = .seconds(SyncCadence.tickInterval)
-    /// How long to wait for the Mac to answer before failing. The Mac polls every 30 s while idle.
-    var offerTimeout: Duration = .seconds(180)
+    /// How long the Mac may say nothing about a request before it is failed. The Mac reads requests
+    /// at its next 30 s round, so a Mac that is running answers well inside this.
+    var offerTimeout: Duration = .seconds(120)
+    /// How long a request the Mac has read may sit in line without its upload starting.
+    var queuedTimeout: Duration = .seconds(30 * 60)
+    /// How long an upload that started may go without the Mac answering.
+    var sendingTimeout: Duration = .seconds(15 * 60)
+    /// How long to wait for the offer to show once the Mac says it answered, before reading it directly.
+    var answeredTimeout: Duration = .seconds(120)
     /// Longest a download may go without receiving bytes.
     var watchdog: Duration = MediaFetcher.defaultWatchdog
     /// The waits before each automatic retry of a download that failed for a passing reason.
@@ -231,10 +261,18 @@ extension LibraryAppModel {
             }
             let intent = try LibraryIntent.requestMedia(entryID: entryID, deviceID: deviceID, createdAt: now())
             try await transport.send(intent: intent)
-            guard let offer = try await awaitOffer(for: entryID, runID: runID, context: context) else {
-                let entry = entryID.rawValue, timeout = mediaTiming.offerTimeout
-                mediaLog.notice("No answer from the Mac for \(entry, privacy: .public) within \(timeout, privacy: .public)")
+            let offer: LibraryMediaOffer
+            switch try await awaitAnswer(for: entryID, intentID: intent.id, runID: runID, context: context) {
+            case let .offer(found): offer = found
+            case .macNotAnswering:
+                let entry = entryID.rawValue
+                mediaLog.notice("No answer from the Mac for \(entry, privacy: .public)")
                 setMedia(.failed(Self.text(for: MediaFetchFailure.macNotAnswering)), entryID, runID)
+                return
+            case let .failed(reason):
+                let entry = entryID.rawValue
+                mediaLog.notice("The Mac could not send \(entry, privacy: .public)")
+                setMedia(.failed(reason), entryID, runID)
                 return
             }
             guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return }
@@ -274,43 +312,9 @@ extension LibraryAppModel {
         }
     }
 
-    /// Waits for the Mac's answer to the request until a `ready` (or `notReady`) offer for `entryID`
-    /// appears, `offerTimeout` passes (nil), or the request is cancelled. An `available` offer is the
-    /// Mac's standing statement that the audio is prepared, not an answer, so it keeps waiting for the
-    /// upload. A failing read is retried until the timeout rather than ending the request.
-    ///
-    /// While the sync tick runs, its rounds read the offers (with the playback records, every round) and this
-    /// only looks at what they found, so a request costs no reads of its own, except a single read of its
-    /// own at half the timeout, in case the rounds missed the answer. Without a tick (the app is not in
-    /// front) it reads the offers itself every `pollInterval`, which defaults to the tick interval.
-    private func awaitOffer(for entryID: ItemID, runID: UUID, context: LibraryMediaContext) async throws -> LibraryMediaOffer? {
-        let start = ContinuousClock.now
-        let deadline = start.advanced(by: mediaTiming.offerTimeout)
-        let halfway = start.advanced(by: mediaTiming.offerTimeout / 2)
-        let requestedAt = now()
-        var rechecked = false
-        while true {
-            try Task.checkCancellation()
-            guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else {
-                throw LibraryTransportError.superseded
-            }
-            let ticking = tickState.tick != nil
-            if ticking, let readAt = tickState.offersReadAt, readAt >= requestedAt,
-               let offer = tickState.offers[entryID], offer.state != .available { return offer }
-            let recheck = ticking && !rechecked && ContinuousClock.now >= halfway
-            if !ticking || recheck {
-                rechecked = rechecked || recheck
-                if let offer = try await readOffer(for: entryID, context: context) { return offer }
-            }
-            if ContinuousClock.now >= deadline { return nil }
-            // Looking at the tick's findings costs nothing, so that check is quick.
-            try await Task.sleep(for: ticking ? min(mediaTiming.pollInterval, .milliseconds(500)) : mediaTiming.pollInterval)
-        }
-    }
-
     /// One read of the offers: the Mac's answer for `entryID`, or nil when there is none yet or the read
     /// failed, so the caller keeps waiting.
-    private func readOffer(for entryID: ItemID, context: LibraryMediaContext) async throws -> LibraryMediaOffer? {
+    func readOffer(for entryID: ItemID, context: LibraryMediaContext) async throws -> LibraryMediaOffer? {
         guard let offers = try? await transport.mediaOffers() else { return nil }
         // A request's notReady response settles this run after durable revocation; it must
         // not cancel its own result while applying the response.
@@ -387,7 +391,7 @@ extension LibraryAppModel {
         }
     }
 
-    private func isCurrent(_ entryID: ItemID, _ runID: UUID) -> Bool { mediaRuns[entryID]?.id == runID }
+    func isCurrent(_ entryID: ItemID, _ runID: UUID) -> Bool { mediaRuns[entryID]?.id == runID }
 
     /// The Mac answered that it has no ready audio. The Larder lists only what the Mac reports ready, so
     /// the row leaves at once instead of waiting for the next refresh to withdraw it, and returns when
@@ -399,7 +403,7 @@ extension LibraryAppModel {
         dropOffer(entryID)
     }
 
-    private func setMedia(_ state: LibraryMediaState, _ entryID: ItemID, _ runID: UUID) {
+    func setMedia(_ state: LibraryMediaState, _ entryID: ItemID, _ runID: UUID) {
         guard isCurrent(entryID, runID) else { return }
         media[entryID] = state
     }

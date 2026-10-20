@@ -19,7 +19,8 @@ final class LibraryViewFixture {
     private let phone: InMemoryLibraryTransport
     private let mirror: FileLibraryStore
 
-    init() throws {
+    /// `linked` is whether the Mac has linked the phone; the hosted views offer no download until it has.
+    init(linked: Bool = true) throws {
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         defaults = UserDefaults(suiteName: suite)!
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
@@ -31,6 +32,7 @@ final class LibraryViewFixture {
             mediaCache: cache,
             mediaTiming: LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30)),
             preferences: defaults, timeZone: TimeZone(identifier: "UTC")!)
+        model.deviceLinked = linked
     }
 
     let cache: FileMediaCache

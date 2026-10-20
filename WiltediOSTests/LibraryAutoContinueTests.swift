@@ -144,10 +144,8 @@ final class LibraryAutoContinueTests: XCTestCase {
             "08:20 left",
             "the car row reads the time left")
         let phoneDate = carRows[0].row.publishedAt.formatted(.dateTime.month(.abbreviated).day().year())
-        XCTAssertEqual(
-            LibraryRowView.detail(row: carRows[0].row, progress: macPosition, completed: false),
-            "The Show - 10:00 - \(phoneDate)",
-            "the phone row retains feed, total duration, and date")
+        XCTAssertEqual(carRows[0].row.showAndDurationText(), "The Show - 10:00", "the phone row retains feed and total duration")
+        XCTAssertEqual(carRows[0].row.publicationDateText, phoneDate, "and the date, on its own line")
         let siri = await LibraryVoiceTarget(model: rig.model, player: rig.player).voiceSnapshot()
         XCTAssertEqual(siri.downloaded.map(\.id.rawValue), phone)
         await start(rig, "c")

@@ -147,6 +147,9 @@ struct LibraryListView: View {
                         publicationDetail: model.publicationDetail, publicationQualifier: model.publicationQualifier) { Task { await model.recoverFromAccountChange() } }
                 }
             }
+            if model.showsMacLinkNotice {
+                Section { LibraryMacLinkNotice(deviceKind: model.deviceKind) }
+            }
             if rows.isEmpty {
                 emptyState
             } else {
@@ -214,6 +217,7 @@ struct LibraryListView: View {
             row: row, media: model.mediaState(for: row.id),
             isPlaying: model.sameLogicalEpisode(playingID, row.id),
             onMedia: { model.performMediaAction($0, entryID: row.id) },
+            canRequestAudio: model.deviceLinked,
             onPlay: onPlay.map { play in { play(row) } },
             decisionStatus: model.decisionStatus(for: row.id),
             onDecision: { model.performDecision($0, entryID: row.id) },
@@ -245,7 +249,9 @@ struct LibraryListView: View {
 
     private func trailing(for row: LibraryRow) -> [LibrarySwipe] {
         guard !row.isPreparationOnly else { return [] }
-        return LibrarySwipe.trailing(media: model.mediaState(for: row.id), isPlaying: model.sameLogicalEpisode(playingID, row.id))
+        return LibrarySwipe.trailing(
+            media: model.mediaState(for: row.id), isPlaying: model.sameLogicalEpisode(playingID, row.id),
+            canRequest: model.deviceLinked)
     }
 
     /// What VoiceOver can do to a row by name: open it, plus every swipe action, through the same
@@ -383,6 +389,8 @@ struct LibraryRowView: View {
     /// True while this row's audio is the one playing, so its button pauses.
     var isPlaying = false
     var onMedia: (LibraryMediaAction) -> Void = { _ in }
+    /// False until the Mac has linked this device; the row then offers no request for audio.
+    var canRequestAudio = true
     /// Plays or pauses the cached audio; only offered once the audio is on the phone.
     var onPlay: (() -> Void)?
     /// Decision buttons for this row, and what its decision in flight says.
@@ -408,7 +416,8 @@ struct LibraryRowView: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 Text(row.title)
                     .wiltedFont(.body)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .accessibilityActions {
                         ForEach(voiceOverActions, id: \.name) { action in Button(action.name, action: action.perform) }
                     }
@@ -441,20 +450,14 @@ struct LibraryRowView: View {
                 }
                 LibraryCheckpointLine(row: row, player: player, identifier: "wilted-library-checkpoint-\(row.id.rawValue)")
                 LibraryEpisodeActions(
-                    row: row, media: media, isPlaying: isPlaying, onMedia: onMedia, onPlay: onPlay,
-                    decisionActions: decisionActions, decisionStatus: decisionStatus,
+                    row: row, media: media, isPlaying: isPlaying, onMedia: onMedia, canRequestAudio: canRequestAudio,
+                    onPlay: onPlay, decisionActions: decisionActions, decisionStatus: decisionStatus,
                     onDecision: onDecision, onCancelDecision: onCancelDecision)
             }
         }
         .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-row-\(row.id.rawValue)")
-    }
-
-    static func detail(
-        row: LibraryRow, progress: EpisodeProgress? = nil, completed: Bool = false, showsShowName: Bool = true
-    ) -> String {
-        row.detailText(namesShow: showsShowName)
     }
 
     /// Playback status stays separate from the factual metadata line. Nil means duration or
@@ -520,6 +523,7 @@ enum LibraryPreviewData {
         }
         let pending = changes.enumerated().map { PendingLibraryChange(localSeq: UInt64($0.offset + 1), change: $0.element, baseVersion: 0) }
         _ = try? await mac.push(changes: pending)
+        try? await mac.publishDeviceLink(LibraryDeviceLink(deviceID: "phone", linkedAt: Date()))
         return LibraryAppModel(transport: InMemoryLibraryTransport(deviceID: "phone", server: server), deviceID: "phone")
     }
 }

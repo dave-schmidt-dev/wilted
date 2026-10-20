@@ -11,18 +11,18 @@ struct LibraryContinueBanner: View {
             title: model.continuation.map { model.continuationTitle($0.entryID) } ?? "",
             media: model.continuation.map { model.mediaState(for: $0.entryID) } ?? .available,
             message: model.handoffMessage, now: model.now(), clockOffset: model.handoffState.clockOffset,
-            onContinue: { Task { await model.continueFromMac() } })
+            onContinue: { Task { await model.continueFromMac() } }, canRequestAudio: model.deviceLinked)
     }
 
     /// True when there is anything to show.
     static func isVisible(_ model: LibraryAppModel) -> Bool { model.continuation != nil || model.handoffMessage != nil }
 
-    static func detail(_ continuation: LibraryContinuation, media: LibraryMediaState) -> String {
-        LibraryContinueBannerContent.detail(continuation, media: media)
+    static func detail(_ continuation: LibraryContinuation, media: LibraryMediaState, canRequest: Bool = true) -> String {
+        LibraryContinueBannerContent.detail(continuation, media: media, canRequest: canRequest)
     }
 
-    static func actionTitle(_ continuation: LibraryContinuation, media: LibraryMediaState) -> String? {
-        LibraryContinueBannerContent.actionTitle(continuation, media: media)
+    static func actionTitle(_ continuation: LibraryContinuation, media: LibraryMediaState, canRequest: Bool = true) -> String? {
+        LibraryContinueBannerContent.actionTitle(continuation, media: media, canRequest: canRequest)
     }
 }
 
@@ -35,6 +35,8 @@ struct LibraryContinueBannerContent: View {
     let now: Date
     let clockOffset: TimeInterval
     let onContinue: () -> Void
+    /// False until the Mac has linked this device; the banner then offers no request for audio.
+    var canRequestAudio = true
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -49,7 +51,7 @@ struct LibraryContinueBannerContent: View {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                         Text(title).wiltedFont(.body).fixedSize(horizontal: false, vertical: true)
-                        Text(Self.detail(continuation, media: media))
+                        Text(Self.detail(continuation, media: media, canRequest: canRequestAudio))
                             .wiltedFont(.utility)
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .fixedSize(horizontal: false, vertical: true)
@@ -63,7 +65,7 @@ struct LibraryContinueBannerContent: View {
                             .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if let title = Self.actionTitle(continuation, media: media) {
+                    if let title = Self.actionTitle(continuation, media: media, canRequest: canRequestAudio) {
                         Button(action: onContinue) {
                             Text(title)
                                 .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
@@ -84,21 +86,23 @@ struct LibraryContinueBannerContent: View {
         .accessibilityIdentifier("wilted-handoff-banner")
     }
 
-    static func detail(_ continuation: LibraryContinuation, media: LibraryMediaState) -> String {
+    static func detail(_ continuation: LibraryContinuation, media: LibraryMediaState, canRequest: Bool = true) -> String {
         switch continuation {
         case let .ready(_, position, _, wasPlaying, _, _):
             "\(wasPlaying ? "Playing" : "Paused") on Mac at \(LibraryClockFormat.duration(position))"
         case .needsAudio:
-            media.isInFlight ? media.statusText() : "On the Mac. Get the audio, then continue."
+            media.isInFlight ? media.statusText()
+                : canRequest ? "On the Mac. Get the audio, then continue." : "On the Mac. Connecting to your Mac first."
         case let .refused(_, reason, _): reason
         }
     }
 
-    /// Nil when nothing can be done: refused, or a transfer is already running.
-    static func actionTitle(_ continuation: LibraryContinuation, media: LibraryMediaState) -> String? {
+    /// Nil when nothing can be done: refused, a transfer is already running, or the Mac has not linked
+    /// this device yet, so a request for audio could not be answered.
+    static func actionTitle(_ continuation: LibraryContinuation, media: LibraryMediaState, canRequest: Bool = true) -> String? {
         switch continuation {
         case .ready: "Continue from Mac"
-        case .needsAudio: media.isInFlight ? nil : "Get audio and continue"
+        case .needsAudio: media.isInFlight || !canRequest ? nil : "Get audio and continue"
         case .refused: nil
         }
     }

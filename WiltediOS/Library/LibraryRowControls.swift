@@ -34,15 +34,22 @@ struct LibraryIconButton: View {
 
 /// The download control for one episode. Its symbol is the state: a download arrow to fetch, a
 /// ring with a stop while it moves, a trash can once the audio is on the phone. Delete asks first.
+///
+/// While the Mac has not linked this device (`canRequest` false) it offers nothing that asks the Mac for
+/// audio: no download, no retry, no check again. The Larder's notice says why; a transfer that is already
+/// running and audio already on the phone keep their controls.
 struct LibraryDownloadControl: View {
     let entryID: ItemID
     let state: LibraryMediaState
     let perform: (LibraryMediaAction) -> Void
     @Binding var isConfirmingDelete: Bool
+    var canRequest = true
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         switch state {
+        case .available where !canRequest, .failed where !canRequest, .notPrepared where !canRequest:
+            EmptyView()
         case .available:
             icon("arrow.down.circle", "Download to phone", .request, id: "get")
         case .requested, .downloading:
