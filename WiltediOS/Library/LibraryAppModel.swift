@@ -400,6 +400,11 @@ final class LibraryAppModel: ObservableObject {
             let result = try await transport.poll(options)
             let owner = await transport.verifiedOwnerToken()
             guard await current(), beforePoll.ownerToken == nil || beforePoll.ownerToken == owner else { return }
+            // The link and the announcement come first: the offer steps below can end the round early,
+            // and a phone whose link waited behind them stayed "Connecting to your Mac" for good.
+            applyPolledDeviceLink(result, owner: beforePoll.ownerToken)
+            await announceDeviceIfNeeded(linkRead: result.deviceLinkRead)
+            guard await current() else { return }
             if let offers = result.offers {
                 try await roundStore.recordDisplayOffers(offers, transport: transport,
                     expectedGeneration: generation, expectedRevision: beforePoll.revision)
@@ -410,7 +415,6 @@ final class LibraryAppModel: ObservableObject {
                 noteOffers(offers); readyOffers = Set(offers.filter(\.isPrepared).map(\.entryID))
                 for entryID in readyOffers where media[entryID] == .notPrepared { media[entryID] = nil }
             }
-            applyPolledDeviceLink(result, owner: beforePoll.ownerToken)
             polled = result
         } catch { if failure == nil { failure = error } }
         guard await current() else { return }
@@ -447,8 +451,6 @@ final class LibraryAppModel: ObservableObject {
             await observeHandoff(records)
             guard await current() else { return }
         }
-        await announceDeviceIfNeeded(linkRead: polled?.deviceLinkRead == true)
-        guard await current() else { return }
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
         await resolveAdds(outcomes: polled?.outcomes ?? [])
         guard await current() else { return }

@@ -167,6 +167,26 @@ final class LibraryDeviceLinkTests: XCTestCase {
         XCTAssertEqual(rig.probe.announceAttempts, 0, "a round that could not read is offline: nothing to announce over")
     }
 
+    /// Regression (2026-10-20): the Mac had saved both devices' links, yet the iPhone and iPad stayed on
+    /// "Connecting to your Mac", because the link was applied only after the round's offer step, which
+    /// can end the round early.
+    func testTheLinkLandsEvenWhenTheRoundsOfferStepEndsItEarly() async throws {
+        let rig = try makeRig()
+        await rig.store.refuseOffers()
+        try await rig.macLinksPhone()
+        await rig.model.refresh()
+        XCTAssertTrue(rig.model.deviceLinked, "the link must not wait behind the offers")
+        XCTAssertFalse(rig.model.showsMacLinkNotice)
+    }
+
+    func testAnUnlinkedPhoneStillAnnouncesWhenTheRoundsOfferStepEndsItEarly() async throws {
+        let rig = try makeRig()
+        await rig.store.refuseOffers()
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announcements.map(\.deviceID), ["phone"], "the Mac must still learn of the device")
+        XCTAssertFalse(rig.model.deviceLinked)
+    }
+
     // MARK: remembering
 
     func testTheLinkSurvivesARelaunchWithNoSignal() async throws {

@@ -123,6 +123,15 @@ actor HandshakeStore: LibraryStore {
     func acknowledge(_ result: LibraryPushResult, sent: [PendingLibraryChange]) { saved.acknowledge(result, sent: sent) }
     func resolveConflict(_ key: LibraryRecordKey, keepLocal: Bool) { saved.resolveConflict(key, keepLocal: keepLocal) }
     func hold() { saved.reviewHold = true; saved.revision += 1 }
+
+    /// Makes the store refuse every round's offers, as a stale revision fence does, which ends the
+    /// round's offer step early.
+    private var refusesOffers = false
+    func refuseOffers() { refusesOffers = true }
+    func recordDisplayOffers(_ offers: [LibraryMediaOffer], transport: any LibraryTransport,
+                             expectedGeneration: UInt64, expectedRevision: UInt64) throws {
+        if refusesOffers { throw LibraryTransportError.superseded }
+    }
 }
 
 /// One phone model over an in-memory Mac, for the device handshake tests: its own clock, defaults and

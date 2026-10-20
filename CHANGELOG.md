@@ -130,6 +130,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- iPhone and iPad: a device the Mac has linked leaves "Connecting to your Mac" at its next sync. Before, the phone read the Mac's link but applied it only after the round's offer step, and when that step ended the round early the notice never cleared and downloads stayed off.
 - Ad removal no longer gives up on a sponsor spot just because the show's transcript lines are long: the review keeps the whole spot and trims the surrounding show text to fit, instead of refusing. This hit 7 of 11 recent AI Daily Brief episodes.
 - Ad removal no longer misses a sponsor spot inside a run of ads when it ends with only a web address ("blitzy dot com") and no "visit" or "go to": a spot like that beside another ad or a cut is now checked too. A confirmed spot that runs into the next cut is joined to it instead of being dropped, so the tail of an ad is no longer left in.
 - Mac: clicking the middle of a playlist in the sidebar, between its name and its Smart or Manual tag, opens it again; only the name and tag answered clicks.
