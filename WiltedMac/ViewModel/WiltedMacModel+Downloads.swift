@@ -52,6 +52,7 @@ extension WiltedMacModel {
         }
         updateEpisode(episode.id) { $0.downloadState = .queued }
         podcastOperationMessage = "Queued \(episode.title) for download."
+        let progressThrottle = WiltedMacDownloadProgressThrottle()
         podcastDownloadTasks[episode.id] = Task { [weak self] in
             guard let self else { throw CancellationError() }
             // One place to clear the task-table entry, run on every exit
@@ -129,6 +130,8 @@ extension WiltedMacModel {
                         await self?.downloadWasInterruptedForTermination(episode.id) == true
                     }
                 ) { progress in
+                    // Every chunk reports; only what the window can render is sent on.
+                    guard progressThrottle.admits(progress) else { return }
                     Task { @MainActor [weak self] in
                         guard self?.updateActiveEpisodeDownload(
                             episode.id,
