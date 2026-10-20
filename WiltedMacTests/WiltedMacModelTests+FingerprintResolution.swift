@@ -54,6 +54,9 @@ extension WiltedMacModelTests {
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
             pipelineFingerprintResolution: { await released.wait(); return "build-fingerprint" },
+            invalidationRules: [PodcastPreparationInvalidationRule(
+                id: "test.readout-fingerprint", consequence: .resetPreparation, applies: { _ in true }
+            )],
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         var steps: [WiltedMacStartupStep] = []
