@@ -507,22 +507,37 @@ exit "$result"
         self.assertNotIn('simctl delete', events)
         self.assertEqual(json.loads(self.state.read_text())['devices'][RUNTIME][0]['state'], 'Shutdown')
     def test_unit_and_ui_destinations_serialize_only_test_sessions(self):
-        self.select()
-        first=subprocess.Popen(['bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'run', str(self.root), UDID,
-                                sys.executable, str(self.root / 'scripts/build-with-cache.py'), 'run', 'xcode', 'native-ios-unit-tests',
-                                '--', 'xcodebuild', 'test-without-building'],
-                               env=dict(self.env, FAKE_TEST_DELAY='2'), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Event-driven, not timed: the first session holds the lane mid-test until the gate file exists, so host
+        # load can slow either session but cannot reorder them or outlast a bound shorter than the work.
+        self.select(); gate=self.root / 'release-first'; deadline=time.monotonic()+fixture.SAFETY_SECONDS; sessions=[]
+        tests=lambda: [e for e in self.events.read_text().splitlines() if e.startswith('test ')]
+        def start(key, **extra):
+            err=self.root / (key+'.stderr')
+            with open(err, 'w') as handle:
+                sessions.append(subprocess.Popen(['bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'run', str(self.root), UDID,
+                                                  sys.executable, str(self.root / 'scripts/build-with-cache.py'), 'run', 'xcode', key,
+                                                  '--', 'xcodebuild', 'test-without-building'],
+                                                 env=dict(self.env, WILTED_TEST_TIMEOUT_SECONDS=str(fixture.SAFETY_SECONDS), **extra),
+                                                 stdout=subprocess.DEVNULL, stderr=handle))
+            return sessions[-1], err
         try:
-            deadline=time.monotonic()+20
-            while 'test start' not in self.events.read_text() and time.monotonic()<deadline: time.sleep(.02)
-            second=self.session(key='native-ios-pixel-snapshot-tests')
-            self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertIn('native.simulator.wait', second.stderr)
-            first.communicate(timeout=60); self.assertEqual(first.returncode, 0)
-            events=[e for e in self.events.read_text().splitlines() if e.startswith('test ')]
-            self.assertEqual(events, ['test start', 'test end', 'test start', 'test end'])
+            first, first_err=start('native-ios-unit-tests', FAKE_TEST_GATE=str(gate))
+            self.wait_for(lambda: tests() or first.poll() is not None, 'first test start', deadline)
+            self.assertEqual(tests(), ['test start'], first_err.read_text())
+            second, second_err=start('native-ios-pixel-snapshot-tests')
+            self.wait_for(lambda: 'native.simulator.wait' in second_err.read_text() or len(tests()) > 1 or second.poll() is not None,
+                          'second session lane wait', deadline)
+            # The pixel session is queued on the shared lane while the unit session is still mid-test.
+            self.assertIn('native.simulator.wait', second_err.read_text()); self.assertEqual(tests(), ['test start'])
+            gate.touch()
+            for process, err in ((first, first_err), (second, second_err)):
+                self.wait_for(lambda: process.poll() is not None, 'session exit', deadline)
+                self.assertEqual(process.returncode, 0, err.read_text())
+            self.assertEqual(tests(), ['test start', 'test end', 'test start', 'test end'])
         finally:
-            if first.poll() is None: first.terminate(); first.communicate(timeout=60)
+            gate.touch()
+            for process in sessions:
+                if process.poll() is None: process.terminate(); process.wait(timeout=fixture.SAFETY_SECONDS)
 
     def test_exact_owned_selection_rejects_wrong_type_and_duplicate(self):
         wrong={'udid':'22222222-2222-2222-2222-222222222222', 'name':'wilted-persistent-iOS-26-0',
