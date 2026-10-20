@@ -230,17 +230,21 @@ extension WiltedMacModelTests {
         model.openNowPlaying(for: first)
         await model.waitForPlaybackOperationForTesting()
         model.scrub(to: 60)
-        for _ in 0..<100 {
-            model.refreshPlaybackReadout()
-            if model.playbackPositionSeconds == 60 { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        XCTAssertEqual(model.playbackPositionSeconds, 60, "the slider answers before the seek runs")
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(model.playback?.livePositionSeconds, 60, "the seek moved the audio before selection")
+        await model.joinPlaybackCheckpoints()
+        let playback = try XCTUnwrap(model.playback)
+        let itemID = try XCTUnwrap(playback.itemID)
+        let revisionID = try XCTUnwrap(playback.revisionID)
+        let saved = try await model.store?.playbackState(for: itemID, revisionID: revisionID)
+        XCTAssertEqual(saved?.positionSeconds, 60, "the outgoing position reached the durable lane")
 
         model.openNowPlaying(for: second)
         await model.waitForPlaybackOperationForTesting()
 
-        // The outgoing article's progress is checkpointed before the overlay
-        // moves; the destination does not inherit it.
+        // The outgoing article keeps its completed seek; the destination
+        // does not inherit the optimistic slider position.
         XCTAssertEqual(model.articles.first(where: { $0.id == first.id })?.playbackSeconds, 60)
         XCTAssertEqual(model.articles.first(where: { $0.id == second.id })?.playbackSeconds, 0)
     }

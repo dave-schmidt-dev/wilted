@@ -336,6 +336,8 @@ extension WiltedMacModel {
             for task in subscriptionWrites { await task.value }
             for task in presentations { await task.value }
         }
+        // A drained command can queue one last checkpoint after the snapshots.
+        await joinPlaybackCheckpoints()
         await waitForAutomationForTemporaryState()
         await waitForLibrarySyncShutdown()
     }

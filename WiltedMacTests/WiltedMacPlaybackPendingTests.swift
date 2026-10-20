@@ -24,8 +24,12 @@ final class WiltedMacPlaybackPendingTests: XCTestCase {
     func testPauseAnswersAtOnceWhileItsCheckpointIsHeld() async throws {
         let (model, backend) = await playingModel()
         backend.currentTime = 90
-        let gate = WiltedMacCommandGate()
-        model.installPlaybackCommandHookForTesting { await gate.hold($0) }
+        let playback = try XCTUnwrap(model.playback)
+        let itemID = try XCTUnwrap(playback.itemID)
+        let revisionID = try XCTUnwrap(playback.revisionID)
+        let store = try XCTUnwrap(model.store)
+        let beforePause = try await store.playbackState(for: itemID, revisionID: revisionID)
+        let gate = WiltedMacCheckpointWriteGate(on: playback)
         let pauses = backend.pauseCount
         let sequence = try XCTUnwrap(model.playbackCheckpointStateForTesting()).sequence
 
@@ -40,17 +44,16 @@ final class WiltedMacPlaybackPendingTests: XCTestCase {
 
         await gate.waitUntilHeld()
         XCTAssertNil(model.playbackCommands.pending)
-        XCTAssertEqual(model.playbackCheckpointStateForTesting()?.sequence, sequence,
-                       "the checkpoint has not run while its effect is held")
+        XCTAssertGreaterThan(try XCTUnwrap(model.playbackCheckpointStateForTesting()).sequence, sequence,
+                             "the checkpoint took the paused position before its write was held")
+        let held = try await store.playbackState(for: itemID, revisionID: revisionID)
+        XCTAssertEqual(held, beforePause, "the held write has not changed the durable checkpoint")
         gate.release()
         await model.waitForPlaybackOperationForTesting()
+        await model.joinPlaybackCheckpoints()
 
         XCTAssertGreaterThan(try XCTUnwrap(model.playbackCheckpointStateForTesting()).sequence, sequence,
                              "the durable checkpoint still follows the Pause")
-        let playback = try XCTUnwrap(model.playback)
-        let itemID = try XCTUnwrap(playback.itemID)
-        let revisionID = try XCTUnwrap(playback.revisionID)
-        let store = try XCTUnwrap(model.store)
         let saved = try await store.playbackState(for: itemID, revisionID: revisionID)
         XCTAssertEqual(try XCTUnwrap(saved).positionSeconds, 90, accuracy: 0.001)
         XCTAssertEqual(backend.pauseCount, pauses + 1, "the checkpoint does not pause again")

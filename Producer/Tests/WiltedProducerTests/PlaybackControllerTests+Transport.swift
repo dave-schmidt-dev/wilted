@@ -274,6 +274,40 @@ extension PlaybackControllerTests {
         }
     }
 
+    // W-INV-040: the Mac moves the audio at once and writes the checkpoint
+    // behind the person's next action, so a non-checkpointing seek moves the
+    // playhead (forward or back, with a new session) and writes nothing.
+    func testSeekWithoutCheckpointingMovesThePlayheadAndLeavesTheWriteToTheCaller() async throws {
+        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: path)
+        let (_, revision) = try await storedFixture(in: store)
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend, deviceID: "test-device")
+        try await controller.load(revision: revision, mediaURL: path.deletingLastPathComponent().appendingPathComponent("audio.m4a"))
+        func stored() async throws -> PlaybackState? {
+            try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
+        }
+        backend.currentTime = 10
+
+        try await controller.seek(to: 30, checkpointing: false)
+        XCTAssertEqual(backend.currentTime, 30)
+        XCTAssertEqual(controller.positionSeconds, 30)
+        let unwrittenForward = try await stored()
+        XCTAssertNil(unwrittenForward, "a forward move makes no store write")
+
+        let session = controller.sessionID
+        try await controller.seek(to: 5, checkpointing: false)
+        XCTAssertEqual(controller.positionSeconds, 5)
+        XCTAssertNotEqual(controller.sessionID, session, "a backward move still starts a new session")
+        let unwrittenBackward = try await stored()
+        XCTAssertNil(unwrittenBackward, "a backward move makes no store write")
+
+        try await controller.checkpoint()
+        let written = try await stored()
+        XCTAssertEqual(written?.positionSeconds, 5)
+        XCTAssertEqual(written?.sessionID, controller.sessionID)
+    }
+
     func testDefaultForwardSeekAdvancesThirtySeconds() async throws {
         let path = storeURL()
         defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }

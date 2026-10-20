@@ -281,14 +281,15 @@ extension WiltedMacModel {
 #endif
     }
 
+    /// The slider follows the drag at once; the audio moves in the seek
+    /// command and its checkpoint is written behind it (W-INV-040).
     func scrub(to value: Double) {
         guard value.isFinite else { return }
+        playbackPositionSeconds = min(max(value, 0), max(0, playbackDurationSeconds))
 #if canImport(WiltedProducer)
         // A scrub is exactly the jump the system cannot extrapolate, and a
         // short one is inside the drift tolerance, so it publishes the jump.
-        seekPlayback(publishesJump: true) { try await $0.seek(to: value) }
-#else
-        playbackPositionSeconds = min(max(value, 0), max(0, playbackDurationSeconds))
+        seekPlayback(publishesJump: true, shows: playbackPositionSeconds) { _ in value }
 #endif
     }
 
@@ -306,8 +307,10 @@ extension WiltedMacModel {
         playbackDurationSeconds = playback.durationSeconds
         // The live engine read, not the checkpointed one. `positionSeconds`
         // only moves on load, seek, and checkpoint, so polling it left the
-        // readout frozen between transport presses.
-        playbackPositionSeconds = min(max(0, playback.livePositionSeconds), max(0, playback.durationSeconds))
+        // readout frozen between transport presses. A scrub whose seek has
+        // not run yet keeps showing where the person dragged.
+        playbackPositionSeconds = shownSeekSeconds
+            ?? min(max(0, playback.livePositionSeconds), max(0, playback.durationSeconds))
         isPlaying = playback.liveIsPlaying
         playbackCompleted = playback.completed
         playbackRate = Double(playback.playbackRate)

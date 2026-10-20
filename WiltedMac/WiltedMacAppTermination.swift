@@ -411,6 +411,11 @@ extension WiltedMacModel {
         guard let playback else { return }
         _ = issuePlaybackCommand(.stop, pending: nil) { _ in }
         guard playback.revisionID != nil else { return }
+        if playbackCommands.checkpoints.tailToken != nil {
+            // Silence first; then queued checkpoints land before the quit's own.
+            try? playback.pauseAudio()
+            await joinPlaybackCheckpoints()
+        }
         try await playback.handlePauseOrQuit()
         isPlaying = playback.liveIsPlaying
         try await playback.flushLifetimeMeasures()
