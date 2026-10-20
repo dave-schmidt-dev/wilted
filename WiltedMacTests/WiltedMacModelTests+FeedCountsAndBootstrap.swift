@@ -280,6 +280,7 @@ extension WiltedMacModelTests {
             arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in try LocalLibraryStore(url: url) },
             pipelineFingerprint: "build-fingerprint",
+            invalidationRules: [],
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         var steps: [WiltedMacStartupStep] = []
@@ -298,7 +299,6 @@ extension WiltedMacModelTests {
             .openingStore,
             .updatingLibraryFormat,
             .retiringFinishedEpisodes,
-            .checkingPreparationFingerprint,
             .closingInterruptedRuns,
             .reconcilingWork,
             .reclaimingStorage,

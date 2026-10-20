@@ -45,6 +45,37 @@ extension LocalLibraryStore {
         return rows
     }
 
+    /// Projects the reset and forced-redownload work a previous launch already
+    /// scheduled, without deciding anything again.
+    ///
+    /// A marker is durable scheduling state: an earlier invalidation pass wrote
+    /// it because a rule condemned the preparation, and the launch that wrote
+    /// it may have exited before admitting the recovery. This read-only
+    /// projection returns those pending IDs so this launch can still cancel
+    /// deferred work, exclude stale sources, and admit the serial recovery. It
+    /// does not decode journal history, resolve or compare a fingerprint,
+    /// evaluate rules, or clear/write any row. Forced IDs dominate overlapping
+    /// reset IDs, matching `invalidateStalePodcastPreparations`.
+    public func pendingPreparationRecoveryIDs() throws -> PodcastPreparationInvalidationResult {
+        let context = ModelContext(container)
+        let markers = try maintenanceInvalidationMarkers(in: context)
+        var forcedIDs = Set<ItemID>()
+        var resetIDs = Set<ItemID>()
+        for marker in markers {
+            guard let itemID = try? ItemID(rawValue: marker.itemID) else { continue }
+            if marker.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix) {
+                forcedIDs.insert(itemID)
+            } else if marker.requestID.hasPrefix(Self.resetPreparationRequestPrefix) {
+                resetIDs.insert(itemID)
+            }
+        }
+        resetIDs.subtract(forcedIDs)
+        return PodcastPreparationInvalidationResult(
+            resetEpisodeIDs: resetIDs.sorted { $0.rawValue < $1.rawValue },
+            forcedRedownloadEpisodeIDs: forcedIDs.sorted { $0.rawValue < $1.rawValue }
+        )
+    }
+
     /// Reads only the generations maintenance can act on: the newest and the
     /// one that proves the Ready revision. Discovery, each complete generation
     /// read and the anchored proof lookup are all row-bounded.
