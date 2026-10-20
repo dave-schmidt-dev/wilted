@@ -223,17 +223,27 @@ def recording_model_lock(events):
         events.append("lock.exit")
 
 @contextmanager
-def synthetic_render(source_duration):
-    """Stand in for ffmpeg and its duration probe on the reported cut path."""
+def synthetic_render(source_duration, silence_report=""):
+    """Stand in for ffmpeg and its duration probe on the reported cut path.
+
+    The silence detection pass has no ``-filter_complex``; it gets
+    ``silence_report`` as its stderr, which by default reports no silence.
+    """
     rendered = {}
 
     def render(command, **_kwargs):
+        if "-filter_complex" not in command:
+            return silence_report
         output = Path(command[-1])
         output.write_bytes(b"synthetic")
         filters = command[command.index("-filter_complex") + 1]
+        # asegment output n runs from split point n-1 to split point n; the
+        # outputs routed to asetpts are the kept ones.
+        points = [float(point) for point in re.search(r"asegment=timestamps=([0-9.|]+)", filters)[1].split("|")]
+        bounds = [0.0, *points, source_duration]
         rendered[output.name] = sum(
-            float(end) - float(start)
-            for start, end in re.findall(r"atrim=start=([0-9.]+):end=([0-9.]+)", filters)
+            max(0.0, min(bounds[index + 1], source_duration) - bounds[index])
+            for index in (int(found) for found in re.findall(r"\[s(\d+)\]asetpts", filters))
         )
 
     def probe(path):

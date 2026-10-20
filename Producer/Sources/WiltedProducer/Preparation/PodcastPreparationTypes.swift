@@ -109,8 +109,10 @@ public struct PodcastKeepInterval: Equatable, Sendable {
     public let outputStartSeconds: Double
 
     /// Where `seconds` on the original clock lands on the cut clock, or nil if
-    /// it fell inside a removed span.
-    static func map(_ seconds: Double, through intervals: [PodcastKeepInterval]) -> Double? {
+    /// it fell inside a removed advertisement. A position inside a shortened
+    /// pause in `silence` moves to where the audio resumes after it.
+    static func map(_ seconds: Double, through intervals: [PodcastKeepInterval],
+                    silence: [Range<Double>] = []) -> Double? {
         guard !intervals.isEmpty else { return nil }
         for interval in intervals where seconds >= interval.startSeconds && seconds < interval.endSeconds {
             return interval.outputStartSeconds + (seconds - interval.startSeconds)
@@ -119,6 +121,10 @@ public struct PodcastKeepInterval: Equatable, Sendable {
         // everything that remains, so the end of the file is the honest answer.
         if let last = intervals.last, seconds >= last.endSeconds {
             return last.outputStartSeconds + (last.endSeconds - last.startSeconds)
+        }
+        if silence.contains(where: { $0.contains(seconds) }),
+           let next = intervals.first(where: { $0.startSeconds >= seconds }) {
+            return next.outputStartSeconds
         }
         return nil
     }

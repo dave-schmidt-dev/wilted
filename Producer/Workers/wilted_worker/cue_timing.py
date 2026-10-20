@@ -21,6 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
 from .constants import ALIGNED_TIMING_TAIL_ALLOWANCE_S, FFPROBE_TIMEOUT_S, NOMINATED_SECONDS_FLOOR, NOMINATED_SHARE_FLOOR, RENDER_DURATION_TOLERANCE_S, RENDER_PROGRESS_INTERVAL_S, RENDER_TIMEOUT_S, SPLIT_WORD_CONTIGUITY_TOLERANCE_S
+from .render_graph import keep_segment_graph
 from .reporting import WorkerError
 
 @dataclass(frozen=True)
@@ -235,13 +236,15 @@ def _terminate_render(process) -> None:
         except (subprocess.TimeoutExpired, OSError):
             continue
 
-def _run_render_with_progress(command: list[str], *, timeout_s: float) -> None:
+def _run_render_with_progress(command: list[str], *, timeout_s: float,
+                              stage: str = "ads.cut.render.progress") -> str:
     """Wait for ffmpeg with a heartbeat and a bound instead of in silence.
 
     A full episode re-encodes for minutes while the caller holds the shared
     admission slot. `subprocess.run` reports none of that and would wait on a
-    wedged encoder indefinitely, so the wait is polled, reported every second,
-    and cut off once it exceeds its limit.
+    wedged encoder indefinitely, so the wait is polled, reported every second
+    under `stage`, and cut off once it exceeds its limit. Returns ffmpeg's
+    stderr, which is where an analysis pass such as `silencedetect` reports.
     """
     process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     started = time.monotonic()
@@ -254,7 +257,7 @@ def _run_render_with_progress(command: list[str], *, timeout_s: float) -> None:
             try:
                 _, stderr = process.communicate(timeout=min(RENDER_PROGRESS_INTERVAL_S, remaining))
             except subprocess.TimeoutExpired:
-                _worker_reporting.progress("ads.cut.render.progress", f"ffmpeg running for {time.monotonic() - started:.0f}s")
+                _worker_reporting.progress(stage, f"ffmpeg running for {time.monotonic() - started:.0f}s")
                 continue
             break
     except BaseException:
@@ -262,6 +265,7 @@ def _run_render_with_progress(command: list[str], *, timeout_s: float) -> None:
         raise
     if process.returncode != 0:
         raise WorkerError("cut-render-failed", f"ffmpeg exited {process.returncode}: {(stderr or '').strip()[-2048:]}")
+    return stderr or ""
 
 def render_keep_segments(audio_path: Path, output_path: Path, keeps: list[KeepInterval], *,
                          timeout_s: float = RENDER_TIMEOUT_S) -> None:
@@ -270,24 +274,11 @@ def render_keep_segments(audio_path: Path, output_path: Path, keeps: list[KeepIn
         raise WorkerError("cut-output-alias", "prepared output must not replace its input in place")
     if not keeps:
         raise WorkerError("cut-unsafe", "no meaningful programme audio remains after ad detection")
+    graph = keep_segment_graph(keeps)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(f".{output_path.stem}.rendering-{os.getpid()}{output_path.suffix}")
     temporary.unlink(missing_ok=True)
-    filters = []
-    labels = []
-    for index, keep in enumerate(keeps):
-        if not (keep.start_s >= 0 and keep.end_s > keep.start_s):
-            raise WorkerError("cut-unsafe", "render map contains an empty or invalid keep interval")
-        label = f"k{index}"
-        filters.append(f"[0:a]atrim=start={keep.start_s:.6f}:end={keep.end_s:.6f},asetpts=PTS-STARTPTS[{label}]")
-        labels.append(f"[{label}]")
-    filters.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[outc]")
-    # libmp3lame's FLTP path rejects any frame with
-    # linesize < 4 * FFALIGN(nb_samples, 8); concat's output frames routinely
-    # fail that check at non-frame-aligned trim points, so resample once more
-    # to force fully-padded frames before the encoder ever sees them.
-    filters.append("[outc]aresample[outa]")
-    command = ["ffmpeg", "-y", "-v", "error", "-i", str(audio_path), "-filter_complex", ";".join(filters),
+    command = ["ffmpeg", "-y", "-v", "error", "-i", str(audio_path), "-filter_complex", graph,
                "-map", "[outa]", *_render_codec_arguments(output_path), str(temporary)]
     _worker_reporting.progress("ads.cut.render", f"accurately re-encoding {len(keeps)} kept intervals")
     try:

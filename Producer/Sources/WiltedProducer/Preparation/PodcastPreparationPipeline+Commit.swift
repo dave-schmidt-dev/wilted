@@ -89,7 +89,8 @@ extension PodcastPreparationPipeline {
         let transcript = try Self.transcript(from: payload, itemID: episode.itemID, revisionID: revisionID,
                                              updatedAt: Timestamp(now()))
         let carried = try await carriedPlayback(from: downloadedRevision, to: revision,
-                                                keeps: payload.keepIntervals, duration: duration)
+                                                keeps: payload.keepIntervals, silence: payload.silenceTrims,
+                                                duration: duration)
         let outcome = PodcastPreparationOutcome(
             episodeID: episode.itemID, revisionID: revisionID,
             policyDigest: Self.policyDigest(policy),
@@ -141,16 +142,19 @@ extension PodcastPreparationPipeline {
     /// Moves a saved listening position onto the prepared audio.
     ///
     /// A position inside a removed advertisement has nowhere to land, so it is
-    /// dropped rather than guessed at; anything else keeps its place in the
-    /// content the listener was actually hearing.
+    /// dropped rather than guessed at. One inside a shortened pause resumes
+    /// where the speech does; anything else keeps its place in the content
+    /// the listener was actually hearing.
     private func carriedPlayback(
         from previous: AudioRevision,
         to revision: AudioRevision,
         keeps: [PodcastKeepInterval],
+        silence: [Range<Double>],
         duration: Double
     ) async throws -> PlaybackState? {
         guard let existing = try await store.playbackState(for: previous.itemID, revisionID: previous.revisionID),
-              let mapped = PodcastKeepInterval.map(existing.positionSeconds, through: keeps) else { return nil }
+              let mapped = PodcastKeepInterval.map(existing.positionSeconds, through: keeps,
+                                                   silence: silence) else { return nil }
         return try PlaybackState(
             itemID: revision.itemID, revisionID: revision.revisionID, sessionID: existing.sessionID,
             sequence: existing.sequence + 1, positionSeconds: min(mapped, duration),
@@ -186,9 +190,16 @@ extension PodcastPreparationPipeline {
         fields.merge(payload.adAuditDiagnostics) { _, diagnostic in diagnostic }
         fields["adRemovalOutcome"] = payload.adRemovalOutcome
         if let warning = payload.warning { fields["warning"] = String(warning.prefix(256)) }
+        // Kept apart from `removedSeconds`, which counts advertisements only.
+        let silenceSeconds = payload.silenceTrims.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
+        var pauses = ""
+        if !payload.silenceTrims.isEmpty {
+            fields["silenceRemovedSeconds"] = String(format: "%.3f", silenceSeconds)
+            pauses = String(format: " · %.1fs of pauses removed", silenceSeconds)
+        }
         let evidence = try? PreparationEvidence(kind: "worker-result", fields: fields)
         return PodcastPreparationProgress(stage: "pipeline.result",
-                                          detail: payload.warning ?? "audio \(payload.audioChanged ? "changed" : "unchanged") · \(payload.adSegments.count) ads · \(payload.cues.count) cues",
+                                          detail: payload.warning ?? "audio \(payload.audioChanged ? "changed" : "unchanged") · \(payload.adSegments.count) ads · \(payload.cues.count) cues" + pauses,
                                           evidence: evidence)
     }
 

@@ -62,6 +62,7 @@ from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import nomination as _worker_nomination
 from wilted_worker import prompts as _worker_prompts
 from wilted_worker import reporting as _worker_reporting
+from wilted_worker import silence_trim as _worker_silence_trim
 from wilted_worker import review_formats as _worker_review_formats
 from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import sponsor_evidence as _worker_sponsor_evidence
@@ -240,6 +241,7 @@ def run(request: dict) -> dict:
             language = published.get("languageCode") or language
             _worker_reporting.progress("transcript.published.accepted", f"{len(cues)} cues")
 
+    audio_duration = None
     if (remove_ads or not cues) and allow_speech_to_text:
         aligned_model = (ALIGNED_STT_MODEL if remove_ads
                          else (request.get("alignedTranscriptModel") or ALIGNED_STT_MODEL))
@@ -294,6 +296,13 @@ def run(request: dict) -> dict:
         if ad_audit and (ad_audit.get("warning") or ad_audit.get("incompleteError") or ad_audit.get("unresolvedIds")):
             if output_path.resolve() != audio_path.resolve() or ad_spans or keeps:
                 raise WorkerError("ads-uncertain-output-invalid", "uncertain ad removal must retain the whole original audio")
+        if (ad_audit is not None and not keeps and ad_audit.get("warning") is None
+                and ad_audit.get("incompleteError") is None and not ad_audit.get("unresolvedIds")):
+            # A clean no-ads result still has its long pauses trimmed. An
+            # uncertain one keeps the whole original, as W-INV-013 requires.
+            output_path, keeps = _worker_silence_trim.trim_unedited(
+                audio_path, Path(request["outputPath"]) if request.get("outputPath") else None, audio_duration
+            )
         if keeps:
             before = len(cues)
             cues = remap_cues(cues, keeps)
@@ -329,7 +338,7 @@ def run(request: dict) -> dict:
         output_path = audio_path
         ad_spans = []
         keeps = []
-    elif keeps:
+    elif ad_spans:
         outcome = "cut"
     else:
         outcome = "noAds"
@@ -353,7 +362,10 @@ def run(request: dict) -> dict:
         # listener's saved position onto the cut audio instead of losing it.
         # Empty means nothing was cut and every timestamp still matches.
         "keepIntervals": serialize_keep_map(keeps),
-        "removedSeconds": round(sum(a["endSeconds"] - a["startSeconds"] for a in ad_spans), 3) if keeps else 0.0,
+        "removedSeconds": round(sum(a["endSeconds"] - a["startSeconds"] for a in ad_spans), 3) if ad_spans else 0.0,
+        # The pauses the map shortens. They are not ads: `adSegments` and
+        # `removedSeconds` never include them, and the outcome follows the ads.
+        "silenceTrims": _worker_silence_trim.silence_trim_spans(serialize_keep_map(keeps), ad_spans, audio_duration),
         # Nominations and detector evidence stay here, out of `adSegments`:
         # what was cut is the keep map's complement, and what was merely
         # proposed is review material, not a claim about the delivered audio.

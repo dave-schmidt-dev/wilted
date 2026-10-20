@@ -209,6 +209,39 @@ RENDER_PROGRESS_INTERVAL_S = 1.0
 
 RENDER_TIMEOUT_S = 7_200.0
 
+# Silence trimming. Audio at or below this level counts as silence. Speech and
+# produced room tone sit far above it, so a noisy recording finds no silence
+# and is left alone, which is the safe direction. On a 98-minute episode
+# (measured 2026-10-20, ffmpeg 9.0) -50 dB found 600 pauses of 0.5 s or more
+# and trimmed 202 s; -35 dB and -60 dB found 782 and 492, so the count changes
+# smoothly with the floor and this choice is not on an edge.
+SILENCE_NOISE_FLOOR_DB = -50
+
+# Every pause longer than this is shortened to it, half on each side.
+SILENCE_KEPT_PAUSE_S = 0.5
+
+# The shortest silence the detector reports: half the kept pause, so the two
+# halves of a pause that an ad cut joins together are both seen.
+SILENCE_DETECT_MIN_S = 0.25
+
+# A trim that would remove less than this is not worth a cut point.
+SILENCE_MIN_TRIM_S = 0.1
+
+# Silence this close to the start or end of the prepared audio, or to the next
+# silence, is treated as touching it.
+SILENCE_EDGE_TOLERANCE_S = 0.05
+
+# A kept piece shorter than this is dropped rather than kept as a sliver.
+SILENCE_MIN_KEEP_S = 0.01
+
+# The Mac stores at most 512 kept intervals per preparation; trimming stops
+# below that, taking the longest pauses first.
+SILENCE_MAX_KEEP_INTERVALS = 500
+
+# The detection pass decodes the whole episode once: 8.4 s for the same
+# 98-minute MP3 (2026-10-20). The bound only stops a wedged decoder.
+SILENCE_DETECT_TIMEOUT_S = 900.0
+
 FFPROBE_TIMEOUT_S = 60
 
 STT_EVICTION_BARRIER_TIMEOUT_S = 10.0

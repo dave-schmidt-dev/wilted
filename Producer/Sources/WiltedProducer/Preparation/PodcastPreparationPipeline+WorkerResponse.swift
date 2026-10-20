@@ -22,6 +22,11 @@ extension PodcastPreparationPipeline {
         var adAuditDiagnostics: [String: String] = [:]
         var timeline: PreparationStatus.PreparationTimeline
         var droppedCueCount: Int = 0
+        /// Long pauses the worker shortened, on the original clock. They are
+        /// never advertisements, so they stay out of `adSegments`,
+        /// `removedSeconds` and the timeline's removed list. A worker that
+        /// predates silence trimming sends none.
+        var silenceTrims: [Range<Double>] = []
     }
 
     static func decode(_ data: Data) throws -> WorkerPayload {
@@ -172,12 +177,21 @@ extension PodcastPreparationPipeline {
             durationSeconds = nil
         }
         let changed = object["audioChanged"] as? Bool ?? false
-        let timelineMatchesMap = timelineMatchesKeepMap(removed: removed, kept: kept)
-        guard timelineMatchesMap,
-              (outcome == "disabled" && !changed && removed.isEmpty && kept.isEmpty)
-                || (outcome == "noAds" && !changed && removed.isEmpty && kept.isEmpty)
-                || (outcome == "uncertain" && !changed && removedSeconds == 0 && removed.isEmpty && kept.isEmpty)
-                || (outcome == "cut" && changed && !removed.isEmpty && !kept.isEmpty) else {
+        let silenceTrims = try silenceIntervals(in: object)
+        let consistent: Bool
+        switch outcome {
+        case "cut":
+            consistent = changed && !removed.isEmpty && !kept.isEmpty
+        case "noAds" where changed:
+            // Only long pauses came out: new audio, and still no advertisement.
+            consistent = removed.isEmpty && removedSeconds == 0 && !kept.isEmpty && !silenceTrims.isEmpty
+        case "uncertain":
+            // W-INV-013: an uncertain result keeps the whole original.
+            consistent = !changed && removedSeconds == 0 && removed.isEmpty && kept.isEmpty && silenceTrims.isEmpty
+        default:
+            consistent = !changed && removed.isEmpty && kept.isEmpty && silenceTrims.isEmpty
+        }
+        guard consistent, timelineMatchesKeepMap(removed: removed, kept: kept, silence: silenceTrims) else {
             throw PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")
         }
         return WorkerPayload(
@@ -200,8 +214,30 @@ extension PodcastPreparationPipeline {
             warning: outcome == "uncertain" ? (report["warning"] as? String).map { String($0.prefix(768)) } : nil,
             adAuditDiagnostics: outcome == "uncertain" ? diagnosticFields(report["audit"] as? [String: Any] ?? [:]) : [:],
             timeline: timeline,
-            droppedCueCount: droppedCueCount
+            droppedCueCount: droppedCueCount,
+            silenceTrims: silenceTrims
         )
+    }
+
+    /// Pieces of the original the keep map drops that are not advertisements.
+    /// Each lies in a gap between kept intervals, beside at most the ads in
+    /// that gap, so their count is bounded by the timeline's own limits.
+    private static func silenceIntervals(in object: [String: Any]) throws -> [Range<Double>] {
+        let raw = try intervalObjects(named: "silenceTrims", in: object)
+        let limit = PreparationStatus.PreparationTimeline.maximumKeptIntervals
+            + PreparationStatus.PreparationTimeline.maximumRemovedIntervals + 1
+        guard raw.count <= limit else {
+            throw PodcastPreparationError.malformedWorkerResponse("too many silence intervals")
+        }
+        var previousEnd = 0.0
+        return try raw.map { interval in
+            guard let start = interval["startSeconds"] as? Double, let end = interval["endSeconds"] as? Double,
+                  start.isFinite, end.isFinite, start >= previousEnd, end > start else {
+                throw PodcastPreparationError.malformedWorkerResponse("malformed silence interval")
+            }
+            previousEnd = end
+            return start..<end
+        }
     }
 
     private static func diagnosticFields(_ audit: [String: Any]) -> [String: String] {
@@ -263,23 +299,40 @@ extension PodcastPreparationPipeline {
         return start.isFinite && end.isFinite && confidence.isFinite && start >= 0 && end > start
     }
 
+    /// Every gap in the keep map must be exactly the advertisements and
+    /// trimmed pauses inside it. A pause beside an ad shares that ad's gap,
+    /// so touching pieces join only when one of them is a pause; two touching
+    /// ads stay separate pieces and still fail, as they always have.
     private static func timelineMatchesKeepMap(
         removed: [PreparationStatus.PreparationTimeline.RemovedInterval],
-        kept: [PreparationStatus.PreparationTimeline.KeptInterval]
+        kept: [PreparationStatus.PreparationTimeline.KeptInterval],
+        silence: [Range<Double>] = []
     ) -> Bool {
         guard !removed.isEmpty || !kept.isEmpty else { return true }
         let orderedKept = kept.sorted { $0.originalStartSeconds < $1.originalStartSeconds }
-        let orderedRemoved = removed.sorted { $0.originalStartSeconds < $1.originalStartSeconds }
+        let pieces = (removed.map { (start: $0.originalStartSeconds, end: $0.originalEndSeconds, pause: false) }
+            + silence.map { (start: $0.lowerBound, end: $0.upperBound, pause: true) })
+            .sorted { $0.start < $1.start }
+        var dropped: [(start: Double, end: Double)] = []
+        var previousWasPause = false
+        for piece in pieces {
+            if let last = dropped.last, abs(piece.start - last.end) <= 0.001, previousWasPause || piece.pause {
+                dropped[dropped.count - 1].end = piece.end
+            } else {
+                dropped.append((piece.start, piece.end))
+            }
+            previousWasPause = piece.pause
+        }
         var expected: [(Double, Double)] = []
         var cursor = 0.0
         for keep in orderedKept {
             if keep.originalStartSeconds > cursor { expected.append((cursor, keep.originalStartSeconds)) }
             cursor = keep.originalEndSeconds
         }
-        let end = max(cursor, orderedRemoved.last?.originalEndSeconds ?? 0)
+        let end = max(cursor, dropped.last?.end ?? 0)
         if cursor < end { expected.append((cursor, end)) }
-        return expected.count == orderedRemoved.count && zip(expected, orderedRemoved).allSatisfy {
-            abs($0.0 - $1.originalStartSeconds) <= 0.001 && abs($0.1 - $1.originalEndSeconds) <= 0.001
+        return expected.count == dropped.count && zip(expected, dropped).allSatisfy {
+            abs($0.0 - $1.start) <= 0.001 && abs($0.1 - $1.end) <= 0.001
         }
     }
 
