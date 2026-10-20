@@ -50,13 +50,20 @@ enum WiltedMorningReportState: Equatable, Sendable {
         case .idle: nil
         case let .building(fraction, detail): "Building… \(Int((fraction * 100).rounded()))% \(detail)"
         case let .published(_, at): "Last report: \(timeStyle(at))"
-        case let .notPublished(reason): "Not published: \(reason)"
+        case let .notPublished(reason): reason
         }
     }
 
     /// Build now needs the daily report on and no run in progress.
     static func buildNowDisabled(state: WiltedMorningReportState, reportEnabled: Bool) -> Bool {
         state.isBuilding || !reportEnabled
+    }
+
+    /// The Build now button's help text: why it is disabled, or what it does.
+    static func buildNowHelp(state: WiltedMorningReportState, reportEnabled: Bool) -> String {
+        if !reportEnabled { return "Turn on Daily report first" }
+        if state.isBuilding { return "A report is being built" }
+        return "Build today's report now"
     }
 }
 

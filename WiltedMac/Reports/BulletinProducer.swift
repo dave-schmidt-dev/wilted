@@ -1,5 +1,7 @@
 import Foundation
+import os
 import WiltedLibrary
+import WiltedProducer
 
 /// The Reports settings the producer reads on every poll.
 struct BulletinProducerSettings: Equatable, Sendable {
@@ -48,6 +50,7 @@ struct BulletinProducerStatus: Equatable, Sendable {
 /// switches false and an empty list. A failed poll backs off, so the next attempt is never
 /// sooner than twice the interval; nothing retries faster than that.
 actor BulletinProducer {
+    private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Bulletins")
     static let pollInterval: TimeInterval = 900
     static let maximumBackoff: TimeInterval = 3600
     /// How long the server and receiving devices keep a headline.
@@ -172,6 +175,7 @@ actor BulletinProducer {
         } catch let error as WiltedMacLibraryAccountError {
             status.waitingFor = error.description
         } catch {
+            Self.log.error("bulletin check failed: \(LogSafeError.describe(error), privacy: .public)")
             status.lastError = Self.describe(error)
             status.waitingFor = nil
             status.consecutiveFailures += 1
@@ -184,9 +188,13 @@ actor BulletinProducer {
 
     private func report() { onStatus(status) }
 
-    private static func describe(_ error: Error) -> String {
-        let text = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-        return String(text.prefix(200))
+    /// The one sentence Settings shows for a failed check. The raw error is for the log only.
+    static func describe(_ error: Error) -> String {
+        switch ReportFailureCause.of(error) {
+        case .offline: "Could not check news: this Mac is offline."
+        case .timedOut: "Could not check news: the connection timed out."
+        case .speechUnavailable, .other: "Could not check news."
+        }
     }
 
     private func run() async throws {

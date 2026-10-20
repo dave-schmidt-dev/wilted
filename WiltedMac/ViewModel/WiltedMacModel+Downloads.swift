@@ -170,7 +170,7 @@ extension WiltedMacModel {
                     // marker is conservative and lets a later launch retry;
                     // misreporting this as a failed transfer would be false.
                     Self.downloadLog.error(
-                        "download recovery checkpoint not saved: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                        "download recovery checkpoint not saved: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) cause=\(LogSafeError.describe(error), privacy: .public)"
                     )
                     recoveryCheckpointSaved = false
                 }
@@ -213,7 +213,7 @@ extension WiltedMacModel {
                     self.dismissedEpisodes = try await self.loadDismissedEpisodes(from: store)
                 } catch {
                     Self.downloadLog.error(
-                        "download landed but the library reload failed: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                        "download landed but the library reload failed: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) cause=\(LogSafeError.describe(error), privacy: .public)"
                     )
                 }
                 await self.recordWorkTicketTransition(
@@ -261,13 +261,13 @@ extension WiltedMacModel {
                 // deliberate click made it.
                 let failureKind = (error as? PodcastDownloadCoordinatorError)?.failureKind ?? .retryable
                 Self.downloadLog.error(
-                    "download failed: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) state=\(ownedTicket.state.rawValue, privacy: .public) cause=\(String(describing: error), privacy: .public)"
+                    "download failed: \(self.episodeLogContext(episode.id, requestSequence: ownedTicket.requestSequence, attempt: ownedTicket.attemptCount), privacy: .public) state=\(ownedTicket.state.rawValue, privacy: .public) cause=\(LogSafeError.describe(error), privacy: .public)"
                 )
                 await self.recordWorkTicketTransition(
                     kind: .podcastDownload, subjectID: episode.id,
                     requestSequence: ownedTicket.requestSequence, state: .failed,
                     failureKind: ownedTicket.failureKind == WorkTicketFailure.interrupted.rawValue && failureKind == .retryable
-                        ? WorkTicketFailure.interrupted.rawValue : failureKind.rawValue, lastFailureMessage: String(describing: error)
+                        ? WorkTicketFailure.interrupted.rawValue : failureKind.rawValue, lastFailureMessage: LogSafeError.describe(error)
                 )
                 throw error
             }

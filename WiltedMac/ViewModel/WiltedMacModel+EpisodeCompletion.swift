@@ -14,6 +14,8 @@ import CloudKit
 #endif
 
 extension WiltedMacModel {
+    static let completionRetryMessage = "Some completions are still being finished. Wilted will retry."
+
     /// Remove and Mark completed both record the owner's finish, retaining media.
     func skipEpisode(_ episode: WiltedMacEpisode, requireStarted: Bool = false) {
 #if canImport(WiltedProducer)
@@ -74,7 +76,7 @@ extension WiltedMacModel {
                 await releaseWaitingEpisodes(feedIDs: Set(feeds.map(\.rawValue)))
             }
             await scheduleManualCompletionExpiry(store: store)
-        } catch { podcastOperationMessage = "Completion recovery could not finish. Automatic admissions will retry." }
+        } catch { podcastOperationMessage = WiltedMacModel.completionRetryMessage }
     }
 
     /// The task is separate from user writes and is cancelled/joined on close.
@@ -113,7 +115,7 @@ extension WiltedMacModel {
                 self.manualCompletionExpiryTask = nil
                 await self.scheduleManualCompletionExpiry(store: store)
             } catch is CancellationError {} catch {
-                self.podcastOperationMessage = "Completion recovery could not finish. Automatic admissions will retry."
+                self.podcastOperationMessage = WiltedMacModel.completionRetryMessage
                 self.manualCompletionExpiryDeadline = nil
                 self.manualCompletionExpiryTask = nil
             }

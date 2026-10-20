@@ -18,7 +18,9 @@ final class WiltedMacReportsCardTests: XCTestCase {
         guard case let .notPublished(reason) = model.morningReport.state else {
             return XCTFail("a build without an open library publishes nothing")
         }
-        XCTAssertEqual(model.morningReport.state.caption(), "Not published: \(reason)")
+        let caption = try XCTUnwrap(model.morningReport.state.caption())
+        XCTAssertEqual(caption, reason)
+        XCTAssertFalse(caption.hasPrefix("Not published:"))
     }
 
     func testCaptionsForEachState() {
@@ -37,5 +39,22 @@ final class WiltedMacReportsCardTests: XCTestCase {
         XCTAssertFalse(WiltedMorningReportState.buildNowDisabled(state: idle, reportEnabled: true))
         XCTAssertFalse(WiltedMorningReportState.buildNowDisabled(
             state: .notPublished(reason: "x"), reportEnabled: true))
+    }
+
+    func testBuildNowHelpSaysWhyTheButtonIsDisabled() {
+        let building = WiltedMorningReportState.building(fraction: 0.2, detail: "Starting")
+        let idle = WiltedMorningReportState.idle
+        XCTAssertEqual(WiltedMorningReportState.buildNowHelp(state: idle, reportEnabled: false),
+                       "Turn on Daily report first")
+        XCTAssertEqual(WiltedMorningReportState.buildNowHelp(state: building, reportEnabled: true),
+                       "A report is being built")
+        XCTAssertEqual(WiltedMorningReportState.buildNowHelp(state: idle, reportEnabled: true),
+                       "Build today's report now")
+    }
+
+    func testInterruptionsOffNoteExplainsWhyTheControlsAreDisabled() {
+        XCTAssertEqual(WiltedMacReportsCard.interruptionsOffNote(interruptionsEnabled: false),
+                       "Turn on Read bulletins while playing to use alerts and headlines.")
+        XCTAssertNil(WiltedMacReportsCard.interruptionsOffNote(interruptionsEnabled: true))
     }
 }

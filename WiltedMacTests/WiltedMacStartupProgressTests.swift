@@ -174,4 +174,72 @@ final class WiltedMacStartupProgressTests: XCTestCase {
         })
         XCTAssertEqual(model.startupState, .ready)
     }
+
+    func testRenamedStartupStepLabelsUsePlainLanguage() {
+        XCTAssertEqual(WiltedMacStartupStep.checkingPreparationFingerprint.label, "Checking prepared audio\u{2026}")
+        XCTAssertEqual(WiltedMacStartupStep.closingInterruptedRuns.label,
+                       "Clearing interrupted preparations\u{2026}")
+        XCTAssertEqual(WiltedMacStartupStep.reconcilingWork.label, "Finishing interrupted work\u{2026}")
+        let labels = [
+            WiltedMacStartupStep.checkingPreparationFingerprint.label,
+            WiltedMacStartupStep.closingInterruptedRuns.label,
+            WiltedMacStartupStep.reconcilingWork.label,
+        ]
+        for label in labels {
+            XCTAssertFalse(label.contains("fingerprint"), label)
+            XCTAssertFalse(label.contains("Reconciling"), label)
+            XCTAssertFalse(label.contains("Closing"), label)
+        }
+    }
+
+    func testRecoveryErrorsStayOutOfTheStartupLabel() {
+        let step = WiltedMacStartupStep.recoveringWork(
+            action: "continuing without reclaiming storage", done: 0, total: 0,
+            errors: ["storage: Error Domain=NSCocoaErrorDomain Code=4"])
+        XCTAssertEqual(
+            step.label,
+            "Finishing interrupted work: continuing without reclaiming storage. "
+                + "Some work could not be finished; Wilted will try again next launch.")
+        XCTAssertFalse(step.label.contains("Error Domain"))
+        XCTAssertFalse(step.label.contains("storage:"))
+    }
+
+    func testExhaustedStartupFailureHidesDetailAndOffersQuit() async throws {
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("startup-quit"),
+            storeBootstrap: { try LocalLibraryStore(url: $0) },
+            preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await model.close() }
+        model.startupState = .failed(WiltedMacStartupFailure(
+            message: "Wilted could not open your larder. The existing library was left in place.",
+            detail: "Error Domain=Fixture Code=9", recoveryCopyURL: nil, canRetry: false))
+        let text = try WiltedMacHeadless.recognizedText(
+            WiltedMacRootView(model: model), size: CGSize(width: 760, height: 420)
+        ).joined(separator: " ")
+        XCTAssertTrue(text.contains("Quit Wilted"), text)
+        XCTAssertTrue(text.contains("Show details"), text)
+        XCTAssertFalse(text.contains("Error Domain"), text)
+    }
+
+    func testStartupRecoverySourceHasCollapsibleDetailAndQuit() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("WiltedMac/Views/WiltedMacRootView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("NSApplication.shared.terminate(nil)"))
+        XCTAssertTrue(source.contains("\"wilted-mac-startup-error-detail\""))
+        XCTAssertTrue(source.contains("\"wilted-mac-startup-error-details\""))
+        XCTAssertFalse(source.contains("Retry limit reached"))
+    }
+
+    func testStartupErrorDescriptionsAreLogSafe() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        for name in [
+            "WiltedMac/ViewModel/WiltedMacModel+Downloads.swift",
+            "WiltedMac/ViewModel/WiltedMacModel+Preparation.swift",
+            "WiltedMac/ViewModel/WiltedMacModel+StoreBootstrap.swift",
+        ] {
+            let source = try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
+            XCTAssertFalse(source.contains("String(describing: error)"), name)
+        }
+    }
 }

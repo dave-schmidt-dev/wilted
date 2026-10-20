@@ -246,6 +246,35 @@ final class BulletinProducerTests: XCTestCase {
         XCTAssertNotNil(states.last?.lastPollAt)
     }
 
+    // MARK: Plain failure text
+
+    func testDescribeGivesAFixedSentencePerCause() {
+        let offline = URLError(
+            .notConnectedToInternet,
+            userInfo: [NSURLErrorFailingURLStringErrorKey: "https://news.example.test/feed?token=SECRET-TOKEN"])
+        XCTAssertEqual(BulletinProducer.describe(offline), "Could not check news: this Mac is offline.")
+        XCTAssertEqual(BulletinProducer.describe(URLError(.timedOut)),
+                       "Could not check news: the connection timed out.")
+        XCTAssertEqual(BulletinProducer.describe(Boom()), "Could not check news.")
+    }
+
+    func testAnOfflinePollFailureIsAPlainSentenceInSettings() async throws {
+        let h = Harness()
+        h.publishError = URLError(
+            .notConnectedToInternet,
+            userInfo: [NSURLErrorFailingURLStringErrorKey: "https://news.example.test/feed?token=SECRET-TOKEN"])
+        let producer = h.producer()
+        await producer.poll()
+        let status = await producer.status
+        XCTAssertEqual(status.lastError, "Could not check news: this Mac is offline.")
+        let statusLine = await WiltedMacBulletinHub.statusLine(status)
+        let line = try XCTUnwrap(statusLine)
+        XCTAssertFalse(line.contains("Error Domain"), line)
+        XCTAssertFalse(line.contains("NSURLErrorDomain"), line)
+        XCTAssertFalse(line.contains("SECRET-TOKEN"), line)
+        XCTAssertFalse(line.contains(".."), line)
+    }
+
     // MARK: Account gate
 
     func testAccountGateForwardsBulletinsOnlyWhileOpen() async throws {

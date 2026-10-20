@@ -86,7 +86,7 @@ extension WiltedMacModel {
                 request.acknowledged = false
                 request.needsReconciliation = true
                 preparationPublicationRequests[subjectID] = request
-                podcastOperationMessage = "Preparation status needs reconciliation. Restart Wilted before retrying."
+                podcastOperationMessage = "Preparation state is out of date. Restart Wilted, then retry."
                 librarySyncController?.requestPublish()
             }
             return nil
@@ -140,7 +140,7 @@ extension WiltedMacModel {
             return ticket
         } catch {
             Self.workTicketLog.warning(
-                "work ticket transition failed: kind=\(kind.rawValue, privacy: .public) \(self.episodeLogContext(subjectID, requestSequence: requestSequence ?? expectedAttempt?.requestSequence, attempt: expectedAttempt?.attemptCount), privacy: .public) attemptedState=\(state.rawValue, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                "work ticket transition failed: kind=\(kind.rawValue, privacy: .public) \(self.episodeLogContext(subjectID, requestSequence: requestSequence ?? expectedAttempt?.requestSequence, attempt: expectedAttempt?.attemptCount), privacy: .public) attemptedState=\(state.rawValue, privacy: .public) error=\(LogSafeError.describe(error), privacy: .public)"
             )
             return nil
         }
@@ -347,7 +347,7 @@ extension WiltedMacModel {
                 await self?.recordWorkTicketTransition(
                     kind: .podcastPreparation, subjectID: episode.id,
                     requestSequence: requestSequence, state: .failed,
-                    failureKind: failureKind.rawValue, lastFailureMessage: String(describing: error), expectedAttempt: attempt, requiresAttempt: true
+                    failureKind: failureKind.rawValue, lastFailureMessage: LogSafeError.describe(error), expectedAttempt: attempt, requiresAttempt: true
                 )
             }
         }

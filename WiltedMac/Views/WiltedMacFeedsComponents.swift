@@ -459,8 +459,8 @@ struct WiltedMacFeedCapacityLabel: View {
     }
 
     private var label: String {
-        if board.loadFailureMessage != nil { return "Capacity unavailable" }
-        guard board.isLoaded(subscription.id) else { return "Capacity loading" }
+        if board.loadFailureMessage != nil { return "Settings unavailable" }
+        guard board.isLoaded(subscription.id) else { return "Loading settings" }
         let kept = board.keptCount(forFeed: subscription.id)
         let limit = board.resolved(for: subscription.id).keptLimit
         let capacity = limit.map { "\(kept) of \($0) kept" } ?? "\(kept) kept · No limit"

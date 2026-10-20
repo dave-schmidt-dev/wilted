@@ -123,7 +123,7 @@ extension WiltedMacModel {
                 )
             } catch {
                 Self.reclaimLog.warning(
-                    "preparation scratch cleanup failed: \(String(describing: error), privacy: .public)"
+                    "preparation scratch cleanup failed: \(LogSafeError.describe(error), privacy: .public)"
                 )
             }
             var storageSweepErrors: [String] = []
@@ -136,11 +136,16 @@ extension WiltedMacModel {
                 Self.logSweepOutcome(report)
             } catch {
                 Self.reclaimLog.warning(
-                    "storage sweep failed: \(String(describing: error), privacy: .public)"
+                    "storage sweep failed: \(LogSafeError.describe(error), privacy: .public)"
                 )
-                storageSweepErrors = ["storage: \(String(describing: error))"]
+                storageSweepErrors = ["storage: \(LogSafeError.describe(error))"]
             }
             let ticketErrors = ticketReconciliation.errors.map { "\($0.subjectID): \($0.message)" }
+            if !ticketErrors.isEmpty {
+                Self.reclaimLog.warning(
+                    "startup recovery left \(ticketErrors.count) unfinished: \(LogSafeError.scrubbingURLs(ticketErrors.joined(separator: "; ")), privacy: .public)"
+                )
+            }
             if ticketErrors.isEmpty, storageSweepErrors.isEmpty {
                 announceStartupStep(.loadingLibrary)
             } else if ticketErrors.isEmpty {
@@ -228,7 +233,7 @@ extension WiltedMacModel {
             configureStoreDependencies(nil)
             startupState = .failed(WiltedMacStartupFailure(
                 message: Self.staleInvalidationFailureMessage,
-                detail: String(describing: invalidationFailure.underlying),
+                detail: LogSafeError.describe(invalidationFailure.underlying),
                 recoveryCopyURL: nil,
                 canRetry: startupAttemptCount < Self.maximumStartupAttempts
             ))
@@ -248,7 +253,7 @@ extension WiltedMacModel {
             }
             startupState = .failed(WiltedMacStartupFailure(
                 message: Self.storeOpenFailureMessage(for: error),
-                detail: String(describing: error),
+                detail: LogSafeError.describe(error),
                 recoveryCopyURL: recoveryURL,
                 canRetry: startupAttemptCount < Self.maximumStartupAttempts
             ))
@@ -514,7 +519,7 @@ extension WiltedMacModel {
             return WorkTicketReconciliation(
                 importedDeferralCount: 0, adoptedDownloadCount: 0, closedRunCount: 0, prunedCount: 0,
                 errors: [LocalLibraryStore.WorkTicketReconciliationError(
-                    step: .importingDeferrals, subjectID: "work-ticket-recovery", message: String(describing: error)
+                    step: .importingDeferrals, subjectID: "work-ticket-recovery", message: LogSafeError.describe(error)
                 )]
             )
         }

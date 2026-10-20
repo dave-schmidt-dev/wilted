@@ -41,6 +41,9 @@ struct WiltedMacReportsCard: View {
                 #endif
                 DisclosureGroup(isExpanded: $showsDetails) {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                        if let line = Self.interruptionsOffNote(interruptionsEnabled: settings.interruptionsEnabled) {
+                            note(line, id: "wilted-reports-interruptions-off-note")
+                        }
                         Toggle("Weather alerts", isOn: reportsBinding(\.alertsEnabled))
                             .disabled(!settings.interruptionsEnabled)
                             .accessibilityIdentifier("wilted-reports-alerts")
@@ -224,7 +227,8 @@ struct WiltedMacReportsCard: View {
             Button("Build now") { Task { await controller.buildNow() } }
                 .disabled(WiltedMorningReportState.buildNowDisabled(
                     state: controller.state, reportEnabled: settings.reportEnabled))
-                .help("Build today's report now")
+                .help(WiltedMorningReportState.buildNowHelp(
+                    state: controller.state, reportEnabled: settings.reportEnabled))
                 .accessibilityIdentifier("wilted-reports-build-now")
         }
     }
@@ -267,6 +271,11 @@ struct WiltedMacReportsCard: View {
         case .denied, .noFix: .caution
         case .none: .neutral
         }
+    }
+
+    /// Why the alerts, headlines and their steppers are disabled while interruptions are off.
+    static func interruptionsOffNote(interruptionsEnabled: Bool) -> String? {
+        interruptionsEnabled ? nil : "Turn on Read bulletins while playing to use alerts and headlines."
     }
 
     static func detailText(_ detail: WiltedLocationDetail) -> String {

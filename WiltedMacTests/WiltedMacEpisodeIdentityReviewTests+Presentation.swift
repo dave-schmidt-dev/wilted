@@ -34,6 +34,36 @@ extension WiltedMacEpisodeIdentityReviewTests {
         XCTAssertTrue(review.approvalSummary.contains("\(secondLabel): stored copy kept"))
     }
 
+    func testEvidenceLabelsUsePlainOwnerWording() throws {
+        let revision = try RevisionID(rawValue: "rev-abc")
+        XCTAssertEqual(
+            WiltedMacEpisodeIdentityReviewLayout.audioFingerprintLabel("sha256:abc"),
+            "Audio fingerprint sha256:abc"
+        )
+        XCTAssertEqual(
+            WiltedMacEpisodeIdentityReviewLayout.audioFingerprintLabel(nil),
+            "No completed original download"
+        )
+        XCTAssertEqual(
+            WiltedMacEpisodeIdentityReviewLayout.preparedVersionLabel(revision),
+            "Prepared version rev-abc"
+        )
+        XCTAssertEqual(
+            WiltedMacEpisodeIdentityReviewLayout.preparedVersionLabel(nil),
+            "Not prepared"
+        )
+        let labels = [
+            WiltedMacEpisodeIdentityReviewLayout.audioFingerprintLabel("sha256:abc"),
+            WiltedMacEpisodeIdentityReviewLayout.audioFingerprintLabel(nil),
+            WiltedMacEpisodeIdentityReviewLayout.preparedVersionLabel(revision),
+            WiltedMacEpisodeIdentityReviewLayout.preparedVersionLabel(nil),
+        ]
+        for label in labels {
+            XCTAssertFalse(label.localizedCaseInsensitiveContains("proof"), label)
+            XCTAssertFalse(label.localizedCaseInsensitiveContains("revision"), label)
+        }
+    }
+
     // MARK: - Headless sheet rendering
 
     func testHeadlessSheetShowsLoadingEvidenceCapturedConsequencesAndBusyStatus() async throws {
@@ -82,6 +112,8 @@ extension WiltedMacEpisodeIdentityReviewTests {
             .joined(separator: " ")
         XCTAssertTrue(evidenceText.contains("Comparison evidence"), evidenceText)
         XCTAssertTrue(evidenceText.contains("Confirm Same Episode"), evidenceText)
+        XCTAssertFalse(evidenceText.contains("proof"), evidenceText)
+        XCTAssertFalse(evidenceText.contains("Prepared revision"), evidenceText)
 
         await review.reviewPair()
         XCTAssertNotNil(review.approvalPreview)
