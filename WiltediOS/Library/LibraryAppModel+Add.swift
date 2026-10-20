@@ -48,6 +48,8 @@ struct PendingAdd: Identifiable, Equatable, Sendable {
     }
     var isFinished: Bool { phase != .sent }
     var isAwaitingAnswer: Bool { phase == .sent }
+    /// The name the Mac lists in `supportedIntentActions` for this add.
+    var actionName: String { isSubscribe ? "subscribe" : "addArticle" }
 }
 
 /// What a sent add says, in words, and how it is toned.
@@ -142,8 +144,10 @@ extension LibraryAppModel {
         }
     }
 
-    /// Sends one add to the Mac, but only when the Mac says it applies that action. A second press while
-    /// the same add waits sends nothing. A refusal leaves the reason in `addNotice` and nothing in `adds`.
+    /// Sends one add to the Mac, but only when the Mac says it applies that action. The pending row shows
+    /// (and is saved in the outbox) before anything else, and the Mac's actions, when not known yet, are read
+    /// behind it (W-INV-040). A second press while the same add waits sends nothing. A Mac that says no takes
+    /// the row back and leaves the reason in `addNotice`; a read that fails leaves the row unsent and retried.
     func addToMac(_ request: LibraryAddRequest, title: String) async {
         addNotice = nil
         guard !accountQuarantined else {
@@ -152,11 +156,6 @@ extension LibraryAppModel {
         }
         guard let intent = try? request.intent(deviceID: deviceID, createdAt: now()) else {
             addNotice = Self.invalidAddLinkText
-            return
-        }
-        if !canAdd(request) || macAddActions == nil || macAddCheckFailed { await loadAddCapability() }
-        guard macAddActions?.contains(request.actionName) == true else {
-            addNotice = macAddCheckFailed ? Self.macCheckFailedText : Self.updateMacText
             return
         }
         guard !adds.contains(where: { $0.isAwaitingAnswer && $0.intent.action == intent.action }) else { return }
@@ -196,7 +195,19 @@ extension LibraryAppModel {
         if applied { tickState.forceFull = true }
     }
 
+    /// Sends `add` once the Mac says it applies that action (W-INV-026), reading that first when it is not
+    /// known, so a saved add replayed after a relaunch is checked too. A Mac that says no takes the add back
+    /// with the update notice; a read that fails keeps it unsent for the next round. Nothing is sent after an
+    /// account change, or once the add has left or been sent while the read ran.
     private func sendAdd(_ add: PendingAdd) async {
+        if macAddActions?.contains(add.actionName) != true || macAddCheckFailed { await loadAddCapability() }
+        guard !accountQuarantined, adds.contains(where: { $0.id == add.id && !$0.isSent }) else { return }
+        guard macAddActions?.contains(add.actionName) == true else {
+            guard !macAddCheckFailed else { return }
+            adds.removeAll { $0.id == add.id }
+            addNotice = Self.updateMacText
+            return
+        }
         guard (try? await transport.send(intent: add.intent)) != nil,
               let index = adds.firstIndex(where: { $0.id == add.id }) else { return }
         adds[index].isSent = true
@@ -455,42 +466,3 @@ final class LibraryAddSession: ObservableObject {
         }
     }
 }
-
-#if DEBUG
-/// DEBUG-only: what the Add sheet's Mac does inside the fixture's pixel scenario, chosen by
-/// `--wilted-library-add-mac=ready|old|rejects-no-audio`. The fixture's in-memory Mac neither publishes
-/// the actions it applies nor answers intents, so the captures need this stand-in; it is compiled out of
-/// release builds and inert outside `--wilted-library-root-scenario=pixel`.
-@MainActor
-enum LibraryAddUITestSeam {
-    enum Mac: String {
-        /// Advertises both add actions and never answers: an add stays "Sent to your Mac".
-        case ready
-        /// Advertises nothing, like a Mac that predates the Add flow.
-        case old
-        /// Advertises both and refuses every add because the feed has no audio.
-        case rejectsNoAudio = "rejects-no-audio"
-    }
-
-    static let argumentPrefix = "--wilted-library-add-mac="
-
-    static var mac: Mac? {
-        guard LibraryUITestFixture.scenario() == .pixel else { return nil }
-        let raw = ProcessInfo.processInfo.arguments.first { $0.hasPrefix(argumentPrefix) }?
-            .dropFirst(argumentPrefix.count)
-        return raw.flatMap { Mac(rawValue: String($0)) } ?? .ready
-    }
-
-    nonisolated static let shows: [PodcastCatalogShow] = [
-        PodcastCatalogShow(
-            collectionID: 9_001, title: "The Slow Garden", feedURL: URL(string: "https://feeds.example.com/slow-garden.xml")!,
-            author: "Field Notes Audio"),
-        PodcastCatalogShow(
-            collectionID: 9_002, title: "Evening Compost", feedURL: URL(string: "https://feeds.example.com/evening-compost.xml")!,
-            author: "Greenhouse Radio"),
-        PodcastCatalogShow(
-            collectionID: 9_003, title: "Seeds and Stories", feedURL: URL(string: "https://feeds.example.com/seeds.xml")!,
-            author: "Open Plot")
-    ]
-}
-#endif

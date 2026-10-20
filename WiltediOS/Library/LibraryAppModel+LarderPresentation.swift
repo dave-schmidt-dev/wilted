@@ -57,6 +57,11 @@ extension LibraryAppModel {
             progress: logicalProgress, finished: logicalFinished, preparationIDs: preparationIDs)
     }
 
+    /// True once the Larder has something true to show (W-INV-040): the saved prepared rows as soon as the
+    /// store is read, while the audio on the phone is still being checked; with none saved, once that check
+    /// ends, so "Nothing prepared yet" is never said before it is known.
+    var larderReady: Bool { localStateLoaded || preparedCount > 0 }
+
     /// How many queued entries are prepared, before any filter or search; tells an empty Larder
     /// from an empty result.
     var preparedCount: Int {

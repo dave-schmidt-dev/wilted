@@ -69,6 +69,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Cutting an episode into many pieces is much faster: the cut now reads the original audio once instead of once per kept piece (450 pieces of a 30-minute episode took 7.5 s instead of over 9 minutes), and the audio it produces is unchanged.
+- The iPhone no longer makes you wait for background work: the Larder lists your saved episodes at once on launch (Download and Play appear a moment later, once the phone has checked the audio it holds), an Add shows "Not sent yet" right away while it asks your Mac, and Remove from phone clears the row at once, showing the usual error if the delete fails.
 - iPhone Larder rows now show the Mac's three info lines: the title on one line, "Feed - duration" (the feed gives way first and the duration is never cut), and the publication date on its own line, which VoiceOver reads after the feed and duration.
 - Mac playlists: the Manual or Smart under a playlist's name is now a coloured tag (Smart in green, Manual in grey) so it no longer reads as part of the name, and the icons are Wilted's own basket (manual) and colander (smart). The playlist page shows the same tag, and New Playlist offers New Smart Playlist.
 - The Mac pauses when its speakers or headphones go away (unplugged, disconnected, or the output device vanishes), saves the position and stays paused, as the iPhone does. Switching to another output that is still connected keeps playing.

@@ -140,6 +140,11 @@ extension LibraryAppModel {
     /// The state shown for `entryID`.
     func mediaState(for entryID: ItemID) -> LibraryMediaState { media[backingEntryID(for: entryID)] ?? .available }
 
+    /// True when a row may ask the Mac for audio: the Mac has linked this device and the check of the audio
+    /// already on the phone has ended. Until then a row whose audio is not known yet offers no download and
+    /// no Play, so it never asks the Mac again for audio the phone holds (W-INV-040).
+    var canRequestAudio: Bool { deviceLinked && localStateLoaded }
+
     /// Routes a row action. Fire-and-forget: progress and outcome arrive through `media`.
     func performMediaAction(_ action: LibraryMediaAction, entryID: ItemID) {
         let entryID = backingEntryID(for: entryID)
@@ -170,16 +175,22 @@ extension LibraryAppModel {
         media[entryID] = nil
     }
 
-    /// Deletes the cached audio. The Mac's copy is untouched.
+    /// Deletes the cached audio. The Mac's copy is untouched. The row clears before the delete starts
+    /// (W-INV-040), and the delete holds the entry's one media run, so no request or cache refresh touches
+    /// the entry until it ends. A delete that fails puts the existing error on the row; a later cache
+    /// refresh shows "On phone" again if the audio is still playable.
     func removeFromPhone(entryID: ItemID) async {
         guard mediaRuns[entryID] == nil else { return }
+        let run = LibraryMediaRun()
+        mediaRuns[entryID] = run
+        defer { if isCurrent(entryID, run.id) { mediaRuns[entryID] = nil } }
+        cancelTranscript(entryID: entryID)
+        media[entryID] = nil
         do {
-            cancelTranscript(entryID: entryID)
             try await mediaCache.remove(entryID: entryID)
-            unacknowledgedMedia[entryID] = nil
-            media[entryID] = nil
+            if isCurrent(entryID, run.id) { unacknowledgedMedia[entryID] = nil }
         } catch {
-            media[entryID] = .failed("Could not remove the audio: \(error.localizedDescription)")
+            setMedia(.failed("Could not remove the audio: \(error.localizedDescription)"), entryID, run.id)
         }
     }
 
@@ -189,8 +200,10 @@ extension LibraryAppModel {
     }
 
     /// Marks entries already cached as "On phone", drops "On phone" for files that are gone, and
-    /// retries acknowledgements that did not reach the Mac. Never touches a running request.
-    func refreshMediaFromCache() async {
+    /// retries acknowledgements that did not reach the Mac. Never touches a running request. The launch's
+    /// local read passes `acknowledging: false`: an acknowledgement is network work, so it waits in the
+    /// outbox for the sync round instead of holding up the Larder or a play (W-INV-040, W-INV-039).
+    func refreshMediaFromCache(acknowledging: Bool = true) async {
         guard let context = await bindMediaOwner() else {
             guard !Task.isCancelled else { return }
             media = media.filter { $0.value != .onPhone }
@@ -227,7 +240,7 @@ extension LibraryAppModel {
             default: break
             }
         }
-        await sendPendingMediaAcknowledgements()
+        if acknowledging { await sendPendingMediaAcknowledgements() }
     }
 
     /// The account changed: audio belongs to the previous account's library.

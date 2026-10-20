@@ -159,6 +159,7 @@ final class LibraryPreparationStatusTests: XCTestCase {
         let fixture = try LibraryViewFixture()
         defer { fixture.tearDown() }
         let model = fixture.model
+        await model.loadLocalState() // as a launch does, so a row may offer Download (W-INV-040)
         let old = try snapshot([entry("a", status: status(.failed))], queue: ["a"])
         model.completedDisplayContent = old
         model.completedDisplayRows = LibraryRowBuilder.rows(content: old, checkpoints: [:], clock: clock)
@@ -264,6 +265,7 @@ final class LibraryPreparationStatusTests: XCTestCase {
         await HostedAccessibility.prepare()
         let fixture = try LibraryViewFixture()
         defer { fixture.tearDown() }
+        await fixture.model.loadLocalState() // so only the status-only rule withholds Download
         fixture.model.decisionContent = try snapshot([entry("a", status: status())], queue: ["a"])
         fixture.model.rebuildRows()
         let raw = try XCTUnwrap(fixture.model.queued.first)
