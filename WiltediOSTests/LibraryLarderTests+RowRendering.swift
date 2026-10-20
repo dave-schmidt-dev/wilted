@@ -54,7 +54,7 @@ extension LibraryLarderTests {
         for width: CGFloat in [320, 390] {
             for scheme in [ColorScheme.light, .dark] {
                 let capture = try PhoneLayoutCapture(
-                    LibraryRowView(row: episode, media: .onPhone, onPlay: {}, showsShowName: showsShowName),
+                    LibraryRowView(row: episode, media: .onPhone, onPlay: {}, deviceKind: "iPhone", showsShowName: showsShowName),
                     width: width, scheme: scheme)
                 XCTAssertNotNil(capture.paintedLine(containing: expectedDate),
                     "The complete date must be rendered, not a clipped prefix: \(capture.text)")
@@ -75,7 +75,7 @@ extension LibraryLarderTests {
         let partial = EpisodeProgress(positionSeconds: 150, lastPlayedAt: published)
         for scheme in [ColorScheme.light, .dark] {
             for started in [false, true] {
-                let content = LibraryRowView(row: episode, media: .onPhone, onPlay: {},
+                let content = LibraryRowView(row: episode, media: .onPhone, onPlay: {}, deviceKind: "iPhone",
                                              progress: started ? partial : nil)
                     .padding(16)
                     .frame(width: 390)

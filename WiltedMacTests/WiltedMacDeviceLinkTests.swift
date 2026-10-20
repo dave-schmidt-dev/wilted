@@ -290,4 +290,25 @@ final class WiltedMacDeviceLinkTests: XCTestCase {
         XCTAssertEqual(rows.map(\.label), ["iPad 1", "iPad 2", "iPhone"])
         XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode, 2 episodes queued", "Linking…", "Linked"])
     }
+
+    /// A Mac linked only to an iPad names the iPad, and its copy about devices in general names no phone.
+    func testAMacLinkedToAnIPadNamesTheIPadAndItsGeneralCopyNamesNoPhone() {
+        let rows = WiltedMacLibrarySyncStatus.deviceRows([
+            WiltedMacLinkedDevice(deviceID: "a", kind: "iPad", isLinked: true, inFlight: []),
+        ])
+        XCTAssertEqual(rows.map(\.label), ["iPad"])
+        XCTAssertEqual(rows.map(\.value), ["Linked"])
+        let now = Date(timeIntervalSince1970: 2000)
+        XCTAssertTrue(WiltedPublicationAge.macDetail(now).hasSuffix(
+            "Author evidence does not prove your devices have the same library."))
+        let general = [
+            WiltedMacLibrarySyncStatus.scopeNote,
+            WiltedPublicationAge.macDetail(now),
+            WiltedPublicationAge.macSidebarSummary(nil, verified: true, held: false, now: now),
+            WiltedPublicationAge.macSidebarSummary(now.addingTimeInterval(-300), verified: true, held: false, now: now),
+        ]
+        for text in general {
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("phone"), text)
+        }
+    }
 }

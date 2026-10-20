@@ -218,7 +218,7 @@ enum LibraryStartFailure: Equatable, Sendable {
     /// The reason `LibraryPlayer.Status.failed` carries.
     var playerReason: String {
         switch self {
-        case .missingMedia: "The audio is not on this iPhone"
+        case .missingMedia: "The audio is not downloaded"
         case .unreadableFile: "Could not open the audio file"
         case .audioSession: "Could not start the audio session"
         case .engineRefused: "The audio engine refused to play"

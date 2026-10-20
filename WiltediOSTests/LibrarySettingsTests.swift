@@ -160,19 +160,19 @@ final class LibrarySettingsTests: XCTestCase {
         XCTAssertEqual(LibrarySettingsFormat.date(nil), "Not yet")
 
         let now = Date()
-        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: true, error: "x", lastRefresh: now).status, "Needs review")
-        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: true, quarantined: false, error: "x", lastRefresh: now).status, "Syncing")
-        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: "x", lastRefresh: now).detail, "x")
+        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: true, error: "x", lastRefresh: now, deviceKind: "iPhone").status, "Needs review")
+        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: true, quarantined: false, error: "x", lastRefresh: now, deviceKind: "iPhone").status, "Syncing")
+        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: "x", lastRefresh: now, deviceKind: "iPhone").detail, "x")
         let paused = LibrarySettingsFormat.sync(
-            isRefreshing: true, quarantined: false, error: "x", lastRefresh: now, throttleNotice: "iCloud is rate limiting sync.")
+            isRefreshing: true, quarantined: false, error: "x", lastRefresh: now, throttleNotice: "iCloud is rate limiting sync.", deviceKind: "iPhone")
         XCTAssertEqual(paused.status, "Paused")
         XCTAssertEqual(paused.detail, "iCloud is rate limiting sync.")
-        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now).status, "Fetched")
-        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: nil).status, "Not synced yet")
+        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now, deviceKind: "iPhone").status, "Fetched")
+        XCTAssertEqual(LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: nil, deviceKind: "iPhone").status, "Not synced yet")
 
-        let current = LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now)
+        let current = LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: nil, lastRefresh: now, deviceKind: "iPhone")
         XCTAssertEqual(LibrarySettingsFormat.syncLine(current, lastRefresh: now), "Fetched · \(LibrarySettingsFormat.date(now))")
-        let broken = LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: "x", lastRefresh: now)
+        let broken = LibrarySettingsFormat.sync(isRefreshing: false, quarantined: false, error: "x", lastRefresh: now, deviceKind: "iPhone")
         XCTAssertEqual(LibrarySettingsFormat.syncLine(broken, lastRefresh: now), "Problem")
     }
 
@@ -196,14 +196,14 @@ final class LibrarySettingsTests: XCTestCase {
 
     func testSyncDetailShowsInlineOnlyForAnErrorAndOtherwiseWaitsInDiagnostics() {
         let fetched = LibrarySettingsFormat.sync(
-            isRefreshing: false, quarantined: false, error: nil, lastRefresh: Date())
+            isRefreshing: false, quarantined: false, error: nil, lastRefresh: Date(), deviceKind: "iPhone")
         XCTAssertFalse(LibrarySettingsFormat.showsSyncDetailInline(fetched))
         let fetchedRows = LibrarySettingsFormat.diagnosticsRows(deviceID: "phone", syncDetail: fetched.detail)
         XCTAssertEqual(fetchedRows.map(\.identifier),
                        [LibrarySettingsFormat.deviceIdentifier, LibrarySettingsFormat.syncDetailIdentifier])
 
         let failure = LibrarySettingsFormat.sync(
-            isRefreshing: false, quarantined: false, error: "The library could not be fetched.", lastRefresh: nil)
+            isRefreshing: false, quarantined: false, error: "The library could not be fetched.", lastRefresh: nil, deviceKind: "iPhone")
         XCTAssertTrue(LibrarySettingsFormat.showsSyncDetailInline(failure))
         XCTAssertEqual(failure.detail, "The library could not be fetched.")
     }
@@ -350,7 +350,7 @@ final class LibrarySettingsTests: XCTestCase {
     }
 }
 
-// MARK: - Speak interruptions on this iPhone
+// MARK: - Speak interruptions on this device
 
 extension LibrarySettingsTests {
     func testSpeakInterruptionsIsOnByDefaultAndTheToggleOffPreventsSpeaking() async {

@@ -51,7 +51,7 @@ struct LibraryDownloadControl: View {
         case .available where !canRequest, .failed where !canRequest, .notPrepared where !canRequest:
             EmptyView()
         case .available:
-            icon("arrow.down.circle", "Download to phone", .request, id: "get")
+            icon("arrow.down.circle", "Download", .request, id: "get")
         case .requested, .downloading:
             ZStack {
                 ring

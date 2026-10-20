@@ -180,7 +180,7 @@ struct LibraryEpisodeDetailView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
             }
-            LibraryCheckpointLine(row: row, player: player, identifier: "wilted-library-detail-checkpoint")
+            LibraryCheckpointLine(row: row, player: player, deviceKind: model.deviceKind, identifier: "wilted-library-detail-checkpoint")
         }
     }
 

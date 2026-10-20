@@ -25,13 +25,13 @@ while the intents run in the app process (`openAppWhenRun = false`).
 |---|---|---|---|
 | playNext(show) | show given, no title matches | none | "I can't find a show called <spoken>." |
 | | show given, ambiguous | none | "Did you mean <A> or <B>?" |
-| | show matched, none downloaded | none | "No <Show> episodes are on your phone." |
+| | show matched, none downloaded | none | "No <Show> episodes are downloaded." |
 | | show matched, playing episode is of that show | play the next downloaded episode of that show after it, in Larder order | "Playing <title>." |
-| | ... and it is the last one | none | "That was the last <Show> episode on your phone." |
+| | ... and it is the last one | none | "That was the last downloaded episode of <Show>." |
 | | show matched, playing episode is another show (or nothing) | play the first downloaded episode of that show | "Playing <title>." |
 | (all lists) | order | The shared play order (also the phone list's order): downloaded episodes someone is partway through (here, on the Mac or elsewhere) first, newest play first; then not-started ones, oldest published first (ties keep the Larder order); then completed ones last. "Next", "what's downloaded" and the disambiguation lists follow it; "play something" takes the head of this order; only the car's "newest" request (`playLatest`) is the newest published | |
-| playNext(nil) | nothing downloaded | none | "No episodes are on your phone." |
-| | otherwise | next downloaded episode after the playing one (first when nothing plays or the playing one is not listed); last one -> none | "Playing <title>." / "That was the last episode on your phone." |
+| playNext(nil) | nothing downloaded | none | "No episodes are downloaded." |
+| | otherwise | next downloaded episode after the playing one (first when nothing plays or the playing one is not listed); last one -> none | "Playing <title>." / "That was the last downloaded episode." |
 | pause | playing | pause | "Paused." |
 | | paused or nothing | none | "Nothing is playing." |
 | resume | paused episode loaded | resume | "Resuming <title>." |
@@ -46,8 +46,8 @@ while the intents run in the app process (`openAppWhenRun = false`).
 | | nothing loaded | none | "Nothing is playing." |
 | whatsPlaying | episode loaded | none | "<title>, from <Show>." (omit the show when empty) |
 | | nothing loaded | none | "Nothing is playing." |
-| listDownloaded | none | none | "No episodes are on your phone." |
-| | n episodes | none | "<n> episode(s) on your phone: <t1>, <t2>, <t3>." (first 3; "and <n-3> more" when more) |
+| listDownloaded | none | none | "No episodes are downloaded." |
+| | n episodes | none | "<n> episode(s) downloaded: <t1>, <t2>, <t3>." (first 3; "and <n-3> more" when more) |
 
 "Playing" means the player holds the episode (playing or paused); the next-episode rules use the
 loaded episode, not whether it is audible.
@@ -82,15 +82,15 @@ The sleep timer intent has no App Shortcut (see Phase 3).
 |---|---|---|---|
 | playEpisode(title, show) | show given, no title matches | none | "I can't find a show called <show>." |
 | | show given, ambiguous | none | "Did you mean <A> or <B>?" |
-| | show matched, none downloaded | none | "No <Show> episodes are on your phone." |
-| | no episodes downloaded | none | "No episodes are on your phone." |
-| | title matches none of the candidate episodes (all downloaded, or the matched show's) | none | "I can't find an episode called <title> on your phone." |
+| | show matched, none downloaded | none | "No <Show> episodes are downloaded." |
+| | no episodes downloaded | none | "No episodes are downloaded." |
+| | title matches none of the candidate episodes (all downloaded, or the matched show's) | none | "I can't find a downloaded episode called <title>." |
 | | title ambiguous (distinct titles tie) | none | "Did you mean <A> or <B>?" |
 | | title matches | play it (first in Larder order when two episodes share a title); a playing episode is played again from where it is, never toggled | "Playing <title>." |
-| playEpisodeByID(id) | id not among the downloaded episodes | none | "That episode isn't on your phone." |
+| playEpisodeByID(id) | id not among the downloaded episodes | none | "That episode isn't downloaded." |
 | | id downloaded (an `EpisodeEntity` Siri resolved; the id decides, so equal titles are never confused) | play it | "Playing <title>." |
 | playLatest(show) | show rules as playNext (no match, ambiguous, none downloaded) | none | same lines as playNext |
-| | no episodes downloaded (no show) | none | "No episodes are on your phone." |
+| | no episodes downloaded (no show) | none | "No episodes are downloaded." |
 | | otherwise | play the downloaded episode (of the show, if given) with the newest `publishedAt`; ties keep Larder order. Only the SiriKit "newest" request sends this | "Playing <title>." |
 | playFirst(show) | show rules as playNext (no match, ambiguous, none downloaded) | none | same lines as playNext |
 | | otherwise | play the first downloaded episode (of the show, if given) in the shared play order: partway through first (newest play first), then not-started oldest first, then completed; never `publishedAt` | "Playing <title>." |

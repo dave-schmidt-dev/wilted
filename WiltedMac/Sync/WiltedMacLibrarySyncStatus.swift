@@ -72,8 +72,8 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
     static let reviewExplanation = WiltedScreenCopy.macAccountReviewDetail
     static let approveReview = "Use reviewed account"
     static let keepHeld = "Keep held"
-    /// Says whose times the card shows, so a send is never read as the phone's fetch.
-    static let scopeNote = "These times are this Mac's own sends and reads. The phone shows its own last fetch."
+    /// Says whose times the card shows, so a send is never read as a device's fetch.
+    static let scopeNote = "These times are this Mac's own sends and reads. Each device shows its own last fetch."
 
     let phase: Phase
     let headline: String
@@ -117,7 +117,7 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
             return Self(.sendFailed, "Send failed. \(kept).", tone: .failure, canSyncNow: true)
         }
         if activity.checkFailed {
-            return Self(.checkFailed, "Reading phone changes failed. The next sync round retries.",
+            return Self(.checkFailed, "Reading device changes failed. The next sync round retries.",
                         tone: .failure, canSyncNow: true)
         }
         let reviewed = activity.accountReviewed ? "Account reviewed. " : ""
@@ -125,7 +125,7 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
             return Self(.pending, "\(reviewed)\(changes(unsent)) waiting to send", canSyncNow: true)
         }
         if let sent = activity.lastSentAt {
-            return Self(.sent, "Local changes sent at \(time(sent, now: now)). Phone fetch is separate.",
+            return Self(.sent, "Local changes sent at \(time(sent, now: now)). Devices fetch separately.",
                         tone: .positive, canSyncNow: true)
         }
         if activity.hasFinishedPass {
@@ -281,7 +281,7 @@ extension WiltedMacModel {
     var libraryPublicationSummary: String {
         WiltedPublicationAge.summary(librarySyncActivity.publication?.publishedAt, verified: libraryPublicationVerified)
     }
-    var libraryPublicationDetail: String { WiltedPublicationAge.detail(librarySyncActivity.publication?.publishedAt) }
+    var libraryPublicationDetail: String { WiltedPublicationAge.macDetail(librarySyncActivity.publication?.publishedAt) }
     var libraryPublicationQualifier: String? {
         WiltedPublicationAge.qualifier(verified: libraryPublicationVerified, pending: librarySyncActivity.isSyncing,
             failed: librarySyncActivity.sendFailed || librarySyncActivity.checkFailed, held: libraryAccountStatus?.needsReview == true)

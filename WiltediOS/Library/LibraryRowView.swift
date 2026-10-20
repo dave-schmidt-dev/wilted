@@ -23,8 +23,9 @@ struct LibraryRowView: View {
     var decisionStatus: LibraryDecisionStatus?
     var onDecision: (LibraryDecisionAction) -> Void = { _ in }
     var onCancelDecision: () -> Void = {}
-    /// Lets the checkpoint line speak for this phone once it has the episode loaded.
+    /// Lets the checkpoint line speak for this device once it has the episode loaded.
     var player: LibraryPlayer?
+    let deviceKind: String
     /// Where the listener is in the episode on any device (this phone or one synced from the Mac), and
     /// whether it is finished; the same data the car rows use.
     var progress: EpisodeProgress?
@@ -73,7 +74,7 @@ struct LibraryRowView: View {
                         .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
                         .accessibilityIdentifier("wilted-library-removal-\(row.id.rawValue)")
                 }
-                LibraryCheckpointLine(row: row, player: player, identifier: "wilted-library-checkpoint-\(row.id.rawValue)")
+                LibraryCheckpointLine(row: row, player: player, deviceKind: deviceKind, identifier: "wilted-library-checkpoint-\(row.id.rawValue)")
                 LibraryEpisodeActions(
                     row: row, media: media, isPlaying: isPlaying, onMedia: onMedia, canRequestAudio: canRequestAudio,
                     onPlay: onPlay, decisionActions: decisionActions, decisionStatus: decisionStatus,

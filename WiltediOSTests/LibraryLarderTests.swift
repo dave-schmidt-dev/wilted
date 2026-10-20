@@ -299,8 +299,8 @@ final class LibraryLarderTests: XCTestCase {
     }
 
     func testCheckpointLineSpeaksForThisPhoneOnceItHasTheEpisode() {
-        XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: true, position: 252), "Playing on this iPhone at 04:12")
-        XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: false, position: 3_725), "Paused on this iPhone at 1:02:05")
+        XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: true, position: 252, deviceKind: "iPhone"), "Playing on this iPhone at 04:12")
+        XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: false, position: 3_725, deviceKind: "iPhone"), "Paused on this iPhone at 1:02:05")
     }
 
     // MARK: toolbar
@@ -386,7 +386,7 @@ final class LibraryLarderTests: XCTestCase {
         let cue = LibraryToolbar.filterCue(.all, kind: .articles)
         XCTAssertTrue(cue.isActive)
         XCTAssertEqual(cue.label, "Filter: Articles")
-        XCTAssertEqual(LibraryToolbar.filterCue(.onPhone, kind: .audiobooks).label, "Filter: On phone · Audiobooks")
+        XCTAssertEqual(LibraryToolbar.filterCue(.onPhone, kind: .audiobooks).label, "Filter: Downloaded · Audiobooks")
         XCTAssertFalse(LibraryToolbar.filterCue(.all, kind: .all).isActive)
     }
 

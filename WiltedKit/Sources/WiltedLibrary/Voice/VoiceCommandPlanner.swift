@@ -21,7 +21,7 @@ public enum VoiceCommandPlanner {
                 case .match(let matchedShowTitle):
                     let showEpisodes = snapshot.downloaded.filter { sameShow($0.showTitle, matchedShowTitle) }
                     if showEpisodes.isEmpty {
-                        return VoicePlan(action: .none, dialog: "No \(matchedShowTitle) episodes are on your phone.")
+                        return VoicePlan(action: .none, dialog: "No \(matchedShowTitle) episodes are downloaded.")
                     }
                     if let playingEpisode = snapshot.nowPlaying?.episode,
                        sameShow(playingEpisode.showTitle, matchedShowTitle),
@@ -30,7 +30,7 @@ public enum VoiceCommandPlanner {
                             let nextEpisode = showEpisodes[currentIndex + 1]
                             return VoicePlan(action: .play(nextEpisode.id), dialog: "Playing \(nextEpisode.title).")
                         } else {
-                            return VoicePlan(action: .none, dialog: "That was the last \(matchedShowTitle) episode on your phone.")
+                            return VoicePlan(action: .none, dialog: "That was the last downloaded episode of \(matchedShowTitle).")
                         }
                     } else {
                         let firstEpisode = showEpisodes[0]
@@ -39,7 +39,7 @@ public enum VoiceCommandPlanner {
                 }
             } else {
                 if snapshot.downloaded.isEmpty {
-                    return VoicePlan(action: .none, dialog: "No episodes are on your phone.")
+                    return VoicePlan(action: .none, dialog: "No episodes are downloaded.")
                 }
                 if let playingEpisode = snapshot.nowPlaying?.episode,
                    let currentIndex = snapshot.downloaded.firstIndex(where: { $0.id == playingEpisode.id }) {
@@ -47,7 +47,7 @@ public enum VoiceCommandPlanner {
                         let nextEpisode = snapshot.downloaded[currentIndex + 1]
                         return VoicePlan(action: .play(nextEpisode.id), dialog: "Playing \(nextEpisode.title).")
                     } else {
-                        return VoicePlan(action: .none, dialog: "That was the last episode on your phone.")
+                        return VoicePlan(action: .none, dialog: "That was the last downloaded episode.")
                     }
                 } else {
                     let firstEpisode = snapshot.downloaded[0]
@@ -60,7 +60,7 @@ public enum VoiceCommandPlanner {
 
         case .playEpisodeByID(let id):
             guard let episode = snapshot.downloaded.first(where: { $0.id == id }) else {
-                return VoicePlan(action: .none, dialog: "That episode isn't on your phone.")
+                return VoicePlan(action: .none, dialog: "That episode isn't downloaded.")
             }
             return VoicePlan(action: .play(episode.id), dialog: "Playing \(episode.title).")
 
@@ -135,7 +135,7 @@ public enum VoiceCommandPlanner {
         case .listDownloaded:
             let count = snapshot.downloaded.count
             if count == 0 {
-                return VoicePlan(action: .none, dialog: "No episodes are on your phone.")
+                return VoicePlan(action: .none, dialog: "No episodes are downloaded.")
             }
             let prefixCount = min(count, spokenTitleLimit)
             var titles = snapshot.downloaded.prefix(prefixCount).map(\.title)
@@ -145,7 +145,7 @@ public enum VoiceCommandPlanner {
             }
             let listString = titles.joined(separator: ", ")
             let countString = count == 1 ? "1 episode" : "\(count) episodes"
-            return VoicePlan(action: .none, dialog: "\(countString) on your phone: \(listString).")
+            return VoicePlan(action: .none, dialog: "\(countString) downloaded: \(listString).")
 
         case .timeLeft:
             return planTimeLeft(snapshot: snapshot)
@@ -167,7 +167,7 @@ public enum VoiceCommandPlanner {
     private static func candidates(show: String?, snapshot: VoiceSnapshot) -> Candidates {
         guard let show else {
             if snapshot.downloaded.isEmpty {
-                return .stop(VoicePlan(action: .none, dialog: "No episodes are on your phone."))
+                return .stop(VoicePlan(action: .none, dialog: "No episodes are downloaded."))
             }
             return .episodes(snapshot.downloaded)
         }
@@ -179,7 +179,7 @@ public enum VoiceCommandPlanner {
         case .match(let matched):
             let episodes = snapshot.downloaded.filter { sameShow($0.showTitle, matched) }
             if episodes.isEmpty {
-                return .stop(VoicePlan(action: .none, dialog: "No \(matched) episodes are on your phone."))
+                return .stop(VoicePlan(action: .none, dialog: "No \(matched) episodes are downloaded."))
             }
             return .episodes(episodes)
         }
@@ -193,12 +193,12 @@ public enum VoiceCommandPlanner {
         }
         switch VoiceShowMatcher.match(title, among: episodes.map(\.title)) {
         case .none:
-            return VoicePlan(action: .none, dialog: "I can't find an episode called \(title) on your phone.")
+            return VoicePlan(action: .none, dialog: "I can't find a downloaded episode called \(title).")
         case .ambiguous(let titles):
             return VoicePlan(action: .none, dialog: "Did you mean \(titles[0]) or \(titles[1])?")
         case .match(let matched):
             guard let episode = episodes.first(where: { $0.title == matched }) else {
-                return VoicePlan(action: .none, dialog: "I can't find an episode called \(title) on your phone.")
+                return VoicePlan(action: .none, dialog: "I can't find a downloaded episode called \(title).")
             }
             return VoicePlan(action: .play(episode.id), dialog: "Playing \(episode.title).")
         }

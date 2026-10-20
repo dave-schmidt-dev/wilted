@@ -239,7 +239,7 @@ final class LibraryActionFirstTests: XCTestCase {
         stats.release()
         await pressing.value
         XCTAssertTrue(model.adds.isEmpty, "the Mac said no, so the row is taken back")
-        XCTAssertEqual(model.addNotice, LibraryAppModel.updateMacText)
+        XCTAssertEqual(model.addNotice, LibraryAppModel.updateMacText(deviceKind: model.deviceKind))
         XCTAssertEqual(sends.attempts, [], "the Mac gets no intent it does not apply")
         XCTAssertEqual(savedIDs(), [], "and nothing is left to send after a relaunch")
     }

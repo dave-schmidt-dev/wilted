@@ -57,7 +57,7 @@ final class LibraryRowInfoLinesTests: XCTestCase {
 
     private func hosted(_ episode: LibraryRow, namesShow: Bool = true, width: CGFloat = 390) -> HostedView<some View> {
         HostedView(
-            LibraryRowView(row: episode, media: .onPhone, onPlay: {}, showsShowName: namesShow).padding(16),
+            LibraryRowView(row: episode, media: .onPhone, onPlay: {}, deviceKind: "iPhone", showsShowName: namesShow).padding(16),
             size: CGSize(width: width, height: 400))
     }
 
@@ -114,12 +114,20 @@ final class LibraryRowInfoLinesTests: XCTestCase {
         let longShow = "An exceptionally long program name that keeps going across the entire metadata line"
         for width: CGFloat in [320, 390] {
             let capture = try PhoneLayoutCapture(
-                LibraryRowView(row: row(show: longShow), media: .onPhone, onPlay: {}), width: width, scheme: .light)
+                LibraryRowView(row: row(show: longShow), media: .onPhone, onPlay: {}, deviceKind: "iPhone"), width: width, scheme: .light)
             let dateLine = try XCTUnwrap(capture.paintedLine(containing: dateText), "the date is whole: \(capture.text)")
             let durationLine = try XCTUnwrap(capture.paintedLine(containing: "10:00"), "the duration is whole: \(capture.text)")
             XCTAssertLessThan(dateLine.box.midY, durationLine.box.midY, "the date is under the show and duration at \(width)")
             XCTAssertFalse(dateLine.text.contains("10:00"), "the date has a line to itself: \(dateLine.text)")
             XCTAssertFalse(durationLine.text.contains(dateText), "the duration's line holds no date: \(durationLine.text)")
         }
+    }
+
+    /// On an iPad the checkpoint line names the iPad, never "this iPhone".
+    func testCheckpointLineOnAnIPadNamesTheIPad() {
+        XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: true, position: 252, deviceKind: "iPad"),
+                       "Playing on this iPad at 04:12")
+        XCTAssertEqual(LibraryCheckpointLine.localText(isPlaying: false, position: 3_725, deviceKind: "iPad"),
+                       "Paused on this iPad at 1:02:05")
     }
 }

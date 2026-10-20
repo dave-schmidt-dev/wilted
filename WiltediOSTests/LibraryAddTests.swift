@@ -14,14 +14,15 @@ final class LibraryAddTests: XCTestCase {
     private let feed = URL(string: "https://feeds.example.com/show.xml")!
     private let page = URL(string: "https://example.com/story")!
 
-    private func makeModel(timeout: TimeInterval = 90, now: @escaping @Sendable () -> Date = { Date() }) -> LibraryAppModel {
+    private func makeModel(timeout: TimeInterval = 90, deviceKind: String = "iPhone",
+                           now: @escaping @Sendable () -> Date = { Date() }) -> LibraryAppModel {
         let mirror = FileManager.default.temporaryDirectory.appendingPathComponent("add-mirror-\(UUID()).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: mirror) }
         let suite = "library-add-tests-\(UUID().uuidString)"
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
         return LibraryAppModel(
             transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
-            store: FileLibraryStore(url: mirror), deviceID: "phone",
+            store: FileLibraryStore(url: mirror), deviceID: "phone", deviceKind: deviceKind,
             decisionTiming: LibraryDecisionTiming(confirmationTimeout: timeout),
             preferences: UserDefaults(suiteName: suite)!, now: now, timeZone: TimeZone(identifier: "UTC")!)
     }
@@ -122,10 +123,13 @@ final class LibraryAddTests: XCTestCase {
     func testEveryReasonTheMacGivesHasWords() {
         let reasons = ["alreadyFollowed", "alreadyAdded", "notAPodcastFeed", "isAFeed", "noAudio", "failed",
                        "unsupportedAction", "expired", nil, "somethingNew"]
-        let texts = reasons.map { LibraryAppModel.addRejectionText($0) }
+        let texts = reasons.map { LibraryAppModel.addRejectionText($0, deviceKind: "iPhone") }
         XCTAssertEqual(Set(texts).count, texts.count - 1, "the unknown and the missing reason share the opaque line")
-        XCTAssertEqual(LibraryAppModel.addRejectionText("unsupportedAction"), "Update Wilted on your Mac to add from iPhone")
-        XCTAssertEqual(LibraryAppModel.addRejectionText("somethingNew"), "Your Mac declined it.")
+        XCTAssertEqual(LibraryAppModel.addRejectionText("unsupportedAction", deviceKind: "iPhone"),
+                       "Update Wilted on your Mac to add from iPhone")
+        XCTAssertEqual(LibraryAppModel.addRejectionText("unsupportedAction", deviceKind: "iPad"),
+                       "Update Wilted on your Mac to add from iPad")
+        XCTAssertEqual(LibraryAppModel.addRejectionText("somethingNew", deviceKind: "iPad"), "Your Mac declined it.")
         XCTAssertTrue(texts.allSatisfy { !$0.isEmpty && !$0.contains("Reason") })
     }
 
@@ -162,6 +166,16 @@ final class LibraryAddTests: XCTestCase {
         XCTAssertEqual(model.addCapabilityNotice, "Wilted could not check your Mac. Try again in a moment.")
         model.macAddCheckFailed = false
         XCTAssertEqual(model.addCapabilityNotice, "Update Wilted on your Mac to add from iPhone")
+    }
+
+    /// An iPad's update message names the iPad, the device the person is adding from.
+    func testAnIPadWithAnOldMacIsToldToUpdateToAddFromIPad() async throws {
+        let model = makeModel(deviceKind: "iPad")
+        await model.addToMac(.subscribe(feed), title: "The Show")
+        let sent = try await intents()
+        XCTAssertTrue(sent.isEmpty)
+        XCTAssertEqual(model.addNotice, "Update Wilted on your Mac to add from iPad")
+        XCTAssertEqual(model.addCapabilityNotice, "Update Wilted on your Mac to add from iPad")
     }
 
     func testALinkWithCredentialsOrNoHTTPSIsRefusedBeforeAnythingIsSent() async throws {

@@ -12,9 +12,13 @@ enum LibrarySettingsFormat {
         let identifier: String
     }
 
-    /// The phone's own three totals are titled for this iPhone: the Mac's seven include work the
-    /// phone never does, so the shared "Lifetime statistics" title invited the wrong comparison (CI-8).
-    static let phoneStatisticsTitle = "This iPhone"
+    /// This device's own three totals are titled for it ("This iPad", "This iPhone"): the Mac's seven
+    /// include work the device never does, so the shared "Lifetime statistics" title invited the
+    /// wrong comparison (CI-8).
+    static func statisticsTitle(deviceKind: String) -> String { "This \(deviceKind)" }
+
+    /// The per-device interruptions switch: it covers only the device it is set on.
+    static func speakInterruptionsLabel(deviceKind: String) -> String { "Speak interruptions on this \(deviceKind)" }
 
     /// This phone's three lifetime rows. Zero reads as "None" so a fresh install is not a wall of zeros.
     static func phoneStatRows(_ stats: LibraryPhoneStats) -> [StatRow] {
@@ -126,9 +130,11 @@ enum LibrarySettingsFormat {
         summary.tone == .failure && summary.detail != nil
     }
 
-    /// Labels the idle fetch time as this phone's own read. The phone cannot see what the Mac has
+    /// Labels the idle fetch time as this device's own read. The device cannot see what the Mac has
     /// published since, so nothing here claims the two match.
-    static let phoneFetchNote = "Fetch time reports this phone’s last successful library read."
+    static func fetchNote(deviceKind: String) -> String {
+        "Fetch time reports this \(deviceKind)’s last successful library read."
+    }
 
     /// One line for the sync row: the status, and, once idle after a fetch, when this phone last fetched.
     static func syncLine(_ summary: SyncSummary, lastRefresh: Date?) -> String {
@@ -138,11 +144,11 @@ enum LibrarySettingsFormat {
 
     /// Status in words, so state never rests on color alone. Precedence: an account review blocks
     /// everything, then iCloud rate limiting, then a running fetch, then the last error, then whether
-    /// this phone has fetched. A fetch says nothing about the Mac's newest publication, so the idle
-    /// state names the phone's fetch and never claims the library matches the Mac.
+    /// this device has fetched. A fetch says nothing about the Mac's newest publication, so the idle
+    /// state names this device's fetch and never claims the library matches the Mac.
     static func sync(
         isRefreshing: Bool, quarantined: Bool, error: String?, lastRefresh: Date?, throttleNotice: String? = nil,
-        throttleRetrying: Bool = false
+        throttleRetrying: Bool = false, deviceKind: String
     ) -> SyncSummary {
         if quarantined {
             return SyncSummary(status: "Needs review", detail: "The iCloud account changed.", tone: .caution)
@@ -154,7 +160,9 @@ enum LibrarySettingsFormat {
         }
         if isRefreshing { return SyncSummary(status: "Syncing", detail: nil, tone: .active) }
         if let error { return SyncSummary(status: "Problem", detail: error, tone: .failure) }
-        if lastRefresh != nil { return SyncSummary(status: "Fetched", detail: phoneFetchNote, tone: .positive) }
+        if lastRefresh != nil {
+            return SyncSummary(status: "Fetched", detail: fetchNote(deviceKind: deviceKind), tone: .positive)
+        }
         return SyncSummary(status: "Not synced yet", detail: nil, tone: .neutral)
     }
 }

@@ -70,13 +70,13 @@ enum LibraryMediaState: Equatable, Sendable {
     /// Status line without color or icon, so state never depends on either. `elapsed` is seconds since start.
     func statusText(elapsed: TimeInterval = 0) -> String {
         switch self {
-        case .available: "Not on phone"
+        case .available: "Not downloaded"
         case let .requested(_, retry?, _): "Retrying (\(retry.attempt) of \(retry.attempts))"
         case let .requested(_, _, stage): "\(stage.text) · \(LibraryClockFormat.duration(elapsed))"
         case let .downloading(bytes, total, _):
             "Downloading \(Self.size(bytes)) of \(Self.size(total)) · \(LibraryClockFormat.duration(elapsed))\(Self.rateSuffix(bytes: bytes, total: total, elapsed: elapsed))"
         case .verifying: "Verifying"
-        case .onPhone: "On phone"
+        case .onPhone: "Downloaded"
         case let .failed(reason): "Failed: \(reason)"
         case .notPrepared: "Not prepared on Mac"
         }
@@ -431,16 +431,16 @@ extension LibraryAppModel {
         case .byteCountMismatch: "The file was the wrong size."
         case .hashMismatch: text(for: MediaFetchFailure.mismatch)
         case .deliveryFailed: text(for: reason.fetchFailure ?? .other)
-        case .cacheFailed: "The audio could not be saved on this phone."
+        case .cacheFailed: "The audio could not be saved."
         }
     }
 
     static func text(for failure: MediaFetchFailure) -> String {
         switch failure {
-        case .offline: "The phone could not reach iCloud. Check the connection and try again."
+        case .offline: "Could not reach iCloud. Check the connection and try again."
         case .macNotAnswering: "The Mac did not send this episode. Open Wilted on the Mac and try again."
         case .mismatch: "The file did not match the Mac's copy."
-        case .tooLarge: "The episode is too large to send to the phone."
+        case .tooLarge: "The episode is too large to download."
         case .other: "The download failed. Try again."
         }
     }

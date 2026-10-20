@@ -87,7 +87,7 @@ final class LibraryContinuationTests: XCTestCase {
             let age = LibraryContinuationAge(source: source, now: now, clockOffset: offset)
             XCTAssertNil(age.seconds)
             XCTAssertFalse(age.isStale)
-            XCTAssertEqual(age.text, "Mac playback position age uncertain.")
+            XCTAssertEqual(age.text, "Playback position age uncertain.")
         }
     }
 
@@ -96,6 +96,97 @@ final class LibraryContinuationTests: XCTestCase {
         let own = try observed(epoch: 2, device: "phone")
         XCTAssertNil(LibraryContinuationPlanner.plan(records: LibraryDeviceRecords(nowPlaying: [mac, own]),
             deviceID: "phone", cachedRevisions: [entryID: revision], durations: [:], now: now, clockOffset: 0))
+    }
+
+    func testEveryRemoteDeviceIdentifierGetsTheSameNeutralReadyCopyAndCheckpoint() throws {
+        let clock = LibraryClockFormat(timeZone: TimeZone(secondsFromGMT: 0)!)
+        var details = Set<String>()
+        var actions = Set<String>()
+        var checkpoints = Set<String>()
+        // Records carry only deviceID, so these identifiers are opaque and do not prove a family.
+        for device in ["mac", "iphone", "ipad"] {
+            for playing in [true, false] {
+                let source = try observed(date: 9_990, playing: playing, device: device)
+                let continuation = try plan([source], cached: revision)
+                XCTAssertEqual(continuation.source, source)
+                guard case let .ready(_, position, _, wasPlaying, sourceDeviceID, _) = continuation else {
+                    return XCTFail("expected ready for \(device)")
+                }
+                XCTAssertEqual(position, playing ? 130 : 120)
+                XCTAssertEqual(wasPlaying, playing)
+                XCTAssertEqual(sourceDeviceID, device)
+                let state = playing ? "Playing" : "Paused"
+                let detail = LibraryContinueBanner.detail(continuation, media: .available)
+                let resumeTime = playing ? "02:10" : "02:00"
+                XCTAssertEqual(detail, "\(state) on another device at \(resumeTime)")
+                let action = try XCTUnwrap(LibraryContinueBanner.actionTitle(continuation, media: .available))
+                XCTAssertEqual(action, "Continue listening")
+                let checkpoint = LibraryRowBuilder.checkpointText(source, clock: clock)
+                XCTAssertEqual(checkpoint, "\(state) on another device at 02:00 (as of 02:46)")
+                details.insert(detail)
+                actions.insert(action)
+                checkpoints.insert(checkpoint)
+            }
+        }
+        XCTAssertEqual(details, ["Playing on another device at 02:10", "Paused on another device at 02:00"])
+        XCTAssertEqual(actions, ["Continue listening"])
+        XCTAssertEqual(checkpoints, ["Playing on another device at 02:00 (as of 02:46)",
+                                     "Paused on another device at 02:00 (as of 02:46)"])
+        let own = try observed(epoch: 2, device: "phone")
+        for device in ["mac", "iphone", "ipad"] {
+            let remote = try observed(epoch: 1, device: device)
+            XCTAssertNil(LibraryContinuationPlanner.plan(records: LibraryDeviceRecords(nowPlaying: [remote, own]),
+                deviceID: "phone", cachedRevisions: [entryID: revision], durations: [:], now: now, clockOffset: 0))
+        }
+    }
+
+    func testEveryRemoteDeviceIdentifierGetsTheSameNeutralMismatchAndAgeCopy() throws {
+        let expectedReason = "The download is a different version of the episode than the one playing on another device. "
+            + "Delete the download, then get the Mac's version."
+        var reasons = Set<String>()
+        var staleTexts = Set<String>()
+        var uncertainTexts = Set<String>()
+        var ordinaryTexts = Set<String>()
+        for device in ["mac", "iphone", "ipad"] {
+            let source = try observed(device: device)
+            let continuation = try plan([source], cached: RevisionID(rawValue: "different"))
+            guard case let .refused(_, reason, retained) = continuation else {
+                return XCTFail("expected refusal for \(device)")
+            }
+            XCTAssertEqual(retained, source)
+            XCTAssertEqual(reason, expectedReason)
+            XCTAssertTrue(reason.contains("playing on another device"))
+            XCTAssertTrue(reason.contains("Mac's version"))
+            XCTAssertFalse(reason.contains("Mac is playing"))
+            reasons.insert(reason)
+
+            let age = LibraryContinuationAge(source: source, now: now, clockOffset: 0)
+            XCTAssertEqual(age.seconds, 200)
+            XCTAssertTrue(age.isStale)
+            XCTAssertTrue(age.text.hasPrefix("Playback position: "))
+            XCTAssertTrue(age.text.hasSuffix("."))
+            for family in ["Mac", "iPhone", "iPad"] {
+                XCTAssertFalse(age.text.contains(family), age.text)
+                XCTAssertFalse(LibraryContinuationAge.staleText.contains(family), LibraryContinuationAge.staleText)
+            }
+            staleTexts.insert(LibraryContinuationAge.staleText)
+
+            let uncertainSource = try observed(date: 10_001, device: device)
+            let uncertain = LibraryContinuationAge(source: uncertainSource, now: now, clockOffset: 0)
+            XCTAssertEqual(uncertain.text, "Playback position age uncertain.")
+            uncertainTexts.insert(uncertain.text)
+
+            let ordinarySource = try observed(date: 1_000, playing: false, device: device)
+            let ordinary = LibraryContinuationAge(source: ordinarySource, now: now, clockOffset: 0)
+            XCTAssertEqual(ordinary.seconds, 9_000)
+            XCTAssertFalse(ordinary.isStale)
+            XCTAssertTrue(ordinary.text.hasPrefix("Playback position: "))
+            ordinaryTexts.insert(ordinary.text)
+        }
+        XCTAssertEqual(reasons, [expectedReason])
+        XCTAssertEqual(staleTexts, ["Playback on another device may be out of date."])
+        XCTAssertEqual(uncertainTexts, ["Playback position age uncertain."])
+        XCTAssertEqual(ordinaryTexts.count, 1)
     }
 
     func testRefusalOverrideAndFreshOfferMismatchKeepWinningServerRecord() async throws {
@@ -139,9 +230,10 @@ final class LibraryContinuationTests: XCTestCase {
             for scheme: ColorScheme in [.light, .dark] {
                 let capture = try render(continuation, width: width, scheme: scheme)
                 XCTAssertTrue(capture.compactText.contains(ContinuationCapture.compact(title)), capture.text)
-                XCTAssertTrue(capture.compactText.contains("continuefrommac"), capture.text)
-                XCTAssertTrue(capture.compactText.contains("macplaybackposition"), capture.text)
-                XCTAssertTrue(capture.compactText.contains("macplaybackmaybeoutofdate"), capture.text)
+                XCTAssertTrue(capture.compactText.contains("continuelistening"), capture.text)
+                XCTAssertTrue(capture.compactText.contains("pausedonanotherdevice"), capture.text)
+                XCTAssertTrue(capture.compactText.contains("playbackposition"), capture.text)
+                XCTAssertTrue(capture.compactText.contains("playbackonanotherdevicemaybeoutofdate"), capture.text)
                 capture.attach("continue-stale-\(Int(width))-\(scheme)")
                 let hosted = HostedView(LibraryContinueBannerContent(continuation: continuation, title: title,
                     media: .onPhone, message: nil, now: now, clockOffset: 0, onContinue: {}),
@@ -161,14 +253,16 @@ final class LibraryContinuationTests: XCTestCase {
             XCTAssertTrue(capture.compactText.contains(ContinuationCapture.compact(title)), capture.text)
             XCTAssertTrue(capture.compactText.contains("ageuncertain"), capture.text)
             XCTAssertTrue(capture.compactText.contains("getaudioandcontinue"), capture.text)
+            XCTAssertTrue(capture.compactText.contains("gettheaudiofromyourmac"), capture.text)
             XCTAssertFalse(capture.compactText.contains("outofdate"), capture.text)
             capture.attach("continue-future-\(Int(width))-\(scheme)")
             let refused = try plan([observed()], cached: RevisionID(rawValue: "wrong"))
             let refusal = try render(refused, width: width, scheme: scheme)
             XCTAssertTrue(refusal.compactText.contains("differentversion"), refusal.text)
-            XCTAssertTrue(refusal.compactText.contains("macplaybackposition"), refusal.text)
+            XCTAssertTrue(refusal.compactText.contains("playingonanotherdevice"), refusal.text)
+            XCTAssertTrue(refusal.compactText.contains("playbackposition"), refusal.text)
             XCTAssertTrue(refusal.compactText.contains("outofdate"), refusal.text)
-            XCTAssertFalse(refusal.compactText.contains("continuefrommac"), refusal.text)
+            XCTAssertFalse(refusal.compactText.contains("continuelistening"), refusal.text)
             refusal.attach("continue-refused-\(Int(width))-\(scheme)")
         }
     }
@@ -178,14 +272,15 @@ final class LibraryContinuationTests: XCTestCase {
         XCTAssertNil(LibraryContinueBanner.actionTitle(missing, media: .available, canRequest: false))
         XCTAssertEqual(LibraryContinueBanner.actionTitle(missing, media: .available), "Get audio and continue")
         XCTAssertEqual(LibraryContinueBanner.detail(missing, media: .available, canRequest: false),
-                       "On the Mac. Connecting to your Mac first.")
-        XCTAssertEqual(LibraryContinueBanner.detail(missing, media: .available), "On the Mac. Get the audio, then continue.")
+                       "On another device. Connecting to your Mac first.")
+        XCTAssertEqual(LibraryContinueBanner.detail(missing, media: .available),
+                       "On another device. Get the audio from your Mac, then continue.")
     }
 
     func testMessageOnlyBannerAndInFlightAudioPreserveExistingActionSemantics() throws {
         let capture = try render(nil, width: 320, scheme: .light, message: "Handoff is unavailable. Check your connection.")
         XCTAssertTrue(capture.compactText.contains("handoffisunavailable"), capture.text)
-        XCTAssertFalse(capture.compactText.contains("macplaybackposition"), capture.text)
+        XCTAssertFalse(capture.compactText.contains("playbackposition"), capture.text)
         let missing = try plan([observed()])
         XCTAssertNil(LibraryContinueBanner.actionTitle(missing, media: .requested(since: now)))
         XCTAssertEqual(LibraryContinueBanner.actionTitle(missing, media: .available), "Get audio and continue")

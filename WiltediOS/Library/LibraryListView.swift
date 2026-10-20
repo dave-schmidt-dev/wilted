@@ -222,7 +222,7 @@ struct LibraryListView: View {
             decisionStatus: model.decisionStatus(for: row.id),
             onDecision: { model.performDecision($0, entryID: row.id) },
             onCancelDecision: { model.cancelDecision(entryID: row.id) },
-            player: player, progress: progress,
+            player: player, deviceKind: model.deviceKind, progress: progress,
             isCompleted: LibraryListing.completionDate(row, finished: finished) != nil,
             voiceOverActions: voiceOverActions(for: row),
             showsShowName: showsShowName)

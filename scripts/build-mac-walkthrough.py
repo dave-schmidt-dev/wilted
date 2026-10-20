@@ -343,8 +343,8 @@ def build(captures, commit, date_iso, date_human, previous):
             "(<code>wilted-automation-off-peak-start</code>, <code>wilted-automation-off-peak-end</code>) "
             "appears only for that processing choice. Sync (<code>wilted-sync-controls</code>) is the library "
             "publisher&rsquo;s card: its status (<code>wilted-sync-status</code>) reads &ldquo;Local changes sent "
-            "at 10:15 AM. Phone fetch is separate.&rdquo;, Sent from this Mac "
-            "(<code>wilted-sync-last-send</code>) and Phone changes read (<code>wilted-sync-last-check</code>) "
+            "at 10:15 AM. Devices fetch separately.&rdquo;, Sent from this Mac "
+            "(<code>wilted-sync-last-send</code>) and Device changes read (<code>wilted-sync-last-check</code>) "
             "are this Mac&rsquo;s own times, which the scope note (<code>wilted-sync-scope-note</code>) says, and "
             "one Sync now (<code>wilted-sync-now</code>) runs a round at once.",
             captures),

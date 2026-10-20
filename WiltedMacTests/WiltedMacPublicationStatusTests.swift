@@ -19,7 +19,7 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
                 .environment(\.wiltedTextScale, scale)
             model.librarySyncActivity.publication = nil
             let unknown = try capturePublicationEvidence(sidebar, model: model, size: CGSize(width: width, height: 700), name: "isolated-unknown-\(scale)")
-            XCTAssertTrue(unknown.localizedCaseInsensitiveContains("iPhone sync status unknown"), "actual width=\(width): \(unknown)")
+            XCTAssertTrue(unknown.localizedCaseInsensitiveContains("Device sync status unknown"), "actual width=\(width): \(unknown)")
             model.librarySyncActivity.publication = try LibraryPublication(id: "sidebar-known",
                 publishedAt: Date().addingTimeInterval(-300), writerDeviceID: "synthetic-mac")
             let known = try capturePublicationEvidence(sidebar, model: model, size: CGSize(width: width, height: 700), name: "isolated-known-\(scale)")
@@ -28,7 +28,7 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
                 held: model.libraryAccountStatus?.needsReview == true)
             XCTAssertTrue(known.localizedCaseInsensitiveContains(expected), "actual width=\(width), expected=\(expected): \(known)")
             XCTAssertFalse(model.libraryPublicationVerified)
-            XCTAssertTrue(known.localizedCaseInsensitiveContains("iPhone sync status unknown"), known)
+            XCTAssertTrue(known.localizedCaseInsensitiveContains("Device sync status unknown"), known)
         }
         await model.close()
     }
@@ -50,16 +50,16 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
     }
     func testStartupDoesNotHideUnknownAuthorPublicationAge() async throws {
         let text = try await rootText()
-        XCTAssertTrue(text.contains("iphone sync status unknown"), text)
+        XCTAssertTrue(text.contains("device sync status unknown"), text)
     }
     func testPendingRoundDisclosesSavedLibrary() async throws {
         let text = try await rootText(pending: true)
-        XCTAssertTrue(text.contains("iphone sync status unknown"), text)
+        XCTAssertTrue(text.contains("device sync status unknown"), text)
         XCTAssertTrue(WiltedPublicationAge.qualifier(verified: false, pending: true, failed: false, held: false)?.contains("pending") == true)
     }
     func testFailedRoundDisclosesSavedLibrary() async throws {
         let text = try await rootText(failed: true)
-        XCTAssertTrue(text.contains("iphone sync status unknown"), text)
+        XCTAssertTrue(text.contains("device sync status unknown"), text)
         XCTAssertTrue(WiltedPublicationAge.qualifier(verified: false, pending: false, failed: true, held: false)?.contains("failed") == true)
     }
     func testColdBoundReceiptIsShownSavedUnverifiedWithoutOpeningAccountGate() async throws {
@@ -77,7 +77,7 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
         await model.librarySyncController?.publicationHydration?.value
         XCTAssertEqual(model.librarySyncActivity.publication, receipt)
         let text = try capturePublicationEvidence(WiltedMacRootView(model: model), model: model, size: CGSize(width: 1400, height: 900), name: "root-cold").lowercased()
-        XCTAssertTrue(text.contains("iphone sync status unknown"), text)
+        XCTAssertTrue(text.contains("device sync status unknown"), text)
         XCTAssertTrue(model.libraryPublicationQualifier?.contains("unverified") == true)
         XCTAssertFalse(model.libraryAccount?.gate.isOpen ?? true)
         let durable = try await WiltedMacLibraryPublicationStore.store(store).load(owner: owner)
@@ -108,20 +108,20 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
         let old = WiltedPublicationAge.summary(now.addingTimeInterval(-100), verified: false, now: now)
         XCTAssertTrue(old.hasPrefix("Saved Mac last published"))
         XCTAssertFalse(old.lowercased().contains("fresh"))
-        XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(nil, verified: true, held: false, now: now), "iPhone sync status unknown")
-        XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(now.addingTimeInterval(1), verified: true, held: false, now: now), "iPhone sync status unknown")
+        XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(nil, verified: true, held: false, now: now), "Device sync status unknown")
+        XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(now.addingTimeInterval(1), verified: true, held: false, now: now), "Device sync status unknown")
     }
     func testSidebarPublicationRequiresVerifiedUnheldOwnerEvenWithSavedTime() {
         let now = Date(timeIntervalSince1970: 2000)
         let saved = now.addingTimeInterval(-300)
-        let unknown = "iPhone sync status unknown"
+        let unknown = "Device sync status unknown"
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(saved, verified: false, held: false, now: now), unknown)
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(saved, verified: true, held: true, now: now), unknown)
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(saved, verified: false, held: true, now: now), unknown)
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(saved, verified: true, held: false, now: now),
-                       "Sent to iPhone \(formatter.localizedString(for: saved, relativeTo: now))")
+                       "Sent to devices \(formatter.localizedString(for: saved, relativeTo: now))")
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(nil, verified: true, held: false, now: now), unknown)
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(now.addingTimeInterval(1), verified: true, held: false, now: now), unknown)
     }
@@ -145,7 +145,7 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
                     attachment.lifetime = .keepAlways; add(attachment)
                     let text = try capturePublicationEvidence(root, model: model, size: CGSize(width: width, height: 900), name: "root-\(context)-\(scale)-\(Int(width))-\(scheme)", fullSidebar: width == 1400).lowercased()
                     let expected = model.libraryPublicationVerified && model.libraryAccountStatus?.needsReview != true
-                        && model.librarySyncActivity.publication != nil ? "sent to iphone" : "iphone sync status unknown"
+                        && model.librarySyncActivity.publication != nil ? "sent to devices" : "device sync status unknown"
                     // The icon rail has a status glyph; native help and accessibility retain the exact status.
                     if width == 1400 { XCTAssertTrue(text.contains(expected), text) }
                     XCTAssertEqual(bitmap.pixelsWide, Int(width))
@@ -204,8 +204,8 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
         try VNImageRequestHandler(cgImage: XCTUnwrap(doubled.cgImage)).perform([request])
         let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
         if fullSidebar {
-            let line = try XCTUnwrap(lines.first(where: { $0.localizedCaseInsensitiveContains("iphone") }),
-                                     "The actual full sidebar must draw a recognized iPhone footer line: \(lines)")
+            let line = try XCTUnwrap(lines.first(where: { $0.localizedCaseInsensitiveContains("device") }),
+                                     "The actual full sidebar must draw a recognized device sync footer line: \(lines)")
             XCTAssertFalse(line.contains("...") || line.contains("…"), "Actual pixels must not truncate the footer: \(line)")
         }
         let ocr = XCTAttachment(string: lines.joined(separator: "\n"))

@@ -50,13 +50,13 @@ final class VoicePlayLookupPlannerTests: XCTestCase {
     func testEpisodeTitleScopedToShowIgnoresOtherShows() {
         let result = plan(.playEpisode(title: "Tide Pools", show: "Planet Money"))
         XCTAssertEqual(result.action, .none)
-        XCTAssertEqual(result.dialog, "I can't find an episode called Tide Pools on your phone.")
+        XCTAssertEqual(result.dialog, "I can't find a downloaded episode called Tide Pools.")
     }
 
     func testEpisodeTitleNoMatch() {
         let result = plan(.playEpisode(title: "Quantum Sandwiches", show: nil))
         XCTAssertEqual(result.action, .none)
-        XCTAssertEqual(result.dialog, "I can't find an episode called Quantum Sandwiches on your phone.")
+        XCTAssertEqual(result.dialog, "I can't find a downloaded episode called Quantum Sandwiches.")
     }
 
     func testEpisodeTitleAmbiguousAcrossShows() {
@@ -80,7 +80,7 @@ final class VoicePlayLookupPlannerTests: XCTestCase {
         )
         XCTAssertEqual(
             plan(.playEpisode(title: "x", show: "Empty Show")).dialog,
-            "No Empty Show episodes are on your phone."
+            "No Empty Show episodes are downloaded."
         )
         let ambiguous = VoiceSnapshot(
             downloaded: [episode("a", "One", "The Daily"), episode("b", "Two", "Daily")],
@@ -96,7 +96,7 @@ final class VoicePlayLookupPlannerTests: XCTestCase {
         let empty = VoiceSnapshot(downloaded: [], knownShowTitles: [], nowPlaying: nil)
         let result = plan(.playEpisode(title: "Tide Pools", show: nil), empty)
         XCTAssertEqual(result.action, .none)
-        XCTAssertEqual(result.dialog, "No episodes are on your phone.")
+        XCTAssertEqual(result.dialog, "No episodes are downloaded.")
     }
 
     func testEpisodePlayingOneStillPlansPlay() {
@@ -113,7 +113,7 @@ final class VoicePlayLookupPlannerTests: XCTestCase {
         XCTAssertEqual(plan(.playEpisodeByID(item("b")), snap).action, .play(item("b")))
         let missing = plan(.playEpisodeByID(item("zzz")), snap)
         XCTAssertEqual(missing.action, .none)
-        XCTAssertEqual(missing.dialog, "That episode isn't on your phone.")
+        XCTAssertEqual(missing.dialog, "That episode isn't downloaded.")
     }
 
     // MARK: playLatest
@@ -131,11 +131,11 @@ final class VoicePlayLookupPlannerTests: XCTestCase {
 
     func testLatestShowUnknownAmbiguousOrEmpty() {
         XCTAssertEqual(plan(.playLatest(show: "Nonexistent Pod")).dialog, "I can't find a show called Nonexistent Pod.")
-        XCTAssertEqual(plan(.playLatest(show: "Empty Show")).dialog, "No Empty Show episodes are on your phone.")
+        XCTAssertEqual(plan(.playLatest(show: "Empty Show")).dialog, "No Empty Show episodes are downloaded.")
         let empty = VoiceSnapshot(downloaded: [], knownShowTitles: [], nowPlaying: nil)
         let result = plan(.playLatest(show: nil), empty)
         XCTAssertEqual(result.action, .none)
-        XCTAssertEqual(result.dialog, "No episodes are on your phone.")
+        XCTAssertEqual(result.dialog, "No episodes are downloaded.")
     }
 
     func testLatestWithUnknownDatesFallsBackToFirstRow() {
@@ -162,10 +162,10 @@ final class VoicePlayLookupPlannerTests: XCTestCase {
 
     func testPlayFirstShowUnknownAmbiguousOrEmpty() {
         XCTAssertEqual(plan(.playFirst(show: "Nonexistent Pod")).dialog, "I can't find a show called Nonexistent Pod.")
-        XCTAssertEqual(plan(.playFirst(show: "Empty Show")).dialog, "No Empty Show episodes are on your phone.")
+        XCTAssertEqual(plan(.playFirst(show: "Empty Show")).dialog, "No Empty Show episodes are downloaded.")
         let empty = VoiceSnapshot(downloaded: [], knownShowTitles: [], nowPlaying: nil)
         let result = plan(.playFirst(show: nil), empty)
         XCTAssertEqual(result.action, .none)
-        XCTAssertEqual(result.dialog, "No episodes are on your phone.")
+        XCTAssertEqual(result.dialog, "No episodes are downloaded.")
     }
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 import WiltedLibrary
 
-/// "Continue from Mac": shown above the mini-player when another device outranks this phone.
+/// "Continue listening": shown above the mini-player when another device outranks this phone.
 /// Says what it will do in words, including the resumed position, and spells out a refusal.
 struct LibraryContinueBanner: View {
     @ObservedObject var model: LibraryAppModel
@@ -89,10 +89,11 @@ struct LibraryContinueBannerContent: View {
     static func detail(_ continuation: LibraryContinuation, media: LibraryMediaState, canRequest: Bool = true) -> String {
         switch continuation {
         case let .ready(_, position, _, wasPlaying, _, _):
-            "\(wasPlaying ? "Playing" : "Paused") on Mac at \(LibraryClockFormat.duration(position))"
+            "\(wasPlaying ? "Playing" : "Paused") on another device at \(LibraryClockFormat.duration(position))"
         case .needsAudio:
             media.isInFlight ? media.statusText()
-                : canRequest ? "On the Mac. Get the audio, then continue." : "On the Mac. Connecting to your Mac first."
+                : canRequest ? "On another device. Get the audio from your Mac, then continue."
+                : "On another device. Connecting to your Mac first."
         case let .refused(_, reason, _): reason
         }
     }
@@ -101,7 +102,7 @@ struct LibraryContinueBannerContent: View {
     /// this device yet, so a request for audio could not be answered.
     static func actionTitle(_ continuation: LibraryContinuation, media: LibraryMediaState, canRequest: Bool = true) -> String? {
         switch continuation {
-        case .ready: "Continue from Mac"
+        case .ready: "Continue listening"
         case .needsAudio: media.isInFlight || !canRequest ? nil : "Get audio and continue"
         case .refused: nil
         }
