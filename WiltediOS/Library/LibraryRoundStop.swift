@@ -1,5 +1,6 @@
 import Foundation
 import os
+import WiltedCloudKit
 
 private let roundLog = Logger(subsystem: "com.zerodelta.wilted", category: "LibrarySyncRound")
 
@@ -32,6 +33,10 @@ enum LibraryRoundStop: String, Equatable {
 
     /// Logs a failed round by error domain and code only; descriptions can carry record names.
     static func logFailure(_ error: any Error) {
+        if case let .cloudKit(code, _)? = error as? CloudKitSyncError {
+            roundLog.notice("Sync round failed: CloudKit error \(code, privacy: .public)")
+            return
+        }
         let ns = error as NSError
         roundLog.notice("Sync round failed: \(ns.domain, privacy: .public) \(ns.code, privacy: .public)")
     }

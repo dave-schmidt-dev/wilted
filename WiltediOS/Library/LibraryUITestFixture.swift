@@ -511,6 +511,7 @@ final class LibraryUITestPressureTransport: LibraryTransport, @unchecked Sendabl
     }
 
     func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func verifyOwner() async { await inner.verifyOwner() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
         let isFirst = lock.withLock {

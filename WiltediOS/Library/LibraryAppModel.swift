@@ -363,6 +363,12 @@ final class LibraryAppModel: ObservableObject {
         let priorQueue = Set(decisionContent.queue.map(\.entryID))
         let roundStore = store, roundReconciler = reconciler
         let generation = await transport.operationGeneration()
+        // A relaunch restores the engine without an account event, so the saved library's owner is unverified
+        // until something checks it; the first check below would otherwise stop every round of this launch.
+        // A check that finds another account moves the generation, so this round still stops.
+        if await roundStore.state().ownerToken != nil, await transport.verifiedOwnerToken() == nil {
+            await transport.verifyOwner()
+        }
         var reportedStop = false
         func current() async -> Bool {
             let liveGeneration = await transport.operationGeneration()

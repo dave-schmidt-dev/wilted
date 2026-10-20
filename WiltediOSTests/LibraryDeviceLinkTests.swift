@@ -179,6 +179,28 @@ final class LibraryDeviceLinkTests: XCTestCase {
         XCTAssertFalse(rig.model.showsMacLinkNotice)
     }
 
+    /// Regression (2026-10-20): a relaunched phone's account stays unverified until something checks it, and
+    /// the round's first check stopped every round, so the phone never synced, announced or picked up the link.
+    func testARelaunchedPhoneChecksItsAccountFirstAndPicksUpTheLink() async throws {
+        let rig = try makeRig()
+        rig.probe.ownerUncheckedUntilAsked = true
+        try await rig.macLinksPhone()
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.ownerChecks, 1, "the round checks the account before its first check")
+        XCTAssertTrue(rig.model.deviceLinked)
+        XCTAssertFalse(rig.model.showsMacLinkNotice)
+
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.ownerChecks, 1, "a verified account is not checked again every round")
+    }
+
+    func testARelaunchedUnlinkedPhoneChecksItsAccountAndAnnounces() async throws {
+        let rig = try makeRig()
+        rig.probe.ownerUncheckedUntilAsked = true
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announcements.map(\.deviceID), ["phone"], "the Mac must learn of the device")
+    }
+
     func testAnUnlinkedPhoneStillAnnouncesWhenTheRoundsOfferStepEndsItEarly() async throws {
         let rig = try makeRig()
         await rig.store.refuseOffers()

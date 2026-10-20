@@ -36,9 +36,18 @@ final class HandshakeProbe: @unchecked Sendable {
     private var attempted = 0
     private var offerReads = 0
     private var linkReads = 0
+    private var ownerUnchecked = false
+    private var ownerCheckCount = 0
 
     var readMode: Read { get { lock.withLock { read } } set { lock.withLock { read = newValue } } }
     var announcementsFail: Bool { get { lock.withLock { announceFails } } set { lock.withLock { announceFails = newValue } } }
+    /// As after a relaunch: the account is unverified until something asks the transport to check it.
+    var ownerUncheckedUntilAsked: Bool {
+        get { lock.withLock { ownerUnchecked } } set { lock.withLock { ownerUnchecked = newValue } }
+    }
+    /// Account checks the phone asked for.
+    var ownerChecks: Int { lock.withLock { ownerCheckCount } }
+    func noteOwnerCheck() { lock.withLock { ownerCheckCount += 1; ownerUnchecked = false } }
     /// Announcements that reached the server.
     var announcements: [LibraryDeviceAnnouncement] { lock.withLock { sent } }
     /// Every announce call, whether it worked or not.
@@ -59,7 +68,10 @@ struct HandshakeTransport: LibraryTransport {
     let inner: InMemoryLibraryTransport
     let probe: HandshakeProbe
 
-    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func verifiedOwnerToken() async -> String? {
+        probe.ownerUncheckedUntilAsked ? nil : await inner.verifiedOwnerToken()
+    }
+    func verifyOwner() async { probe.noteOwnerCheck() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }

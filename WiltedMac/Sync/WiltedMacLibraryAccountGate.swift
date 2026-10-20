@@ -66,6 +66,7 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
     func verifiedOwnerToken() async -> String? {
         try? await run { await inner.verifiedOwnerToken() }
     }
+    func verifyOwner() async { try? await run { await inner.verifyOwner() } }
 
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
         try await run { try await inner.fetchChanges(since: token) }
