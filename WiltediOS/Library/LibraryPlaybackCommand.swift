@@ -361,7 +361,9 @@ extension LibraryAppModel {
             }
         }
         let rawID = backingEntryID(for: row.id)
-        let cached = await verifiedCachedMedia(rawID, token: token)
+        // One cache walk serves this start: the verification and a grouped episode's position lookup.
+        let walked = await mediaCache.cachedEntries()
+        let cached = await verifiedCachedMedia(rawID, token: token, walked: walked)
         guard commandState.token == token else { return .superseded }
         guard let player = handoffState.player else { return failStart(row, .playerUnavailable, kind: kind) }
         if let onlyIf, !onlyIf(player) { return .declined }
@@ -388,14 +390,17 @@ extension LibraryAppModel {
             return .resumed
         }
         let forwardSequence: [ItemID] = isManual ? manualForwardSuffix(from: row.id) : []
-        guard let position = await associatedStartPosition(rawID, revision: cached.revisionID) else {
+        guard let position = await associatedStartPosition(rawID, revision: cached.revisionID, walked: walked) else {
             return failStart(row, .engineRefused, kind: kind)
         }
         guard commandState.token == token else { return .superseded }
         guard queued.contains(where: { $0.id == rawID }), media[rawID] == .onPhone,
               !accountQuarantined else { return .declined }
         if episodeGroup(rawID) != nil {
-            guard let final = await verifiedCachedMedia(rawID, token: token), final == cached else { return .declined }
+            // Re-admit the file verified above after the position lookup's awaits: every fence runs
+            // again, without a second walk or a second hash of unchanged bytes.
+            guard let final = await verifiedCachedMedia(rawID, token: token, walked: [rawID: cached]),
+                  final == cached else { return .declined }
             guard commandState.token == token else { return .superseded }
             guard sameLogicalEpisode(rawID, row.id) else { return .declined }
             if let onlyIf, !onlyIf(player) { return .declined }
@@ -407,33 +412,6 @@ extension LibraryAppModel {
         }
         if isManual { handoffState.forwardSequenceIDs = forwardSequence }
         return position > 0 ? .resumed : .started
-    }
-
-    /// One final local boundary for row starts, Continue and retained system playback.
-    /// Exact owner-bound preparation remains usable offline until a semantic withdrawal is observed.
-    func verifiedCachedMedia(_ entryID: ItemID, token: UInt64) async -> CachedMedia? {
-        LibraryPlaybackTrace.shared.record(.admissionBegan, token: token)
-        defer { LibraryPlaybackTrace.shared.record(.admissionSettled, token: token) }
-        guard let context = await mediaContext() else { return nil }
-        let identity = context.storeIdentity
-        guard let entry = decisionContent.entries[entryID] else { return nil }
-        func current() -> Bool {
-            commandState.token == token && !accountQuarantined && playbackStoreIdentity == identity
-                && decisionContent.entries[entryID] == entry
-                && queued.contains { $0.id == entryID } && media[entryID] == .onPhone
-        }
-        let generation = await transport.operationGeneration()
-        guard current() else { return nil }
-        let cached = await mediaCache.cachedEntries()[entryID]
-        guard current(), let cached, cachedProofMatches(cached, entryID: entryID, context: context),
-              let identityBefore = cached.fileIdentity(),
-              await mediaContextIsCurrent(context, entryID: entryID) else { return nil }
-        guard await mediaCache.verifies(cached), current() else { return nil }
-        let currentGeneration = await transport.operationGeneration()
-        guard await mediaContextIsCurrent(context, entryID: entryID), current(),
-              currentGeneration == generation, cached.fileIdentity() == identityBefore,
-              cachedProofMatches(cached, entryID: entryID, context: context) else { return nil }
-        return cached
     }
 
     /// Publishes a failure after the player effect, so the effect's own command hook cannot clear

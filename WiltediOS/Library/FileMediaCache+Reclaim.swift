@@ -29,11 +29,13 @@ extension FileMediaCache {
                 let files = (try? fileManager.contentsOfDirectory(
                     at: revisionDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
                 let audio = files.filter { structurallyAdmitted($0) }
-                guard !audio.isEmpty, audio.allSatisfy({ neverPlays($0, entryID: entryID, ledger: ledger) }),
-                      (try? fileManager.removeItem(at: revisionDirectory)) != nil else { continue }
+                guard !audio.isEmpty, audio.allSatisfy({ neverPlays($0, entryID: entryID, ledger: ledger) }) else { continue }
+                verificationMemo.forget(revisionDirectory)
+                guard (try? fileManager.removeItem(at: revisionDirectory)) != nil else { continue }
                 reclaimed.insert(entryID)
             }
             if reclaimed.contains(entryID), (try? fileManager.contentsOfDirectory(atPath: entryDirectory.path))?.isEmpty == true {
+                verificationMemo.forget(entryDirectory)
                 try? fileManager.removeItem(at: entryDirectory)
             }
         }

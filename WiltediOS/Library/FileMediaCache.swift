@@ -21,12 +21,6 @@ struct CachedMedia: Equatable, Sendable {
         return MediaHash.isWellFormed(hash) ? hash : nil
     }
 
-    struct FileIdentity: Equatable {
-        let inode: UInt64
-        let size: Int64
-        let modified: Date
-    }
-
     func fileIdentity() -> FileIdentity? {
         var directory = url.deletingLastPathComponent()
         for _ in 0..<3 {
@@ -34,12 +28,7 @@ struct CachedMedia: Equatable, Sendable {
                   values.isDirectory == true, values.isSymbolicLink != true else { return nil }
             directory.deleteLastPathComponent()
         }
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              attributes[.type] as? FileAttributeType == .typeRegular,
-              let inode = attributes[.systemFileNumber] as? NSNumber,
-              let size = attributes[.size] as? NSNumber,
-              let modified = attributes[.modificationDate] as? Date else { return nil }
-        return FileIdentity(inode: inode.uint64Value, size: size.int64Value, modified: modified)
+        return FileIdentity(regularFileAt: url)
     }
 
     func verifies() async -> Bool {
@@ -90,6 +79,8 @@ actor FileMediaCache: LibraryMediaCache {
     var ledgerDurable = false
     var bindingConfirmed = false
     var cacheGeneration = UUID()
+    /// This process's passed byte checks; see `MediaVerificationMemo` for what it may skip.
+    var verificationMemo = MediaVerificationMemo()
     let byteVerifier: @Sendable (URL, Int64, String) async -> Bool
     let preparationWriter: @Sendable (Data, URL) throws -> Void
 
@@ -113,9 +104,14 @@ actor FileMediaCache: LibraryMediaCache {
     func remove(entryID: ItemID) async throws {
         try await withdrawPreparationForRemoval(entryID: entryID)
         let directory = root.appendingPathComponent(entryID.rawValue, isDirectory: true)
+        verificationMemo.forget(directory)
         guard fileManager.fileExists(atPath: directory.path) else { return }
         try fileManager.removeItem(at: directory)
     }
+
+    /// Whether a passed byte check is remembered for this resolved path (`FileIdentity.path`); lets
+    /// tests observe invalidation directly, including after the file itself is gone.
+    func remembersVerification(atPath path: String) -> Bool { verificationMemo.remembers(path: path) }
 
     /// Counts retained regular canonical audio across every revision, regardless of proof.
     /// Storage maintenance must not bind an owner or expose a playable file or URL.
