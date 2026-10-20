@@ -63,6 +63,10 @@ final class LibraryAppModel: ObservableObject {
     /// On-demand audio state per entry; an entry with no value is `.available`. Written by
     /// `LibraryAppModel+Media`, which owns the request, download, verify and cache flow.
     @Published var media: [ItemID: LibraryMediaState] = [:]
+    /// True once the Mac has linked this device (`LibraryAppModel+DeviceLink`): until then it has not
+    /// read this device's requests, so the Larder offers no download. Kept across launches; never cleared
+    /// by a failed read, only by an account change.
+    @Published var deviceLinked = false
     /// This phone's own lifetime totals, shown in Settings. Never synced.
     let phoneStats: LibraryPhoneStatsStore
     /// What "Continue from Mac" would do right now; nil when no other device outranks this one.
@@ -120,6 +124,10 @@ final class LibraryAppModel: ObservableObject {
     let transport: any LibraryTransport
     let throttleGate: TransportGate
     let deviceID: String
+    /// "iPad" or "iPhone"; the model family only, which is all the Mac is told and the notice says.
+    let deviceKind: String
+    /// The newest device link and the announcement bookkeeping; owned by `LibraryAppModel+DeviceLink`.
+    let deviceLinkState = LibraryDeviceLinkState()
     let now: @Sendable () -> Date
     let mediaCache: any LibraryMediaCache
     let mediaTiming: LibraryMediaTiming
@@ -174,7 +182,7 @@ final class LibraryAppModel: ObservableObject {
     /// When a revision's missing transcript was last re-requested this session, to space retries.
     var transcriptRetried: [ItemID: (revision: RevisionID, at: Date)] = [:]
     let clockFormat: LibraryClockFormat
-    private let preferences: UserDefaults
+    let preferences: UserDefaults
     private let recovery: LibraryAccountRecovery?
     var playbackStoreIdentity: ObjectIdentifier { ObjectIdentifier(store as AnyObject) }
     func mediaStoreState() async -> LibraryStoreState { await store.state() }
@@ -191,6 +199,7 @@ final class LibraryAppModel: ObservableObject {
         transport: any LibraryTransport,
         store: any LibraryStore = InMemoryLibraryStore(),
         deviceID: String,
+        deviceKind: String? = nil,
         recovery: LibraryAccountRecovery? = nil,
         mediaCache: (any LibraryMediaCache)? = nil,
         mediaTiming: LibraryMediaTiming = LibraryMediaTiming(),
@@ -223,6 +232,7 @@ final class LibraryAppModel: ObservableObject {
         self.phoneStats = LibraryPhoneStatsStore(defaults: preferences)
         self.store = store
         self.deviceID = deviceID
+        self.deviceKind = deviceKind ?? Self.currentDeviceKind
         self.recovery = recovery
         self.now = now
         self.clockFormat = LibraryClockFormat(timeZone: timeZone)
@@ -258,6 +268,7 @@ final class LibraryAppModel: ObservableObject {
     func loadLocalState() async {
         let saved = await store.state()
         verifyOutboxOwner(saved.ownerToken)
+        restoreDeviceLink(owner: saved.ownerToken)
         applyStoreMetadata(saved)
         _ = await bindMediaOwner()
         displayContext = (await transport.operationGeneration(), saved.displayAdmissionRevision)
@@ -343,6 +354,7 @@ final class LibraryAppModel: ObservableObject {
         discardDecisionsAfterAccountChange()
         discardAddsAfterAccountChange()
         await discardMediaAfterAccountChange()
+        discardDeviceLinkAfterAccountChange()
         await refresh()
     }
 
@@ -378,7 +390,7 @@ final class LibraryAppModel: ObservableObject {
             if case let .failure(error) = await roundReconciler.synchronize() { failure = error }
             guard await current() else { return }
         }
-        var options: LibraryPollOptions = [.deviceRecords]
+        var options: LibraryPollOptions = [.deviceRecords, .deviceLink]
         if plan.readsOffers { options.insert(.offers) }
         if !decisions.isEmpty || hasAddAwaitingAnswer { options.insert(.outcomes) }
         let beforePoll = await roundStore.state()
@@ -398,6 +410,7 @@ final class LibraryAppModel: ObservableObject {
                 noteOffers(offers); readyOffers = Set(offers.filter(\.isPrepared).map(\.entryID))
                 for entryID in readyOffers where media[entryID] == .notPrepared { media[entryID] = nil }
             }
+            applyPolledDeviceLink(result, owner: beforePoll.ownerToken)
             polled = result
         } catch { if failure == nil { failure = error } }
         guard await current() else { return }
@@ -434,6 +447,8 @@ final class LibraryAppModel: ObservableObject {
             await observeHandoff(records)
             guard await current() else { return }
         }
+        await announceDeviceIfNeeded(linkRead: polled?.deviceLinkRead == true)
+        guard await current() else { return }
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
         await resolveAdds(outcomes: polled?.outcomes ?? [])
         guard await current() else { return }

@@ -12,6 +12,8 @@ struct LibraryEpisodeActions: View {
     /// True while this episode's audio is the one playing, so its button pauses.
     var isPlaying = false
     var onMedia: (LibraryMediaAction) -> Void = { _ in }
+    /// False until the Mac has linked this device; the row then offers no request for audio.
+    var canRequestAudio = true
     /// Plays or pauses the cached audio; only offered once the audio is on the phone.
     var onPlay: (() -> Void)?
     var decisionActions: [LibraryDecisionAction] = []
@@ -28,7 +30,8 @@ struct LibraryEpisodeActions: View {
             HStack(spacing: WiltedTheme.Spacing.small) {
                 if let media, !row.isPreparationOnly {
                     LibraryDownloadControl(
-                        entryID: row.id, state: media, perform: onMedia, isConfirmingDelete: $isConfirmingDelete)
+                        entryID: row.id, state: media, perform: onMedia, isConfirmingDelete: $isConfirmingDelete,
+                        canRequest: canRequestAudio)
                     if media == .onPhone, let onPlay {
                         LibraryIconButton(
                             symbol: isPlaying ? "pause.circle.fill" : "play.circle.fill", label: playLabel,

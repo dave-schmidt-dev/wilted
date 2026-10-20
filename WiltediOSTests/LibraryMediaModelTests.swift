@@ -384,7 +384,7 @@ final class LibraryMediaModelTests: XCTestCase {
 
         let retrying = LibraryMediaRetry(attempt: 2, attempts: 3)
         try await eventually("first retry shown") {
-            if case let .requested(_, retry) = model.mediaState(for: self.entryID), retry == retrying { return true }
+            if case let .requested(_, retry, _) = model.mediaState(for: self.entryID), retry == retrying { return true }
             return false
         }
         XCTAssertEqual(model.mediaState(for: entryID).statusText(), "Retrying (2 of 3)")
@@ -536,7 +536,7 @@ final class LibraryMediaModelTests: XCTestCase {
     func testEveryStateSpellsItselfOutWithoutRelyingOnColor() {
         let start = Date(timeIntervalSince1970: 0)
         XCTAssertEqual(LibraryMediaState.available.statusText(), "Not on phone")
-        XCTAssertTrue(LibraryMediaState.requested(since: start).statusText(elapsed: 5).hasPrefix("Requested"))
+        XCTAssertEqual(LibraryMediaState.requested(since: start).statusText(elapsed: 5), "Sent to Mac · 00:05")
         XCTAssertTrue(LibraryMediaState.downloading(bytes: 1, total: 2, since: start).statusText().hasPrefix("Downloading"))
         XCTAssertEqual(LibraryMediaState.verifying.statusText(), "Verifying")
         XCTAssertEqual(LibraryMediaState.onPhone.statusText(), "On phone")

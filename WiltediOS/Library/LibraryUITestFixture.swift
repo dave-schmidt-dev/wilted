@@ -151,6 +151,9 @@ enum LibraryUITestFixture {
             defaultsSuite = LibraryUITestFixture.suiteName + "-" + UUID().uuidString
             let defaults = UserDefaults(suiteName: defaultsSuite)!
             self.defaults = defaults
+            // The fixture's Mac has already linked the phone, so every scenario starts with downloads on offer.
+            defaults.set(try? JSONEncoder().encode(LibrarySavedMacLink(deviceID: "phone", ownerToken: "fixture-owner")),
+                         forKey: LibraryAppModel.savedMacLinkKey)
             cache = FileMediaCache(rootURL: scratch.appendingPathComponent("media", isDirectory: true))
             phone = InMemoryLibraryTransport(
                 deviceID: "phone", server: server,
@@ -291,6 +294,7 @@ enum LibraryUITestFixture {
                     PendingLibraryChange(localSeq: UInt64($0.offset + 1), change: $0.element, baseVersion: 0)
                 }
                 _ = try await mac.push(changes: pending)
+                try await mac.publishDeviceLink(LibraryDeviceLink(deviceID: "phone", linkedAt: LibraryUITestFixture.pixelClock))
                 let audio = Data(repeating: 7, count: 512)
                 let hash = MediaHash.prefix + SHA256.hash(data: audio).map { String(format: "%02x", $0) }.joined()
                 try await cache.bindOwner(ownerToken: "fixture-owner", libraryScope: LibraryAppModel.mediaLibraryScope, held: false)

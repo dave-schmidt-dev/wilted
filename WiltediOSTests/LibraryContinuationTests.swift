@@ -173,6 +173,15 @@ final class LibraryContinuationTests: XCTestCase {
         }
     }
 
+    func testTheBannerOffersNoAudioRequestWhileTheMacHasNotLinkedThisDevice() throws {
+        let missing = try plan([observed()])
+        XCTAssertNil(LibraryContinueBanner.actionTitle(missing, media: .available, canRequest: false))
+        XCTAssertEqual(LibraryContinueBanner.actionTitle(missing, media: .available), "Get audio and continue")
+        XCTAssertEqual(LibraryContinueBanner.detail(missing, media: .available, canRequest: false),
+                       "On the Mac. Connecting to your Mac first.")
+        XCTAssertEqual(LibraryContinueBanner.detail(missing, media: .available), "On the Mac. Get the audio, then continue.")
+    }
+
     func testMessageOnlyBannerAndInFlightAudioPreserveExistingActionSemantics() throws {
         let capture = try render(nil, width: 320, scheme: .light, message: "Handoff is unavailable. Check your connection.")
         XCTAssertTrue(capture.compactText.contains("handoffisunavailable"), capture.text)
@@ -202,11 +211,17 @@ final class LibraryContinuationTests: XCTestCase {
         let model = LibraryAppModel(transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
             deviceID: "phone", mediaCache: FileMediaCache(rootURL: scratch), preferences: preferences)
         await model.refresh()
+        model.deviceLinked = true // the Mac has linked this phone, so the banner may offer to request the audio
         await model.updateContinuation(from: LibraryDeviceRecords(nowPlaying: [try observed()]))
         let capture = try ContinuationCapture(LibraryContinueBanner(model: model), width: 320, scheme: .light)
         XCTAssertTrue(capture.compactText.contains(ContinuationCapture.compact(title)), capture.text)
         XCTAssertTrue(capture.compactText.contains("getaudioandcontinue"), capture.text)
         capture.attach("continue-model-320-light")
+
+        model.deviceLinked = false
+        let unlinked = try ContinuationCapture(LibraryContinueBanner(model: model), width: 320, scheme: .light)
+        XCTAssertTrue(unlinked.compactText.contains("connectingtoyourmac"), unlinked.text)
+        XCTAssertFalse(unlinked.compactText.contains("getaudioandcontinue"), unlinked.text)
     }
 }
 

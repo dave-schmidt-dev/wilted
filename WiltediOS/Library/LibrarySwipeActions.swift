@@ -91,11 +91,12 @@ enum LibrarySwipe: Equatable {
     }
 
     /// Swipe left. Downloaded: Play or Pause. Otherwise: Download, unless a transfer is already running
-    /// (the row's own ring cancels it) or the Mac has nothing to send.
-    static func trailing(media: LibraryMediaState, isPlaying: Bool) -> [LibrarySwipe] {
+    /// (the row's own ring cancels it), the Mac has nothing to send, or the Mac has not linked this
+    /// device yet (`canRequest` false), when no request can be answered.
+    static func trailing(media: LibraryMediaState, isPlaying: Bool, canRequest: Bool = true) -> [LibrarySwipe] {
         switch media {
         case .onPhone: [isPlaying ? .pause : .play]
-        case .available, .failed, .notPrepared: [.download]
+        case .available, .failed, .notPrepared: canRequest ? [.download] : []
         case .requested, .downloading, .verifying: []
         }
     }
