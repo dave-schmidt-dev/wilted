@@ -93,4 +93,6 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 
 ## After the walkthrough
 
+Walkthrough fixes land as one batch with headless gates. If any fix touches the Mac UI surface, the one screen-seizing `make native-ui` run on the final candidate waits until you say you are away from the Mac.
+
 On a pass: tag `v0.7.0` on the walked commit, finalize the CHANGELOG 0.7.0 section (moving the 134 entries that shipped in 0.6.0 (11) under 0.6.0), record it in HISTORY, and set TASKS to `open`. Push, TestFlight and any other publication wait for your explicit go.
