@@ -285,7 +285,7 @@ extension WiltedMacModelTests {
 
     /// Larder projects every subscribed episode's preparation evidence, so it
     /// cannot use Prep's display-oriented 200-run cap: this seeds a
-    /// non-terminal run for one subscribed episode, then 200 newer terminal
+    /// terminal failure for one subscribed episode, then 200 newer terminal
     /// runs for other episodes that push it out of that cap, and requires
     /// the Larder row to still show it while Prep's own capped display list
     /// still excludes it.
@@ -312,13 +312,16 @@ extension WiltedMacModelTests {
                     title: "Beyond Cap Episode", publishedTime: created, enclosureURL: enclosureURL,
                     enclosureMediaType: "audio/mpeg", createdAt: created
                 ))
-                // The target run: old, non-terminal, must survive being
-                // pushed out of Prep's 200-newest cap.
+                // Keep this target terminal so launch recovery does not
+                // close it with a fresh timestamp and move it inside the cap.
+                let failure = try PreparationTerminalResult(outcome: .failed,
+                    error: ProducerError(code: .failed, message: "Retained old failure", retryable: true))
                 try await store.record(preparation: PreparationJournalEntry(
-                    id: "beyond-cap|preparing", itemID: episodeID,
+                    id: "beyond-cap|failed", itemID: episodeID,
                     requestID: WiltedMacModel.podcastRequestPrefix + episodeID.rawValue,
                     status: try PreparationStatus(
-                        stage: .preparing, detail: "Preparing…", fraction: 0.1, cancellable: true, emittedAt: created
+                        stage: .failed, detail: "Retained old failure", cancellable: false,
+                        terminalResult: failure, emittedAt: created
                     )
                 ))
                 // 200 newer requests to push the target out of the default 200-run display cap.
@@ -342,12 +345,16 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.startupState, .ready)
 
         let projected = model.episodes.first(where: { $0.id == episodeID.rawValue })
-        guard case .preparing = projected?.preparationState else {
-            return XCTFail("Larder must show preparation evidence even when 200 newer podcast-prepare runs exist to push it out of Prep's display cap")
-        }
+        XCTAssertEqual(projected?.preparationState, .failed(WiltedMacModel.preparationFailedLabel),
+                       "Larder must show old failure evidence beyond Prep's display cap")
 
         let capturedStore = await storeCapture.store
         let store = try XCTUnwrap(capturedStore)
+        let allRuns = try await store.preparationRuns(limit: Int.max)
+        let retained = try XCTUnwrap(allRuns.first { $0.itemID == episodeID })
+        XCTAssertEqual(retained.outcome, .failed)
+        XCTAssertEqual(retained.failure?.message, "Retained old failure")
+        XCTAssertEqual(retained.entries.count, 1, "bootstrap must not rewrite terminal evidence")
         let displayRuns = try await store.preparationRuns()
         XCTAssertEqual(displayRuns.count, 200, "Prep's own display list keeps its 200-run cap")
         XCTAssertFalse(displayRuns.contains(where: { $0.itemID == episodeID }),
