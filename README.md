@@ -96,7 +96,7 @@ It is idempotent and never replaces an existing entry that resolves elsewhere.
 ## Test tiers
 
 1. **Commit:** `make check-fast` (lint, dead code, file size, scratch).
-2. **Push:** `make validate`, the headless gate. It defers the `macos-ui-tests` leg and says so.
+2. **Push:** `make validate`, the headless gate. It defers the `macos-ui-tests` leg and says so. A failing step never stops it: every step runs, and the run ends with one `validate.failed count=<n> steps=<names>` line.
 3. **Install:** `make install` first runs `python3 scripts/native-ui-receipt.py check-head` and refuses unless a green `make native-ui` receipt (`.logs/native-ui-receipt.json`) covers the Mac UI surface (`scripts/mac-ui-surface.paths`) of the tree being installed: new commits, staged or unstaged edits and untracked files under those paths all count as stale. `WILTED_SKIP_UI_RECEIPT=1 make install` proceeds anyway and prints a warning naming the receipt commit it ignores (or `none`); use it only when the Mac UI leg cannot run.
 4. **`make native-ui`:** the full gate including the screen-seizing XCUITest leg, on a clean commit; the only thing that mints a receipt.
 
