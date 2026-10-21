@@ -1,6 +1,6 @@
 # Wilted 0.7.0 walkthrough checklist
 
-Candidate: `fcaf44f9` (code identical to `912d61cb`; only CHANGELOG wording differs), version 0.7.0 (12). Baseline: 0.6.0 (11), `0bce4c73`, 2026-10-13.
+Candidate: product code of `912d61cb`; later commits change only CHANGELOG and this checklist. Version 0.7.0 (12). Baseline: 0.6.0 (11), `0bce4c73`, 2026-10-13.
 
 ## Status before the walkthrough
 
@@ -8,7 +8,7 @@ Candidate: `fcaf44f9` (code identical to `912d61cb`; only CHANGELOG wording diff
 2. Classification: 201 verified by a named test, 22 need a person or live device (listed below), 0 product failures. Two entries described behaviour the code doesn't have; their wording was corrected in `fcaf44f9`.
 3. Gates: the full native gate passed on `912d61cb`, including the one screen-seizing Mac UI run (Mac unit 1582, Mac UI 10, iOS unit 933, iOS pixel 36, Kit 104, CloudSync 114, Producer 817, Playback 4). The receipt still covers `fcaf44f9`. Headless `make validate` on `fcaf44f9`: 35/35 phase-0 legs and 8/8 native legs passed. An earlier run on `912d61cb` hit a 10 s timeout in one build-cache tooling test while the machine was at load 160; that test passes alone.
 4. Installed app evidence: no WiltedMac crash from the `/Applications` copy (all 16 crash reports since 10-14 came from test hosts). The installed Mac logged iCloud "service unavailable" (CloudKit error 6) about every 5 minutes from 17:00 to 23:04 on 10-20, then nothing since.
-5. Devices: the Mac runs the candidate. The iPhone and iPad (both iOS 27.0.1) need the candidate installed before step G.
+5. Devices: the Mac runs the candidate (installed `912d61cb`, same code). The iPhone and iPad (both iOS 27.0.1) got the candidate `fe55645e` on 2026-10-21; its embedded Watch app reaches the Watch through the iPhone.
 6. Inventory tables: `.logs/release-0.7.0/class-*.md` (ids such as A1, C22, F87 refer to rows there).
 
 Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks something 0.6.0 did gets fixed in this release; everything else goes to `## Next release`, unless you say it belongs in this one.
