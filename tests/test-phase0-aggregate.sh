@@ -300,6 +300,7 @@ entry = {"executable": Path(sys.argv[0]).name, "args": sys.argv[1:],
              "WILTED_GATE_LEGS", "WILTED_NATIVE_RESULTS_DIR", "WILTED_MAC_UI")}}
 with open(os.environ["WILTED_VALIDATE_ENV_RECORDS"], "a", encoding="utf-8") as output:
     output.write(json.dumps(entry) + "\\n")
+sys.exit(1 if os.environ.get("WILTED_VALIDATE_FAKE_FAIL") in sys.argv[1:] else 0)
 '''
 for name in ("bash", "python3"):
     executable = root / "bin" / name
@@ -329,6 +330,19 @@ assert shell[-1]["environment"]["WILTED_GATE_LEGS"] == selection, shell[-1]
 assert shell[-1]["environment"]["WILTED_NATIVE_RESULTS_DIR"] == destination, shell[-1]
 assert all(entry["environment"]["WILTED_MAC_UI"] == "0" for entry in entries), entries
 print("validate-inner environment isolation passed: meta=5 native=1 recipes=8")
+
+# A failing step never stops validate-inner: every later step still runs, and the
+# run fails once at the end naming every failed step.
+records.unlink()
+failing = dict(environment, WILTED_VALIDATE_FAKE_FAIL="scripts/test-phase0.sh")
+result = subprocess.run([make, "-f", str(makefile), "validate-inner"], cwd=makefile.parent,
+                        env=failing, text=True, capture_output=True, timeout=30)
+assert result.returncode != 0, (result.returncode, result.stdout, result.stderr)
+entries = [json.loads(line) for line in records.read_text(encoding="utf-8").splitlines()]
+assert len(entries) == 8 and entries[-1]["args"] == ["scripts/test-gate.sh"], entries
+assert "validate.failed count=1 steps=phase0" in result.stderr, result.stderr
+assert not list((root / "scratch").glob("wilted-validate-failures.*")), "failure note leaked"
+print("validate-inner runs every step after a failure: recipes=8 failed=phase0")
 PY
 
 # A gate copy cut off right after one of its EXIT traps and ending in a parse

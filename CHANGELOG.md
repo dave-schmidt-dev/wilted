@@ -69,6 +69,7 @@ All notable changes to this project are documented in this file.
 - Episodes now keep their own web page address from the feed's item link: it is read when a feed loads, stored in the library (store schema V15, migrated with the usual backup), and published in the library sync so the phone can offer it. Relative, non-web, credentialed or self-referential links are ignored.
 
 ### Changed
+- `make validate` no longer stops at the first failing step: every check, meta-test, Phase 0 and the native gate run to the end, and the run then fails once with `validate.failed count=<n> steps=<names>`.
 - Mac launch still resumes downloads already scheduled for preparation recovery, even when no fingerprint comparison is needed.
 - Commercial ad reviews fit their complete transcript cues to the local model before inference and reuse the exact counted request. Surrounding context can shrink, while a proposed ad and required programme boundaries stay intact; a review that still cannot fit keeps the original audio. New preparations record engine v10, and existing prepared copies remain unchanged.
 - Preparation journals keep bounded reasons, original timings and exact cue numbers for unresolved ad reviews, without storing model replies.

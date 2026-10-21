@@ -34,15 +34,22 @@ validate:
 # meta-test and the pre-push gate that validate-inner runs.
 NATIVE_UNIT_FILTER_UNSET = -u WILTED_MAC_UNIT_SELECTORS -u WILTED_MAC_UNIT_ITERATIONS -u WILTED_IOS_UNIT_SELECTORS -u WILTED_IOS_UNIT_ITERATIONS
 
+# A failing step never stops the gate: every step runs, each failure is noted in
+# one file, and the last line reports them all together and fails. Each recipe
+# line is its own shell whose parent is this make, so $$PPID names one file per run.
+VALIDATE_FAILURES = "$${TMPDIR:?}/wilted-validate-failures.$$PPID"
+
 validate-inner:
-	@python3 scripts/check-no-global-tmp.py
-	@python3 scripts/check_file_size.py --all
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-phase0-aggregate.sh
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash scripts/test-phase0.sh
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-native-gate.sh
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-native-gate-watch.sh
-	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-carplay-config.sh
-	@env $(NATIVE_UNIT_FILTER_UNSET) bash scripts/test-gate.sh
+	@rm -f $(VALIDATE_FAILURES)
+	@python3 scripts/check-no-global-tmp.py || echo check-no-global-tmp >>$(VALIDATE_FAILURES)
+	@python3 scripts/check_file_size.py --all || echo check-file-size >>$(VALIDATE_FAILURES)
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-phase0-aggregate.sh || echo test-phase0-aggregate >>$(VALIDATE_FAILURES)
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash scripts/test-phase0.sh || echo phase0 >>$(VALIDATE_FAILURES)
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-native-gate.sh || echo test-native-gate >>$(VALIDATE_FAILURES)
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-native-gate-watch.sh || echo test-native-gate-watch >>$(VALIDATE_FAILURES)
+	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-carplay-config.sh || echo test-carplay-config >>$(VALIDATE_FAILURES)
+	@env $(NATIVE_UNIT_FILTER_UNSET) bash scripts/test-gate.sh || echo native-gate >>$(VALIDATE_FAILURES)
+	@if [ -s $(VALIDATE_FAILURES) ]; then printf 'validate.failed count=%s steps=%s\n' "$$(wc -l <$(VALIDATE_FAILURES) | tr -d ' ')" "$$(tr '\n' ' ' <$(VALIDATE_FAILURES))" >&2; rm -f $(VALIDATE_FAILURES); exit 1; fi; rm -f $(VALIDATE_FAILURES); printf '%s\n' 'validate.passed' >&2
 
 native-meta:
 	@bash tests/test-native-gate.sh
