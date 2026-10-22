@@ -29,6 +29,7 @@ from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import span_bounds as _worker_span_bounds
+from wilted_worker import break_edges as _worker_break_edges
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
@@ -336,3 +337,86 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
                 self.request, self.audio, [], segments
             )
         self.assertEqual(spans, [])
+
+
+class BreakEdgePauseTests(unittest.TestCase):
+    """A break's real edge is its pause; an edge cue across a longer pause is programme."""
+
+    # The Headlines' postroll (2026-10-22 rescan, in013): the sign-off cue 2,
+    # a 7 s pause, then two sponsor cues. The cut started on the sign-off.
+    SEGMENTS = [
+        FakeSegment(591.0, 610.68, "programme"),
+        FakeSegment(610.68, 619.0, "programme"),
+        FakeSegment(622.44, 634.12, "those are the headlines and a full month of free access"),
+        FakeSegment(641.16, 660.64, "there's rewarding and then there's remarkably rewarding"),
+        FakeSegment(661.36, 669.52, "learn more at chase dot com"),
+        FakeSegment(670.0, 680.0, "programme after"),
+    ]
+
+    def trim(self, *ads, protected_ids=frozenset(), segments=None):
+        ads_module = install_fake_ads(FakeLLM())
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            trimmed = _worker_break_edges.trim_edge_cues_across_gaps(
+                ads_module, segments or self.SEGMENTS, list(ads), protected_ids
+            )
+        return [(ad.start_s, ad.end_s) for ad in trimmed], stream.getvalue()
+
+    def test_a_sign_off_cue_before_the_breaks_pause_stays_in(self):
+        trimmed, log = self.trim(FakeAd(622.44, 669.52))
+        self.assertEqual(trimmed, [(634.12, 669.52)])
+        self.assertIn("ads.detect.edge-gap.trimmed", log)
+
+    def test_a_closing_cue_after_the_breaks_pause_stays_in(self):
+        # Mirror: the last cut cue sits after a pause longer than the one that
+        # follows it, so the cut ends at that pause (Giant Bombcast's mailbag line).
+        segments = [
+            FakeSegment(0.0, 10.0, "programme"),
+            FakeSegment(10.5, 30.0, "sponsor one"),
+            FakeSegment(30.2, 50.0, "sponsor two"),
+            FakeSegment(59.0, 70.0, "send your emails to the show"),
+            FakeSegment(70.0, 80.0, "programme"),
+        ]
+        trimmed, _log = self.trim(FakeAd(10.5, 70.0), segments=segments)
+        self.assertEqual(trimmed, [(10.5, 59.0)])
+
+    def test_an_edge_pause_shorter_than_the_threshold_or_the_outer_pause_changes_nothing(self):
+        segments = [
+            FakeSegment(0.0, 10.0, "programme"),
+            FakeSegment(14.0, 30.0, "sponsor one"),
+            FakeSegment(32.0, 50.0, "sponsor two"),
+            FakeSegment(50.5, 70.0, "sponsor three"),
+            FakeSegment(70.2, 80.0, "programme"),
+        ]
+        # Pause after the first cue (2.0 s) is under the threshold and shorter
+        # than the 4.0 s pause before it.
+        trimmed, log = self.trim(FakeAd(14.0, 70.0), segments=segments)
+        self.assertEqual(trimmed, [(14.0, 70.0)])
+        self.assertNotIn("ads.detect.edge-gap.trimmed", log)
+
+    def test_short_cuts_file_edges_and_sponsor_anchors_are_left_alone(self):
+        with self.subTest("two cues"):
+            trimmed, _log = self.trim(FakeAd(622.44, 660.64))
+            self.assertEqual(trimmed, [(622.44, 660.64)])
+        with self.subTest("explicit sponsor anchor"):
+            trimmed, _log = self.trim(FakeAd(622.44, 669.52), protected_ids=frozenset({2}))
+            self.assertEqual(trimmed, [(622.44, 669.52)])
+        with self.subTest("a silence too long to be a pause"):
+            segments = [
+                FakeSegment(3800.0, 3813.0, "programme"),
+                FakeSegment(3813.36, 3830.0, "brought to you by"),
+                FakeSegment(3830.0, 3850.0, "the product details"),
+                FakeSegment(4119.56, 4139.88, "learn more today"),
+                FakeSegment(4139.88, 4150.0, "programme"),
+            ]
+            trimmed, _log = self.trim(FakeAd(3813.36, 4139.88), segments=segments)
+            self.assertEqual(trimmed, [(3813.36, 4139.88)])
+        with self.subTest("file's first and last cue"):
+            segments = [
+                FakeSegment(0.0, 10.0, "sponsor"),
+                FakeSegment(20.0, 30.0, "sponsor"),
+                FakeSegment(30.1, 40.0, "sponsor"),
+                FakeSegment(50.0, 60.0, "sponsor"),
+            ]
+            trimmed, _log = self.trim(FakeAd(0.0, 60.0), segments=segments)
+            self.assertEqual(trimmed, [(0.0, 60.0)])

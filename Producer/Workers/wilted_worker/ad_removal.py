@@ -19,6 +19,7 @@ import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from . import break_edges as _worker_break_edges
 from . import commercial_recovery as _worker_commercial_recovery
 from . import commercial_seeds as _worker_commercial_seeds
 from . import cue_timing as _worker_cue_timing
@@ -187,6 +188,9 @@ def analyze_ad_detections(
     )
     detections = _worker_tail_recovery.trim_credit_span_heads(
         ads_module, auditing_backend, segments, detections, held_spans
+    )
+    detections = _worker_break_edges.trim_edge_cues_across_gaps(
+        ads_module, segments, detections, frozenset(explicit_anchor_ids)
     )
     detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
         ads_module, auditing_backend, segments, detections, total_seconds,

@@ -89,6 +89,19 @@ POSTROLL_CLEAN_BREAK_SECONDS = 2.0
 
 POSTROLL_LEADER_MAX_SECONDS = 15.0
 
+# A break's edge cue is handed back to the programme only across a pause at
+# least this long (2026-10-22 rescan: 8 programme cues restored, no advertising
+# cue lost at 2.0-2.5 s; 2.5 s keeps a margin over in-read pauses).
+BREAK_EDGE_GAP_MIN_SECONDS = 2.5
+
+# Cuts shorter than this keep both edge cues: on two-cue cuts the rule took an
+# advertising cue as often as a programme one.
+BREAK_EDGE_MIN_CUES = 3
+
+# A longer "pause" is untranscribed audio (music, a spot without speech), which
+# says nothing about where the break ends; the longest real fix was 23.8 s.
+BREAK_EDGE_GAP_MAX_SECONDS = 30.0
+
 EXPLICIT_SPONSOR_RECOVERY_MAX_SEGMENTS = 64
 
 EXPLICIT_SPONSOR_RECOVERY_MAX_SECONDS = 10 * 60

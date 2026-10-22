@@ -143,6 +143,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Ad removal no longer cuts a show's sign-off or first words back when the break's own pause falls one line inside the cut, such as The Headlines' "those are the headlines" line before its closing sponsor.
 - Ad removal no longer keeps every advertisement because of one unclear passage elsewhere in the episode. A passage the ad review cannot settle now stays in by itself while the confirmed breaks are removed, including one right at the edge of a break, such as a sign-off or closing credit before the final ads; a passage a cut would remove, a share ceiling or an unresolved programme boundary still keeps the whole original. Episodes prepared earlier are left as they are.
 - Mac: old interrupted preparations are closed even beyond Prep's 200-run display limit, and the current prepared revision keeps its cut markers after many newer failed attempts.
 - Mac UI fixture windows stay wholly on the primary screen after switching to a wider fixture, keeping player controls reachable during the single-launch test run.
