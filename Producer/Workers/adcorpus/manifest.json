@@ -836,7 +836,7 @@
       "audioDurationSeconds": 4285.805714285714,
       "afterOutcomeRuleChange": {
         "date": "2026-10-22",
-        "verdict": "fail, narrowed -- every break is now cut; keepLossSeconds 0.0, unknownCutSeconds 0.0",
+        "verdict": "fail, narrowed -- every break is now cut at least in part (preroll 100%, first mid-roll 95%, second mid-roll 100%, postroll 62% removed); keepLossSeconds 0.0, unknownCutSeconds 0.0",
         "change": "decide_ad_outcome in Producer/Workers/wilted_worker/ad_outcome.py lets a review-unresolved seed that no cut overlaps or sits beside stay audible on its own while the confirmed cuts apply. Before it, this case removed 0% of every break.",
         "remaining": "Two detector misses, not outcome-rule failures: the first mid-roll keeps 10.6s (cues 199-200, the legal-software spot's lead-in, which the sparse-prefix review called programme), and the postroll keeps 35.4s (the network TV promotion, cues 594-601, and the brokerage spot's first cue). The replay cut 0.8-118.6, 1262.9-1355.1, 1365.8-1457.8, 2764.1-2959.9 and 4225.0-4283.3.",
         "reproduce": "Producer/Runtime/.venv/bin/python Producer/Workers/ad_corpus.py --mode replay --case smartless-every-break-kept-for-one-house-promo --json"
