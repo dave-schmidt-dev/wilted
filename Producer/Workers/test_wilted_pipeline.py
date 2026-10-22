@@ -689,14 +689,12 @@ class ActualParserUncertaintyTests(unittest.TestCase):
                               [FakeSegment(0, 2, "programme")])
         self.assertTrue(llm.closed)
 
-    def test_unresolved_seed_or_share_refusal_keeps_whole_original_despite_independent_confirmed_ad(self):
+    def test_share_refusal_keeps_whole_original_despite_independent_confirmed_ad(self):
         audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
         original = audio.read_bytes()
         segments = [FakeSegment(0, 10, "programme before"), FakeSegment(10, 20, "visit acme dot"),
                     FakeSegment(20, 30, "com to get started today"), FakeSegment(30, 40, "programme after")]
-        scenarios = [("unresolved-seed", FakeLLM(commercial_ad_ids=[1, 2], commercial_preservation_answer="invalid JSON"),
-                      [FakeAd(400, 420)]),
-                     ("share-refusal", FakeLLM(), [FakeAd(0, 370), FakeAd(400, 420)])]
+        scenarios = [("share-refusal", FakeLLM(), [FakeAd(0, 370), FakeAd(400, 420)])]
         for name, llm, detections in scenarios:
             with self.subTest(scenario=name):
                 install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
@@ -718,13 +716,8 @@ class ActualParserUncertaintyTests(unittest.TestCase):
                 self.assertIn("original audio includes ads", result["warning"])
                 audit = result["report"]["audit"]
                 self.assertEqual(audit["unresolvedIds"], [])  # Archive coverage resolved; review uncertainty is separate.
-                if name == "unresolved-seed":
-                    self.assertEqual(audit["declinedCommercialEvidenceSeeds"][0]["ids"], [1, 2])
-                    self.assertEqual(audit["declinedCommercialEvidenceSeeds"][0]["reason"], "review-unresolved")
-                else:
-                    self.assertTrue(any(span["reason"] == "total-share-ceiling" for span in audit["heldSpans"]))
+                self.assertTrue(any(span["reason"] == "total-share-ceiling" for span in audit["heldSpans"]))
                 render.assert_not_called()
-
 
 class ContextCapacityFallbackTests(unittest.TestCase):
     def test_exact_capacity_failure_in_one_sparse_verifier_keeps_original(self):

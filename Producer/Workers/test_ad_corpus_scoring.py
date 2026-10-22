@@ -371,7 +371,7 @@ class AdCorpusManifestTests(unittest.TestCase):
                     for start, end in recorded
                 ):
                     reproduced.append((case["id"], *pod))
-        # Twenty-two labelled pods across ten cases as of 2026-10-20. The count is a
+        # Twenty-six labelled pods across eleven cases as of 2026-10-22. The count is a
         # tripwire for a case being added or relabelled without anyone rereading
         # this measurement. The Planet Money case added four pods; its recorded
         # run reproduced the three it cut and missed the mid-roll pod it left whole.
@@ -381,7 +381,9 @@ class AdCorpusManifestTests(unittest.TestCase):
         # own promotion and the mid-roll pod, and reproduced none: two runs
         # refused to cut at all and the other two started their pod cut late
         # in one case and inside the programme before it in the other.
-        self.assertEqual(len(pods), 22)
+        # The SmartLess case (2026-10-22) added four, the preroll, two mid-rolls
+        # and the postroll, and reproduced none: its run refused to cut at all.
+        self.assertEqual(len(pods), 26)
         self.assertEqual(
             [(round(start, 2), round(end, 2)) for _case_id, start, end in reproduced],
             [(2729.8, 2917.96), (5278.64, 5339.76),

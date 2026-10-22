@@ -30,6 +30,7 @@ from . import silence_trim as _worker_silence_trim
 from . import span_bounds as _worker_span_bounds
 from . import tail_recovery as _worker_tail_recovery
 from .ad_audit import AdAnalysis, AdAnalysisAudit, AuditingBackend, DeclinedCommercialEvidenceSeed, uncertain_ad_analysis, expected_backend_unavailable
+from .ad_outcome import decide_ad_outcome
 from .ad_runtime_adaptations import install_context_aware_overlap_resolution, install_legacy_sponsor_opening_compatibility, install_produced_disclaimer_evidence, install_proportional_render_budget
 from .constants import COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
 from .cue_timing import _near_empty_nominations, build_effective_cut_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
@@ -433,28 +434,20 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                     analysis = uncertain_ad_analysis(counting, segments, str(error))
                     return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
                 raise
-            unresolved_seeds = [
-                seed for seed in analysis.audit.declined_commercial_evidence_seeds
-                if seed.reason != "review-declined" and not any(
-                    # A positively preserved mixed cue resolves its own CTA evidence.
-                    held.reason in {"sponsor-prefix-programme-found", "programme-boundary"}
-                    and interval_contains(held.start_s, held.end_s, seed.start_s, seed.end_s)
-                    for held in analysis.audit.held_spans
-                )
-            ]
-            if (
-                any(span.reason in {"total-share-ceiling", "programme-boundary-conflict",
-                                    "boundary-review-unresolved", "credits-boundary-unresolved"}
-                    for span in analysis.audit.held_spans)
-                or unresolved_seeds
-            ):
-                # An unresolved span keeps the whole original and carries its
-                # reason in the report.
+            outcome = decide_ad_outcome(analysis.audit, detections, segments)
+            if outcome.keep_whole_reason is not None:
+                # The whole original is kept and the reason is in the report.
                 analysis = uncertain_ad_analysis(
-                    counting, segments, "ad review could not safely resolve all proposed commercial spans",
+                    counting, segments, outcome.keep_whole_reason,
                     held_spans=analysis.audit.held_spans, proposed_detections=detections, audit=analysis.audit,
                 )
                 return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
+            for seed in outcome.left_in:
+                _worker_reporting.progress(
+                    "ads.detect.seed.kept",
+                    f"unresolved commercial evidence IDs {seed.ids[0]}-{seed.ids[-1]} "
+                    f"({seed.start_s:.1f}-{seed.end_s:.1f}s) stays audible; other cuts apply",
+                )
         finally:
             try:
                 backend.close()

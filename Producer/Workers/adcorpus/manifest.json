@@ -753,6 +753,94 @@
       "recorded": [],
       "transcriptEndSeconds": 2978.32,
       "audioDurationSeconds": 2989.94068
+    },
+    {
+      "id": "smartless-every-break-kept-for-one-house-promo",
+      "itemID": "item-84d448bd824ae4f4f977139091cb029da4cdc2a17a384452861e45874c2cf0d6",
+      "show": "SmartLess",
+      "sourceHash": "sha256:148aa222dc008f55c6d244409d3e6ad6eeb418850ddb958b2ed849613f113f89",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 608,
+      "intentionalCondition": "A celebrity-interview episode with four produced advertising breaks: a three-spot preroll (cues 0-6), a four-spot mid-roll (cues 194-206), a three-spot mid-roll (cues 391-401) and a postroll of a network TV promotion then a brokerage spot (cues 594-607). The detector found every break, but its commercial-evidence nomination for one cue of the show's own live-show promotion (cue 16, 183.0-196.76) failed as not contiguous and was left unresolved. Under the old all-or-nothing outcome rule that one unresolved span, which overlaps no proposed cut, voided every confirmed cut, so the run ended uncertain and delivered the whole original with every break in it.",
+      "reportedBy": "David, 2026-10-22, during the 0.7.0 walkthrough on iPhone: 'This episode started with multiple ads' and 'There were multiple ads that were obvious.' Preparation run recorded in ZPREPARATIONRECORD for this itemID on 2026-10-19 (build 8ed9da77) ended with original audio and ads: ad review could not safely resolve all proposed commercial spans.",
+      "provenance": {
+        "labelledBy": "Labelled by reading the aligned transcript cue by cue on 2026-10-22, anchored by David's report that the episode opened with several ads. David was not asked to listen to any boundary.",
+        "labelledOn": "2026-10-22",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 608 cues, pinned from the live aligned cache on 2026-10-22.",
+        "labelSource": "Read from cue edges. Cues 7-12 (126.04-151.64) are an ambiguous stretch between the preroll and the show's own live-show promotion and are left unlabelled. Cues 13-22 are the show's own live-show promotion; self-promotion removal is off for this show, so they are unlabelled. The one-cue bumpers before and after each mid-roll (cues 193, 207, 390, 402), the show's closing credits (cue 592) and the stray cue 593 are unlabelled. Cues 199-200 are the lead-in of the mid-roll's legal-software spot and are labelled must-cut with the rest of the pod even though the recorded detector keeps them."
+      },
+      "expected": [
+        {
+          "start": 0.8,
+          "end": 118.64,
+          "label": "must-cut",
+          "why": "Preroll, cues 0-6: three produced spots back to back (insurance, a university, body care) before the show starts. This is what David heard first."
+        },
+        {
+          "start": 232.0,
+          "end": 247.44,
+          "label": "must-keep",
+          "why": "Programme, cues 23-27: the hosts' opening conversation."
+        },
+        {
+          "start": 1250.2,
+          "end": 1254.52,
+          "label": "must-keep",
+          "why": "Programme, cue 192: the last line of conversation before the first mid-roll."
+        },
+        {
+          "start": 1262.92,
+          "end": 1457.8,
+          "label": "must-cut",
+          "why": "Mid-roll, cues 194-206: four produced spots (an espresso machine, a social app's teen accounts, legal software, a university)."
+        },
+        {
+          "start": 1465.48,
+          "end": 1476.76,
+          "label": "must-keep",
+          "why": "Programme, cues 208-209: the conversation resuming after the first mid-roll."
+        },
+        {
+          "start": 2751.76,
+          "end": 2759.04,
+          "label": "must-keep",
+          "why": "Programme, cues 388-389: the conversation before the second mid-roll."
+        },
+        {
+          "start": 2764.08,
+          "end": 2959.92,
+          "label": "must-cut",
+          "why": "Mid-roll, cues 391-401: three produced spots (running shoes, a supplement, clothing)."
+        },
+        {
+          "start": 2968.24,
+          "end": 2978.88,
+          "label": "must-keep",
+          "why": "Programme, cue 403: the conversation resuming after the second mid-roll."
+        },
+        {
+          "start": 4130.84,
+          "end": 4156.52,
+          "label": "must-keep",
+          "why": "Programme, cues 589-591: the hosts' sign-off."
+        },
+        {
+          "start": 4189.64,
+          "end": 4283.28,
+          "label": "must-cut",
+          "why": "Postroll, cues 594-607: a network TV series promotion (cues 594-601) then a brokerage spot (cues 602-607) to the end of the transcript."
+        }
+      ],
+      "recorded": [],
+      "transcriptEndSeconds": 4283.28,
+      "audioDurationSeconds": 4285.805714285714,
+      "afterOutcomeRuleChange": {
+        "date": "2026-10-22",
+        "verdict": "fail, narrowed -- every break is now cut; keepLossSeconds 0.0, unknownCutSeconds 0.0",
+        "change": "decide_ad_outcome in Producer/Workers/wilted_worker/ad_outcome.py lets a review-unresolved seed that no cut overlaps or sits beside stay audible on its own while the confirmed cuts apply. Before it, this case removed 0% of every break.",
+        "remaining": "Two detector misses, not outcome-rule failures: the first mid-roll keeps 10.6s (cues 199-200, the legal-software spot's lead-in, which the sparse-prefix review called programme), and the postroll keeps 35.4s (the network TV promotion, cues 594-601, and the brokerage spot's first cue). The replay cut 0.8-118.6, 1262.9-1355.1, 1365.8-1457.8, 2764.1-2959.9 and 4225.0-4283.3.",
+        "reproduce": "Producer/Runtime/.venv/bin/python Producer/Workers/ad_corpus.py --mode replay --case smartless-every-break-kept-for-one-house-promo --json"
+      }
     }
   ],
   "decisions": [

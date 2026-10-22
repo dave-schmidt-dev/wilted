@@ -543,8 +543,18 @@ def replay_spans(
             raise ReplayRefused(error.code, str(error)) from error
         finally:
             backend.close()
+    # The app's last word on the analysis, so a replay scores what would be
+    # committed: an outcome that keeps the whole original cuts nothing.
+    from wilted_worker.ad_outcome import decide_ad_outcome  # noqa: PLC0415
+
+    detections = list(analysis.detections)
+    outcome = decide_ad_outcome(analysis.audit, detections, aligned)
+    if outcome.keep_whole_reason is not None:
+        analysis.audit.incomplete_error = outcome.keep_whole_reason
+        analysis.audit.warning = f"original audio includes ads: {outcome.keep_whole_reason}"
+        detections = []
     return (
-        [Span(float(ad.start_s), float(ad.end_s)) for ad in analysis.detections],
+        [Span(float(ad.start_s), float(ad.end_s)) for ad in detections],
         wp.serialize_ad_audit(analysis.audit),
     )
 

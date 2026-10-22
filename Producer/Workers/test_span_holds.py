@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import re
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stderr
 from unittest import mock
 
+from wilted_worker import ad_audit
 from wilted_worker import ad_removal
 from wilted_worker import boundary_review
 from wilted_worker import constants
+from wilted_worker import cue_timing
+from wilted_worker import gpu_admission
 from wilted_worker import span_bounds
 from wilted_worker import tail_recovery
 from wilted_worker.ad_audit import (
@@ -21,7 +26,7 @@ from wilted_worker.ad_audit import (
 )
 from worker_test_fake_ads import FakeAd, install_fake_ads
 from worker_test_fake_llm import FakeLLM
-from worker_test_support import FakeSegment
+from worker_test_support import FakeSegment, install_fake_wilted, wp
 
 
 class HeldSeedFallbackTests(unittest.TestCase):
@@ -110,6 +115,115 @@ class HeldSeedFallbackTests(unittest.TestCase):
         ])
         reextended = FakeAd(6.72, 200.0)
         self.assertEqual(boundary_review.reject_programme_conflicts([reextended], held), [])
+
+
+class LocalUnresolvedSeedTests(unittest.TestCase):
+    """One unresolved commercial span no cut reaches no longer voids every other cut.
+
+    The 2026-10-22 SmartLess regression: a single unresolved cue of the show's
+    own promotion kept four confirmed advertising breaks in the delivered audio.
+    """
+
+    CUT = FakeAd(480.0, 540.0, label="sponsor_read")
+
+    def detect(self, seeds, detections=(CUT,)):
+        segments = [FakeSegment(i * 60.0, (i + 1) * 60.0, f"cue {i}") for i in range(10)]
+        analysis = AdAnalysis(
+            detections=tuple(detections),
+            audit=AdAnalysisAudit(declined_commercial_evidence_seeds=tuple(seeds)),
+        )
+        with tempfile.TemporaryDirectory() as scratch:
+            audio = Path(scratch) / "source.mp3"
+            output = Path(scratch) / "cut.mp3"
+            audio.write_bytes(b"original audio")
+            install_fake_ads(FakeLLM())
+
+            def render(_audio, destination, _keeps):
+                Path(destination).write_bytes(b"rendered cut")
+
+            render_call = mock.Mock(side_effect=render)
+            progress = mock.Mock()
+            with (
+                mock.patch.object(ad_removal._worker_cue_timing, "probe_duration", return_value=600.0),
+                mock.patch.object(ad_removal, "analyze_ad_detections", return_value=analysis),
+                mock.patch.dict(ad_removal.__dict__, {"render_keep_segments": render_call}),
+                mock.patch.object(ad_removal._worker_reporting, "progress", progress),
+            ):
+                result = ad_removal.detect_and_cut(
+                    {"outputPath": str(output)}, audio, [], segments,
+                    model_lock=contextlib.nullcontext(),
+                )
+        stages = [call.args[0] for call in progress.call_args_list]
+        return audio, output, result, render_call, stages
+
+    @staticmethod
+    def seed(cue, reason="review-unresolved"):
+        return DeclinedCommercialEvidenceSeed(
+            ids=(cue,), start_s=cue * 60.0, end_s=(cue + 1) * 60.0, reason=reason
+        )
+
+    def test_an_isolated_unresolved_span_stays_and_the_confirmed_cut_applies(self):
+        _audio, output, result, render, stages = self.detect([self.seed(2)])
+        self.assertEqual(result[0], output)
+        render.assert_called_once()
+        audit = result[4]
+        self.assertIsNone(audit["warning"])
+        self.assertIsNone(audit["incompleteError"])
+        self.assertEqual(
+            [(s["reason"], s["ids"]) for s in audit["declinedCommercialEvidenceSeeds"]],
+            [("review-unresolved", [2])],
+        )
+        self.assertIn("ads.detect.seed.kept", stages)
+        self.assertNotIn("ads.uncertain", stages)
+
+    def test_doubt_beside_or_about_a_cut_still_keeps_the_whole_original(self):
+        cases = (
+            ("in the cue just before the cut", [self.seed(7)], (self.CUT,)),
+            ("in the cue just after the cut", [self.seed(9)], (self.CUT,)),
+            ("dropped after a proposed cut", [self.seed(2, "dropped-after-proposal")], (self.CUT,)),
+            ("isolated but beside another", [self.seed(2), self.seed(7)], (self.CUT,)),
+            ("isolated with nothing to cut", [self.seed(2)], ()),
+        )
+        for name, seeds, detections in cases:
+            with self.subTest(case=name):
+                audio, _output, result, render, stages = self.detect(seeds, detections)
+                self.assertEqual(result[:4], (audio, [], [], []))
+                self.assertIn("could not safely resolve", result[4]["incompleteError"])
+                render.assert_not_called()
+                self.assertIn("ads.uncertain", stages)
+
+
+    def test_an_isolated_unresolved_seed_stays_audible_while_an_independent_confirmed_ad_is_cut(self):
+        # The 2026-10-22 SmartLess regression: one unresolved commercial seed
+        # that no cut reaches used to keep every confirmed advertisement.
+        audio = Path(__file__)
+        segments = [FakeSegment(0, 10, "programme before"), FakeSegment(10, 20, "visit acme dot"),
+                    FakeSegment(20, 30, "com to get started today"), FakeSegment(30, 40, "programme after")]
+        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
+        install_fake_ads(FakeLLM(commercial_ad_ids=[1, 2], commercial_preservation_answer="invalid JSON"),
+                         detections=[FakeAd(400, 420)])
+
+        def render(command, *, timeout_s):
+            Path(command[-1]).write_bytes(b"rendered cut")
+
+        with tempfile.TemporaryDirectory() as scratch, redirect_stderr(io.StringIO()), \
+                mock.patch.object(ad_audit, "preflight_ad_removal"), \
+                mock.patch.object(cue_timing, "probe_duration",
+                                  side_effect=lambda path: 600.0 if Path(path) == audio else 580.0), \
+                mock.patch.object(gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()), \
+                mock.patch.object(span_bounds, "resize_oversized_ad_spans", side_effect=lambda _ads, _backend, _segments, spans, *_args, **_kwargs: (spans, frozenset((ad.start_s, ad.end_s) for ad in spans))), \
+                mock.patch.object(cue_timing, "_run_render_with_progress", side_effect=render):
+            result = wp.run({"protocolVersion": 2, "audioPath": str(audio),
+                             "outputPath": str(Path(scratch) / "cut.mp3"), "removeAds": True,
+                             "readableTranscript": False})
+        self.assertEqual(result["report"]["outcome"], "cut")
+        self.assertTrue(result["audioChanged"])
+        self.assertEqual(result["removedSeconds"], 20.0)
+        audit = result["report"]["audit"]
+        self.assertIsNone(audit["warning"])
+        self.assertIsNone(audit["incompleteError"])
+        self.assertEqual([(s["reason"], s["ids"]) for s in audit["declinedCommercialEvidenceSeeds"]],
+                         [("review-unresolved", [1, 2])])
 
 
 class SpanCeilingTests(unittest.TestCase):
