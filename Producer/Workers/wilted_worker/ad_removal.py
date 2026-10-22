@@ -434,7 +434,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                     analysis = uncertain_ad_analysis(counting, segments, str(error))
                     return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
                 raise
-            outcome = decide_ad_outcome(analysis.audit, detections, segments)
+            outcome = decide_ad_outcome(analysis.audit, detections)
             if outcome.keep_whole_reason is not None:
                 # The whole original is kept and the reason is in the report.
                 analysis = uncertain_ad_analysis(

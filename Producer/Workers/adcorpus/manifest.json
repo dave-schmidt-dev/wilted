@@ -837,10 +837,178 @@
       "afterOutcomeRuleChange": {
         "date": "2026-10-22",
         "verdict": "fail, narrowed -- every break is now cut at least in part (preroll 100%, first mid-roll 95%, second mid-roll 100%, postroll 62% removed); keepLossSeconds 0.0, unknownCutSeconds 0.0",
-        "change": "decide_ad_outcome in Producer/Workers/wilted_worker/ad_outcome.py lets a review-unresolved seed that no cut overlaps or sits beside stay audible on its own while the confirmed cuts apply. Before it, this case removed 0% of every break.",
+        "change": "decide_ad_outcome in Producer/Workers/wilted_worker/ad_outcome.py lets a review-unresolved seed that no cut overlaps stay audible on its own while the confirmed cuts apply (beside a cut too, since the later 2026-10-22 rescan). Before it, this case removed 0% of every break.",
         "remaining": "Two detector misses, not outcome-rule failures: the first mid-roll keeps 10.6s (cues 199-200, the legal-software spot's lead-in, which the sparse-prefix review called programme), and the postroll keeps 35.4s (the network TV promotion, cues 594-601, and the brokerage spot's first cue). The replay cut 0.8-118.6, 1262.9-1355.1, 1365.8-1457.8, 2764.1-2959.9 and 4225.0-4283.3.",
         "reproduce": "Producer/Runtime/.venv/bin/python Producer/Workers/ad_corpus.py --mode replay --case smartless-every-break-kept-for-one-house-promo --json"
       }
+    },
+    {
+      "id": "sysk-every-break-kept-for-one-closing-credit-cue",
+      "itemID": "item-7731b60e094394afe24113eed2f5e27e32990b227e04dd76d8a66edf09165a8f",
+      "show": "Stuff You Should Know",
+      "sourceHash": "sha256:2fa60963fe1048ffa4affe9bc15a177408e724afeb3df9f6e81dca9ec4b303bc",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 343,
+      "intentionalCondition": "A rerun episode with four produced breaks: a three-spot preroll, two three-spot mid-rolls and a three-spot postroll. The detector found every break, but its commercial-evidence nomination for cues 332-333, the hosts' contact address and the network credit just before the postroll, was left unresolved. Before 2026-10-22 an unresolved seed beside a cut kept the whole original, so every break played.",
+      "reportedBy": "David, 2026-10-22: 'There have been a LOT of ad removal failures' and 'I do not want the same errors going forward.' Found by the 2026-10-22 rescan, which replayed today's engine over every stored original transcript; the run ended with original audio and ads: ad review could not safely resolve all proposed commercial spans.",
+      "provenance": {
+        "labelledBy": "Labelled on 2026-10-22 by a reviewer agent reading the aligned transcript cue by cue for the per-feed placement study; boundaries checked against cue edges. David was not asked to listen to any boundary.",
+        "labelledOn": "2026-10-22",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 343 cues, pinned on 2026-10-22. The original audio has since been replaced by its prepared copy, so audioDurationSeconds is the last cue's end plus 0.5 s.",
+        "labelSource": "Read from cue edges. Rerun 'Selects' episode so a host intro (cues 7-11) precedes the show open. Cue 0 and cues 341-342 are the iHeart 'this is an iheart podcast / guaranteed human' ident (network branding, left unlabelled; cue 341 straddles spot tail and ident). Cue 1 starts with the ident slogan then a spot (kept in must-cut as mostly ad). Cues 227-228: hosts mention a ramen sponsor coupon code and say it is not an ad; ambiguous, unlabelled. Cues 19-39: audio-book / book chatter at episode start is the hosts' own promotion mixed with banter, unlabelled. Hosts' tease into each break (cues 109, 243) kept as programme."
+      },
+      "recorded": [],
+      "transcriptEndSeconds": 3289.6400000000003,
+      "audioDurationSeconds": 3290.14,
+      "expected": [
+        {
+          "start": 2.48,
+          "end": 104.16,
+          "label": "must-cut",
+          "why": "network-inserted produced spots: home-improvement retailer, spice brand, business software; opens after the iHeart ident (cue 0, 0.08-1.6s)"
+        },
+        {
+          "start": 104.8,
+          "end": 146.52,
+          "label": "must-keep",
+          "why": "host intro explaining this is a rerun/select episode"
+        },
+        {
+          "start": 152.04,
+          "end": 181.96,
+          "label": "must-keep",
+          "why": "show open and host banter"
+        },
+        {
+          "start": 1004.28,
+          "end": 1017.16,
+          "label": "must-keep",
+          "why": "programme up to and including the hosts' tease into the break"
+        },
+        {
+          "start": 1028.12,
+          "end": 1139.04,
+          "label": "must-cut",
+          "why": "produced spots: protein soda, spice brand, kids' fencing; no stinger, plain gap from 1017.16"
+        },
+        {
+          "start": 1149.52,
+          "end": 1157.6,
+          "label": "acceptable-cut",
+          "why": "hosts remind listeners to pre-order their book"
+        },
+        {
+          "start": 1159.6,
+          "end": 1179.8,
+          "label": "must-keep",
+          "why": "programme resumes with banter"
+        },
+        {
+          "start": 2256.28,
+          "end": 2285.16,
+          "label": "must-keep",
+          "why": "programme and host tease into last break"
+        },
+        {
+          "start": 2296.68,
+          "end": 2421.84,
+          "label": "must-cut",
+          "why": "produced spots: protein soda (shorter variant), spice brand, kids' fencing; repeats the first midroll copy"
+        },
+        {
+          "start": 2432.28,
+          "end": 2441.0,
+          "label": "must-keep",
+          "why": "hosts return and refer back to pre-break remark"
+        },
+        {
+          "start": 3170.48,
+          "end": 3190.48,
+          "label": "must-keep",
+          "why": "sign-off and contact address"
+        },
+        {
+          "start": 3190.48,
+          "end": 3191.44,
+          "label": "must-keep",
+          "why": "tail of the contact email address, the cue the unresolved seed starts on"
+        },
+        {
+          "start": 3194.24,
+          "end": 3203.76,
+          "label": "acceptable-cut",
+          "why": "network production credit and 'for more podcasts' line"
+        },
+        {
+          "start": 3210.0,
+          "end": 3281.56,
+          "label": "must-cut",
+          "why": "produced spots: protein soda, kids' fencing, a kids' app song; ends before cue 341 which blends spot tail with iHeart ident"
+        }
+      ]
+    },
+    {
+      "id": "headlines-every-ad-kept-for-the-sign-off-cue",
+      "itemID": "item-05a620d327e75b91d12a43e1b79079a7fd9c126bd43ae692cd829ce7d42fdf7f",
+      "show": "The Headlines",
+      "sourceHash": "sha256:64f276e114f3d7cadcc10fd25992b9238fd75c8a7bd02c7be7ad958b5308c86e",
+      "sttModel": "mlx-community/parakeet-tdt-1.1b",
+      "segmentCount": 56,
+      "intentionalCondition": "A daily news episode with a one-spot preroll and a one-spot postroll. The detector found both, but its commercial-evidence nomination for cue 47, the listener request fused with the sign-off, was left unresolved, and that cue sits directly before the postroll cut. Before 2026-10-22 an unresolved seed beside a cut kept the whole original, so both spots played.",
+      "reportedBy": "David, 2026-10-22: 'There have been a LOT of ad removal failures' and 'I do not want the same errors going forward.' Found by the 2026-10-22 rescan, which replayed today's engine over every stored original transcript; the run ended with original audio and ads: ad review could not safely resolve all proposed commercial spans.",
+      "provenance": {
+        "labelledBy": "Labelled on 2026-10-22 by a reviewer agent reading the aligned transcript cue by cue for the per-feed placement study; boundaries checked against cue edges. David was not asked to listen to any boundary.",
+        "labelledOn": "2026-10-22",
+        "inputIdentity": "Every timing is a cue boundary of the aligned-STT cache entry keyed by this case's sourceHash, produced by mlx-community/parakeet-tdt-1.1b over 56 cues, pinned on 2026-10-22. The original audio has since been replaced by its prepared copy, so audioDurationSeconds is the last cue's end plus 0.5 s.",
+        "labelSource": "Read from cue edges. Original download with ads. Cue 47, the rest of the listener ask fused with the sign-off, is labelled must-keep because it holds the sign-off; the ask alone would be acceptable-cut. It is the cue the unresolved seed covers."
+      },
+      "recorded": [],
+      "transcriptEndSeconds": 732.32,
+      "audioDurationSeconds": 732.82,
+      "expected": [
+        {
+          "start": 0.08,
+          "end": 15.04,
+          "label": "must-cut",
+          "why": "a streaming-video premium subscription spot voiced by a creator (rotating creator reads of one script), ~15 s"
+        },
+        {
+          "start": 17.84,
+          "end": 24.56,
+          "label": "must-keep",
+          "why": "programme cue (opening, break neighbour, or closing sign-off)"
+        },
+        {
+          "start": 28.72,
+          "end": 48.72,
+          "label": "must-keep",
+          "why": "programme cue (opening, break neighbour, or closing sign-off)"
+        },
+        {
+          "start": 646.72,
+          "end": 661.44,
+          "label": "must-keep",
+          "why": "programme cue (opening, break neighbour, or closing sign-off)"
+        },
+        {
+          "start": 666.16,
+          "end": 681.68,
+          "label": "acceptable-cut",
+          "why": "host's request for listener questions to email in; the show's own audience ask"
+        },
+        {
+          "start": 682.24,
+          "end": 696.64,
+          "label": "must-keep",
+          "why": "programme cue (opening, break neighbour, or closing sign-off)"
+        },
+        {
+          "start": 702.72,
+          "end": 732.32,
+          "label": "must-cut",
+          "why": "a university brand spot, 8 short cues, ~29.6 s, 6 s after the sign-off"
+        }
+      ]
     }
   ],
   "decisions": [

@@ -548,7 +548,7 @@ def replay_spans(
     from wilted_worker.ad_outcome import decide_ad_outcome  # noqa: PLC0415
 
     detections = list(analysis.detections)
-    outcome = decide_ad_outcome(analysis.audit, detections, aligned)
+    outcome = decide_ad_outcome(analysis.audit, detections)
     if outcome.keep_whole_reason is not None:
         analysis.audit.incomplete_error = outcome.keep_whole_reason
         analysis.audit.warning = f"original audio includes ads: {outcome.keep_whole_reason}"

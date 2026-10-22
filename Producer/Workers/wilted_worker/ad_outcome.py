@@ -34,9 +34,12 @@ _RESOLVING_HOLD_REASONS = frozenset(
 )
 
 # The only unresolved seed that can stay audible on its own: review neither
-# confirmed nor declined it, and no proposed cut reached it. A seed a proposed
-# cut overlapped (`dropped-after-proposal`) is doubt about that cut's own
-# extent, so it still keeps the whole original.
+# confirmed nor declined it. A seed beside a cut stays in too: the cut was
+# verified on its own, so leaving the seed costs at most the seed's seconds,
+# where keeping the whole original kept every advertisement (2026-10-22 rescan:
+# 11 of 93 episodes, 2,277 of 2,821 seconds recovered). A seed a proposed cut
+# overlapped (`dropped-after-proposal`), or a final cut overlaps, is doubt
+# about that cut's own extent, so it still keeps the whole original.
 _LOCAL_SEED_REASON = "review-unresolved"
 
 
@@ -63,35 +66,18 @@ def _resolved_by_hold(
     )
 
 
-def _touches_a_cut(seed: DeclinedCommercialEvidenceSeed, detections, segments) -> bool:
-    """Whether a cut overlaps the seed or either cue beside it.
-
-    A seed next to a cut may be that advertisement's unconfirmed edge, so the
-    cut's own boundary is in doubt and the seed cannot be judged on its own.
-    """
-    first = max(seed.ids[0] - 1, 0)
-    last = min(seed.ids[-1] + 1, len(segments) - 1)
-    start = min(seed.start_s, float(segments[first].start_s))
-    end = max(seed.end_s, float(segments[last].end_s))
-    return any(
-        intervals_overlap(float(ad.start_s), float(ad.end_s), start, end)
-        for ad in detections
-    )
-
-
-def decide_ad_outcome(audit: AdAnalysisAudit, detections, segments) -> AdOutcome:
+def decide_ad_outcome(audit: AdAnalysisAudit, detections) -> AdOutcome:
     """Decide whether the analysis may be cut.
 
     Args:
         audit: The analysis audit, with held spans and declined evidence seeds.
         detections: The final detections the cut would apply.
-        segments: The aligned segments the analysis read, indexed by cue ID.
 
     Returns:
         The outcome. Any held span in `WHOLE_ORIGINAL_HOLD_REASONS` keeps the
         whole original, as does any unresolved seed unless every one is a
-        `review-unresolved` seed that touches no cut and there is at least one
-        cut to apply. Those seeds stay audible in `left_in` and the cuts stand.
+        `review-unresolved` seed no cut overlaps and there is at least one cut
+        to apply. Those seeds stay audible in `left_in` and the cuts stand.
     """
     if any(span.reason in WHOLE_ORIGINAL_HOLD_REASONS for span in audit.held_spans):
         return AdOutcome(UNRESOLVED_SPANS_REASON)
@@ -102,10 +88,13 @@ def decide_ad_outcome(audit: AdAnalysisAudit, detections, segments) -> AdOutcome
     )
     if not unresolved:
         return AdOutcome(None)
-    local = (
-        bool(detections)
-        and all(seed.reason == _LOCAL_SEED_REASON for seed in unresolved)
-        and not any(_touches_a_cut(seed, detections, segments) for seed in unresolved)
+    local = bool(detections) and all(
+        seed.reason == _LOCAL_SEED_REASON
+        and not any(
+            intervals_overlap(float(ad.start_s), float(ad.end_s), seed.start_s, seed.end_s)
+            for ad in detections
+        )
+        for seed in unresolved
     )
     if not local:
         return AdOutcome(UNRESOLVED_SPANS_REASON)

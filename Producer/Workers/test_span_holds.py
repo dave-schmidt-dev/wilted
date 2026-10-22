@@ -12,6 +12,7 @@ from unittest import mock
 
 from wilted_worker import ad_audit
 from wilted_worker import ad_removal
+from wilted_worker.ad_outcome import AdOutcome, decide_ad_outcome
 from wilted_worker import boundary_review
 from wilted_worker import constants
 from wilted_worker import cue_timing
@@ -71,11 +72,25 @@ class HeldSeedFallbackTests(unittest.TestCase):
             self.assertNotEqual(result[0], audio)
             render.assert_called_once()
 
+        # A seed outside the programme cue is not resolved by it: it stays
+        # audible on its own while the cut applies.
+        outside = DeclinedCommercialEvidenceSeed(
+            ids=(0,), start_s=40.0, end_s=48.0, reason="review-unresolved"
+        )
+        outcome = decide_ad_outcome(
+            AdAnalysisAudit(
+                declined_commercial_evidence_seeds=(outside,),
+                held_spans=(HeldAdSpan(20.0, 30.0, "programme-boundary"),),
+            ),
+            (FakeAd(400.0, 420.0, label="sponsor_read"),),
+        )
+        self.assertEqual(outcome, AdOutcome(None, left_in=(outside,)))
+
         failing_cases = (
             (
-                "seed outside cue",
+                "seed under the cut",
                 DeclinedCommercialEvidenceSeed(
-                    ids=(0,), start_s=40.0, end_s=48.0, reason="review-unresolved"
+                    ids=(0,), start_s=405.0, end_s=415.0, reason="review-unresolved"
                 ),
                 HeldAdSpan(20.0, 30.0, "programme-boundary"),
             ),
@@ -176,12 +191,39 @@ class LocalUnresolvedSeedTests(unittest.TestCase):
         self.assertIn("ads.detect.seed.kept", stages)
         self.assertNotIn("ads.uncertain", stages)
 
-    def test_doubt_beside_or_about_a_cut_still_keeps_the_whole_original(self):
+    def test_an_unresolved_span_beside_a_cut_stays_and_the_cut_applies(self):
+        # The 2026-10-22 rescan: a single unresolved cue at the start of a
+        # postroll kept every confirmed break in 11 of 93 episodes.
         cases = (
-            ("in the cue just before the cut", [self.seed(7)], (self.CUT,)),
-            ("in the cue just after the cut", [self.seed(9)], (self.CUT,)),
+            ("in the cue just before the cut", [self.seed(7)]),
+            ("in the cue just after the cut", [self.seed(9)]),
+            ("isolated and beside the cut", [self.seed(2), self.seed(7)]),
+        )
+        for name, seeds in cases:
+            with self.subTest(case=name):
+                _audio, output, result, render, stages = self.detect(seeds)
+                self.assertEqual(result[0], output)
+                render.assert_called_once()
+                self.assertIsNone(result[4]["incompleteError"])
+                self.assertEqual(stages.count("ads.detect.seed.kept"), len(seeds))
+                self.assertNotIn("ads.uncertain", stages)
+
+    def test_a_seed_ending_where_the_cut_starts_is_beside_it_not_under_it(self):
+        # The Headlines rescan case: the seed's end and the postroll cut's start
+        # differ by one unit in the last place after aligned-cue arithmetic.
+        seed = DeclinedCommercialEvidenceSeed(
+            ids=(47,), start_s=682.24, end_s=696.6400000000001, reason="review-unresolved"
+        )
+        outcome = decide_ad_outcome(
+            AdAnalysisAudit(declined_commercial_evidence_seeds=(seed,)),
+            (FakeAd(696.64, 732.82, label="sponsor_read"),),
+        )
+        self.assertEqual(outcome, AdOutcome(None, left_in=(seed,)))
+
+    def test_doubt_about_a_cut_or_with_nothing_to_cut_keeps_the_whole_original(self):
+        cases = (
             ("dropped after a proposed cut", [self.seed(2, "dropped-after-proposal")], (self.CUT,)),
-            ("isolated but beside another", [self.seed(2), self.seed(7)], (self.CUT,)),
+            ("unresolved beside a dropped proposal", [self.seed(2), self.seed(7, "dropped-after-proposal")], (self.CUT,)),
             ("isolated with nothing to cut", [self.seed(2)], ()),
         )
         for name, seeds, detections in cases:
@@ -191,7 +233,6 @@ class LocalUnresolvedSeedTests(unittest.TestCase):
                 self.assertIn("could not safely resolve", result[4]["incompleteError"])
                 render.assert_not_called()
                 self.assertIn("ads.uncertain", stages)
-
 
     def test_an_isolated_unresolved_seed_stays_audible_while_an_independent_confirmed_ad_is_cut(self):
         # The 2026-10-22 SmartLess regression: one unresolved commercial seed
