@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from . import break_edges as _worker_break_edges
+from . import break_starts as _worker_break_starts
 from . import commercial_recovery as _worker_commercial_recovery
 from . import commercial_seeds as _worker_commercial_seeds
 from . import cue_timing as _worker_cue_timing
@@ -189,9 +190,11 @@ def analyze_ad_detections(
     detections = _worker_tail_recovery.trim_credit_span_heads(
         ads_module, auditing_backend, segments, detections, held_spans
     )
+    head_trim_before = [float(ad.start_s) for ad in detections]
     detections = _worker_break_edges.trim_edge_cues_across_gaps(
         ads_module, segments, detections, frozenset(explicit_anchor_ids)
     )
+    released_heads = tuple((before, float(ad.start_s)) for ad, before in zip(detections, head_trim_before) if float(ad.start_s) > before)
     detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
         ads_module, auditing_backend, segments, detections, total_seconds,
         rebase_anchor_ids=prefix_rebase_anchor_ids, held_spans=held_spans,
@@ -203,6 +206,9 @@ def analyze_ad_detections(
     detections = recover_adjacent_ad_pod_continuations(
         ads_module, auditing_backend, segments, detections, total_seconds, held_spans
     )
+    detections = _worker_break_starts.recover_late_break_starts(
+        ads_module, auditing_backend, segments, detections, total_seconds, held_spans,
+        frozenset(explicit_anchor_ids), released_heads)
     detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
     detections = reject_programme_conflicts(detections, held_spans)
     dropped_anchor_ids = [

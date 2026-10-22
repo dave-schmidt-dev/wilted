@@ -77,6 +77,15 @@ AD_POD_CONTINUATION_MAX_SEGMENTS = 12
 
 AD_POD_CONTINUATION_MAX_SECONDS = 90.0
 
+# Late-start floor sweep (2026-10-22): 4.0 s fixes 29 of 32 late starts and exposes 14 correct cuts.
+BREAK_START_GAP_MIN_SECONDS = 4.0
+
+# Late-start floor sweep window: at most 16 cues of lead-in are ever reviewed.
+BREAK_START_MAX_SEGMENTS = 16
+
+# Late-start floor sweep window: at most 90 s of lead-in are ever reviewed.
+BREAK_START_MAX_SECONDS = 90.0
+
 POSTROLL_RECOVERY_MAX_SECONDS = 300.0
 
 POSTROLL_RECOVERY_MAX_SEGMENTS = 96

@@ -85,6 +85,16 @@ interview count as programme. A second produced advertisement, a second sponsor 
 programme resumption is visible in the supplied excerpt. Use only a supplied ID or -1.
 Return only the strict JSON object {"program_start_id": ID}, with no prose or Markdown."""
 
+AD_BREAK_START_PROMPT = """\
+The excerpt is the run-up to a verified commercial in a podcast. The cut's own cues are marked
+"verified commercial"; the unmarked cues before them are the programme leading up to the break.
+Find the first supplied ID at which the advertising actually begins. A host-read lead-in that names
+or introduces the sponsor and leads directly into the marked commercial is part of the advertising.
+The programme's own discussion, the host's own sign-off, and a teaser for this show's own next
+episode are not advertising. Return -1 when the advertising begins at the marked commercial's first
+cue. Use only a supplied ID or -1.
+Return only the strict JSON object {"ad_start_id": ID}, with no prose or Markdown."""
+
 POSTROLL_PROGRAM_END_PROMPT = """\
 The excerpt is the end of a podcast episode. Advertising is sometimes appended after the program
 finishes: a produced commercial, or a promotional spot for a different show, voiced by someone who
