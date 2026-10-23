@@ -234,7 +234,7 @@ final class TransportGateTests: XCTestCase {
         XCTAssertEqual(gaps, [5, 10, 20])
         let recovered = await attempt(gate, calls: calls)
         XCTAssertNil(recovered)
-        clock.advance(TransportGate.quietWindow(afterWait: 20))
+        clock.advance(TransportGate.quietWindow)
         _ = await attempt(gate, calls: calls, failing: limited)
         let restarted = await gate.state
         XCTAssertEqual(restarted?.consecutiveFailures, 1, "pressure after a quiet spell starts the count over")
@@ -260,9 +260,59 @@ final class TransportGateTests: XCTestCase {
         XCTAssertEqual(gaps, [5, 10, 20, 40])
     }
 
-    func testTheQuietWindowIsARoundOrTheLastWait() {
-        XCTAssertEqual(TransportGate.quietWindow(afterWait: 5), SyncCadence.tickInterval)
-        XCTAssertEqual(TransportGate.quietWindow(afterWait: 300), 300)
+    func testTheQuietWindowIsTwoRoundsWhateverTheLastWait() {
+        XCTAssertEqual(TransportGate.quietWindow, 2 * SyncCadence.tickInterval)
+        XCTAssertLessThan(TransportGate.quietWindow, SyncCadence.backoffCap)
+    }
+
+    /// The 2026-10-23 iCloud outage: after the Mac reached the 300 s cap, one call failed every two or
+    /// three minutes. Each error must start the count over, not hold the Mac at the cap again.
+    func testScatteredOutageErrorsAfterTheCapStartOverInsteadOfHoldingAtTheCap() async {
+        let clock = TestClock()
+        let gate = gate(clock)
+        let calls = Counter()
+        let waits = await escalateToTheCap(gate, clock: clock, calls: calls)
+        XCTAssertEqual(waits.last, SyncCadence.backoffCap)
+        clock.advance(150)
+        let outage = FakeCloudKitError.cloudKit(code: 6, message: "Service Unavailable. Retry after 19 seconds.")
+        _ = await attempt(gate, calls: calls, failing: outage)
+        let state = await gate.state
+        XCTAssertEqual(state?.consecutiveFailures, 1)
+        XCTAssertEqual(state?.retryAt.timeIntervalSince(clock.now), 19, "the server's wait, not the cap")
+        clock.advance(19.1)
+        let probe = await attempt(gate, calls: calls)
+        XCTAssertNil(probe)
+        clock.advance(150)
+        _ = await attempt(gate, calls: calls, failing: limited)
+        let next = await gate.state
+        XCTAssertEqual(next?.consecutiveFailures, 1)
+        XCTAssertEqual(next?.retryAt.timeIntervalSince(clock.now), SyncCadence.backoffBase)
+    }
+
+    func testPressureInsideTheQuietWindowAfterTheCapStaysAtTheCap() async {
+        let clock = TestClock()
+        let gate = gate(clock)
+        let calls = Counter()
+        let waits = await escalateToTheCap(gate, clock: clock, calls: calls)
+        clock.advance(TransportGate.quietWindow - 0.1)
+        _ = await attempt(gate, calls: calls, failing: limited)
+        let state = await gate.state
+        XCTAssertEqual(state?.consecutiveFailures, waits.count + 1)
+        XCTAssertEqual(state?.retryAt.timeIntervalSince(clock.now), SyncCadence.backoffCap)
+    }
+
+    /// Fails probes until the wait reaches the cap, then lets one probe through and returns the waits.
+    private func escalateToTheCap(_ gate: TransportGate, clock: TestClock, calls: Counter) async -> [TimeInterval] {
+        var waits: [TimeInterval] = []
+        repeat {
+            _ = await attempt(gate, calls: calls, failing: limited)
+            let state = await gate.state
+            waits.append(state!.retryAt.timeIntervalSince(clock.now))
+            clock.advance(waits.last! + 0.1)
+        } while waits.last! < SyncCadence.backoffCap
+        let probe = await attempt(gate, calls: calls)
+        XCTAssertNil(probe)
+        return waits
     }
 
     func testWhileAProbeIsInFlightOtherCallersStillWait() async {

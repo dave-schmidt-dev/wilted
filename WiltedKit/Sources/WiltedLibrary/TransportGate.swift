@@ -131,16 +131,19 @@ public struct TransportGateState: Sendable, Equatable {
 /// succeeded and a later one was refused, resetting on that success closed the gate for the base wait
 /// every time, so a refused phone retried every 5 s for good and kept iCloud limiting it. The count
 /// starts over only when pressure returns after the gate stayed open for `quietWindow`.
+///
+/// The window is fixed rather than as long as the last wait. When it grew with the wait, a capped
+/// 300 s closure needed 300 s with no error to reset, so an iCloud outage that failed one call every
+/// two or three minutes held the Mac at the cap for hours. A server that names a longer wait still
+/// gets it through `delay`.
 public actor TransportGate {
     private let clock: @Sendable () -> Date
     private let onChange: (@Sendable (TransportGateState?) -> Void)?
     private var closed: TransportGateState?
     private var failures = 0
     private var probing = false
-    /// The wait of the current or last closure.
-    private var closedWait: TimeInterval = 0
-    /// When the last closure ended, and how long it had waited.
-    private var reopened: (at: Date, afterWait: TimeInterval)?
+    /// When the last closure ended.
+    private var reopenedAt: Date?
 
     /// - Parameters:
     ///   - onChange: called when the gate closes (with the new state) and when it reopens (nil).
@@ -159,11 +162,9 @@ public actor TransportGate {
         return min(3_600, max(backoff, retryAfter ?? 0))
     }
 
-    /// How long the gate must stay open after a closure that waited `wait` before new pressure counts
-    /// from one again: a whole sync round, or the last wait when that was longer.
-    static func quietWindow(afterWait wait: TimeInterval) -> TimeInterval {
-        max(SyncCadence.tickInterval, wait)
-    }
+    /// How long the gate must stay open before new pressure counts from one again: two sync rounds,
+    /// so a device refused every round keeps backing off while scattered errors start over.
+    static let quietWindow: TimeInterval = 2 * SyncCadence.tickInterval
 
     public var state: TransportGateState? { closed }
 
@@ -197,7 +198,7 @@ public actor TransportGate {
         guard isProbe || closed == nil else { return }
         guard closed != nil else { return }
         closed = nil
-        reopened = (clock(), closedWait)
+        reopenedAt = clock()
         onChange?(nil)
     }
 
@@ -209,13 +210,12 @@ public actor TransportGate {
         guard isProbe || closed == nil else { return }
         guard let pressure = TransportPressureClassifier.classify(error) else { return }
         let now = clock()
-        if closed == nil, let reopened, now.timeIntervalSince(reopened.at) >= Self.quietWindow(afterWait: reopened.afterWait) {
+        if closed == nil, let reopenedAt, now.timeIntervalSince(reopenedAt) >= Self.quietWindow {
             failures = 0
         }
-        reopened = nil
+        reopenedAt = nil
         failures += 1
         let wait = Self.delay(failures: failures, retryAfter: pressure.retryAfter)
-        closedWait = wait
         let state = TransportGateState(
             kind: pressure.kind, retryAt: now.addingTimeInterval(wait), consecutiveFailures: failures)
         closed = state
