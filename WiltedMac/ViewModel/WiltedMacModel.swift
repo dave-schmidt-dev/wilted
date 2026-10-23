@@ -154,6 +154,12 @@ final class WiltedMacModel {
     }
     var articles: [WiltedMacArticle] = []
     var episodes: [WiltedMacEpisode] = []
+    /// Episodes whose newest preparation succeeded but kept every advertisement
+    /// (`adRemovalOutcome == "uncertain"`), read from the store with each
+    /// library load. The only episodes the Larder offers to prepare again.
+    var episodesKeepingAds: Set<String> = []
+    /// The confirmation before re-preparing every episode that kept its ads.
+    var isConfirmingPrepareAgainAll = false
     var episodeAssociations: [String: LibraryEpisodeAssociation] = [:]
     var podcastOperationMessage: String?
     /// The episode an Undo button beside `podcastOperationMessage` would

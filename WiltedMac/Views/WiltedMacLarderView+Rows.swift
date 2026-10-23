@@ -133,6 +133,11 @@ extension WiltedMacLarderView {
         .accessibilityIdentifier("wilted-larder-row-\(episode.id)")
         .contextMenu {
             WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id)
+            if model.canPrepareAgain(episode) {
+                Divider()
+                Button("Prepare Again") { model.prepareAgain(episode) }
+                    .accessibilityIdentifier("wilted-larder-prepare-again-\(episode.id)")
+            }
             if WiltedMacEpisodeIdentityReviewRequest.isAvailable(for: episode) {
                 Divider()
                 Button("Review Possible Duplicate\u{2026}") {

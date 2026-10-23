@@ -147,6 +147,15 @@ struct WiltedMacApp: App {
                 Button("Add\u{2026}") { model.presentAddSheet() }
                     .keyboardShortcut("n", modifiers: .command)
             }
+            // Episodes an older preparation left with every ad: the row's own
+            // Prepare Again, applied to the whole set. The confirmation names
+            // the count and the kept listening position before anything runs.
+            CommandGroup(after: .newItem) {
+                Button("Prepare Again Episodes With Ads (\(model.episodesToPrepareAgain.count))\u{2026}") {
+                    model.isConfirmingPrepareAgainAll = true
+                }
+                .disabled(model.episodesToPrepareAgain.isEmpty)
+            }
             // The sidebar is a column of the window, not a split view, so the
             // system's Toggle Sidebar has nothing to act on: this is the
             // command, with the same ⌃⌘S.
