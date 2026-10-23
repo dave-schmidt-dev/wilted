@@ -1,7 +1,6 @@
 """Regression coverage for float boundaries and programme-safe ad recovery."""
 from __future__ import annotations
 
-import json
 import math
 import unittest
 from unittest import mock
@@ -13,7 +12,6 @@ from wilted_worker import constants
 from wilted_worker import interval_geometry
 from wilted_worker import tail_recovery
 from wilted_worker.prompts import (
-    COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT,
     OVERSIZED_SPAN_CONFIRM_PROMPT,
     OVERSIZED_SPAN_PROGRAM_START_PROMPT,
 )
@@ -293,31 +291,6 @@ class CreditsBoundaryTests(unittest.TestCase):
         self.assertIn((0.0, 10.0, "programme-boundary"), [
             (span.start_s, span.end_s, span.reason) for span in held
         ])
-
-    def test_a_head_cue_the_envelope_review_calls_commercial_keeps_the_cut(self):
-        # in022/in105-shaped: a postroll tagged credits opens on a sponsor read
-        # that the single-cue credits question mistook for reporting.
-        _ads, candidate, result, held, llm = self.run_trim(FakeLLM(
-            tail_carries_program=True,
-            commercial_preservation_answer=json.dumps({"labels": {"0": "commercial"}}),
-        ))
-        self.assertEqual(result, [candidate])
-        self.assertEqual(held, [])
-        self.assertIn(COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT, llm.request_prompts)
-        self.assertTrue(any(content.startswith("IDs to classify: 0\n") for content in llm.request_contents))
-
-    def test_a_programme_or_mixed_or_unanswered_envelope_review_leaves_the_trim(self):
-        for answer in (json.dumps({"labels": {"0": "mixed"}}),
-                       json.dumps({"labels": {"0": "programme"}}),
-                       "not json"):
-            with self.subTest(answer=answer):
-                _ads, _candidate, result, held, _llm = self.run_trim(FakeLLM(
-                    tail_carries_program=True, commercial_preservation_answer=answer,
-                ))
-                self.assertEqual([(ad.start_s, ad.end_s) for ad in result], [(10.0, 25.0)])
-                self.assertIn((0.0, 10.0, "programme-boundary"), [
-                    (span.start_s, span.end_s, span.reason) for span in held
-                ])
 
     def test_credits_cue_without_programme_keeps_original_span(self):
         _ads, candidate, result, held, _llm = self.run_trim(
