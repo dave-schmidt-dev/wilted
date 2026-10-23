@@ -133,10 +133,13 @@ final class WiltedMacCompletionOptimisticTests: XCTestCase {
         model.skipEpisode(refreshed)
         await WiltedMacHeadless.drainDecisions(model)
         let second = try XCTUnwrap(model.undoableSkip)
+        XCTAssertEqual(model.podcastOperationMessage,
+                       "Marked \(episode.title) completed. Undo completion is available for 10 seconds.")
         clock.advance(10)
         await WiltedMacHeadless.eventually("the expiry task commits the durable seal") {
             model.manualCompletionExpiryTask == nil && model.undoableSkip == nil
         }
+        XCTAssertNil(model.podcastOperationMessage, "the Undo notice leaves the header when its window closes")
         model.undoSkipEpisode(second)
         await WiltedMacHeadless.drainDecisions(model)
         let retired = try await fixture.store.removalKind(for: id)

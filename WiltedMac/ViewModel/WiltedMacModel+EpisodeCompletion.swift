@@ -15,6 +15,7 @@ import CloudKit
 
 extension WiltedMacModel {
     static let completionRetryMessage = "Some completions are still being finished. Wilted will retry."
+    static let completionUndoNotice = " Undo completion is available for 10 seconds."
 
     /// Remove and Mark completed both record the owner's finish, retaining media.
     func skipEpisode(_ episode: WiltedMacEpisode, requireStarted: Bool = false) {
@@ -109,6 +110,10 @@ extension WiltedMacModel {
                 _ = try await store.sealExpiredManualCompletions(at: self.manualCompletionNow())
                 if let operationID = self.undoableSkip?.manualCompletionOperationID,
                    (currentWindows[operationID] ?? .distantPast) <= self.manualCompletionNow() { self.undoableSkip = nil }
+                // The header must not keep offering an Undo the window no longer allows.
+                if self.undoableSkip == nil, self.podcastOperationMessage?.hasSuffix(WiltedMacModel.completionUndoNotice) == true {
+                    self.podcastOperationMessage = nil
+                }
                 await self.reloadLibraryRows()
                 await self.releaseWaitingEpisodes(feedIDs: Set(self.episodes.compactMap(\.feedID)))
                 self.manualCompletionExpiryDeadline = nil
@@ -146,8 +151,8 @@ extension WiltedMacModel {
             await refreshPodcastQueueState()
             await reloadLibraryRows()
             podcastOperationMessage = committed.count == 1
-                ? "Marked \(committedEpisode.title) completed. Undo completion is available for 10 seconds."
-                : "Marked \(committed.count) episodes completed. Undo completion is available for 10 seconds."
+                ? "Marked \(committedEpisode.title) completed.\(WiltedMacModel.completionUndoNotice)"
+                : "Marked \(committed.count) episodes completed.\(WiltedMacModel.completionUndoNotice)"
             return committed.count == candidates.count
         } catch {
             for episode in candidates { rollbackEpisodeCompletionProjection(episode.id, title: episode.title) }
