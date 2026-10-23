@@ -6,7 +6,7 @@ import WiltedLibrary
 private let outboxLog = Logger(subsystem: "com.zerodelta.wilted", category: "LibraryOutbox")
 
 /// The phone's intents that the Mac does not have yet, on disk, so a kill or a crash before the send
-/// cannot lose a decision, an Add or a media acknowledgement. The model writes the whole unsent set
+/// cannot lose a decision, an Add, a media acknowledgement or ad feedback. The model writes the whole unsent set
 /// before it sends and rewrites it without an intent once the transport accepted that intent; at the
 /// next launch the saved intents are tracked again and the next sync round sends them with their own
 /// ids, which the Mac applies at most once.
@@ -40,8 +40,10 @@ struct LibraryIntentOutbox: Sendable {
         var adds: [Add] = []
         /// `mediaCached` intents, one per entry, ordered by intent id.
         var acknowledgements: [LibraryIntent] = []
+        /// `adFeedback` intents in the order they were made.
+        var adFeedback: [LibraryIntent] = []
 
-        var intents: [LibraryIntent] { decisions.map(\.intent) + adds.map(\.intent) + acknowledgements }
+        var intents: [LibraryIntent] { decisions.map(\.intent) + adds.map(\.intent) + acknowledgements + adFeedback }
 
         var intentIDs: Set<String> { Set(intents.map(\.id)) }
     }
@@ -135,6 +137,8 @@ private struct File: Codable {
     let decisions: [Decision]
     let adds: [Add]
     let acknowledgements: [LibraryIntent]
+    /// Added after version 1 shipped, so optional: a file without it still loads, and the version stays 1.
+    let adFeedback: [LibraryIntent]?
 
     init(_ saved: LibraryIntentOutbox.Saved) {
         version = LibraryIntentOutbox.version
@@ -146,6 +150,7 @@ private struct File: Codable {
         }
         adds = saved.adds.map { Add(intent: $0.intent, title: $0.title) }
         acknowledgements = saved.acknowledgements
+        adFeedback = saved.adFeedback.isEmpty ? nil : saved.adFeedback
     }
 
     var saved: LibraryIntentOutbox.Saved {
@@ -158,6 +163,6 @@ private struct File: Codable {
                     isSilent: $0.isSilent, retiresEpisode: $0.retiresEpisode, supersededByRestore: $0.supersededByRestore)
             },
             adds: adds.map { LibraryIntentOutbox.Add(intent: $0.intent, title: $0.title) },
-            acknowledgements: acknowledgements)
+            acknowledgements: acknowledgements, adFeedback: adFeedback ?? [])
     }
 }

@@ -28,6 +28,10 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case subscribe(feedURL: URL)
         /// Add the single article at an HTTPS URL. The Mac answers with an `IntentOutcome`.
         case addArticle(url: URL)
+        /// The listener's verdict on ad removal at `playedSeconds` of the prepared revision `revisionID`
+        /// they were hearing. The Mac maps it onto the original episode and files it for review; the
+        /// intent id is the feedback id. The Mac answers with an `IntentOutcome`.
+        case adFeedback(entryID: ItemID, revisionID: RevisionID, kind: AdFeedbackKind, playedSeconds: Double)
         /// An action this build cannot decode (a newer phone sent it). Decode-side only: the
         /// transport builds it so the Mac can answer `unsupportedAction`, and `LibraryIntent`
         /// refuses to encode it, so it is never written back as a valid action.
@@ -43,7 +47,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             case let .addArticle(url):
                 return (try? ItemID.derive(from: url)) ?? Self.invalidURLEntryID
             case let .requestMedia(entryID), let .mediaCached(entryID, _, _), let .keep(entryID), let .skip(entryID),
-                 let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _):
+                 let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _),
+                 let .adFeedback(entryID, _, _, _):
                 return entryID
             case .unsupported:
                 return Self.invalidURLEntryID
@@ -53,7 +58,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// True for the decision actions the Mac answers with an `IntentOutcome`.
         public var isDecision: Bool {
             switch self {
-            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle: return true
+            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle, .adFeedback: return true
             case .requestMedia, .mediaCached: return false
             case .unsupported: return true
             }
@@ -81,6 +86,9 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         guard !deviceID.isEmpty else { throw DomainError.invalidValue(field: "deviceID", reason: "must not be empty") }
         if case let .reorder(entryID, after) = action, after == entryID {
             throw DomainError.invalidValue(field: "afterEntryID", reason: "an entry cannot be placed after itself")
+        }
+        if case let .adFeedback(_, _, _, playedSeconds) = action, !(playedSeconds.isFinite && playedSeconds >= 0) {
+            throw DomainError.invalidValue(field: "playedSeconds", reason: "must be finite and non-negative")
         }
         if let url = action.addURL {
             guard let canonical = try? ItemID.canonicalURL(url) else {
@@ -155,6 +163,16 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
     /// Ask the Mac to add the single article at `url`.
     public static func addArticle(url: URL, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
         try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .addArticle(url: url))
+    }
+
+    /// The listener's ad-removal feedback, with a fresh idempotency id that doubles as the feedback id.
+    public static func adFeedback(
+        entryID: ItemID, revisionID: RevisionID, kind: AdFeedbackKind, playedSeconds: Double,
+        deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString
+    ) throws -> LibraryIntent {
+        try LibraryIntent(
+            id: id, deviceID: deviceID, createdAt: createdAt,
+            action: .adFeedback(entryID: entryID, revisionID: revisionID, kind: kind, playedSeconds: playedSeconds))
     }
 
     /// The stand-in for an intent whose action this build cannot decode, built from the fields
@@ -254,8 +272,11 @@ public enum IntentRetention {
     /// The Mac rejects an intent older than this without applying it.
     public static let maximumAge: TimeInterval = 7 * 24 * 60 * 60
 
+    /// Ad feedback never expires: it records what the listener heard, which stays true however
+    /// long the phone was offline.
     public static func isExpired(_ intent: LibraryIntent, now: Date) -> Bool {
-        now.timeIntervalSince(intent.createdAt) > maximumAge
+        if case .adFeedback = intent.action { return false }
+        return now.timeIntervalSince(intent.createdAt) > maximumAge
     }
 
     /// The rejection the Mac publishes for an expired decision intent, or nil while it is still live.

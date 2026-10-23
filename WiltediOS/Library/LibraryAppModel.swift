@@ -87,6 +87,13 @@ final class LibraryAppModel: ObservableObject {
     @Published var adds: [PendingAdd] = [] {
         didSet { persistOutbox() }
     }
+    /// Ad-removal feedback not sent yet, oldest first; written by `LibraryAppModel+AdFeedback`. Each press
+    /// waits out its undo window before it is sent. Saved in the outbox.
+    @Published var adFeedback: [PendingAdFeedback] = [] {
+        didSet { persistOutbox() }
+    }
+    /// What the full player says right after a feedback press, with its Undo; nil once it has gone.
+    @Published var adFeedbackAcknowledgement: LibraryAdFeedbackAcknowledgement?
     /// Why the last add was not sent, in words; nil when it was.
     @Published var addNotice: String?
     /// The add actions the Mac says it applies (`supportedIntentActions`); nil until read.
@@ -353,6 +360,7 @@ final class LibraryAppModel: ObservableObject {
         completedDisplayContent = nil
         discardDecisionsAfterAccountChange()
         discardAddsAfterAccountChange()
+        discardAdFeedbackAfterAccountChange()
         await discardMediaAfterAccountChange()
         discardDeviceLinkAfterAccountChange()
         await refresh()
@@ -464,6 +472,7 @@ final class LibraryAppModel: ObservableObject {
         }
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
         await resolveAdds(outcomes: polled?.outcomes ?? [])
+        await sendDueAdFeedback()
         guard await current() else { return }
         if let failure {
             if !(failure is TransportThrottled) { LibraryRoundStop.logFailure(failure) }

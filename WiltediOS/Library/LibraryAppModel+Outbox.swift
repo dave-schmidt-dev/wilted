@@ -54,6 +54,7 @@ extension LibraryAppModel {
                 return decision
             }
             adds = saved.adds.map { PendingAdd(intent: $0.intent, title: $0.title) }
+            adFeedback = saved.adFeedback.map { PendingAdFeedback(intent: $0, sendAfter: .distantPast) }
             unacknowledgedMedia = Dictionary(
                 saved.acknowledgements.map { ($0.action.entryID, $0) }, uniquingKeysWith: { first, _ in first })
             outboxLog.notice("Restored \(saved.intentIDs.count, privacy: .public) unsent intents from the last run.")
@@ -75,6 +76,7 @@ extension LibraryAppModel {
         state.batching = true
         decisions.removeAll { foreign.contains($0.id) }
         adds.removeAll { foreign.contains($0.id) }
+        adFeedback.removeAll { foreign.contains($0.id) }
         unacknowledgedMedia = unacknowledgedMedia.filter { !foreign.contains($0.value.id) }
         state.batching = false
         persistOutbox()
@@ -97,10 +99,11 @@ extension LibraryAppModel {
                     retiresEpisode: $0.retiresEpisode, supersededByRestore: $0.supersededByRestore)
             },
             adds: adds.filter { !$0.isSent }.map { LibraryIntentOutbox.Add(intent: $0.intent, title: $0.title) },
-            acknowledgements: unacknowledgedMedia.values.sorted { $0.id < $1.id })
+            acknowledgements: unacknowledgedMedia.values.sorted { $0.id < $1.id },
+            adFeedback: adFeedback.map(\.intent))
     }
 
-    /// Writes the unsent set when it changed. Called whenever `decisions`, `adds` or
+    /// Writes the unsent set when it changed. Called whenever `decisions`, `adds`, `adFeedback` or
     /// `unacknowledgedMedia` change, so a new intent is on disk before its send starts and leaves the
     /// file only once the transport accepted it (or the listener cancelled it, or the account was reset).
     func persistOutbox() {

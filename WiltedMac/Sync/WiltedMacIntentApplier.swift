@@ -47,10 +47,13 @@ protocol WiltedMacDecisionHost: AnyObject {
     /// Classifies `url` and, when it is not a feed, starts the single-article path; answers what
     /// became of it. `.added` means the Mac accepted the article and began preparing it.
     func addArticleLink(_ url: URL) async -> WiltedMacAddResult
+    /// Files one `adFeedback` intent in the review inbox; true once it is saved (or was already).
+    func recordAdFeedback(_ intent: LibraryIntent) async -> Bool
 }
 
 extension WiltedMacDecisionHost {
     func applyOwnerIntent(_ intent: LibraryIntent) async -> WiltedMacDatedDecisionResult? { nil }
+    func recordAdFeedback(_ intent: LibraryIntent) async -> Bool { false }
 }
 
 /// What the Mac's add path concluded for one phone `subscribe` or `addArticle` request.
@@ -243,6 +246,10 @@ final class WiltedMacIntentApplier {
             case .isAFeed, .notAPodcastFeed, .noAudio: return try rejected(Self.reasonIsAFeed)
             case .failed: return try rejected(IntentOutcome.reasonFailed)
             }
+        // Feedback is about audio the phone played, which may have left the Larder since; it is
+        // filed whatever the entry's state.
+        case .adFeedback:
+            return try result(await host.recordAdFeedback(intent))
         default: break
         }
         let entryID = intent.action.entryID
@@ -309,7 +316,7 @@ final class WiltedMacIntentApplier {
             return try result(await host.moveQueueEntry(from: index, to: index, resulting: host.decisionQueue))
         case .unsupported:
             return try rejected(IntentOutcome.reasonUnsupportedAction)
-        case .requestMedia, .mediaCached, .subscribe, .addArticle:
+        case .requestMedia, .mediaCached, .subscribe, .addArticle, .adFeedback:
             return try rejected(notApplicable)
         }
     }

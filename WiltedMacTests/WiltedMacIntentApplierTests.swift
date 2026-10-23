@@ -35,6 +35,12 @@ final class FakeDecisionHost: WiltedMacDecisionHost {
         calls.append("addArticle \(url.absoluteString)")
         return addResult
     }
+    /// What the model reports for an `adFeedback` intent.
+    var filesFeedback = true
+    func recordAdFeedback(_ intent: LibraryIntent) async -> Bool {
+        calls.append("adFeedback \(intent.id)")
+        return filesFeedback
+    }
 
     private func record(_ name: String, _ entryID: ItemID) -> Bool {
         calls.append("\(name) \(entryID.rawValue)")

@@ -52,6 +52,8 @@ final class LibraryPlayer: ObservableObject {
         var artworkURL: URL? = nil
         /// An audiobook volume's chapters in start order; empty for everything else.
         var chapters: [AudiobookChapter] = []
+        /// The prepared podcast revision the file holds, which ad feedback is about; nil for anything else.
+        var feedbackRevisionID: RevisionID? = nil
     }
 
     enum Status: Equatable {

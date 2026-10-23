@@ -114,6 +114,9 @@ struct WiltedMacNowPlayingPane: View {
             transportRow
             WiltedMacSpeedSaveLine(model: model)
             scrubber
+            #if canImport(WiltedProducer)
+            WiltedMacAdFeedbackBar(model: model)
+            #endif
             if showsStatus {
                 HStack(spacing: WiltedTheme.Spacing.small) {
                     Text(model.playbackStatusMessage)

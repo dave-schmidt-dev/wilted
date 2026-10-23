@@ -5,6 +5,7 @@ import os
 
 #if canImport(WiltedProducer)
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 #endif
 
@@ -437,8 +438,7 @@ extension WiltedMacModel {
         for removed: PreparationStatus.PreparationTimeline.RemovedInterval,
         in timeline: PreparationStatus.PreparationTimeline
     ) -> TimeInterval {
-        timeline.kept.last(where: { $0.originalEndSeconds <= removed.originalStartSeconds })
-            .map { $0.outputStartSeconds + ($0.originalEndSeconds - $0.originalStartSeconds) } ?? 0
+        timeline.preparedSeam(for: removed)
     }
 
 #endif
