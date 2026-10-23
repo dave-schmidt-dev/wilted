@@ -125,6 +125,19 @@ public enum DurableFile {
         #endif
     }
 
+    /// Flushes a file another process wrote, and the directory entry that now
+    /// names it, so a file moved into place survives power loss before any
+    /// record points at it.
+    public static func persist(_ url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try flush(handle.fileDescriptor)
+        try syncDirectory(url.deletingLastPathComponent())
+        #if DEBUG
+        Self.observer?(.fullSync(url))
+        #endif
+    }
+
     /// Flushes a file descriptor to stable storage with F_FULLFSYNC, falling
     /// back to `fsync` on a volume that refuses it.
     private static func flush(_ fd: Int32) throws {

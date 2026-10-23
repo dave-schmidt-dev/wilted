@@ -132,6 +132,19 @@ extension LocalLibraryStore {
     /// immutable, so the old one is removed rather than edited, along with the
     /// transcript that described audio that is gone.
     ///
+    /// What a replacement expects the superseded revision's saved place to be.
+    /// The place it carries was computed from a read before the save; another
+    /// device can save a newer place in between, and the save deletes the
+    /// superseded place, so a caller that carries a place says which one.
+    public enum SupersededPlaybackExpectation: Equatable, Sendable {
+        case unchecked
+        /// The place (or its absence, nil) the carried place was computed from.
+        case unchanged(PlaybackState?)
+    }
+
+    /// The superseded revision's place changed after the carry was computed.
+    public struct SupersededPlaybackMoved: Error, Equatable {}
+
     /// Everything lands in one save. A partial commit here is the case that
     /// loses an episode: the caller deletes the original file once this
     /// returns, and it must never delete a file the store still points at.
@@ -143,6 +156,7 @@ extension LocalLibraryStore {
         superseding superseded: RevisionID,
         outcome: PodcastPreparationOutcome,
         carrying playback: PlaybackState? = nil,
+        expectingSupersededPlayback expected: SupersededPlaybackExpectation = .unchecked,
         lifetimeStatistics: [LifetimeStatisticContribution] = []
     ) throws {
         guard transcript.itemID == revision.itemID, transcript.revisionID == revision.revisionID else {
@@ -161,6 +175,12 @@ extension LocalLibraryStore {
         }
         guard superseded != revision.revisionID else {
             throw LocalLibraryStoreError.immutableRevision(revision.revisionID, site: .replacementSupersedesItself)
+        }
+        // Checked inside the save's actor turn: no other write can land between
+        // this read and the delete of the superseded place below.
+        if case .unchanged(let snapshot) = expected,
+           try playbackState(for: revision.itemID, revisionID: superseded) != snapshot {
+            throw SupersededPlaybackMoved()
         }
         let context = ModelContext(container)
         let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())

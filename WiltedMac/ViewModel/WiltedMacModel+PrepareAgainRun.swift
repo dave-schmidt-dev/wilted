@@ -187,7 +187,11 @@ extension WiltedMacModel {
                         }
                     }
                 },
-                policy: policy, attempt: attempt, onJournaled: onJournaled
+                policy: policy, attempt: attempt,
+                // Loaded in the player since the run began: the cut is not
+                // swapped under the playhead.
+                mayReplace: { await MainActor.run { self.currentPodcastEpisodeID != episodeID } },
+                onJournaled: onJournaled
             )
             switch outcome {
             case .prepared(let result):
@@ -200,6 +204,10 @@ extension WiltedMacModel {
                 return refusal.message
             }
         } catch {
+            if error is CancellationError, currentPodcastEpisodeID == episode.id {
+                prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(
+                    phase: .note("Playing now, so it was left as it is"))
+            }
             // A failed run counts as tried; the offer should reflect it now,
             // not at the next library load.
             if let store { await refreshEpisodesToPrepareAgain(from: store, readEpoch: libraryReadEpoch) }

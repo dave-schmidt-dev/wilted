@@ -55,11 +55,14 @@ extension PodcastPreparationPipeline {
     ///
     /// Staging that fails is journalled without engine evidence, so it does
     /// not count as a try: nothing was decided, and the episode stays offered.
+    /// `mayReplace` is asked just before the swap; false ends the run as
+    /// cancelled (the Mac says no while the cut is loaded in its player).
     public func prepareAgain(
         candidate: PodcastPrepareAgainCandidate,
         stage: @escaping @Sendable () async throws -> StagedPodcastAudio,
         policy: PodcastPreparationPolicySnapshot? = nil,
         attempt: PreparationAttemptIdentity? = nil,
+        mayReplace: @escaping @Sendable () async -> Bool = { true },
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void = { _ in },
         onJournaled: @escaping @Sendable () async -> Void = {}
     ) async throws -> PodcastPrepareAgainOutcome {
@@ -173,7 +176,8 @@ extension PodcastPreparationPipeline {
             }
             let result = try await commitAgain(payload, episode: episode, staged: staged,
                                                stagedRevision: stagedRevision, old: old, kept: kept,
-                                               exact: exact, policy: policy, onStatus: report)
+                                               exact: exact, policy: policy, mayReplace: mayReplace,
+                                               onStatus: report)
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: nil,
                                   revisionID: result.revision.revisionID, summary: result.summary,
@@ -215,6 +219,7 @@ extension PodcastPreparationPipeline {
         kept: [PodcastKeepInterval]?,
         exact: Bool,
         policy: PodcastPreparationPolicySnapshot,
+        mayReplace: @escaping @Sendable () async -> Bool,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PodcastPreparationResult {
         let itemID = episode.itemID
@@ -249,9 +254,14 @@ extension PodcastPreparationPipeline {
         // The same bytes as the cut already in the library: the revision is the
         // ready one, so there is nothing to supersede and the place is where it was.
         let isSameAsCut = revisionID == old.revision.revisionID
-        let carried = isSameAsCut ? nil : try await carriedPlaybackAgain(
-            from: old.revision, to: revision, kept: kept, exact: exact,
-            forward: payload.audioChanged ? (payload.keepIntervals, payload.silenceTrims) : nil)
+        let forward = payload.audioChanged ? (keeps: payload.keepIntervals, silence: payload.silenceTrims) : nil
+        // Carried once before anything moves, so a place that cannot be carried
+        // is refused with no file placed in the library.
+        var carry = CarriedPlace(carried: nil, from: nil)
+        if !isSameAsCut {
+            carry = try await carriedPlaybackAgain(from: old.revision, to: revision, kept: kept, exact: exact,
+                                                   forward: forward)
+        }
 
         let finalURL: URL
         if let existing = try await store.readyRevision(for: itemID, revisionID: revisionID)?.mediaURL {
@@ -262,44 +272,77 @@ extension PodcastPreparationPipeline {
         }
         // The final file exists before its revision record does; see `commit`.
         store.inFlightMedia.begin(finalURL)
-        defer { store.inFlightMedia.end(finalURL) }
-        if finalURL != source {
-            if FileManager.default.fileExists(atPath: finalURL.path) {
-                guard try Self.contentHash(of: finalURL) == hash else {
-                    throw PodcastPreparationError.preparedAudioUnreadable
+        var placed = false
+        let transcript: Transcript
+        do {
+            if finalURL != source {
+                if FileManager.default.fileExists(atPath: finalURL.path) {
+                    guard try Self.contentHash(of: finalURL) == hash else {
+                        throw PodcastPreparationError.preparedAudioUnreadable
+                    }
+                    try FileManager.default.removeItem(at: source)
+                } else {
+                    try FileManager.default.moveItem(at: source, to: finalURL)
+                    placed = true
                 }
-                try FileManager.default.removeItem(at: source)
-            } else {
-                try FileManager.default.moveItem(at: source, to: finalURL)
             }
-        }
+            // The worker only renames its output, and the cut is deleted once
+            // the save lands: a power loss must not take back the file the
+            // new record names.
+            try DurableFile.persist(finalURL)
 
-        let transcript = try Self.transcript(from: payload, itemID: itemID, revisionID: revisionID,
+            transcript = try Self.transcript(from: payload, itemID: itemID, revisionID: revisionID,
                                              updatedAt: Timestamp(now()))
-        let outcome = PodcastPreparationOutcome(
-            episodeID: itemID, revisionID: revisionID, policyDigest: Self.policyDigest(policy),
-            pipelineFingerprint: Self.semanticFingerprintResolution,
-            semanticVersion: Self.semanticVersion, producedAt: Timestamp(now()))
-        var lifetimeStatistics = [LifetimeStatisticContribution(
-            id: LifetimeStatisticEventID.podcastAudioProcessed(sourceRevisionID: stagedRevision.revisionID),
-            kind: .audioProcessed, seconds: stagedRevision.durationSeconds)]
-        if payload.adRemovalOutcome == "cut", payload.audioChanged,
-           payload.removedSeconds.isFinite, payload.removedSeconds > 0 {
-            lifetimeStatistics.append(LifetimeStatisticContribution(
-                id: LifetimeStatisticEventID.podcastAdRemoved(revisionID: revisionID),
-                kind: .confirmedAdTimeRemoved, seconds: payload.removedSeconds))
+            let outcome = PodcastPreparationOutcome(
+                episodeID: itemID, revisionID: revisionID, policyDigest: Self.policyDigest(policy),
+                pipelineFingerprint: Self.semanticFingerprintResolution,
+                semanticVersion: Self.semanticVersion, producedAt: Timestamp(now()))
+            var lifetimeStatistics = [LifetimeStatisticContribution(
+                id: LifetimeStatisticEventID.podcastAudioProcessed(sourceRevisionID: stagedRevision.revisionID),
+                kind: .audioProcessed, seconds: stagedRevision.durationSeconds)]
+            if payload.adRemovalOutcome == "cut", payload.audioChanged,
+               payload.removedSeconds.isFinite, payload.removedSeconds > 0 {
+                lifetimeStatistics.append(LifetimeStatisticContribution(
+                    id: LifetimeStatisticEventID.podcastAdRemoved(revisionID: revisionID),
+                    kind: .confirmedAdTimeRemoved, seconds: payload.removedSeconds))
+            }
+            if isSameAsCut {
+                try await store.saveReadyRevision(revision, mediaURL: finalURL, transcript: transcript,
+                                                  outcome: outcome, lifetimeStatistics: lifetimeStatistics)
+            } else {
+                let download = try PodcastDownload(episodeID: itemID, status: .completed, bytesReceived: byteCount,
+                                                   expectedByteCount: byteCount, localURL: finalURL, contentHash: hash,
+                                                   updatedAt: Timestamp(now()))
+                // The save deletes the cut's place. One the phone synced since
+                // the carry was read is carried again rather than lost.
+                var retries = 0
+                while true {
+                    // Stop, or the cut being loaded into the player, wins up to
+                    // the save itself.
+                    try Task.checkCancellation()
+                    guard await mayReplace() else { throw CancellationError() }
+                    do {
+                        try await store.replaceReadyRevision(
+                            revision, mediaURL: finalURL, transcript: transcript, download: download,
+                            superseding: old.revision.revisionID, outcome: outcome, carrying: carry.carried,
+                            expectingSupersededPlayback: .unchanged(carry.from),
+                            lifetimeStatistics: lifetimeStatistics)
+                        break
+                    } catch is LocalLibraryStore.SupersededPlaybackMoved where retries < 2 {
+                        retries += 1
+                        carry = try await carriedPlaybackAgain(from: old.revision, to: revision, kept: kept,
+                                                               exact: exact, forward: forward)
+                    }
+                }
+            }
+            store.inFlightMedia.end(finalURL)
+        } catch {
+            store.inFlightMedia.end(finalURL)
+            // A file placed for a save that never landed belongs to nothing.
+            if placed { await store.deleteMediaIfUnreferenced([finalURL]) }
+            throw error
         }
-        if isSameAsCut {
-            try await store.saveReadyRevision(revision, mediaURL: finalURL, transcript: transcript,
-                                              outcome: outcome, lifetimeStatistics: lifetimeStatistics)
-        } else {
-            let download = try PodcastDownload(episodeID: itemID, status: .completed, bytesReceived: byteCount,
-                                               expectedByteCount: byteCount, localURL: finalURL, contentHash: hash,
-                                               updatedAt: Timestamp(now()))
-            try await store.replaceReadyRevision(
-                revision, mediaURL: finalURL, transcript: transcript, download: download,
-                superseding: old.revision.revisionID, outcome: outcome, carrying: carried,
-                lifetimeStatistics: lifetimeStatistics)
+        if !isSameAsCut {
             // Only now is the successor durable, so only now may the cut go: a
             // crash before this leaves the cut in place to be swept as an
             // orphan or reused, never a ready revision without a file.
@@ -308,8 +351,8 @@ extension PodcastPreparationPipeline {
         return finish(payload, revision: revision, mediaURL: finalURL, transcript: transcript, onStatus: onStatus)
     }
 
-    /// The listener's place on the old cut, moved onto the new audio, or nil
-    /// when there is none to move.
+    /// The listener's place on the old cut, moved onto the new audio (nil
+    /// when there is none to move), with the place it was read from.
     ///
     /// Read again here rather than taken from the start of the run: the phone
     /// can sync a new place while the original downloads. A place past the start
@@ -321,9 +364,9 @@ extension PodcastPreparationPipeline {
         kept: [PodcastKeepInterval]?,
         exact: Bool,
         forward: (keeps: [PodcastKeepInterval], silence: [Range<Double>])?
-    ) async throws -> PlaybackState? {
+    ) async throws -> CarriedPlace {
         guard let existing = try await store.playbackState(for: previous.itemID, revisionID: previous.revisionID) else {
-            return nil
+            return CarriedPlace(carried: nil, from: nil)
         }
         var position = 0.0
         if existing.positionSeconds > 0 {
@@ -332,17 +375,26 @@ extension PodcastPreparationPipeline {
                 throw PrepareAgainRefused(reason: .publisherFileChanged)
             }
             if let forward {
-                guard let mapped = PodcastKeepInterval.mapSnapping(original, through: forward.keeps,
-                                                                   silence: forward.silence) else { return nil }
-                position = mapped
+                // Past the new cut's last kept audio is its end: the listener
+                // was in a closing break, and their place stays at the end.
+                position = PodcastKeepInterval.mapSnapping(original, through: forward.keeps, silence: forward.silence)
+                    ?? revision.durationSeconds
             } else {
                 position = original
             }
         }
-        return try PlaybackState(
+        let carried = try PlaybackState(
             itemID: revision.itemID, revisionID: revision.revisionID, sessionID: existing.sessionID,
             sequence: existing.sequence + 1, positionSeconds: min(position, revision.durationSeconds),
             durationSeconds: revision.durationSeconds, completed: existing.completed, intent: existing.intent,
             deviceID: existing.deviceID, updatedAt: Timestamp(now()))
+        return CarriedPlace(carried: carried, from: existing)
     }
+}
+
+/// A place moved onto new audio, and the saved place it was computed from,
+/// which the save checks is still the one on record.
+private struct CarriedPlace {
+    let carried: PlaybackState?
+    let from: PlaybackState?
 }

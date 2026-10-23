@@ -263,6 +263,69 @@ extension PodcastPreparationPipelineTests {
         #expect(!fixture.store.inFlightMedia.isInFlight(staged.url))
     }
 
+    /// The phone can sync a newer place on the old cut after the carry was
+    /// read. The save deletes the old cut's place, so it must carry that newer
+    /// one, not the place read before it. The new file is flushed to disk
+    /// before any record names it.
+    @Test func aPlaceSyncedJustBeforeTheSwapIsTheOneCarried() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let old = try await olderCut(fixture, position: 4.5)
+        let target = try await candidate(fixture)
+        let staged = try fixture.staged(Fixture.originalBody)
+        let store = fixture.store
+        let episodeID = fixture.episodeID
+        let synced = PhoneSyncOnce()
+        let flushes = DurableFileEventRecorder()
+
+        let outcome = try await DurableFile.$observer.withValue({ flushes.append($0) }) {
+            try await fixture.pipeline(Self.recuttingWorker()).prepareAgain(
+                candidate: target, stage: { staged },
+                mayReplace: {
+                    await synced.once {
+                        try? await store.save(playback: try PlaybackState(
+                            itemID: episodeID, revisionID: old.revision.revisionID, sessionID: "phone-session",
+                            sequence: 9, positionSeconds: 6.0, durationSeconds: 7.5, completed: false,
+                            intent: .progress, deviceID: "phone-1",
+                            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_400))))
+                    }
+                    return true
+                })
+        }
+        guard case .prepared(let result) = outcome else { Issue.record("expected a new cut, got \(outcome)"); return }
+
+        // 6.0 on the old cut is 10.5 on the original, which is 6.5 on the new cut.
+        let carried = try #require(try await fixture.store.playbackState(
+            for: fixture.episodeID, revisionID: result.revision.revisionID))
+        #expect(carried.positionSeconds == 6.5)
+        #expect(carried.sessionID == "phone-session")
+        #expect(flushes.fullSyncSnapshots.contains { $0.url == result.mediaURL && $0.exists })
+    }
+
+    /// Stop, or the Mac loading the cut into its player, after the engine has
+    /// run but before the swap leaves the library exactly as it was.
+    @Test func aRunStoppedAtTheSwapLeavesTheCutAndNoNewFile() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let old = try await olderCut(fixture, position: 4.5)
+        let oldURL = try #require(try await fixture.store.readyRevision(for: fixture.episodeID)).mediaURL
+        let target = try await candidate(fixture)
+        let staged = try fixture.staged(Fixture.originalBody)
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await fixture.pipeline(Self.recuttingWorker()).prepareAgain(
+                candidate: target, stage: { staged }, mayReplace: { false })
+        }
+        let ready = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
+        #expect(ready.revision.revisionID == old.revision.revisionID)
+        #expect(try await fixture.store.playbackState(
+            for: fixture.episodeID, revisionID: old.revision.revisionID)?.positionSeconds == 4.5)
+        #expect(mediaFiles(fixture) == [oldURL.lastPathComponent], "the placed file is removed again")
+        #expect(stagedFiles(fixture).isEmpty)
+        let again = try await candidate(fixture)
+        #expect(again.readyRevision == target.readyRevision, "a stopped run is not a try")
+    }
+
     @Test func anUncertainResultKeepsTheCut() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }
@@ -347,5 +410,15 @@ extension PodcastPreparationPipelineTests.Fixture {
         store.inFlightMedia.begin(url)
         return StagedPodcastAudio(url: url, contentHash: Self.contentHash(body), byteCount: Int64(body.count),
                                   durationSeconds: duration, mediaType: "audio/mpeg")
+    }
+}
+
+/// Runs a side effect the first time it is asked.
+private actor PhoneSyncOnce {
+    private var done = false
+    func once(_ body: () async -> Void) async {
+        guard !done else { return }
+        done = true
+        await body()
     }
 }
