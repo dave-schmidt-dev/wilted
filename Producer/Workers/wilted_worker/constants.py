@@ -89,6 +89,9 @@ BREAK_START_MAX_SECONDS = 90.0
 # Late-start lead-in cue review: programme cues shown before the chosen start, as in the 2026-10-22 prefix-check replay.
 BREAK_START_CONTEXT_IDS = 4
 
+# Credits head veto: cues of context on each side of the head cue the envelope classifier reads.
+CREDITS_HEAD_CONTEXT_IDS = 2
+
 POSTROLL_RECOVERY_MAX_SECONDS = 300.0
 
 POSTROLL_RECOVERY_MAX_SEGMENTS = 96

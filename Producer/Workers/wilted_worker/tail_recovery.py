@@ -22,12 +22,13 @@ from pathlib import Path
 from . import reporting as _worker_reporting
 from .ad_audit import HeldAdSpan
 from .boundary_review import complete_fragment_visible
-from .commercial_preservation import recovered_confidence
+from .commercial_preservation import _generate_review, recovered_confidence
 from .commercial_seeds import _constrained_id
-from .constants import MAXIMUM_SINGLE_AD_SHARE, POSTROLL_ALREADY_CLAIMED_SECONDS, POSTROLL_CLEAN_BREAK_SECONDS, POSTROLL_LEADER_MAX_SECONDS, POSTROLL_RECOVERY_MAX_SECONDS, POSTROLL_RECOVERY_MAX_SEGMENTS, POSTROLL_RECOVERY_MINIMUM_SECONDS, STRADDLING_TAIL_MAX_PROBES
+from .constants import CREDITS_HEAD_CONTEXT_IDS, MAXIMUM_SINGLE_AD_SHARE, POSTROLL_ALREADY_CLAIMED_SECONDS, POSTROLL_CLEAN_BREAK_SECONDS, POSTROLL_LEADER_MAX_SECONDS, POSTROLL_RECOVERY_MAX_SECONDS, POSTROLL_RECOVERY_MAX_SEGMENTS, POSTROLL_RECOVERY_MINIMUM_SECONDS, STRADDLING_TAIL_MAX_PROBES
 from .edge_recovery import _program_start_inside_answer
 from .interval_geometry import intervals_overlap
-from .prompts import CREDITS_BOUNDARY_PROGRAMME_PROMPT, BOUNDARY_SEGMENT_TAIL_PROMPT, POSTROLL_CONFIRM_PROMPT, POSTROLL_PROGRAM_END_PROMPT
+from .prompts import COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT, CREDITS_BOUNDARY_PROGRAMME_PROMPT, BOUNDARY_SEGMENT_TAIL_PROMPT, POSTROLL_CONFIRM_PROMPT, POSTROLL_PROGRAM_END_PROMPT
+from .review_formats import _commercial_preservation_labels, _commercial_preservation_response_format
 from .sponsor_evidence import explicit_sponsor_anchor_ids
 
 def trim_straddling_span_tails(ads_module, backend, segments, detections, opening_pattern, held_spans=None):
@@ -332,6 +333,36 @@ def recover_transcript_end_postroll(ads_module, backend, segments, detections, t
     ])
 
 
+def _credits_head_is_commercial(ads_module, backend, segments, cue_id):
+    """Return True only when the envelope classifier labels the head cue commercial.
+
+    The postroll pass tags every ending it recovers as credits, so the credits
+    head question also sees postrolls that open on a sponsor read. Asked alone
+    whether such a cue holds reporting or discussion, the model said yes to a
+    refugee-agency appeal (in022) and a credit-union spot (in105), and the
+    trim handed each read's first cue back to the programme. The envelope
+    question names advertising and credits explicitly, so its "commercial"
+    vetoes the trim. Any failure answers False and the trim stands.
+    """
+    context_ids = range(max(0, cue_id - CREDITS_HEAD_CONTEXT_IDS),
+                        min(len(segments), cue_id + CREDITS_HEAD_CONTEXT_IDS + 1))
+    rendered = "\n".join(
+        ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
+        + (segments[segment_id].text or "")
+        for segment_id in context_ids
+    )
+    try:
+        response, _tokens = _generate_review(
+            backend, COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT,
+            f"IDs to classify: {cue_id}\n{rendered}",
+            response_format=_commercial_preservation_response_format((cue_id,)),
+        )
+        return _commercial_preservation_labels(response, (cue_id,))[str(cue_id)] == "commercial"
+    except Exception as error:  # noqa: BLE001 - an unanswered veto leaves the programme protected
+        _worker_reporting.progress("ads.detect.credits.veto-skipped", f"envelope review failed: {type(error).__name__}")
+        return False
+
+
 def trim_credit_span_heads(ads_module, backend, segments, detections, held_spans=None):
     """Preserve a credits cut's first cue when it also contains programme speech."""
     kept = []
@@ -367,6 +398,13 @@ def trim_credit_span_heads(ads_module, backend, segments, detections, held_spans
                 held_spans.append(HeldAdSpan(float(ad.start_s), float(ad.end_s), "credits-boundary-unresolved"))
             continue
         if not parsed["carries_program"]:
+            kept.append(ad)
+            continue
+        if _credits_head_is_commercial(ads_module, backend, segments, cue_id):
+            _worker_reporting.progress(
+                "ads.detect.credits.commercial",
+                f"credits boundary cue {cue_id} is a commercial; keeping the cut",
+            )
             kept.append(ad)
             continue
         if held_spans is not None:
