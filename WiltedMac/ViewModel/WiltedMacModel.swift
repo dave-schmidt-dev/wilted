@@ -154,10 +154,12 @@ final class WiltedMacModel {
     }
     var articles: [WiltedMacArticle] = []
     var episodes: [WiltedMacEpisode] = []
-    /// Episodes whose newest preparation succeeded but kept every advertisement
-    /// (`adRemovalOutcome == "uncertain"`), read from the store with each
-    /// library load. The only episodes the Larder offers to prepare again.
-    var episodesKeepingAds: Set<String> = []
+    /// Episodes the current engine has not prepared, by id, read from the store
+    /// with each library load. The only episodes the Larder offers to prepare
+    /// again; each says what the run needs (see `PodcastPrepareAgainCandidate`).
+    var prepareAgainCandidates: [String: PodcastPrepareAgainCandidate] = [:]
+    /// What a prepare-again run is saying on its Larder row, by episode id.
+    var prepareAgainRows: [String: WiltedMacPrepareAgainRow] = [:]
     /// The confirmation before re-preparing every episode that kept its ads.
     var isConfirmingPrepareAgainAll = false
     var episodeAssociations: [String: LibraryEpisodeAssociation] = [:]

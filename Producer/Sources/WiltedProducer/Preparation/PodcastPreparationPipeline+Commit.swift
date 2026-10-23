@@ -166,7 +166,7 @@ extension PodcastPreparationPipeline {
         )
     }
 
-    private func finish(
+    func finish(
         _ payload: WorkerPayload,
         revision: AudioRevision,
         mediaURL: URL,
@@ -277,7 +277,7 @@ extension PodcastPreparationPipeline {
         workDirectory.appendingPathComponent("prepared-" + audioURL.lastPathComponent)
     }
 
-    private static func contentHash(of url: URL) throws -> String {
+    static func contentHash(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()

@@ -9,6 +9,7 @@ public enum PodcastPreparationError: Error, Equatable, LocalizedError, Sendable 
     case workerTimedOut
     case malformedWorkerResponse(String)
     case preparedAudioUnreadable
+    case readyAudioChanged
     case cancelled
 
     public var errorDescription: String? {
@@ -29,6 +30,7 @@ public enum PodcastPreparationError: Error, Equatable, LocalizedError, Sendable 
                 detail: detail
             )
         case .preparedAudioUnreadable: "The prepared audio could not be read back."
+        case .readyAudioChanged: "The episode's audio changed while it was being prepared again."
         case .cancelled: "Preparation was cancelled."
         }
     }
@@ -127,6 +129,47 @@ public struct PodcastKeepInterval: Equatable, Sendable {
             return next.outputStartSeconds
         }
         return nil
+    }
+
+    /// Where `seconds` on the cut file's clock was on the original's clock: the
+    /// inverse of `map`.
+    ///
+    /// The cut file is the kept spans laid end to end, so every position in it
+    /// lies inside exactly one span and the answer is exact. Past the end of
+    /// the last span is the end of the original's last kept audio, and a
+    /// position before zero is the start of the first.
+    static func unmap(_ seconds: Double, through intervals: [PodcastKeepInterval]) -> Double? {
+        guard let first = intervals.first, let last = intervals.last else { return nil }
+        if seconds <= first.outputStartSeconds { return first.startSeconds }
+        for interval in intervals {
+            let length = interval.endSeconds - interval.startSeconds
+            if seconds >= interval.outputStartSeconds, seconds < interval.outputStartSeconds + length {
+                return interval.startSeconds + (seconds - interval.outputStartSeconds)
+            }
+        }
+        // Only reachable past the end, or in the rounding gap between two
+        // spans: the next span's start is where the audio resumes.
+        if let next = intervals.first(where: { $0.outputStartSeconds >= seconds }) { return next.startSeconds }
+        return last.endSeconds
+    }
+
+    /// `map`, except that a position inside a removed span lands where the
+    /// programme resumes instead of being dropped. Preparing an episode again
+    /// moves a listener who was inside what the new cut removes to the next
+    /// audio they will hear, rather than losing their place.
+    static func mapSnapping(_ seconds: Double, through intervals: [PodcastKeepInterval],
+                            silence: [Range<Double>] = []) -> Double? {
+        if let mapped = map(seconds, through: intervals, silence: silence) { return mapped }
+        return intervals.first(where: { $0.startSeconds >= seconds })?.outputStartSeconds
+    }
+}
+
+extension PodcastKeepInterval {
+    /// A persisted timeline's kept span, in the shape `map` and `unmap` read.
+    /// An extension, so the struct keeps its memberwise initializer.
+    init(_ kept: PreparationStatus.PreparationTimeline.KeptInterval) {
+        self.init(startSeconds: kept.originalStartSeconds, endSeconds: kept.originalEndSeconds,
+                  outputStartSeconds: kept.outputStartSeconds)
     }
 }
 

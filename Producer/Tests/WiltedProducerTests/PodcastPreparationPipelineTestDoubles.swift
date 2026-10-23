@@ -173,7 +173,7 @@ struct Fixture {
             createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
         ))
 
-        let body = Data("original-audio-bytes".utf8)
+        let body = Fixture.originalBody
         contentHash = Fixture.contentHash(body)
         revisionID = try RevisionID.derive(downloadedAudioContentHash: contentHash)
         let audioDirectory = libraryDirectory.appendingPathComponent("PodcastAudio", isDirectory: true)
@@ -203,6 +203,7 @@ struct Fixture {
     }
 
     static let cuttingAudio = Data("shorter-audio-bytes".utf8)
+    static let originalBody = Data("original-audio-bytes".utf8)
 
     static func cuttingStubResponse() -> [String: Any] {
         [
@@ -218,13 +219,14 @@ struct Fixture {
     func pipeline(
         _ runner: some PodcastPipelineRunning,
         now: (@Sendable () -> Date)? = nil,
-        appVersion: String? = PodcastPreparationBuildStamp.hostAppVersion()
+        appVersion: String? = PodcastPreparationBuildStamp.hostAppVersion(),
+        engineVersion: String = PodcastPreparationPipeline.semanticVersion
     ) -> PodcastPreparationPipeline {
         PodcastPreparationPipeline(
             store: store, workDirectory: workDirectory, runner: runner,
             documentLoader: TranscriptDocumentLoader(statusCode: transcriptStatusCode),
             now: now ?? { Date(timeIntervalSince1970: 1_700_000_200) },
-            appVersion: appVersion
+            appVersion: appVersion, engineVersion: engineVersion
         )
     }
 

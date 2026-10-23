@@ -175,20 +175,20 @@ struct WiltedMacRootView: View {
         .sheet(isPresented: $model.isPresentingAddSheet) {
             WiltedMacAddSheet(model: model)
         }
-        // File > Prepare Again Episodes With Ads asks once for the whole set,
+        // File > Prepare Again With Current Engine asks once for the whole set,
         // naming how many runs it starts. Each run keeps the listener's place.
         // It hangs on the window root so the command works from any section.
         .confirmationDialog(
-            "Prepare \(model.episodesToPrepareAgain.count) episodes again?",
+            WiltedMacModel.prepareAgainConfirmationTitle(count: model.episodesToPrepareAgain.count),
             isPresented: $model.isConfirmingPrepareAgainAll,
             titleVisibility: .visible
         ) {
-            Button("Prepare Again") { model.prepareAgainAllKeepingAds() }
+            Button("Prepare Again") { model.prepareAgainAll() }
                 .accessibilityIdentifier("wilted-larder-prepare-again-all-confirm")
             Button("Cancel", role: .cancel) {}
                 .accessibilityIdentifier("wilted-larder-prepare-again-all-cancel")
         } message: {
-            Text("Wilted removes the ads left in them. Your place in each is kept.")
+            Text(WiltedMacModel.prepareAgainConfirmationMessage)
         }
         // One place the chosen size enters the window. Every typographic
         // site reads it back out through `wiltedFont`.

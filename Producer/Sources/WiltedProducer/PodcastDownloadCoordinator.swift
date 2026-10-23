@@ -163,12 +163,12 @@ public struct PodcastDownloadResult: Equatable, Sendable {
 public actor PodcastDownloadCoordinator {
     public static let maximumDownloadBytes: Int64 = 500_000_000
 
-    private let store: LocalLibraryStore
-    private let transport: any PodcastDownloadTransporting
-    private let mediaValidator: any PodcastMediaValidating
-    private let libraryDirectory: URL
-    private let maximumBytes: Int64
-    private let now: @Sendable () -> Date
+    let store: LocalLibraryStore
+    let transport: any PodcastDownloadTransporting
+    let mediaValidator: any PodcastMediaValidating
+    let libraryDirectory: URL
+    let maximumBytes: Int64
+    let now: @Sendable () -> Date
 
     public init(
         store: LocalLibraryStore,
@@ -481,7 +481,7 @@ public actor PodcastDownloadCoordinator {
         return max(expected, received)
     }
 
-    fileprivate static func isHTTPS(_ url: URL) -> Bool {
+    static func isHTTPS(_ url: URL) -> Bool {
         url.scheme?.lowercased() == "https" && url.host != nil && url.user == nil && url.password == nil
     }
 
@@ -495,7 +495,7 @@ public actor PodcastDownloadCoordinator {
         "audio/x-m4a", "audio/x-wav"
     ]
 
-    private static func validatedMediaType(_ value: String?) throws -> String {
+    static func validatedMediaType(_ value: String?) throws -> String {
         guard let value else { throw PodcastDownloadCoordinatorError.unsupportedMediaType(nil) }
         let normalized = value.split(separator: ";", maxSplits: 1).first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         guard supportedMediaTypes.contains(normalized) else {
@@ -506,14 +506,14 @@ public actor PodcastDownloadCoordinator {
 
     /// Compares the two MP3 MIME aliases as one format while retaining exact
     /// matching for every other supported media type.
-    private static func comparisonMediaType(_ mediaType: String) -> String {
+    static func comparisonMediaType(_ mediaType: String) -> String {
         switch mediaType {
         case "audio/mp3", "audio/mpeg": "audio/mpeg"
         default: mediaType
         }
     }
 
-    private static func fileExtension(for mediaType: String) -> String {
+    static func fileExtension(for mediaType: String) -> String {
         switch mediaType {
         case "audio/mp3", "audio/mpeg": "mp3"
         case "audio/m4a", "audio/mp4", "audio/x-m4a": "m4a"

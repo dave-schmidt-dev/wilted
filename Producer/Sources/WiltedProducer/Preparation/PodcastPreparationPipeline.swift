@@ -161,12 +161,16 @@ public actor PodcastPreparationPipeline {
     public static let alignedTranscriptModel = "mlx-community/parakeet-tdt-1.1b"
 
     let store: LocalLibraryStore
-    private let runner: any PodcastPipelineRunning
+    let runner: any PodcastPipelineRunning
     private let documentLoader: any PodcastFeedLoading
     let workDirectory: URL
-    private let defaultPolicy: PodcastPreparationPolicySnapshot
+    let defaultPolicy: PodcastPreparationPolicySnapshot
     let now: @Sendable () -> Date
     let appVersion: String?
+    /// What the journal records as the engine that ran. Always the current
+    /// `semanticVersion` in the app; a test passes an older one to leave behind
+    /// the journal an earlier engine would have written.
+    let engineVersion: String
 
     public init(
         store: LocalLibraryStore,
@@ -176,7 +180,8 @@ public actor PodcastPreparationPipeline {
         removeAds: Bool = true,
         allowSpeechToText: Bool = true,
         now: @escaping @Sendable () -> Date = Date.init,
-        appVersion: String? = PodcastPreparationBuildStamp.hostAppVersion()
+        appVersion: String? = PodcastPreparationBuildStamp.hostAppVersion(),
+        engineVersion: String = PodcastPreparationPipeline.semanticVersion
     ) {
         self.store = store
         self.runner = runner
@@ -188,6 +193,7 @@ public actor PodcastPreparationPipeline {
         )
         self.now = now
         self.appVersion = appVersion
+        self.engineVersion = engineVersion
     }
 
     /// The journal key for one episode's preparation history.
@@ -213,21 +219,8 @@ public actor PodcastPreparationPipeline {
             }
         }
         let writes = JournalWrites()
-        // Every status is journalled as well as reported, so a run that failed
-        // while the window was closed still leaves evidence a reader can find.
-        // Journalling must never be the thing that fails a preparation.
-        let clock = now
-        let report: @Sendable (PodcastPreparationProgress) -> Void = { [weak self] progress in
-            onStatus(progress)
-            guard let self else { return }
-            // Stamped here rather than inside the journal task: the write is
-            // enqueued behind this actor and may not run until the run is
-            // over, and an entry timestamped then would sort after the
-            // terminal record it preceded.
-            let emittedAt = Timestamp(clock())
-            let eventID = writes.eventID(for: progress.stage)
-            writes.track(Task { await self.journal(progress, eventID: eventID, at: emittedAt, for: episodeID, requestID: requestID, attempt: attempt); await onJournaled() })
-        }
+        let report = reporter(writes: writes, episodeID: episodeID, requestID: requestID, attempt: attempt,
+                              onStatus: onStatus, onJournaled: onJournaled)
 
         guard let episode = try await store.podcastEpisode(for: episodeID),
               let download = try await store.download(for: episodeID), download.status == .completed,
@@ -242,25 +235,8 @@ public actor PodcastPreparationPipeline {
         }
 
         let codeRevision = await runner.codeRevision()
-        var provenanceFields = [
-            "sourceRevisionID": stored.revision.revisionID.rawValue,
-            "sourceHash": stored.revision.contentHash,
-            "engineVersion": Self.semanticVersion,
-        ]
-        if let appVersion {
-            provenanceFields["appVersion"] = appVersion
-        }
-        if let codeRevision {
-            provenanceFields["codeRevision"] = codeRevision
-        }
-        // Omitted rather than stamped with the sentinel: an absent fingerprint
-        // reads as "not recorded", which is true, where `-unresolved` would
-        // later read as a different pipeline.
-        if let fingerprint = Self.semanticFingerprintResolution {
-            provenanceFields["fingerprint"] = fingerprint
-        }
-        let provenance = try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind,
-                                                  fields: provenanceFields)
+        let provenance = provenanceEvidence(sourceRevisionID: stored.revision.revisionID,
+                                            sourceHash: stored.revision.contentHash, codeRevision: codeRevision)
         report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title, evidence: provenance))
         do {
             // The prepared output exists before its revision record does.
@@ -269,37 +245,10 @@ public actor PodcastPreparationPipeline {
             let preparedURL = preparedAudioURL(for: audioURL)
             store.inFlightMedia.begin(preparedURL)
             defer { store.inFlightMedia.end(preparedURL) }
-            var request: [String: Any] = [
-                "protocolVersion": 2,
-                "audioPath": audioURL.path,
-                "outputPath": preparedURL.path,
-                "workDir": workDirectory.path,
-                "transcriptPolicy": policy.transcriptPolicy.rawValue,
-                "removeAds": policy.removeAds,
-                "allowSpeechToText": policy.transcriptPolicy != .noLocalSTT,
-                "sourceHash": stored.revision.contentHash,
-                "alignedTranscriptModel": Self.alignedTranscriptModel,
-            ]
-            // The worker echoes this back into the result it stores. Sending
-            // the sentinel would persist it one layer further out.
-            if let fingerprint = Self.semanticFingerprintResolution {
-                request["pipelineFingerprint"] = fingerprint
-            }
-            // Sent only when on, so every other feed's request is unchanged.
-            if policy.removeSelfPromotion { request["removeSelfPromotion"] = true }
-            if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
-               let published = await fetchPublishedTranscript(for: episode, onStatus: report) {
-                request["publishedTranscript"] = published
-            }
-            // The feed's show notes name the hosts, guests, stories, products,
-            // and sponsors: the worker's glossary for the words speech-to-text
-            // got wrong.
-            if let notes = episode.notes {
-                request["episodeNotes"] = notes
-            }
-            request["episodeTitle"] = episode.title
-            let response = try await runner.run(request: try JSONSerialization.data(withJSONObject: request),
-                                                onProgress: report)
+            let request = try await workerRequest(episode: episode, audioURL: audioURL, preparedURL: preparedURL,
+                                                  sourceHash: stored.revision.contentHash, policy: policy,
+                                                  onStatus: report)
+            let response = try await runner.run(request: request, onProgress: report)
             let payload = try Self.decode(response)
             if payload.droppedCueCount > 0 {
                 let totalCues = payload.cues.count + payload.droppedCueCount
@@ -337,9 +286,87 @@ public actor PodcastPreparationPipeline {
         }
     }
 
+    // MARK: Shared run steps
+
+    /// Journals every status as well as reporting it, so a run that failed
+    /// while the window was closed still leaves evidence a reader can find.
+    /// Journalling must never be the thing that fails a preparation.
+    func reporter(
+        writes: JournalWrites, episodeID: ItemID, requestID: String, attempt: PreparationAttemptIdentity?,
+        onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void,
+        onJournaled: @escaping @Sendable () async -> Void
+    ) -> @Sendable (PodcastPreparationProgress) -> Void {
+        let clock = now
+        return { [weak self] progress in
+            onStatus(progress)
+            guard let self else { return }
+            // Stamped here rather than inside the journal task: the write is
+            // enqueued behind this actor and may not run until the run is
+            // over, and an entry timestamped then would sort after the
+            // terminal record it preceded.
+            let emittedAt = Timestamp(clock())
+            let eventID = writes.eventID(for: progress.stage)
+            writes.track(Task { await self.journal(progress, eventID: eventID, at: emittedAt, for: episodeID, requestID: requestID, attempt: attempt); await onJournaled() })
+        }
+    }
+
+    /// The run's provenance: which source bytes, which engine, which code.
+    /// A field that is not known is omitted, because absent reads as "not
+    /// recorded", which is true, where a sentinel would later read as a
+    /// different pipeline.
+    func provenanceEvidence(sourceRevisionID: RevisionID, sourceHash: String, codeRevision: String?) -> PreparationEvidence? {
+        var fields = [
+            "sourceRevisionID": sourceRevisionID.rawValue,
+            "sourceHash": sourceHash,
+            "engineVersion": engineVersion,
+        ]
+        if let appVersion { fields["appVersion"] = appVersion }
+        if let codeRevision { fields["codeRevision"] = codeRevision }
+        if let fingerprint = Self.semanticFingerprintResolution { fields["fingerprint"] = fingerprint }
+        return try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: fields)
+    }
+
+    /// The worker request for one source file, serialized.
+    func workerRequest(
+        episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
+        policy: PodcastPreparationPolicySnapshot,
+        onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
+    ) async throws -> Data {
+        var request: [String: Any] = [
+            "protocolVersion": 2,
+            "audioPath": audioURL.path,
+            "outputPath": preparedURL.path,
+            "workDir": workDirectory.path,
+            "transcriptPolicy": policy.transcriptPolicy.rawValue,
+            "removeAds": policy.removeAds,
+            "allowSpeechToText": policy.transcriptPolicy != .noLocalSTT,
+            "sourceHash": sourceHash,
+            "alignedTranscriptModel": Self.alignedTranscriptModel,
+        ]
+        // The worker echoes this back into the result it stores. Sending
+        // the sentinel would persist it one layer further out.
+        if let fingerprint = Self.semanticFingerprintResolution {
+            request["pipelineFingerprint"] = fingerprint
+        }
+        // Sent only when on, so every other feed's request is unchanged.
+        if policy.removeSelfPromotion { request["removeSelfPromotion"] = true }
+        if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
+           let published = await fetchPublishedTranscript(for: episode, onStatus: onStatus) {
+            request["publishedTranscript"] = published
+        }
+        // The feed's show notes name the hosts, guests, stories, products,
+        // and sponsors: the worker's glossary for the words speech-to-text
+        // got wrong.
+        if let notes = episode.notes {
+            request["episodeNotes"] = notes
+        }
+        request["episodeTitle"] = episode.title
+        return try JSONSerialization.data(withJSONObject: request)
+    }
+
     // MARK: Journal
 
-    private func journal(
+    func journal(
         _ progress: PodcastPreparationProgress, eventID: String, at emittedAt: Timestamp,
         for episodeID: ItemID, requestID: String, attempt: PreparationAttemptIdentity?
     ) async {
@@ -357,7 +384,7 @@ public actor PodcastPreparationPipeline {
         }
     }
 
-    private func journalTerminal(
+    func journalTerminal(
         episodeID: ItemID, requestID: String, attempt: PreparationAttemptIdentity?, error: (any Error)?, revisionID: RevisionID?,
         summary: String? = nil, fingerprint: String? = nil,
         sourceRevisionID: RevisionID? = nil, sourceHash: String? = nil, sourceURL: URL? = nil,
@@ -384,7 +411,7 @@ public actor PodcastPreparationPipeline {
                 "fingerprint": value,
                 "sourceRevisionID": sourceRevisionID?.rawValue ?? "",
                 "sourceHash": sourceHash ?? "",
-                "engineVersion": Self.semanticVersion,
+                "engineVersion": engineVersion,
             ]
             if let appVersion {
                 fields["appVersion"] = appVersion

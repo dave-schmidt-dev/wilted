@@ -57,7 +57,7 @@ rationale: Stable item identity and immutable revision identity prevent mutation
 area: ["Producer/**", "WiltedMac/**"]
 gate_test: test-gate.sh
 threshold: 3
-rationale: A failed or cancelled preparation never replaces the last valid media; a ready revision is exposed only after its complete, self-contained transfer file is durable. Podcast enclosure downloads remain temporary until bounds, content hash, and media validation succeed and one atomic move publishes the immutable local revision. Cancellation or failure removes only temporary bytes and preserves every prior playable revision.
+rationale: A failed or cancelled preparation never replaces the last valid media; a ready revision is exposed only after its complete, self-contained transfer file is durable. Podcast enclosure downloads remain temporary until bounds, content hash, and media validation succeed and one atomic move publishes the immutable local revision. Cancellation or failure removes only temporary bytes and preserves every prior playable revision. Preparing a cut episode again follows the same rule: the original is fetched into a temporary staging file outside the download record, the old cut stays the ready, playable revision until one commit supersedes it (records and file together), and a failure, cancel, refusal or kept result deletes the staging file and changes nothing else. Enforced by `theOldCutStaysReadyAndPlayableWhileTheOriginalIsFetched`, `aWorkerFailureLeavesThePlayableCutAndNoStagedFile`, `aFailedOrStoppedDownloadChangesNothingAndStaysOffered` and `aChangedOriginalIsRefusedWhenThereIsAPlaceToCarry` (`PodcastPreparationPipelineTests+PrepareAgain`).
 
 ### W-INV-005 — UI does not write producer state
 area: ["WiltedMac/**", "WiltedKit/**"]

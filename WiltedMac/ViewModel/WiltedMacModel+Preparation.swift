@@ -163,7 +163,8 @@ extension WiltedMacModel {
     @discardableResult
     func prepareEpisode(
         _ episode: WiltedMacEpisode,
-        policySnapshot: PodcastPreparationPolicySnapshot
+        policySnapshot: PodcastPreparationPolicySnapshot,
+        again: PodcastPrepareAgainCandidate? = nil
     ) -> Bool {
 #if canImport(WiltedProducer)
         guard podcastPreparationTasks[episode.id] == nil else { return false }
@@ -200,9 +201,7 @@ extension WiltedMacModel {
         // row is corrected below rather than left waiting.
         let queued = preparationGate.isBusy || !podcastPreparationTasks.isEmpty
             || articlePreparationIsPending
-        updateEpisode(episode.id) {
-            $0.preparationState = .preparing(stage: queued ? Self.preparationQueuedStage : Self.preparingStage)
-        }
+        showPreparationAdmitted(episode.id, queued: queued, again: again != nil)
         if queued {
             preparationQueue.enter(WiltedMacWaitingPreparation(
                 id: episode.id, title: episode.title, source: episode.feedTitle
@@ -239,13 +238,13 @@ extension WiltedMacModel {
                 // ones that never reached the admission below.
                 self?.preparationQueue.leave(episode.id)
                 self?.finishProjectedProcessorRun(for: episode.id)
+                self?.finishPrepareAgainRow(episode.id)
             }
             guard let gate = self?.preparationGate else { return }
             do {
                 try await gate.admit(sequence: requestSequence)
             } catch {
-                self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
-                self?.podcastOperationMessage = "Preparation cancelled."
+                self?.markPreparationCancelled(episode.id, again: again != nil)
                 await self?.recordWorkTicketTransition(
                     kind: .podcastPreparation, subjectID: episode.id,
                     requestSequence: requestSequence, state: .cancelled
@@ -255,10 +254,7 @@ extension WiltedMacModel {
             defer { gate.release() }
             self?.preparationQueue.leave(episode.id)
             self?.startProjectedProcessorRun(for: episode)
-            if queued {
-                self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparingStage) }
-                self?.podcastOperationMessage = "Preparing \(episode.title)…"
-            }
+            if queued { self?.showPreparationStarted(episode, again: again != nil) }
             // Admission is also dispatched when the request is consumed, but
             // that task can race this run after an immediately available gate.
             // Await the same idempotent write before reading its policy.
@@ -292,12 +288,10 @@ extension WiltedMacModel {
                 try? JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: $0)
             } ?? policySnapshot
             do {
-                let result = try await pipeline.prepare(episodeID: itemID, policy: runPolicySnapshot, attempt: attempt,
-                    onJournaled: { [weak self] in
-                        await MainActor.run { self?.librarySyncController?.requestPublish() }
-                    })
                 guard let self else { return }
-                let summary = result.summary
+                let summary = try await self.runPreparation(
+                    pipeline: pipeline, itemID: itemID, episode: episode,
+                    policy: runPolicySnapshot, attempt: attempt, again: again)
                 self.podcastOperationMessage = "\(episode.title): \(summary)"
                 await self.recordWorkTicketTransition(
                     kind: .podcastPreparation, subjectID: episode.id,
@@ -325,8 +319,7 @@ extension WiltedMacModel {
                 await self.reloadPreparedPlayback(episode.id, itemID: itemID)
                 await self.refreshLifetimeStatistics()
             } catch is CancellationError {
-                self?.updateEpisode(episode.id) { $0.preparationState = .notPrepared }
-                self?.podcastOperationMessage = "Preparation cancelled."
+                self?.markPreparationCancelled(episode.id, again: again != nil)
                 await self?.recordWorkTicketTransition(
                     kind: .podcastPreparation, subjectID: episode.id,
                     requestSequence: requestSequence, state: .cancelled, expectedAttempt: attempt, requiresAttempt: true
@@ -334,9 +327,7 @@ extension WiltedMacModel {
             } catch {
                 // The row shows a short cause beside Retry; the log that led
                 // to it stays with the run.
-                self?.preparationFailureCauses[episode.id] = Self.preparationFailureCause(for: error)
-                self?.updateEpisode(episode.id) { $0.preparationState = .failed(Self.preparationFailedLabel) }
-                self?.podcastOperationMessage = "\(episode.title): \(Self.preparationFailedLabel)"
+                self?.markPreparationFailed(episode, error: error, again: again != nil)
                 // `PreparationCoordinator` classifies every terminal failure
                 // into a `ProducerError` with its own `retryable` flag before
                 // it ever reaches here; anything else reaching this catch

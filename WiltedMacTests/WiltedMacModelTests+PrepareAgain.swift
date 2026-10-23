@@ -6,7 +6,8 @@ import WiltedProducer
 @testable import WiltedMac
 
 /// The Larder's Prepare Again controls: which rows offer them, what they start,
-/// and what a failed re-preparation leaves behind.
+/// and what a failed re-preparation leaves behind. The staged run on a cut
+/// episode is in `WiltedMacModelTests+PrepareAgainRun`.
 extension WiltedMacModelTests {
     /// A worker that fails the run without touching the store. The pipeline's
     /// own failure path journals the attempt; nothing about the prepared audio
@@ -18,6 +19,24 @@ extension WiltedMacModelTests {
         ) async throws -> Data {
             throw PodcastPreparationError.workerUnavailable("test worker refused the run")
         }
+    }
+
+    /// What the store would offer for `id`: a ready revision and the enclosure
+    /// to fetch again. The model only reads which episodes have one.
+    func prepareAgainCandidate(_ id: String, isCut: Bool = true) throws -> PodcastPrepareAgainCandidate {
+        let itemID = try ItemID(rawValue: id)
+        let hash = "sha256:" + String(repeating: "a", count: 64)
+        let revision = try AudioRevision(
+            itemID: itemID, revisionID: try RevisionID(rawValue: "rev-" + String(repeating: "a", count: 64)),
+            durationSeconds: 12, byteCount: 5, contentHash: hash, mediaType: "audio/mpeg",
+            createdAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)), schemaVersion: 3
+        )
+        return PodcastPrepareAgainCandidate(
+            episodeID: itemID,
+            readyRevision: StoredAudioRevision(revision: revision, mediaURL: URL(fileURLWithPath: "/dev/null")),
+            isCut: isCut, keptTimeline: nil, sourceHash: nil,
+            enclosureURL: try XCTUnwrap(URL(string: "https://media.example.test/\(id).mp3"))
+        )
     }
 
     /// The journal an older pipeline left when it could not resolve an ad: the
@@ -53,17 +72,24 @@ extension WiltedMacModelTests {
 
     // MARK: canPrepareAgain
 
-    func testCanPrepareAgainRequiresTheStoreSetAndAnIdleRow() {
+    func testCanPrepareAgainRequiresAStoreCandidateAndAnIdleRow() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let eligible = preparedEpisode("prepare-again-eligible")
         let ineligible = preparedEpisode("prepare-again-ineligible")
         model.installEpisodeForTesting(eligible)
         model.installEpisodeForTesting(ineligible)
-        model.episodesKeepingAds = [eligible.id]
+        model.prepareAgainCandidates = [eligible.id: try prepareAgainCandidate(eligible.id)]
 
         XCTAssertTrue(model.canPrepareAgain(eligible))
         XCTAssertFalse(model.canPrepareAgain(ineligible),
-                       "the store's kept-ad proof, not the row's appearance, decides")
+                       "the store's candidate, not the row's appearance, decides")
+
+        // The episode in the player is the audio being heard: its cut stays.
+        model.currentPodcastEpisodeID = eligible.id
+        XCTAssertFalse(model.canPrepareAgain(eligible), "loaded in the player")
+        model.currentPodcastEpisodeID = ineligible.id
+        XCTAssertTrue(model.canPrepareAgain(eligible), "another episode loaded does not matter")
+        model.currentPodcastEpisodeID = nil
 
         // A run this process started.
         let running = Task {}
@@ -108,7 +134,7 @@ extension WiltedMacModelTests {
                        "the row is left exactly as it was")
     }
 
-    // MARK: prepareAgainAllKeepingAds
+    // MARK: prepareAgainAll
 
     func testPrepareAgainAllStartsOneRunPerEligibleEpisodeInLarderOrder() async throws {
         let directory = temporaryDirectory("prepare-again-all")
@@ -125,11 +151,13 @@ extension WiltedMacModelTests {
         episodes.forEach(model.installEpisodeForTesting)
         // The Larder's order is the queue's order, not the library's.
         for index in [2, 0, 1] { model.seedPodcastQueueMembershipForTesting(episodes[index]) }
-        model.episodesKeepingAds = Set(episodes.map(\.id))
+        model.prepareAgainCandidates = Dictionary(uniqueKeysWithValues: try episodes.map {
+            ($0.id, try prepareAgainCandidate($0.id, isCut: false))
+        })
         XCTAssertEqual(model.episodesToPrepareAgain.map(\.id),
                        [episodes[2].id, episodes[0].id, episodes[1].id])
 
-        model.prepareAgainAllKeepingAds()
+        model.prepareAgainAll()
 
         XCTAssertEqual(Set(model.podcastPreparationTasks.keys), Set(episodes.map(\.id)),
                        "every eligible episode gets exactly one run")
@@ -137,6 +165,18 @@ extension WiltedMacModelTests {
                        "the slot holds the first Larder row; the rest wait in that order")
         await model.waitForPodcastPreparationOperationsForTesting()
         XCTAssertTrue(model.preparationQueue.isEmpty)
+    }
+
+    // MARK: Wording
+
+    func testTheFileCommandAndItsConfirmationNameTheCountAndTheKeptPlace() {
+        XCTAssertEqual(WiltedMacModel.prepareAgainCommandTitle(count: 3),
+                       "Prepare Again With Current Engine (3)\u{2026}")
+        XCTAssertEqual(WiltedMacModel.prepareAgainConfirmationTitle(count: 3), "Prepare 3 episodes again?")
+        XCTAssertEqual(
+            WiltedMacModel.prepareAgainConfirmationMessage,
+            "Wilted downloads the original audio where needed and removes ads with the current engine. "
+                + "Your place in each is kept.")
     }
 
     // MARK: A failed re-preparation
@@ -166,8 +206,8 @@ extension WiltedMacModelTests {
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
         let episode = try XCTUnwrap(model.episodes.first { $0.id == episodeID.rawValue })
-        XCTAssertTrue(model.episodesKeepingAds.contains(episode.id),
-                      "the library load reads the kept-ad set from the store")
+        XCTAssertNotNil(model.prepareAgainCandidates[episode.id],
+                        "the library load reads the candidates from the store")
         XCTAssertTrue(model.canPrepareAgain(episode))
 
         model.prepareAgain(episode)

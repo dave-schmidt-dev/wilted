@@ -343,7 +343,7 @@ extension WiltedMacModel {
         let projectedEpisodeValues = Self.applyingPendingEpisodeCompletions(
             episodeValues, projections: episodeCompletionProjections
         )
-        await refreshEpisodesKeepingAds(from: store, readEpoch: readEpoch)
+        await refreshEpisodesToPrepareAgain(from: store, readEpoch: readEpoch)
         return (articleValues, LibraryEpisodeRows(values: projectedEpisodeValues, readEpoch: readEpoch),
                 allSubscriptionValues.map(applyingPendingFeedRename).map(applyingPendingFeedEnabled))
     }

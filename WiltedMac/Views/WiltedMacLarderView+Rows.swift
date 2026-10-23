@@ -73,6 +73,9 @@ extension WiltedMacLarderView {
                     }
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    if let again = model.prepareAgainRows[episode.id] {
+                        prepareAgainStatus(episode, again, scheme: colorScheme)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -193,6 +196,29 @@ extension WiltedMacLarderView {
         WiltedMacEpisodeArtwork(episode: episode, size: 40)
     }
 
+    /// A prepare-again run's line under a Ready row: the live stage with its
+    /// transfer progress, or the note a run that changed nothing leaves.
+    private func prepareAgainStatus(
+        _ episode: WiltedMacEpisode, _ row: WiltedMacPrepareAgainRow, scheme colorScheme: ColorScheme
+    ) -> some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            if row.isRunning {
+                if let fraction = row.fraction {
+                    ProgressView(value: fraction)
+                        .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+                        .frame(width: 60)
+                } else {
+                    ProgressView().controlSize(.mini)
+                }
+            }
+            Text(row.label).lineLimit(2)
+        }
+        .wiltedFont(.utility)
+        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("wilted-larder-prepare-again-status-\(episode.id)")
+    }
+
     /// The short cause beside a failed preparation's Retry: the typed cause
     /// from this session, or a plain "failed" for a failure found at launch.
     private func preparationFailureCause(_ episode: WiltedMacEpisode) -> String? {
@@ -208,7 +234,17 @@ extension WiltedMacLarderView {
     @ViewBuilder func nextStepContents(_ episode: WiltedMacEpisode, group: WiltedMacLarderGroup, scheme colorScheme: ColorScheme) -> some View {
         switch group {
         case .playable:
-            if model.isEpisodeFinished(episode) {
+            if model.prepareAgainRows[episode.id]?.isRunning == true {
+                // The old cut stays playable underneath; this stops the run only.
+                Button { model.cancelEpisodePreparation(episode) } label: {
+                    if let fraction = model.prepareAgainRows[episode.id]?.fraction {
+                        ProgressView(value: fraction).frame(width: 28)
+                    } else { ProgressView().controlSize(.small) }
+                }
+                .help("Stop preparing again")
+                .accessibilityLabel("Stop preparing \(episode.title) again")
+                .accessibilityIdentifier("wilted-larder-stop-\(episode.id)")
+            } else if model.isEpisodeFinished(episode) {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .help("Played")

@@ -147,11 +147,11 @@ struct WiltedMacApp: App {
                 Button("Add\u{2026}") { model.presentAddSheet() }
                     .keyboardShortcut("n", modifiers: .command)
             }
-            // Episodes an older preparation left with every ad: the row's own
-            // Prepare Again, applied to the whole set. The confirmation names
-            // the count and the kept listening position before anything runs.
+            // Episodes an older engine prepared: the row's own Prepare Again,
+            // applied to the whole set. The confirmation names the count and
+            // the kept listening position before anything runs.
             CommandGroup(after: .newItem) {
-                Button("Prepare Again Episodes With Ads (\(model.episodesToPrepareAgain.count))\u{2026}") {
+                Button(WiltedMacModel.prepareAgainCommandTitle(count: model.episodesToPrepareAgain.count)) {
                     model.isConfirmingPrepareAgainAll = true
                 }
                 .disabled(model.episodesToPrepareAgain.isEmpty)
