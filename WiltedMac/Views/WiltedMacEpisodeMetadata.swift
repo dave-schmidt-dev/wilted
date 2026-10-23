@@ -163,3 +163,23 @@ struct WiltedMacEpisodeMetadata: View {
         .accessibilityLabel(presentation.accessibilityFactsLabel)
     }
 }
+
+/// How far a started, unfinished episode has been listened to, for the Larder
+/// row. The saved position lives on the ready revision's timeline (a cut runs
+/// shorter than the feed's duration), so the fraction and time left use the
+/// playable duration and say nothing when there is none.
+enum WiltedMacListeningProgress {
+    static func fraction(for episode: WiltedMacEpisode) -> Double? {
+        guard !episode.isPlayed, let duration = episode.playableDurationSeconds,
+              duration.isFinite, duration > 0 else { return nil }
+        let fraction = episode.playbackSeconds / duration
+        // Nothing to draw before the first second of listening, or for a bad position.
+        guard fraction.isFinite, fraction > 0 else { return nil }
+        return min(1, fraction)
+    }
+
+    static func remainingLabel(for episode: WiltedMacEpisode) -> String? {
+        guard fraction(for: episode) != nil, let duration = episode.playableDurationSeconds else { return nil }
+        return "\(WiltedMacEpisodePresentation.durationLabel(max(0, duration - episode.playbackSeconds))) left"
+    }
+}

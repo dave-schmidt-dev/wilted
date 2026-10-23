@@ -36,6 +36,7 @@ extension WiltedVisualSystemTests {
         XCTAssertTrue(row.contains("wilted-larder-date-\\(episode.id)"))
         XCTAssertFalse(row.contains("lifecycleLabel:"))
         XCTAssertFalse(row.contains("wilted-larder-listened-"))
+        XCTAssertTrue(row.contains("wilted-larder-listening-\\(episode.id)"), "progress rides on the date line")
         XCTAssertFalse(row.contains("wilted-larder-phone-position-"))
         XCTAssertTrue(metadata.contains("Publication date unknown"))
         XCTAssertTrue(row.contains("wilted-larder-row-\\(episode.id)"))

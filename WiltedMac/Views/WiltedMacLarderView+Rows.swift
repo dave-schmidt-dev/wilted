@@ -51,11 +51,28 @@ extension WiltedMacLarderView {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
-                    Text(episode.presentation.publicationLabel)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .lineLimit(1)
-                        .accessibilityIdentifier("wilted-larder-date-\(episode.id)")
+                    // The row keeps three lines, so listening progress from any
+                    // device rides on the date line. Without it the only sign of
+                    // a started episode was the Mark completed button.
+                    HStack(spacing: WiltedTheme.Spacing.small) {
+                        Text(episode.presentation.publicationLabel)
+                            .lineLimit(1)
+                            .accessibilityIdentifier("wilted-larder-date-\(episode.id)")
+                        if let fraction = WiltedMacListeningProgress.fraction(for: episode),
+                           let remaining = WiltedMacListeningProgress.remainingLabel(for: episode) {
+                            HStack(spacing: WiltedTheme.Spacing.small) {
+                                ProgressView(value: fraction)
+                                    .tint(WiltedTheme.color(.progress, scheme: colorScheme))
+                                    .frame(width: 60)
+                                Text(remaining).lineLimit(1)
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Listened \(Int((fraction * 100).rounded())) percent, \(remaining)")
+                            .accessibilityIdentifier("wilted-larder-listening-\(episode.id)")
+                        }
+                    }
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
