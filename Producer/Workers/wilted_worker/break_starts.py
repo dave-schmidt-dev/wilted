@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 
 from . import reporting as _worker_reporting
+from .commercial_preservation import _generate_review
 from .constants import (
+    BREAK_START_CONTEXT_IDS,
     BREAK_START_GAP_MIN_SECONDS,
     BREAK_START_MAX_SECONDS,
     BREAK_START_MAX_SEGMENTS,
@@ -13,12 +15,42 @@ from .constants import (
     MAXIMUM_TOTAL_AD_SHARE,
 )
 from .interval_geometry import intervals_overlap
-from .prompts import AD_BREAK_START_PROMPT
+from .prompts import AD_BREAK_START_PROMPT, COMMERCIAL_PREFIX_CUE_PROMPT
+from .review_formats import _commercial_preservation_labels, _commercial_preservation_response_format
 
 # The rendered lead-in marks the cut's own cues with this token, so the review
 # can match a host-read setup to the sponsor it introduces. A cue the cut only
 # partly overlaps is never marked: it may carry programme before the break.
 _COMMERCIAL_MARKER = "verified commercial: "
+
+
+def _first_commercial_lead_in_cue(ads_module, backend, segments, start_id, evidence_id):
+    """Return the first lead-in cue a per-cue review labels commercial, or None.
+
+    The start review picks a pause, but the model chose the lone candidate
+    over plain programme (a show open, a sign-off and its credits) in 13 of
+    46 accepts on the 2026-10-22 library replay. Each lead-in cue from the chosen start up to the cut's
+    first fully contained cue is therefore labelled on its own, unmarked, with
+    the same per-cue question the sparse-prefix recovery asks, and the cut
+    reaches back only to the first cue labelled commercial.
+    """
+    lead_in_ids = tuple(range(start_id, evidence_id))
+    context_ids = range(max(0, start_id - BREAK_START_CONTEXT_IDS), min(len(segments), evidence_id + 2))
+    rendered = "\n".join(
+        ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
+        + (segments[segment_id].text or "")
+        for segment_id in context_ids
+    )
+    if len(rendered) > COMMERCIAL_RECOVERY_CONTEXT_CHARS:
+        raise ValueError("the lead-in cue review exceeds the rendering budget")
+    response, _tokens = _generate_review(
+        backend,
+        COMMERCIAL_PREFIX_CUE_PROMPT,
+        f"IDs to classify: {', '.join(map(str, lead_in_ids))}; observed evidence ID: {evidence_id}\n{rendered}",
+        response_format=_commercial_preservation_response_format(lead_in_ids),
+    )
+    labels = _commercial_preservation_labels(response, lead_in_ids)
+    return next((segment_id for segment_id in lead_in_ids if labels[str(segment_id)] == "commercial"), None)
 
 
 def recover_late_break_starts(
@@ -31,7 +63,9 @@ def recover_late_break_starts(
     host-read lead-in, a postroll's first spot, or a mid-roll introduction.
     The cue that actually starts the break follows a pause at least
     `BREAK_START_GAP_MIN_SECONDS` long and longer than the pause before the
-    cut's current first cue, and the model reviews those candidates. The
+    cut's current first cue, and the model reviews those candidates. A
+    second, per-cue review then keeps only the lead-in from its first
+    commercial cue. The
     window never reaches back past `BREAK_START_MAX_SEGMENTS` cues or
     `BREAK_START_MAX_SECONDS`, and stops before another cut, an explicit
     sponsor anchor, a positively identified programme cue, or a cue the edge
@@ -160,7 +194,16 @@ def recover_late_break_starts(
                 raise ValueError("ad_start_id must be one of the supplied IDs")
             if ad_start_id == -1:
                 continue
-            extension_start = float(segments[ad_start_id].start_s)
+            start_id = _first_commercial_lead_in_cue(
+                ads_module, backend, segments, ad_start_id, contained_ids[0],
+            )
+            if start_id is None:
+                _worker_reporting.progress(
+                    "ads.detect.break-start.skipped",
+                    f"no lead-in cue from ID {ad_start_id} was labelled commercial; keeping the verified cut",
+                )
+                continue
+            extension_start = float(segments[start_id].start_s)
             if extension_start >= ad_start:
                 raise ValueError("late-start extension is not earlier than the verified cut")
             if any(
@@ -174,7 +217,7 @@ def recover_late_break_starts(
             if proposed_share > MAXIMUM_SINGLE_AD_SHARE:
                 _worker_reporting.progress(
                     "ads.detect.break-start.skipped",
-                    f"late start at ID {ad_start_id} would make the cut {proposed_share:.0%} of "
+                    f"late start at ID {start_id} would make the cut {proposed_share:.0%} of "
                     f"the episode, over the {MAXIMUM_SINGLE_AD_SHARE:.0%} single-share ceiling; "
                     "keeping the verified cut",
                 )
@@ -184,7 +227,7 @@ def recover_late_break_starts(
             if total_removed / total_seconds > MAXIMUM_TOTAL_AD_SHARE:
                 _worker_reporting.progress(
                     "ads.detect.break-start.skipped",
-                    f"late start at ID {ad_start_id} would leave {total_removed / total_seconds:.0%} "
+                    f"late start at ID {start_id} would leave {total_removed / total_seconds:.0%} "
                     f"of the episode removed, over the {MAXIMUM_TOTAL_AD_SHARE:.0%} total-share "
                     "ceiling; keeping the verified cut",
                 )
@@ -201,6 +244,6 @@ def recover_late_break_starts(
         )
         _worker_reporting.progress(
             "ads.detect.break-start",
-            f"{ad_start:.3f}-{ad_end:.3f} extended back to {extension_start:.3f} at cue ID {ad_start_id}",
+            f"{ad_start:.3f}-{ad_end:.3f} extended back to {extension_start:.3f} at cue ID {start_id}",
         )
     return recovered

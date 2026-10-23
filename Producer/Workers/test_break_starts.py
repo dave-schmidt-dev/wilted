@@ -31,7 +31,7 @@ class RecordingBackend:
         self.responses = list(responses)
         self.calls = []
 
-    def generate(self, system_prompt, user_content, *, response_format=None):
+    def generate(self, system_prompt, user_content, *, response_format=None, prepared_prompt=None):
         self.calls.append({
             "prompt": system_prompt,
             "content": user_content,
@@ -41,6 +41,14 @@ class RecordingBackend:
         if isinstance(response, Exception):
             raise response
         return response, 1
+
+    def measure_prompt(self, system_prompt, user_content, *, response_format=None):
+        return (1, 8192, 256)
+
+
+def lead_in_labels(**labels):
+    """A per-cue lead-in review answer: `lead_in_labels(**{"2": "commercial"})`."""
+    return json.dumps({"labels": labels})
 
 
 @dataclass
@@ -110,13 +118,18 @@ class LateBreakStartTests(unittest.TestCase):
         return [event["stage"] for event in events]
 
     def test_a_postroll_starting_one_cue_late_moves_back_to_the_lead_in(self):
-        recovered, backend, events = self.recover([json.dumps({"ad_start_id": 2})])
+        recovered, backend, events = self.recover(
+            [json.dumps({"ad_start_id": 2}), lead_in_labels(**{"2": "commercial"})]
+        )
         self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(65.0, 130.0)])
         self.assertEqual(recovered[0].label, "sponsor")
         self.assertEqual(recovered[0].confidence, 0.9)
         self.assertEqual(recovered[0].kinds, ("paid advertising",))
-        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(len(backend.calls), 2)
         self.assertEqual(backend.calls[0]["response_format"]["field"], "ad_start_id")
+        self.assertEqual(backend.calls[1]["prompt"], _worker_prompts.COMMERCIAL_PREFIX_CUE_PROMPT)
+        self.assertIn("IDs to classify: 2; observed evidence ID: 3", backend.calls[1]["content"])
+        self.assertNotIn("verified commercial", backend.calls[1]["content"])
         self.assertEqual(backend.calls[0]["response_format"]["ids"], [-1, 2])
         self.assertIn("[3] verified commercial: sponsor read one", backend.calls[0]["content"])
         accepted = [event for event in events if event["stage"] == "ads.detect.break-start"]
@@ -124,6 +137,44 @@ class LateBreakStartTests(unittest.TestCase):
         self.assertIn("90.000-130.000", accepted[0]["detail"])
         self.assertIn("65.000", accepted[0]["detail"])
         self.assertIn("cue ID 2", accepted[0]["detail"])
+
+    def test_the_lead_in_is_kept_from_its_first_commercial_cue(self):
+        # in125-shaped: the start review reaches back two cues, but only the
+        # second is the host's sponsor setup.
+        segments = [
+            FakeSegment(0.0, 30.0, "programme"),
+            FakeSegment(35.0, 60.0, "host wraps up the interview"),
+            FakeSegment(61.0, 89.0, "host introduces the sponsor"),
+            FakeSegment(90.0, 110.0, "sponsor read one"),
+            FakeSegment(110.0, 130.0, "sponsor read two"),
+        ]
+        recovered, backend, events = self.recover(
+            [json.dumps({"ad_start_id": 1}),
+             lead_in_labels(**{"1": "programme", "2": "commercial"})],
+            segments=segments,
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(61.0, 130.0)])
+        self.assertIn("IDs to classify: 1, 2; observed evidence ID: 3", backend.calls[1]["content"])
+        self.assertIn("cue ID 2", [e for e in events if e["stage"] == "ads.detect.break-start"][0]["detail"])
+
+    def test_a_lead_in_with_no_commercial_cue_keeps_the_verified_cut(self):
+        # in021/in048-shaped: the start review chose a show open or a sign-off.
+        for labels in ({"2": "programme"}, {"2": "mixed"}):
+            with self.subTest(labels=labels):
+                recovered, backend, events = self.recover(
+                    [json.dumps({"ad_start_id": 2}), lead_in_labels(**labels)]
+                )
+                self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(90.0, 130.0)])
+                self.assertEqual(len(backend.calls), 2)
+                self.assertIn("ads.detect.break-start.skipped", self.stages(events))
+                self.assertNotIn("ads.detect.break-start", self.stages(events))
+
+    def test_an_unanswerable_lead_in_review_keeps_the_verified_cut(self):
+        for answer in ("not json", lead_in_labels(**{"9": "commercial"}), ValueError("backend down")):
+            with self.subTest(answer=answer):
+                recovered, _backend, events = self.recover([json.dumps({"ad_start_id": 2}), answer])
+                self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(90.0, 130.0)])
+                self.assertIn("ads.detect.break-start.skipped", self.stages(events))
 
     def test_a_declined_review_keeps_the_verified_cut(self):
         recovered, backend, events = self.recover([json.dumps({"ad_start_id": -1})])
@@ -195,12 +246,12 @@ class LateBreakStartTests(unittest.TestCase):
             FakeSegment(100.0, 120.0, "sponsor one"),
         ]
         recovered, backend, _events = self.recover(
-            [json.dumps({"ad_start_id": 1})],
+            [json.dumps({"ad_start_id": 1}), lead_in_labels(**{"1": "commercial"})],
             detections=[FakeAd(100.0, 120.0)],
             segments=at_limit,
         )
         self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(10.0, 120.0)])
-        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(len(backend.calls), 2)
 
         over_limit = [
             FakeSegment(0.0, 4.0, "programme"),
@@ -261,7 +312,7 @@ class LateBreakStartTests(unittest.TestCase):
         ]
         held_spans = []
         recovered, _backend, events = self.recover(
-            [json.dumps({"ad_start_id": 1})],
+            [json.dumps({"ad_start_id": 1}), lead_in_labels(**{"1": "commercial"})],
             detections=[FakeAd(60.0, 80.0)],
             segments=segments,
             total_seconds=100.0,
@@ -281,7 +332,7 @@ class LateBreakStartTests(unittest.TestCase):
         ]
         held_spans = []
         recovered, _backend, events = self.recover(
-            [json.dumps({"ad_start_id": 1})],
+            [json.dumps({"ad_start_id": 1}), lead_in_labels(**{"1": "commercial"})],
             detections=[FakeAd(0.0, 25.0), FakeAd(55.0, 75.0)],
             segments=segments,
             total_seconds=100.0,
@@ -360,7 +411,10 @@ class LateBreakStartEndToEndTests(unittest.TestCase):
 
     def test_an_accepted_extension_moves_only_the_late_cut(self):
         analysis, events = self.analyze(
-            BreakStartLLM(preroll_program_start_id=0, break_start_id=2)
+            BreakStartLLM(
+                preroll_program_start_id=0, break_start_id=2,
+                commercial_prefix_cue_answer=lead_in_labels(**{"2": "commercial"}),
+            )
         )
         self.assertEqual(
             [(ad.start_s, ad.end_s) for ad in analysis.detections],

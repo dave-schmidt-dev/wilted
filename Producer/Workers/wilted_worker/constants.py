@@ -86,6 +86,9 @@ BREAK_START_MAX_SEGMENTS = 16
 # Late-start floor sweep window: at most 90 s of lead-in are ever reviewed.
 BREAK_START_MAX_SECONDS = 90.0
 
+# Late-start lead-in cue review: programme cues shown before the chosen start, as in the 2026-10-22 prefix-check replay.
+BREAK_START_CONTEXT_IDS = 4
+
 POSTROLL_RECOVERY_MAX_SECONDS = 300.0
 
 POSTROLL_RECOVERY_MAX_SEGMENTS = 96
