@@ -212,10 +212,22 @@ extension WiltedMacLarderView {
                 }
             }
             Text(row.label).lineLimit(2)
+            if row.isRunning {
+                // Beside the run it stops. Play keeps its slot: the old cut is
+                // playable for the whole run.
+                Button { model.cancelEpisodePreparation(episode) } label: {
+                    Label("Stop preparing again", systemImage: "stop.circle")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("Stop preparing again")
+                .accessibilityLabel("Stop preparing \(episode.title) again")
+                .accessibilityIdentifier("wilted-larder-stop-\(episode.id)")
+            }
         }
         .wiltedFont(.utility)
         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-larder-prepare-again-status-\(episode.id)")
     }
 
@@ -234,17 +246,7 @@ extension WiltedMacLarderView {
     @ViewBuilder func nextStepContents(_ episode: WiltedMacEpisode, group: WiltedMacLarderGroup, scheme colorScheme: ColorScheme) -> some View {
         switch group {
         case .playable:
-            if model.prepareAgainRows[episode.id]?.isRunning == true {
-                // The old cut stays playable underneath; this stops the run only.
-                Button { model.cancelEpisodePreparation(episode) } label: {
-                    if let fraction = model.prepareAgainRows[episode.id]?.fraction {
-                        ProgressView(value: fraction).frame(width: 28)
-                    } else { ProgressView().controlSize(.small) }
-                }
-                .help("Stop preparing again")
-                .accessibilityLabel("Stop preparing \(episode.title) again")
-                .accessibilityIdentifier("wilted-larder-stop-\(episode.id)")
-            } else if model.isEpisodeFinished(episode) {
+            if model.isEpisodeFinished(episode) {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .help("Played")

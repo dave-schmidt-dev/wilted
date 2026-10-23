@@ -126,6 +126,21 @@ extension WiltedMacModel {
         podcastOperationMessage = "\(episode.title): \(note)"
     }
 
+    /// A run whose request could not be saved. A cut keeps its Ready row for
+    /// the same reason `markPreparationFailed` does.
+    func markPreparationNotStarted(_ episode: WiltedMacEpisode, again: Bool) {
+        guard again else {
+            updateEpisode(episode.id) {
+                $0.preparationState = .failed("Preparation could not start. Retry from Larder.")
+            }
+            podcastOperationMessage = "Preparation could not start because its request was not saved. Retry from Larder."
+            return
+        }
+        let note = "Preparing again could not start, so nothing changed"
+        prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(phase: .note(note))
+        podcastOperationMessage = "\(episode.title): \(note)"
+    }
+
     // MARK: Run
 
     /// Runs one admitted preparation and returns the sentence that reports it.
@@ -153,6 +168,13 @@ extension WiltedMacModel {
         }
         do {
             guard let coordinator = podcastDownloadCoordinator else { throw CancellationError() }
+            // A bulk run can wait for hours, and the listener can load the
+            // episode meanwhile: its cut is not swapped under the playhead.
+            if currentPodcastEpisodeID == episode.id {
+                prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(
+                    phase: .note("Playing now, so it was left as it is"))
+                throw CancellationError()
+            }
             prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(phase: .downloading(fraction: nil))
             let throttle = WiltedMacDownloadProgressThrottle()
             let episodeID = episode.id

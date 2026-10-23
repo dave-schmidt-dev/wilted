@@ -278,10 +278,7 @@ extension WiltedMacModel {
                 // behind an unacknowledged durable running claim.
                 await self?.recordWorkTicketTransition(kind: .podcastPreparation, subjectID: episode.id,
                     requestSequence: requestSequence, state: .failed, requiresAttempt: true)
-                self?.updateEpisode(episode.id) {
-                    $0.preparationState = .failed("Preparation could not start. Retry from Larder.")
-                }
-                self?.podcastOperationMessage = "Preparation could not start because its request was not saved. Retry from Larder."
+                self?.markPreparationNotStarted(episode, again: again != nil)
                 return
             }
             let runPolicySnapshot = runningTicket?.policySnapshot.flatMap {

@@ -149,6 +149,29 @@ extension WiltedMacModelTests {
         XCTAssertFalse(model.canPrepareAgain(after))
     }
 
+    /// A bulk run can wait for the slot while the listener loads the episode.
+    func testAnEpisodeLoadedInThePlayerBeforeItsTurnIsLeftAsItIs() async throws {
+        let attempts = DownloadAttemptCounter()
+        let fixture = try await cutFixture(
+            "loaded-first",
+            transport: { CountingFailingPodcastDownloadTransport(enclosureURL: $0, statusCode: 503, counter: attempts) },
+            runner: CancellingPodcastPipelineRunner()
+        )
+        let model = fixture.model
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == fixture.episodeID.rawValue })
+
+        model.prepareAgain(episode)
+        // The run's task has not started; the listener loads the episode first.
+        model.currentPodcastEpisodeID = episode.id
+        await model.waitForPodcastPreparationOperationsForTesting()
+
+        XCTAssertEqual(attempts.count, 0, "nothing was downloaded for an episode being heard")
+        XCTAssertEqual(model.prepareAgainRows[episode.id]?.label, "Playing now, so it was left as it is")
+        let after = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
+        XCTAssertEqual(WiltedMacModel.larderGroup(for: after), .playable)
+        XCTAssertTrue(stagedFiles(under: fixture.directory).isEmpty)
+    }
+
     func testDownloadProgressShowsOnTheRowUntilTheOriginalIsHere() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let id = "prepare-again-progress"
