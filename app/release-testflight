@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CENTRAL_ROOT="$ROOT/../apple_developer"
@@ -11,6 +11,19 @@ for arg in "$@"; do
       ;;
   esac
 done
+[ -f "$CENTRAL_ROOT/release_tools/templates/release_checkout.sh" ] || {
+  echo "release-testflight: central release_checkout.sh is unavailable" >&2
+  exit 4
+}
+# A release runs from the tool-owned checkout, never the owner's tree. Prepare
+# moves it to this checkout's HEAD; stage and upload run it where it is.
+. "$CENTRAL_ROOT/release_tools/templates/release_checkout.sh"
+case "${1:-}" in
+  --prepare-only) checkout_mode=refresh ;;
+  *) checkout_mode=stay ;;
+esac
+cd "$ROOT"
+release_checkout_exec "$CENTRAL_ROOT" .release/release-adapter.json app/release-testflight "$checkout_mode" "$@"
 if [ -n "${HOME:-}" ] && [ -x "$HOME/.agent/bin/bws-secret-exec" ]; then
   PATH="$HOME/.agent/bin:$PATH"
   export PATH

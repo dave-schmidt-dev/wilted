@@ -636,7 +636,8 @@ assert_deferred_mac_ui_contract() {
   assert_validation_contains 'clear_ui_failure_bundle'
   # The Makefile must keep an opt-in route, or the leg becomes unreachable
   # rather than deferred.
-  assert_contains 'WILTED_MAC_UI=1 caffeinate -disu python3 scripts/native-ui-receipt.py record' "$repo_root/Makefile"
+  assert_contains 'bash scripts/verify-once-gate.sh ui-verify' "$repo_root/Makefile"
+  assert_contains 'WILTED_MAC_UI=1 caffeinate -disu bash scripts/test-gate.sh' "$repo_root/scripts/verify-once-gate.sh"
 }
 assert_deferred_mac_ui_contract
 

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CENTRAL_ROOT="$ROOT/../apple_developer"
@@ -15,4 +15,11 @@ done
   echo "release-status: central release_tools or adapter is unavailable" >&2
   exit 4
 }
+[ -f "$CENTRAL_ROOT/release_tools/templates/release_checkout.sh" ] || {
+  echo "release-status: central release_checkout.sh is unavailable" >&2
+  exit 4
+}
+. "$CENTRAL_ROOT/release_tools/templates/release_checkout.sh"
+cd "$ROOT"
+release_checkout_exec "$CENTRAL_ROOT" .release/release-adapter.json app/release-status stay "$@"
 exec env PYTHONPATH="$CENTRAL_ROOT" python3 -m release_tools status --repository "$ROOT" --adapter "$ADAPTER" "$@"

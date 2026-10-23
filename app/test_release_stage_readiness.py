@@ -82,6 +82,7 @@ class ReleaseStageReadinessV2Tests(unittest.TestCase):
             source=source,
             local_gate=True,
             observed_at="2026-08-24T12:00:00Z",
+            leg_receipts_sha256="c" * 64,
         )
 
         for proof, schema, op_class in (
@@ -114,6 +115,7 @@ class ReleaseStageReadinessV2Tests(unittest.TestCase):
 
         # Local gate proof must retain scope and material evidence
         self.assertEqual(local_gate_proof["scope"], "authoritative")
+        self.assertEqual(local_gate_proof["legReceiptsSha256"], "c" * 64)
         expected_local_gate_material = b"\0".join(
             (raw_manifest, b"Production", b"authoritative")
         )
@@ -305,7 +307,13 @@ class ReleaseStageReadinessV2Tests(unittest.TestCase):
             candidates_root = root / "release-state" / "wilted-ios" / "candidates"
 
             with (
-                patch.dict(os.environ, {"READINESS_MANIFEST": str(manifest)}),
+                patch.dict(
+                    os.environ,
+                    {
+                        "READINESS_MANIFEST": str(manifest),
+                        "GATE_LEG_RECEIPTS_SHA256": "ab" * 32,
+                    },
+                ),
                 patch.object(
                     release_stage_readiness,
                     "git_common_candidates_dir",
@@ -325,12 +333,39 @@ class ReleaseStageReadinessV2Tests(unittest.TestCase):
             self.assertEqual(proof["candidateId"], "0.2.2-2")
             self.assertEqual(proof["scope"], "authoritative")
             self.assertEqual(proof["configuration"], "Production")
+            self.assertEqual(proof["legReceiptsSha256"], "ab" * 32)
             self.assertIn("environmentClosureSha256", proof)
             self.assertNotIn("issuedAt", proof)
             self.assertNotIn("expiresAt", proof)
 
             mode = stat.S_IMODE(proof_file.stat().st_mode)
             self.assertEqual(mode, 0o600)
+
+    def test_local_gate_proof_requires_the_bound_leg_receipts_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.write_manifest_file(root, candidate_id="0.2.2-2")
+            candidates_root = root / "release-state" / "wilted-ios" / "candidates"
+            for value in (None, "", "not-a-digest"):
+                environment = {"READINESS_MANIFEST": str(manifest)}
+                if value is not None:
+                    environment["GATE_LEG_RECEIPTS_SHA256"] = value
+                with (
+                    patch.dict(os.environ, environment),
+                    patch.object(
+                        release_stage_readiness,
+                        "git_common_candidates_dir",
+                        return_value=candidates_root,
+                    ),
+                ):
+                    if value is None:
+                        os.environ.pop("GATE_LEG_RECEIPTS_SHA256", None)
+                    self.assertEqual(
+                        release_stage_readiness.main(["--local-gate"], root=root), 4
+                    )
+            self.assertFalse(
+                (root / ".release-state" / "evidence" / "0.2.2-2" / "local-gate.json").exists()
+            )
 
     def test_main_rejects_invalid_arguments(self) -> None:
         self.assertEqual(release_stage_readiness.main(["--unknown"]), 4)

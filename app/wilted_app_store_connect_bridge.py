@@ -16,6 +16,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import time
 import urllib.error
@@ -60,6 +61,27 @@ def evidence_path(operation: str, candidate: str | None) -> Path:
     if candidate is None or not _CANDIDATE.fullmatch(candidate):
         raise ValueError("candidate-identity-invalid")
     return ROOT / ".release-state" / "evidence" / candidate / f"{operation}.json"
+
+
+def candidates_dir(root: Path = ROOT) -> Path:
+    """Return the frozen-candidate directory in the repository's git common directory.
+
+    A linked worktree (the tool-owned release checkout is one) has a `.git` file,
+    not a directory, and shares the owner's candidates through the common
+    directory. Outside a git repository the literal `.git` is the fallback.
+    """
+
+    try:
+        common = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        common = ""
+    return (Path(common) if common else root / ".git") / "release-state" / PRODUCT / "candidates"
 
 
 def write_json(path: Path, payload: Mapping[str, Any], *, exclusive: bool = False) -> None:
@@ -251,7 +273,7 @@ def _next_build(payload: Mapping[str, Any]) -> tuple[int, int, bytes]:
 def _local_highest_build(version: str, *, root: Path = ROOT) -> int:
     """Return the highest immutable local build for one marketing version."""
 
-    candidates = root / ".git" / "release-state" / PRODUCT / "candidates"
+    candidates = candidates_dir(root)
     try:
         entries = tuple(candidates.iterdir())
     except OSError:
@@ -332,7 +354,7 @@ def allocate_identity(*, get: Callable[[str, str], Mapping[str, Any]] | None = N
 def _candidate_release(candidate: str, *, root: Path = ROOT) -> tuple[str, str]:
     """Load only the frozen release identity for a supplied candidate."""
 
-    manifest_path = root / ".git" / "release-state" / PRODUCT / "candidates" / candidate / "manifest.json"
+    manifest_path = candidates_dir(root) / candidate / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:

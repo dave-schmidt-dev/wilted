@@ -48,7 +48,7 @@ validate-inner:
 	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-native-gate.sh || echo test-native-gate >>$(VALIDATE_FAILURES)
 	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-native-gate-watch.sh || echo test-native-gate-watch >>$(VALIDATE_FAILURES)
 	@env -u WILTED_GATE_LEGS -u WILTED_NATIVE_RESULTS_DIR $(NATIVE_UNIT_FILTER_UNSET) bash tests/test-carplay-config.sh || echo test-carplay-config >>$(VALIDATE_FAILURES)
-	@env $(NATIVE_UNIT_FILTER_UNSET) bash scripts/test-gate.sh || echo native-gate >>$(VALIDATE_FAILURES)
+	@env $(NATIVE_UNIT_FILTER_UNSET) bash scripts/verify-once-gate.sh headless || echo native-gate >>$(VALIDATE_FAILURES)
 	@if [ -s $(VALIDATE_FAILURES) ]; then printf 'validate.failed count=%s steps=%s\n' "$$(wc -l <$(VALIDATE_FAILURES) | tr -d ' ')" "$$(tr '\n' ' ' <$(VALIDATE_FAILURES))" >&2; rm -f $(VALIDATE_FAILURES); exit 1; fi; rm -f $(VALIDATE_FAILURES); printf '%s\n' 'validate.passed' >&2
 
 native-meta:
@@ -71,18 +71,18 @@ native-ios-unit:
 	@test -n "$${TEST-}" || { printf '%s\n' 'usage: make native-ios-unit TEST=<Class[/testMethod],...> [ITERATIONS=<n>]' >&2; exit 2; }
 	@if [ -n "$${ITERATIONS-}" ]; then export WILTED_IOS_UNIT_ITERATIONS="$$ITERATIONS"; fi; WILTED_GATE_LEGS=ios-unit-tests WILTED_IOS_UNIT_SELECTORS="$$TEST" bash scripts/test-gate.sh
 
-# The full gate INCLUDING the macos-ui-tests leg. That leg drives real HID
-# events through WindowServer and will hold the cursor, keyboard, and window
-# focus for its entire run, so it is deliberately absent from `validate` and
-# `native`. Run this when you can give up the machine; the deferred-leg line
-# in every other run tells you when it is owed.
-# A clean, fully green run writes a commit-bound receipt that `make install` checks.
-# The receipt runner checks cleanliness before entering the screen-seizing gate.
-# `caffeinate` because every test in the leg fails with "Failed to activate
-# application (current state: Running Background)" if the display sleeps
+# The screen-seizing macos-ui-tests leg, run once and recorded as a verify-once
+# receipt for this source (what `make install` and the TestFlight upload check).
+# That leg drives real HID events through WindowServer and will hold the cursor,
+# keyboard, and window focus for its entire run, so it is deliberately absent from
+# `validate` and `native`. Run this when you can give up the machine; the deferred-leg
+# line in every other run tells you when it is owed. Inside a release, the same leg
+# runs through app/verify-release-ui on the staged candidate.
+# `caffeinate` (inside the script) because every test in the leg fails with "Failed to
+# activate application (current state: Running Background)" if the display sleeps
 # mid-run, which reads as every journey broken rather than one asleep Mac.
 native-ui:
-	@WILTED_MAC_UI=1 caffeinate -disu python3 scripts/native-ui-receipt.py record
+	@bash scripts/verify-once-gate.sh ui-verify
 
 # Regenerates the app icons from the shipping `WiltedMarkShape`, so the icon and
 # the in-app mark cannot drift. Rerun after any change to the brand geometry.
@@ -94,10 +94,10 @@ app-icon:
 # the live build that runs the library publisher against Development CloudKit;
 # Debug has no live transport and Release needs a Developer ID identity this
 # machine is not required to hold. See the script for the signing and TCC grant.
-# Refuses when no green `make native-ui` receipt covers the Mac UI surface being
-# installed; WILTED_SKIP_UI_RECEIPT=1 installs anyway with a loud warning.
+# Refuses when no fresh `make native-ui` receipt covers this source;
+# WILTED_SKIP_UI_RECEIPT=1 installs anyway with a loud warning.
 install:
-	@python3 scripts/native-ui-receipt.py check-head
+	@bash scripts/verify-once-gate.sh check-ui
 	@bash scripts/install-mac-app.sh
 
 # Scores the ad detector against hand-labelled real episodes, reading the cuts

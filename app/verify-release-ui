@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Runs the screen-seizing UI leg once on the staged candidate's own source, after the
+# owner's walkthrough. It takes over the cursor, keyboard and focus: run it only when
+# away from the Mac. `testflight --upload` stays blocked (ui-verification-required)
+# until it has passed.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CENTRAL_ROOT="$ROOT/../apple_developer"
+for arg in "$@"; do
+  case "$arg" in
+    --adapter|--adapter=*|--repository|--repository=*|--broker|--broker=*|--executable|--executable=*|--credential|--credential=*)
+      echo "verify-release-ui: caller-selected paths and credentials are not permitted" >&2
+      exit 2
+      ;;
+  esac
+done
+[ "$#" -eq 0 ] || {
+  echo "usage: app/verify-release-ui" >&2
+  exit 64
+}
+[ -f "$CENTRAL_ROOT/release_tools/templates/release_checkout.sh" ] && [ -f "$ROOT/.release/release-adapter.json" ] || {
+  echo "verify-release-ui: central release_tools or adapter is unavailable" >&2
+  exit 4
+}
+. "$CENTRAL_ROOT/release_tools/templates/release_checkout.sh"
+cd "$ROOT"
+release_checkout_exec "$CENTRAL_ROOT" .release/release-adapter.json app/verify-release-ui stay "$@"
+exec bash scripts/verify-once-gate.sh ui-verify

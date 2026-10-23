@@ -4,7 +4,7 @@
 # WILTED_GATE_LEGS=<comma list of leg names> runs only those legs and reports
 # the rest as skipped. A filtered run is a diagnostic, never evidence: its
 # `native.passed` line carries `filtered=<n>` so it cannot match the full-gate
-# line a receipt requires, and native-ui-receipt.py refuses to record while
+# line a receipt requires, and the verify-once receipt layer records nothing while
 # the variable is set. Unknown or empty names fail closed before any leg (or
 # the simulator sweep) runs.
 

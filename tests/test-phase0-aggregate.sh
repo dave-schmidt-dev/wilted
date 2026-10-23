@@ -320,7 +320,7 @@ print(json.dumps({"validate_inner_recipes": entries}, sort_keys=True), flush=Tru
 meta = ["tests/test-phase0-aggregate.sh", "scripts/test-phase0.sh", "tests/test-native-gate.sh",
         "tests/test-native-gate-watch.sh", "tests/test-carplay-config.sh"]
 shell = [entry for entry in entries if entry["executable"] == "bash"]
-assert [entry["args"] for entry in shell] == [[name] for name in meta + ["scripts/test-gate.sh"]], entries
+assert [entry["args"] for entry in shell] == [[name] for name in meta] + [["scripts/verify-once-gate.sh", "headless"]], entries
 assert len(entries) == 8, entries
 assert entries[-1] == shell[-1], "the real native gate must remain the last recipe"
 for entry in shell[:-1]:
@@ -339,7 +339,7 @@ result = subprocess.run([make, "-f", str(makefile), "validate-inner"], cwd=makef
                         env=failing, text=True, capture_output=True, timeout=30)
 assert result.returncode != 0, (result.returncode, result.stdout, result.stderr)
 entries = [json.loads(line) for line in records.read_text(encoding="utf-8").splitlines()]
-assert len(entries) == 8 and entries[-1]["args"] == ["scripts/test-gate.sh"], entries
+assert len(entries) == 8 and entries[-1]["args"] == ["scripts/verify-once-gate.sh", "headless"], entries
 assert "validate.failed count=1 steps=phase0" in result.stderr, result.stderr
 assert not list((root / "scratch").glob("wilted-validate-failures.*")), "failure note leaked"
 print("validate-inner runs every step after a failure: recipes=8 failed=phase0")

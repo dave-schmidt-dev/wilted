@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ CONTRACT_REVISION = "wilted-ios-v2"
 READINESS_SCHEMA_V2 = "release.proof.readiness.v2"
 LOCAL_GATE_SCHEMA_V2 = "release.proof.local-gate.v2"
 PROOF_VERSION = "2.0.0"
+LEG_RECEIPTS_ENV = "GATE_LEG_RECEIPTS_SHA256"
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def fail(code: str) -> int:
@@ -120,6 +123,7 @@ def build_proof(
     configuration: str = CONFIGURATION,
     contract_revision: str = CONTRACT_REVISION,
     observed_at: str | None = None,
+    leg_receipts_sha256: str | None = None,
 ) -> dict[str, Any]:
     observed = observed_at if observed_at is not None else now_utc_iso()
     if local_gate:
@@ -132,6 +136,8 @@ def build_proof(
         material = b"\0".join(
             (raw_manifest, configuration.encode("utf-8"), b"authoritative")
         )
+        if leg_receipts_sha256 is None or not _HEX64.fullmatch(leg_receipts_sha256):
+            raise ValueError("leg-receipts-missing")
         return {
             "proofVersion": PROOF_VERSION,
             "proofSchema": schema,
@@ -144,6 +150,7 @@ def build_proof(
             "scope": "authoritative",
             "environmentClosureSha256": closure,
             "evidenceSha256": hashlib.sha256(material).hexdigest(),
+            "legReceiptsSha256": leg_receipts_sha256,
         }
 
     schema = READINESS_SCHEMA_V2
@@ -194,6 +201,7 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
             local_gate=local_gate,
             configuration=CONFIGURATION,
             contract_revision=CONTRACT_REVISION,
+            leg_receipts_sha256=os.environ.get(LEG_RECEIPTS_ENV) if local_gate else None,
         )
         destination = root / ".release-state" / "evidence" / candidate / name
         write_proof(destination, proof)
@@ -203,8 +211,9 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
         ValueError,
         json.JSONDecodeError,
         subprocess.SubprocessError,
-    ):
-        return fail("readiness-manifest-invalid")
+    ) as error:
+        missing = isinstance(error, ValueError) and str(error) == "leg-receipts-missing"
+        return fail("leg-receipts-missing" if missing else "readiness-manifest-invalid")
     return 0
 
 
