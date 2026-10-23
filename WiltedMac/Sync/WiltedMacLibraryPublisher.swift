@@ -309,8 +309,8 @@ actor WiltedMacLibraryPublisher {
     }
 
     /// The phone intents this Mac answers beyond the media and decision actions, so a phone sends
-    /// only what it sees listed.
-    static let supportedIntentActions = ["subscribe", "addArticle"]
+    /// only what it sees listed. `adFeedback` is the listener's ad-removal feedback (`WiltedMacModel+AdFeedback`).
+    static let supportedIntentActions = ["subscribe", "addArticle", "adFeedback"]
 
     // MARK: - Intents
 

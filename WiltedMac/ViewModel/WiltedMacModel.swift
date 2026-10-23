@@ -250,6 +250,9 @@ final class WiltedMacModel {
     /// loads. Keyed rather than held as one current value so that changing
     /// episode cannot leave the previous episode's cuts on screen.
     var removedSpansByEpisode: [String: [WiltedMacRemovedSpan]] = [:]
+    /// The listener's ad-removal feedback and its review inbox (`WiltedMacModel+AdFeedback`).
+    @ObservationIgnored lazy var adFeedback = WiltedMacAdFeedbackController(inbox: WiltedMacAdFeedbackInbox(
+        fileURL: libraryURL.deletingLastPathComponent().appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)))
     var seamMarkerTask: Task<Void, Never>?
     var lastMarkedSeam: (episodeID: String, seconds: TimeInterval)?
     /// The output is injectable for tests. A prior test-host gate played a

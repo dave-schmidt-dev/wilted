@@ -42,6 +42,10 @@ public struct LibraryTranscript: Codable, Equatable, Sendable {
     /// True when content was dropped to fit `maximumEncodedBytes`.
     public let isTruncated: Bool
     public let languageCode: String?
+    /// Where preparation's cuts land in this revision, so a phone can tell when the listener is
+    /// just past one. Nil when the Mac did not say (an older Mac, or no preparation timeline);
+    /// empty when it said nothing was cut.
+    public let cuts: [AdCut]?
 
     /// Validating initializer. Throws when the content is empty, holds both cues and text, has an
     /// invalid cue, or encodes above the cap; use `capped(...)` to truncate instead of failing.
@@ -51,7 +55,8 @@ public struct LibraryTranscript: Codable, Equatable, Sendable {
         cues: [LibraryTranscriptCue] = [],
         plainText: String? = nil,
         isTruncated: Bool = false,
-        languageCode: String? = nil
+        languageCode: String? = nil,
+        cuts: [AdCut]? = nil
     ) throws {
         let text = plainText.flatMap { $0.isEmpty ? nil : $0 }
         guard cues.isEmpty != (text == nil) else {
@@ -65,12 +70,18 @@ public struct LibraryTranscript: Codable, Equatable, Sendable {
         for (previous, next) in zip(cues, cues.dropFirst()) where next.start < previous.start {
             throw DomainError.invalidValue(field: "libraryTranscript.cues", reason: "must be ordered by start")
         }
+        if let cuts {
+            guard cuts.count <= PreparationStatus.PreparationTimeline.maximumRemovedIntervals, cuts.allSatisfy(\.isValid) else {
+                throw DomainError.invalidValue(field: "libraryTranscript.cuts", reason: "a cut is invalid")
+            }
+        }
         self.entryID = entryID
         self.revisionID = revisionID
         self.cues = cues
         self.plainText = text
         self.isTruncated = isTruncated
         self.languageCode = languageCode
+        self.cuts = cuts
         guard (try? JSONEncoder().encode(self).count) ?? .max <= Self.maximumEncodedBytes else {
             throw DomainError.invalidValue(field: "libraryTranscript", reason: "exceeds the \(Self.maximumEncodedBytes)-byte cap")
         }
@@ -99,41 +110,44 @@ public struct LibraryTranscript: Codable, Equatable, Sendable {
         revisionID: RevisionID,
         cues: [LibraryTranscriptCue] = [],
         plainText: String? = nil,
-        languageCode: String? = nil
+        languageCode: String? = nil,
+        cuts: [AdCut]? = nil
     ) -> LibraryTranscript? {
         let usable = cues.filter { !$0.text.isEmpty && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start }
         let ordered = usable.enumerated().sorted { ($0.element.start, $0.offset) < ($1.element.start, $1.offset) }.map(\.element)
         if !ordered.isEmpty {
             let count = largestFit(in: ordered.count) { n in
                 try? LibraryTranscript(entryID: entryID, revisionID: revisionID, cues: Array(ordered.prefix(n)),
-                                       isTruncated: n < ordered.count, languageCode: languageCode)
+                                       isTruncated: n < ordered.count, languageCode: languageCode, cuts: cuts)
             }
             guard count > 0 else { return nil }
             return try? LibraryTranscript(entryID: entryID, revisionID: revisionID, cues: Array(ordered.prefix(count)),
-                                          isTruncated: count < ordered.count, languageCode: languageCode)
+                                          isTruncated: count < ordered.count, languageCode: languageCode, cuts: cuts)
         }
         guard let plainText, !plainText.isEmpty else { return nil }
         let characters = Array(plainText)
         let count = largestFit(in: characters.count) { n in
             try? LibraryTranscript(entryID: entryID, revisionID: revisionID, plainText: String(characters.prefix(n)),
-                                   isTruncated: n < characters.count, languageCode: languageCode)
+                                   isTruncated: n < characters.count, languageCode: languageCode, cuts: cuts)
         }
         guard count > 0 else { return nil }
         return try? LibraryTranscript(entryID: entryID, revisionID: revisionID, plainText: String(characters.prefix(count)),
-                                      isTruncated: count < characters.count, languageCode: languageCode)
+                                      isTruncated: count < characters.count, languageCode: languageCode, cuts: cuts)
     }
 
     /// Maps the Mac's stored transcript for a prepared revision onto the wire value. Only an
     /// `available` transcript is published; timed cues are used when the store holds real timing
-    /// evidence (`published` or `aligned`), otherwise the plain text is the fallback.
-    public static func capped(entryID: ItemID, from transcript: Transcript) -> LibraryTranscript? {
+    /// evidence (`published` or `aligned`), otherwise the plain text is the fallback. `cuts` are the
+    /// revision's preparation cuts, when the Mac holds its timeline.
+    public static func capped(entryID: ItemID, from transcript: Transcript, cuts: [AdCut]? = nil) -> LibraryTranscript? {
         guard transcript.availability == .available else { return nil }
         let language = transcript.languageCode
         if transcript.timing != .none, let cues = transcript.cues, !cues.isEmpty {
             let mapped = cues.map { LibraryTranscriptCue(start: $0.startSeconds, end: $0.endSeconds, text: $0.text, speaker: $0.speaker) }
-            return capped(entryID: entryID, revisionID: transcript.revisionID, cues: mapped, languageCode: language)
+            return capped(entryID: entryID, revisionID: transcript.revisionID, cues: mapped, languageCode: language, cuts: cuts)
         }
-        return capped(entryID: entryID, revisionID: transcript.revisionID, plainText: transcript.text, languageCode: language)
+        return capped(entryID: entryID, revisionID: transcript.revisionID, plainText: transcript.text, languageCode: language,
+                      cuts: cuts)
     }
 
     /// The largest `n` in `0...total` for which `build(n)` succeeds; encoded size only grows with `n`.
@@ -151,7 +165,7 @@ public struct LibraryTranscript: Codable, Equatable, Sendable {
     // MARK: Coding
 
     private enum CodingKeys: String, CodingKey {
-        case entryID, revisionID, cues, plainText, truncated, languageCode
+        case entryID, revisionID, cues, plainText, truncated, languageCode, cuts
     }
 
     public init(from decoder: Decoder) throws {
@@ -162,7 +176,8 @@ public struct LibraryTranscript: Codable, Equatable, Sendable {
             cues: c.decodeIfPresent([LibraryTranscriptCue].self, forKey: .cues) ?? [],
             plainText: c.decodeIfPresent(String.self, forKey: .plainText),
             isTruncated: c.decodeIfPresent(Bool.self, forKey: .truncated) ?? false,
-            languageCode: c.decodeIfPresent(String.self, forKey: .languageCode)
+            languageCode: c.decodeIfPresent(String.self, forKey: .languageCode),
+            cuts: c.decodeIfPresent([AdCut].self, forKey: .cuts)
         )
     }
 
@@ -174,5 +189,6 @@ public struct LibraryTranscript: Codable, Equatable, Sendable {
         try c.encodeIfPresent(plainText, forKey: .plainText)
         if isTruncated { try c.encode(true, forKey: .truncated) }
         try c.encodeIfPresent(languageCode, forKey: .languageCode)
+        try c.encodeIfPresent(cuts, forKey: .cuts)
     }
 }

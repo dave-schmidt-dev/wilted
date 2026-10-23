@@ -75,7 +75,8 @@ extension LibraryAppModel {
                         : decisionContent.sources[$0.sourceID]?.title ?? ""
                 } ?? "",
                 fileURL: cached.url, artworkURL: LibraryRowBuilder.artworkURL(entry?.artworkRef),
-                chapters: entry.map(LibraryRowBuilder.chapters) ?? [])
+                chapters: entry.map(LibraryRowBuilder.chapters) ?? [],
+                feedbackRevisionID: entry?.kind == .podcastEpisode ? cached.revisionID : nil)
             let forwardSequence = manualForwardSuffix(from: entryID)
             guard commandState.token == token else { return }
             continuation = nil

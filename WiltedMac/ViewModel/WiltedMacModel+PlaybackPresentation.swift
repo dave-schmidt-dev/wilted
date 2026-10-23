@@ -99,7 +99,8 @@ extension WiltedMacModel {
             transcriptResult = .failure(error)
         }
         guard ownsPlaybackPresentation(owner) else { return }
-        var spans: [WiltedMacRemovedSpan] = []
+        // Nil when the journal holds no timeline for the revision, which also hides ad feedback.
+        var spans: [WiltedMacRemovedSpan]?
         if includesCuts {
             if let timeline = try? await store.latestPreparationTimeline(
                 for: owner.itemID, revisionID: owner.revisionID

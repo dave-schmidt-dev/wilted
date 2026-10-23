@@ -1,4 +1,4 @@
-.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt
+.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt ad-feedback-drafts
 
 # The runtime venv every target shares (Producer/Runtime/Makefile pins the same path).
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/Producer/Runtime/.venv
@@ -119,6 +119,13 @@ ad-corpus:
 ad-corpus-adopt:
 	@test -n "$(SOURCE)" || { printf '%s\n' 'usage: make ad-corpus-adopt SOURCE=<cache snapshot directory>'; exit 2; }
 	@python3 Producer/Workers/ad_corpus.py --adopt "$(SOURCE)"
+
+# Turns the ad feedback accepted in Settings > Ad feedback into draft corpus
+# cases and labels for adcorpus/manifest.json. Drafts name shows, so OUT must
+# be outside the repository; without OUT they print to stdout.
+# Usage: make ad-feedback-drafts [OUT=<file outside the repo>]
+ad-feedback-drafts:
+	@python3 Producer/Workers/ad_feedback_export.py $(if $(OUT),--out "$(OUT)")
 
 # The same scoring, but re-running the live detector over the aligned segments
 # the original run consumed, so a candidate fix can be measured without

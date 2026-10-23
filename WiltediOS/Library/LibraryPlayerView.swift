@@ -137,6 +137,7 @@ struct LibraryPlayerView: View {
             scrubber
             transport
             LibraryChapterBar(player: player)
+            if let model { LibraryAdFeedbackBar(model: model, player: player) }
             HStack(spacing: WiltedTheme.Spacing.large) {
                 if player.supportsRate { rateMenu }
                 if let model, let entryID = player.item?.entryID {

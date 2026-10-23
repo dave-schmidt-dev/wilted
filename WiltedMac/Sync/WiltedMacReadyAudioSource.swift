@@ -86,7 +86,8 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
 
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
         let stored = try await store.podcastLibrarySnapshot().transcripts["\(entryID.rawValue)|\(revisionID.rawValue)"]
-        return stored.flatMap { LibraryTranscript.capped(entryID: entryID, from: $0) }
+        guard let stored else { return nil }
+        return LibraryTranscript.capped(entryID: entryID, from: stored, cuts: await cuts(for: entryID, revisionID: revisionID))
     }
 
     func transcripts(for revisions: [ItemID: RevisionID]) async throws -> [ItemID: LibraryTranscript] {
@@ -94,9 +95,18 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
         var found: [ItemID: LibraryTranscript] = [:]
         for (entryID, revisionID) in revisions {
             if let value = stored["\(entryID.rawValue)|\(revisionID.rawValue)"],
-               let capped = LibraryTranscript.capped(entryID: entryID, from: value) { found[entryID] = capped }
+               let capped = LibraryTranscript.capped(
+                entryID: entryID, from: value, cuts: await cuts(for: entryID, revisionID: revisionID)) {
+                found[entryID] = capped
+            }
         }
         return found
+    }
+
+    /// The revision's preparation cuts for the phone's feedback buttons; nil when the journal holds
+    /// no timeline for it, so the phone falls back to offering every action.
+    private func cuts(for entryID: ItemID, revisionID: RevisionID) async -> [AdCut]? {
+        (try? await store.latestPreparationTimeline(for: entryID, revisionID: revisionID))?.adCuts
     }
 }
 #endif
