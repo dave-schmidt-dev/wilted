@@ -240,7 +240,7 @@ final class LibraryRequestProgressTests: XCTestCase {
 
     func testTheDefaultLimitsAreTheAgreedOnes() {
         let timing = LibraryMediaTiming()
-        XCTAssertEqual(timing.offerTimeout, .seconds(120), "silence")
+        XCTAssertEqual(timing.offerTimeout, .seconds(360), "silence: the Mac's longest iCloud hold plus two rounds")
         XCTAssertEqual(timing.queuedTimeout, .seconds(30 * 60))
         XCTAssertEqual(timing.sendingTimeout, .seconds(15 * 60))
         XCTAssertEqual(timing.answeredTimeout, .seconds(120))

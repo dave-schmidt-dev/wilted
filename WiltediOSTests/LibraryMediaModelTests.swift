@@ -45,9 +45,13 @@ private struct ScriptedTransport: LibraryTransport {
         case failFirst(times: Int, counter: FetchCounter)
     }
 
+    /// How the first media requests are refused before one goes through.
+    enum RequestRefusal: Sendable { case throttled, refused }
+
     let inner: InMemoryLibraryTransport
     var delivery: Delivery = .normal
     var failAcknowledgements: Flag = Flag(false)
+    var refuseRequests: (times: Int, how: RequestRefusal, counter: FetchCounter)?
 
     func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
@@ -64,6 +68,12 @@ private struct ScriptedTransport: LibraryTransport {
     func send(intent: LibraryIntent) async throws {
         if case .mediaCached = intent.action, failAcknowledgements.isSet {
             throw LibraryTransportError.transport("offline")
+        }
+        if case .requestMedia = intent.action, let refusal = refuseRequests, refusal.counter.next() <= refusal.times {
+            switch refusal.how {
+            case .throttled: throw TransportThrottled(retryAt: Date())
+            case .refused: throw LibraryTransportError.transport("the record was rejected")
+            }
         }
         try await inner.send(intent: intent)
     }
@@ -145,11 +155,11 @@ final class LibraryMediaModelTests: XCTestCase {
     private func makeModel(
         _ delivery: ScriptedTransport.Delivery = .normal, cache: FileMediaCache? = nil,
         timing: LibraryMediaTiming? = nil, failAcknowledgements: Flag = Flag(false), store: MediaModelStore? = nil,
-        outbox: URL? = nil
+        outbox: URL? = nil, refuseRequests: (times: Int, how: ScriptedTransport.RequestRefusal, counter: FetchCounter)? = nil
     ) -> LibraryAppModel {
         let transport = ScriptedTransport(
             inner: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "media-model-owner"),
-            delivery: delivery, failAcknowledgements: failAcknowledgements)
+            delivery: delivery, failAcknowledgements: failAcknowledgements, refuseRequests: refuseRequests)
         return LibraryAppModel(
             transport: transport, store: store ?? fixtureStore(), deviceID: "phone", mediaCache: cache ?? makeCache(),
             mediaTiming: timing ?? fast, outboxURL: outbox, timeZone: TimeZone(identifier: "UTC")!)
@@ -508,6 +518,40 @@ final class LibraryMediaModelTests: XCTestCase {
         XCTAssertEqual(sent.map(\.id), [ack.id], "sent once, with the id it was made with")
         guard case let .saved(saved) = LibraryIntentOutbox(url: outbox).load() else { return XCTFail("the outbox file is gone") }
         XCTAssertTrue(saved.intentIDs.isEmpty)
+    }
+
+    func testARequestICloudHoldsBackIsSentOnceTheHoldLiftsWithTheSameID() async throws {
+        try await macPublish(makeOffer())
+        let counter = FetchCounter()
+        let held = Gate()
+        var timing = fast
+        timing.retrySleep = { _ in await held.wait() }
+        let model = makeModel(timing: timing, refuseRequests: (times: 2, how: .throttled, counter: counter))
+        model.performMediaAction(.request, entryID: entryID)
+
+        try await eventually("the resend shown") {
+            if case let .requested(_, retry, _) = model.mediaState(for: self.entryID),
+               retry == LibraryMediaRetry(attempt: 2, attempts: 4) { return true }
+            return false
+        }
+        XCTAssertTrue(model.mediaState(for: entryID).isInFlight, "a held request can still be cancelled")
+
+        await held.open()
+        await model.waitForMedia(entryID: entryID)
+        XCTAssertEqual(model.mediaState(for: entryID), .onPhone, "no manual Retry was needed")
+        XCTAssertEqual(counter.count, 3)
+        let requests = try await intents().filter { if case .requestMedia = $0.action { return true }; return false }
+        XCTAssertEqual(requests.count, 1, "every try is the same request")
+    }
+
+    func testARequestICloudRefusesOutrightFailsWithoutRetrying() async throws {
+        try await macPublish(makeOffer())
+        let counter = FetchCounter()
+        let model = makeModel(refuseRequests: (times: 1, how: .refused, counter: counter))
+        model.performMediaAction(.request, entryID: entryID)
+        await model.waitForMedia(entryID: entryID)
+        XCTAssertEqual(model.mediaState(for: entryID), .failed("The download failed. Try again."))
+        XCTAssertEqual(counter.count, 1)
     }
 
     func testTransportFailureOnRequestShowsFailedWithReason() async throws {

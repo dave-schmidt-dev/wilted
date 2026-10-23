@@ -114,8 +114,9 @@ struct LibraryMediaTiming: Sendable {
     /// How often to look for the Mac's offer after sending the request.
     var pollInterval: Duration = .seconds(SyncCadence.tickInterval)
     /// How long the Mac may say nothing about a request before it is failed. The Mac reads requests
-    /// at its next 30 s round, so a Mac that is running answers well inside this.
-    var offerTimeout: Duration = .seconds(120)
+    /// at its next 30 s round, but while iCloud refuses it the Mac holds its rounds for up to
+    /// `SyncCadence.backoffCap`, so a running Mac is given that hold plus two rounds.
+    var offerTimeout: Duration = .seconds(SyncCadence.backoffCap + 2 * SyncCadence.tickInterval)
     /// How long a request the Mac has read may sit in line without its upload starting.
     var queuedTimeout: Duration = .seconds(30 * 60)
     /// How long an upload that started may go without the Mac answering.
@@ -126,6 +127,10 @@ struct LibraryMediaTiming: Sendable {
     var watchdog: Duration = MediaFetcher.defaultWatchdog
     /// The waits before each automatic retry of a download that failed for a passing reason.
     var retryDelays: [Duration] = MediaFetcher.defaultRetryDelays
+    /// The waits before each new try at sending the request itself when iCloud refuses it for a passing
+    /// reason (busy, rate-limited, offline, or the shared retry wait), so a tap during an iCloud hold is
+    /// sent once the hold lifts instead of failing at once.
+    var sendRetryDelays: [Duration] = [.seconds(10), .seconds(30), .seconds(60)]
     /// How a retry waits. Tests replace it so a retry costs no real time.
     var retrySleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
 }
@@ -273,7 +278,7 @@ extension LibraryAppModel {
                 return
             }
             let intent = try LibraryIntent.requestMedia(entryID: entryID, deviceID: deviceID, createdAt: now())
-            try await transport.send(intent: intent)
+            try await sendRequest(intent, entryID: entryID, runID: runID)
             let offer: LibraryMediaOffer
             switch try await awaitAnswer(for: entryID, intentID: intent.id, runID: runID, context: context) {
             case let .offer(found): offer = found
@@ -380,6 +385,35 @@ extension LibraryAppModel {
         case let .downloading(bytes, total): setMedia(.downloading(bytes: bytes, total: total, since: started), entryID, runID)
         case .verifying: setMedia(.verifying, entryID, runID)
         case .cached, .failed, .notReady: break // the final state is set from the fetch outcome
+        }
+    }
+
+    /// Sends the request, trying again after each of `sendRetryDelays` while iCloud refuses it for a passing
+    /// reason. Every try sends the same intent id, so a Mac that read an earlier try sees one request. A wait
+    /// is at least iCloud's own retry time (capped at two minutes), and the row shows the try it is on.
+    private func sendRequest(_ intent: LibraryIntent, entryID: ItemID, runID: UUID) async throws {
+        let delays = mediaTiming.sendRetryDelays
+        var attempt = 1
+        while true {
+            do {
+                try await transport.send(intent: intent)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard attempt <= delays.count, MediaFetchErrorClassifier.isTransient(error) else { throw error }
+                var delay = delays[attempt - 1]
+                if let throttled = error as? TransportThrottled {
+                    delay = max(delay, .seconds(min(max(throttled.retryAt.timeIntervalSince(now()), 0), 120)))
+                }
+                attempt += 1
+                let entry = entryID.rawValue, detail = MediaFetchErrorClassifier.logDescription(error)
+                mediaLog.notice("Request for \(entry, privacy: .public) not sent; try \(attempt, privacy: .public) in \(delay, privacy: .public): \(detail, privacy: .public)")
+                setMedia(.requested(since: now(), retry: LibraryMediaRetry(attempt: attempt, attempts: delays.count + 1)), entryID, runID)
+                try await mediaTiming.retrySleep(delay)
+                try Task.checkCancellation()
+                guard isCurrent(entryID, runID) else { throw CancellationError() }
+            }
         }
     }
 
