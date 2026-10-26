@@ -146,6 +146,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Marking a paused episode completed on the Mac no longer starts the next episode; the next one starts only if the finished episode was playing.
 - After you mark an episode completed on the Mac, the Larder's "Undo completion is available for 10 seconds" notice now goes away when the 10 seconds end; before, it stayed until another message replaced it.
 - During an iCloud outage that refuses a request every few minutes, the Mac and iPhone no longer stay paused for 5 minutes after each refusal: after a minute without errors the next refusal waits only as long as iCloud asks (or 5 s), while a device refused every round still backs off up to 5 minutes.
 - Tapping Download on the iPhone while iCloud is briefly refusing requests no longer fails at once with "The download failed": the phone sends the same request again (up to three more times, at least as long as iCloud asks it to wait) and shows "Retrying". It also waits up to six minutes for the Mac's answer, longer than the Mac's longest iCloud hold, before saying the Mac did not send the episode.

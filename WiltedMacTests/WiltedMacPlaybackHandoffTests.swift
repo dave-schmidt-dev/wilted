@@ -89,6 +89,37 @@ final class WiltedMacPlaybackHandoffTests: XCTestCase {
         retainTraceReport(trace.report(), name: "Held old presentation and newer audio call boundaries")
     }
 
+    /// Reported 2026-10-26: Pause, then Mark completed, started the next episode.
+    /// Paused means "not now", so finishing a paused episode leaves the player stopped.
+    func testMarkingAPausedEpisodeCompleteDoesNotStartTheNext() async throws {
+        let (model, _, directory) = makeModel()
+        let fixture = try XCTUnwrap(model.episodes.first)
+        let first = try await addReadyEpisode(
+            after: fixture, to: model, in: directory,
+            suffix: "first", durationSeconds: 10
+        )
+        let second = try await addReadyEpisode(after: first, to: model, in: directory)
+        model.playEpisode(first)
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(model.currentPodcastEpisodeID, first.id)
+        model.addEpisodeToUpNext(second)
+        try await waitUntil { model.podcastQueueIDs.contains(second.id) }
+        model.pausePlayback()
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertFalse(model.isPlaying)
+
+        model.markCurrentPlaybackCompleted()
+        XCTAssertFalse(model.isAutomaticAdvancing, "no Loading next episode… for a paused finish")
+        try await waitUntil { model.episodes.first { $0.id == first.id }?.isPlayed == true }
+        await model.waitForPlaybackOperationForTesting()
+        try await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertNotEqual(model.currentPodcastEpisodeID, second.id, "the next episode was not loaded")
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertFalse(model.isAutomaticAdvancing)
+        XCTAssertTrue(model.podcastQueueIDs.contains(second.id), "the next episode is still waiting in the Larder")
+    }
+
     func testMarkingCompleteAdvancesTheWidgetToTheNextEpisode() async throws {
         let (model, sink, directory) = makeModel()
         let fixture = try XCTUnwrap(model.episodes.first)

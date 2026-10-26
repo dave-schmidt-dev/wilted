@@ -99,16 +99,23 @@ extension WiltedMacModel {
     /// wrote, and the two disagreeing is worse than the reload costs. A
     /// finished podcast episode is then retired from the Larder, the same as
     /// one that ran out on its own.
+    ///
+    /// The next episode starts only when this one was playing, or about to,
+    /// at the press. Finishing a paused episode leaves the player stopped:
+    /// paused means "not now", and that holds across the finish.
     func markCurrentPlaybackCompleted() {
 #if canImport(WiltedProducer)
         guard let playback else { return }
+        let wasPlaying = playback.liveIsPlaying || isPlaying
+            || playbackCommands.pending?.command.kind.startsAudio == true
         if isPodcastPlayback, let episode = currentEpisode, !episode.isAudiobook {
             guard episodeCompletionProjections[episode.id] == nil else { return }
             projectEpisodeCompletions([episode])
-            let advance = beginAutomaticAdvance()
+            let advance = wasPlaying ? beginAutomaticAdvance() : nil
             trackSubscriptionWrite { [weak self] in
                 guard let self else { return }
                 let finished = await self.finishCurrentPodcast(episode)
+                guard let advance else { return }
                 guard finished else {
                     if self.playbackCommands.automaticAdvance == advance.serial {
                         self.playbackCommands.automaticAdvance = nil
@@ -130,7 +137,7 @@ extension WiltedMacModel {
         }
         // A command issued while this runs (a selection, Pause, seek) owns
         // what plays next, so the advance below only runs if none was.
-        let advance = beginAutomaticAdvance()
+        let advance = wasPlaying ? beginAutomaticAdvance() : nil
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -149,6 +156,7 @@ extension WiltedMacModel {
                     await self.reloadLibraryRows()
                 }
                 await self.retireFinishedEpisode()
+                guard let advance else { return }
                 let claim = self.claimAutomaticAdvance(advance)
                 guard claim == .owns else {
                     if self.playbackCommands.automaticAdvance == advance.serial {
@@ -158,7 +166,7 @@ extension WiltedMacModel {
                 }
                 self.advanceToNextLarderEpisode()
             } catch {
-                if self.playbackCommands.automaticAdvance == advance.serial {
+                if let advance, self.playbackCommands.automaticAdvance == advance.serial {
                     self.playbackCommands.automaticAdvance = nil
                 }
                 self.playbackError = "This episode could not be marked completed."
