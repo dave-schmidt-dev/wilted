@@ -1,4 +1,4 @@
-"""Tests for `ad_feedback_export`: accepted feedback becomes draft corpus labels."""
+"""Tests for `ad_feedback_export`: counted feedback becomes draft corpus labels."""
 from __future__ import annotations
 
 import contextlib
@@ -99,7 +99,7 @@ class FeedbackExportTests(unittest.TestCase):
             now=NOW,
         )
 
-    def test_only_accepted_entries_are_exported(self):
+    def test_every_entry_not_removed_is_exported(self):
         entries = [
             entry("accepted"),
             entry("pending", review="pending", itemID="item-pending", originalSeconds=500.0),
@@ -112,8 +112,9 @@ class FeedbackExportTests(unittest.TestCase):
             for item in case["expected"]
             for feedback_id in item["feedbackIDs"]
         ]
-        self.assertEqual(exported, ["accepted"])
-        self.assertEqual(len(drafts["newCases"]), 1)
+        self.assertEqual(sorted(exported), ["accepted", "pending"],
+                         "an older file's pending press counts; a removed one does not")
+        self.assertEqual(len(drafts["newCases"]), 2)
         self.assertEqual(drafts["skipped"], [])
 
     def test_default_labels_and_explicit_override(self):
@@ -301,7 +302,7 @@ class FeedbackExportTests(unittest.TestCase):
         self.assertEqual(len(payload["newCases"]), 1)
         self.assertEqual(
             stderr.strip(),
-            "ad-feedback.drafts new_cases=1 additions=0 needs_timing=1 skipped=0 accepted=1",
+            "ad-feedback.drafts new_cases=1 additions=0 needs_timing=1 skipped=0 counted=1",
         )
 
     def test_missing_library_adds_a_todo_note(self):

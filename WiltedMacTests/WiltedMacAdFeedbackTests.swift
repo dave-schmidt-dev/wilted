@@ -40,7 +40,8 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
         XCTAssertEqual(made.nearestCut?.originalStartSeconds, 100)
         XCTAssertEqual(made.nearestCut?.originalEndSeconds, 160)
         XCTAssertEqual(made.nearestCut?.distanceSeconds, 4, "positive: the press came after the seam")
-        XCTAssertEqual(made.review, .pending)
+        XCTAssertEqual(made.review, .accepted, "a press counts as soon as it is filed")
+        XCTAssertTrue(made.counts)
         XCTAssertEqual(made.effectiveLabel, .mustCut)
         XCTAssertEqual(try entry(kind: .notAnAd, timeline: timeline()).effectiveLabel, .mustKeep)
     }
@@ -90,11 +91,18 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
         XCTAssertEqual(saved.first?.label, .acceptableCut)
         XCTAssertEqual(saved.first?.reviewedAt, clock)
 
-        try await inbox.review(id: "one", as: .pending, label: .mustKeep, at: clock)
-        let reopened = await inbox.all().first
-        XCTAssertEqual(reopened?.review, .pending)
-        XCTAssertNil(reopened?.label, "reopening forgets the old verdict")
-        XCTAssertNil(reopened?.reviewedAt)
+    }
+
+    func testAPendingPressFromAnOlderFileCounts() async throws {
+        let directory = wiltedTemporaryDirectory("legacy")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)
+        var old = try entry(id: "old", timeline: timeline())
+        old.review = .pending
+        let encoded = try String(decoding: WiltedMacAdFeedbackInbox.encoder.encode([old]), as: UTF8.self)
+        try Data("{\"version\":1,\"entries\":\(encoded)}".utf8).write(to: url)
+        let loaded = await WiltedMacAdFeedbackInbox(fileURL: url).all()
+        XCTAssertEqual(loaded.map(\.review), [.accepted])
     }
 
     func testAnUnreadableInboxIsSetAsideNotOverwritten() async throws {
@@ -148,7 +156,7 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
 
         await feedback.file(try entry(id: "p", kind: .adHere, timeline: nil))
         feedback.pressFinished()
-        XCTAssertEqual(feedback.pending.map(\.id), ["p"])
+        XCTAssertEqual(feedback.counted.map(\.id), ["p"])
         await feedback.undo()
         XCTAssertNil(feedback.acknowledgement)
         XCTAssertTrue(feedback.entries.isEmpty)
@@ -175,18 +183,20 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
         XCTAssertNil(feedback.acknowledgement)
     }
 
-    func testReviewMovesEntriesBetweenTheLists() async throws {
+    func testRelabelRemoveAndRestore() async throws {
         let feedback = WiltedMacAdFeedbackController(inbox: WiltedMacAdFeedbackInbox(fileURL: nil))
         feedback.now = { [clock] in clock }
         await feedback.file(try entry(id: "a", timeline: nil))
-        await feedback.file(try entry(id: "b", timeline: nil))
-        await feedback.accept("a", as: .mustKeep)
-        await feedback.dismiss("b")
-        XCTAssertTrue(feedback.pending.isEmpty)
-        XCTAssertEqual(Set(feedback.reviewed.map(\.id)), ["a", "b"])
+        await feedback.file(try entry(id: "b", timeline: nil, createdAt: clock.addingTimeInterval(1)))
+        XCTAssertEqual(feedback.counted.map(\.id), ["b", "a"], "both count without any review")
+        await feedback.relabel("a", as: .mustKeep)
+        await feedback.remove("b")
+        XCTAssertEqual(feedback.counted.map(\.id), ["a"])
+        XCTAssertEqual(feedback.removed.map(\.id), ["b"])
         XCTAssertEqual(feedback.entries.first { $0.id == "a" }?.effectiveLabel, .mustKeep)
-        await feedback.reopen("b")
-        XCTAssertEqual(feedback.pending.map(\.id), ["b"])
+        await feedback.restore("b")
+        XCTAssertEqual(Set(feedback.counted.map(\.id)), ["a", "b"])
+        XCTAssertEqual(feedback.entries.first { $0.id == "b" }?.effectiveLabel, .mustCut, "restored with its default label")
     }
 
     // MARK: A phone's intent

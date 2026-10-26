@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import WiltedLibrary
 
-/// The Mac's ad-feedback state: the review inbox's entries for Settings and the one
+/// The Mac's ad-feedback state: the filed presses for Settings and the one
 /// acknowledgement the Now Playing pane shows after a press, with its Undo.
 @MainActor
 @Observable
@@ -32,8 +32,10 @@ final class WiltedMacAdFeedbackController {
 
     init(inbox: WiltedMacAdFeedbackInbox) { self.inbox = inbox }
 
-    var pending: [WiltedMacAdFeedbackEntry] { entries.filter { $0.review == .pending } }
-    var reviewed: [WiltedMacAdFeedbackEntry] { entries.filter { $0.review != .pending } }
+    /// Presses that count for the ad corpus, newest first.
+    var counted: [WiltedMacAdFeedbackEntry] { entries.filter(\.counts) }
+    /// Presses the listener removed; Restore counts them again.
+    var removed: [WiltedMacAdFeedbackEntry] { entries.filter { !$0.counts } }
 
     func loadIfNeeded() async {
         guard !loaded else { return }
@@ -79,20 +81,22 @@ final class WiltedMacAdFeedbackController {
         await perform { try await $0.remove(id: acknowledgement.entryID) }
     }
 
-    func accept(_ id: String, as label: WiltedMacAdFeedbackEntry.CorpusLabel) async {
+    /// Gives a counted press a different corpus label.
+    func relabel(_ id: String, as label: WiltedMacAdFeedbackEntry.CorpusLabel) async {
         let at = now()
         await perform { try await $0.review(id: id, as: .accepted, label: label, at: at) }
     }
 
-    func dismiss(_ id: String) async {
+    /// Stops a press counting for the corpus; it stays listed under Removed.
+    func remove(_ id: String) async {
         let at = now()
         await perform { try await $0.review(id: id, as: .dismissed, label: nil, at: at) }
     }
 
-    /// Returns a reviewed entry to the inbox.
-    func reopen(_ id: String) async {
+    /// Counts a removed press again, with its default label.
+    func restore(_ id: String) async {
         let at = now()
-        await perform { try await $0.review(id: id, as: .pending, label: nil, at: at) }
+        await perform { try await $0.review(id: id, as: .accepted, label: nil, at: at) }
     }
 
     private func perform(_ change: (WiltedMacAdFeedbackInbox) async throws -> Void) async {

@@ -25,6 +25,9 @@ struct WiltedMacAdFeedbackEntry: Codable, Equatable, Identifiable, Sendable {
 
     enum Source: String, Codable, Sendable { case mac, phone }
 
+    /// A press counts for the corpus as soon as it is filed (`accepted`); removing it in Settings
+    /// sets `dismissed`. `pending` is only read from files written before presses counted at once,
+    /// and is treated as `accepted`.
     enum Review: String, Codable, Sendable { case pending, accepted, dismissed }
 
     /// The ad corpus's label vocabulary (`Producer/Workers/adcorpus/manifest.json`).
@@ -43,7 +46,7 @@ struct WiltedMacAdFeedbackEntry: Codable, Equatable, Identifiable, Sendable {
             }
         }
 
-        /// What a press means for the corpus unless the reviewer says otherwise.
+        /// What a press means for the corpus unless the listener relabels it.
         static func suggested(for kind: AdFeedbackKind) -> CorpusLabel {
             kind == .notAnAd ? .mustKeep : .mustCut
         }
@@ -82,8 +85,11 @@ struct WiltedMacAdFeedbackEntry: Codable, Equatable, Identifiable, Sendable {
     var label: CorpusLabel?
     var reviewedAt: Date?
 
-    /// The label the export will use: the reviewer's, else the one the press suggests.
+    /// The label the export will use: the listener's, else the one the press suggests.
     var effectiveLabel: CorpusLabel { label ?? .suggested(for: kind) }
+
+    /// True unless the listener removed it in Settings.
+    var counts: Bool { review != .dismissed }
 
     /// Builds an entry, mapping the press onto the original episode with `timeline`, the
     /// preparation timeline of exactly `revisionID`.
@@ -105,11 +111,11 @@ struct WiltedMacAdFeedbackEntry: Codable, Equatable, Identifiable, Sendable {
             },
             engineVersion: engineVersion, pipelineFingerprint: pipelineFingerprint, createdAt: createdAt,
             deviceID: deviceID, source: source, showTitle: showTitle, episodeTitle: episodeTitle,
-            review: .pending, label: nil, reviewedAt: nil)
+            review: .accepted, label: nil, reviewedAt: nil)
     }
 }
 
-/// The review inbox's durable file: `ad-feedback.json` in the app's state directory, one
+/// The ad feedback's durable file: `ad-feedback.json` in the app's state directory, one
 /// versioned JSON document replaced atomically on every change. A file this build cannot read is
 /// set aside next to it, never overwritten. `ad_feedback_export.py` reads the same file.
 actor WiltedMacAdFeedbackInbox {
@@ -147,7 +153,11 @@ actor WiltedMacAdFeedbackInbox {
         self.writeBytes = write ?? Self.durableWrite
         guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return }
         if let stored = try? Self.decoder.decode(Stored.self, from: data), stored.version == Self.version {
-            entries = stored.entries
+            entries = stored.entries.map { entry in
+                var entry = entry
+                if entry.review == .pending { entry.review = .accepted }
+                return entry
+            }
         } else {
             let aside = fileURL.appendingPathExtension("unreadable")
             try? FileManager.default.removeItem(at: aside)

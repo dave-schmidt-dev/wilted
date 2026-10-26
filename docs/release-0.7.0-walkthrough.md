@@ -98,7 +98,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 - [x] File > Prepare Again With Current Engine shows (0) now that every episode has been through the current engine; right-click a Larder row has no Prepare Again. (2026-10-26: (0) confirmed; right-click not yet checked.)
 - [x] Mac Now Playing: press **Ad here** during an ad you can hear. After a cut, **Good cut** and **Not an ad** show for 30 s. Each press confirms at once with Undo. (2026-10-26: Good cut and two Ad here presses on The Weekly Show recorded and mapped.)
 - [ ] iPhone full player: the same three buttons. A press reaches the Mac after about 8 s plus iCloud.
-- [x] Settings > Ad feedback on the Mac lists both presses, with where they fall in the episode; accept one and reject one. (2026-10-26: two accepted, one dismissed; saved.)
+- [ ] Settings > Ad feedback on the Mac lists both presses, with where they fall in the episode; accept one and reject one. (2026-10-26: two accepted, one dismissed; saved. Since changed: presses count at once, and the list only relabels, removes or restores. Recheck: change one label, remove one press, restore it.)
 
 ## After the walkthrough
 

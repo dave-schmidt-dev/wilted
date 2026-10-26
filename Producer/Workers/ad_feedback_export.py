@@ -1,7 +1,7 @@
-"""Turn accepted listener ad feedback into draft ad-corpus cases and labels.
+"""Turn counted listener ad feedback into draft ad-corpus cases and labels.
 
-The Mac player records presses and the review inbox records which the owner
-accepted. This module writes manifest-ready draft cases and expected spans for
+The Mac and iPhone players record presses; each counts with its default label
+unless the owner relabels or removes it in Settings > Ad feedback. This module writes manifest-ready draft cases and expected spans for
 `adcorpus/manifest.json` without editing it, and never copies transcript text,
 cue text, podcast prose or audio: `why` comes only from numbers and enum values.
 Drafts carry show titles, so `--out` must point outside this public repository.
@@ -91,6 +91,12 @@ def load_feedback(path) -> list[dict]:
     if not isinstance(entries := payload.get("entries"), list):
         raise FeedbackError(f"ad feedback at {path} has no entries list")
     return [entry for entry in entries if isinstance(entry, dict)]
+def _counts(entry) -> bool:
+    """True for a press that counts: filed presses count unless removed (`dismissed`) in Settings.
+
+    `pending` comes only from files written before presses counted at once.
+    """
+    return isinstance(entry, dict) and entry.get("review") in ("accepted", "pending")
 def _label_for(entry: dict) -> str | None:
     """The entry's explicit label, else the default for its kind."""
     explicit = entry.get("label")
@@ -259,16 +265,16 @@ def _new_case(item_id, members: list[dict], items: list[dict], *, library: Path,
 def build_drafts(entries, manifest, *, library, now) -> dict:
     """Build draft cases, additions and skips from feedback entries.
     Args:
-        entries: All entries read from the file; only `accepted` ones are used.
+        entries: All entries read from the file; every one not `dismissed` is used.
         manifest: The loaded ad-corpus manifest.
         library: Path to the read-only database.
         now: A datetime or ISO 8601 string, the generation time.
     Returns:
         `generatedAt`, `newCases`, `additions` and `skipped`.
     """
-    accepted = [e for e in entries if isinstance(e, dict) and e.get("review") == "accepted"]
+    counted = [e for e in entries if _counts(e)]
     skipped, usable = [], []
-    for entry in accepted:
+    for entry in counted:
         if _span_for(entry) is None:
             skipped.append({"id": entry.get("id"), "reason": "unmapped"})
         elif _label_for(entry) is None:
@@ -279,7 +285,7 @@ def build_drafts(entries, manifest, *, library, now) -> dict:
     for item in expected_items(usable):
         by_item.setdefault(item["itemID"], []).append(item)
     members: dict = {}
-    for entry in accepted:
+    for entry in counted:
         members.setdefault(entry.get("itemID"), []).append(entry)
     cases = {case["itemID"]: case for case in manifest.get("cases", [])
              if isinstance(case, dict) and case.get("itemID")}
@@ -339,10 +345,10 @@ def main(argv=None) -> int:
     needs_timing = sum(1 for collection in (payload["newCases"], payload["additions"])
                        for entry in collection for item in entry["expected"]
                        if item.get("needsTiming"))
-    accepted = sum(1 for e in entries if isinstance(e, dict) and e.get("review") == "accepted")
+    counted = sum(1 for e in entries if _counts(e))
     print(f"ad-feedback.drafts new_cases={len(payload['newCases'])}"
           f" additions={len(payload['additions'])} needs_timing={needs_timing}"
-          f" skipped={len(payload['skipped'])} accepted={accepted}", file=sys.stderr)
+          f" skipped={len(payload['skipped'])} counted={counted}", file=sys.stderr)
     return 0
 
 if __name__ == "__main__":
