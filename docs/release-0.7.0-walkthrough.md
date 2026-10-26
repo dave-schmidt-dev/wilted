@@ -96,7 +96,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 - [x] A started episode on the Mac Larder shows a small progress bar and the time left beside its date, wherever it was last played.
 - [ ] Mark an episode completed: the "Undo completion is available for 10 seconds" notice goes away after 10 s.
 - [x] File > Prepare Again With Current Engine shows (0) now that every episode has been through the current engine; right-click a Larder row has no Prepare Again. (2026-10-26: (0) confirmed; right-click not yet checked.)
-- [ ] Mac Now Playing: press **Ad here** during an ad you can hear. After a cut, **Good cut** and **Not an ad** show for 30 s. Each press confirms at once with Undo.
+- [x] Mac Now Playing: press **Ad here** during an ad you can hear. After a cut, **Good cut** and **Not an ad** show for 30 s. Each press confirms at once with Undo. (2026-10-26: Good cut and two Ad here presses on The Weekly Show recorded and mapped.)
 - [ ] iPhone full player: the same three buttons. A press reaches the Mac after about 8 s plus iCloud.
 - [ ] Settings > Ad feedback on the Mac lists both presses, with where they fall in the episode; accept one and reject one.
 
