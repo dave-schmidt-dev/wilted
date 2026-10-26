@@ -91,6 +91,15 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 5. Playlist and rule parity (Awaiting milestone check): playlist order, rule behaviour and automatic results, Manual/Smart indicators, shared sorting across list pages, Larder Add, direct Share transcript, the two conditional accessibility checks, and preparation recovery once processing runs.
 6. Weekly Show 9/30 Birdie Box ad (old Task 43): this was your report. It moved to `## Next release` only because the exact episode file vanished and the fix can't be verified. Say so and it stays in this release.
 
+## J. Added since this checklist was written (2026-10-23)
+
+- [ ] A started episode on the Mac Larder shows a small progress bar and the time left beside its date, wherever it was last played.
+- [ ] Mark an episode completed: the "Undo completion is available for 10 seconds" notice goes away after 10 s.
+- [ ] File > Prepare Again With Current Engine shows (0) now that every episode has been through the current engine; right-click a Larder row has no Prepare Again.
+- [ ] Mac Now Playing: press **Ad here** during an ad you can hear. After a cut, **Good cut** and **Not an ad** show for 30 s. Each press confirms at once with Undo.
+- [ ] iPhone full player: the same three buttons. A press reaches the Mac after about 8 s plus iCloud.
+- [ ] Settings > Ad feedback on the Mac lists both presses, with where they fall in the episode; accept one and reject one.
+
 ## After the walkthrough
 
 Walkthrough fixes land as one batch with headless gates. If any fix touches the Mac UI surface, the one screen-seizing `make native-ui` run on the final candidate waits until you say you are away from the Mac.
