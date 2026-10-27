@@ -35,7 +35,12 @@ extension WiltedMacModelTests {
         let notes = "Guest: Ada (https://example.com/ada) and code WILTED at example.com/quiet."
         let linked = WiltedShowNotes.linked(notes)
         let links = linked.runs.compactMap(\.link)
-        XCTAssertEqual(links.map(\.absoluteString), ["https://example.com/ada", "http://example.com/quiet"])
+        XCTAssertEqual(links.first?.absoluteString, "https://example.com/ada")
+        // A bare domain gets whichever scheme the system detector picks: http
+        // on earlier macOS, https on 27.2.
+        XCTAssertEqual(links.count, 2)
+        XCTAssertEqual(links.last.map { "\($0.host() ?? "")\($0.path())" }, "example.com/quiet")
+        XCTAssertTrue(["http", "https"].contains(links.last?.scheme ?? ""), String(describing: links.last))
         XCTAssertEqual(String(linked.characters), notes, "linking must not alter the words")
     }
 
