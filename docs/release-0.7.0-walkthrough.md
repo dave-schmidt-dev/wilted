@@ -1,15 +1,25 @@
 # Wilted 0.7.0 walkthrough checklist
 
-Candidate: product code of `912d61cb`; later commits change only CHANGELOG and this checklist. Version 0.7.0 (12). Baseline: 0.6.0 (11), `0bce4c73`, 2026-10-13.
+Candidate: `efe9e256` (2026-10-26), version 0.7.0 (12). Sections A-I were written against `912d61cb` (2026-10-21); item 7 below lists what changed since, and section J covers it. Baseline: 0.6.0 (11), `0bce4c73`, 2026-10-13.
 
 ## Status before the walkthrough
 
-1. The changelog's `[Unreleased]` section has 225 entries. 134 of them already shipped in the 0.6.0 (11) build but were never filed under 0.6.0, so you have been running them since 10-13. 91 are new since 0.6.0.
+1. The changelog's `[Unreleased]` section has 236 entries at `efe9e256`. 134 of them already shipped in the 0.6.0 (11) build but were never filed under 0.6.0, so you have been running them since 10-13. 102 are new since 0.6.0 (91 at the freeze, 11 added since). The split is drafted in `docs/release-0.7.0-changelog-draft.md`.
 2. Classification: 201 verified by a named test, 22 need a person or live device (listed below), 0 product failures. Two entries described behaviour the code doesn't have; their wording was corrected in `fcaf44f9`.
-3. Gates: the full native gate passed on `912d61cb`, including the one screen-seizing Mac UI run (Mac unit 1582, Mac UI 10, iOS unit 933, iOS pixel 36, Kit 104, CloudSync 114, Producer 817, Playback 4). The receipt still covers `fcaf44f9`. Headless `make validate` on `fcaf44f9`: 35/35 phase-0 legs and 8/8 native legs passed. An earlier run on `912d61cb` hit a 10 s timeout in one build-cache tooling test while the machine was at load 160; that test passes alone.
+3. Gates: the full native gate passed on `912d61cb`, including the one screen-seizing Mac UI run (Mac unit 1582, Mac UI 10, iOS unit 933, iOS pixel 36, Kit 104, CloudSync 114, Producer 817, Playback 4). The receipt still covers `fcaf44f9`. Headless `make validate` on `fcaf44f9`: 35/35 phase-0 legs and 8/8 native legs passed. An earlier run on `912d61cb` hit a 10 s timeout in one build-cache tooling test while the machine was at load 160; that test passes alone. Headless `make validate` on `efe9e256` (2026-10-27, macOS 27.2): 35/35 phase-0 legs; Playback 4, CloudSync 114, Kit 104, Producer 851, iOS pixel 36 and iOS unit 942 passed; Mac unit failed 2 of 1612, both from the macOS 27.2 update, not the code: the system link detector now gives a bare domain in show notes `https` rather than `http` (test now accepts either), and the player-chapters pixel baseline from 10-10 still showed the pre-10-13 "No episode page" control and fell just past the 1% tolerance (re-recorded). With both fixes the full Mac unit leg then passed headlessly (log `.logs/mac-unit-rerun-2026-10-27.log`). The `make native-ui` receipt for `efe9e256` (10-26, Mac UI 9/9 legs) predates the walkthrough; the Mac UI run is owed again on the final candidate after the walkthrough.
 4. Installed app evidence: no WiltedMac crash from the `/Applications` copy (all 16 crash reports since 10-14 came from test hosts). The installed Mac logged iCloud "service unavailable" (CloudKit error 6) about every 5 minutes from 17:00 to 23:04 on 10-20, then nothing since.
-5. Devices: the Mac runs the candidate (installed `912d61cb`, same code). The iPhone and iPad (both iOS 27.0.1) got the candidate `fe55645e` on 2026-10-21; its embedded Watch app reaches the Watch through the iPhone.
+5. Devices: the Mac runs the candidate (`make install` of `efe9e256`, 2026-10-26). The iPhone and iPad (both iOS 27.0.1) still run `fe55645e` from 2026-10-21, which lacks the iPhone ad feedback buttons and the 10-23 phone resend; section G and the iPhone line in J need a phone install of the candidate first. The embedded Watch app reaches the Watch through the iPhone.
 6. Inventory tables: `.logs/release-0.7.0/class-*.md` (ids such as A1, C22, F87 refer to rows there).
+7. Changes since `912d61cb`, each at your word (session transcript, 2026-10-22 to 10-26):
+   - Ad engine v12 and edge trims (`74049737`, `18cd83bc`, `58d0ab22`, `e2148743`, `2176dfd9`): after "This episode started with multiple ads … we need this not to happen again" (10-22), and "no dont revert, tweak" (10-23). Pushed.
+   - Phone audio resend (`7b8ac30f`): "the download to iphone button is gone? … im going to the car, try to fix" (10-23). Mac iCloud backoff reset (`574e0b20`): "Work on the Mac side" (10-23), the follow-on to that failure.
+   - Prepare Again (`683d330e`, `6d41fa4d`, review fixes `9a2c73a2`, `3e2ede5f`): "add a way to re-prepare episodes whose preparation kept every ad" and "extend Prepare Again to any episode prepared by an older engine" (10-23).
+   - Mac Larder progress bar (`6dd29b3e`): your report that the started Michael Douglas episode showed no progress on the Mac (10-23).
+   - Undo notice clears after 10 s (`bb751ead`): "this undo message has not gone anywhere after minutes" (10-23).
+   - In-player ad feedback (`994c2491`, merged in `80a282be`): from your question about pointing out good and bad ad removals (10-23); you started that session and asked for the merge. Presses counting at once (`fff3eab3`): "count my presses automatically" (10-26).
+   - Mark completed on a paused episode no longer starts the next (`efe9e256`): your bug report (10-26).
+   - Requested but not shipped: the in022/in105 programme-boundary mislabel fix (10-23). The attempt (`d9ee5e5f`) failed the corpus gate and was reverted (`69ce7b89`); it is open engine work in TASKS.
+   - Checklist-only commits: `0c9a1a8f`, `ce216bd7`, `6294bedc`, `eb487e2e`, `ed0c6397`.
 
 Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks something 0.6.0 did gets fixed in this release; everything else goes to `## Next release`, unless you say it belongs in this one.
 
@@ -98,10 +108,11 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 - [x] File > Prepare Again With Current Engine shows (0) now that every episode has been through the current engine; right-click a Larder row has no Prepare Again. (2026-10-26: (0) confirmed; right-click not yet checked.)
 - [x] Mac Now Playing: press **Ad here** during an ad you can hear. After a cut, **Good cut** and **Not an ad** show for 30 s. Each press confirms at once with Undo. (2026-10-26: Good cut and two Ad here presses on The Weekly Show recorded and mapped.)
 - [ ] iPhone full player: the same three buttons. A press reaches the Mac after about 8 s plus iCloud.
-- [ ] Settings > Ad feedback on the Mac lists both presses, with where they fall in the episode; accept one and reject one. (2026-10-26: two accepted, one dismissed; saved. Since changed: presses count at once, and the list only relabels, removes or restores. Recheck: change one label, remove one press, restore it.)
+- [ ] Settings > Ad feedback on the Mac lists every press as counted, with where it falls in the episode. Change one press's label, remove one, then restore it from Removed. (2026-10-26: the earlier accept/dismiss version passed; this is the recheck after `fff3eab3`.)
+- [ ] Pause an episode, then Mark completed: it is marked completed and nothing else starts. Mark completed while playing still starts the next Larder episode (`efe9e256`).
 
 ## After the walkthrough
 
 Walkthrough fixes land as one batch with headless gates. If any fix touches the Mac UI surface, the one screen-seizing `make native-ui` run on the final candidate waits until you say you are away from the Mac.
 
-On a pass: tag `v0.7.0` on the walked commit, finalize the CHANGELOG 0.7.0 section (moving the 134 entries that shipped in 0.6.0 (11) under 0.6.0), record it in HISTORY, and set TASKS to `open`. Push, TestFlight and any other publication wait for your explicit go.
+On a pass: tag `v0.7.0` on the walked commit, finalize the CHANGELOG 0.7.0 section from `docs/release-0.7.0-changelog-draft.md` (102 entries for 0.7.0; the 134 that shipped in 0.6.0 (11) move under 0.6.0), record it in HISTORY, and set TASKS to `open`. Push, TestFlight and any other publication wait for your explicit go.
