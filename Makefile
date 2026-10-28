@@ -1,4 +1,4 @@
-.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install app-icon ad-corpus ad-corpus-replay ad-corpus-adopt ad-feedback-drafts
+.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-replay ad-corpus-adopt ad-feedback-drafts
 
 # The runtime venv every target shares (Producer/Runtime/Makefile pins the same path).
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/Producer/Runtime/.venv
@@ -98,6 +98,16 @@ app-icon:
 # WILTED_SKIP_UI_RECEIPT=1 installs anyway with a loud warning.
 install:
 	@bash scripts/verify-once-gate.sh check-ui
+	@bash scripts/install-mac-app.sh
+
+# The walkthrough build: the same install after the headless gate alone. A
+# release walkthrough has to run on the new build, and the screen-seizing leg
+# runs once, after that walkthrough, on the final candidate while David is
+# away, so `install`'s receipt check cannot come first. Everything `validate`
+# runs must pass; nothing records a ui receipt, and `install` still refuses
+# this source until `make native-ui` has run on it.
+install-walkthrough:
+	@$(MAKE) validate
 	@bash scripts/install-mac-app.sh
 
 # Scores the ad detector against hand-labelled real episodes, reading the cuts

@@ -282,6 +282,31 @@ class AlignedSTTCacheTests(unittest.TestCase):
         cached = json.loads(self.cache_path().read_text())
         self.assertEqual([e["text"] for e in cached["segments"]], ["Before.", "After."])
 
+    def test_an_app_built_before_v3_is_served_with_v3_rather_than_refused(self):
+        # The installed app runs this checkout's worker and still names 1.1b
+        # until it is rebuilt; refusing it failed every ad-removal preparation.
+        calls = []
+        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "programme")]})
+        transcribe = sys.modules["wilted.transcribe"]
+        original = transcribe.transcribe_audio
+        install_fake_ads(FakeLLM())
+        request = {"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
+                   "removeAds": True, "alignedTranscriptModel": "mlx-community/parakeet-tdt-1.1b"}
+        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
+                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), \
+                mock.patch.object(transcribe, "transcribe_audio",
+                                  lambda *a, **k: calls.append(k["model_name"]) or original(*a, **k)), \
+                redirect_stderr(io.StringIO()) as progress:
+            result = wp.run(request)
+        self.assertEqual(calls, [wp.ALIGNED_STT_MODEL])
+        self.assertEqual(result["report"]["outcome"], "noAds")
+        self.assertIn("transcript.stt.model.substituted", progress.getvalue())
+
+        with mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), self.assertRaises(wp.WorkerError) as raised:
+            wp.run({**request, "alignedTranscriptModel": "some-other-model"})
+        self.assertEqual(raised.exception.code, "aligned-stt-model-required")
+
     def test_a_join_that_moves_a_start_past_its_neighbour_still_caches_in_order(self):
         # Overlapping stitched windows can put a segment between the fragment
         # and the rest of the sentence it opened; the cache refuses any

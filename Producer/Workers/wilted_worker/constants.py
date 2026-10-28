@@ -216,6 +216,11 @@ EXPLICIT_SPONSOR_NAME_LEADING_FILLER = frozenset(
 
 ALIGNED_STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 
+# The model an app built before engine v13 still names in its removal requests.
+# The app runs this checkout's worker, so it meets the new model before it is
+# rebuilt; its requests are served with ALIGNED_STT_MODEL rather than refused.
+ALIGNED_STT_PREVIOUS_MODEL = "mlx-community/parakeet-tdt-1.1b"
+
 ALIGNED_STT_CACHE_SCHEMA_VERSION = 2
 
 # Parakeet computes a token's end as its start plus its duration, and the next

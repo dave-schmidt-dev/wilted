@@ -91,7 +91,7 @@ from wilted_worker.commercial_seeds import recover_sparse_commercial_reads
 from wilted_worker.commercial_seeds import sparse_commercial_seeds
 from wilted_worker.commercial_seeds import sparse_pause_envelope
 from wilted_worker.constants import ALIGNED_STT_CACHE_MAXIMUM_ENTRIES
-from wilted_worker.constants import ALIGNED_STT_MODEL
+from wilted_worker.constants import ALIGNED_STT_MODEL, ALIGNED_STT_PREVIOUS_MODEL
 from wilted_worker.constants import COMMERCIAL_PRESERVATION_FLANK_STEPS
 from wilted_worker.constants import COMMERCIAL_RECOVERY_CONTEXT_CHARS
 from wilted_worker.constants import COMMERCIAL_RECOVERY_MAX_CANDIDATES
@@ -209,7 +209,10 @@ def run(request: dict) -> dict:
         if Path(request["outputPath"]).resolve() == audio_path.resolve():
             raise WorkerError("cut-output-alias", "prepared output must not alias the downloaded audio")
         _worker_ad_audit.preflight_cut_tools()
-        if request.get("alignedTranscriptModel", ALIGNED_STT_MODEL) != ALIGNED_STT_MODEL:
+        requested_model = request.get("alignedTranscriptModel", ALIGNED_STT_MODEL)
+        if requested_model == ALIGNED_STT_PREVIOUS_MODEL:
+            _worker_reporting.progress("transcript.stt.model.substituted", f"{requested_model} -> {ALIGNED_STT_MODEL}")
+        elif requested_model != ALIGNED_STT_MODEL:
             raise WorkerError("aligned-stt-model-required", f"ad removal requires {ALIGNED_STT_MODEL}")
 
     cues: list[dict] = []
