@@ -25,6 +25,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import shutil
 import subprocess
 import sys
 import time
@@ -280,6 +281,37 @@ def fetch(episode: dict, root: Path, model: str) -> bool:
         return False
 
 
+def retranscribe_all(root: Path, only: list[str], model: str) -> int:
+    """Transcribe every downloaded episode under `root` again, leaving labels and reviews alone.
+
+    Works from the gold folders, not the library, whose newest episode may have
+    changed since the download. The previous transcript is kept beside the new
+    one so the labeller can be pointed at the speech the new pass recovered.
+    """
+    folders = sorted(
+        p for p in root.iterdir() if (p / "episode.json").exists() and (not only or p.name in only)
+    )
+    failed = []
+    for index, folder in enumerate(folders, 1):
+        audio = folder / json.loads((folder / "episode.json").read_text())["audioFile"]
+        say(f"[{index}/{len(folders)}] {folder.name}")
+        if not audio.exists():
+            say(f"skip {folder.name}: the full download is gone (already finished)")
+            continue
+        current, previous = folder / "transcript.json", folder / "transcript.previous.json"
+        # The first transcript stays the baseline across repeated runs; the
+        # review page reads transcript.json, so a failed run copies it back.
+        if current.exists() and not previous.exists():
+            shutil.copy2(current, previous)
+        try:
+            transcribe(audio, folder, model)
+        except Exception as error:  # noqa: BLE001 - one show's failure must not stop the rest
+            say(f"FAILED {folder.name}: {type(error).__name__}: {error}")
+            failed.append(folder.name)
+    say(f"retranscribed {len(folders) - len(failed)} of {len(folders)}" + (f"; failed {', '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--library", type=Path, default=DEFAULT_LIBRARY)
@@ -290,9 +322,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--list", action="store_true", help="print the chosen episodes and stop"
     )
+    parser.add_argument(
+        "--retranscribe",
+        action="store_true",
+        help="transcribe the downloaded episodes again; keeps the old transcript as transcript.previous.json",
+    )
     args = parser.parse_args(argv)
     sys.path.insert(0, str(REPO_ROOT / "Producer" / "Workers"))
     from wilted_worker.constants import ALIGNED_STT_MODEL
+
+    if args.retranscribe:
+        return retranscribe_all(args.root, args.only, ALIGNED_STT_MODEL)
 
     episodes = [
         e

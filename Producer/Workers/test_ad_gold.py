@@ -13,6 +13,7 @@ from unittest import mock
 import ad_gold_fetch as fetch
 import ad_gold_finish as finish
 import ad_gold_label as label
+import ad_gold_recover as recover
 
 
 @dataclass
@@ -139,6 +140,11 @@ class LabelTests(unittest.TestCase):
         words = [[10.0, 10.5, "a"], [10.5, 30.0, "stretched"], [40.0, 40.4, "b"]]
         self.assertEqual(label.untranscribed_gaps(words, 60.0), [[0.0, 10.0], [11.7, 40.0], [40.4, 60.0]])
 
+    def test_review_lists_long_gaps_and_gaps_beside_a_break(self):
+        gaps = [[0.0, 10.0], [105.0, 115.0], [200.0, 230.0]]
+        ranges = [{"start_s": 40.0, "end_s": 70.0}]
+        self.assertEqual(label.review_gaps(gaps, ranges), [[0.0, 10.0], [200.0, 230.0]])
+
     def test_bad_enum_is_rejected(self):
         with self.assertRaises(label.LabelError):
             label.snap_range(self.raw(kind="banner"), WORDS, 1)
@@ -257,6 +263,37 @@ class FinishTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("transcript words", json.dumps(shows))
+
+
+class RecoverTests(unittest.TestCase):
+    PREVIOUS = [[0.0, 0.5, "a"], [40.0, 40.5, "b"]]
+    RECOVERED = ["This", "episode", "is", "brought", "to", "you"]
+    NOW = PREVIOUS[:1] + [[10.0 + i, 10.5 + i, w] for i, w in enumerate(RECOVERED)] + PREVIOUS[1:]
+
+    def test_stretches_are_new_words_inside_old_gaps(self):
+        self.assertEqual(recover.recovered_stretches(self.PREVIOUS, self.NOW, 41.0), [[10.0, 15.5]])
+        self.assertEqual(recover.recovered_stretches(self.PREVIOUS, self.PREVIOUS, 41.0), [])
+
+    def test_merge_adds_pending_ranges_and_reopens_a_confirmed_show(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "transcript.json").write_text(json.dumps({"words": self.NOW}))
+            (folder / "episode.json").write_text(json.dumps({"durationSeconds": 41.0}))
+            kept = {"id": "r1", "start_s": 40.0, "end_s": 40.5, "kind": "outro", "label": "acceptable-cut"}
+            (folder / "labels.opus.json").write_text(json.dumps({"pattern": "p", "ranges": [kept], "gaps": []}))
+            decided = {**kept, "decision": "confirmed", "origin": "opus", "opus": kept}
+            (folder / "review.json").write_text(json.dumps({"version": 1, "status": "confirmed", "ranges": [decided]}))
+            item = {"start_s": 10.0, "end_s": 15.0, "first_words": "This episode is", "last_words": "to you",
+                    "kind": "sponsor", "label": "must-cut", "confidence": "high", "sponsor": None, "note": ""}
+            (folder / "labels.recovered.raw.json").write_text(json.dumps({"ranges": [item, item]}))
+            self.assertEqual(recover.merge_show(folder), 1)
+            review = json.loads((folder / "review.json").read_text())
+            labels = json.loads((folder / "labels.opus.json").read_text())
+        self.assertEqual(review["status"], "in-progress")
+        self.assertEqual([(r["id"], r["decision"]) for r in review["ranges"]], [("x1", "pending"), ("r1", "confirmed")])
+        self.assertEqual((review["ranges"][0]["start_s"], review["ranges"][0]["end_s"]), (10.0, 15.5))
+        self.assertEqual([r["id"] for r in labels["ranges"]], ["x1", "r1"])
+        self.assertEqual(labels["gaps"], [[0.5, 10.0], [15.5, 40.0]])
 
 
 if __name__ == "__main__":

@@ -29,6 +29,10 @@ END_WINDOW = (-20.0, 45.0)
 # ("exceptional." 38.96-41.2), so an end edge stops this long after the word starts.
 LONGEST_WORD_S = 1.2
 GAP_S = 8.0
+# The review page lists a gap only when it is long or beside a break: short music
+# beds inside a story (Radiolab) are not worth the owner's time.
+REVIEW_GAP_S = 20.0
+NEAR_BREAK_S = 30.0
 
 
 class LabelError(ValueError):
@@ -82,6 +86,18 @@ def untranscribed_gaps(words: list[list], duration: float | None, minimum: float
         if end - start >= minimum:
             gaps.append([round(start, 2), round(end, 2)])
     return gaps
+
+
+def review_gaps(
+    gaps: list[list[float]], ranges: list[dict], long_s: float = REVIEW_GAP_S, near_s: float = NEAR_BREAK_S
+) -> list[list[float]]:
+    """The gaps worth listening to: at least `long_s` long, or within `near_s` of a labelled break."""
+    return [
+        [start, end]
+        for start, end in gaps
+        if end - start >= long_s
+        or any(start - near_s <= r["end_s"] and r["start_s"] <= end + near_s for r in ranges)
+    ]
 
 
 def nearest_boundary(words: list[list], seconds: float, use_end: bool) -> float:
@@ -162,7 +178,7 @@ def snap_show(folder: Path) -> dict:
         key=lambda item: item["start_s"],
     )
     duration = json.loads((folder / "episode.json").read_text()).get("durationSeconds") if (folder / "episode.json").exists() else None
-    labels = {"pattern": raw["pattern"].strip(), "ranges": ranges, "gaps": untranscribed_gaps(words, duration)}
+    labels = {"pattern": raw["pattern"].strip(), "ranges": ranges, "gaps": review_gaps(untranscribed_gaps(words, duration), ranges)}
     (folder / "labels.opus.json").write_text(json.dumps(labels, indent=2))
     return labels
 
