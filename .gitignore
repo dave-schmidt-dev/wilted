@@ -9,6 +9,7 @@ venv/
 
 # Node / JS
 node_modules/
+test-results/
 *.tsbuildinfo
 
 # Secrets / local state (never commit)

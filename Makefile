@@ -1,4 +1,4 @@
-.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-replay ad-corpus-adopt ad-feedback-drafts
+.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-replay ad-corpus-adopt ad-feedback-drafts ad-gold-review ad-gold-review-ui-test
 
 # The runtime venv every target shares (Producer/Runtime/Makefile pins the same path).
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/Producer/Runtime/.venv
@@ -156,3 +156,9 @@ ad-feedback-drafts:
 ad-corpus-replay:
 	@"$${WILTED_PIPELINE_PYTHON:-$(UV_PROJECT_ENVIRONMENT)/bin/python}" \
 		Producer/Workers/ad_corpus.py --mode replay --strict
+
+ad-gold-review:
+	@python3 Producer/Workers/ad_gold_review.py $(if $(ROOT),--root "$(ROOT)")
+
+ad-gold-review-ui-test:
+	cd tests/ad-gold-review && npm install --no-audit --no-fund && npx playwright test
