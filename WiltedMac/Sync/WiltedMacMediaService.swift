@@ -241,6 +241,8 @@ actor WiltedMacMediaService {
                 preparation: ready.preparation
             )
             let key = AssetKey(entryID: entryID.rawValue, revisionID: ready.revisionID.rawValue)
+            // Unseeded offers only cost a fresh upload, so a failed read falls through to one.
+            try? await seedOffers()
             if published[entryID.rawValue] == key.revisionID, offered[entryID.rawValue] == offer,
                var existing = records[key] {
                 existing.requesters.insert(requester)
@@ -398,14 +400,19 @@ actor WiltedMacMediaService {
 
     // MARK: - Available offers
 
+    /// Learns the published offers once per launch, so neither a reconcile nor a request that
+    /// arrives before one republishes or re-uploads what iCloud already holds.
+    private func seedOffers() async throws {
+        guard !offersSeeded else { return }
+        for offer in try await transport.mediaOffers() { offered[offer.entryID.rawValue] = offer }
+        offersSeeded = true
+    }
+
     private func reconcile() async -> Bool {
         let prepared: [ItemID: WiltedMacReadyAudio]
         do {
             prepared = try await source.preparedQueuedAudio()
-            if !offersSeeded {
-                for offer in try await transport.mediaOffers() { offered[offer.entryID.rawValue] = offer }
-                offersSeeded = true
-            }
+            try await seedOffers()
         } catch {
             lastFailure = String(describing: error)
             mediaLog.error("Could not read the prepared Larder to publish offers: \(String(describing: error), privacy: .public)")

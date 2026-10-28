@@ -305,6 +305,18 @@ final class WiltedMacTranscriptPublishTests: XCTestCase {
         XCTAssertTrue(holding)
     }
 
+    func testARequestWaitingAtLaunchIsServedFromTheExistingOfferBeforeAnyReconcile() async throws {
+        let rig = rig("transcript-launch-request")
+        let entry = try id("episode-v")
+        rig.source.set(entry, audio: try audio(rig, revision: "rev-1", preparedAt: fineTime), transcript: try transcript(entry, revision: "rev-1"))
+        let (first, _) = launch(rig)
+        await first.handle(try request(rig, entry, from: phoneID, "v-1"))
+
+        let (again, againWire) = launch(rig)
+        await again.handle(try request(rig, entry, from: tabletID, "v-2"))
+        XCTAssertFalse(againWire.writes.contains("offer episode-v ready"), "the audio is already offered: \(againWire.writes)")
+    }
+
     func testRepublishingTheSameRevisionKeepsItsTranscript() async throws {
         let rig = rig("transcript-same-revision")
         let entry = try id("episode-t")
