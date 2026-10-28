@@ -29,6 +29,7 @@ validate_pixel_snapshot_baselines() {
     testMacPlayerShellPixelBaselines \
     testMacSidebarFullPixelBaselines \
     testMacSidebarRailPixelBaselines \
+    testMacSidebarCountsPixelBaselines \
     testMacToolbarPixelBaselines; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$snapshot_test_source" ||
       fail "Mac pixel snapshot test method is missing: $method"
@@ -69,7 +70,7 @@ validate_pixel_snapshot_baselines() {
     "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
     fail 'Mac persistent compact-player journey selector is missing'
 
-  expected_count=210
+  expected_count=212
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
@@ -107,7 +108,7 @@ validate_pixel_snapshot_baselines() {
       expected_selectors+="state-$state_id-$variant\n"
     done <<<"$expected_variants"
   done <<<"$expected_state_ids"
-  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-feed-policy-article-light\nmac-shell-feed-policy-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-feeds-row-light\nmac-shell-feeds-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-real-size-minimum-light\nmac-shell-larder-real-size-minimum-dark\nmac-shell-larder-real-size-full-light\nmac-shell-larder-real-size-full-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\nmac-shell-sidebar-playlists-light\nmac-shell-sidebar-playlists-dark\nmac-shell-playlist-manual-light\nmac-shell-playlist-manual-dark\nmac-shell-playlist-rules-light\nmac-shell-playlist-rules-dark\nmac-shell-settings-reports-light\nmac-shell-settings-reports-dark\nmac-shell-player-bulletin-banner-light\nmac-shell-player-bulletin-banner-dark\nmac-shell-larder-report-row-light\nmac-shell-larder-report-row-dark\nmac-shell-now-playing-pane-light\nmac-shell-now-playing-pane-dark'
+  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-sidebar-counts-light\nmac-shell-sidebar-counts-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-feed-policy-article-light\nmac-shell-feed-policy-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-feeds-row-light\nmac-shell-feeds-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-real-size-minimum-light\nmac-shell-larder-real-size-minimum-dark\nmac-shell-larder-real-size-full-light\nmac-shell-larder-real-size-full-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\nmac-shell-sidebar-playlists-light\nmac-shell-sidebar-playlists-dark\nmac-shell-playlist-manual-light\nmac-shell-playlist-manual-dark\nmac-shell-playlist-rules-light\nmac-shell-playlist-rules-dark\nmac-shell-settings-reports-light\nmac-shell-settings-reports-dark\nmac-shell-player-bulletin-banner-light\nmac-shell-player-bulletin-banner-dark\nmac-shell-larder-report-row-light\nmac-shell-larder-report-row-dark\nmac-shell-now-playing-pane-light\nmac-shell-now-playing-pane-dark'
   expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
   actual_selectors="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; |
     sed -E 's/^.*\.(state-[^.]+|mac-shell-[^.]+)\.png$/\1/' | sort)"
@@ -131,6 +132,8 @@ validate_pixel_snapshot_baselines() {
     testMacSidebarFullPixelBaselines.mac-shell-sidebar-full-dark.png \
     testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-light.png \
     testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-dark.png \
+    testMacSidebarCountsPixelBaselines.mac-shell-sidebar-counts-light.png \
+    testMacSidebarCountsPixelBaselines.mac-shell-sidebar-counts-dark.png \
     testMacToolbarPixelBaselines.mac-shell-toolbar-light.png \
     testMacToolbarPixelBaselines.mac-shell-toolbar-dark.png \
     testMacAddSheetPixelBaselines.mac-shell-add-sheet-link-light.png \
@@ -197,6 +200,7 @@ validate_pixel_snapshot_baselines() {
     case "$png_name" in
       testMacSidebarFullPixelBaselines.mac-shell-sidebar-full-*.png) expected_size='202 x 260' ;;
       testMacSidebarRailPixelBaselines.mac-shell-sidebar-rail-*.png) expected_size='56 x 260' ;;
+      testMacSidebarCountsPixelBaselines.mac-shell-sidebar-counts-*.png) expected_size='202 x 260' ;;
       testMacToolbarPixelBaselines.mac-shell-toolbar-*.png) expected_size='224 x 56' ;;
       testMacAddSheetPixelBaselines.mac-shell-add-sheet-*.png) expected_size='520 x 420' ;;
       testArticleFeedPolicyPopoverPixelBaselines.mac-shell-feed-policy-article-*.png) expected_size='520 x 460' ;;

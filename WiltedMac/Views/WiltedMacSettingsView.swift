@@ -48,6 +48,11 @@ struct WiltedMacSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("wilted-text-scale")
+                Toggle("Show counts in the sidebar", isOn: Binding(
+                    get: { model.showsSidebarCounts },
+                    set: { model.showsSidebarCounts = $0 }
+                ))
+                    .accessibilityIdentifier("wilted-sidebar-counts")
             }
         }
         .accessibilityElement(children: .contain)
@@ -59,7 +64,8 @@ struct WiltedMacSettingsView: View {
     }
 
     var appearanceHelp: WiltedMacHelpContent {
-        WiltedMacHelpContent(title: "Appearance", text: "Applies to every screen. Icons and artwork grow with the text.")
+        WiltedMacHelpContent(title: "Appearance", text: "Applies to every screen. Icons and artwork grow with the text. "
+            + "Sidebar counts number the episodes ready to play beside Larder and the episodes still to decide beside Feeds.")
     }
 
     var automationHelp: WiltedMacHelpContent {

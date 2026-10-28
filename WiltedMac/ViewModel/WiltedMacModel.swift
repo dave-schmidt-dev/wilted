@@ -152,6 +152,12 @@ final class WiltedMacModel {
     var isSidebarVisible = true {
         didSet { preferences.set(isSidebarVisible, forKey: Self.sidebarVisiblePreferenceKey) }
     }
+    /// The reader's choice to number the Larder and Feeds rows: ready
+    /// episodes beside Larder, episodes still to decide beside Feeds. Off by
+    /// default; the sidebar's totals already carry the waiting times.
+    var showsSidebarCounts = false {
+        didSet { preferences.set(showsSidebarCounts, forKey: Self.sidebarCountsPreferenceKey) }
+    }
     var articles: [WiltedMacArticle] = []
     var episodes: [WiltedMacEpisode] = []
     /// Episodes the current engine has not prepared, by id, read from the store

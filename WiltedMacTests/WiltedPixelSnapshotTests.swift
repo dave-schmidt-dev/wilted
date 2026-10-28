@@ -49,6 +49,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: "producer-url-focus", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "sidebar-full", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "sidebar-rail", appearance: appearance),
+                WiltedSnapshotContract.shellName(kind: "sidebar-counts", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "toolbar", appearance: appearance)
             ] + ["add-sheet-link", "add-sheet-results", "add-sheet-followed", "add-sheet-error", "add-sheet-import-progress", "add-sheet-import-refusal",
                 "feed-policy-article", "feeds-article-row", "feeds-row",
@@ -143,6 +144,12 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         try captureSidebar(mode: .rail, kind: "sidebar-rail", testName: "testMacSidebarRailPixelBaselines")
     }
 
+    /// The optional figures: two ready beside Larder, one to decide beside Feeds.
+    func testMacSidebarCountsPixelBaselines() throws {
+        try captureSidebar(mode: .full, kind: "sidebar-counts", testName: "testMacSidebarCountsPixelBaselines",
+                           counts: true)
+    }
+
     /// The same controls used by ToolbarItems, without claiming AppKit toolbar chrome.
     func testMacToolbarPixelBaselines() throws {
         for appearance in WiltedAppearance.allCases {
@@ -170,12 +177,15 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
-    private func captureSidebar(mode: WiltedMacSidebarMode, kind: String, testName: String) throws {
+    private func captureSidebar(
+        mode: WiltedMacSidebarMode, kind: String, testName: String, counts: Bool = false
+    ) throws {
         for appearance in WiltedAppearance.allCases {
             let model = WiltedMacModel(
-                arguments: ["--wilted-ui-fixture-ready"],
+                arguments: counts ? [] : ["--wilted-ui-fixture-ready"],
                 stateDirectoryOverride: wiltedTemporaryDirectory("sidebar-pixel"),
                 preferences: WiltedMacTestPreferences.ephemeral())
+            if counts { seedSidebarCountEpisodes(into: model) }
             model.selectedNavigation = .larder
             let sidebar = WiltedMacSidebar(model: model, mode: mode) { model.selectedNavigation = $0 }
             let width = mode == .full
@@ -200,6 +210,23 @@ final class WiltedPixelSnapshotTests: XCTestCase {
             assertSnapshot(image, named: WiltedSnapshotContract.shellName(kind: kind, appearance: appearance),
                            testName: testName)
         }
+    }
+
+    private func seedSidebarCountEpisodes(into model: WiltedMacModel) {
+        func episode(_ id: String, download: WiltedMacEpisodeDownloadState,
+                     preparation: WiltedMacEpisodePreparationState) -> WiltedMacEpisode {
+            WiltedMacEpisode(
+                id: id, title: id, feedTitle: "Show", summary: "",
+                artworkURL: nil, releasedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                durationSeconds: 600, playbackSeconds: 0, downloadState: download, preparationState: preparation)
+        }
+        for id in ["pixel-ready-1", "pixel-ready-2"] {
+            let value = episode(id, download: .completed, preparation: .prepared(summary: "Ready"))
+            model.installEpisodeForTesting(value)
+            model.seedPodcastQueueMembershipForTesting(value)
+        }
+        model.installEpisodeForTesting(episode("pixel-new", download: .notDownloaded, preparation: .notPrepared))
+        model.showsSidebarCounts = true
     }
 
     func testMacLibraryShellPixelBaselines() {
@@ -591,7 +618,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
 enum WiltedSnapshotContract {
     static let stateCount = WiltedPreviewState.allCases.count
     static let variantCount = WiltedVisualVariant.matrix.count
-    static let shellCount = 58
+    static let shellCount = 60
     static let expectedPixelBaselineCount = stateCount * variantCount + shellCount
 
     static var recordMode: Bool {

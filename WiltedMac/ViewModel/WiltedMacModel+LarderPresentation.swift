@@ -172,6 +172,7 @@ extension WiltedMacModel {
             from: preferences.string(forKey: Self.selectedNavigationPreferenceKey)
         )
         isSidebarVisible = preferences.object(forKey: Self.sidebarVisiblePreferenceKey) as? Bool ?? true
+        showsSidebarCounts = preferences.bool(forKey: Self.sidebarCountsPreferenceKey)
         restoreNavigationState()
         restoreLarderPresentation()
         preparationRequestSequence = preferences.integer(

@@ -79,7 +79,7 @@ struct WiltedMacSidebar: View {
 
     func row(_ destination: WiltedMacNavigation) -> some View {
         WiltedMacSidebarRow(
-            destination: destination, mode: mode,
+            destination: destination, count: model.sidebarCount(for: destination), mode: mode,
             isSelected: model.selectedNavigation == destination, textScale: model.textScale
         ) { onSelect(destination) }
     }
@@ -175,6 +175,9 @@ struct WiltedMacSidebarRow: View {
     var symbolName: String? = nil
     /// A playlist's kind, tagged beneath its name in the labelled sidebar.
     var playlistKind: PlaylistKind? = nil
+    /// The figure beside the name when the reader turned sidebar counts on.
+    /// The rail has no room for it, so there it lives in the tooltip and label.
+    var count: Int? = nil
     let mode: WiltedMacSidebarMode
     let isSelected: Bool
     let textScale: WiltedTheme.TextScale
@@ -183,6 +186,7 @@ struct WiltedMacSidebarRow: View {
 
     private var accessibilityDescription: String {
         let name = title ?? destination.title
+        if let count { return "\(name), \(WiltedMacModel.sidebarCountPhrase(count, for: destination))" }
         guard let playlistKind else { return name }
         return "\(name), \(playlistKind.displayName) playlist"
     }
@@ -222,6 +226,14 @@ struct WiltedMacSidebarRow: View {
                             .foregroundStyle(
                                 WiltedMacSidebarStyle.titleColor(isSelected: isSelected, scheme: colorScheme)
                             )
+                    }
+                    if let count {
+                        Spacer(minLength: WiltedTheme.Spacing.small)
+                        Text("\(count)")
+                            .wiltedFont(.utility)
+                            .monospacedDigit()
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .accessibilityIdentifier("wilted-navigation-\(destination.rawValue)-count")
                     }
                 }
             }

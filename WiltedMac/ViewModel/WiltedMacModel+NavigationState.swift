@@ -4,6 +4,7 @@ import SwiftUI
 /// Window state the reader chooses and the app keeps across launches.
 extension WiltedMacModel {
     static let sidebarVisiblePreferenceKey = "wilted.navigation.sidebar.visible"
+    static let sidebarCountsPreferenceKey = "wilted.navigation.sidebar.counts"
 
     /// Collapse or expand labels: the toolbar button and ⌃⌘S both come here.
     /// The existing false preference now retains the rail instead of hiding it.
@@ -14,6 +15,30 @@ extension WiltedMacModel {
     /// The label the toolbar button and the menu command carry.
     var sidebarToggleTitle: String {
         isSidebarVisible ? "Collapse Sidebar" : "Expand Sidebar"
+    }
+
+    /// Episodes ready to play: the same set the sidebar's Ready total sums.
+    var sidebarReadyCount: Int { larderUnfilteredEpisodes(in: .playable).count }
+
+    /// Everything Feeds asks Keep or Skip about, matching the Feeds header count.
+    var feedsDecisionCount: Int { feedsEpisodeCandidates.count + feedsOfferedArticles.count }
+
+    /// The number a sidebar row carries when counts are on, or nil for none.
+    /// Zero is nil: an empty row needs no figure.
+    func sidebarCount(for destination: WiltedMacNavigation) -> Int? {
+        guard showsSidebarCounts else { return nil }
+        let count: Int
+        switch destination {
+        case .larder: count = sidebarReadyCount
+        case .feeds: count = feedsDecisionCount
+        case .settings, .playlist: return nil
+        }
+        return count > 0 ? count : nil
+    }
+
+    /// The words a counted row adds to its tooltip and accessibility label.
+    static func sidebarCountPhrase(_ count: Int, for destination: WiltedMacNavigation) -> String {
+        destination == .feeds ? "\(count) to decide" : "\(count) ready"
     }
 }
 

@@ -292,7 +292,7 @@ assert_snapshot_contract() {
   assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_validation_contains 'expected_count=210'
+  assert_validation_contains 'expected_count=212'
   assert_validation_contains 'shells=58'
   assert_validation_contains 'WiltedPixelSnapshotTests+Rendering.swift'
   assert_validation_contains "expected_size='202 x 260'"
@@ -382,6 +382,7 @@ assert_snapshot_contract() {
     testShippingMacURLFocusPixelBaselines \
     testMacSidebarFullPixelBaselines \
     testMacSidebarRailPixelBaselines \
+    testMacSidebarCountsPixelBaselines \
     testMacToolbarPixelBaselines \
     testMacAddSheetPixelBaselines \
     testArticleFeedPolicyPopoverPixelBaselines \
