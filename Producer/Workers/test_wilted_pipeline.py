@@ -234,7 +234,7 @@ class RunTests(unittest.TestCase):
     def test_the_aligned_pass_is_both_detector_and_delivered_transcript_input(self):
         aligned = [FakeSegment(0, 2, "hello there world"), FakeSegment(2, 4, "leo laporte here")]
         calls = []
-        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-1.1b": aligned})
+        install_fake_wilted(transcriptions={"mlx-community/parakeet-tdt-0.6b-v3": aligned})
         transcribe = sys.modules["wilted.transcribe"]
         original = transcribe.transcribe_audio
 
@@ -250,7 +250,7 @@ class RunTests(unittest.TestCase):
                 })
         self.assertEqual(result["timing"], "aligned")
         self.assertEqual(result["text"], "hello there world leo laporte here")
-        self.assertEqual(calls, ["mlx-community/parakeet-tdt-1.1b"])
+        self.assertEqual(calls, ["mlx-community/parakeet-tdt-0.6b-v3"])
         stages = [json.loads(line)["stage"] for line in err.getvalue().splitlines()]
         self.assertFalse(any(stage.startswith("transcript.stt.readable") for stage in stages))
 

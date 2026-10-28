@@ -52,7 +52,7 @@ class TestTranscribeAudio:
         # Dispatched with the audio path positional and the rest as kwargs.
         (audio_path,), kwargs = mock_stt_path.call_args
         assert audio_path == "/tmp/test.mp3"
-        assert kwargs["model"] == "mlx-community/parakeet-tdt-1.1b"
+        assert kwargs["model"] == "mlx-community/parakeet-tdt-0.6b-v3"
 
     @patch("wilted.transcribe.client.stt_path")
     def test_empty_segments_raises_error(self, mock_stt_path):
@@ -303,7 +303,7 @@ class TestTranscribeAudioDaemonOnly:
 
         assert [(s.start_s, s.end_s, s.text) for s in segments] == [(0.0, 2.0, "Hello daemon.")]
         assert captured["audio_path"] == str(audio)
-        assert captured["kwargs"]["model"] == "mlx-community/parakeet-tdt-1.1b"
+        assert captured["kwargs"]["model"] == "mlx-community/parakeet-tdt-0.6b-v3"
         assert captured["kwargs"]["chunk_duration"] == 120.0
         assert captured["kwargs"]["overlap_duration"] == 15.0
         assert captured["kwargs"]["sentence_split"] is True

@@ -19,7 +19,7 @@ public actor PodcastPreparationPipeline {
     /// Manually bumped when the semantic preparation behavior changes. This is
     /// deliberately independent of the app or UI build number so a launch can
     /// identify old preparation results without invalidating unrelated work.
-    public static let semanticVersion = "podcast-preparation-v12"
+    public static let semanticVersion = "podcast-preparation-v13"
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
     /// but `speech-stack` is still an editable dependency resolved outside it,
@@ -158,7 +158,7 @@ public actor PodcastPreparationPipeline {
     /// The detector was tuned against this exact aligned STT output. This is
     /// sent explicitly with the verified download hash so the worker cache
     /// cannot be reused by a different model or source revision.
-    public static let alignedTranscriptModel = "mlx-community/parakeet-tdt-1.1b"
+    public static let alignedTranscriptModel = "mlx-community/parakeet-tdt-0.6b-v3"
 
     let store: LocalLibraryStore
     let runner: any PodcastPipelineRunning

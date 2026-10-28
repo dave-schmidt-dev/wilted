@@ -261,7 +261,7 @@ def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=Non
     """
     transcribe = types.ModuleType("wilted.transcribe")
 
-    def transcribe_audio(audio_path, model_name="mlx-community/parakeet-tdt-1.1b", **_):
+    def transcribe_audio(audio_path, model_name="mlx-community/parakeet-tdt-0.6b-v3", **_):
         outcome = (transcriptions or {}).get(model_name)
         if isinstance(outcome, Exception):
             raise outcome

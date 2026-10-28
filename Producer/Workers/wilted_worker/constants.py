@@ -214,7 +214,7 @@ EXPLICIT_SPONSOR_NAME_LEADING_FILLER = frozenset(
     {"the", "a", "an", "our", "my", "your", "this", "today", "todays", "good", "folks", "fine", "great"}
 )
 
-ALIGNED_STT_MODEL = "mlx-community/parakeet-tdt-1.1b"
+ALIGNED_STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 
 ALIGNED_STT_CACHE_SCHEMA_VERSION = 2
 

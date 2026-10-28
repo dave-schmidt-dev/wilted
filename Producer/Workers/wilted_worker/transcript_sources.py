@@ -321,5 +321,23 @@ def transcribe_with_daemon(audio_path: Path, model: str = ALIGNED_STT_MODEL):
         # aligned cache included, keeps them. A join moves a segment's start
         # later, which can pass an overlapping neighbour, so order is restored.
         segments = in_time_order(join_split_words(segments))
+    segments = _drop_untimed_segments(segments)
     _worker_reporting.progress("transcript.stt.complete", f"{len(segments)} segments")
     return segments
+
+def _drop_untimed_segments(segments) -> list:
+    """Drop segments with no duration or no text before anything keeps them.
+
+    parakeet-tdt-0.6b-v3 occasionally closes a sentence on a token whose start
+    and end agree (Rogan #2565: 2616.48-2616.48 "are."). Nothing can place a
+    cue that spans no time, and the aligned cache refuses the whole pass for
+    one, so the word is lost rather than the episode's transcript.
+    """
+    kept = [
+        segment for segment in segments
+        if str(getattr(segment, "text", "") or "").strip()
+        and getattr(segment, "start_s", 0.0) < getattr(segment, "end_s", 0.0)
+    ]
+    if len(kept) != len(segments):
+        _worker_reporting.progress("transcript.stt.untimed.dropped", f"{len(segments) - len(kept)} segments")
+    return kept

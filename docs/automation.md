@@ -71,7 +71,7 @@ acquisition, alongside the `removeAds` boolean (default on). They validate, pers
 are captured when preparation is admitted.
 
 Ad removal is not a preference the transcript policy can outvote: a removal run never
-fetches or parses the publisher's transcript, and one aligned `parakeet-tdt-1.1b` pass
+fetches or parses the publisher's transcript, and one aligned `parakeet-tdt-0.6b-v3` pass
 supplies both the ad detector and the displayed transcript. **No local STT** with
 `removeAds` still on is therefore a pair that cannot both be honoured, and the pane says
 so while both are selected rather than leaving it to be discovered one episode at a time:

@@ -265,6 +265,23 @@ class AlignedSTTCacheTests(unittest.TestCase):
         self.assertEqual([(e["text"], e["start_s"], e["end_s"]) for e in cached["segments"]],
                          [("This is measurable", 0.0, 0.7), ("and more", 0.7, 0.9)])
 
+    def test_a_segment_that_spans_no_time_is_dropped_and_the_pass_still_caches(self):
+        # parakeet-tdt-0.6b-v3 emitted 2616.48-2616.48 "are." on Rogan #2565;
+        # the cache refuses any such segment, which used to cost the whole pass.
+        install_fake_wilted()
+        sys.modules["wilted.transcribe"].transcribe_audio = lambda _path, model_name, **_: [
+            FakeSegment(0.0, 0.5, "Before."), FakeSegment(0.5, 0.5, "are."),
+            FakeSegment(0.6, 0.6, " "), FakeSegment(0.6, 1.0, "After."),
+        ]
+        with redirect_stderr(io.StringIO()) as err:
+            returned = _worker_transcript_sources.transcribe_with_daemon(self.audio, "detector-v1")
+        self.assertEqual([s.text for s in returned], ["Before.", "After."])
+        self.assertIn("transcript.stt.untimed.dropped", err.getvalue())
+
+        self.run_pipeline()
+        cached = json.loads(self.cache_path().read_text())
+        self.assertEqual([e["text"] for e in cached["segments"]], ["Before.", "After."])
+
     def test_a_join_that_moves_a_start_past_its_neighbour_still_caches_in_order(self):
         # Overlapping stitched windows can put a segment between the fragment
         # and the rest of the sentence it opened; the cache refuses any

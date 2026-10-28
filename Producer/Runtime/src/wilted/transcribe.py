@@ -127,7 +127,7 @@ def _env_int_or_none(name: str) -> int | None:
 
 def transcribe_audio(
     audio_path: str | Path,
-    model_name: str = "mlx-community/parakeet-tdt-1.1b",
+    model_name: str = "mlx-community/parakeet-tdt-0.6b-v3",
     chunk_duration: float = 120.0,
     overlap_duration: float = 15.0,
 ) -> list[TranscriptSegment]:

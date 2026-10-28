@@ -112,8 +112,8 @@ class PreflightTests(unittest.TestCase):
         transcribe = sys.modules["wilted.transcribe"]
         install_fake_speech_stack(events=events)
 
-        def transcribe_audio(path, model_name="mlx-community/parakeet-tdt-1.1b", **_):
-            self.assertEqual(model_name, "mlx-community/parakeet-tdt-1.1b")
+        def transcribe_audio(path, model_name="mlx-community/parakeet-tdt-0.6b-v3", **_):
+            self.assertEqual(model_name, "mlx-community/parakeet-tdt-0.6b-v3")
             return events.append("aligned") or [FakeSegment(0, 1, "content")]
 
         llm = FakeLLM()
