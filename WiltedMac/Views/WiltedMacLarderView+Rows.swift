@@ -153,6 +153,10 @@ extension WiltedMacLarderView {
         .accessibilityIdentifier("wilted-larder-row-\(episode.id)")
         .contextMenu {
             WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id)
+            if model.canShowInFinder(episode) {
+                Button("Show in Finder") { model.showInFinder(episode) }
+                    .accessibilityIdentifier("wilted-larder-show-in-finder-\(episode.id)")
+            }
             if model.canPrepareAgain(episode) {
                 Divider()
                 Button("Prepare Again") { model.prepareAgain(episode) }

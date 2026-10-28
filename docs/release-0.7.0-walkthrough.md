@@ -113,6 +113,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 - [ ] A newly prepared episode's transcript has punctuation and capitals, and its ad cuts land on the sponsor's words: parakeet-tdt-0.6b-v3 now transcribes for both (engine v13, `4b789647`, joined 0.7.0 at David's request 2026-10-27). An app installed before it still sends 1.1b; since `68df75e8` the worker serves those runs with v3 instead of refusing them.
 - [ ] File > Prepare Again With Current Engine now counts every episode prepared before v13; preparing one again gives it the v3 transcript and new cuts.
 - [ ] Settings > Appearance > **Show counts in the sidebar**: Larder shows how many episodes are ready to play and Feeds how many are still to decide, matching the Ready total and the Feeds header. Off hides both; a narrow window's rail puts them in the tooltip.
+- [ ] Right-click a prepared Larder episode > **Show in Finder**: Finder opens with that episode's prepared audio file selected; an unprepared episode has no such item.
 
 ## After the walkthrough
 
