@@ -110,6 +110,8 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 - [ ] iPhone full player: the same three buttons. A press reaches the Mac after about 8 s plus iCloud.
 - [ ] Settings > Ad feedback on the Mac lists every press as counted, with where it falls in the episode. Change one press's label, remove one, then restore it from Removed. (2026-10-26: the earlier accept/dismiss version passed; this is the recheck after `fff3eab3`.)
 - [ ] Pause an episode, then Mark completed: it is marked completed and nothing else starts. Mark completed while playing still starts the next Larder episode (`efe9e256`).
+- [ ] A newly prepared episode's transcript has punctuation and capitals, and its ad cuts land on the sponsor's words: parakeet-tdt-0.6b-v3 now transcribes for both (engine v13, `4b789647`, joined 0.7.0 at David's request 2026-10-27). Needs this candidate installed; the app installed before it sends 1.1b and the worker refuses its ad-removal runs.
+- [ ] File > Prepare Again With Current Engine now counts every episode prepared before v13; preparing one again gives it the v3 transcript and new cuts.
 
 ## After the walkthrough
 
