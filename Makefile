@@ -158,7 +158,7 @@ ad-corpus-replay:
 		Producer/Workers/ad_corpus.py --mode replay --strict
 
 ad-gold-review:
-	@python3 Producer/Workers/ad_gold_review.py $(if $(ROOT),--root "$(ROOT)")
+	@python3 Producer/Workers/ad_gold_review.py $(if $(ROOT),--root "$(ROOT)") $(if $(PORT),--port $(PORT))
 
 ad-gold-review-ui-test:
 	cd tests/ad-gold-review && npm install --no-audit --no-fund && npx playwright test
