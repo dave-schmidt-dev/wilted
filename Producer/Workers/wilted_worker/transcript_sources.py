@@ -23,6 +23,7 @@ from . import cue_timing as _worker_cue_timing
 from . import reporting as _worker_reporting
 from .constants import ALIGNED_STT_CACHE_MAXIMUM_ENTRIES, ALIGNED_STT_CACHE_SCHEMA_VERSION, ALIGNED_STT_MODEL, PUBLISHED_TRANSCRIPT_GAP_FLOOR_S, PUBLISHED_TRANSCRIPT_GAP_FRACTION, TIMED_MEDIA_TYPES
 from .cue_timing import CachedAlignedSegment, in_time_order, join_split_words
+from .stt_refill import refill_holes
 
 CUE_MARKUP_PATTERN = re.compile(r"<[^>]*>")
 
@@ -317,6 +318,21 @@ def transcribe_with_daemon(audio_path: Path, model: str = ALIGNED_STT_MODEL):
     _worker_reporting.progress("transcript.stt.start", str(audio_path.name))
     segments = in_time_order(transcribe.transcribe_audio(audio_path, model_name=model))
     if segments:
+        duration = None
+        # Without a duration only the trailing hole goes unchecked.
+        with contextlib.suppress(_worker_cue_timing.WorkerError, subprocess.CalledProcessError, OSError, ValueError):
+            duration = _worker_cue_timing.probe_duration(audio_path)
+        if duration is None or duration <= 0:
+            duration = max(
+                (float(tok.end_s) for seg in segments for tok in (getattr(seg, "tokens", None) or (seg,))),
+                default=0.0,
+            )
+        segments = refill_holes(
+            audio_path,
+            segments,
+            duration,
+            lambda wav: transcribe.transcribe_audio(wav, model_name=model),
+        )
         # Rejoin words the aligner split across segments before anything, the
         # aligned cache included, keeps them. A join moves a segment's start
         # later, which can pass an overlapping neighbour, so order is restored.
