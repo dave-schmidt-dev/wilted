@@ -7,9 +7,11 @@ public struct LibraryMediaPreparation: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public let preparedAt: Timestamp
 
+    /// `preparedAt` is kept at the wire's millisecond precision, so a preparation equals its own
+    /// decoded copy. A finer producer time made every offer read back from iCloud look changed.
     public init(schemaVersion: Int = 1, preparedAt: Timestamp) {
         self.schemaVersion = schemaVersion
-        self.preparedAt = preparedAt
+        self.preparedAt = (try? Timestamp(iso8601: preparedAt.description)) ?? preparedAt
     }
 }
 

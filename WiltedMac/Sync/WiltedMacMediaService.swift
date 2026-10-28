@@ -442,7 +442,8 @@ actor WiltedMacMediaService {
             }
             do {
                 try await transport.publishMedia(offer: want, fileURL: URL(fileURLWithPath: "/dev/null"))
-                await withdrawTranscript(for: raw)
+                // A transcript belongs to its revision; a republish of the same revision keeps it.
+                if publishedTranscripts[raw] != want.revisionID?.rawValue { await withdrawTranscript(for: raw) }
                 dropBooks(for: raw)
                 offered[raw] = want
             } catch {

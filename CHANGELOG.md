@@ -152,6 +152,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- The Mac no longer re-uploads every episode's offer and transcript to iCloud each time it starts, and no longer removes and re-uploads a transcript when an episode's offer is republished at the same audio revision. Both added avoidable iCloud requests (19 offers and 19 transcripts at one launch on 2026-10-28, the day iCloud throttled the Mac). A phone asking again for audio the Mac already offers no longer makes it upload the file again.
 - A phone download request no longer fails while iCloud is briefly refusing uploads from the Mac. The Mac now waits until iCloud says it will accept uploads again, up to 10 minutes, and only then reports a failure.
 - Marking a paused episode completed on the Mac no longer starts the next episode; the next one starts only if the finished episode was playing.
 - After you mark an episode completed on the Mac, the Larder's "Undo completion is available for 10 seconds" notice now goes away when the 10 seconds end; before, it stayed until another message replaced it.

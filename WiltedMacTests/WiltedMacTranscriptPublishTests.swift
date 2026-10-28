@@ -30,6 +30,51 @@ private final class TranscriptClock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) { lock.withLock { current = current.addingTimeInterval(seconds) } }
 }
 
+/// Hands offers back the way CloudKit does, encoded and decoded, and records every audio and
+/// transcript write the service makes.
+private final class WireTransport: LibraryTransport, @unchecked Sendable {
+    private let inner: InMemoryLibraryTransport
+    private let lock = NSLock()
+    private var log: [String] = []
+
+    init(_ inner: InMemoryLibraryTransport) { self.inner = inner }
+
+    var writes: [String] { lock.withLock { log } }
+    private func record(_ write: String) { lock.withLock { log.append(write) } }
+
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
+    func send(intent: LibraryIntent) async throws { try await inner.send(intent: intent) }
+    func listIntents() async throws -> [LibraryIntent] { try await inner.listIntents() }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws { try await inner.publish(record, as: channel) }
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { try await inner.fetchDeviceRecords() }
+    func removeMedia(entryID: ItemID) async throws { try await inner.removeMedia(entryID: entryID) }
+    func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
+        try await inner.transcript(entryID: entryID, revisionID: revisionID)
+    }
+
+    func mediaOffers() async throws -> [LibraryMediaOffer] {
+        try JSONDecoder().decode([LibraryMediaOffer].self, from: JSONEncoder().encode(try await inner.mediaOffers()))
+    }
+
+    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
+        record("offer \(offer.entryID.rawValue) \(offer.state.rawValue)")
+        try await inner.publishMedia(offer: offer, fileURL: fileURL)
+    }
+
+    func publishTranscript(_ transcript: LibraryTranscript) async throws {
+        record("transcript \(transcript.entryID.rawValue) \(transcript.revisionID.rawValue)")
+        try await inner.publishTranscript(transcript)
+    }
+
+    func removeTranscript(entryID: ItemID) async throws {
+        record("remove transcript \(entryID.rawValue)")
+        try await inner.removeTranscript(entryID: entryID)
+    }
+}
+
 @MainActor
 final class WiltedMacTranscriptPublishTests: XCTestCase {
     private let macID = "mac-test"
@@ -59,13 +104,26 @@ final class WiltedMacTranscriptPublishTests: XCTestCase {
     private func id(_ raw: String) throws -> ItemID { try ItemID(rawValue: raw) }
     private func rev(_ raw: String) throws -> RevisionID { try RevisionID(rawValue: raw) }
 
-    private func audio(_ rig: Rig, revision: String) throws -> WiltedMacReadyAudio {
+    /// A preparation time finer than the wire's milliseconds, as the producer stamps it.
+    private let fineTime = Date(timeIntervalSince1970: 1_800_000_000.123456)
+
+    /// A service over the rig's source and server that reads and writes `accounting`, as one
+    /// launch of the Mac app would.
+    private func launch(_ rig: Rig, accounting: String = "relaunch-accounting.json") -> (WiltedMacMediaService, WireTransport) {
+        let wire = WireTransport(rig.mac)
+        let clock = rig.clock
+        let service = WiltedMacMediaService(
+            source: rig.source, transport: wire, accountingURL: rig.directory.appendingPathComponent(accounting), now: { clock.now })
+        return (service, wire)
+    }
+
+    private func audio(_ rig: Rig, revision: String, preparedAt: Date = Date(timeIntervalSince1970: 1_800_000_000)) throws -> WiltedMacReadyAudio {
         let file = rig.directory.appendingPathComponent("\(revision).m4a")
         try Data(repeating: 7, count: 2_048).write(to: file)
         return WiltedMacReadyAudio(
             revisionID: try rev(revision), contentHash: try MediaHash.sha256(fileAt: file), byteCount: 2_048,
             mediaType: "audio/mp4", durationSeconds: 30, fileURL: file,
-            preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_800_000_000))))
+            preparation: LibraryMediaPreparation(preparedAt: Timestamp(preparedAt)))
     }
 
     private func transcript(_ entry: ItemID, revision: String, cues: Int = 3) throws -> LibraryTranscript {
@@ -212,5 +270,70 @@ final class WiltedMacTranscriptPublishTests: XCTestCase {
         _ = await rig.runtime.service.reconcileAvailable()
         let gone = try await rig.phone.transcript(entryID: entry, revisionID: rev("rev-1"))
         XCTAssertNil(gone, "it goes when the entry leaves the prepared Larder")
+    }
+
+    func testARelaunchWithAnUnchangedLarderWritesNothing() async throws {
+        let rig = rig("transcript-relaunch")
+        let entry = try id("episode-r")
+        rig.source.set(entry, audio: try audio(rig, revision: "rev-1", preparedAt: fineTime), transcript: try transcript(entry, revision: "rev-1"))
+        let (first, firstWire) = launch(rig)
+        _ = await first.reconcileAvailable()
+        _ = await first.reconcileAvailable()
+        XCTAssertEqual(firstWire.writes, ["offer episode-r available", "transcript episode-r rev-1"])
+
+        let (again, againWire) = launch(rig)
+        _ = await again.reconcileAvailable()
+        _ = await again.reconcileAvailable()
+        XCTAssertEqual(againWire.writes, [], "a relaunch republishes no offer and no transcript")
+        let held = try await rig.phone.transcript(entryID: entry, revisionID: rev("rev-1"))
+        XCTAssertNotNil(held)
+    }
+
+    func testARequestAfterARelaunchAddsARequesterWithoutUploadingTheAudioAgain() async throws {
+        let rig = rig("transcript-relaunch-request")
+        let entry = try id("episode-s")
+        rig.source.set(entry, audio: try audio(rig, revision: "rev-1", preparedAt: fineTime), transcript: try transcript(entry, revision: "rev-1"))
+        let (first, _) = launch(rig)
+        _ = await first.reconcileAvailable()
+        await first.handle(try request(rig, entry, from: phoneID, "s-1"))
+
+        let (again, againWire) = launch(rig)
+        _ = await again.reconcileAvailable()
+        await again.handle(try request(rig, entry, from: tabletID, "s-2"))
+        XCTAssertFalse(againWire.writes.contains("offer episode-s ready"), "the audio is already offered: \(againWire.writes)")
+        let holding = await again.isHolding(entryID: entry, revisionID: try rev("rev-1"))
+        XCTAssertTrue(holding)
+    }
+
+    func testRepublishingTheSameRevisionKeepsItsTranscript() async throws {
+        let rig = rig("transcript-same-revision")
+        let entry = try id("episode-t")
+        let text = try transcript(entry, revision: "rev-1")
+        rig.source.set(entry, audio: try audio(rig, revision: "rev-1"), transcript: text)
+        let (service, wire) = launch(rig)
+        _ = await service.reconcileAvailable()
+
+        rig.source.set(entry, audio: try audio(rig, revision: "rev-1", preparedAt: fineTime.addingTimeInterval(60)), transcript: text)
+        _ = await service.reconcileAvailable()
+        XCTAssertEqual(wire.writes, ["offer episode-t available", "transcript episode-t rev-1", "offer episode-t available"],
+                       "a new preparation of the same revision keeps its transcript")
+    }
+
+    func testANewRevisionReplacesTheTranscriptOnce() async throws {
+        let rig = rig("transcript-new-revision")
+        let entry = try id("episode-u")
+        rig.source.set(entry, audio: try audio(rig, revision: "rev-1"), transcript: try transcript(entry, revision: "rev-1"))
+        let (service, wire) = launch(rig)
+        _ = await service.reconcileAvailable()
+
+        rig.source.set(entry, audio: try audio(rig, revision: "rev-2"), transcript: try transcript(entry, revision: "rev-2"))
+        _ = await service.reconcileAvailable()
+        _ = await service.reconcileAvailable()
+        XCTAssertEqual(wire.writes, [
+            "offer episode-u available", "transcript episode-u rev-1",
+            "offer episode-u available", "remove transcript episode-u", "transcript episode-u rev-2"
+        ])
+        let current = try await rig.phone.transcript(entryID: entry, revisionID: rev("rev-2"))
+        XCTAssertNotNil(current)
     }
 }

@@ -27,6 +27,18 @@ final class LibraryMediaOfferStateTests: XCTestCase {
         XCTAssertFalse(try decodedOffer(state: "available", hash: "").isPrepared)
     }
 
+    func testAPreparationTimeFinerThanTheWireEqualsItsDecodedCopy() throws {
+        // The producer stamps full Date precision; the wire keeps milliseconds. An offer that
+        // differed from its own decoded copy was republished, with its transcript, on every launch.
+        let preparation = LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_800_000_000.123456)))
+        let offer = try LibraryMediaOffer(
+            entryID: entry, revisionID: revision, contentHash: MediaHash.prefix + String(repeating: "a", count: 64),
+            byteCount: 4096, mediaType: "audio/mp4", durationSeconds: 30, state: .available, preparation: preparation)
+        let decoded = try JSONDecoder().decode(LibraryMediaOffer.self, from: JSONEncoder().encode(offer))
+        XCTAssertEqual(decoded, offer)
+        XCTAssertEqual(decoded.preparation, preparation)
+    }
+
     func testV1PreparationRoundTripsForExactReadyAndAvailableIdentity() throws {
         for state in ["ready", "available"] {
             let offer = try decodedOffer(state: state, preparation: [
