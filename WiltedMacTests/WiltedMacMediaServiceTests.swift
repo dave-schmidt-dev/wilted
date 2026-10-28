@@ -57,10 +57,13 @@ private final class FlakyUploadTransport: LibraryTransport, @unchecked Sendable 
     private var failuresLeft: Int
     private var attempts = 0
     private var uploads = 0
+    private let failure: @Sendable () -> Error
 
-    init(_ inner: InMemoryLibraryTransport, failing count: Int) {
+    init(_ inner: InMemoryLibraryTransport, failing count: Int,
+         with failure: @escaping @Sendable () -> Error = { URLError(.networkConnectionLost) }) {
         self.inner = inner
         failuresLeft = count
+        self.failure = failure
     }
 
     var readyAttempts: Int { lock.withLock { attempts } }
@@ -90,7 +93,7 @@ private final class FlakyUploadTransport: LibraryTransport, @unchecked Sendable 
             failuresLeft -= 1
             return true
         }
-        if fails { throw URLError(.networkConnectionLost) }
+        if fails { throw failure() }
         try await inner.publishMedia(offer: offer, fileURL: fileURL)
         lock.withLock { uploads += 1 }
     }
@@ -245,12 +248,17 @@ final class WiltedMacMediaServiceTests: XCTestCase {
 
     // MARK: Upload retry
 
-    private func flakyService(_ rig: Rig, failing count: Int, waits: WaitLog) -> (WiltedMacMediaService, FlakyUploadTransport) {
-        let flaky = FlakyUploadTransport(rig.mac, failing: count)
+    private func flakyService(
+        _ rig: Rig, failing count: Int, waits: WaitLog,
+        with failure: @escaping @Sendable () -> Error = { URLError(.networkConnectionLost) },
+        sleep: (@Sendable (Duration) async throws -> Void)? = nil
+    ) -> (WiltedMacMediaService, FlakyUploadTransport) {
+        let flaky = FlakyUploadTransport(rig.mac, failing: count, with: failure)
         let clock = rig.clock
         let service = WiltedMacMediaService(
             source: rig.source, transport: flaky, accountingURL: rig.directory.appendingPathComponent("media-accounting.json"),
-            now: { clock.now }, uploadRetryDelay: .seconds(5), sleep: { waits.append($0) }
+            now: { clock.now }, uploadRetryDelay: .seconds(5),
+            sleep: sleep ?? { waits.append($0); clock.advance(Double($0.components.seconds)) }
         )
         return (service, flaky)
     }
@@ -294,6 +302,83 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         let lastFailure = await service.lastFailure
         let failure = try XCTUnwrap(lastFailure)
         XCTAssertEqual(failure, "NSURLErrorDomain(-1005)")
+    }
+
+    func testAThrottledUploadWaitsUntilICloudTakesUploadsAgainWithoutSpendingTheRetry() async throws {
+        let rig = rig("media-upload-throttled")
+        let entry = try id("episode-throttled")
+        rig.source.set(entry, try makeAudio(rig.directory, revision: "rev-1"))
+        let clock = rig.clock
+        let waits = WaitLog()
+        // Throttled twice (each 290 s out), then a dropped connection: the retry is still unspent.
+        let throttles = WaitLog()
+        let (service, flaky) = flakyService(rig, failing: 3, waits: waits, with: {
+            throttles.append(.zero)
+            return throttles.values.count <= 2 ? TransportThrottled(retryAt: clock.now.addingTimeInterval(290)) : URLError(.networkConnectionLost)
+        })
+
+        await service.handle(try request(rig, entry, from: phoneID, intentID: "throttled-1"))
+
+        XCTAssertEqual(flaky.readyAttempts, 4)
+        XCTAssertEqual(flaky.readyUploads, 1)
+        XCTAssertEqual(waits.values, [.seconds(290), .seconds(290), .seconds(5)])
+        let offers = try await rig.phone.mediaOffers()
+        XCTAssertEqual(offers.first?.state, .ready)
+        let failure = await service.lastFailure
+        XCTAssertNil(failure)
+    }
+
+    func testAThrottleBeyondTheLongestWaitIsReportedAtOnce() async throws {
+        let rig = rig("media-upload-throttled-long")
+        let entry = try id("episode-throttled-long")
+        rig.source.set(entry, try makeAudio(rig.directory, revision: "rev-1"))
+        let clock = rig.clock
+        let waits = WaitLog()
+        let beyond = WiltedMacMediaService.maximumThrottleWait + 60
+        let (service, flaky) = flakyService(rig, failing: 2, waits: waits, with: {
+            TransportThrottled(retryAt: clock.now.addingTimeInterval(beyond))
+        })
+
+        await service.handle(try request(rig, entry, from: phoneID, intentID: "throttled-2"))
+
+        XCTAssertEqual(flaky.readyAttempts, 2, "the ordinary retry only")
+        XCTAssertEqual(waits.values, [.seconds(5)])
+        let lastFailure = await service.lastFailure
+        let failure = try XCTUnwrap(lastFailure)
+        XCTAssertTrue(failure.hasPrefix("TransportThrottled."), failure)
+    }
+
+    func testShutdownEndsAThrottleWaitAsAFailedRequestAndALaterThrottleIsWaitedOutAgain() async throws {
+        let rig = rig("media-upload-throttled-shutdown")
+        let entry = try id("episode-throttled-shutdown")
+        rig.source.set(entry, try makeAudio(rig.directory, revision: "rev-1"))
+        let clock = rig.clock
+        // The first wait lasts an hour unless cancelled, as `Task.sleep` does; later ones end at once.
+        let waits = WaitLog()
+        let (service, flaky) = flakyService(rig, failing: 2, waits: waits, with: {
+            TransportThrottled(retryAt: clock.now.addingTimeInterval(120))
+        }, sleep: {
+            waits.append($0)
+            if waits.values.count == 1 { try await Task.sleep(for: .seconds(3600)) }
+        })
+
+        _ = await service.enqueue(try request(rig, entry, from: phoneID, intentID: "throttled-3"))
+        try await eventually("first throttle wait") { waits.values.count == 1 }
+        await service.drainEndingThrottleWaits()
+
+        XCTAssertEqual(flaky.readyAttempts, 1, "no attempt after shutdown began")
+        let lastFailure = await service.lastFailure
+        let failure = try XCTUnwrap(lastFailure)
+        XCTAssertTrue(failure.hasPrefix("TransportThrottled."), failure)
+
+        // After the restart, a throttle is waited out again.
+        let retried = await service.enqueue(try request(rig, entry, from: phoneID, intentID: "throttled-4"))
+        await retried.value
+        XCTAssertEqual(waits.values, [.seconds(120), .seconds(120)])
+        XCTAssertEqual(flaky.readyAttempts, 3)
+        XCTAssertEqual(flaky.readyUploads, 1)
+        let cleared = await service.lastFailure
+        XCTAssertNil(cleared)
     }
 
     func testTypedCauseNamesFoundationErrorsByDomainAndSwiftErrorsByTypeAndValue() {

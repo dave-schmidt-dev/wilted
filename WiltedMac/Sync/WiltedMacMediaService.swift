@@ -32,6 +32,8 @@ actor WiltedMacMediaService {
     static let maximumByteCount: Int64 = 250 * 1024 * 1024
     /// The wait before the one retry of an upload that failed.
     static let defaultUploadRetryDelay: Duration = .seconds(5)
+    /// The longest one upload waits out iCloud throttling before the request is reported failed.
+    static let maximumThrottleWait: TimeInterval = 10 * 60
 
     /// Told each stage of a media request after `received`, so the requesting device can show it.
     typealias RequestReporter = @Sendable (LibraryIntent, LibraryMediaRequestStatus.Stage, String?) async -> Void
@@ -81,6 +83,9 @@ actor WiltedMacMediaService {
     private var sweepQueued = false
     private let reportRequest: RequestReporter?
     private(set) var lastFailure: String?
+    /// The upload's current wait for a throttle to lift, cut short by `drainEndingThrottleWaits()`.
+    private var throttleWait: Task<Void, Error>?
+    private var abandoningThrottleWaits = false
 
     /// - Parameters:
     ///   - uploadRetryDelay: the wait before retrying an upload that failed once.
@@ -140,6 +145,15 @@ actor WiltedMacMediaService {
             await self.beginSweep()
             await self.cleanup()
         }
+    }
+
+    /// Waits for every queued request and sweep like `drain()`, but ends any wait for iCloud
+    /// throttling at once, as a failed request, so shutdown does not sit behind it.
+    func drainEndingThrottleWaits() async {
+        abandoningThrottleWaits = true
+        throttleWait?.cancel()
+        await tail?.value
+        abandoningThrottleWaits = false
     }
 
     /// Waits for every queued request and sweep.
@@ -267,20 +281,46 @@ actor WiltedMacMediaService {
         }
     }
 
-    /// Uploads the audio for `offer`, trying once more after `uploadRetryDelay` when the first attempt
-    /// fails. The second attempt's error is the one thrown.
+    /// Uploads the audio for `offer`, trying once more after `uploadRetryDelay` when an attempt fails.
+    /// A throttled attempt instead waits until iCloud said it will take uploads again, within
+    /// `maximumThrottleWait` of the first attempt, and does not spend the retry. The last error is thrown.
     private func upload(_ offer: LibraryMediaOffer, from fileURL: URL) async throws {
-        do {
-            try await transport.publishMedia(offer: offer, fileURL: fileURL)
-            return
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            let entry = offer.entryID.rawValue, delay = uploadRetryDelay, cause = Self.typedCause(error)
-            mediaLog.notice("Upload of audio for \(entry, privacy: .public) failed; retrying once in \(delay, privacy: .public): \(cause, privacy: .public)")
+        let entry = offer.entryID.rawValue
+        let throttleDeadline = now().addingTimeInterval(Self.maximumThrottleWait)
+        var retried = false
+        while true {
+            do {
+                try await transport.publishMedia(offer: offer, fileURL: fileURL)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let throttled as TransportThrottled where throttled.retryAt <= throttleDeadline {
+                let seconds = max(throttled.retryAt.timeIntervalSince(now()), 1)
+                mediaLog.notice("Upload of audio for \(entry, privacy: .public) throttled; waiting \(seconds, format: .fixed(precision: 0), privacy: .public) s")
+                try await waitOutThrottle(seconds: seconds, else: throttled)
+            } catch {
+                guard !retried else { throw error }
+                retried = true
+                let delay = uploadRetryDelay, cause = Self.typedCause(error)
+                mediaLog.notice("Upload of audio for \(entry, privacy: .public) failed; retrying once in \(delay, privacy: .public): \(cause, privacy: .public)")
+                try await self.sleep(uploadRetryDelay)
+            }
         }
-        try await self.sleep(uploadRetryDelay)
-        try await transport.publishMedia(offer: offer, fileURL: fileURL)
+    }
+
+    /// Sleeps `seconds`, or throws `throttled` when `drainEndingThrottleWaits()` ends the wait.
+    private func waitOutThrottle(seconds: TimeInterval, else throttled: TransportThrottled) async throws {
+        guard !abandoningThrottleWaits else { throw throttled }
+        let sleep = self.sleep
+        let wait = Task { try await sleep(.seconds(seconds)) }
+        throttleWait = wait
+        defer { throttleWait = nil }
+        do {
+            try await wait.value
+        } catch {
+            throw throttled
+        }
+        if abandoningThrottleWaits { throw throttled }
     }
 
     /// The error's type and value, e.g. `CloudKitSyncError.cloudKit(code: 4, message: "…")`. A

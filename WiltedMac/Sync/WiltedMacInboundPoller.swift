@@ -324,8 +324,8 @@ final class WiltedMacInboundRuntime {
             await startup?.value
             await poller.stop()
             // Rounds no longer wait on uploads and sweeps, so shutdown joins them here: they can
-            // still write accounting.
-            await service.drain()
+            // still write accounting. A wait for iCloud throttling ends first, as a failed request.
+            await service.drainEndingThrottleWaits()
         }
         shutdown = task
         return task
