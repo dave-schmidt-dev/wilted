@@ -21,7 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
 from .ad_audit import HeldAdSpan
-from .boundary_review import complete_fragment_visible
+from .boundary_review import complete_fragment_visible, record_programme_boundary
 from .commercial_preservation import recovered_confidence
 from .commercial_seeds import _constrained_id
 from .constants import MAXIMUM_SINGLE_AD_SHARE, POSTROLL_ALREADY_CLAIMED_SECONDS, POSTROLL_CLEAN_BREAK_SECONDS, POSTROLL_LEADER_MAX_SECONDS, POSTROLL_RECOVERY_MAX_SECONDS, POSTROLL_RECOVERY_MAX_SEGMENTS, POSTROLL_RECOVERY_MINIMUM_SECONDS, STRADDLING_TAIL_MAX_PROBES
@@ -76,9 +76,7 @@ def trim_straddling_span_tails(ads_module, backend, segments, detections, openin
         if _program_start_inside_answer(ads_module, backend, segments, boundary_id) is not True:
             trimmed.append(ad)
             continue
-        if held_spans is not None:
-            cue = segments[boundary_id]
-            held_spans.append(HeldAdSpan(float(cue.start_s), float(cue.end_s), "programme-boundary"))
+        record_programme_boundary(held_spans, segments[boundary_id])
         end_s = float(segments[boundary_id].start_s)
         _worker_reporting.progress(
             "ads.detect.tail.shortened",
@@ -369,8 +367,7 @@ def trim_credit_span_heads(ads_module, backend, segments, detections, held_spans
         if not parsed["carries_program"]:
             kept.append(ad)
             continue
-        if held_spans is not None:
-            held_spans.append(HeldAdSpan(float(cue.start_s), float(cue.end_s), "programme-boundary"))
+        record_programme_boundary(held_spans, cue)
         start_s = max(float(ad.start_s), float(cue.end_s))
         _worker_reporting.progress("ads.detect.credits.shortened", f"preserving programme in credits boundary cue {cue_id}")
         if start_s < float(ad.end_s):

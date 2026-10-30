@@ -75,6 +75,7 @@ All notable changes to this project are documented in this file.
 - Episodes now keep their own web page address from the feed's item link: it is read when a feed loads, stored in the library (store schema V15, migrated with the usual backup), and published in the library sync so the phone can offer it. Relative, non-web, credentialed or self-referential links are ignored.
 
 ### Changed
+- Ad recovery shares one programme-evidence contract across boundary review, tail and credits trimming, late-start recovery, and the final conflict check, preserving the existing cut and original-audio fallback rules.
 - Episodes are transcribed with parakeet-tdt-0.6b-v3 instead of parakeet-tdt-1.1b, for both ad detection and the displayed transcript. Transcripts now have punctuation and capitals, and ad cuts land closer to the sponsor's words: over five test episodes, programme cut by mistake fell from about 7.5 minutes to about 2. New preparations record engine v13; episodes already prepared keep their cuts.
 - A started episode on the Mac Larder shows a small progress bar and the time left beside its date, wherever it was last played; before, the only sign was the Mark completed button.
 - `make validate` no longer stops at the first failing step: every check, meta-test, Phase 0 and the native gate run to the end, and the run then fails once with `validate.failed count=<n> steps=<names>`.

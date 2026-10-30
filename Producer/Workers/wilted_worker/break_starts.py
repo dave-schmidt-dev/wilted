@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from . import reporting as _worker_reporting
+from .boundary_review import overlaps_programme_boundary
 from .commercial_preservation import _generate_review
 from .constants import (
     BREAK_START_CONTEXT_IDS,
@@ -140,12 +141,8 @@ def recover_late_break_starts(
                 for other in recovered
             ):
                 break
-            if any(
-                held.reason == "programme-boundary" and intervals_overlap(
-                    float(segments[segment_id].start_s), float(segments[segment_id].end_s),
-                    float(held.start_s), float(held.end_s),
-                )
-                for held in held_spans or ()
+            if overlaps_programme_boundary(
+                held_spans, segments[segment_id].start_s, segments[segment_id].end_s
             ):
                 break
             window_ids.append(segment_id)

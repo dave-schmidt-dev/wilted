@@ -13,6 +13,41 @@ from .reporting import WorkerError
 from .prompts import OVERSIZED_SPAN_CONFIRM_PROMPT, OVERSIZED_SPAN_PROGRAM_START_PROMPT
 
 
+def record_programme_boundary(
+    held_spans: list[HeldAdSpan] | None, cue: Any, total_seconds: float | None = None,
+) -> None:
+    """Retain a positively identified programme/mixed cue for later passes.
+
+    This records evidence, not a model verdict: callers retain their own
+    review and malformed-timing policies. Unknown reviews and advisory seeds
+    must not call this. Optional reporting preserves each caller's journal.
+    """
+    start_s, end_s = float(cue.start_s), float(cue.end_s)
+    if total_seconds is not None:
+        record_held_span(held_spans, start_s, end_s, "programme-boundary", total_seconds)
+    elif held_spans is not None:
+        held_spans.append(HeldAdSpan(start_s, end_s, "programme-boundary"))
+
+
+def overlaps_programme_boundary(
+    held_spans: list[HeldAdSpan] | tuple[HeldAdSpan, ...] | None,
+    start_s: float, end_s: float,
+) -> bool:
+    """Test positive keep evidence using the shared interval geometry.
+
+    Other holds describe uncertainty or a refused proposal, not a positively
+    identified programme cue. Touching endpoints and one-ULP drift do not
+    cross a barrier; point cues keep the geometry owner's existing semantics.
+    Read the current ledger each time, so later passes see newly found cues.
+    """
+    return any(
+        held.reason == "programme-boundary" and intervals_overlap(
+            float(start_s), float(end_s), float(held.start_s), float(held.end_s)
+        )
+        for held in held_spans or ()
+    )
+
+
 def record_held_span(
     held_spans: list[HeldAdSpan] | None,
     start_s: float,
@@ -75,9 +110,7 @@ def review_candidate_span(
     current_ids = span_ids
     barriers = {
         i for i, cue in enumerate(segments)
-        if any(held.reason == "programme-boundary" and intervals_overlap(
-            float(cue.start_s), float(cue.end_s), held.start_s, held.end_s
-        ) for held in held_spans or ())
+        if overlaps_programme_boundary(held_spans, cue.start_s, cue.end_s)
     }
 
     def preserve(cue_id):
@@ -85,7 +118,7 @@ def review_candidate_span(
         cue = segments[cue_id]
         if float(cue.end_s) <= float(cue.start_s):
             raise WorkerError("ads-recovery-audit-failed", "programme cue has no positive timing interval")
-        record_held_span(held_spans, cue.start_s, cue.end_s, "programme-boundary", total_seconds)
+        record_programme_boundary(held_spans, cue, total_seconds)
 
     def hold(reason="boundary-review-unresolved", cause="boundary review unresolved"):
         _worker_reporting.progress("ads.detect.span.resize.skipped",
@@ -161,12 +194,8 @@ def review_candidate_span(
 
 def reject_programme_conflicts(detections, held_spans):
     """Keep the episode whole if later recovery crosses a positive keep cue."""
-    conflicts = [ad for ad in detections if any(
-        held.reason == "programme-boundary" and intervals_overlap(
-            float(ad.start_s), float(ad.end_s), held.start_s, held.end_s
-        )
-        for held in held_spans or ()
-    )]
+    conflicts = [ad for ad in detections
+                 if overlaps_programme_boundary(held_spans, ad.start_s, ad.end_s)]
     if conflicts:
         if held_spans is not None:
             held_spans.extend(HeldAdSpan(float(ad.start_s), float(ad.end_s), "programme-boundary-conflict")
