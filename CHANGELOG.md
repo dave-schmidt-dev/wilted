@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- A documented ad-feedback investigation and tuning procedure that preserves available evidence, distinguishes reported positions from verified ad boundaries, and keeps unresolved reports visible through regression checks and listening acceptance.
 - Right-click a prepared episode in the Mac Larder and choose **Show in Finder** to select its prepared audio file, so it can be AirDropped or copied. If the file is gone, the Mac beeps.
 - Mac Settings > Appearance > **Show counts in the sidebar** (off by default) numbers the episodes ready to play beside Larder and the episodes still to decide beside Feeds.
 - Ad feedback while listening: the Mac Now Playing pane and the iPhone full player offer **Ad here** at the playhead, plus **Good cut** and **Not an ad** for 30 seconds after a cut. Each press is confirmed at once with Undo. iPhone presses reach the Mac through iCloud after an 8-second undo hold, and an older Mac holds them until it is updated. The Mac records where each press falls in the original episode, which cut it is about and which engine prepared it. Every press counts with its default label at once; Settings > Ad feedback lists them so you can change a label, remove a press or restore one, and `make ad-feedback-drafts` turns the counted presses into draft ad-corpus labels.
