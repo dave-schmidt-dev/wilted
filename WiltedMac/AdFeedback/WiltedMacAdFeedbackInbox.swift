@@ -38,10 +38,11 @@ struct WiltedMacAdFeedbackEntry: Codable, Equatable, Identifiable, Sendable {
 
         var id: String { rawValue }
 
+        /// In the player's words, so Settings and the Now Playing buttons agree.
         var title: String {
             switch self {
-            case .mustCut: "Must cut"
-            case .mustKeep: "Must keep"
+            case .mustCut: "Ad"
+            case .mustKeep: AdFeedbackKind.notAnAd.title
             case .acceptableCut: "Either is fine"
             }
         }

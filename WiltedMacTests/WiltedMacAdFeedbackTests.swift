@@ -93,6 +93,13 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
 
     }
 
+    func testSettingsLabelsUseThePlayersWords() {
+        typealias Label = WiltedMacAdFeedbackEntry.CorpusLabel
+        XCTAssertEqual(Label.allCases.map(\.title), ["Ad", "Not an ad", "Either is fine"])
+        XCTAssertEqual(Label.suggested(for: .notAnAd).title, AdFeedbackKind.notAnAd.title)
+        XCTAssertEqual(Label.suggested(for: .goodCut).title, "Ad")
+    }
+
     func testAPendingPressFromAnOlderFileCounts() async throws {
         let directory = wiltedTemporaryDirectory("legacy")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
