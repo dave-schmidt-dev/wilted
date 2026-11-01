@@ -37,6 +37,7 @@ from .ad_runtime_adaptations import install_context_aware_overlap_resolution, in
 from .constants import COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
 from .cue_timing import _near_empty_nominations, build_effective_cut_map, effective_removed_intervals, render_keep_segments, serialize_ad_audit
 from .boundary_review import reject_programme_conflicts
+from .recovery_policy import enforce_known_house_kind_policy, project_detections_around_blocked_house_regions
 from .interval_geometry import interval_contains, intervals_overlap
 from .nomination import _CallBudgetBackend, _experimental_speculative_cuts
 from .reporting import DiscardedRuns, WorkerError
@@ -153,8 +154,12 @@ def analyze_ad_detections(
             f"classifier produced no successfully validated coverage for global IDs: {details}",
         )
 
+    held_spans = []
     commercial_recovery_backend = _CallBudgetBackend(
         auditing_backend, COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
+    )
+    detections = enforce_known_house_kind_policy(
+        detections, ads_module, total_seconds, remove_self_promotion, held_spans,
     )
     opening_pattern = explicit_sponsor_opening_pattern(ads_module)
     explicit_anchor_ids = explicit_sponsor_anchor_ids(segments, opening_pattern)
@@ -166,16 +171,17 @@ def analyze_ad_detections(
     )
     prefix_rebase_anchor_ids = frozenset(explicit_anchor_ids)
     detections = _worker_commercial_seeds.recover_commercial_evidence_reads(
-        ads_module, commercial_recovery_backend, segments, detections, total_seconds
+        ads_module, commercial_recovery_backend, segments, detections, total_seconds,
+        remove_self_promotion, held_spans,
     )
     detections = _worker_commercial_seeds.recover_sparse_commercial_reads(
         ads_module, commercial_recovery_backend, segments, detections,
         total_seconds, preliminary_audit,
+        remove_self_promotion, held_spans,
     )
     detections = _worker_edge_recovery.recover_transcript_start_preroll(
         ads_module, auditing_backend, segments, detections
     )
-    held_spans = []
     detections = _worker_tail_recovery.recover_transcript_end_postroll(
         ads_module, auditing_backend, segments, detections, total_seconds,
     )
@@ -195,9 +201,15 @@ def analyze_ad_detections(
         ads_module, segments, detections, frozenset(explicit_anchor_ids)
     )
     released_heads = tuple((before, float(ad.start_s)) for ad, before in zip(detections, head_trim_before) if float(ad.start_s) > before)
+    detections = project_detections_around_blocked_house_regions(
+        detections, ads_module, held_spans,
+    )
     detections, confirmed_spans = _worker_span_bounds.resize_oversized_ad_spans(
         ads_module, auditing_backend, segments, detections, total_seconds,
         rebase_anchor_ids=prefix_rebase_anchor_ids, held_spans=held_spans,
+    )
+    detections = project_detections_around_blocked_house_regions(
+        detections, ads_module, held_spans,
     )
     proposed_detections = detections
     detections = reject_implausible_ad_spans(
@@ -209,6 +221,12 @@ def analyze_ad_detections(
     detections = _worker_break_starts.recover_late_break_starts(
         ads_module, auditing_backend, segments, detections, total_seconds, held_spans,
         frozenset(explicit_anchor_ids), released_heads)
+    detections = project_detections_around_blocked_house_regions(
+        detections, ads_module, held_spans,
+    )
+    detections = enforce_known_house_kind_policy(
+        detections, ads_module, total_seconds, remove_self_promotion, held_spans,
+    )
     detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
     detections = reject_programme_conflicts(detections, held_spans)
     dropped_anchor_ids = [
@@ -218,7 +236,8 @@ def analyze_ad_detections(
         and not sponsor_anchor_is_covered(anchor_id, segments, detections)
         and not any(
             held.reason in {"sponsor-prefix-programme-found", "programme-boundary",
-                            "total-share-ceiling", "programme-boundary-conflict"}
+                            "total-share-ceiling", "programme-boundary-conflict",
+                            "house-promotion-disabled"}
             and intervals_overlap(
                 held.start_s, held.end_s,
                 float(segments[anchor_id].start_s), float(segments[anchor_id].end_s),

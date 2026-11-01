@@ -156,6 +156,8 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Ad removal lead-in recovery walks backward from verified break cores and extends only across contiguous commercial cues, stopping at any programme or mixed cue rather than cutting across earlier programme lines to an isolated commercial match.
+- Ad recovery now blocks candidates tagged with the known house-promotion kind or house label when show-promotion removal is disabled, carries known kinds through merges, and prevents later recovery from re-cutting those held regions. This metadata safeguard does not classify untagged promotion, which may still be recovered as paid advertising.
 - Recorded ad-corpus scoring no longer borrows a timeline from another download of the same episode. It requires a successful preparation with the labelled source hash and optional revision, and reports unavailable evidence instead of treating malformed cuts as a pass.
 - Ad detection no longer misses speech the transcriber dropped. The v3 speech model sometimes went silent for 40 to 55 seconds of clear speech; any stretch of 8 seconds or more with no words is now transcribed again on its own, so ads read there can be found. Episodes prepared earlier keep their gaps until they are prepared again.
 - The Mac no longer re-uploads every episode's offer and transcript to iCloud each time it starts, and no longer removes and re-uploads a transcript when an episode's offer is republished at the same audio revision. Both added avoidable iCloud requests (about 20 transcripts removed and uploaded again at one launch on 2026-10-28, the day iCloud throttled the Mac). A phone asking again for audio the Mac already offers no longer makes it upload the file again.

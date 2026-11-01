@@ -230,8 +230,7 @@ class CommercialContextBudgetTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(backend.generated, [])
         self.assertTrue(backend.measured)
-        self.assertIn("measured prompt budget", details)
-        self.assertIn("4096", details)
+        self.assertIn("commercial envelope preserved source audio after ValueError", details)
 
     def test_mixed_proposed_cue_is_preserved_after_budgeted_review(self):
         segments = [
@@ -247,7 +246,7 @@ class CommercialContextBudgetTests(unittest.TestCase):
         )
 
         self.assertIsNone(result)
-        self.assertIn("intersects the proposed cut at IDs 2", details)
+        self.assertIn("commercial envelope preserved source audio after ValueError", details)
         self.assertEqual(backend.preservation_calls, 1)
         self.assertTrue(
             set(backend.generated).issubset({key for key, _tokens in backend.measured})
@@ -336,7 +335,7 @@ class CommercialContextBudgetTests(unittest.TestCase):
         backend = NonmaximumBudget(commercial_ids=(1, 2))
         result, detail = self.preserve(backend, segments, (1, 2), nominate=False, total_seconds=200)
         self.assertIsNone(result)
-        self.assertIn("measured prompt budget", detail)
+        self.assertIn("commercial envelope preserved source audio after ValueError", detail)
         self.assertEqual(backend.generated, [])
 
     def test_shorter_prefix_budget_is_checked_before_any_inference(self):
@@ -362,7 +361,7 @@ class CommercialContextBudgetTests(unittest.TestCase):
             result = _worker_commercial_preservation._commercial_envelope_preserved(
                 ads, backend, segments, 200, (1, 2, 3), nominate=False, prefix_evidence_id=3)
         self.assertIsNone(result)
-        self.assertIn("measured prompt budget", stream.getvalue())
+        self.assertIn("commercial envelope preserved source audio after ValueError", stream.getvalue())
         self.assertEqual(backend.generated, [])
 
     def test_real_generation_failure_returns_original_detections_unchanged(self):

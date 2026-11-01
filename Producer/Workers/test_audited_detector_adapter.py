@@ -70,6 +70,7 @@ class AuditedDetectorAdapterTests(AuditedDetectorAdapterMixinB, unittest.TestCas
 
     def ads(self, detector):
         ads = types.ModuleType("wilted.ads")
+        attach_ad_kind_taxonomy(ads)
         ads._AD_DETECT_SYSTEM_PROMPT = "classify"
         ads._AD_DETECT_CORRECTION_PROMPT = "correct"
         ads._AD_DETECT_RESPONSE_FORMAT = {

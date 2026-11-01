@@ -53,7 +53,11 @@ class AdKindContractTests(unittest.TestCase):
 
     def setUp(self):
         self.audio = Path(REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py")
-        self.request = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
+        self.request = {
+            "audioPath": str(self.audio),
+            "outputPath": "/tmp/never-written.mp3",
+            "removeSelfPromotion": True,
+        }
         self.segments = [
             FakeSegment(index * 10.0, index * 10.0 + 10.0, f"segment {index}")
             for index in range(10)

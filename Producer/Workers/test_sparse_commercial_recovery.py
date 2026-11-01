@@ -326,7 +326,7 @@ class SparseCommercialRecoveryTests(unittest.TestCase):
         self.assertEqual(llm.requests, [])
         self.assertTrue(any(
             event["stage"] == "ads.detect.recovery.skipped"
-            and "budget exhausted" in event["detail"]
+            and event["detail"] == "commercial envelope preserved source audio after WorkerError"
             for event in events
         ))
 

@@ -27,18 +27,12 @@ from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import edge_recovery as _worker_edge_recovery
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
+from wilted_worker import prompts as _worker_prompts
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
-from worker_test_support import *
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import glossary as _worker_glossary
-from wilted_worker import gpu_admission as _worker_gpu_admission
-from wilted_worker import reporting as _worker_reporting
-from wilted_worker import transcript_sources as _worker_transcript_sources
+from worker_test_support import wp
 
 @dataclass
 class FakeLLM:
@@ -102,7 +96,12 @@ class FakeLLM:
             raise RuntimeError("Model not loaded. Call load() first.")
         if self.fail_generate is not None:
             raise self.fail_generate
-        if system_prompt in {"archive ad classifier", "archive ad classifier correction"}:
+        if system_prompt in {
+            "archive ad classifier",
+            "archive ad classifier correction",
+            _worker_prompts.SELF_PROMOTION_AD_DETECT_SYSTEM_PROMPT,
+            _worker_prompts.SELF_PROMOTION_AD_DETECT_CORRECTION_PROMPT,
+        }:
             return self.classifier_answer, 1
         if system_prompt == wp.COMMERCIAL_PREFIX_ROLE_PROMPT:
             return self.commercial_prefix_role_answer or self.answer, 1

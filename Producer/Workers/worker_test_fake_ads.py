@@ -91,7 +91,7 @@ def install_fake_ads(llm: FakeLLM, detections=()):
             if name == "detect_ads" and callable(value) and not getattr(value, "_covers_classifier", False):
                 raw_detector = value
 
-                def detector_with_classifier_coverage(segments, backend):
+                def detector_with_classifier_coverage(segments, backend, *args, **kwargs):
                     ids = list(range(len(segments)))
                     rendered = "\n".join(
                         f"[ID {segment_id}] [{segment.start_s:.3f}s - {segment.end_s:.3f}s] {segment.text}"
@@ -106,7 +106,7 @@ def install_fake_ads(llm: FakeLLM, detections=()):
                             break
                         except Exception:  # noqa: BLE001 - archive retries malformed classifier responses
                             continue
-                    return raw_detector(segments, backend)
+                    return raw_detector(segments, backend, *args, **kwargs)
 
                 detector_with_classifier_coverage._covers_classifier = True
                 value = detector_with_classifier_coverage
@@ -240,7 +240,7 @@ def install_fake_ads(llm: FakeLLM, detections=()):
     ads._probe_boundary_candidate = probe_boundary  # noqa: SLF001
     attach_archive_overlap_resolver(ads)
 
-    def detect_ads(segments, backend):
+    def detect_ads(segments, backend, *args, **kwargs):
         return list(detections)
 
     ads.detect_ads = detect_ads

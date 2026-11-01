@@ -271,8 +271,9 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         )
         preserved, details = self.preserve(llm, segments, (3, 4))
         self.assertIsNone(preserved)
-        self.assertIn(
-            "intersects the proposed cut at IDs 3", details["ads.detect.recovery.skipped"]
+        self.assertEqual(
+            details["ads.detect.recovery.skipped"],
+            "commercial envelope preserved source audio after ValueError",
         )
 
     def test_commercial_labels_on_one_flank_do_not_confirm_the_proposal(self):
@@ -287,8 +288,9 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         )
         preserved, details = self.preserve(llm, segments, (3, 4))
         self.assertIsNone(preserved)
-        self.assertIn(
-            "not confirmed on both sides", details["ads.detect.recovery.skipped"]
+        self.assertEqual(
+            details["ads.detect.recovery.skipped"],
+            "commercial envelope preserved source audio after ValueError",
         )
 
     def test_malformed_preservation_labels_decline_without_cutting(self):
@@ -313,7 +315,10 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
                     FakeLLM(commercial_preservation_answer=response), segments, (3, 4)
                 )
                 self.assertIsNone(preserved)
-                self.assertIn("invalid shape", details["ads.detect.recovery.skipped"])
+                self.assertEqual(
+                    details["ads.detect.recovery.skipped"],
+                    "commercial envelope preserved source audio after ValueError",
+                )
 
     def test_preservation_request_labels_only_the_proposal_and_nearby_flanks(self):
         segments = [
@@ -363,7 +368,10 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         preserved, details = self.preserve(llm, segments, (3, 4))
         requests = [content for content in llm.request_contents if content.startswith("IDs to classify:")]
         self.assertIsNone(preserved)
-        self.assertIn("not confirmed on both sides", details["ads.detect.recovery.skipped"])
+        self.assertEqual(
+            details["ads.detect.recovery.skipped"],
+            "commercial envelope preserved source audio after ValueError",
+        )
         self.assertEqual(len(requests), 1 + wp.COMMERCIAL_PRESERVATION_FLANK_STEPS)
         # Each step labels the next IDs out, never the same flank again.
         self.assertEqual(requests[-1].partition("\n")[0], "IDs to classify: 11, 12")
@@ -377,7 +385,10 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         preserved, details = self.preserve(llm, segments, (3, 4))
         requests = [content for content in llm.request_contents if content.startswith("IDs to classify:")]
         self.assertIsNone(preserved)
-        self.assertIn("not confirmed on both sides", details["ads.detect.recovery.skipped"])
+        self.assertEqual(
+            details["ads.detect.recovery.skipped"],
+            "commercial envelope preserved source audio after ValueError",
+        )
         for request in requests:
             ids = request.partition("\n")[0].partition(": ")[2].split(", ")
             self.assertTrue(all(0 <= int(segment_id) < len(segments) for segment_id in ids))
@@ -395,7 +406,10 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         )
         preserved, details = self.preserve(llm, segments, (3, 4))
         self.assertIsNone(preserved)
-        self.assertIn("invalid shape", details["ads.detect.recovery.skipped"])
+        self.assertEqual(
+            details["ads.detect.recovery.skipped"],
+            "commercial envelope preserved source audio after ValueError",
+        )
 
     def test_conflicting_evidence_cta_destination_cue_recovers_ground_news_like_midroll(self):
         # Synthetic Ground News-like host midroll:
@@ -498,7 +512,10 @@ class CommercialEvidenceRecoveryTests(unittest.TestCase):
         )
         preserved, details = self.preserve(llm, segments, (1, 2))
         self.assertIsNone(preserved)
-        self.assertIn("intersects the proposed cut at IDs 2", details["ads.detect.recovery.skipped"])
+        self.assertEqual(
+            details["ads.detect.recovery.skipped"],
+            "commercial envelope preserved source audio after ValueError",
+        )
         self.assertFalse(any(wp.COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT == p for p in llm.request_prompts))
 
     def test_destination_only_cue_near_a_cta_seed_is_nominated(self):

@@ -25,6 +25,7 @@ from .commercial_seeds import _constrained_id
 from .constants import AD_POD_CONTINUATION_MAX_GAP_SECONDS, AD_POD_CONTINUATION_MAX_SECONDS, AD_POD_CONTINUATION_MAX_SEGMENTS, COMMERCIAL_RECOVERY_CONTEXT_CHARS, MAXIMUM_SINGLE_AD_SHARE, MAXIMUM_TOTAL_AD_SHARE, MAXIMUM_UNCONFIRMED_AD_SHARE, MINIMUM_PROGRAMME_SHARE, OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS
 from .interval_geometry import intervals_overlap
 from .prompts import AD_POD_CONTINUATION_PROMPT, OVERSIZED_SPAN_CONFIRM_PROMPT, OVERSIZED_SPAN_RESCAN_PROMPT
+from .recovery_policy import overlaps_blocked_house_region
 
 
 def _resize_one_oversized_span(
@@ -323,6 +324,10 @@ def recover_adjacent_ad_pod_continuations(
         window_ids = []
         for segment_id in range(first, min(len(segments), first + AD_POD_CONTINUATION_MAX_SEGMENTS)):
             if float(segments[segment_id].start_s) - ad_end > AD_POD_CONTINUATION_MAX_SECONDS:
+                break
+            if overlaps_blocked_house_region(
+                held_spans, segments[segment_id].start_s, segments[segment_id].end_s
+            ):
                 break
             window_ids.append(segment_id)
         if len(window_ids) < 2:

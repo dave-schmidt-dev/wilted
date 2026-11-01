@@ -18,6 +18,7 @@ from .constants import (
 from .interval_geometry import intervals_overlap
 from .prompts import AD_BREAK_START_PROMPT, COMMERCIAL_PREFIX_CUE_PROMPT
 from .review_formats import _commercial_preservation_labels, _commercial_preservation_response_format
+from .recovery_policy import overlaps_blocked_house_region
 
 # The rendered lead-in marks the cut's own cues with this token, so the review
 # can match a host-read setup to the sponsor it introduces. A cue the cut only
@@ -26,16 +27,15 @@ _COMMERCIAL_MARKER = "verified commercial: "
 
 
 def _first_commercial_lead_in_cue(ads_module, backend, segments, start_id, evidence_id):
-    """Return the first lead-in cue a per-cue review labels commercial, or None.
+    """Return the start cue of a contiguous commercial suffix ending at evidence_id, or None.
 
-    The start review picks a pause, but the model chose the lone candidate
-    over plain programme (a show open, a sign-off and its credits) in 13 of
-    46 accepts on the 2026-10-22 library replay. Each lead-in cue from the chosen start up to the cut's
-    first fully contained cue is therefore labelled on its own, unmarked, with
-    the same per-cue question the sparse-prefix recovery asks, and the cut
-    reaches back only to the first cue labelled commercial.
+    Walking backward from the verified commercial core (evidence_id), include only
+    a contiguous suffix whose every cue is commercial; stop at programme or mixed cues.
+    No contiguous commercial suffix means no extension.
     """
     lead_in_ids = tuple(range(start_id, evidence_id))
+    if not lead_in_ids:
+        return None
     context_ids = range(max(0, start_id - BREAK_START_CONTEXT_IDS), min(len(segments), evidence_id + 2))
     rendered = "\n".join(
         ads_module._segment_prefix(segment_id, segments[segment_id])  # noqa: SLF001
@@ -51,7 +51,13 @@ def _first_commercial_lead_in_cue(ads_module, backend, segments, start_id, evide
         response_format=_commercial_preservation_response_format(lead_in_ids),
     )
     labels = _commercial_preservation_labels(response, lead_in_ids)
-    return next((segment_id for segment_id in lead_in_ids if labels[str(segment_id)] == "commercial"), None)
+    first_commercial = None
+    for segment_id in reversed(lead_in_ids):
+        if labels.get(str(segment_id)) == "commercial":
+            first_commercial = segment_id
+        else:
+            break
+    return first_commercial
 
 
 def recover_late_break_starts(
@@ -142,6 +148,10 @@ def recover_late_break_starts(
             ):
                 break
             if overlaps_programme_boundary(
+                held_spans, segments[segment_id].start_s, segments[segment_id].end_s
+            ):
+                break
+            if overlaps_blocked_house_region(
                 held_spans, segments[segment_id].start_s, segments[segment_id].end_s
             ):
                 break

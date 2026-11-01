@@ -21,6 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
 from .commercial_preservation import _commercial_envelope_preserved, _evidence_is_covered, recovered_confidence
+from .recovery_policy import overlaps_blocked_house_region
 from .constants import COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_IDS, COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS, COMMERCIAL_RECOVERY_MAX_CANDIDATE_SECONDS, COMMERCIAL_RECOVERY_MAX_CANDIDATES, COMMERCIAL_SPARSE_CONTEXT_FLANK_IDS, COMMERCIAL_SPARSE_GAP_MIN_SECONDS, COMMERCIAL_SPARSE_MAX_ENVELOPE_SECONDS, COMMERCIAL_SPARSE_MAX_SECONDS, COMMERCIAL_SPARSE_TRANSITION_MAX_CHARS, COMMERCIAL_SPARSE_TRANSITION_MAX_SECONDS, EXPLICIT_SPONSOR_CTA_RE
 from .interval_geometry import interval_contains, intervals_overlap
 from .sponsor_evidence import explicit_sponsor_destination_seen
@@ -148,10 +149,27 @@ def _neighbour_seed_is_near(neighbour_start, neighbour_end, anchor_start, anchor
         return neighbour_start - anchor_end <= COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS
     return anchor_start - neighbour_end <= COMMERCIAL_RECOVERY_EVIDENCE_WINDOW_SECONDS
 
-def recover_commercial_evidence_reads(ads_module, backend, segments, detections, total_seconds):
+def _ids_overlap_blocked_house_region(segments, ids, held_spans):
+    return any(
+        overlaps_blocked_house_region(
+            held_spans, float(segments[segment_id].start_s), float(segments[segment_id].end_s)
+        )
+        for segment_id in ids
+    )
+
+def recover_commercial_evidence_reads(
+    ads_module, backend, segments, detections, total_seconds,
+    remove_self_promotion: bool = False, held_spans: list | None = None,
+):
     """Recover unanchored host reads only from reviewed CTA/destination evidence."""
     recovered = []
     for evidence_ids in commercial_evidence_seed_ids(segments, detections):
+        if _ids_overlap_blocked_house_region(segments, evidence_ids, held_spans):
+            _worker_reporting.progress(
+                "ads.detect.recovery.skipped",
+                "commercial evidence overlaps known house material kept by policy",
+            )
+            continue
         first, last = evidence_ids[0], evidence_ids[-1]
         _worker_reporting.progress(
             "ads.detect.commercial.nominated",
@@ -161,6 +179,12 @@ def recover_commercial_evidence_reads(ads_module, backend, segments, detections,
             ads_module, backend, segments, total_seconds, evidence_ids, nominate=True
         )
         if proposed_ids is None:
+            continue
+        if _ids_overlap_blocked_house_region(segments, proposed_ids, held_spans):
+            _worker_reporting.progress(
+                "ads.detect.recovery.skipped",
+                "commercial proposal overlaps known house material kept by policy",
+            )
             continue
         start_s = float(segments[proposed_ids[0]].start_s)
         end_s = float(segments[proposed_ids[-1]].end_s)
@@ -182,12 +206,28 @@ def recover_commercial_evidence_reads(ads_module, backend, segments, detections,
             )),
             3,
         )
-        recovered.append(ads_module.AdSegment(start_s, end_s, confidence, "sponsor_read"))
+        recovered.append(ads_module.AdSegment(
+            start_s, end_s, confidence, "sponsor_read", kinds=(ads_module.AD_KIND_PAID,),
+        ))
     if not recovered:
         return detections
-    merged = ads_module._merge_adjacent(  # noqa: SLF001 - preserve legacy merge shape
-        sorted([*detections, *recovered], key=lambda ad: ad.start_s)
-    )
+    if not remove_self_promotion:
+        house_kind = ads_module.AD_KIND_HOUSE
+        non_house_detections = [
+            ad for ad in detections
+            if house_kind not in ads_module.ad_segment_kinds(ad)
+            and getattr(ad, "label", None) not in {"self_promo", "newsletter_pitch"}
+        ]
+        house_detections = [ad for ad in detections if ad not in non_house_detections]
+        merged = ads_module._merge_adjacent(  # noqa: SLF001
+            sorted([*non_house_detections, *recovered], key=lambda ad: ad.start_s)
+        )
+        merged.extend(house_detections)
+        merged.sort(key=lambda ad: ad.start_s)
+    else:
+        merged = ads_module._merge_adjacent(  # noqa: SLF001 - preserve legacy merge shape
+            sorted([*detections, *recovered], key=lambda ad: ad.start_s)
+        )
     evidence = ", ".join(f"{ad.start_s:.3f}-{ad.end_s:.3f}" for ad in recovered)
     _worker_reporting.progress("ads.detect.recovered", f"{len(recovered)} commercial-evidence spans: {evidence}")
     return merged
@@ -275,12 +315,21 @@ def sparse_pause_envelope(segments, seed_id):
     return tuple(range(first, last + 1))
 
 def recover_sparse_commercial_reads(
-    ads_module, backend, segments, detections, total_seconds, audit
+    ads_module, backend, segments, detections, total_seconds, audit,
+    remove_self_promotion: bool = False, held_spans: list | None = None,
 ):
     """Recover a complete read around sparse classifier evidence, or keep audio."""
     recovered = list(detections)
     reviewed_envelopes = set()
+    house_kind = ads_module.AD_KIND_HOUSE
+    paid_kind = ads_module.AD_KIND_PAID
     for segment_id, original in sparse_commercial_seeds(segments, detections, audit):
+        if _ids_overlap_blocked_house_region(segments, [segment_id], held_spans):
+            _worker_reporting.progress(
+                "ads.detect.sparse.skipped",
+                f"evidence ID {segment_id} is known house material kept by policy",
+            )
+            continue
         candidate_ids = sparse_pause_envelope(segments, segment_id)
         if candidate_ids is None or candidate_ids in reviewed_envelopes:
             continue
@@ -297,6 +346,12 @@ def recover_sparse_commercial_reads(
             prefix_evidence_id=segment_id,
         )
         if proposed_ids is None:
+            continue
+        if _ids_overlap_blocked_house_region(segments, proposed_ids, held_spans):
+            _worker_reporting.progress(
+                "ads.detect.sparse.skipped",
+                f"proposal around evidence ID {segment_id} overlaps known house material",
+            )
             continue
         start_s = float(segments[proposed_ids[0]].start_s)
         end_s = float(segments[proposed_ids[-1]].end_s)
@@ -325,16 +380,37 @@ def recover_sparse_commercial_reads(
                 merged_ads = [*overlapping]
                 if original is not None:
                     merged_ads.append(original)
+                has_disallowed_house = not remove_self_promotion and any(
+                    house_kind in ads_module.ad_segment_kinds(ad)
+                    or getattr(ad, "label", None) in {"self_promo", "newsletter_pitch"}
+                    for ad in merged_ads
+                )
+                if has_disallowed_house:
+                    _worker_reporting.progress(
+                        "ads.detect.sparse.skipped",
+                        f"disallowed house material cannot enter merged cut at ID {segment_id}",
+                    )
+                    continue
+
                 removed = {id(ad) for ad in merged_ads}
                 recovered[:] = [ad for ad in recovered if id(ad) not in removed]
                 confidence = min(
                     recovered_confidence(2, 3),
                     *(float(ad.confidence) for ad in merged_ads),
                 )
-                labels = {ad.label for ad in merged_ads}
-                label = labels.pop() if len(labels) == 1 else "sponsor_read"
+                all_kinds = set()
+                for ad in merged_ads:
+                    all_kinds.update(ads_module.ad_segment_kinds(ad))
+                merged_kinds = tuple(sorted(all_kinds))
+                if paid_kind in merged_kinds:
+                    label = "sponsor_read"
+                elif house_kind in merged_kinds:
+                    label = "self_promo"
+                else:
+                    labels = {ad.label for ad in merged_ads}
+                    label = labels.pop() if len(labels) == 1 else merged_ads[0].label
                 recovered.append(ads_module.AdSegment(
-                    union_start, union_end, confidence, label
+                    union_start, union_end, confidence, label, kinds=merged_kinds,
                 ))
                 _worker_reporting.progress(
                     "ads.detect.sparse.merged",
@@ -343,13 +419,35 @@ def recover_sparse_commercial_reads(
                 continue
             _worker_reporting.progress("ads.detect.sparse.skipped", f"proposal overlaps another cut at ID {segment_id}")
             continue
+
+        if original is not None and not remove_self_promotion and (
+            house_kind in ads_module.ad_segment_kinds(original)
+            or getattr(original, "label", None) in {"self_promo", "newsletter_pitch"}
+        ):
+            _worker_reporting.progress(
+                "ads.detect.sparse.skipped",
+                f"known house material at ID {segment_id} cannot be expanded when removal is disabled",
+            )
+            continue
+
         confidence = recovered_confidence(2, 3)
-        label = "sponsor_read"
+        candidate_kinds = set()
         if original is not None:
             confidence = min(confidence, float(original.confidence))
-            label = original.label
+            candidate_kinds.update(ads_module.ad_segment_kinds(original))
             recovered.remove(original)
-        recovered.append(ads_module.AdSegment(start_s, end_s, confidence, label))
+        else:
+            candidate_kinds.add(paid_kind)
+        final_kinds = tuple(sorted(candidate_kinds))
+        if paid_kind in final_kinds:
+            label = "sponsor_read"
+        elif house_kind in final_kinds:
+            label = "self_promo"
+        elif original is not None:
+            label = original.label
+        else:
+            label = "sponsor_read"
+        recovered.append(ads_module.AdSegment(start_s, end_s, confidence, label, kinds=final_kinds))
         _worker_reporting.progress(
             "ads.detect.sparse.recovered",
             f"ID {segment_id} verified as complete commercial {start_s:.3f}-{end_s:.3f}",

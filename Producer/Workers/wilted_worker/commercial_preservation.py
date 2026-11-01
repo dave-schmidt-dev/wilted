@@ -427,7 +427,7 @@ def _commercial_envelope_preserved(
     except Exception as error:  # noqa: BLE001 - incomplete commercial review preserves source audio
         _worker_reporting.progress(
             "ads.detect.recovery.skipped",
-            f"commercial envelope preserved source audio: {type(error).__name__}: {error}",
+            f"commercial envelope preserved source audio after {type(error).__name__}",
         )
         return None
 

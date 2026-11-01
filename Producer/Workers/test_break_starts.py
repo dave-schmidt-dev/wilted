@@ -382,6 +382,80 @@ class LateBreakStartTests(unittest.TestCase):
         self.assertIn("[3] verified commercial: fully contained sponsor cue", content)
         self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(40.0, 60.0)])
 
+    def test_non_contiguous_commercial_lead_in_retains_programme_and_keeps_verified_cut(self):
+        # cues: 0=(0,30 programme), 1=(35,45 sponsor setup), 2=(45,60 editorial programme),
+        # 3=(60,80 verified sponsor), 4=(80,100 programme); existing cut 60–80, first review start 1,
+        # labels 1 commercial / 2 programme. Old code cut 35–80; fixed must keep 60–80.
+        segments = [
+            FakeSegment(0.0, 30.0, "programme"),
+            FakeSegment(35.0, 45.0, "sponsor setup"),
+            FakeSegment(45.0, 60.0, "editorial programme"),
+            FakeSegment(60.0, 80.0, "verified sponsor"),
+            FakeSegment(80.0, 100.0, "programme"),
+        ]
+        detection = FakeAd(60.0, 80.0, label="sponsor", confidence=0.9, kinds=("paid advertising",))
+        recovered, _backend, events = self.recover(
+            [json.dumps({"ad_start_id": 1}),
+             lead_in_labels(**{"1": "commercial", "2": "programme"})],
+            segments=segments,
+            detections=[detection],
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(60.0, 80.0)])
+        self.assertIn("ads.detect.break-start.skipped", self.stages(events))
+
+    def test_commercial_programme_commercial_prefix_retains_programme_and_extends_safe_suffix(self):
+        # cues: 0=(0,20), 1=(25,35 commercial), 2=(35,45 programme), 3=(46,60 commercial), 4=(60,80 sponsor)
+        segments = [
+            FakeSegment(0.0, 20.0, "programme"),
+            FakeSegment(25.0, 35.0, "early commercial setup"),
+            FakeSegment(35.0, 45.0, "editorial programme"),
+            FakeSegment(46.0, 60.0, "immediate commercial lead-in"),
+            FakeSegment(60.0, 80.0, "verified sponsor"),
+            FakeSegment(80.0, 100.0, "programme"),
+        ]
+        detection = FakeAd(60.0, 80.0, label="sponsor", confidence=0.9, kinds=("paid advertising",))
+        recovered, _backend, _events = self.recover(
+            [json.dumps({"ad_start_id": 1}),
+             lead_in_labels(**{"1": "commercial", "2": "programme", "3": "commercial"})],
+            segments=segments,
+            detections=[detection],
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(46.0, 80.0)])
+
+    def test_mixed_cue_in_lead_in_stops_extension(self):
+        segments = [
+            FakeSegment(0.0, 20.0, "programme"),
+            FakeSegment(25.0, 40.0, "sponsor setup"),
+            FakeSegment(40.0, 60.0, "mixed programme and transition"),
+            FakeSegment(60.0, 80.0, "verified sponsor"),
+            FakeSegment(80.0, 100.0, "programme"),
+        ]
+        detection = FakeAd(60.0, 80.0, label="sponsor", confidence=0.9, kinds=("paid advertising",))
+        recovered, _backend, _events = self.recover(
+            [json.dumps({"ad_start_id": 1}),
+             lead_in_labels(**{"1": "commercial", "2": "mixed"})],
+            segments=segments,
+            detections=[detection],
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(60.0, 80.0)])
+
+    def test_all_commercial_prefix_still_extends(self):
+        segments = [
+            FakeSegment(0.0, 20.0, "programme"),
+            FakeSegment(25.0, 40.0, "sponsor setup 1"),
+            FakeSegment(40.0, 60.0, "sponsor setup 2"),
+            FakeSegment(60.0, 80.0, "verified sponsor"),
+            FakeSegment(80.0, 100.0, "programme"),
+        ]
+        detection = FakeAd(60.0, 80.0, label="sponsor", confidence=0.9, kinds=("paid advertising",))
+        recovered, _backend, _events = self.recover(
+            [json.dumps({"ad_start_id": 1}),
+             lead_in_labels(**{"1": "commercial", "2": "commercial"})],
+            segments=segments,
+            detections=[detection],
+        )
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in recovered], [(25.0, 80.0)])
+
 
 class LateBreakStartEndToEndTests(unittest.TestCase):
     """The extension through `analyze_ad_detections`, with the whole recovery path."""
