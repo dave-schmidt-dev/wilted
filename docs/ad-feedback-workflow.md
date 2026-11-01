@@ -69,6 +69,11 @@ cut, but a press alone does not establish the content of everything removed.
 Conflicting feedback is investigated and documented, not silently resolved in
 favor of the label that makes a candidate pass.
 
+Verify every proposed programme flank through the next call to action or clear
+return to the show: an apparent discussion after one sponsor may introduce the
+next sponsor. Independently recheck any label that implies programme loss before
+diagnosing the engine. Preserve superseded labels and invalidate their scores.
+
 Define source-time `must-cut` and adjacent `must-keep` intervals, with who/what
 verified each, the evidence used, and boundary uncertainty. Listen when original
 audio is available. Transcript-only judgments must say so; model-generated gold
