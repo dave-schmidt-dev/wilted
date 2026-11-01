@@ -36,10 +36,11 @@ import contextlib
 import json
 import os
 import shutil
-import sqlite3
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ad_corpus_recorded import recorded_intervals
 
 MANIFEST = Path(__file__).resolve().parent / "adcorpus" / "manifest.json"
 
@@ -352,37 +353,9 @@ def _clamped(spans, total: float | None) -> list[Span]:
 
 
 def recorded_spans(case: dict, *, library: Path) -> list[Span] | None:
-    """The spans a real preparation committed, or None when it is not here.
-
-    Returns None rather than an empty list for an absent item, because "this
-    machine never prepared it" and "the detector found nothing" are opposite
-    readings and only one of them is a failure.
-    """
-    if not library.exists():
-        return None
-    connection = sqlite3.connect(f"file:{library}?mode=ro", uri=True)
-    try:
-        rows = connection.execute(
-            "SELECT CAST(ZSTATUSDATA AS TEXT) FROM ZPREPARATIONRECORD"
-            " WHERE ZITEMID = ? ORDER BY ZEMITTEDAT DESC",
-            (case["itemID"],),
-        ).fetchall()
-    finally:
-        connection.close()
-
-    for (blob,) in rows:
-        try:
-            status = json.loads(blob or "")
-        except (ValueError, TypeError):
-            continue
-        timeline = status.get("timeline") or {}
-        if "removed" not in timeline:
-            continue
-        return [
-            Span(float(entry["originalStartSeconds"]), float(entry["originalEndSeconds"]))
-            for entry in timeline["removed"]
-        ]
-    return None
+    """Cuts from a successful preparation matching source and optional revision."""
+    intervals = recorded_intervals(case, library=library)
+    return None if intervals is None else [Span(start, end) for start, end in intervals]
 
 
 def cached_segments(case: dict, *, cache: Path):
@@ -610,7 +583,7 @@ def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPU
             continue
         if produced is None:
             if mode == "recorded":
-                missing = f"no preparation for {case['itemID']} in {library}"
+                missing = f"no valid source-matched successful preparation for {case['itemID']} in {library}"
                 unrunnable = False
             else:
                 missing = (

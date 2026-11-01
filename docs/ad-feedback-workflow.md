@@ -26,6 +26,9 @@ running experiments. Copy; do not move, replace, or re-prepare owner media.
 Identify source audio by its journal `sourceHash`, and prepared audio by the
 revision's content hash. A successful preparation can replace downloaded bytes
 with cut audio; the current download path is **not proof of original audio**.
+Use the original file's probed duration when available. The last retained or
+removed timeline endpoint can exclude trimmed trailing silence and is not proof
+of the full source duration. Correct both sides of a comparison together.
 
 Search the current cache, pinned corpus, historical snapshots, and retained
 artifacts by embedded source identity, not just filenames. Record the transcript
@@ -77,11 +80,15 @@ protected. Do not copy unreviewed proposals into the accepted corpus.
 Use `make ad-feedback-drafts` for draft labels only. Its current exporter groups
 by item, so split the input by revision and source identity before using it on
 multi-revision reports; never adopt a draft without identity and timing review.
-`make ad-corpus-adopt SOURCE=<snapshot-directory>` pins inputs for cases already
-named in the manifest; it does not automatically adopt new feedback or gaps.
+`make ad-corpus-adopt SOURCE=<snapshot-directory>` pins inputs for cases and
+acquired gap inputs already named in the manifest; it does not automatically
+turn new feedback into cases or establish their labels.
 
-Record both the saved cuts and a current-source replay. The replay must use the
-shipping `analyze_ad_detections` path, including the final outcome decision;
+Record both the saved cuts and a current-source replay, each matched to its
+labels' input identity. Recorded scoring requires a successful
+preparation with the case's source hash and, when supplied, `revisionID`;
+an unmatched or malformed timeline is unavailable, never a passing empty cut.
+Replay uses the shipping `analyze_ad_detections` path, including the final outcome decision;
 a classifier-only result is a diagnostic, not what the app would cut.
 Use `ad_corpus.py --mode replay --strict --case <case-id>` for a targeted case,
 then the full strict corpus for candidate acceptance. Run with the project's
