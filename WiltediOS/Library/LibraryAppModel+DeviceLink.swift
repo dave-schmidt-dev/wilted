@@ -75,6 +75,7 @@ extension LibraryAppModel {
     func noteDeviceLink(_ link: LibraryDeviceLink?, owner: String?) {
         guard let link, link.deviceID == deviceID else { return }
         deviceLinkState.link = link
+        rememberDirectLink(link, owner: owner)
         if !deviceLinked {
             deviceLinked = true
             linkLog.notice("The Mac linked this device.")
@@ -90,6 +91,7 @@ extension LibraryAppModel {
         deviceLinked = false
         deviceLinkState.link = nil
         deviceLinkState.lastAnnounceAttempt = nil
+        forgetDirectCache()
         preferences.removeObject(forKey: Self.savedMacLinkKey)
         preferences.removeObject(forKey: Self.linkedAnnounceKey)
     }

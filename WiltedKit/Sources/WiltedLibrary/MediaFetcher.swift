@@ -249,10 +249,31 @@ public struct MediaFetcher: Sendable {
             validation: { await cache.permits(admission, for: offer) }, onState: onState)
     }
 
+    /// Verifies a file a nearby source delivered (`DirectMediaSource`) against `offer` and moves it into the
+    /// cache. Unlike `accept`, every check is the live one `fetch` makes: the transport's verified owner and
+    /// operation generation must still be the admission's, so an account change during the transfer adopts
+    /// nothing. `offer` may be `available`: a prepared revision the Mac has not uploaded to CloudKit. The
+    /// bytes still have to match its byte count and SHA-256 (W-INV-007), and `fetch` itself still needs `ready`.
+    public func acceptDirect(
+        deliveredFile: URL, for offer: LibraryMediaOffer, admission: MediaCacheAdmission,
+        transport: any LibraryTransport, onState: @escaping StateHandler = { _ in }
+    ) async throws -> MediaFetchOutcome {
+        let outcome = try await acceptDelivery(deliveredFile: deliveredFile, for: offer, admission: admission,
+            validation: { await liveAdmission(admission, offer: offer, transport: transport) }) { state in
+            if state != .cached { onState(state) }
+        }
+        guard await liveAdmission(admission, offer: offer, transport: transport) else {
+            return fail(.cacheFailed("Media admission changed"), onState)
+        }
+        if case .cached = outcome { onState(.cached) }
+        return outcome
+    }
+
     private func acceptDelivery(deliveredFile: URL, for offer: LibraryMediaOffer, admission: MediaCacheAdmission,
                                 validation: @escaping @Sendable () async -> Bool,
                                 onState: @escaping StateHandler) async throws -> MediaFetchOutcome {
-        guard offer.state == .ready, offer.isPrepared else { onState(.notReady); return .notReady }
+        // `isPrepared` is true for `ready` and for a prepared `available` offer (a direct delivery).
+        guard offer.isPrepared else { onState(.notReady); return .notReady }
         guard await validation() else { return fail(.cacheFailed("Media admission changed"), onState) }
         if let existing = await cache.cachedFile(for: offer, admission: admission),
            await validation(),

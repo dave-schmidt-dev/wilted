@@ -180,8 +180,13 @@ extension WiltedMacFeedPolicyViewTests {
                     let image = try XCTUnwrap(bitmap.cgImage)
                     let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
                     for observation in request.results ?? [] {
-                        guard observation.topCandidates(1).first?.string.contains("Set in") == true else { continue }
-                        let box = observation.boundingBox
+                        // A full pass can drop a right-aligned value beside its label, so each
+                        // feed-default row is read again across the canvas's whole width.
+                        let found = observation.topCandidates(1).first?.string ?? ""
+                        let isRow = found.hasPrefix("Auto download") || found.hasPrefix("Auto prepare")
+                        guard found.contains("Set in") || isRow else { continue }
+                        let box = isRow ? CGRect(x: 0, y: observation.boundingBox.minY, width: 1,
+                                                 height: observation.boundingBox.height) : observation.boundingBox
                         let pixels = CGRect(x: box.minX * bounds.width,
                             y: (1 - box.maxY) * bounds.height, width: box.width * bounds.width,
                             height: box.height * bounds.height).insetBy(dx: -4, dy: -4).intersection(bounds).integral

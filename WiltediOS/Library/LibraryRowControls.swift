@@ -52,11 +52,11 @@ struct LibraryDownloadControl: View {
             EmptyView()
         case .available:
             icon("arrow.down.circle", "Download", .request, id: "get")
-        case .requested, .downloading:
+        case .requested, .downloading, .downloadingFromMac:
             ZStack {
                 ring
                 LibraryIconButton(
-                    symbol: "xmark", label: "Cancel download",
+                    symbol: "xmark", label: state.cancelLabel,
                     identifier: "wilted-library-media-cancel-\(entryID.rawValue)") { perform(.cancel) }
                     .imageScale(.small)
             }
@@ -159,7 +159,7 @@ struct LibraryStatusLine: View {
 
     private func tone(_ state: LibraryMediaState) -> WiltedStatusTone {
         switch state {
-        case .requested, .downloading, .verifying: .active
+        case .requested, .downloading, .downloadingFromMac, .verifying: .active
         case .failed: .failure
         case .notPrepared: .caution
         case .available, .onPhone: .neutral

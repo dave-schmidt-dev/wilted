@@ -147,6 +147,16 @@ struct LibrarySettingsView: View {
                     .multilineTextAlignment(.trailing)
                     .accessibilityIdentifier("wilted-library-settings-sync-status")
             }
+            Toggle("Download from your Mac over Wi-Fi", isOn: $settings.directDownloads)
+                .wiltedFont(.utility)
+                .accessibilityIdentifier("wilted-library-settings-direct-downloads")
+            if model.directState.localNetworkDenied {
+                Text(LibraryDirectDownloadOnboarding.localNetworkDeniedInstruction)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-library-settings-direct-downloads-denied")
+            }
             if LibrarySettingsFormat.showsSyncDetailInline(sync), let detail = sync.detail {
                 Text(detail).wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

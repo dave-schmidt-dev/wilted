@@ -45,8 +45,16 @@ protocol LibraryMediaCache: MediaCacheStore {
     func revokePreparation(entryID: ItemID) async throws
     /// The newest cached revision for every entry that has one.
     func cachedEntries() async -> [ItemID: CachedMedia]
-    /// Physical canonical audio size by entry; conveys no playback permission.
+    /// Physical canonical audio size by entry; conveys no playback permission. Includes the bytes of
+    /// unfinished direct transfers, which are counted like the audio they will become.
     func storedAudioByteCounts() async -> [ItemID: Int64]
+    /// Where unfinished direct transfers for `entryID` are kept; nil when this cache keeps none.
+    func partialDirectory(for entryID: ItemID) -> URL?
+    /// Deletes `entryID`'s unfinished direct transfers, except the one `offer` would resume.
+    func discardPartials(entryID: ItemID, keeping offer: LibraryMediaOffer?) async
+    func discardAllPartials() async
+    /// Deletes unfinished direct transfers not written to since `cutoff`.
+    func purgePartials(olderThan cutoff: Date) async
     /// Deletes audio that can never play again; returns the entries that lost a revision.
     func reclaimUnplayableAudio(keeping kept: Set<ItemID>) async -> Set<ItemID>
     func verifies(_ cached: CachedMedia) async -> Bool
@@ -103,6 +111,7 @@ actor FileMediaCache: LibraryMediaCache {
 
     func remove(entryID: ItemID) async throws {
         try await withdrawPreparationForRemoval(entryID: entryID)
+        await discardPartials(entryID: entryID, keeping: nil)
         let directory = root.appendingPathComponent(entryID.rawValue, isDirectory: true)
         verificationMemo.forget(directory)
         guard fileManager.fileExists(atPath: directory.path) else { return }
@@ -117,7 +126,7 @@ actor FileMediaCache: LibraryMediaCache {
     /// Storage maintenance must not bind an owner or expose a playable file or URL.
     func storedAudioByteCounts() async -> [ItemID: Int64] {
         guard safeDirectory(root) else { return [:] }
-        var counts: [ItemID: Int64] = [:]
+        var counts = partialByteCounts()
         for entryDirectory in subdirectories(of: root) {
             guard let entryID = try? ItemID(rawValue: entryDirectory.lastPathComponent) else { continue }
             for revisionDirectory in subdirectories(of: entryDirectory) {
@@ -186,7 +195,8 @@ actor FileMediaCache: LibraryMediaCache {
     }
 
     func location(for offer: LibraryMediaOffer) -> URL? {
-        guard offer.state == .ready, let revisionID = offer.revisionID, MediaHash.isWellFormed(offer.contentHash) else { return nil }
+        guard offer.state == .ready || offer.state == .available, let revisionID = offer.revisionID,
+              MediaHash.isWellFormed(offer.contentHash) else { return nil }
         let name = offer.contentHash.dropFirst(MediaHash.prefix.count) + "." + Self.fileExtension(for: offer.mediaType)
         return root
             .appendingPathComponent(offer.entryID.rawValue, isDirectory: true)

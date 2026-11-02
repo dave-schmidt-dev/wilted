@@ -48,10 +48,25 @@ enum LibraryEnvironment {
                 throw error
             }
         }
-        return LibraryAppModel(
+        let model = LibraryAppModel(
             transport: built.transport, store: store, deviceID: deviceID, recovery: recovery,
             ownPositionsURL: directory.appendingPathComponent("own-positions.json"),
             outboxURL: directory.appendingPathComponent("pending-intents.json"))
+        if isLiveAllowed { installDirectPath(on: model) }
+        return model
+    }
+
+    /// Turns on the direct (local network) path: the phone's LAN key is announced to the Mac, and downloads
+    /// try the Mac before iCloud. The switch is read each time, so turning it off stops the announcement
+    /// and all browsing at once. Tests and previews never get this: they build their own model.
+    private static func installDirectPath(on model: LibraryAppModel) {
+        let phoneKey = LibraryPhoneKey(store: KeychainLANKeyStore())
+        // UserDefaults is documented thread-safe; it just is not annotated Sendable.
+        nonisolated(unsafe) let preferences = model.preferences
+        model.deviceLinkState.lanPublicKeySource = {
+            LibrarySettingsStore.directDownloadsEnabled(in: preferences) ? phoneKey.key()?.publicKey : nil
+        }
+        model.directState.environment = .live(phoneKey: phoneKey, scheduler: LiveBackgroundTransferScheduler.shared)
     }
 
     /// Constructor failure retains the same mirror and expected owner; it never retries unowned.

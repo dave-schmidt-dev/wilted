@@ -30,6 +30,8 @@ final class LibrarySettingsStore: ObservableObject {
     nonisolated static let autoPlayNextKey = "wilted.library.autoPlayNext"
     nonisolated static let listSortKey = "wilted.library.listSort"
     nonisolated static let listGroupKey = "wilted.library.listGroup"
+    nonisolated static let directDownloadsKey = "wilted.library.directDownloads"
+    nonisolated static let directDownloadsOnboardingShownKey = "wilted.library.directDownloadsOnboardingShown"
 
     @Published var textScale: WiltedTheme.TextScale {
         didSet { if textScale != oldValue { defaults.set(textScale.rawValue, forKey: Self.textScaleKey) } }
@@ -61,6 +63,17 @@ final class LibrarySettingsStore: ObservableObject {
         didSet { if autoPlayNext != oldValue { defaults.set(autoPlayNext, forKey: Self.autoPlayNextKey) } }
     }
 
+    /// On unless switched off: audio comes straight from the Mac over the local network when the Mac is
+    /// near, with iCloud as the fallback. Off stops all local-network use, browsing included.
+    @Published var directDownloads: Bool {
+        didSet { if directDownloads != oldValue { defaults.set(directDownloads, forKey: Self.directDownloadsKey) } }
+    }
+
+    /// Whether the one-time direct-download onboarding step has been shown.
+    @Published var directDownloadsOnboardingShown: Bool {
+        didSet { if directDownloadsOnboardingShown != oldValue { defaults.set(directDownloadsOnboardingShown, forKey: Self.directDownloadsOnboardingShownKey) } }
+    }
+
     /// How the Larder list is sorted and grouped. Display only: playback, auto-continue, CarPlay and
     /// Siri keep the play order. An unknown stored value reads as the play order / no grouping.
     @Published var listSort: LibrarySortOption {
@@ -70,7 +83,7 @@ final class LibrarySettingsStore: ObservableObject {
         didSet { if listGroup != oldValue { defaults.set(listGroup.rawValue, forKey: Self.listGroupKey) } }
     }
 
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -80,6 +93,8 @@ final class LibrarySettingsStore: ObservableObject {
         skipBackSeconds = Self.snapSkip(defaults.object(forKey: Self.skipBackKey) as? Int, fallback: Self.defaultSkipBack)
         skipForwardSeconds = Self.snapSkip(defaults.object(forKey: Self.skipForwardKey) as? Int, fallback: Self.defaultSkipForward)
         autoPlayNext = defaults.object(forKey: Self.autoPlayNextKey) as? Bool ?? true
+        directDownloads = Self.directDownloadsEnabled(in: defaults)
+        directDownloadsOnboardingShown = Self.directDownloadsOnboardingShown(in: defaults)
         listSort = LibrarySortOption.stored(defaults.string(forKey: Self.listSortKey))
         listGroup = LibraryGroupOption.stored(defaults.string(forKey: Self.listGroupKey))
     }
@@ -88,6 +103,27 @@ final class LibrarySettingsStore: ObservableObject {
         LibraryPlaybackPreferences(
             defaultSpeed: defaultSpeed, skipBackSeconds: skipBackSeconds, skipForwardSeconds: skipForwardSeconds,
             autoPlayNext: autoPlayNext)
+    }
+
+    /// The direct-download switch as stored; on when never set. The library model reads it through this at
+    /// the moment a download starts, so a change takes effect on the next download.
+    nonisolated static func directDownloadsEnabled(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: directDownloadsKey) as? Bool ?? true
+    }
+
+    /// Whether the direct downloads onboarding step has been shown in `defaults`.
+    nonisolated static func directDownloadsOnboardingShown(in defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: directDownloadsOnboardingShownKey)
+    }
+
+    /// Marks the direct downloads onboarding step as shown in `defaults`.
+    nonisolated static func recordDirectDownloadsOnboardingShown(in defaults: UserDefaults) {
+        defaults.set(true, forKey: directDownloadsOnboardingShownKey)
+    }
+
+    /// True when the direct downloads onboarding step needs to be shown.
+    var needsDirectDownloadsOnboarding: Bool {
+        !directDownloadsOnboardingShown
     }
 
     /// The nearest speed in `PlaybackSpeeds`; a non-finite value falls back to the default.

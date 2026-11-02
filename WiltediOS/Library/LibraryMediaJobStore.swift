@@ -46,6 +46,12 @@ struct LibraryMediaJob: Codable, Sendable, Equatable {
     /// The verification mismatch seen last and how many times in a row.
     var mismatchKey: String?
     var mismatchCount: Int
+    /// True when `nextAttempt` waits for the saved account to be verified, which a direct download needs
+    /// before it starts (D5). Optional so a file written before the direct path still decodes.
+    var waitsOnOwner: Bool?
+    /// The content hash the direct path has already given up on in this job, so a later pass goes
+    /// straight to iCloud instead of looking for the Mac again. Optional for the same reason.
+    var directFailedFor: String?
 
     init(entryID: ItemID, intentID: String, createdAt: Date) {
         self.entryID = entryID

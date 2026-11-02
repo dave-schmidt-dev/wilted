@@ -34,6 +34,11 @@ extension LibraryAppModel {
         "Waiting for the Mac, checking again at \(clockFormat.clock(due))"
     }
 
+    /// Wording for a job waiting for the saved account to be confirmed before it can start a direct download.
+    func ownerWaitNotice(checkingAt due: Date) -> String {
+        "Confirming your iCloud account, trying again at \(clockFormat.clock(due))"
+    }
+
     /// Asks the Mac for the episode's audio, then downloads, verifies and caches it, as a durable job.
     /// Does nothing while a request is already running or the audio is already on the phone.
     func startMediaRequest(entryID: ItemID) {
@@ -146,11 +151,24 @@ extension LibraryAppModel {
                 endMediaJob(job, runID: runID, row: .failed("The saved library account is not verified for downloading."))
                 return .finished
             }
-            return transientWait(&job) // a saved account that cannot be verified right now: offline
+            // A saved account that cannot be verified right now (offline, or a cold launch before iCloud
+            // answers). A download that would have gone direct says so, because it starts nothing until the
+            // account is confirmed (D5).
+            if job.waitsOnOwner != true, await directPathWaitsOnOwner(job, savedOwner: saved.ownerToken) {
+                job.waitsOnOwner = true
+                directState.record(.ownerUnverified, entryID: entryID)
+            }
+            return transientWait(&job)
         }
+        job.waitsOnOwner = nil
         guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else {
             endMediaJob(job, runID: runID, row: nil) // the entry left the queue or was revoked
             return .finished
+        }
+
+        switch try await attemptDirectDownload(&job, runID: runID, context: context) {
+        case .cached, .ended: return .finished
+        case .notTried, .fellBack: break
         }
 
         if !job.requestSent {
@@ -272,7 +290,8 @@ extension LibraryAppModel {
     /// The row for a job waiting until `due`, with the time in its words; nil when it is not waiting.
     private func waitingRow(_ job: LibraryMediaJob, until due: Date?) -> LibraryMediaState? {
         guard let due, due > now() else { return nil }
-        let notice = job.waitsOnMac ? macWaitNotice(checkingAt: due) : throttleNotice(retryingAt: due)
+        let notice = job.waitsOnOwner == true ? ownerWaitNotice(checkingAt: due)
+            : job.waitsOnMac ? macWaitNotice(checkingAt: due) : throttleNotice(retryingAt: due)
         return .requested(since: job.requestedSince, retry: LibraryMediaRetry(notice: notice), stage: job.stage.requestStage)
     }
 
@@ -291,7 +310,7 @@ extension LibraryAppModel {
 
     /// Changes `job` and saves it, unless this run is no longer the entry's (cancelled or replaced), in
     /// which case it saves nothing.
-    private func persist(job: inout LibraryMediaJob, runID: UUID, _ change: (inout LibraryMediaJob) -> Void) -> Bool {
+    func persist(job: inout LibraryMediaJob, runID: UUID, _ change: (inout LibraryMediaJob) -> Void) -> Bool {
         change(&job)
         guard isCurrent(job.entryID, runID) else { return false }
         mediaJobStore.saveJob(job, ownerToken: outboxState.ownerToken)
@@ -300,7 +319,7 @@ extension LibraryAppModel {
 
     /// Ends a job: the row takes `row` and the job leaves the file. A run that is no longer the entry's
     /// does neither, so a cancelled run cannot remove its successor's job.
-    private func endMediaJob(_ job: LibraryMediaJob, runID: UUID, row: LibraryMediaState?) {
+    func endMediaJob(_ job: LibraryMediaJob, runID: UUID, row: LibraryMediaState?) {
         guard isCurrent(job.entryID, runID) else { return }
         mediaJobStore.removeJob(entryID: job.entryID, ownerToken: outboxState.ownerToken)
         media[job.entryID] = row

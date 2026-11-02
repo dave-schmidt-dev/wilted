@@ -43,6 +43,7 @@ extension LibraryAppModel {
     /// only when one is due.
     func sceneBecameActive() async {
         tickState.sceneActive = true
+        resumeSuspendedDirectRuns()
         handoffState.interruptions?.appBecameActive()
         guard started else { return }
         tickState.forceFull = true
@@ -95,6 +96,7 @@ extension LibraryAppModel {
     func noteOffers(_ offers: [LibraryMediaOffer]) {
         tickState.offers = Dictionary(offers.map { ($0.entryID, $0) }, uniquingKeysWith: { first, _ in first })
         tickState.offersReadAt = now()
+        rememberDirectOffers(offers)
     }
 
     /// Entries any device, this one included, has played past the start.

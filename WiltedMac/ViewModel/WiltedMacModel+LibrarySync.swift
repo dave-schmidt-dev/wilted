@@ -363,7 +363,7 @@ extension WiltedMacModel {
         let importer = WiltedMacPositionImporter(host: WiltedMacModelPositionImportHost(model: self), deviceID: deviceID)
         let inbound = WiltedMacInboundRuntime(
             source: WiltedMacLibraryReadyAudioSource(store: store), transport: resolvedTransport,
-            directory: syncDirectory, deviceID: deviceID, gate: gate,
+            directory: syncDirectory, deviceID: deviceID, gate: gate, accountGate: accountGated.gate,
             // The one whole-zone scan: it teaches the transport the peer and entry names to poll.
             discover: {
                 try await gate.run {

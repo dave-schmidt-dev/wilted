@@ -97,7 +97,7 @@ enum LibrarySwipe: Equatable {
         switch media {
         case .onPhone: [isPlaying ? .pause : .play]
         case .available, .failed, .notPrepared: canRequest ? [.download] : []
-        case .requested, .downloading, .verifying: []
+        case .requested, .downloading, .downloadingFromMac, .verifying: []
         }
     }
 }

@@ -16,6 +16,8 @@ struct WiltedMacLinkedDevice: Equatable, Sendable, Identifiable {
     let isLinked: Bool
     /// The device's media requests this Mac has not finished answering.
     let inFlight: [LibraryMediaRequestStatus]
+    /// Whether direct LAN downloads are stopped for this follower device.
+    var isDirectDownloadsStopped: Bool = false
 }
 
 /// The Mac's side of the device handshake: it links every follower it learns of (from the
@@ -41,6 +43,9 @@ actor WiltedMacDeviceLinks {
     private var saved: Set<String> = []
     private var flushing: Task<Void, Never>?
     private var lastFailure: String?
+    private var macLANPublicKey: Data?
+    private var stoppedDevices: Set<String> = []
+    private var phonePublicKeys: [String: Data] = [:]
 
     init(transport: any LibraryTransport, macDeviceID: String?, now: @escaping @Sendable () -> Date = { Date() },
          onChange: OnChange? = nil) {
@@ -50,17 +55,83 @@ actor WiltedMacDeviceLinks {
         self.onChange = onChange
     }
 
+    /// Updates this Mac's published LAN key across all device links.
+    func setMacLANPublicKey(_ key: Data?) async {
+        macLANPublicKey = key
+        var changed = false
+        for (deviceID, link) in links {
+            let isStopped = stoppedDevices.contains(deviceID)
+            let targetMacKey = isStopped ? nil : key
+            let targetFingerprint = isStopped ? nil : phonePublicKeys[deviceID].map { LANPairingKey.fingerprint(of: $0) }
+            if link.lanPublicKey != targetMacKey || link.knownPhoneKeyFingerprint != targetFingerprint {
+                links[deviceID] = LibraryDeviceLink(
+                    deviceID: link.deviceID,
+                    linkedAt: link.linkedAt,
+                    requests: link.requests,
+                    lanPublicKey: targetMacKey,
+                    knownPhoneKeyFingerprint: targetFingerprint
+                )
+                unsaved.insert(deviceID)
+                changed = true
+            }
+        }
+        if changed { await report() }
+    }
+
+    /// Drops direct download capabilities for one device ("Stop direct downloads for this iPhone").
+    func stopDirectDownloads(for deviceID: String) async {
+        stoppedDevices.insert(deviceID)
+        if let link = links[deviceID] {
+            links[deviceID] = LibraryDeviceLink(
+                deviceID: link.deviceID,
+                linkedAt: link.linkedAt,
+                requests: link.requests,
+                lanPublicKey: nil,
+                knownPhoneKeyFingerprint: nil
+            )
+            unsaved.insert(deviceID)
+            await flush()
+            await report()
+        }
+    }
+
+    /// Whether direct downloads have been stopped for this device.
+    func isDirectDownloadsStopped(for deviceID: String) -> Bool {
+        stoppedDevices.contains(deviceID)
+    }
+
+    /// The phone public key held for this device, if announced.
+    func phonePublicKey(for deviceID: String) -> Data? {
+        phonePublicKeys[deviceID]
+    }
+
     /// Links every device in the directory that this Mac has not linked for its latest announcement.
     func noteDirectory(_ directory: LibraryDeviceDirectory?) async {
         guard let directory else { return }
         var changed = false
         for device in directory.devices where device.deviceID != macDeviceID {
+            if let phoneKey = device.lanPublicKey {
+                phonePublicKeys[device.deviceID] = phoneKey
+            }
             if kinds[device.deviceID] != device.kind { kinds[device.deviceID] = device.kind; changed = true }
-            guard answeredAnnouncements[device.deviceID].map({ device.announcedAt > $0 }) ?? true else { continue }
-            answeredAnnouncements[device.deviceID] = device.announcedAt
-            links[device.deviceID] = links[device.deviceID] ?? LibraryDeviceLink(deviceID: device.deviceID, linkedAt: now())
-            unsaved.insert(device.deviceID)
-            changed = true
+            let needsLink = links[device.deviceID] == nil
+                || (answeredAnnouncements[device.deviceID].map { device.announcedAt > $0 } ?? true)
+            let isStopped = stoppedDevices.contains(device.deviceID)
+            let targetMacKey = isStopped ? nil : macLANPublicKey
+            let targetFingerprint = isStopped ? nil : device.lanPublicKey.map { LANPairingKey.fingerprint(of: $0) }
+            let existing = links[device.deviceID]
+            if needsLink || existing?.lanPublicKey != targetMacKey || existing?.knownPhoneKeyFingerprint != targetFingerprint {
+                answeredAnnouncements[device.deviceID] = device.announcedAt
+                links[device.deviceID] = LibraryDeviceLink(
+                    deviceID: device.deviceID,
+                    linkedAt: existing?.linkedAt ?? now(),
+                    requests: existing?.requests ?? [],
+                    lanPublicKey: targetMacKey,
+                    knownPhoneKeyFingerprint: targetFingerprint
+                )
+                unsaved.insert(device.deviceID)
+                changed = true
+            }
         }
         if changed { await report() }
     }
@@ -69,7 +140,12 @@ actor WiltedMacDeviceLinks {
     func noteDevices(_ deviceIDs: some Sequence<String>) async {
         var changed = false
         for deviceID in deviceIDs where deviceID != macDeviceID && links[deviceID] == nil && !deviceID.isEmpty {
-            links[deviceID] = LibraryDeviceLink(deviceID: deviceID, linkedAt: now())
+            let isStopped = stoppedDevices.contains(deviceID)
+            let targetMacKey = isStopped ? nil : macLANPublicKey
+            let targetFingerprint = isStopped ? nil : phonePublicKeys[deviceID].map { LANPairingKey.fingerprint(of: $0) }
+            links[deviceID] = LibraryDeviceLink(
+                deviceID: deviceID, linkedAt: now(),
+                lanPublicKey: targetMacKey, knownPhoneKeyFingerprint: targetFingerprint)
             unsaved.insert(deviceID)
             changed = true
         }
@@ -114,13 +190,19 @@ actor WiltedMacDeviceLinks {
             WiltedMacLinkedDevice(
                 deviceID: link.deviceID, kind: kinds[link.deviceID],
                 isLinked: saved.contains(link.deviceID),
-                inFlight: link.requests.filter { $0.stage == .received || $0.stage == .sending })
+                inFlight: link.requests.filter { $0.stage == .received || $0.stage == .sending },
+                isDirectDownloadsStopped: stoppedDevices.contains(link.deviceID))
         }
         .sorted { ($0.kind ?? "~", $0.deviceID) < ($1.kind ?? "~", $1.deviceID) }
     }
 
     private func set(_ status: LibraryMediaRequestStatus, for deviceID: String) {
-        let link = links[deviceID] ?? LibraryDeviceLink(deviceID: deviceID, linkedAt: now())
+        let isStopped = stoppedDevices.contains(deviceID)
+        let targetMacKey = isStopped ? nil : macLANPublicKey
+        let targetFingerprint = isStopped ? nil : phonePublicKeys[deviceID].map { LANPairingKey.fingerprint(of: $0) }
+        let link = links[deviceID] ?? LibraryDeviceLink(
+            deviceID: deviceID, linkedAt: now(),
+            lanPublicKey: targetMacKey, knownPhoneKeyFingerprint: targetFingerprint)
         links[deviceID] = link.updating(status, server: nil, now: now())
         unsaved.insert(deviceID)
     }

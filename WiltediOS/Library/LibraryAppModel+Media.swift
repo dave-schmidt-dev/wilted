@@ -32,12 +32,15 @@ enum LibraryMediaRequestStage: Equatable, Sendable {
     case queued
     /// The Mac is uploading the audio.
     case sending
+    /// Browsing the local network and shaking hands with a nearby Mac for a direct download.
+    case lookingForMac
 
     var text: String {
         switch self {
         case .sent: "Sent to Mac"
         case .queued: "Queued on Mac"
         case .sending: "Mac is sending"
+        case .lookingForMac: "Looking for your Mac…"
         }
     }
 }
@@ -51,6 +54,8 @@ enum LibraryMediaState: Equatable, Sendable {
     /// short wait.
     case requested(since: Date, retry: LibraryMediaRetry? = nil, stage: LibraryMediaRequestStage = .sent)
     case downloading(bytes: Int64, total: Int64, since: Date)
+    /// The same transfer, straight from the Mac over the local network.
+    case downloadingFromMac(bytes: Int64, total: Int64, since: Date)
     case verifying
     /// Verified and cached on this phone.
     case onPhone
@@ -61,7 +66,7 @@ enum LibraryMediaState: Equatable, Sendable {
     /// True while a request is running and can be cancelled.
     var isInFlight: Bool {
         switch self {
-        case .requested, .downloading, .verifying: true
+        case .requested, .downloading, .downloadingFromMac, .verifying: true
         default: false
         }
     }
@@ -69,15 +74,19 @@ enum LibraryMediaState: Equatable, Sendable {
     /// The moment the transfer began, for the elapsed-time readout.
     var startedAt: Date? {
         switch self {
-        case let .requested(since, _, _), let .downloading(_, _, since): since
+        case let .requested(since, _, _), let .downloading(_, _, since), let .downloadingFromMac(_, _, since): since
         default: nil
         }
     }
 
     /// Fraction received, when the total is known.
     var fraction: Double? {
-        guard case let .downloading(bytes, total, _) = self, total > 0 else { return nil }
-        return min(1, max(0, Double(bytes) / Double(total)))
+        switch self {
+        case let .downloading(bytes, total, _), let .downloadingFromMac(bytes, total, _):
+            guard total > 0 else { return nil }
+            return min(1, max(0, Double(bytes) / Double(total)))
+        default: return nil
+        }
     }
 
     /// Status line without color or icon, so state never depends on either. `elapsed` is seconds since start.
@@ -89,10 +98,20 @@ enum LibraryMediaState: Equatable, Sendable {
         case let .requested(_, _, stage): "\(stage.text) · \(LibraryClockFormat.duration(elapsed))"
         case let .downloading(bytes, total, _):
             "Downloading \(Self.size(bytes)) of \(Self.size(total)) · \(LibraryClockFormat.duration(elapsed))\(Self.rateSuffix(bytes: bytes, total: total, elapsed: elapsed))"
+        case let .downloadingFromMac(bytes, total, _):
+            "Downloading from your Mac · \(Self.size(bytes)) of \(Self.size(total)) · \(LibraryClockFormat.duration(elapsed))\(Self.rateSuffix(bytes: bytes, total: total, elapsed: elapsed))"
         case .verifying: "Verifying"
         case .onPhone: "Downloaded"
         case let .failed(reason): "Failed: \(reason)"
         case .notPrepared: "Not prepared on Mac"
+        }
+    }
+
+    /// What VoiceOver calls the stop control while this transfer runs.
+    var cancelLabel: String {
+        switch self {
+        case .downloadingFromMac, .requested(_, _, .lookingForMac): "Cancel download from your Mac"
+        default: "Cancel download"
         }
     }
 
@@ -225,6 +244,7 @@ extension LibraryAppModel {
         if !reclaimed.isEmpty {
             mediaLog.notice("Deleted unplayable audio for \(reclaimed.count, privacy: .public) episodes")
         }
+        await purgeOldPartials()
         let inventory = await mediaCache.cachedEntries()
         guard await mediaContextIsCurrent(context) else { return }
         var cached: [ItemID: CachedMedia] = [:]

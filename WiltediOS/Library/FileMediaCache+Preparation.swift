@@ -62,6 +62,7 @@ extension FileMediaCache {
            ledger.libraryScope == libraryScope, ledger.held == held { bindingConfirmed = true; return }
         // Fresh durable nonce prevents old markers surviving a missing/corrupt ledger or reset.
         cacheGeneration = UUID()
+        await discardAllPartials() // another owner's, or an unconfirmed, library: nothing unfinished carries over
         let replacement = PreparationLedger(ownerToken: owner, libraryScope: libraryScope, held: held,
                                              ownerEpoch: UUID(), revocations: [:])
         try persist(replacement)
@@ -92,7 +93,7 @@ extension FileMediaCache {
     }
 
     func permits(_ admission: MediaCacheAdmission, for offer: LibraryMediaOffer) async -> Bool {
-        offer.isPrepared && offer.state == .ready && offer.entryID == admission.entryID && current(admission)
+        offer.isPrepared && offer.entryID == admission.entryID && current(admission)
     }
 
     /// Explicit deletion needs no grant when no valid journal has ever been loaded.
@@ -115,6 +116,7 @@ extension FileMediaCache {
         if old == UInt64.max { ledger.ownerEpoch = UUID(); ledger.revocations = [:] }
         else { ledger.revocations[entryID.rawValue] = old + 1 }
         verificationMemo.forget(root.appendingPathComponent(entryID.rawValue, isDirectory: true))
+        await discardPartials(entryID: entryID, keeping: nil)
         try persist(ledger)
     }
 
@@ -127,7 +129,7 @@ extension FileMediaCache {
         guard structurallyAdmitted(audio), let ledger = currentBinding(), regularFile(markerURL(audio)),
               let data = try? Data(contentsOf: markerURL(audio)),
               let proof = try? JSONDecoder().decode(MediaCachePreparationProof.self, from: data),
-              proof.offer.isPrepared, proof.offer.state == .ready, proof.offer.entryID == entryID,
+              proof.offer.isPrepared, proof.offer.entryID == entryID,
               proof.ownerToken == ledger.ownerToken, proof.libraryScope == ledger.libraryScope,
               proof.ownerEpoch == ledger.ownerEpoch,
               proof.entryRevocationEpoch == (ledger.revocations[entryID.rawValue] ?? 0),
@@ -161,10 +163,19 @@ extension FileMediaCache {
         return true
     }
 
+    /// Whether two offers name the same prepared bytes. A file adopted against an `available` offer stays
+    /// the cached file when the same revision later turns `ready` (DS-2): state is how the Mac delivers
+    /// the bytes, not which bytes they are, so it is not part of the match.
+    nonisolated static func samePreparedFile(_ first: LibraryMediaOffer, _ second: LibraryMediaOffer) -> Bool {
+        first.isPrepared && second.isPrepared && first.entryID == second.entryID
+            && first.revisionID == second.revisionID && first.contentHash == second.contentHash
+            && first.byteCount == second.byteCount && first.mediaType == second.mediaType
+    }
+
     func cachedFile(for offer: LibraryMediaOffer, admission: MediaCacheAdmission) async -> URL? {
         guard await permits(admission, for: offer), let url = location(for: offer),
-              let proof = validPreparation(at: url, entryID: admission.entryID), proof.offer == offer,
-              let revision = offer.revisionID else { return nil }
+              let proof = validPreparation(at: url, entryID: admission.entryID),
+              Self.samePreparedFile(proof.offer, offer), let revision = offer.revisionID else { return nil }
         let cached = CachedMedia(revisionID: revision, url: url, byteCount: offer.byteCount, preparation: proof)
         guard await verifies(cached), current(admission),
               validPreparation(at: url, entryID: admission.entryID) == proof else { return nil }
@@ -181,6 +192,7 @@ extension FileMediaCache {
                 verificationMemo.forget(verifiedFile)
                 try? fileManager.removeItem(at: verifiedFile)
             }
+            await discardPartials(entryID: admission.entryID, keeping: nil)
             return existing
         }
         guard current(admission), let identity = sourceIdentity(verifiedFile) else { throw CocoaError(.fileReadCorruptFile) }
@@ -216,6 +228,8 @@ extension FileMediaCache {
         LibraryFileProtection.apply(to: destination)
         try preparationWriter(encoded, marker)
         guard validPreparation(at: destination, entryID: admission.entryID) == proof else { throw CocoaError(.fileWriteUnknown) }
+        // The entry is complete, however it arrived: a partial left by the other path (DS-5) is dead weight.
+        await discardPartials(entryID: admission.entryID, keeping: nil)
         return destination
     }
 

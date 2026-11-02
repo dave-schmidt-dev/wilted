@@ -12,6 +12,7 @@ struct LibraryRoot: View {
     @State private var isPlayerPresented = false
     @State private var isSettingsPresented = false
     @State private var isAddPresented = false
+    @State private var isOnboardingPresented = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
 
@@ -95,10 +96,23 @@ struct LibraryRoot: View {
                 .environment(\.wiltedTextScale, settings.textScale)
                 .presentationDetents([.large])
         }
+        .sheet(isPresented: $isOnboardingPresented) {
+            LibraryDirectDownloadOnboarding(
+                settings: settings, model: model,
+                onContinue: { isOnboardingPresented = false })
+                .environment(\.wiltedTextScale, settings.textScale)
+                .presentationDetents([.large])
+                .interactiveDismissDisabled()
+        }
         .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
         .environment(\.wiltedTextScale, settings.textScale)
         .task { await runtime.start() }
         .task { SiriAuthorization.requestIfNeeded() }
+        .task {
+            if settings.needsDirectDownloadsOnboarding {
+                isOnboardingPresented = true
+            }
+        }
         .onChange(of: scenePhase, initial: true) { _, phase in
             // Coming forward starts the phone's sync tick; its round also fetches the device records
             // behind "Continue from Mac". At launch the first sync runs it, so this only notes the scene.

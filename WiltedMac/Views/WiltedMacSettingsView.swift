@@ -402,10 +402,27 @@ private struct WiltedMacLibrarySyncCard: View {
             WiltedSettingsRow(
                 "Device changes read", value: WiltedMacLibrarySyncStatus.timeLabel(activity.lastCheckedAt),
                 identifier: "wilted-sync-last-check")
+            Divider()
+            Toggle("Direct downloads from this Mac", isOn: Binding(
+                get: { model.isDirectDownloadsEnabled },
+                set: { model.setDirectDownloadsEnabled($0) }
+            ))
+            .wiltedFont(.utility)
+            .accessibilityIdentifier("wilted-sync-direct-downloads-toggle")
             // Each iPhone and iPad this Mac links as soon as it syncs, and the requests it is answering.
             ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in
                 Divider()
-                WiltedSettingsRow(row.label, value: row.value, identifier: "wilted-sync-device")
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                    WiltedSettingsRow(row.label, value: row.value, identifier: "wilted-sync-device")
+                    if row.label.hasPrefix("iPhone") {
+                        Button("Stop direct downloads for this iPhone") {
+                            model.stopDirectDownloads(for: row.id)
+                        }
+                        .wiltedFont(.utility)
+                        .buttonStyle(.link)
+                        .accessibilityIdentifier("wilted-sync-stop-direct-\(row.id)")
+                    }
+                }
             }
             // The counters are not observed, so the line re-reads them on a 30 s timeline. Without
             // counters there is no timeline at all, so the card's spacing stays as before.

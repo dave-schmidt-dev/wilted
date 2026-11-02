@@ -19,11 +19,17 @@ final class WiltedMacLibraryAccountGate: @unchecked Sendable {
     private let lock = NSLock()
     private var open: Bool
     private var generationValue: UInt64 = 0
+    private var invalidationHandlers: [@Sendable () -> Void] = []
 
     init(open: Bool) { self.open = open }
 
     var isOpen: Bool { lock.withLock { open } }
     var generation: UInt64 { lock.withLock { generationValue } }
+
+    /// Registers a closure called immediately whenever the gate closes or its generation moves.
+    func addInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
+        lock.withLock { invalidationHandlers.append(handler) }
+    }
 
     /// Admits one call, returning the generation it must still hold when it finishes.
     func admit() throws -> UInt64 {
@@ -40,7 +46,15 @@ final class WiltedMacLibraryAccountGate: @unchecked Sendable {
         }
     }
 
-    func close() { lock.withLock { open = false; generationValue &+= 1 } }
+    func close() {
+        let handlers = lock.withLock { () -> [@Sendable () -> Void] in
+            open = false
+            generationValue &+= 1
+            return invalidationHandlers
+        }
+        for handler in handlers { handler() }
+    }
+
     func reopen() { lock.withLock { open = true } }
 }
 

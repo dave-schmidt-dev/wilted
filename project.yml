@@ -116,6 +116,9 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         NSLocationUsageDescription: Wilted uses your approximate location (rounded to about 1 km) only to look up weather alerts for your area. Typed coordinates work instead if you decline.
+        NSLocalNetworkUsageDescription: Wilted uses your local network to send prepared audio directly to your iPhone.
+        NSBonjourServices:
+          - _wilted-media._tcp
         WiltedSourceCommit: $(WILTED_SOURCE_COMMIT)
 
   WiltediOS:
@@ -223,6 +226,11 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         # Required by SiriKit authorization (INPreferences.requestSiriAuthorization), asked once on the phone.
         NSSiriUsageDescription: Wilted shares your episode titles with Siri so you can ask it to play your downloaded episodes by voice, including from CarPlay.
+        NSLocalNetworkUsageDescription: Wilted uses your local network to download prepared audio directly from your Mac.
+        NSBonjourServices:
+          - _wilted-media._tcp
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.zerodelta.wilted.ios.media-download
         # Weather alerts: asked only when the user turns alerts on for this iPhone; approximate, foreground only.
         NSLocationWhenInUseUsageDescription: Wilted uses your approximate location, only while the app is in use, to check for severe weather alerts near you. It is rounded and sent to the National Weather Service only for that check.
         NSLocationDefaultAccuracyReduced: true

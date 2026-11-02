@@ -197,6 +197,7 @@ final class WiltedMacInboundRuntime {
     let ledger: WiltedMacIntentLedger
     let service: WiltedMacMediaService
     let links: WiltedMacDeviceLinks
+    let lanServer: WiltedMacLANMediaServer?
     private let transport: any LibraryTransport
     private let deviceID: String?
     private let gate: TransportGate?
@@ -217,6 +218,9 @@ final class WiltedMacInboundRuntime {
         directory: URL,
         deviceID: String? = nil,
         gate: TransportGate? = nil,
+        accountGate: WiltedMacLibraryAccountGate? = nil,
+        keyStore: (any LANKeyStore)? = nil,
+        lanServer: (any LANMediaServing)? = nil,
         discover: (@Sendable () async throws -> Void)? = nil,
         onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
         maintenance: (@Sendable () async -> Void)? = nil,
@@ -247,6 +251,16 @@ final class WiltedMacInboundRuntime {
             reportRequest: { intent, stage, detail in await links.record(intent, stage: stage, detail: detail) },
             queueURL: directory.appendingPathComponent("media-upload-queue.json")
         )
+        // Without an account gate (tests, fixtures) there is no owner to bind keys to: no LAN server.
+        self.lanServer = accountGate.map { accountGate in WiltedMacLANMediaServer(
+            readySource: source,
+            accountGate: accountGate,
+            links: links,
+            deviceID: deviceID,
+            ownerTokenProvider: { await transport.verifiedOwnerToken() },
+            keyStore: keyStore,
+            server: lanServer
+        ) }
     }
 
     /// Records the intent id durably, then applies it and waits for it; an id already recorded is skipped.
@@ -305,6 +319,7 @@ final class WiltedMacInboundRuntime {
     /// directory, the intents and the playback records, marks each new media request `received`,
     /// and writes the links that changed (none in an idle round).
     nonisolated func noteRound(_ polled: LibraryPollResult) async {
+        try? await lanServer?.updateDirectory(polled.directory)
         await links.noteDirectory(polled.directory)
         var devices = polled.intents.map(\.deviceID)
         if let records = polled.records { devices += (records.nowPlaying + records.progress).map(\.record.deviceID) }
@@ -337,12 +352,14 @@ final class WiltedMacInboundRuntime {
         self.poller = poller
         let beforePollerStart = beforePollerStart
         let previousShutdown = shutdown
+        let lanServer = lanServer
         let task = Task {
             await previousShutdown?.value
             guard !Task.isCancelled else { return }
             await self.resumeQueuedRequests()
             await beforePollerStart?()
             guard !Task.isCancelled else { return }
+            await lanServer?.start()
             await poller.start()
         }
         startup = task
@@ -356,12 +373,15 @@ final class WiltedMacInboundRuntime {
         let startup = startup
         startup?.cancel()
         let service = service
+        let lanServer = lanServer
         let task = Task {
             // Stop promptly, then settle a startup already suspended on an actor
             // or injected wait, and stop again to cover its last possible start.
             await poller.stop()
+            await lanServer?.stop()
             await startup?.value
             await poller.stop()
+            await lanServer?.stop()
             // Rounds no longer wait on uploads and sweeps, so shutdown joins them here: they can
             // still write accounting. A wait for iCloud throttling ends first, as a failed request.
             await service.drainEndingThrottleWaits()
@@ -370,5 +390,13 @@ final class WiltedMacInboundRuntime {
         return task
     }
 
-    func close() async { await stop()?.value }
+    func close() async {
+        await stop()?.value
+        await lanServer?.stop()
+    }
+
+    /// Drops direct download capabilities for one device ("Stop direct downloads for this iPhone").
+    func stopDirectDownloads(for deviceID: String) async {
+        await lanServer?.stopDirectDownloads(for: deviceID)
+    }
 }

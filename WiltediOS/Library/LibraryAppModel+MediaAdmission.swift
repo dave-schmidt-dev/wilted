@@ -121,6 +121,7 @@ extension LibraryAppModel {
                 guard await revokeMediaPreparation(offer.entryID, context: context) else { return false }
             }
         }
+        await discardStalePartials(for: offers)
         return await mediaContextIsCurrent(context, live: true)
     }
 

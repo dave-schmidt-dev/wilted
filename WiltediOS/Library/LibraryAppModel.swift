@@ -149,6 +149,8 @@ final class LibraryAppModel: ObservableObject {
     let deviceKind: String
     /// The newest device link and the announcement bookkeeping; owned by `LibraryAppModel+DeviceLink`.
     let deviceLinkState = LibraryDeviceLinkState()
+    /// The direct (local network) download path; owned by `LibraryAppModel+Direct`. Off until given an environment.
+    let directState = LibraryDirectState()
     let now: @Sendable () -> Date
     let mediaCache: any LibraryMediaCache
     let mediaTiming: LibraryMediaTiming
