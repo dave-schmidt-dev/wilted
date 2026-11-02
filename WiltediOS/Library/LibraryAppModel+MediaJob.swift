@@ -141,7 +141,9 @@ extension LibraryAppModel {
         let entryID = job.entryID
         guard isCurrent(entryID, runID) else { return .finished }
         setMedia(.requested(since: job.requestedSince, stage: job.stage.requestStage), entryID, runID)
-        guard let context = await mediaContext(live: true) else {
+        var verified = await mediaContext(live: true)
+        if verified == nil, await confirmSavedOwnerNow() { verified = await mediaContext(live: true) }
+        guard let context = verified else {
             let saved = await mediaStoreState()
             if accountQuarantined || saved.reviewHold {
                 dropMediaJobsForHeldAccount()
@@ -264,6 +266,20 @@ extension LibraryAppModel {
 
     /// A passing cause: wait the next backoff step, or until `notBefore` when iCloud said when it reopens,
     /// whichever is later, so a gate that answers with a time already past cannot make the job spin.
+    /// Runs this launch's account check now when the saved owner is not yet confirmed, instead of waiting
+    /// for the sync round to do it: a job restored at launch, or a tap right after launch, runs before the
+    /// first round. It is the same check the round makes (W-INV-021); true when it ran and succeeded.
+    private func confirmSavedOwnerNow() async -> Bool {
+        let saved = await mediaStoreState()
+        guard saved.ownerToken?.isEmpty == false, !saved.reviewHold, !accountQuarantined,
+              await transport.verifiedOwnerToken() == nil else { return false }
+        do { try await transport.verifyOwner() } catch {
+            jobLog.notice("The account check before a download failed: \(String(describing: error), privacy: .public)")
+            return false
+        }
+        return true
+    }
+
     private func transientWait(_ job: inout LibraryMediaJob, notBefore: Date? = nil) -> MediaJobStep {
         let steps = mediaTiming.waitDelays
         let step = steps.isEmpty ? 10 : steps[min(job.waits, steps.count - 1)].timeInterval

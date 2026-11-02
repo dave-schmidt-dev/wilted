@@ -64,9 +64,15 @@ final class DirectCloudCounter: @unchecked Sendable {
 struct DirectCountingTransport: LibraryTransport {
     let inner: InMemoryLibraryTransport
     let counter: DirectCloudCounter
+    /// What this launch's account check finds; nil leaves the owner unverified (offline).
+    var ownerCheck = DirectOwnerCheck()
 
     // Local bookkeeping: never leaves the phone.
-    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func verifiedOwnerToken() async -> String? {
+        if let confirmed = ownerCheck.confirmed { return confirmed }
+        return await inner.verifiedOwnerToken()
+    }
+    func verifyOwner() async throws { ownerCheck.run() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
 
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
@@ -158,4 +164,19 @@ final class DirectFakeScheduler: LibraryBackgroundTransferScheduling {
 
     /// The system starts the submitted task.
     func begin(_ task: DirectFakeTask) { start?(task) }
+}
+
+/// The account check a cold launch makes: counts its runs, and confirms `finds` when set.
+final class DirectOwnerCheck: @unchecked Sendable {
+    private let lock = NSLock()
+    private var found: String?
+    private var ran = 0
+    var finds: String? {
+        get { lock.withLock { found } }
+        set { lock.withLock { found = newValue } }
+    }
+    private var confirmedOwner: String?
+    var confirmed: String? { lock.withLock { confirmedOwner } }
+    var runs: Int { lock.withLock { ran } }
+    func run() { lock.withLock { ran += 1; confirmedOwner = found } }
 }

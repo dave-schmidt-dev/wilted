@@ -130,14 +130,14 @@ final class LibraryDirectMediaTests: XCTestCase {
     }
 
     /// A transport with no verified owner yet: the cold-launch state before the first iCloud answer.
-    private func makeUnverifiedModel(latch: DirectLatch) -> LibraryAppModel {
+    private func makeUnverifiedModel(latch: DirectLatch, ownerCheck: DirectOwnerCheck = DirectOwnerCheck()) -> LibraryAppModel {
         var timing = LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30))
         timing.jobStoreURL = jobStoreURL
         timing.retrySleep = { _ in try await latch.wait() }
         let inner = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: nil)
         let model = LibraryAppModel(
-            transport: DirectCountingTransport(inner: inner, counter: counter), store: store, deviceID: "phone",
-            mediaCache: cache, mediaTiming: timing, preferences: defaults(),
+            transport: DirectCountingTransport(inner: inner, counter: counter, ownerCheck: ownerCheck), store: store,
+            deviceID: "phone", mediaCache: cache, mediaTiming: timing, preferences: defaults(),
             outboxURL: scratch.appendingPathComponent("pending-intents.json"), timeZone: TimeZone(identifier: "UTC")!)
         let key = phoneKey, source = source
         model.directState.environment = LibraryDirectEnvironment(
@@ -310,7 +310,8 @@ final class LibraryDirectMediaTests: XCTestCase {
     func testRule1AColdLaunchWithAnUnverifiedOwnerSkipsTheDirectPathSaysWhyAndReadsTheOffersBackAfterRelaunch() async throws {
         try seedDirect()
         let latch = DirectLatch()
-        let cold = makeUnverifiedModel(latch: latch)
+        let ownerCheck = DirectOwnerCheck()
+        let cold = makeUnverifiedModel(latch: latch, ownerCheck: ownerCheck)
         cold.performMediaAction(.request, entryID: entryA)
         try await eventually("the owner wait") { self.notice(cold).hasPrefix("Confirming your iCloud account") }
         XCTAssertTrue(notice(cold).hasPrefix("Confirming your iCloud account, trying again at "), notice(cold))
@@ -319,6 +320,7 @@ final class LibraryDirectMediaTests: XCTestCase {
         XCTAssertEqual(locator.calls, 0)
         XCTAssertEqual(counter.serverCalls, 0, "and nothing goes to iCloud either")
         XCTAssertEqual(causes(cold), [.ownerUnverified])
+        XCTAssertGreaterThanOrEqual(ownerCheck.runs, 1, "the download ran the launch's account check itself")
 
         // The relaunch: the job and the offers come back from their files, and the verified owner goes direct.
         cold.mediaRuns[entryA]?.task?.cancel()
@@ -331,6 +333,24 @@ final class LibraryDirectMediaTests: XCTestCase {
         XCTAssertEqual(relaunched.mediaState(for: entryA), .onPhone)
         XCTAssertEqual(source.fetchCount, 1)
         XCTAssertEqual(counter.requestIDs, [], "a direct success asks iCloud for nothing")
+    }
+
+    /// A download started before the launch's first sync round (a job restored at launch, or a tap right
+    /// after it) confirms the account itself and goes straight on, instead of waiting out a retry.
+    func testADownloadBeforeTheFirstRoundConfirmsTheAccountAndStartsAtOnce() async throws {
+        try seedDirect()
+        source.set(delivering())
+        let ownerCheck = DirectOwnerCheck()
+        ownerCheck.finds = owner
+        let latch = DirectLatch()
+        let model = makeUnverifiedModel(latch: latch, ownerCheck: ownerCheck)
+        model.performMediaAction(.request, entryID: entryA)
+        await model.waitForMedia(entryID: entryA)
+        XCTAssertEqual(model.mediaState(for: entryA), .onPhone)
+        XCTAssertEqual(ownerCheck.runs, 1)
+        XCTAssertEqual(source.fetchCount, 1)
+        XCTAssertEqual(causes(model), [], "no owner wait was shown")
+        latch.release()
     }
 
     // MARK: fallback rule 2: no Mac, or no handshake
