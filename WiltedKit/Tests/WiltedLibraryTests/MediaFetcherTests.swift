@@ -705,3 +705,61 @@ private actor FetcherAwaitGate {
     }
     func release() { continuation?.resume(); continuation = nil }
 }
+
+/// Reports scripted cumulative byte counts, then delivers through the in-memory transport.
+private struct CumulativeProgressTransport: LibraryTransport {
+    let inner: InMemoryLibraryTransport
+    let reports: [Int64]
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { fatalError() }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { fatalError() }
+    func send(intent: LibraryIntent) async throws {}
+    func listIntents() async throws -> [LibraryIntent] { [] }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {}
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { LibraryDeviceRecords() }
+
+    func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
+        reports.forEach(progress)
+        return try await inner.fetchMedia(offer, progress: progress)
+    }
+}
+
+extension MediaFetcherTests {
+    /// A resumed delivery starts its progress at the bytes already on disk, never below them.
+    func testStartOffsetSeedsProgressAndLowerCountsAreNotProgress() async throws {
+        let (inner, source, cache) = try await fixture()
+        let ready = try offer(for: source)
+        try await inner.publishMedia(offer: ready, fileURL: source)
+        let log = StateLog()
+        let transport = CumulativeProgressTransport(inner: inner, reports: [500_000, 1_500_000])
+
+        let outcome = try await MediaFetcher(cache: cache).fetch(
+            ready, from: transport, admission: await cache.admission(for: ready),
+            onState: { log.append($0) }, startOffset: 1_000_000)
+
+        guard case .cached = outcome else { return XCTFail("\(outcome)") }
+        let counts = log.states.compactMap { state -> Int64? in
+            if case let .downloading(bytes, _) = state { return bytes }
+            return nil
+        }
+        XCTAssertEqual(counts.first, 1_000_000, "the resumed prefix is shown at once")
+        XCTAssertFalse(counts.contains(500_000), "a count below the prefix is not progress")
+        XCTAssertTrue(counts.contains(1_500_000))
+        XCTAssertEqual(counts, counts.sorted(), "progress never goes backwards")
+    }
+
+    func testNoStartOffsetLeavesProgressUnchanged() async throws {
+        let (inner, source, cache) = try await fixture()
+        let ready = try offer(for: source)
+        try await inner.publishMedia(offer: ready, fileURL: source)
+        let log = StateLog()
+
+        _ = try await MediaFetcher(cache: cache).fetch(
+            ready, from: CumulativeProgressTransport(inner: inner, reports: [10]),
+            admission: await cache.admission(for: ready), onState: { log.append($0) })
+
+        let first = log.states.first { if case .downloading = $0 { true } else { false } }
+        XCTAssertEqual(first, .downloading(bytes: 10, total: ready.byteCount))
+    }
+}

@@ -126,10 +126,12 @@ struct MediaFetchTimer: Sendable {
 /// A delivered file that fails verification is deleted, so a bad file is never cached.
 ///
 /// A transient transport failure (see `MediaFetchErrorClassifier.isTransient`) is retried
-/// automatically after each of `retryDelays`, so three quick attempts by default. Each retry
-/// downloads the whole file again; nothing resumes from a byte offset. When the quick attempts are
-/// used up the transient error is thrown, not reported as a failure: the caller owns the longer wait
-/// (the phone's durable media job), so a passing cause never ends a request.
+/// automatically after each of `retryDelays`, so three quick attempts by default. The fetcher itself
+/// never asks for a byte range: whether a retry starts over or continues is the transport's choice (the
+/// LAN client resumes a partial file). `startOffset` only tells progress and the stall watchdog where
+/// the first attempt begins. When the quick attempts are used up the transient error is thrown, not
+/// reported as a failure: the caller owns the longer wait (the phone's durable media job), so a passing
+/// cause never ends a request.
 public struct MediaFetcher: Sendable {
     /// Longest a transfer may go without receiving more bytes before it fails.
     public static let defaultWatchdog: Duration = .seconds(300)
@@ -184,7 +186,10 @@ public struct MediaFetcher: Sendable {
     }
 
     /// Fetches `offer` through `transport` and reports each state change to `onState`, and each
-    /// automatic retry to `onRetry` before its wait begins.
+    /// automatic retry to `onRetry` before its wait begins. `startOffset` is the number of bytes of the
+    /// file the first attempt already holds (a resumed partial file): progress counts them, so a row
+    /// shows the whole file's progress and the watchdog does not read the resumed prefix as a stall.
+    /// The transport reports cumulative bytes of the whole file, prefix included.
     /// Cancellation and a transient transport error (a closed gate, or quick retries used up) throw;
     /// every other end is an outcome.
     public func fetch(
@@ -192,7 +197,8 @@ public struct MediaFetcher: Sendable {
         from transport: any LibraryTransport,
         admission: MediaCacheAdmission,
         onState: @escaping StateHandler = { _ in },
-        onRetry: @escaping RetryHandler = { _ in }
+        onRetry: @escaping RetryHandler = { _ in },
+        startOffset: Int64 = 0
     ) async throws -> MediaFetchOutcome {
         guard offer.state == .ready, offer.isPrepared else {
             onState(.notReady)
@@ -212,7 +218,7 @@ public struct MediaFetcher: Sendable {
             return fail(.cacheFailed("Media admission changed"), onState)
         }
         let delivered: URL
-        switch try await deliverRetrying(offer, from: transport, admission: admission, onState: onState, onRetry: onRetry) {
+        switch try await deliverRetrying(offer, from: transport, admission: admission, startOffset: startOffset, onState: onState, onRetry: onRetry) {
         case let .file(url): delivered = url
         case let .ended(outcome): return outcome
         }
@@ -326,7 +332,7 @@ public struct MediaFetcher: Sendable {
     /// A stall, a terminal error or the last failed attempt ends the fetch.
     private func deliverRetrying(
         _ offer: LibraryMediaOffer, from transport: any LibraryTransport, admission: MediaCacheAdmission,
-        onState: @escaping StateHandler, onRetry: @escaping RetryHandler
+        startOffset: Int64 = 0, onState: @escaping StateHandler, onRetry: @escaping RetryHandler
     ) async throws -> Delivery {
         let attempts = retryDelays.count + 1
         var attempt = 1
@@ -334,7 +340,7 @@ public struct MediaFetcher: Sendable {
             onState(.awaiting)
             let error: Error
             do {
-                return .file(try await deliver(offer, from: transport, onState: onState))
+                return .file(try await deliver(offer, from: transport, startOffset: attempt == 1 ? startOffset : 0, onState: onState))
             } catch is StalledError {
                 fetchLog.error("Audio for \(offer.entryID.rawValue, privacy: .public) stalled: no bytes for \(watchdog, privacy: .public)")
                 return .ended(fail(.timedOut, onState))
@@ -370,12 +376,15 @@ public struct MediaFetcher: Sendable {
     }
 
     /// One attempt: the transport's download raced against the stall watchdog. Progress starts
-    /// from zero, because a new attempt downloads the whole file again.
-    private func deliver(_ offer: LibraryMediaOffer, from transport: any LibraryTransport,
+    /// from `startOffset` (zero unless the first attempt resumes a partial file); a transport that
+    /// downloads the whole file again reports from zero, and its low counts are not progress.
+    private func deliver(_ offer: LibraryMediaOffer, from transport: any LibraryTransport, startOffset: Int64 = 0,
                          onState: @escaping StateHandler) async throws -> URL {
         let timer = timer, watchdog = watchdog
-        let tracker = ProgressTracker(start: timer.now())
         let total = offer.byteCount
+        let begin = min(max(startOffset, 0), total)
+        let tracker = ProgressTracker(start: timer.now(), bytes: begin)
+        if begin > 0 { onState(.downloading(bytes: begin, total: total)) }
         return try await withThrowingTaskGroup(of: URL?.self) { group in
             group.addTask {
                 try await transport.fetchMedia(offer) { bytes in
@@ -412,10 +421,13 @@ public struct MediaFetcher: Sendable {
 /// Thread-safe record of the last time the received byte count grew.
 private final class ProgressTracker: @unchecked Sendable {
     private let lock = NSLock()
-    private var bytes: Int64 = 0
+    private var bytes: Int64
     private var last: Duration
 
-    init(start: Duration) { last = start }
+    init(start: Duration, bytes: Int64 = 0) {
+        last = start
+        self.bytes = bytes
+    }
 
     var lastProgress: Duration {
         lock.lock()

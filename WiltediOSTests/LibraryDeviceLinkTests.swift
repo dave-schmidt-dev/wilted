@@ -322,6 +322,72 @@ final class LibraryDeviceLinkTests: XCTestCase {
         XCTAssertEqual(rig.probe.announcements.count, 1, "the new account's first verified round announces at once")
     }
 
+    // MARK: LAN key re-announce
+
+    private let lanKey = Data(0..<64)
+
+    private func linkRig(knownFingerprint: String?, key: Data? = Data(0..<64)) async throws -> HandshakeRig {
+        let rig = try makeRig(deviceKind: "iPhone")
+        if let key { rig.model.deviceLinkState.lanPublicKeySource = { key } }
+        try await rig.mac.publishDeviceLink(LibraryDeviceLink(
+            deviceID: "phone", linkedAt: rig.clock.now, knownPhoneKeyFingerprint: knownFingerprint))
+        return rig
+    }
+
+    func testALinkedPhoneWhoseKeyTheMacDoesNotHoldAnnouncesOnceWithTheKey() async throws {
+        for known in [nil, "0000"] as [String?] {
+            let rig = try await linkRig(knownFingerprint: known)
+            await rig.model.refresh()
+            XCTAssertTrue(rig.model.deviceLinked, "\(String(describing: known)): linked")
+            XCTAssertEqual(rig.probe.announcements.count, 1, "\(String(describing: known)): the missing or stale fingerprint announces")
+            XCTAssertEqual(rig.probe.announcements.first?.lanPublicKey, lanKey)
+            let directory = try await rig.mac.fetchDeviceDirectory()
+            XCTAssertEqual(directory?.devices.first?.lanPublicKey, lanKey, "the Mac reads the key from the directory")
+
+            await rig.model.refresh()
+            XCTAssertEqual(rig.probe.announcements.count, 1, "paced: the Mac's link still holds the stale fingerprint")
+            rig.clock.advance(LibraryAppModel.announceInterval + 1)
+            await rig.model.refresh()
+            XCTAssertEqual(rig.probe.announcements.count, 2, "and it tries again once the interval has passed")
+        }
+    }
+
+    func testALinkedPhoneWhoseKeyTheMacHoldsDoesNotAnnounce() async throws {
+        let rig = try await linkRig(knownFingerprint: LANPairingKey.fingerprint(of: lanKey))
+        await rig.model.refresh()
+        rig.clock.advance(LibraryAppModel.announceInterval * 3)
+        await rig.model.refresh()
+        XCTAssertTrue(rig.model.deviceLinked)
+        XCTAssertEqual(rig.probe.announceAttempts, 0)
+    }
+
+    func testTheMacAnsweringWithTheFingerprintEndsTheReannouncing() async throws {
+        let rig = try await linkRig(knownFingerprint: nil)
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announcements.count, 1)
+        try await rig.mac.publishDeviceLink(LibraryDeviceLink(
+            deviceID: "phone", linkedAt: rig.clock.now, knownPhoneKeyFingerprint: LANPairingKey.fingerprint(of: lanKey)))
+        rig.clock.advance(LibraryAppModel.announceInterval + 1)
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announcements.count, 1, "the Mac holds the key now")
+    }
+
+    func testAPhoneWithoutALANKeyBehavesAsBefore() async throws {
+        let rig = try await linkRig(knownFingerprint: nil, key: nil)
+        await rig.model.refresh()
+        rig.clock.advance(LibraryAppModel.announceInterval * 3)
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announceAttempts, 0, "a linked phone with no key never announces")
+    }
+
+    func testTheKeyReannounceStillHonoursTheAccountHolds() async throws {
+        let rig = try makeRig(storeOwner: "saved-owner", verifiedOwner: "another-owner")
+        rig.model.deviceLinkState.lanPublicKeySource = { Data(0..<64) }
+        try await rig.mac.publishDeviceLink(LibraryDeviceLink(deviceID: "phone", linkedAt: rig.clock.now))
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announceAttempts, 0, "the signed-in account is not the saved library's (W-INV-021)")
+    }
+
     // MARK: a running tick
 
     func testTheRoundsOfARunningTickAnnounceOnceAndPickUpTheLink() async throws {

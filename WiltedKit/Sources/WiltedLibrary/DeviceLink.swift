@@ -13,11 +13,17 @@ public struct LibraryDeviceAnnouncement: Codable, Sendable, Equatable {
     /// "iPhone", "iPad" or "Watch".
     public let kind: String
     public let announcedAt: Date
+    /// This install's raw P-256 key-agreement public key for direct LAN transfers (base64 in JSON).
+    /// Optional, so an older build decodes the entry and ignores the key. Such a build that re-saves the
+    /// directory drops it, which is why the Mac keeps every device's last-seen key and a phone whose key is
+    /// missing announces again.
+    public let lanPublicKey: Data?
 
-    public init(deviceID: String, kind: String, announcedAt: Date) {
+    public init(deviceID: String, kind: String, announcedAt: Date, lanPublicKey: Data? = nil) {
         self.deviceID = deviceID
         self.kind = kind
         self.announcedAt = announcedAt
+        self.lanPublicKey = lanPublicKey
     }
 }
 
@@ -100,11 +106,22 @@ public struct LibraryDeviceLink: Codable, Sendable, Equatable {
     /// When the Mac first linked this device.
     public let linkedAt: Date
     public let requests: [LibraryMediaRequestStatus]
+    /// The Mac's raw P-256 key-agreement public key for direct LAN transfers, written per phone.
+    /// Optional and absent from older payloads.
+    public let lanPublicKey: Data?
+    /// The `LANPairingKey.fingerprint` of the phone key the Mac currently holds for this device. A phone
+    /// whose own key's fingerprint differs, or that finds this missing, announces again.
+    public let knownPhoneKeyFingerprint: String?
 
-    public init(deviceID: String, linkedAt: Date, requests: [LibraryMediaRequestStatus] = []) {
+    public init(
+        deviceID: String, linkedAt: Date, requests: [LibraryMediaRequestStatus] = [],
+        lanPublicKey: Data? = nil, knownPhoneKeyFingerprint: String? = nil
+    ) {
         self.deviceID = deviceID
         self.linkedAt = linkedAt
         self.requests = requests
+        self.lanPublicKey = lanPublicKey
+        self.knownPhoneKeyFingerprint = knownPhoneKeyFingerprint
     }
 
     /// The status of the request `intentID`, if the Mac has read it.
@@ -113,7 +130,8 @@ public struct LibraryDeviceLink: Codable, Sendable, Equatable {
     }
 
     /// This link with `status` replacing any status for the same intent, keeping the earlier
-    /// `linkedAt` of `server` and dropping requests past their lifetime as of `now`.
+    /// `linkedAt` of `server` and dropping requests past their lifetime as of `now`. The LAN fields are this
+    /// link's own: the Mac is the only writer, so a key it cleared must not come back from the server copy.
     public func updating(_ status: LibraryMediaRequestStatus?, server: LibraryDeviceLink?, now: Date) -> LibraryDeviceLink {
         var byIntent: [String: LibraryMediaRequestStatus] = [:]
         for request in (server?.requests ?? []) + requests + [status].compactMap({ $0 }) {
@@ -124,6 +142,7 @@ public struct LibraryDeviceLink: Codable, Sendable, Equatable {
             .sorted { ($0.updatedAt, $0.intentID) > ($1.updatedAt, $1.intentID) }
             .prefix(Self.maximumRequests)
         return LibraryDeviceLink(deviceID: deviceID, linkedAt: min(linkedAt, server?.linkedAt ?? linkedAt),
-                                 requests: kept.sorted { ($0.updatedAt, $0.intentID) < ($1.updatedAt, $1.intentID) })
+                                 requests: kept.sorted { ($0.updatedAt, $0.intentID) < ($1.updatedAt, $1.intentID) },
+                                 lanPublicKey: lanPublicKey, knownPhoneKeyFingerprint: knownPhoneKeyFingerprint)
     }
 }

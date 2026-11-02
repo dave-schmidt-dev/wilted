@@ -31,6 +31,9 @@ final class LibraryDeviceLinkState {
     var link: LibraryDeviceLink?
     /// When the phone last tried to announce itself, whether or not the try worked.
     var lastAnnounceAttempt: Date?
+    /// This install's raw LAN public key, if it has one; nil until the LAN key is wired in, so a phone
+    /// without one announces exactly as before. Read when announcing, so a rotated key is picked up.
+    var lanPublicKeySource: (@Sendable () -> Data?)?
 }
 
 /// The phone's side of the device handshake (`DeviceLink`): it announces itself until the Mac links it,
@@ -107,11 +110,15 @@ extension LibraryAppModel {
     /// device directory so the Mac reads its requests at its next round instead of after a zone scan. Never
     /// while the account is held, unbound or under review (W-INV-021), and at most once per interval; a failure
     /// waits for the next interval too. `linkRead` is true when this round read the link, which also proves the phone is online.
+    ///
+    /// A linked phone with a LAN key also announces, on the unlinked pacing, while the Mac's link does not
+    /// name that key's fingerprint (`lanKeyAnnounceDue`).
     func announceDeviceIfNeeded(linkRead: Bool) async {
         guard linkRead else { return }
+        let refreshing = deviceLinked && !lanKeyAnnounceDue
         let state = deviceLinkState, current = now()
-        let interval = deviceLinked ? LibraryDeviceAnnouncement.refreshInterval : Self.announceInterval
-        let last = state.lastAnnounceAttempt ?? (deviceLinked ? linkedAnnounceAnchor(now: current) : nil)
+        let interval = refreshing ? LibraryDeviceAnnouncement.refreshInterval : Self.announceInterval
+        let last = state.lastAnnounceAttempt ?? (refreshing ? linkedAnnounceAnchor(now: current) : nil)
         // A clock set back counts as an interval passed, so it can never silence the announcement.
         if let last, current >= last, current.timeIntervalSince(last) < interval { return }
         guard await mediaContext(live: true) != nil else { return }
@@ -119,12 +126,21 @@ extension LibraryAppModel {
         if deviceLinked { preferences.set(current.timeIntervalSinceReferenceDate, forKey: Self.linkedAnnounceKey) }
         let kind = deviceKind
         do {
-            try await transport.announceDevice(LibraryDeviceAnnouncement(deviceID: deviceID, kind: kind, announcedAt: current))
+            try await transport.announceDevice(LibraryDeviceAnnouncement(
+                deviceID: deviceID, kind: kind, announcedAt: current, lanPublicKey: deviceLinkState.lanPublicKeySource?()))
             linkLog.notice("Announced this \(kind, privacy: .public) to the Mac.")
         } catch {
             let detail = MediaFetchErrorClassifier.logDescription(error)
             linkLog.error("Could not announce this device: \(detail, privacy: .public)")
         }
+    }
+
+    /// True when this phone has a LAN key and the link it last read from the Mac does not name that key's
+    /// fingerprint: the Mac never got the key, or an older build's directory write dropped it. A missing
+    /// link counts as a mismatch.
+    private var lanKeyAnnounceDue: Bool {
+        guard let key = deviceLinkState.lanPublicKeySource?() else { return false }
+        return deviceLinkState.link?.knownPhoneKeyFingerprint != LANPairingKey.fingerprint(of: key)
     }
 
     // MARK: - Waiting for the Mac
