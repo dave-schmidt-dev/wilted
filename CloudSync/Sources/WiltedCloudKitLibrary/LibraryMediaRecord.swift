@@ -73,15 +73,37 @@ public enum LibraryMediaRecord {
     }
 }
 
-/// Device ids and entry ids seen in fetched records: the names a targeted fetch asks for.
+/// A playback position pair (device and entry) observed from playback records or seeded.
+struct LibraryPlaybackPair: Hashable, Sendable {
+    let deviceID: String
+    let entryID: ItemID
+}
+
+/// Device ids and observed playback pairs seen in fetched records or explicitly seeded.
 struct LibraryPeerDirectory {
     var devices: Set<String> = []
-    var entries: Set<ItemID> = []
+    var seedEntries: Set<ItemID> = []
+    var observedPairs: Set<LibraryPlaybackPair> = []
 
-    mutating func note(device: String? = nil, entry: ItemID? = nil) {
+    mutating func note(device: String? = nil) {
         if let device, !device.isEmpty { devices.insert(device) }
-        if let entry { entries.insert(entry) }
     }
+
+    mutating func note(device: String, entry: ItemID) {
+        note(device: device)
+        guard !device.isEmpty else { return }
+        observedPairs.insert(LibraryPlaybackPair(deviceID: device, entryID: entry))
+    }
+
+    mutating func seed(devices: [String] = [], entries: [ItemID] = []) {
+        for device in devices where !device.isEmpty {
+            self.devices.insert(device)
+        }
+        for entry in entries {
+            seedEntries.insert(entry)
+        }
+    }
+
 }
 
 /// Elapsed time since a transfer last reported progress.
@@ -97,11 +119,31 @@ private final class MediaProgressClock: @unchecked Sendable {
 // MARK: - Targeted reads (no engine, no zone scan)
 
 extension CloudKitLibraryTransport {
-    /// Teaches the transport device and entry ids to ask for by name. Fetched records add to the
-    /// same set, so this is only needed to seed a cold start.
+    /// Canonical progress and now-playing record IDs to fetch: now-playing records for all known
+    /// devices (when requested), plus progress records for observed pairs and Cartesian explicit seeds.
+    func playbackRecordIDs(devices: [String], nowPlaying: Bool) -> [CKRecord.ID] {
+        var ids: [CKRecord.ID] = []
+        if nowPlaying {
+            ids += devices.compactMap { try? mapper.recordID(nowPlayingFor: $0) }
+        }
+        var candidatePairs = peers.observedPairs
+        for device in devices {
+            for entry in peers.seedEntries {
+                candidatePairs.insert(LibraryPlaybackPair(deviceID: device, entryID: entry))
+            }
+        }
+        let sortedPairs = candidatePairs.sorted {
+            ($0.deviceID, $0.entryID.rawValue) < ($1.deviceID, $1.entryID.rawValue)
+        }
+        ids += sortedPairs.compactMap { try? mapper.recordID(progressFor: $0.deviceID, entryID: $0.entryID) }
+        return ids
+    }
+
+    /// Explicit cold-start seeds: every seed entry is queried for each known device, including
+    /// devices learned later. Passive offers never add seed entries. Account quarantine/reset
+    /// clears this account-scoped directory; callers must seed again for the new account.
     public func track(devices: [String] = [], entries: [ItemID] = []) {
-        devices.forEach { peers.note(device: $0) }
-        entries.forEach { peers.note(entry: $0) }
+        peers.seed(devices: devices, entries: entries)
     }
 
     /// One whole-zone scan that learns every device and entry id and every intent already
@@ -152,17 +194,12 @@ extension CloudKitLibraryTransport {
     public func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
         var observed: [String: (channel: PlaybackChannel, observed: ObservedPlayback)] = [:]
         var asked = Set<String>()
-        let devices = peers.devices.union([deviceID]).sorted()
-        func names(nowPlaying: Bool) -> [CKRecord.ID] {
-            let entries = peers.entries.sorted { $0.rawValue < $1.rawValue }
-            var ids: [CKRecord.ID] = []
-            for device in devices {
-                if nowPlaying, let id = try? mapper.recordID(nowPlayingFor: device) { ids.append(id) }
-                ids += entries.compactMap { try? mapper.recordID(progressFor: device, entryID: $0) }
-            }
-            return ids.filter { asked.insert($0.recordName).inserted }
+        func nextIDs(nowPlaying: Bool) -> [CKRecord.ID] {
+            let devices = peers.devices.union([deviceID]).sorted()
+            return playbackRecordIDs(devices: devices, nowPlaying: nowPlaying)
+                .filter { asked.insert($0.recordName).inserted }
         }
-        var ids = names(nowPlaying: true)
+        var ids = nextIDs(nowPlaying: true)
         // The second round covers entries first named by a now-playing record from this call.
         for _ in 0..<2 where !ids.isEmpty {
             for record in try await fetchPresent(ids) {
@@ -171,7 +208,7 @@ extension CloudKitLibraryTransport {
                 observed[record.recordID.recordName] = (channel, ObservedPlayback(
                     record: value, serverModifiedAt: record.modificationDate ?? .distantPast))
             }
-            ids = names(nowPlaying: false)
+            ids = nextIDs(nowPlaying: false)
         }
         func ordered(_ channel: PlaybackChannel) -> [ObservedPlayback] {
             observed.values.filter { $0.channel == channel }.map(\.observed)
@@ -183,7 +220,6 @@ extension CloudKitLibraryTransport {
     public func mediaOffers() async throws -> [LibraryMediaOffer] {
         let indexRecords = try await fetchPresent([mapper.offerIndexRecordID])
         guard case let .offerIndex(index)? = indexRecords.compactMap({ try? mapper.decode($0) }).first else { return [] }
-        index.entryIDs.forEach { peers.note(entry: $0) }
         let records = try await fetchPresent(index.entryIDs.compactMap { try? mapper.recordID(offerFor: $0) })
         return records.compactMap { record -> LibraryMediaOffer? in
             guard case let .offer(offer)? = try? mapper.decode(record) else { return nil }
@@ -234,7 +270,6 @@ extension CloudKitLibraryTransport {
             try self.mapper.record(offer: offer, existing: $0)
         }
         try await updateOfferIndex(adding: offer.entryID, removing: nil)
-        peers.note(entry: offer.entryID)
     }
 
     public func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {

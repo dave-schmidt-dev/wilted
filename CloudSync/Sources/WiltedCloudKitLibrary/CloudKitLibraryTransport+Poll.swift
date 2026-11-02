@@ -37,7 +37,7 @@ extension CloudKitLibraryTransport {
     /// now-playing record just introduced, the intent index of a device the directory just
     /// introduced). A third exists only on the round a new device's index first names intents, so
     /// its waiting request is read in that same round. An idle round is therefore one request.
-    /// Names that do not exist cost nothing extra, since they ride along.
+    /// Progress names are limited to observed pairs and explicit cold-start seeds.
     public func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
         let devices = peers.devices.union([deviceID]).sorted()
         var first: [CKRecord.ID] = []
@@ -54,7 +54,7 @@ extension CloudKitLibraryTransport {
         if options.contains(.deviceLink), let id = try? mapper.recordID(deviceLinkFor: deviceID) { first.append(id) }
         var asked = Set<String>()
         func unasked(_ ids: [CKRecord.ID]) -> [CKRecord.ID] { ids.filter { asked.insert($0.recordName).inserted } }
-        if options.contains(.deviceRecords) { first += playbackNames(devices: devices, nowPlaying: true) }
+        if options.contains(.deviceRecords) { first += playbackRecordIDs(devices: devices, nowPlaying: true) }
         first = unasked(first)
 
         var observed: [String: (channel: PlaybackChannel, observed: ObservedPlayback)] = [:]
@@ -83,7 +83,6 @@ extension CloudKitLibraryTransport {
                         wantedOutcomes.append((name, index.deviceID, id))
                     }
                 case let .offerIndex(index)?:
-                    index.entryIDs.forEach { peers.note(entry: $0) }
                     offerEntries = index.entryIDs
                 case let .playback(channel, value)?:
                     peers.note(device: value.deviceID, entry: value.entryID)
@@ -113,7 +112,11 @@ extension CloudKitLibraryTransport {
             .compactMap { try? mapper.recordID(intentID: $0.id, deviceID: $0.deviceID) }
         second += wantedOutcomes.filter { outcomeCache[$0.name] == nil }
             .compactMap { try? mapper.recordID(outcomeIntentID: $0.id, deviceID: $0.deviceID) }
-        if options.contains(.deviceRecords) { second += playbackNames(devices: devices, nowPlaying: false) }
+        if options.contains(.deviceRecords) {
+            let currentDevices = peers.devices.union([deviceID]).sorted()
+            second += playbackRecordIDs(devices: currentDevices, nowPlaying: false)
+            second += introduced.compactMap { try? mapper.recordID(nowPlayingFor: $0) }
+        }
         second = unasked(second)
         let offerIDs = (offerEntries ?? []).compactMap { try? mapper.recordID(offerFor: $0) }
         if !second.isEmpty || !offerIDs.isEmpty {
@@ -123,10 +126,14 @@ extension CloudKitLibraryTransport {
             absorb(found.filter { !offerNames.contains($0.recordID.recordName) })
             // The progress just fetched may name entries only a now-playing record introduced.
         }
-        // A device the directory just introduced: its index named intents nobody has read yet.
+        // A newly introduced device can name both intents and active progress in the second read.
         if !introduced.isEmpty {
-            let third = unasked(wantedIntents.filter { intentCache[$0.name] == nil }
-                .compactMap { try? mapper.recordID(intentID: $0.id, deviceID: $0.deviceID) })
+            var pending = wantedIntents.filter { intentCache[$0.name] == nil }
+                .compactMap { try? mapper.recordID(intentID: $0.id, deviceID: $0.deviceID) }
+            if options.contains(.deviceRecords) {
+                pending += playbackRecordIDs(devices: peers.devices.union([deviceID]).sorted(), nowPlaying: false)
+            }
+            let third = unasked(pending)
             if !third.isEmpty { absorb(try await fetchPresent(third)) }
         }
 
@@ -158,17 +165,5 @@ extension CloudKitLibraryTransport {
             result.records = LibraryDeviceRecords(nowPlaying: ordered(.nowPlaying), progress: ordered(.progress))
         }
         return result
-    }
-
-    /// Each known device's playback names: its now-playing record, and its progress record for every
-    /// known entry.
-    private func playbackNames(devices: [String], nowPlaying: Bool) -> [CKRecord.ID] {
-        let entries = peers.entries.sorted { $0.rawValue < $1.rawValue }
-        var ids: [CKRecord.ID] = []
-        for device in devices {
-            if nowPlaying, let id = try? mapper.recordID(nowPlayingFor: device) { ids.append(id) }
-            ids += entries.compactMap { try? mapper.recordID(progressFor: device, entryID: $0) }
-        }
-        return ids
     }
 }

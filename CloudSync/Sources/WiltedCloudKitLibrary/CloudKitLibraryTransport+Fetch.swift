@@ -89,12 +89,10 @@ extension CloudKitLibraryTransport {
                     fetchAcc.intents[name] = value
                     intentCache[name] = value
                     peers.note(device: value.deviceID)
-                case let .offer(offer):
+                case .offer:
                     serverRecords[name] = record
-                    peers.note(entry: offer.entryID)
-                case let .offerIndex(index):
+                case .offerIndex:
                     serverRecords[name] = record
-                    index.entryIDs.forEach { peers.note(entry: $0) }
                 case let .intentIndex(index):
                     serverRecords[name] = record
                     peers.note(device: index.deviceID)

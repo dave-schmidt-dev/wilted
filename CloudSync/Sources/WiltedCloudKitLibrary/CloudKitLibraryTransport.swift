@@ -173,6 +173,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         }
         let id = try mapper.recordID(playback: record, channel: channel).recordName
         try await write(name: id, conflictIsSuccess: false) { try self.mapper.record(playback: record, channel: channel, existing: $0) }
+        peers.note(device: record.deviceID, entry: record.entryID)
     }
 
     /// One write for all of a moment's playback records: now-playing and progress go up together.
@@ -188,6 +189,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                 try self.mapper.record(playback: entry.item.record, channel: entry.item.channel, existing: base)
             })
         })
+        for item in records {
+            peers.note(device: item.record.deviceID, entry: item.record.entryID)
+        }
     }
 
     public func commitFetchedState(_ token: LibraryChangeToken?) async throws {
@@ -212,6 +216,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         enginePosition = nil
         committedFetchToken = nil
         serverRecords = [:]
+        peers = LibraryPeerDirectory()
         await driver.resetZoneBootstrap()
         quarantined = false
     }
@@ -432,6 +437,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
             quarantined = true
             await driver.resetZoneBootstrap()
             serverRecords = [:]
+            peers = LibraryPeerDirectory()
             enginePosition = nil
             finish(.failure(CloudKitSyncError.accountChanged))
             accountContinuation.yield(.quarantineRequired(changeType))

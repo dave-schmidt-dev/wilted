@@ -46,6 +46,7 @@ actor FakeMediaServer {
     }
 
     func present(_ ids: [CKRecord.ID]) -> [CKRecord] { ids.compactMap { records[$0.recordName] } }
+    func allRecords() -> [CKRecord] { Array(records.values) }
     func bytes(_ name: String) -> Data? { assetBytes[name] }
     func mutate(_ name: String, _ change: (CKRecord) -> Void) { if let record = records[name] { change(record) } }
 }
@@ -62,6 +63,9 @@ actor FakeMediaDriver: CloudKitEngineDriver {
     /// The names each targeted fetch asked for, in order, and how many sends the engine made.
     private(set) var askedNames: [[String]] = []
     private(set) var sendCount = 0
+    var failSends = false
+
+    func setFailSends(_ value: Bool) { failSends = value }
 
     init(server: FakeMediaServer, outbox: CloudKitLibraryOutbox) {
         (stream, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream()
@@ -71,13 +75,23 @@ actor FakeMediaDriver: CloudKitEngineDriver {
 
     var events: AsyncStream<CloudKitEngineEvent> { get async { stream } }
     func fetchChanges() async throws { unscopedFetches += 1; continuation.yield(.fetchCompleted) }
-    func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws { scopes.append(zoneIDs); continuation.yield(.fetchCompleted) }
+    func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws {
+        scopes.append(zoneIDs)
+        let matching = await server.allRecords().filter { zoneIDs.contains($0.recordID.zoneID) }
+        if !matching.isEmpty {
+            continuation.yield(.fetched(modifications: matching, deletions: []))
+        }
+        continuation.yield(.fetchCompleted)
+    }
     func cancelOperations() async {}
     func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async { pending += changes }
     nonisolated func isValidStateData(_ data: Data) -> Bool { true }
 
     func sendChanges() async throws {
         sendCount += 1
+        if failSends {
+            throw CKError(.networkFailure)
+        }
         var saved: [CKRecord] = [], deleted: [CKRecord.ID] = []
         for change in pending {
             switch change {

@@ -76,6 +76,7 @@ All notable changes to this project are documented in this file.
 - Episodes now keep their own web page address from the feed's item link: it is read when a feed loads, stored in the library (store schema V15, migrated with the usual backup), and published in the library sync so the phone can offer it. Relative, non-web, credentialed or self-referential links are ignored.
 
 ### Changed
+- Cloud sync stops requesting playback positions for every device and offered episode combination. Active playback and known positions keep their normal cadence; a previously unseen inactive position may take up to 20 minutes to be discovered on a Mac with known peers.
 - Mac Settings > Ad feedback labels a press in the player's words, Ad, Not an ad or Either is fine, instead of Must cut and Must keep.
 - Ad recovery shares one programme-evidence contract across boundary review, tail and credits trimming, late-start recovery, and the final conflict check, preserving the existing cut and original-audio fallback rules.
 - Episodes are transcribed with parakeet-tdt-0.6b-v3 instead of parakeet-tdt-1.1b, for both ad detection and the displayed transcript. Transcripts now have punctuation and capitals, and ad cuts land closer to the sponsor's words: over five test episodes, programme cut by mistake fell from about 7.5 minutes to about 2. New preparations record engine v13; episodes already prepared keep their cuts.
