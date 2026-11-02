@@ -122,4 +122,35 @@ final class LibraryDeviceLinkTests: XCTestCase {
         let newer = Data(#""queued-on-a-future-mac""#.utf8)
         XCTAssertEqual(try JSONDecoder().decode(LibraryMediaRequestStatus.Stage.self, from: newer), .received)
     }
+
+    func testStaleDirectoryEntryIsPrunedAndReturnsOnReannounce() async throws {
+        let fixture = try MediaFixture()
+        let mac = try fixture.endpoint("mac", writer: true)
+        let phone = try fixture.endpoint("phone", writer: false)
+
+        let start = at
+        await mac.transport.setClock { start }
+        await phone.transport.setClock { start }
+
+        // Phone announces at `at`
+        try await phone.transport.announceDevice(announcement("phone", "iPhone"))
+        _ = try await mac.transport.poll(macRound)
+        var asked = await mac.driver.askedNames.last ?? []
+        let phoneIntentIndex = try mapper.recordID(intentIndexFor: "phone").recordName
+        XCTAssertTrue(asked.contains(phoneIntentIndex), "announced device is polled")
+
+        // Advance 31 days (> 30-day lifetime)
+        let advanced = at.addingTimeInterval(31 * 24 * 60 * 60)
+        await mac.transport.setClock { advanced }
+        _ = try await mac.transport.poll(macRound)
+        asked = await mac.driver.askedNames.last ?? []
+        XCTAssertFalse(asked.contains(phoneIntentIndex), "31-day-old entry is pruned from polled names")
+
+        // Phone re-announces at 31 days
+        await phone.transport.setClock { advanced }
+        try await phone.transport.announceDevice(LibraryDeviceAnnouncement(deviceID: "phone", kind: "iPhone", announcedAt: advanced))
+        _ = try await mac.transport.poll(macRound)
+        asked = await mac.driver.askedNames.last ?? []
+        XCTAssertTrue(asked.contains(phoneIntentIndex), "re-announced entry is restored to polled names")
+    }
 }

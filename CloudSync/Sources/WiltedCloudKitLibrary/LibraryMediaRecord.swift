@@ -8,7 +8,22 @@ import WiltedLibrary
 /// what lets a phone find offers by name without scanning the zone.
 public struct LibraryOfferIndex: Codable, Sendable, Equatable {
     public let entryIDs: [ItemID]
-    public init(entryIDs: [ItemID]) { self.entryIDs = entryIDs }
+    public let generation: UInt64
+
+    public init(entryIDs: [ItemID], generation: UInt64 = 0) {
+        self.entryIDs = entryIDs
+        self.generation = generation
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case entryIDs, generation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entryIDs = try container.decode([ItemID].self, forKey: .entryIDs)
+        generation = try container.decodeIfPresent(UInt64.self, forKey: .generation) ?? 0
+    }
 }
 
 /// The ids of the intents one device has sent. Only that device writes it.
@@ -84,15 +99,33 @@ struct LibraryPeerDirectory {
     var devices: Set<String> = []
     var seedEntries: Set<ItemID> = []
     var observedPairs: Set<LibraryPlaybackPair> = []
+    var announcements: [String: Date] = [:]
 
-    mutating func note(device: String? = nil) {
-        if let device, !device.isEmpty { devices.insert(device) }
+    mutating func note(device: String? = nil, announcedAt: Date? = nil) {
+        if let device, !device.isEmpty {
+            devices.insert(device)
+            if let announcedAt { announcements[device] = announcedAt }
+        }
     }
 
-    mutating func note(device: String, entry: ItemID) {
-        note(device: device)
+    mutating func note(device: String, entry: ItemID, announcedAt: Date? = nil) {
+        note(device: device, announcedAt: announcedAt)
         guard !device.isEmpty else { return }
         observedPairs.insert(LibraryPlaybackPair(deviceID: device, entryID: entry))
+    }
+
+    mutating func remove(device: String) {
+        devices.remove(device)
+        announcements.removeValue(forKey: device)
+        observedPairs = observedPairs.filter { $0.deviceID != device }
+    }
+
+    mutating func pruneStale(now: Date, lifetime: TimeInterval = LibraryDeviceDirectory.announcementLifetime) {
+        for (device, announcedAt) in announcements {
+            if now.timeIntervalSince(announcedAt) > lifetime {
+                remove(device: device)
+            }
+        }
     }
 
     mutating func seed(devices: [String] = [], entries: [ItemID] = []) {
@@ -147,11 +180,43 @@ extension CloudKitLibraryTransport {
     }
 
     /// One whole-zone scan that learns every device and entry id and every intent already
-    /// present. Call it once at startup or on demand; polling never does.
+    /// present. Runs only when no device directory record exists or three consecutive directory reads failed.
     @discardableResult
     public func discoverPeers() async throws -> Int {
-        _ = try await scan()
-        return peers.devices.count
+        if consecutiveDirectoryFailures >= 3 {
+            _ = try await scan()
+            consecutiveDirectoryFailures = 0
+            return peers.devices.count
+        }
+        do {
+            let directoryRecords = try await fetchPresent([mapper.deviceDirectoryRecordID])
+            if let record = directoryRecords.first, case let .deviceDirectory(directory)? = try? mapper.decode(record) {
+                consecutiveDirectoryFailures = 0
+                directoryRecordPresent = true
+                let now = clock()
+                for device in directory.devices {
+                    if now.timeIntervalSince(device.announcedAt) <= LibraryDeviceDirectory.announcementLifetime {
+                        peers.note(device: device.deviceID, announcedAt: device.announcedAt)
+                    } else {
+                        peers.remove(device: device.deviceID)
+                    }
+                }
+                return peers.devices.count
+            } else {
+                directoryRecordPresent = false
+                consecutiveDirectoryFailures = 0
+                _ = try await scan()
+                return peers.devices.count
+            }
+        } catch {
+            consecutiveDirectoryFailures += 1
+            if consecutiveDirectoryFailures >= 3 {
+                _ = try await scan()
+                consecutiveDirectoryFailures = 0
+                return peers.devices.count
+            }
+            throw failure(error)
+        }
     }
 
     /// The named records that exist, fetched outside the transport's serial gate.
@@ -379,10 +444,20 @@ extension CloudKitLibraryTransport {
     private func updateOfferIndex(adding: ItemID?, removing: ItemID?) async throws {
         try await write(name: mapper.offerIndexRecordID.recordName, conflictIsSuccess: false) { base in
             var entries: Set<ItemID> = []
-            if let base, case let .offerIndex(server)? = try? self.mapper.decode(base) { entries = Set(server.entryIDs) }
+            var generation: UInt64 = 0
+            if let base, case let .offerIndex(server)? = try? self.mapper.decode(base) {
+                entries = Set(server.entryIDs)
+                generation = server.generation
+            }
             if let adding { entries.insert(adding) }
             if let removing { entries.remove(removing) }
-            return try self.mapper.record(offerIndex: LibraryOfferIndex(entryIDs: entries.sorted { $0.rawValue < $1.rawValue }), existing: base)
+            return try self.mapper.record(
+                offerIndex: LibraryOfferIndex(
+                    entryIDs: entries.sorted { $0.rawValue < $1.rawValue },
+                    generation: generation &+ 1
+                ),
+                existing: base
+            )
         }
     }
 }

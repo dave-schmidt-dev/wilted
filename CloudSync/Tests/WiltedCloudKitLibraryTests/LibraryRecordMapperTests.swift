@@ -213,6 +213,8 @@ actor ScriptedDriver: CloudKitEngineDriver {
     var events: AsyncStream<CloudKitEngineEvent> { get async { stream } }
     func currentAccountIdentity() async throws -> CloudKitAccountIdentity? { try await identity() }
     func ensureZone() async throws { try await zone() }
+    /// A scripted zone holds no named records, so a named read (the device directory) finds nothing.
+    func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] { [] }
     func fetchChanges() async throws {
         fetched = true
         fetchWaiters.forEach { $0.resume() }

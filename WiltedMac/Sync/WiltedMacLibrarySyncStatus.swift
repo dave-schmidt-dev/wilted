@@ -1,5 +1,6 @@
 import Foundation
 import ObjectiveC
+import WiltedCloudKitLibrary
 import WiltedLibrary
 
 #if canImport(WiltedProducer)
@@ -260,6 +261,7 @@ enum WiltedMacLibrarySyncFixtureScenario: String, CaseIterable, Sendable {
 }
 
 private nonisolated(unsafe) var librarySyncFixtureKey: UInt8 = 0
+private nonisolated(unsafe) var libraryOperationCountersKey: UInt8 = 0
 
 private final class WiltedMacLibrarySyncFixtureBox {
     let scenario: WiltedMacLibrarySyncFixtureScenario
@@ -289,6 +291,17 @@ extension WiltedMacModel {
 
     var librarySyncStatus: WiltedMacLibrarySyncStatus {
         .resolve(account: libraryAccountStatus, throttle: libraryThrottle, activity: librarySyncActivity)
+    }
+
+    /// Operation counters for CloudKit diagnostics.
+    var libraryOperationCounters: CloudKitOperationCounters? {
+        get { objc_getAssociatedObject(self, &libraryOperationCountersKey) as? CloudKitOperationCounters }
+        set { objc_setAssociatedObject(self, &libraryOperationCountersKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+
+    /// The Settings diagnostics line (`CloudKitOperationSummary.statusLine`), nil without counters.
+    var librarySyncDiagnostics: String? {
+        libraryOperationCounters?.summary().statusLine()
     }
 
     /// The one Sync now action: a press while a sync runs joins it instead of starting another.

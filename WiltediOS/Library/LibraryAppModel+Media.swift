@@ -9,6 +9,19 @@ private let mediaLog = Logger(subsystem: "com.zerodelta.wilted", category: "Libr
 struct LibraryMediaRetry: Equatable, Sendable {
     var attempt: Int
     var attempts: Int
+    var notice: String?
+
+    init(attempt: Int, attempts: Int, notice: String? = nil) {
+        self.attempt = attempt
+        self.attempts = attempts
+        self.notice = notice
+    }
+
+    init(notice: String) {
+        self.attempt = 1
+        self.attempts = 1
+        self.notice = notice
+    }
 }
 
 /// How far the Mac has got with a request the phone sent, as the row says it.
@@ -71,7 +84,8 @@ enum LibraryMediaState: Equatable, Sendable {
     func statusText(elapsed: TimeInterval = 0) -> String {
         switch self {
         case .available: "Not downloaded"
-        case let .requested(_, retry?, _): "Retrying (\(retry.attempt) of \(retry.attempts))"
+        case let .requested(_, retry?, _):
+            retry.notice.flatMap { $0.isEmpty ? nil : $0 } ?? "Retrying (\(retry.attempt) of \(retry.attempts))"
         case let .requested(_, _, stage): "\(stage.text) · \(LibraryClockFormat.duration(elapsed))"
         case let .downloading(bytes, total, _):
             "Downloading \(Self.size(bytes)) of \(Self.size(total)) · \(LibraryClockFormat.duration(elapsed))\(Self.rateSuffix(bytes: bytes, total: total, elapsed: elapsed))"
@@ -109,11 +123,12 @@ enum LibraryMediaAction: Equatable, Sendable {
 ///
 /// The Mac reports each request's stage (`LibraryDeviceLink`), and the limit depends on the stage it
 /// last reported: a request can wait a long time in line behind other uploads, so only silence is
-/// short. Every limit restarts when the stage changes.
+/// short. Every limit restarts when the stage changes. A limit never fails the request: it starts a
+/// visible wait for the Mac ("Waiting for the Mac, checking again at ...") that Cancel can end.
 struct LibraryMediaTiming: Sendable {
     /// How often to look for the Mac's offer after sending the request.
     var pollInterval: Duration = .seconds(SyncCadence.tickInterval)
-    /// How long the Mac may say nothing about a request before it is failed. The Mac reads requests
+    /// How long the Mac may say nothing about a request before the job waits for it. The Mac reads requests
     /// at its next 30 s round, but while iCloud refuses it the Mac holds its rounds for up to
     /// `SyncCadence.backoffCap`, so a running Mac is given that hold plus two rounds.
     var offerTimeout: Duration = .seconds(SyncCadence.backoffCap + 2 * SyncCadence.tickInterval)
@@ -127,12 +142,17 @@ struct LibraryMediaTiming: Sendable {
     var watchdog: Duration = MediaFetcher.defaultWatchdog
     /// The waits before each automatic retry of a download that failed for a passing reason.
     var retryDelays: [Duration] = MediaFetcher.defaultRetryDelays
-    /// The waits before each new try at sending the request itself when iCloud refuses it for a passing
-    /// reason (busy, rate-limited, offline, or the shared retry wait), so a tap during an iCloud hold is
-    /// sent once the hold lifts instead of failing at once.
-    var sendRetryDelays: [Duration] = [.seconds(10), .seconds(30), .seconds(60)]
+    /// The waits between tries of a media job that a passing cause (iCloud busy, rate-limited or
+    /// offline) keeps pending, one step per cause in a row; the last step repeats until the person
+    /// cancels or a terminal cause ends the job.
+    var waitDelays: [Duration] = [.seconds(10), .seconds(30), .seconds(60), .seconds(120), .seconds(SyncCadence.backoffCap)]
+    /// How long a job waits before it looks for the Mac again once the Mac has said nothing for
+    /// `offerTimeout` (asleep, offline, or Wilted not running there).
+    var macRecheckDelay: Duration = .seconds(SyncCadence.backoffCap)
     /// How a retry waits. Tests replace it so a retry costs no real time.
     var retrySleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// Where media jobs persist; nil puts the file beside the intent outbox.
+    var jobStoreURL: URL? = nil
 }
 
 /// Identifies one request so a cancelled or replaced run can never write state for its successor.
@@ -160,26 +180,6 @@ extension LibraryAppModel {
         }
     }
 
-    /// Asks the Mac for the episode's audio, then downloads, verifies and caches it. Does nothing
-    /// while a request is already running or the audio is already on the phone.
-    func startMediaRequest(entryID: ItemID) {
-        guard mediaRuns[entryID] == nil, mediaState(for: entryID) != .onPhone else { return }
-        var run = LibraryMediaRun()
-        let runID = run.id
-        media[entryID] = .requested(since: now())
-        run.task = Task { [weak self] in
-            await self?.runMediaRequest(entryID, runID: runID)
-        }
-        mediaRuns[entryID] = run
-    }
-
-    /// Stops a running request and returns the row to "Get audio".
-    func cancelMediaRequest(entryID: ItemID) {
-        guard let run = mediaRuns.removeValue(forKey: entryID) else { return }
-        run.task?.cancel()
-        media[entryID] = nil
-    }
-
     /// Deletes the cached audio. The Mac's copy is untouched. The row clears before the delete starts
     /// (W-INV-040), and the delete holds the entry's one media run, so no request or cache refresh touches
     /// the entry until it ends. A delete that fails puts the existing error on the row; a later cache
@@ -191,6 +191,7 @@ extension LibraryAppModel {
         defer { if isCurrent(entryID, run.id) { mediaRuns[entryID] = nil } }
         cancelTranscript(entryID: entryID)
         media[entryID] = nil
+        mediaJobStore.removeJob(entryID: entryID, ownerToken: outboxState.ownerToken)
         do {
             try await mediaCache.remove(entryID: entryID)
             if isCurrent(entryID, run.id) { unacknowledgedMedia[entryID] = nil }
@@ -211,6 +212,7 @@ extension LibraryAppModel {
     func refreshMediaFromCache(acknowledging: Bool = true) async {
         guard let context = await bindMediaOwner() else {
             guard !Task.isCancelled else { return }
+            if accountQuarantined { dropMediaJobsForHeldAccount() }
             media = media.filter { $0.value != .onPhone }
             handoffState.player?.invalidateLoadedItem()
             return
@@ -246,10 +248,14 @@ extension LibraryAppModel {
             }
         }
         if acknowledging { await sendPendingMediaAcknowledgements() }
+        // The launch's local read brings back the jobs a relaunch interrupted, once; a later read finds
+        // the run that is already there.
+        if !localStateLoaded { restoreMediaJobs(context: context) }
     }
 
     /// The account changed: audio belongs to the previous account's library.
     func discardMediaAfterAccountChange() async {
+        mediaJobStore.removeAll(ownerToken: nil)
         try? await mediaCache.bindOwner(ownerToken: nil, libraryScope: Self.mediaLibraryScope, held: true)
         handoffState.player?.invalidateLoadedItem()
         for run in mediaRuns.values { run.task?.cancel() }
@@ -267,68 +273,6 @@ extension LibraryAppModel {
     }
 
     // MARK: - Request flow
-
-    private func runMediaRequest(_ entryID: ItemID, runID: UUID) async {
-        defer { if isCurrent(entryID, runID) { mediaRuns[entryID] = nil } }
-        do {
-            await loadLocalState()
-            guard isCurrent(entryID, runID), let context = await mediaContext(live: true),
-                  await mediaContextIsCurrent(context, entryID: entryID, live: true) else {
-                setMedia(.failed("The saved library account is not verified for downloading."), entryID, runID)
-                return
-            }
-            let intent = try LibraryIntent.requestMedia(entryID: entryID, deviceID: deviceID, createdAt: now())
-            try await sendRequest(intent, entryID: entryID, runID: runID)
-            let offer: LibraryMediaOffer
-            switch try await awaitAnswer(for: entryID, intentID: intent.id, runID: runID, context: context) {
-            case let .offer(found): offer = found
-            case .macNotAnswering:
-                let entry = entryID.rawValue
-                mediaLog.notice("No answer from the Mac for \(entry, privacy: .public)")
-                setMedia(.failed(Self.text(for: MediaFetchFailure.macNotAnswering)), entryID, runID)
-                return
-            case let .failed(reason):
-                let entry = entryID.rawValue
-                mediaLog.notice("The Mac could not send \(entry, privacy: .public)")
-                setMedia(.failed(reason), entryID, runID)
-                return
-            }
-            guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return }
-            guard offer.state == .ready, offer.isPrepared else {
-                setNotPrepared(entryID, runID)
-                return
-            }
-            guard let admission = await mediaCache.admission(entryID: entryID, ownerToken: context.ownerToken,
-                libraryScope: Self.mediaLibraryScope, transportGeneration: context.generation),
-                isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return }
-            let outcome = try await download(offer, runID: runID, admission: admission)
-            guard await mediaCache.permits(admission, for: offer),
-                  await mediaContextIsCurrent(context, entryID: entryID, live: true), isCurrent(entryID, runID) else {
-                setMedia(.failed("The saved library account changed during downloading."), entryID, runID)
-                return
-            }
-            try Task.checkCancellation()
-            switch outcome {
-            case .cached:
-                setMedia(.onPhone, entryID, runID)
-                phoneStats.recordDownload(bytes: offer.byteCount)
-                if let revisionID = offer.revisionID, let intent = try? LibraryIntent.mediaCached(
-                    entryID: entryID, revisionID: revisionID, deviceID: deviceID, createdAt: now()) {
-                    unacknowledgedMedia[entryID] = intent
-                    await sendPendingMediaAcknowledgements()
-                }
-                startTranscriptLoad(entryID: entryID, fetchOnMiss: true)
-            case .notReady: setNotPrepared(entryID, runID)
-            case let .failed(reason): setMedia(.failed(Self.text(for: reason)), entryID, runID)
-            }
-        } catch is CancellationError {
-            return
-        } catch {
-            let entry = entryID.rawValue, detail = MediaFetchErrorClassifier.logDescription(error)
-            mediaLog.error("Media request for \(entry, privacy: .public) failed: \(detail, privacy: .public)")
-            setMedia(.failed(Self.mediaText(for: error)), entryID, runID)
-        }
-    }
 
     /// One read of the offers: the Mac's answer for `entryID`, or nil when there is none yet or the read
     /// failed, so the caller keeps waiting.
@@ -349,7 +293,7 @@ extension LibraryAppModel {
     }
 
     /// Runs the fetcher and mirrors its states and automatic retries into `media` in the order they happened.
-    private func download(_ offer: LibraryMediaOffer, runID: UUID, admission: MediaCacheAdmission) async throws -> MediaFetchOutcome {
+    func download(_ offer: LibraryMediaOffer, runID: UUID, admission: MediaCacheAdmission) async throws -> MediaFetchOutcome {
         let (events, continuation) = AsyncStream<MediaFetchEvent>.makeStream()
         let entryID = offer.entryID
         let mirror = Task { @MainActor [weak self] in
@@ -388,35 +332,6 @@ extension LibraryAppModel {
         }
     }
 
-    /// Sends the request, trying again after each of `sendRetryDelays` while iCloud refuses it for a passing
-    /// reason. Every try sends the same intent id, so a Mac that read an earlier try sees one request. A wait
-    /// is at least iCloud's own retry time (capped at two minutes), and the row shows the try it is on.
-    private func sendRequest(_ intent: LibraryIntent, entryID: ItemID, runID: UUID) async throws {
-        let delays = mediaTiming.sendRetryDelays
-        var attempt = 1
-        while true {
-            do {
-                try await transport.send(intent: intent)
-                return
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                guard attempt <= delays.count, MediaFetchErrorClassifier.isTransient(error) else { throw error }
-                var delay = delays[attempt - 1]
-                if let throttled = error as? TransportThrottled {
-                    delay = max(delay, .seconds(min(max(throttled.retryAt.timeIntervalSince(now()), 0), 120)))
-                }
-                attempt += 1
-                let entry = entryID.rawValue, detail = MediaFetchErrorClassifier.logDescription(error)
-                mediaLog.notice("Request for \(entry, privacy: .public) not sent; try \(attempt, privacy: .public) in \(delay, privacy: .public): \(detail, privacy: .public)")
-                setMedia(.requested(since: now(), retry: LibraryMediaRetry(attempt: attempt, attempts: delays.count + 1)), entryID, runID)
-                try await mediaTiming.retrySleep(delay)
-                try Task.checkCancellation()
-                guard isCurrent(entryID, runID) else { throw CancellationError() }
-            }
-        }
-    }
-
     /// The download failed for a passing reason and the fetcher waits before trying again.
     private func applyRetry(_ retry: MediaFetchRetry, entryID: ItemID, runID: UUID) {
         setMedia(.requested(since: now(), retry: LibraryMediaRetry(attempt: retry.attempt, attempts: retry.attempts)), entryID, runID)
@@ -424,7 +339,7 @@ extension LibraryAppModel {
 
     /// Sends each saved acknowledgement with its own intent id, so a retry, or a replay after a relaunch,
     /// is the same request to the Mac. An entry that is not current now is skipped and kept.
-    private func sendPendingMediaAcknowledgements() async {
+    func sendPendingMediaAcknowledgements() async {
         guard let context = await mediaContext(live: true) else { return }
         for (entryID, intent) in unacknowledgedMedia {
             guard await mediaContextIsCurrent(context, entryID: entryID, live: true) else {
@@ -443,7 +358,7 @@ extension LibraryAppModel {
     /// The Mac answered that it has no ready audio. The Larder lists only what the Mac reports ready, so
     /// the row leaves at once instead of waiting for the next refresh to withdraw it, and returns when
     /// a later refresh sees the Mac offer it again.
-    private func setNotPrepared(_ entryID: ItemID, _ runID: UUID) {
+    func setNotPrepared(_ entryID: ItemID, _ runID: UUID) {
         guard isCurrent(entryID, runID) else { return }
         media[entryID] = .notPrepared
         if handoffState.player?.item?.entryID == entryID { handoffState.player?.invalidateLoadedItem() }

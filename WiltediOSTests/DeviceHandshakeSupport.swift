@@ -219,7 +219,7 @@ final class HandshakeRig {
 
     /// The Mac links the phone, as it does when it learns of it.
     func macLinksPhone(requests: [LibraryMediaRequestStatus] = []) async throws {
-        try await mac.publishDeviceLink(LibraryDeviceLink(deviceID: "phone", linkedAt: Date(), requests: requests))
+        try await mac.publishDeviceLink(LibraryDeviceLink(deviceID: "phone", linkedAt: clock.now, requests: requests))
     }
 
     /// The Mac reports the stage of one request.

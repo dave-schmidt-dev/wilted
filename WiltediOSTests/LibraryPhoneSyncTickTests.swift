@@ -190,12 +190,14 @@ final class LibraryPhoneSyncTickTests: XCTestCase {
         XCTAssertLessThanOrEqual(Double(spent) / 10, 2.35, "idle requests per minute: \(spent) in 10 minutes")
     }
 
-    func testABackgroundedPhoneThatIsNotPlayingMakesNoRequests() async throws {
+    func testABackgroundedPhoneThatIsNotPlayingRoundsOnlyEveryFiveMinutes() async throws {
         let rig = try await makeRig()
         await rig.model.sceneEnteredBackground()
         let before = rig.calls.total
-        await rig.time.advance(by: 600)
-        XCTAssertEqual(rig.calls.total, before, "the tick stops with the app out of front")
+        await rig.time.advance(by: SyncCadence.phoneIdleInterval - 1)
+        XCTAssertEqual(rig.calls.total, before, "no round inside the idle interval")
+        await rig.time.advance(by: 1)
+        XCTAssertGreaterThan(rig.calls.total, before, "one round once the idle interval passes")
     }
 
     func testAlreadyCancelledSleepNeverRegistersALiveTimer() async {

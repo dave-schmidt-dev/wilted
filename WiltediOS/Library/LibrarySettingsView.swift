@@ -152,6 +152,15 @@ struct LibrarySettingsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier(LibrarySettingsFormat.syncDetailIdentifier)
             }
+            // The counters are not observed, so the line re-reads them on a 30 s timeline.
+            TimelineView(.periodic(from: .now, by: 30)) { _ in
+                if let diagnostics = model.syncDiagnostics {
+                    Text(diagnostics)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier(LibrarySettingsFormat.syncDiagnosticsIdentifier)
+                }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-sync")

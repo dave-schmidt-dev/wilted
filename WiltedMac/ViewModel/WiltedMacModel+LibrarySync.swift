@@ -336,6 +336,7 @@ extension WiltedMacModel {
         })
         let rawTransport = transport
             ?? WiltedMacLibraryTransports.production(deviceID: deviceID, hostsTests: librarySyncBuildFacts.hostsTests)
+        libraryOperationCounters = (rawTransport as? CloudKitLibraryTransport)?.counters
         let accountSource = accountSource
             ?? WiltedMacLibraryAccountSource.transport(rawTransport, probe: WiltedMacLibraryTransports.accountProbe())
         guard selection.admits(managedTransport: accountSource != nil) else {
@@ -448,6 +449,7 @@ extension WiltedMacModel {
             }
         }
         objc_setAssociatedObject(self, &librarySyncControllerKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        libraryOperationCounters = nil
         // A UI fixture's scripted state is not a running publisher's, so stopping keeps it.
         guard librarySyncFixture == nil else { return }
         libraryThrottle = nil

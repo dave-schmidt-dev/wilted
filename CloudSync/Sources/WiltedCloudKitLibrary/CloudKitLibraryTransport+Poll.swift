@@ -39,6 +39,8 @@ extension CloudKitLibraryTransport {
     /// its waiting request is read in that same round. An idle round is therefore one request.
     /// Progress names are limited to observed pairs and explicit cold-start seeds.
     public func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
+        try await CloudKitOperationContext.$caller.withValue(.poll) {
+        peers.pruneStale(now: clock())
         let devices = peers.devices.union([deviceID]).sorted()
         var first: [CKRecord.ID] = []
         let asksOwnIntentIndex = options.contains(.intents) && !ownIntentIndexMissing
@@ -61,6 +63,8 @@ extension CloudKitLibraryTransport {
         var wantedIntents: [(name: String, deviceID: String, id: String)] = []
         var wantedOutcomes: [(name: String, deviceID: String, id: String)] = []
         var offerEntries: [ItemID]?
+        var observedNewOfferGeneration: UInt64?
+        let seenOfferGeneration = options.contains(.forceOffers) ? nil : lastObservedOfferGeneration
         var sawOwnIntentIndex = false
         var directory: LibraryDeviceDirectory?
         var link: LibraryDeviceLink?
@@ -83,7 +87,11 @@ extension CloudKitLibraryTransport {
                         wantedOutcomes.append((name, index.deviceID, id))
                     }
                 case let .offerIndex(index)?:
-                    offerEntries = index.entryIDs
+                    // The offer records are fetched only when the index generation moved since the last read.
+                    if seenOfferGeneration != index.generation {
+                        offerEntries = index.entryIDs
+                        observedNewOfferGeneration = index.generation
+                    }
                 case let .playback(channel, value)?:
                     peers.note(device: value.deviceID, entry: value.entryID)
                     observed[record.recordID.recordName] = (channel, ObservedPlayback(
@@ -92,9 +100,18 @@ extension CloudKitLibraryTransport {
                 case let .outcome(value)?: outcomeCache[record.recordID.recordName] = value
                 case let .deviceDirectory(value)?:
                     directory = value
-                    for device in value.devices where !peers.devices.contains(device.deviceID) && device.deviceID != deviceID {
-                        introduced.append(device.deviceID)
-                        peers.note(device: device.deviceID)
+                    consecutiveDirectoryFailures = 0
+                    directoryRecordPresent = true
+                    let now = clock()
+                    for device in value.devices {
+                        if now.timeIntervalSince(device.announcedAt) <= LibraryDeviceDirectory.announcementLifetime {
+                            if !peers.devices.contains(device.deviceID) && device.deviceID != deviceID {
+                                introduced.append(device.deviceID)
+                            }
+                            peers.note(device: device.deviceID, announcedAt: device.announcedAt)
+                        } else {
+                            peers.remove(device: device.deviceID)
+                        }
                     }
                 case let .deviceLink(value)? where value.deviceID == deviceID: link = value
                 default: break
@@ -103,7 +120,12 @@ extension CloudKitLibraryTransport {
         }
 
         var offerRecords: [CKRecord] = []
-        absorb(try await fetchPresent(first))
+        do {
+            absorb(try await fetchPresent(first))
+        } catch {
+            if options.contains(.deviceDirectory) { consecutiveDirectoryFailures += 1 }
+            throw error
+        }
         if asksOwnIntentIndex, !sawOwnIntentIndex { ownIntentIndexMissing = true }
 
         var second: [CKRecord.ID] = []
@@ -152,10 +174,14 @@ extension CloudKitLibraryTransport {
                 .sorted { ($0.decidedAt, $0.intentID) < ($1.decidedAt, $1.intentID) }
         }
         if options.contains(.offers) {
-            result.offers = offerRecords.compactMap { record -> LibraryMediaOffer? in
-                guard case let .offer(offer)? = try? mapper.decode(record) else { return nil }
-                return offer
-            }.sorted { $0.entryID.rawValue < $1.entryID.rawValue }
+            if let newGen = observedNewOfferGeneration {
+                lastObservedOfferGeneration = newGen
+                cachedOffers = offerRecords.compactMap { record -> LibraryMediaOffer? in
+                    guard case let .offer(offer)? = try? mapper.decode(record) else { return nil }
+                    return offer
+                }.sorted { $0.entryID.rawValue < $1.entryID.rawValue }
+            }
+            result.offers = cachedOffers
         }
         if options.contains(.deviceRecords) {
             func ordered(_ channel: PlaybackChannel) -> [ObservedPlayback] {
@@ -165,5 +191,6 @@ extension CloudKitLibraryTransport {
             result.records = LibraryDeviceRecords(nowPlaying: ordered(.nowPlaying), progress: ordered(.progress))
         }
         return result
+        }
     }
 }

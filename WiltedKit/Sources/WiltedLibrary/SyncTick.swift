@@ -20,6 +20,44 @@ import Foundation
 public actor SyncTick {
     public enum Trigger: Sendable, Equatable { case timer, refresh, event }
 
+    /// What one refresh reads. The direct `refresh()` (launch, pull, push, account change) is `.full`; a
+    /// round of the tick reads the playback records every time and the library state only when it is due.
+    public struct RoundPlan: Sendable, Equatable {
+        /// The library state (the Mac's published Larder), through the sync engine.
+        public var readsState: Bool
+        /// The Mac's offer index, which rides the playback records' read. The transport fetches the offer
+        /// records themselves only when the index generation moved, or when `forcesOffers` is set.
+        public var readsOffers: Bool
+        /// Re-read every offer record even if the index generation has not moved (pull, foreground, push).
+        public var forcesOffers: Bool
+        /// Whether the pull-to-refresh spinner shows; the tick's background rounds stay quiet.
+        public var showsProgress: Bool
+
+        public static let full = RoundPlan(readsState: true, readsOffers: true, forcesOffers: true, showsProgress: true)
+        public var isFull: Bool { self == .full }
+
+        public init(readsState: Bool, readsOffers: Bool, forcesOffers: Bool = false, showsProgress: Bool = false) {
+            self.readsState = readsState
+            self.readsOffers = readsOffers
+            self.forcesOffers = forcesOffers
+            self.showsProgress = showsProgress
+        }
+
+        /// The plan for round number `round` (counted from 1). A timer round reads the state every
+        /// `SyncCadence.phoneStateEveryRounds` rounds or while a decision waits; an event round (push,
+        /// foreground) reads everything quietly.
+        public static func plan(for trigger: Trigger, round: Int, forceFull: Bool = false, hasDecisions: Bool = false) -> RoundPlan {
+            switch trigger {
+            case .refresh:
+                return .full
+            case .timer, .event:
+                let forced = forceFull || trigger == .event
+                let readsState = forced || hasDecisions || (round > 0 && round % SyncCadence.phoneStateEveryRounds == 0)
+                return RoundPlan(readsState: readsState, readsOffers: true, forcesOffers: forced)
+            }
+        }
+    }
+
     public enum RefreshOutcome: Sendable, Equatable {
         /// A round ran for this call.
         case ran
@@ -29,7 +67,7 @@ public actor SyncTick {
         case throttled(TransportGateState)
     }
 
-    private let interval: TimeInterval
+    private var interval: TimeInterval
     private let gate: TransportGate?
     private let clock: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async throws -> Void
@@ -81,6 +119,13 @@ public actor SyncTick {
     }
 
     public var isRunning: Bool { loop != nil }
+
+    /// Adjusts the timer interval (e.g. stretching to 5 min when idle in background or 30 s when active).
+    public func setInterval(_ newInterval: TimeInterval) {
+        guard interval != newInterval else { return }
+        interval = newInterval
+        nap?.cancel()
+    }
 
     /// Pull to refresh: a round now, and the timer restarts from it.
     @discardableResult

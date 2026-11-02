@@ -286,22 +286,29 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         XCTAssertTrue(holding)
     }
 
-    func testAnUploadThatFailsTwiceIsReportedWithItsCauseAndPublishesNoAnswer() async throws {
-        let rig = rig("media-upload-gives-up")
+    func testAnUploadThatKeepsFailingStaysQueuedWithItsCauseAndPublishesNoAnswer() async throws {
+        let rig = rig("media-upload-stays-queued")
         let entry = try id("episode-offline")
         rig.source.set(entry, try makeAudio(rig.directory, revision: "rev-1"))
         let waits = WaitLog()
-        let (service, flaky) = flakyService(rig, failing: 2, waits: waits)
+        // The first wait lasts an hour unless cancelled, as `Task.sleep` does.
+        let (service, flaky) = flakyService(rig, failing: 2, waits: waits, sleep: {
+            waits.append($0)
+            try await Task.sleep(for: .seconds(3600))
+        })
 
-        await service.handle(try request(rig, entry, from: phoneID, intentID: "retry-2"))
+        _ = await service.enqueue(try request(rig, entry, from: phoneID, intentID: "retry-2"))
+        try await eventually("first retry wait") { waits.values.count == 1 }
 
-        XCTAssertEqual(flaky.readyAttempts, 2, "one retry, then it gives up")
+        XCTAssertEqual(flaky.readyAttempts, 1)
         XCTAssertEqual(waits.values, [.seconds(5)])
+        let queued = await service.uploadQueue.queuedCount
+        XCTAssertEqual(queued, 1, "it waits in the queue instead of failing")
         let offers = try await rig.phone.mediaOffers()
-        XCTAssertTrue(offers.isEmpty, "no notReady and no new offer state: the phone's timeout speaks")
+        XCTAssertTrue(offers.isEmpty, "no notReady and no new offer state")
         let lastFailure = await service.lastFailure
-        let failure = try XCTUnwrap(lastFailure)
-        XCTAssertEqual(failure, "NSURLErrorDomain(-1005)")
+        XCTAssertEqual(try XCTUnwrap(lastFailure), "NSURLErrorDomain(-1005)")
+        await service.drainEndingThrottleWaits()
     }
 
     func testAThrottledUploadWaitsUntilICloudTakesUploadsAgainWithoutSpendingTheRetry() async throws {
@@ -328,27 +335,7 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         XCTAssertNil(failure)
     }
 
-    func testAThrottleBeyondTheLongestWaitIsReportedAtOnce() async throws {
-        let rig = rig("media-upload-throttled-long")
-        let entry = try id("episode-throttled-long")
-        rig.source.set(entry, try makeAudio(rig.directory, revision: "rev-1"))
-        let clock = rig.clock
-        let waits = WaitLog()
-        let beyond = WiltedMacMediaService.maximumThrottleWait + 60
-        let (service, flaky) = flakyService(rig, failing: 2, waits: waits, with: {
-            TransportThrottled(retryAt: clock.now.addingTimeInterval(beyond))
-        })
-
-        await service.handle(try request(rig, entry, from: phoneID, intentID: "throttled-2"))
-
-        XCTAssertEqual(flaky.readyAttempts, 2, "the ordinary retry only")
-        XCTAssertEqual(waits.values, [.seconds(5)])
-        let lastFailure = await service.lastFailure
-        let failure = try XCTUnwrap(lastFailure)
-        XCTAssertTrue(failure.hasPrefix("TransportThrottled."), failure)
-    }
-
-    func testShutdownEndsAThrottleWaitAsAFailedRequestAndALaterThrottleIsWaitedOutAgain() async throws {
+    func testShutdownEndsAThrottleWaitAndTheRequestIsServedWhenTheQueueIsReplayed() async throws {
         let rig = rig("media-upload-throttled-shutdown")
         let entry = try id("episode-throttled-shutdown")
         rig.source.set(entry, try makeAudio(rig.directory, revision: "rev-1"))
@@ -370,15 +357,19 @@ final class WiltedMacMediaServiceTests: XCTestCase {
         let lastFailure = await service.lastFailure
         let failure = try XCTUnwrap(lastFailure)
         XCTAssertTrue(failure.hasPrefix("TransportThrottled."), failure)
+        let queued = await service.uploadQueue.queuedCount
+        XCTAssertEqual(queued, 1, "the request stays queued")
 
-        // After the restart, a throttle is waited out again.
-        let retried = await service.enqueue(try request(rig, entry, from: phoneID, intentID: "throttled-4"))
-        await retried.value
+        // On replay, a throttle is waited out again.
+        await service.uploadQueue.resumeAll()
+        await service.drain()
         XCTAssertEqual(waits.values, [.seconds(120), .seconds(120)])
         XCTAssertEqual(flaky.readyAttempts, 3)
         XCTAssertEqual(flaky.readyUploads, 1)
         let cleared = await service.lastFailure
         XCTAssertNil(cleared)
+        let left = await service.uploadQueue.queuedCount
+        XCTAssertEqual(left, 0)
     }
 
     func testTypedCauseNamesFoundationErrorsByDomainAndSwiftErrorsByTypeAndValue() {

@@ -160,12 +160,17 @@ final class TransportGateTests: XCTestCase {
     private let limited = FakeCloudKitError.cloudKit(code: 7, message: "throttled. Retry after 1.5 seconds.")
 
     private func gate(_ clock: TestClock, log: ChangeLog = ChangeLog()) -> TransportGate {
-        TransportGate(clock: { clock.now }, onChange: { log.record($0) })
+        TransportGate(clock: { clock.now }, jitter: { _ in 0 }, onChange: { log.record($0) })
     }
 
-    private func attempt(_ gate: TransportGate, calls: Counter, failing error: Error? = nil) async -> Error? {
+    private func attempt(
+        _ gate: TransportGate,
+        priority: TransportPriority = .background,
+        calls: Counter,
+        failing error: Error? = nil
+    ) async -> Error? {
         do {
-            try await gate.run { calls.bump(); if let error { throw error } }
+            try await gate.run(priority: priority) { calls.bump(); if let error { throw error } }
             return nil
         } catch { return error }
     }
@@ -173,7 +178,7 @@ final class TransportGateTests: XCTestCase {
     func testBackoffGrowsDoublesAndIsCapped() {
         let waits = (1...12).map { TransportGate.delay(failures: $0, retryAfter: nil) }
         XCTAssertEqual(Array(waits.prefix(4)), [5, 10, 20, 40])
-        XCTAssertEqual(waits.last, SyncCadence.backoffCap)
+        XCTAssertEqual(waits.last, TransportGate.backoffCap)
         XCTAssertEqual(waits, waits.sorted())
     }
 
@@ -272,7 +277,7 @@ final class TransportGateTests: XCTestCase {
         let gate = gate(clock)
         let calls = Counter()
         let waits = await escalateToTheCap(gate, clock: clock, calls: calls)
-        XCTAssertEqual(waits.last, SyncCadence.backoffCap)
+        XCTAssertEqual(waits.last, TransportGate.backoffCap)
         clock.advance(150)
         let outage = FakeCloudKitError.cloudKit(code: 6, message: "Service Unavailable. Retry after 19 seconds.")
         _ = await attempt(gate, calls: calls, failing: outage)
@@ -298,7 +303,7 @@ final class TransportGateTests: XCTestCase {
         _ = await attempt(gate, calls: calls, failing: limited)
         let state = await gate.state
         XCTAssertEqual(state?.consecutiveFailures, waits.count + 1)
-        XCTAssertEqual(state?.retryAt.timeIntervalSince(clock.now), SyncCadence.backoffCap)
+        XCTAssertEqual(state?.retryAt.timeIntervalSince(clock.now), TransportGate.backoffCap)
     }
 
     /// Fails probes until the wait reaches the cap, then lets one probe through and returns the waits.
@@ -309,7 +314,7 @@ final class TransportGateTests: XCTestCase {
             let state = await gate.state
             waits.append(state!.retryAt.timeIntervalSince(clock.now))
             clock.advance(waits.last! + 0.1)
-        } while waits.last! < SyncCadence.backoffCap
+        } while waits.last! < TransportGate.backoffCap
         let probe = await attempt(gate, calls: calls)
         XCTAssertNil(probe)
         return waits
@@ -377,6 +382,66 @@ final class TransportGateTests: XCTestCase {
         do { _ = try await transport.fetchDeviceRecords(); XCTFail("closed gate must throw") } catch { XCTAssertTrue(error is TransportThrottled) }
         try await transport.commitFetchedState(nil)
         try await transport.commitSentState(nil)
+    }
+
+    func testPollArrivingFirstDoesNotTakeProbeFromPendingOwnerAction() async {
+        let clock = TestClock()
+        let gate = gate(clock)
+        let calls = Counter()
+        _ = await attempt(gate, calls: calls, failing: limited)
+        XCTAssertEqual(calls.count, 1)
+
+        let ownerError = await attempt(gate, priority: .ownerAction, calls: calls)
+        XCTAssertTrue(ownerError is TransportThrottled)
+        XCTAssertEqual(calls.count, 1, "nothing is sent while closed")
+
+        clock.advance(SyncCadence.backoffBase + 0.1)
+
+        let pollError = await attempt(gate, priority: .poll, calls: calls)
+        XCTAssertTrue(pollError is TransportThrottled, "poll arriving first does not take probe from pending owner action")
+        XCTAssertEqual(calls.count, 1, "poll sent nothing")
+
+        let ownerSuccess = await attempt(gate, priority: .ownerAction, calls: calls)
+        XCTAssertNil(ownerSuccess, "owner action took the probe and succeeded")
+        XCTAssertEqual(calls.count, 2)
+
+        let pollSuccess = await attempt(gate, priority: .poll, calls: calls)
+        XCTAssertNil(pollSuccess, "gate reopened after successful probe")
+        XCTAssertEqual(calls.count, 3)
+    }
+
+    func testThrottledProbeDoublesExtraWaitBeyondRetryAfterWithJitter() {
+        XCTAssertEqual(TransportGate.delay(failures: 1, retryAfter: 30), 30)
+        XCTAssertEqual(TransportGate.delay(failures: 2, retryAfter: 30), 35)
+        XCTAssertEqual(TransportGate.delay(failures: 3, retryAfter: 30), 40)
+        XCTAssertEqual(TransportGate.delay(failures: 4, retryAfter: 30), 50)
+        XCTAssertEqual(TransportGate.delay(failures: 2, retryAfter: 30, jitter: 2.5), 37.5)
+        XCTAssertEqual(TransportGate.delay(failures: 20, retryAfter: nil), TransportGate.backoffCap)
+    }
+
+    func testDefaultJitterStaysWithinAQuarterOfTheExtraWait() async throws {
+        let clock = TestClock()
+        let gate = TransportGate(clock: { clock.now })
+        let calls = Counter()
+        for failures in 1...6 {
+            _ = await attempt(gate, calls: calls, failing: limited)
+            let current = await gate.state
+            let state = try XCTUnwrap(current)
+            let wait = state.retryAt.timeIntervalSince(clock.now)
+            let floor = TransportGate.delay(failures: failures, retryAfter: 1.5)
+            let extra = TransportGate.extraWait(failures: failures)
+            XCTAssertGreaterThanOrEqual(wait, floor - 0.001)
+            XCTAssertLessThanOrEqual(wait, min(TransportGate.backoffCap, floor + extra / 4) + 0.001)
+            clock.advance(wait)
+        }
+    }
+}
+
+final class TransportPressureRetryAfterKeyTests: XCTestCase {
+    func testCloudKitsRealRetryAfterKeyIsRead() {
+        // CloudKit's `CKErrorRetryAfterKey` constant is the string "CKRetryAfter".
+        let error = NSError(domain: "CKErrorDomain", code: 7, userInfo: ["CKRetryAfter": NSNumber(value: 45)])
+        XCTAssertEqual(TransportPressureClassifier.classify(error), TransportPressure(kind: .rateLimited, retryAfter: 45))
     }
 }
 

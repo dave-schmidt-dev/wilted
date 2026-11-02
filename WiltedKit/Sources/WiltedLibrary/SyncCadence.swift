@@ -10,10 +10,17 @@ import Foundation
 /// After a rate limit the whole tick waits out the server's Retry-After (see `TransportGate`).
 /// Real use is pausing on one device, walking away, then starting on the other, so 30 s is enough.
 public enum SyncCadence {
-    /// The one sync round of a device: the Mac while it runs, the phone while it is in front or playing.
+    /// The one sync round of a device: the Mac while it runs, the phone while it is in front, playing,
+    /// or has a pending request.
     public static let tickInterval: TimeInterval = 30
+    /// The phone idle sync round when backgrounded, not playing, and no request is pending (5 minutes).
+    public static let phoneIdleInterval: TimeInterval = 300
     /// The Mac reads intents and every device's playback records this often, playing or not.
     public static let pollInterval: TimeInterval = tickInterval
+    /// Pinned requests per idle hour for the Mac (one request per 30 s tick).
+    public static let macIdleRequestsPerHour: Int = 120
+    /// Pinned requests per idle hour for the phone (one request per 5 min tick).
+    public static let phoneIdleRequestsPerHour: Int = 12
     /// A playing device republishes its position this often (one NowPlaying and one Progress write).
     public static let playingPublishInterval: TimeInterval = tickInterval
     /// The phone looks at the other devices this often while it plays.

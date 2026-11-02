@@ -126,15 +126,15 @@ struct MediaFetchTimer: Sendable {
 /// A delivered file that fails verification is deleted, so a bad file is never cached.
 ///
 /// A transient transport failure (see `MediaFetchErrorClassifier.isTransient`) is retried
-/// automatically after each of `retryDelays`, so three attempts in all by default. Each retry
-/// downloads the whole file again; nothing resumes from a byte offset.
+/// automatically after each of `retryDelays`, so three quick attempts by default. Each retry
+/// downloads the whole file again; nothing resumes from a byte offset. When the quick attempts are
+/// used up the transient error is thrown, not reported as a failure: the caller owns the longer wait
+/// (the phone's durable media job), so a passing cause never ends a request.
 public struct MediaFetcher: Sendable {
     /// Longest a transfer may go without receiving more bytes before it fails.
     public static let defaultWatchdog: Duration = .seconds(300)
     /// The waits before the second and third attempts.
     public static let defaultRetryDelays: [Duration] = [.seconds(2), .seconds(8)]
-    /// Longest a retry waits for a closed `TransportGate` to reopen.
-    static let maximumThrottleWait: TimeInterval = 60
 
     public typealias StateHandler = @Sendable (MediaTransferState) -> Void
     public typealias RetryHandler = @Sendable (MediaFetchRetry) -> Void
@@ -185,7 +185,8 @@ public struct MediaFetcher: Sendable {
 
     /// Fetches `offer` through `transport` and reports each state change to `onState`, and each
     /// automatic retry to `onRetry` before its wait begins.
-    /// Only cancellation throws; every other end is an outcome.
+    /// Cancellation and a transient transport error (a closed gate, or quick retries used up) throw;
+    /// every other end is an outcome.
     public func fetch(
         _ offer: LibraryMediaOffer,
         from transport: any LibraryTransport,
@@ -339,17 +340,24 @@ public struct MediaFetcher: Sendable {
                 return .ended(fail(.timedOut, onState))
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let throttled as TransportThrottled {
+                throw throttled
             } catch let caught {
                 error = caught
             }
             try Task.checkCancellation()
             let cause = MediaFetchErrorClassifier.failure(for: error)
             let detail = MediaFetchErrorClassifier.logDescription(error)
-            guard attempt < attempts, MediaFetchErrorClassifier.isTransient(error) else {
+            let transient = MediaFetchErrorClassifier.isTransient(error)
+            if transient, attempt >= attempts {
+                fetchLog.notice("Audio for \(offer.entryID.rawValue, privacy: .public) failed transiently on attempt \(attempt, privacy: .public) of \(attempts, privacy: .public) (\(cause.rawValue, privacy: .public)): \(detail, privacy: .public)")
+                throw error
+            }
+            guard transient else {
                 fetchLog.error("Audio for \(offer.entryID.rawValue, privacy: .public) failed on attempt \(attempt, privacy: .public) of \(attempts, privacy: .public) (\(cause.rawValue, privacy: .public)): \(detail, privacy: .public)")
                 return .ended(fail(.deliveryFailed(cause.rawValue), onState))
             }
-            let delay = Self.backoff(retryDelays[attempt - 1], after: error)
+            let delay = retryDelays[attempt - 1]
             attempt += 1
             fetchLog.notice("Audio for \(offer.entryID.rawValue, privacy: .public) failed transiently; attempt \(attempt, privacy: .public) of \(attempts, privacy: .public) in \(delay, privacy: .public): \(detail, privacy: .public)")
             onRetry(MediaFetchRetry(attempt: attempt, attempts: attempts, delay: delay, cause: cause))
@@ -385,14 +393,6 @@ public struct MediaFetcher: Sendable {
             }
             throw CancellationError()
         }
-    }
-
-    /// The wait before the next attempt: the scheduled step, or longer when a closed `TransportGate`
-    /// said when it reopens (capped, so a long closure ends the fetch rather than hiding it).
-    static func backoff(_ step: Duration, after error: Error) -> Duration {
-        guard let throttled = error as? TransportThrottled else { return step }
-        let wait = min(max(throttled.retryAt.timeIntervalSinceNow, 0), maximumThrottleWait)
-        return max(step, .seconds(wait))
     }
 
     /// Returns only by throwing `StalledError` once no byte has arrived for `interval`,

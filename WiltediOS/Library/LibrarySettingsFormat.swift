@@ -1,4 +1,5 @@
 import Foundation
+import WiltedCloudKitLibrary
 import WiltedLibrary
 
 /// Words and numbers for the Settings page. Pure, so the formatting is testable without a view.
@@ -71,6 +72,7 @@ enum LibrarySettingsFormat {
     static let versionIdentifier = "wilted-library-settings-version"
     static let deviceIdentifier = "wilted-library-settings-device-id"
     static let syncDetailIdentifier = "wilted-library-settings-sync-detail"
+    static let syncDiagnosticsIdentifier = "wilted-library-settings-sync-diagnostics"
     static let copyDeviceIDLabel = "Copy device ID"
 
     /// One settings row, described outside the view so which card holds the device ID and whether it
@@ -164,5 +166,16 @@ enum LibrarySettingsFormat {
             return SyncSummary(status: "Fetched", detail: fetchNote(deviceKind: deviceKind), tone: .positive)
         }
         return SyncSummary(status: "Not synced yet", detail: nil, tone: .neutral)
+    }
+
+    /// The sync diagnostics line (`CloudKitOperationSummary.statusLine`).
+    static func syncDiagnostics(recentRequests: Int, lastThrottleDate: Date?, timeZone: TimeZone? = nil) -> String {
+        CloudKitOperationSummary.statusLine(
+            recentRequests: recentRequests, lastThrottleDate: lastThrottleDate, timeZone: timeZone)
+    }
+
+    /// The sync diagnostics line for `summary`, or nil when no counters are available.
+    static func syncDiagnostics(_ summary: CloudKitOperationSummary?, timeZone: TimeZone? = nil) -> String? {
+        summary?.statusLine(timeZone: timeZone)
     }
 }

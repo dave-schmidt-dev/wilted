@@ -38,7 +38,9 @@ public enum TransportPressureClassifier {
         var retryAfter: TimeInterval?
         if nsError.domain == "CKErrorDomain" {
             code = nsError.code
-            retryAfter = (nsError.userInfo["CKErrorRetryAfterKey"] as? NSNumber)?.doubleValue
+            // `CKErrorRetryAfterKey` is the string "CKRetryAfter"; the older literal is kept for fakes.
+            retryAfter = (nsError.userInfo["CKRetryAfter"] as? NSNumber)?.doubleValue
+                ?? (nsError.userInfo["CKErrorRetryAfterKey"] as? NSNumber)?.doubleValue
         } else if let found = firstMatch(#"cloudKit\(code: (-?\d+)"#, in: text) {
             code = Int(found)
         }
@@ -117,6 +119,28 @@ public struct TransportGateState: Sendable, Equatable {
     }
 }
 
+/// Priority class for a gated transport call. An owner action that asked while the gate was closed
+/// reserves the probe after it reopens, for up to one tick, so a routine poll cannot take it.
+public enum TransportPriority: String, Sendable, CaseIterable, Comparable {
+    case background
+    case poll
+    case handoff
+    case ownerAction
+
+    private var rank: Int {
+        switch self {
+        case .background: 0
+        case .poll: 1
+        case .handoff: 2
+        case .ownerAction: 3
+        }
+    }
+
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        lhs.rank < rhs.rank
+    }
+}
+
 /// One gate per device, shared by everything that talks to the server (poller, handoff, library
 /// publish, intents, media), so a rate limit pauses all of them together instead of each
 /// retrying on its own timer.
@@ -137,29 +161,51 @@ public struct TransportGateState: Sendable, Equatable {
 /// two or three minutes held the Mac at the cap for hours. A server that names a longer wait still
 /// gets it through `delay`.
 public actor TransportGate {
+    /// Cap on exponential backoff for a closed gate: 15 minutes.
+    public static let backoffCap: TimeInterval = 900
+
     private let clock: @Sendable () -> Date
+    private let jitter: @Sendable (TimeInterval) -> TimeInterval
     private let onChange: (@Sendable (TransportGateState?) -> Void)?
     private var closed: TransportGateState?
     private var failures = 0
     private var probing = false
+    private var pendingOwnerAction = false
     /// When the last closure ended.
     private var reopenedAt: Date?
 
     /// - Parameters:
+    ///   - clock: returns the current time.
+    ///   - jitter: random extra wait, given the doubling extra wait beyond Retry-After. Defaults to up
+    ///     to a quarter of it, so devices throttled together do not all retry in the same second.
     ///   - onChange: called when the gate closes (with the new state) and when it reopens (nil).
     public init(
         clock: @escaping @Sendable () -> Date = { Date() },
+        jitter: @escaping @Sendable (TimeInterval) -> TimeInterval = { .random(in: 0...max(0, $0 / 4)) },
         onChange: (@Sendable (TransportGateState?) -> Void)? = nil
     ) {
         self.clock = clock
+        self.jitter = jitter
         self.onChange = onChange
     }
 
-    /// The wait for `failures` consecutive pressure replies, given what the server asked for.
-    static func delay(failures: Int, retryAfter: TimeInterval?) -> TimeInterval {
+    /// The doubling wait added beyond Retry-After for the `failures`-th consecutive pressure reply.
+    static func extraWait(failures: Int) -> TimeInterval {
+        failures > 1 ? min(backoffCap, SyncCadence.backoffBase * pow(2, Double(min(failures - 2, 20)))) : 0
+    }
+
+    /// The wait for `failures` consecutive pressure replies, given what the server asked for: the
+    /// doubling backoff, or Retry-After plus `extraWait` and jitter, capped at `backoffCap` unless the
+    /// server itself asked for longer (never past an hour).
+    public static func delay(
+        failures: Int,
+        retryAfter: TimeInterval?,
+        jitter: TimeInterval = 0
+    ) -> TimeInterval {
         let exponent = Double(min(max(failures, 1) - 1, 20))
-        let backoff = min(SyncCadence.backoffCap, SyncCadence.backoffBase * pow(2, exponent))
-        return min(3_600, max(backoff, retryAfter ?? 0))
+        let backoff = min(backoffCap, SyncCadence.backoffBase * pow(2, exponent))
+        let wait = max(backoff, (retryAfter ?? 0) + extraWait(failures: failures) + jitter)
+        return min(3_600, max(min(backoffCap, wait), retryAfter ?? 0))
     }
 
     /// How long the gate must stay open before new pressure counts from one again: two sync rounds,
@@ -169,8 +215,11 @@ public actor TransportGate {
     public var state: TransportGateState? { closed }
 
     /// Runs `operation` unless the gate is closed, and learns from how it ends.
-    public func run<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
-        let isProbe = try admit()
+    public func run<T: Sendable>(
+        priority: TransportPriority = .background,
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        let isProbe = try admit(priority: priority)
         do {
             let value = try await operation()
             succeeded(isProbe: isProbe)
@@ -183,12 +232,30 @@ public actor TransportGate {
 
     /// Whether the caller admitted is the probe that follows a closure. A request admitted while
     /// the gate was open is not: its outcome must not reopen or re-close a later closure.
-    private func admit() throws -> Bool {
+    private func admit(priority: TransportPriority) throws -> Bool {
         guard let current = closed else { return false }
         let now = clock()
-        if now < current.retryAt { throw TransportThrottled(retryAt: current.retryAt) }
-        if probing { throw TransportThrottled(retryAt: now.addingTimeInterval(1)) }
+        if now < current.retryAt {
+            if priority == .ownerAction {
+                pendingOwnerAction = true
+            }
+            throw TransportThrottled(retryAt: current.retryAt)
+        }
+        if probing {
+            throw TransportThrottled(retryAt: now.addingTimeInterval(1))
+        }
+        if pendingOwnerAction {
+            let reservationDeadline = current.retryAt.addingTimeInterval(SyncCadence.tickInterval)
+            if now < reservationDeadline {
+                if priority != .ownerAction {
+                    throw TransportThrottled(retryAt: reservationDeadline)
+                }
+            } else {
+                pendingOwnerAction = false
+            }
+        }
         probing = true
+        pendingOwnerAction = false
         return true
     }
 
@@ -198,6 +265,7 @@ public actor TransportGate {
         guard isProbe || closed == nil else { return }
         guard closed != nil else { return }
         closed = nil
+        pendingOwnerAction = false
         reopenedAt = clock()
         onChange?(nil)
     }
@@ -215,7 +283,8 @@ public actor TransportGate {
         }
         reopenedAt = nil
         failures += 1
-        let wait = Self.delay(failures: failures, retryAfter: pressure.retryAfter)
+        let wait = Self.delay(
+            failures: failures, retryAfter: pressure.retryAfter, jitter: jitter(Self.extraWait(failures: failures)))
         let state = TransportGateState(
             kind: pressure.kind, retryAt: now.addingTimeInterval(wait), consecutiveFailures: failures)
         closed = state

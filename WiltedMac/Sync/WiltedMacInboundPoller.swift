@@ -224,6 +224,7 @@ final class WiltedMacInboundRuntime {
         onPollerStop: (@Sendable () async -> Void)? = nil,
         onRoundFinished: WiltedMacInboundPoller.RoundFinished? = nil,
         onDevicesChange: WiltedMacDeviceLinks.OnChange? = nil,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.onRoundFinished = onRoundFinished
@@ -241,8 +242,10 @@ final class WiltedMacInboundRuntime {
         self.links = links
         service = WiltedMacMediaService(
             source: source, transport: transport,
-            accountingURL: directory.appendingPathComponent("media-accounting.json"), now: now,
-            reportRequest: { intent, stage, detail in await links.record(intent, stage: stage, detail: detail) }
+            accountingURL: directory.appendingPathComponent("media-accounting.json"),
+            now: now, sleep: sleep,
+            reportRequest: { intent, stage, detail in await links.record(intent, stage: stage, detail: detail) },
+            queueURL: directory.appendingPathComponent("media-upload-queue.json")
         )
     }
 
@@ -255,6 +258,9 @@ final class WiltedMacInboundRuntime {
     /// upload, so the round goes on reading. Nil when the id was already recorded or could not be.
     @discardableResult
     nonisolated func admit(_ intent: LibraryIntent) async -> Task<Void, Never>? {
+        if case .requestMedia = intent.action {
+            return await admitQueued(intent, to: service.uploadQueue)
+        }
         do {
             guard try await ledger.recordIfNew(intent.id) else { return nil }
         } catch {
@@ -262,6 +268,37 @@ final class WiltedMacInboundRuntime {
             return nil
         }
         return await service.enqueue(intent)
+    }
+
+    /// Queues a media request durably before the ledger records it, so a crash between the two
+    /// writes loses nothing: the next launch replays the queue and records what it holds. An id the
+    /// ledger already has is served only if the queue still holds it (a crash after both writes, or
+    /// a quit before it was served).
+    private nonisolated func admitQueued(_ intent: LibraryIntent, to queue: WiltedMacMediaUploadQueue) async -> Task<Void, Never>? {
+        if await ledger.contains(intent.id) { return await queue.resume(intent.id) }
+        let task: Task<Void, Never>
+        do {
+            task = try await queue.admit(intent)
+        } catch {
+            pollerLog.error("Intent \(intent.id, privacy: .public) was not queued and is not applied: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+        do { _ = try await ledger.recordIfNew(intent.id) } catch {
+            pollerLog.error("Intent \(intent.id, privacy: .public) is queued but was not recorded: \(String(describing: error), privacy: .public)")
+        }
+        return task
+    }
+
+    /// Replays the upload queue: records the ids it holds, so a request that outlived a crash before
+    /// its ledger write is not served again when the server hands it over, then starts each upload.
+    func resumeQueuedRequests() async {
+        let queue = service.uploadQueue
+        for intent in await queue.queuedIntents {
+            do { _ = try await ledger.recordIfNew(intent.id) } catch {
+                pollerLog.error("Queued intent \(intent.id, privacy: .public) was not recorded: \(String(describing: error), privacy: .public)")
+            }
+        }
+        await queue.resumeAll()
     }
 
     /// The handshake half of a round, before its intents are applied: links devices from the
@@ -276,7 +313,8 @@ final class WiltedMacInboundRuntime {
         let cutoff = now().addingTimeInterval(-WiltedMacMediaService.maximumIntentAge)
         for intent in polled.intents where intent.createdAt >= cutoff {
             guard case .requestMedia = intent.action else { continue }
-            if await !ledger.contains(intent.id) { fresh.append(intent) }
+            let queued = await service.uploadQueue.contains(intent.id)
+            if await !ledger.contains(intent.id) && !queued { fresh.append(intent) }
         }
         await links.noteReceived(fresh)
         await links.flush()
@@ -302,6 +340,7 @@ final class WiltedMacInboundRuntime {
         let task = Task {
             await previousShutdown?.value
             guard !Task.isCancelled else { return }
+            await self.resumeQueuedRequests()
             await beforePollerStart?()
             guard !Task.isCancelled else { return }
             await poller.start()

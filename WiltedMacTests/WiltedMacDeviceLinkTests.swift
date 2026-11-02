@@ -62,7 +62,7 @@ private final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
 
     func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
         if offer.state == .ready {
-            if lock.withLock({ uploadsFail }) { throw URLError(.networkConnectionLost) }
+            if lock.withLock({ uploadsFail }) { throw LibraryTransportError.transport("upload rejected") }
             await withCheckedContinuation { continuation in
                 let wait = lock.withLock { () -> Bool in
                     guard holding else { return false }
@@ -273,7 +273,7 @@ final class WiltedMacDeviceLinkTests: XCTestCase {
         XCTAssertEqual(log.stages, [.sending, .failed])
         let detail = try XCTUnwrap(log.details.last ?? nil)
         XCTAssertEqual(detail, "The Mac could not send the audio. Try again.")
-        XCTAssertFalse(detail.contains("URLError") || detail.contains("NSURLErrorDomain"), "no typed cause leaves the Mac")
+        XCTAssertFalse(detail.contains("LibraryTransportError") || detail.contains("rejected"), "no typed cause leaves the Mac")
     }
 
     func testTheSyncCardNamesEachDeviceOnceAndItsRequests() throws {

@@ -19,114 +19,114 @@ public struct ThrottledLibraryTransport: LibraryTransport {
 
     public func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
     public func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
-    public func verifyOwner() async throws { try await gate.run { try await inner.verifyOwner() } }
+    public func verifyOwner() async throws { try await gate.run(priority: .ownerAction) { try await inner.verifyOwner() } }
 
     public func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
-        try await gate.run { try await inner.fetchChanges(since: token) }
+        try await gate.run(priority: .poll) { try await inner.fetchChanges(since: token) }
     }
 
     public func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult {
-        try await gate.run { try await inner.push(changes: changes) }
+        try await gate.run(priority: .background) { try await inner.push(changes: changes) }
     }
 
     public func send(intent: LibraryIntent) async throws {
-        try await gate.run { try await inner.send(intent: intent) }
+        try await gate.run(priority: .ownerAction) { try await inner.send(intent: intent) }
     }
 
     public func listIntents() async throws -> [LibraryIntent] {
-        try await gate.run { try await inner.listIntents() }
+        try await gate.run(priority: .poll) { try await inner.listIntents() }
     }
 
     public func publishIntentOutcome(_ outcome: IntentOutcome) async throws {
-        try await gate.run { try await inner.publishIntentOutcome(outcome) }
+        try await gate.run(priority: .background) { try await inner.publishIntentOutcome(outcome) }
     }
 
     public func intentOutcomes() async throws -> [IntentOutcome] {
-        try await gate.run { try await inner.intentOutcomes() }
+        try await gate.run(priority: .poll) { try await inner.intentOutcomes() }
     }
 
     public func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {
-        try await gate.run { try await inner.publish(record, as: channel) }
+        try await gate.run(priority: .handoff) { try await inner.publish(record, as: channel) }
     }
 
     public func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
-        try await gate.run { try await inner.fetchDeviceRecords() }
+        try await gate.run(priority: .handoff) { try await inner.fetchDeviceRecords() }
     }
 
     public func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
-        try await gate.run { try await inner.publish(records) }
+        try await gate.run(priority: .handoff) { try await inner.publish(records) }
     }
 
     public func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
-        try await gate.run { try await inner.poll(options) }
+        try await gate.run(priority: .poll) { try await inner.poll(options) }
     }
 
     public func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
-        try await gate.run { try await inner.publishMedia(offer: offer, fileURL: fileURL) }
+        try await gate.run(priority: .background) { try await inner.publishMedia(offer: offer, fileURL: fileURL) }
     }
 
     public func mediaOffers() async throws -> [LibraryMediaOffer] {
-        try await gate.run { try await inner.mediaOffers() }
+        try await gate.run(priority: .poll) { try await inner.mediaOffers() }
     }
 
     public func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
-        try await gate.run { try await inner.fetchMedia(offer, progress: progress) }
+        try await gate.run(priority: .ownerAction) { try await inner.fetchMedia(offer, progress: progress) }
     }
 
     public func removeMedia(entryID: ItemID) async throws {
-        try await gate.run { try await inner.removeMedia(entryID: entryID) }
+        try await gate.run(priority: .background) { try await inner.removeMedia(entryID: entryID) }
     }
 
     public func publishStats(_ stats: LibraryStats) async throws {
-        try await gate.run { try await inner.publishStats(stats) }
+        try await gate.run(priority: .background) { try await inner.publishStats(stats) }
     }
 
     public func readStats() async throws -> LibraryStats? {
-        try await gate.run { try await inner.readStats() }
+        try await gate.run(priority: .poll) { try await inner.readStats() }
     }
 
     public func publishBulletins(_ bulletins: LibraryBulletins) async throws {
-        try await gate.run { try await inner.publishBulletins(bulletins) }
+        try await gate.run(priority: .background) { try await inner.publishBulletins(bulletins) }
     }
 
     public func fetchBulletins() async throws -> LibraryBulletins? {
-        try await gate.run { try await inner.fetchBulletins() }
+        try await gate.run(priority: .poll) { try await inner.fetchBulletins() }
     }
 
     public func publishPublication(_ publication: LibraryPublication) async throws {
-        try await gate.run { try await inner.publishPublication(publication) }
+        try await gate.run(priority: .background) { try await inner.publishPublication(publication) }
     }
 
     public func readPublication() async throws -> LibraryPublication? {
-        try await gate.run { try await inner.readPublication() }
+        try await gate.run(priority: .poll) { try await inner.readPublication() }
     }
 
     public func publishTranscript(_ transcript: LibraryTranscript) async throws {
-        try await gate.run { try await inner.publishTranscript(transcript) }
+        try await gate.run(priority: .background) { try await inner.publishTranscript(transcript) }
     }
 
     public func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
-        try await gate.run { try await inner.transcript(entryID: entryID, revisionID: revisionID) }
+        try await gate.run(priority: .poll) { try await inner.transcript(entryID: entryID, revisionID: revisionID) }
     }
 
     public func removeTranscript(entryID: ItemID) async throws {
-        try await gate.run { try await inner.removeTranscript(entryID: entryID) }
+        try await gate.run(priority: .background) { try await inner.removeTranscript(entryID: entryID) }
     }
 
     public func announceDevice(_ announcement: LibraryDeviceAnnouncement) async throws {
-        try await gate.run { try await inner.announceDevice(announcement) }
+        try await gate.run(priority: .background) { try await inner.announceDevice(announcement) }
     }
 
     public func fetchDeviceDirectory() async throws -> LibraryDeviceDirectory? {
-        try await gate.run { try await inner.fetchDeviceDirectory() }
+        try await gate.run(priority: .poll) { try await inner.fetchDeviceDirectory() }
     }
 
     public func publishDeviceLink(_ link: LibraryDeviceLink) async throws {
-        try await gate.run { try await inner.publishDeviceLink(link) }
+        try await gate.run(priority: .background) { try await inner.publishDeviceLink(link) }
     }
 
     public func fetchDeviceLink() async throws -> LibraryDeviceLink? {
-        try await gate.run { try await inner.fetchDeviceLink() }
+        try await gate.run(priority: .poll) { try await inner.fetchDeviceLink() }
     }
 
     public func commitFetchedState(_ token: LibraryChangeToken?) async throws {

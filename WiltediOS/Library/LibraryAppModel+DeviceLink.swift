@@ -40,6 +40,8 @@ extension LibraryAppModel {
     /// unlinked tries again only this often.
     static let announceInterval: TimeInterval = 10 * 60
     static let savedMacLinkKey = "wilted.library.macLink"
+    /// When a linked phone last announced, kept across launches so the 7-day refresh is not reset by a relaunch.
+    static let linkedAnnounceKey = "wilted.library.linkedAnnounceAt"
 
     /// "iPad" or "iPhone": the model family only, never the person's name for the device (W-INV-031).
     static var currentDeviceKind: String { UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone" }
@@ -86,21 +88,35 @@ extension LibraryAppModel {
         deviceLinkState.link = nil
         deviceLinkState.lastAnnounceAttempt = nil
         preferences.removeObject(forKey: Self.savedMacLinkKey)
+        preferences.removeObject(forKey: Self.linkedAnnounceKey)
     }
 
     // MARK: - Announcing
 
-    /// While the Mac has not linked this device, adds it to the shared device directory so the Mac reads its
-    /// requests at its next round instead of after a zone scan. Never while the account is held, unbound
-    /// or under review (W-INV-021), and at most once per `announceInterval`; a failure waits for the next
-    /// interval too. `linkRead` is true when this round read the link, which also proves the phone is online.
+    /// When a linked phone last announced: the saved time, or, the first time, its link (a link made long
+    /// ago, as on a phone linked before this rule existed, announces at once; one made just now waits).
+    private func linkedAnnounceAnchor(now current: Date) -> Date {
+        let saved = preferences.object(forKey: Self.linkedAnnounceKey) as? Double
+        if let saved { return Date(timeIntervalSinceReferenceDate: saved) }
+        let anchor = min(deviceLinkState.link?.linkedAt ?? current, current)
+        preferences.set(anchor.timeIntervalSinceReferenceDate, forKey: Self.linkedAnnounceKey)
+        return anchor
+    }
+
+    /// While the Mac has not linked this device, or once every 7 days when linked, adds it to the shared
+    /// device directory so the Mac reads its requests at its next round instead of after a zone scan. Never
+    /// while the account is held, unbound or under review (W-INV-021), and at most once per interval; a failure
+    /// waits for the next interval too. `linkRead` is true when this round read the link, which also proves the phone is online.
     func announceDeviceIfNeeded(linkRead: Bool) async {
-        guard linkRead, !deviceLinked else { return }
+        guard linkRead else { return }
         let state = deviceLinkState, current = now()
+        let interval = deviceLinked ? LibraryDeviceAnnouncement.refreshInterval : Self.announceInterval
+        let last = state.lastAnnounceAttempt ?? (deviceLinked ? linkedAnnounceAnchor(now: current) : nil)
         // A clock set back counts as an interval passed, so it can never silence the announcement.
-        if let last = state.lastAnnounceAttempt, current >= last, current.timeIntervalSince(last) < Self.announceInterval { return }
+        if let last, current >= last, current.timeIntervalSince(last) < interval { return }
         guard await mediaContext(live: true) != nil else { return }
         state.lastAnnounceAttempt = current
+        if deviceLinked { preferences.set(current.timeIntervalSinceReferenceDate, forKey: Self.linkedAnnounceKey) }
         let kind = deviceKind
         do {
             try await transport.announceDevice(LibraryDeviceAnnouncement(deviceID: deviceID, kind: kind, announcedAt: current))

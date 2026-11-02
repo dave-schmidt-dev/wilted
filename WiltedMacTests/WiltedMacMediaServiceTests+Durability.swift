@@ -78,9 +78,47 @@ extension WiltedMacMediaServiceTests {
             ledgerURL, bookURL,
             rig.directory.appendingPathComponent("intent-ledger.json"),
             rig.directory.appendingPathComponent("media-accounting.json"),
+            rig.directory.appendingPathComponent("media-upload-queue.json"),
         ]
         for url in expected {
             XCTAssertTrue(written.contains(url.path), "no durable write for \(url.lastPathComponent)")
         }
+        let queueFirst = written.firstIndex(of: rig.directory.appendingPathComponent("media-upload-queue.json").path)
+        let ledgerFirst = written.firstIndex(of: rig.directory.appendingPathComponent("intent-ledger.json").path)
+        XCTAssertLessThan(try XCTUnwrap(queueFirst), try XCTUnwrap(ledgerFirst), "the request is queued before the ledger records it")
+    }
+
+    func testAnUnreadableUploadQueueFileIsSetAsideNotOverwritten() async throws {
+        let rig = rig("media-corrupt-upload-queue")
+        let queueURL = rig.directory.appendingPathComponent("media-upload-queue.json")
+        let garbage = Data("{not json at all".utf8)
+        try garbage.write(to: queueURL)
+        let entry = try id("episode-corrupt-queue")
+        let audio = try makeAudio(rig.directory, revision: "rev-1")
+        rig.source.set(entry, audio)
+        let runtime = runtime(rig)
+
+        await runtime.consume(try request(rig, entry, from: phoneID, intentID: "cq-1"))
+
+        XCTAssertEqual(try Data(contentsOf: queueURL.appendingPathExtension("corrupt")), garbage)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: queueURL.path))
+        let holding = await runtime.service.isHolding(entryID: entry, revisionID: audio.revisionID)
+        XCTAssertTrue(holding)
+    }
+
+    func testAReadableUploadQueueFileIsNotSetAside() async throws {
+        let rig = rig("media-readable-upload-queue")
+        let queueURL = rig.directory.appendingPathComponent("media-upload-queue.json")
+        let entry = try id("episode-readable-queue")
+        let audio = try makeAudio(rig.directory, revision: "rev-1")
+        rig.source.set(entry, audio)
+        await runtime(rig).consume(try request(rig, entry, from: phoneID, intentID: "rq-1"))
+
+        let restarted = runtime(rig)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: queueURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: queueURL.appendingPathExtension("corrupt").path))
+        let holding = await restarted.service.isHolding(entryID: entry, revisionID: audio.revisionID)
+        XCTAssertTrue(holding)
     }
 }

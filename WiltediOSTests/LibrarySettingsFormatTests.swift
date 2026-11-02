@@ -1,4 +1,5 @@
 import Foundation
+import WiltedCloudKitLibrary
 import WiltedDomain
 import WiltedLibrary
 import XCTest
@@ -123,5 +124,78 @@ final class LibrarySettingsFormatTests: XCTestCase {
             now: { Self.fetchedAt }, timeZone: TimeZone(identifier: "UTC")!)
         await model.refresh()
         XCTAssertEqual(model.syncSummary.detail, "Fetch time reports this iPad’s last successful library read.")
+    }
+
+    func testSyncDiagnosticsFormatForZeroRequestsAndNoLimit() {
+        let text = LibrarySettingsFormat.syncDiagnostics(recentRequests: 0, lastThrottleDate: nil)
+        XCTAssertEqual(text, "iCloud: 0 requests in the last 5 minutes · no limits since launch")
+        assertNoConvergenceClaim([text])
+    }
+
+    func testSyncDiagnosticsFormatForRecentLimit() {
+        let utc = TimeZone(identifier: "UTC")!
+        let throttleDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let formattedTime = throttleDate.formatted(Date.FormatStyle(time: .shortened, timeZone: utc))
+        let text = LibrarySettingsFormat.syncDiagnostics(
+            recentRequests: 3, lastThrottleDate: throttleDate, timeZone: utc)
+        XCTAssertEqual(text, "iCloud: 3 requests in the last 5 minutes · last limit \(formattedTime)")
+        assertNoConvergenceClaim([text])
+    }
+
+    func testSyncDiagnosticsFormatForNoLimitWithRequests() {
+        let text = LibrarySettingsFormat.syncDiagnostics(recentRequests: 12, lastThrottleDate: nil)
+        XCTAssertEqual(text, "iCloud: 12 requests in the last 5 minutes · no limits since launch")
+        assertNoConvergenceClaim([text])
+
+        let single = LibrarySettingsFormat.syncDiagnostics(recentRequests: 1, lastThrottleDate: nil)
+        XCTAssertEqual(single, "iCloud: 1 request in the last 5 minutes · no limits since launch")
+        assertNoConvergenceClaim([single])
+    }
+
+    func testSyncDiagnosticsWithCloudKitOperationCounters() {
+        let utc = TimeZone(identifier: "UTC")!
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let counters = CloudKitOperationCounters(clock: { base }, startLoggingTask: false)
+
+        var summary = counters.summary()
+        var text = LibrarySettingsFormat.syncDiagnostics(summary, timeZone: utc)
+        XCTAssertEqual(text, "iCloud: 0 requests in the last 5 minutes · no limits since launch")
+
+        counters.record(caller: .poll, recordCount: 1, bytes: 100, result: .throttled(retryAfter: 30), timestamp: base)
+        summary = counters.summary()
+        text = LibrarySettingsFormat.syncDiagnostics(summary, timeZone: utc)
+        let timeStr = base.formatted(Date.FormatStyle(time: .shortened, timeZone: utc))
+        XCTAssertEqual(text, "iCloud: 1 request in the last 5 minutes · last limit \(timeStr)")
+
+        counters.record(caller: .handoff, recordCount: 1, bytes: 50, result: .ok, timestamp: base)
+        counters.record(caller: .stats, recordCount: 1, bytes: 50, result: .ok, timestamp: base)
+        summary = counters.summary()
+        text = LibrarySettingsFormat.syncDiagnostics(summary, timeZone: utc)
+        XCTAssertEqual(text, "iCloud: 3 requests in the last 5 minutes · last limit \(timeStr)")
+        assertNoConvergenceClaim([text])
+    }
+
+    func testAppModelExposesSyncDiagnosticsWhenCountersConfigured() {
+        let utc = TimeZone(identifier: "UTC")!
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let counters = CloudKitOperationCounters(clock: { base }, startLoggingTask: false)
+        let modelWithCounters = LibraryAppModel(
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: InMemoryLibraryServer(writerDeviceID: "mac")),
+            deviceID: "phone", deviceKind: "iPhone",
+            preferences: UserDefaults(suiteName: "library-settings-format-counters")!,
+            now: { base }, timeZone: utc,
+            operationCounters: counters)
+
+        XCTAssertEqual(
+            modelWithCounters.syncDiagnostics,
+            "iCloud: 0 requests in the last 5 minutes · no limits since launch")
+
+        let modelWithoutCounters = LibraryAppModel(
+            transport: InMemoryLibraryTransport(deviceID: "phone", server: InMemoryLibraryServer(writerDeviceID: "mac")),
+            deviceID: "phone", deviceKind: "iPhone",
+            preferences: UserDefaults(suiteName: "library-settings-format-no-counters")!,
+            now: { base }, timeZone: utc)
+
+        XCTAssertNil(modelWithoutCounters.syncDiagnostics)
     }
 }

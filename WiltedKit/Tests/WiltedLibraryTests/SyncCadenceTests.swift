@@ -17,10 +17,18 @@ final class SyncCadenceTests: XCTestCase {
 
     func testTheSteadyStateIntervalsAreThirtySecondsOrLonger() {
         XCTAssertEqual(SyncCadence.pollInterval, 30)
+        XCTAssertEqual(SyncCadence.phoneIdleInterval, 300)
         XCTAssertEqual(SyncCadence.playingPublishInterval, 30)
         XCTAssertEqual(SyncCadence.phoneObserveInterval, 30)
         XCTAssertEqual(SyncCadence.storedPositionRefreshInterval, 60)
         XCTAssertEqual(SyncCadence.rediscoverEveryCycles, 4)
+    }
+
+    func testPinnedRequestsPerIdleHourForEachDevice() {
+        XCTAssertEqual(SyncCadence.macIdleRequestsPerHour, 120)
+        XCTAssertEqual(SyncCadence.phoneIdleRequestsPerHour, 12)
+        XCTAssertEqual(Int(3600 / SyncCadence.pollInterval), SyncCadence.macIdleRequestsPerHour)
+        XCTAssertEqual(Int(3600 / SyncCadence.phoneIdleInterval), SyncCadence.phoneIdleRequestsPerHour)
     }
 
     func testAPlayingRecordIsDeadOnlyAfterThreePublishCadences() {

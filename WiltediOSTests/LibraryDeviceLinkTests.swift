@@ -122,7 +122,46 @@ final class LibraryDeviceLinkTests: XCTestCase {
 
         rig.clock.advance(LibraryAppModel.announceInterval * 3)
         await rig.model.refresh()
-        XCTAssertEqual(rig.probe.announcements.count, 1, "a linked device never announces again")
+        XCTAssertEqual(rig.probe.announcements.count, 1, "a linked device does not announce within the 7-day interval")
+    }
+
+    func testAPhoneLinkedLongAgoAnnouncesOnceAndTheRefreshSurvivesARelaunch() async throws {
+        let rig = try makeRig()
+        try await rig.mac.publishDeviceLink(LibraryDeviceLink(deviceID: "phone", linkedAt: rig.clock.now.addingTimeInterval(-40 * 24 * 60 * 60)))
+        await rig.model.refresh()
+        XCTAssertTrue(rig.model.deviceLinked)
+        XCTAssertEqual(rig.probe.announcements.count, 1, "a link older than 7 days announces at its first round")
+
+        let relaunched = rig.makeModel(store: rig.store, verifiedOwner: HandshakeRig.owner)
+        rig.clock.advance(24 * 60 * 60)
+        await relaunched.refresh()
+        XCTAssertEqual(rig.probe.announcements.count, 1, "a relaunch does not restart or skip the 7-day refresh")
+    }
+
+    func testLinkedPhoneReannouncesAfterSevenDays() async throws {
+        let rig = try makeRig()
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announcements.count, 1)
+
+        try await rig.macLinksPhone()
+        await rig.model.refresh()
+        XCTAssertTrue(rig.model.deviceLinked)
+
+        // Advance 6 days: still inside the 7-day window, does not re-announce
+        rig.clock.advance(6 * 24 * 60 * 60)
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announcements.count, 1)
+
+        // Advance another 2 days (8 days total > 7 days): re-announces
+        rig.clock.advance(2 * 24 * 60 * 60)
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announcements.count, 2, "a linked phone re-announces after 7 days")
+        XCTAssertEqual(rig.probe.announcements.last?.announcedAt, rig.clock.now)
+
+        // Immediate subsequent refresh does not re-announce again
+        rig.clock.advance(LibraryAppModel.announceInterval * 2)
+        await rig.model.refresh()
+        XCTAssertEqual(rig.probe.announcements.count, 2)
     }
 
     func testALinkInTheSameRoundPreventsTheAnnouncement() async throws {

@@ -373,9 +373,10 @@ final class LibraryHandoffModelTests: XCTestCase {
         XCTAssertNotNil(rig.model.handoffMessage)
         let stillHolds = await rig.model.coordinator.hasRelinquished
         XCTAssertTrue(stillHolds)
-        // Never restarts: the loop is gone, so no further sleep is requested.
+        // Never restarts: the observe loop is gone, so no further observe-cadence sleep is requested. The
+        // paused phone's sync tick drops to the idle interval.
         let requested = await sleeper.requested
-        XCTAssertEqual(requested, [SyncCadence.phoneObserveInterval])
+        XCTAssertEqual(requested.filter { $0 != SyncCadence.phoneIdleInterval }, [SyncCadence.phoneObserveInterval], "\(requested)")
     }
 
     func testALowerEpochElsewhereDoesNotPauseThePhone() async throws {

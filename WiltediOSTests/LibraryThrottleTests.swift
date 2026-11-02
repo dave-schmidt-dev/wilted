@@ -105,4 +105,18 @@ final class LibraryThrottleTests: XCTestCase {
         XCTAssertEqual(LibraryHandoffTiming().observeInterval, 30)
         XCTAssertEqual(LibraryHandoffTiming().observeInterval, SyncCadence.phoneObserveInterval)
     }
+
+    func testPhoneRowSaysWaitingForICloudWithRetryTime() async throws {
+        let model = makeModel()
+        do {
+            try await model.throttleGate.run {
+                throw FakeCloudKitError.cloudKit(code: 7, message: "Request was rate limited. Retry after 45 seconds")
+            } as Void
+        } catch {}
+        try await eventually("the row notice appears") { model.throttleRowNotice != nil }
+        let notice = try XCTUnwrap(model.throttleRowNotice)
+        XCTAssertTrue(notice.hasPrefix("Waiting for iCloud, retrying at "), notice)
+        let expectedTime = model.clockFormat.clock(model.throttleState!.retryAt)
+        XCTAssertEqual(notice, "Waiting for iCloud, retrying at \(expectedTime)")
+    }
 }

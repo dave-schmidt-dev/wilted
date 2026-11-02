@@ -53,4 +53,16 @@ extension LibraryAppModel {
             self.scheduleThrottleRetry()
         }
     }
+
+    /// Formats a retry time for a row or banner: "Waiting for iCloud, retrying at HH:mm".
+    func throttleNotice(retryingAt due: Date) -> String {
+        "Waiting for iCloud, retrying at \(clockFormat.clock(due))"
+    }
+
+    /// Status text for a row waiting on the gate: "Waiting for iCloud, retrying at HH:mm".
+    var throttleRowNotice: String? {
+        guard let state = throttleState else { return nil }
+        let due = max(state.retryAt, throttleAttemptAt ?? state.retryAt)
+        return throttleNotice(retryingAt: due)
+    }
 }

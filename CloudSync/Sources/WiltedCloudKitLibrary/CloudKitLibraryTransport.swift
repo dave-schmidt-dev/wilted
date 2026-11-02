@@ -16,6 +16,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     public nonisolated let accountChanges: AsyncStream<CloudKitAccountChangeSignal>
     public nonisolated let deviceID: String
     public nonisolated let isLibraryWriter: Bool
+    public nonisolated let counters: CloudKitOperationCounters
     let mapper: LibraryRecordMapper
 
     enum Operation { case fetch, send }
@@ -40,6 +41,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     private var waiter: CheckedContinuation<Void, Error>?
     var fetchAcc = LibraryFetchAccumulator()
     private var sendAcc = LibrarySendAccumulator()
+    private var sendRecordErrors: [String: Error] = [:]
     var serverRecords: [String: CKRecord] = [:]
     private var busy = false
     /// Devices and entries learned from fetched records, so targeted fetches know which names to ask for.
@@ -52,6 +54,11 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     /// The last read found no intent index for this device, so it is not asked for again until this
     /// device sends an intent (which creates it). A device that never sends one stops paying for it.
     var ownIntentIndexMissing = false
+    var consecutiveDirectoryFailures = 0
+    var directoryRecordPresent = false
+    var lastObservedOfferGeneration: UInt64?
+    var cachedOffers: [LibraryMediaOffer] = []
+    var clock: @Sendable () -> Date = { Date() }
     /// Seconds without upload or download progress before a media transfer is abandoned.
     let mediaWatchdogInterval: TimeInterval
     private var gate: [CheckedContinuation<Void, Never>] = []
@@ -65,12 +72,23 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                 driverFactory: @escaping CloudKitEngineDriverFactory, outbox: CloudKitLibraryOutbox,
                 state: LibraryChangeToken? = nil, knownOwnerToken: String? = nil, initialReviewHold: Bool = false,
                 mapper: LibraryRecordMapper = LibraryRecordMapper(),
-                mediaWatchdogInterval: TimeInterval = 300) throws {
+                mediaWatchdogInterval: TimeInterval = 300,
+                counters: CloudKitOperationCounters? = nil) throws {
+        let opCounters = counters ?? CloudKitOperationCounters()
+        self.counters = opCounters
         self.mediaWatchdogInterval = mediaWatchdogInterval
         self.deviceID = deviceID
         self.isLibraryWriter = isLibraryWriter
-        self.driver = driver
-        self.driverFactory = driverFactory
+        self.driverFactory = { state in
+            let inner = try driverFactory(state)
+            if let counting = inner as? CountingEngineDriver { return counting }
+            return CountingEngineDriver(inner: inner, counters: opCounters, outbox: outbox, mapper: mapper)
+        }
+        if let counting = driver as? CountingEngineDriver {
+            self.driver = counting
+        } else {
+            self.driver = CountingEngineDriver(inner: driver, counters: opCounters, outbox: outbox, mapper: mapper)
+        }
         self.outbox = outbox
         self.mapper = mapper
         self.knownOwnerToken = knownOwnerToken
@@ -98,6 +116,11 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         catch { throw failure(error) }
     }
     public func isQuarantined() -> Bool { quarantined }
+
+    public func setClock(_ clock: @escaping @Sendable () -> Date) { self.clock = clock }
+
+    /// Exposes a Sendable snapshot of CloudKit operation counters for diagnostics and status lines.
+    public func operationSummary() async -> CloudKitOperationSummary { counters.summary() }
 
     public func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult {
         guard isLibraryWriter else { throw LibraryTransportError.ownershipViolation("\(deviceID) may not write library state") }
@@ -168,29 +191,33 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     }
 
     public func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {
-        guard record.deviceID == deviceID else {
-            throw LibraryTransportError.ownershipViolation("\(deviceID) may not write records for \(record.deviceID)")
+        try await CloudKitOperationContext.$caller.withValue(.handoff) {
+            guard record.deviceID == deviceID else {
+                throw LibraryTransportError.ownershipViolation("\(deviceID) may not write records for \(record.deviceID)")
+            }
+            let id = try mapper.recordID(playback: record, channel: channel).recordName
+            try await write(name: id, conflictIsSuccess: false) { try self.mapper.record(playback: record, channel: channel, existing: $0) }
+            peers.note(device: record.deviceID, entry: record.entryID)
         }
-        let id = try mapper.recordID(playback: record, channel: channel).recordName
-        try await write(name: id, conflictIsSuccess: false) { try self.mapper.record(playback: record, channel: channel, existing: $0) }
-        peers.note(device: record.deviceID, entry: record.entryID)
     }
 
     /// One write for all of a moment's playback records: now-playing and progress go up together.
     public func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
-        for item in records where item.record.deviceID != deviceID {
-            throw LibraryTransportError.ownershipViolation("\(deviceID) may not write records for \(item.record.deviceID)")
-        }
-        let items = try records.map { item in
-            (name: try mapper.recordID(playback: item.record, channel: item.channel).recordName, item: item)
-        }
-        try await writeMany(items.map { entry in
-            (name: entry.name, build: { base in
-                try self.mapper.record(playback: entry.item.record, channel: entry.item.channel, existing: base)
+        try await CloudKitOperationContext.$caller.withValue(.handoff) {
+            for item in records where item.record.deviceID != deviceID {
+                throw LibraryTransportError.ownershipViolation("\(deviceID) may not write records for \(item.record.deviceID)")
+            }
+            let items = try records.map { item in
+                (name: try mapper.recordID(playback: item.record, channel: item.channel).recordName, item: item)
+            }
+            try await writeMany(items.map { entry in
+                (name: entry.name, build: { base in
+                    try self.mapper.record(playback: entry.item.record, channel: entry.item.channel, existing: base)
+                })
             })
-        })
-        for item in records {
-            peers.note(device: item.record.deviceID, entry: item.record.entryID)
+            for item in records {
+                peers.note(device: item.record.deviceID, entry: item.record.entryID)
+            }
         }
     }
 
@@ -217,6 +244,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         committedFetchToken = nil
         serverRecords = [:]
         peers = LibraryPeerDirectory()
+        consecutiveDirectoryFailures = 0
+        lastObservedOfferGeneration = nil
+        cachedOffers = []
         await driver.resetZoneBootstrap()
         quarantined = false
     }
@@ -237,7 +267,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
             defer { task.cancel() }
             defer { Task { await scanDriver.cancelOperations() } }
             try await scanDriver.ensureZone()
-            return try await runFetch(on: scanDriver, epoch: scanEpoch)
+            return try await CloudKitOperationContext.$caller.withValue(.scan) {
+                try await runFetch(on: scanDriver, epoch: scanEpoch)
+            }
         } catch { throw failure(error) }
     }
 
@@ -265,6 +297,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                 for item in remaining where acc.saved[item.name] == nil {
                     if let failed = acc.failed[item.name] {
                         guard failed.disposition == .conflict else {
+                            if let recordError = sendRecordErrors[item.name] {
+                                throw recordError
+                            }
                             throw LibraryTransportError.transport("save failed: \(failed.disposition.rawValue)")
                         }
                         bases[item.name] = failed.server
@@ -275,6 +310,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                 }
                 if retry.isEmpty { return }
                 remaining = retry
+            }
+            if let recordError = sendRecordErrors[remaining[0].name] {
+                throw recordError
             }
             throw LibraryTransportError.transport("record \(remaining[0].name) was not acknowledged")
         } catch { throw failure(error) }
@@ -297,6 +335,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                 if acc.saved[name] != nil { return }
                 if let failed = acc.failed[name] {
                     guard failed.disposition == .conflict else {
+                        if let recordError = sendRecordErrors[name] {
+                            throw recordError
+                        }
                         throw LibraryTransportError.transport("save failed: \(failed.disposition.rawValue)")
                     }
                     if conflictIsSuccess { return }
@@ -304,6 +345,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                     continue
                 }
                 if acc.zoneMissing { base = nil }
+            }
+            if let recordError = sendRecordErrors[name] {
+                throw recordError
             }
             throw LibraryTransportError.transport("record \(name) was not acknowledged")
         } catch { throw failure(error) }
@@ -318,6 +362,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         outbox.set(saves)
         defer { outbox.clear() }
         sendAcc = LibrarySendAccumulator()
+        sendRecordErrors.removeAll()
         operation = .send
         activeEpoch = mainEpoch
         defer { operation = nil; activeEpoch = -1 }
@@ -368,6 +413,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         await driver.resetZoneBootstrap()
         committedFetchToken = nil
         provisionalFetchToken = nil
+        consecutiveDirectoryFailures = 0
+        lastObservedOfferGeneration = nil
+        cachedOffers = []
     }
 
     private nonisolated func consume(_ target: any CloudKitEngineDriver, epoch: Int) -> Task<Void, Never> {
@@ -452,6 +500,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         }
         for id in deleted { sendAcc.deleted.insert(id.recordName); serverRecords[id.recordName] = nil }
         for (id, error) in failed + failedDeletes.map({ ($0.key, $0.value as Error) }) {
+            sendRecordErrors[id.recordName] = error
             let ckError = error as? CKError
             if ckError?.code == .unknownItem, failedDeletes[id] != nil { sendAcc.deleted.insert(id.recordName); continue }
             if Self.isServerReset(error) { sendAcc.zoneMissing = true; continue }

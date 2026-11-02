@@ -164,6 +164,8 @@ public struct LibraryPollOptions: OptionSet, Sendable {
     public static let deviceDirectory = LibraryPollOptions(rawValue: 1 << 4)
     /// The Mac's side of the handshake with this device (the phone).
     public static let deviceLink = LibraryPollOptions(rawValue: 1 << 5)
+    /// With `offers`: fetch every offer record even if the offer index generation has not moved.
+    public static let forceOffers = LibraryPollOptions(rawValue: 1 << 6)
 }
 
 /// The parts of an inbound poll that were asked for; the others stay nil or empty.

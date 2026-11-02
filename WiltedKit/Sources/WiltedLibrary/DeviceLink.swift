@@ -6,6 +6,9 @@ import WiltedDomain
 /// One follower device's announcement: its id and model family, never the person's device name
 /// (W-INV-031).
 public struct LibraryDeviceAnnouncement: Codable, Sendable, Equatable {
+    /// A linked follower refreshes its announcement at most once every 7 days.
+    public static let refreshInterval: TimeInterval = 7 * 24 * 60 * 60
+
     public let deviceID: String
     /// "iPhone", "iPad" or "Watch".
     public let kind: String
@@ -27,11 +30,18 @@ public struct LibraryDeviceAnnouncement: Codable, Sendable, Equatable {
 public struct LibraryDeviceDirectory: Codable, Sendable, Equatable {
     /// Oldest announcements beyond this are dropped, so the record stays small.
     public static let maximumDevices = 32
+    /// An announcement not refreshed within 30 days is dropped from what the Mac polls.
+    public static let announcementLifetime: TimeInterval = 30 * 24 * 60 * 60
 
     public let devices: [LibraryDeviceAnnouncement]
 
     public init(devices: [LibraryDeviceAnnouncement] = []) {
         self.devices = devices.sorted { $0.deviceID < $1.deviceID }
+    }
+
+    /// Devices whose announcement is within `lifetime` as of `now`.
+    public func activeDevices(asOf now: Date = Date(), lifetime: TimeInterval = announcementLifetime) -> [LibraryDeviceAnnouncement] {
+        devices.filter { now.timeIntervalSince($0.announcedAt) <= lifetime }
     }
 
     /// This directory with `announcement` replacing any entry for the same device, keeping the

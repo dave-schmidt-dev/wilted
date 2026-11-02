@@ -24,16 +24,18 @@ private let mediaLog = Logger(subsystem: "com.zerodelta.wilted", category: "MacM
 /// `mediaCached` for it, or seven days after its last request. The transport holds one asset
 /// per entry, so a newer revision replaces the older asset on upload; the older revision's
 /// accounting then only drops its books and never withdraws the newer asset.
+///
+/// Every `requestMedia` is held in a `WiltedMacMediaUploadQueue`, saved to `queueURL` (in memory
+/// when nil, for tests). An upload that fails transiently stays queued and retries until
+/// `maximumIntentAge`; this service makes one attempt at a time and the queue owns the waits.
 actor WiltedMacMediaService {
     static let timeToLive: TimeInterval = 7 * 24 * 60 * 60
-    /// An intent older than this is stale and ignored.
+    /// A queued request older than this is failed rather than retried.
     static let maximumIntentAge: TimeInterval = 7 * 24 * 60 * 60
     /// Mirrors the transport limit so an oversize file is answered `notReady` up front.
     static let maximumByteCount: Int64 = 250 * 1024 * 1024
-    /// The wait before the one retry of an upload that failed.
+    /// The wait before the first retry of an upload that failed; later retries wait longer.
     static let defaultUploadRetryDelay: Duration = .seconds(5)
-    /// The longest one upload waits out iCloud throttling before the request is reported failed.
-    static let maximumThrottleWait: TimeInterval = 10 * 60
 
     /// Told each stage of a media request after `received`, so the requesting device can show it.
     typealias RequestReporter = @Sendable (LibraryIntent, LibraryMediaRequestStatus.Stage, String?) async -> Void
@@ -64,41 +66,47 @@ actor WiltedMacMediaService {
         var transcripts: [String: String]?
     }
 
-    private let source: any WiltedMacReadyAudioSource
-    private let transport: any LibraryTransport
+    /// Lets the queue reach its service without keeping it alive, as the queue is built inside `init`.
+    private final class ServiceLink: @unchecked Sendable {
+        weak var service: WiltedMacMediaService?
+    }
+
+    let source: any WiltedMacReadyAudioSource
+    let transport: any LibraryTransport
     private let accountingURL: URL?
     private let accountingWrite: AccountingWriter
     private let now: @Sendable () -> Date
-    private let uploadRetryDelay: Duration
-    private let sleep: @Sendable (Duration) async throws -> Void
-    private var records: [AssetKey: AssetRecord] = [:]
-    private var published: [String: String] = [:]
+    var records: [AssetKey: AssetRecord] = [:]
+    var published: [String: String] = [:]
     /// What the transport holds per entry, seeded from it on the first reconcile.
-    private var offered: [String: LibraryMediaOffer] = [:]
-    private var offersSeeded = false
+    var offered: [String: LibraryMediaOffer] = [:]
+    var offersSeeded = false
     /// The `available` offer each prepared queued entry should show, from the last reconcile.
-    private var availableOffers: [String: LibraryMediaOffer] = [:]
-    private var publishedTranscripts: [String: String] = [:]
+    var availableOffers: [String: LibraryMediaOffer] = [:]
+    var publishedTranscripts: [String: String] = [:]
     private var tail: Task<Void, Never>?
     private var sweepQueued = false
     private let reportRequest: RequestReporter?
-    private(set) var lastFailure: String?
-    /// The upload's current wait for a throttle to lift, cut short by `drainEndingThrottleWaits()`.
-    private var throttleWait: Task<Void, Error>?
-    private var abandoningThrottleWaits = false
+    var lastFailure: String?
+    /// The queue every media request passes through.
+    let uploadQueue: WiltedMacMediaUploadQueue
 
     /// - Parameters:
-    ///   - uploadRetryDelay: the wait before retrying an upload that failed once.
+    ///   - uploadRetryDelay: the wait before the first retry of a failed upload.
     ///   - sleep: how that wait passes. Tests replace it so a retry costs no real time.
     ///   - reportRequest: told `sending`, `answered` or `failed` for each media request it serves.
     ///   - accountingWrite: writes the accounting bytes; tests replace it to fail the folder sync.
+    ///   - queueURL: where the upload queue is saved; nil keeps it in memory only (tests).
+    ///   - queueWrite: writes the queue bytes; tests replace it to fail or watch a save.
     init(
         source: any WiltedMacReadyAudioSource, transport: any LibraryTransport, accountingURL: URL?,
         now: @escaping @Sendable () -> Date = { Date() },
         uploadRetryDelay: Duration = WiltedMacMediaService.defaultUploadRetryDelay,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         reportRequest: RequestReporter? = nil,
-        accountingWrite: @escaping AccountingWriter = { try DurableFile.replace($0, to: $1) }
+        accountingWrite: @escaping AccountingWriter = { try DurableFile.replace($0, to: $1) },
+        queueURL: URL? = nil,
+        queueWrite: @escaping WiltedMacMediaUploadQueue.Writer = { try DurableFile.replace($0, to: $1) }
     ) {
         self.reportRequest = reportRequest
         self.source = source
@@ -106,8 +114,6 @@ actor WiltedMacMediaService {
         self.accountingURL = accountingURL
         self.accountingWrite = accountingWrite
         self.now = now
-        self.uploadRetryDelay = uploadRetryDelay
-        self.sleep = sleep
         if let accountingURL, let data = try? Data(contentsOf: accountingURL) {
             if let stored = try? JSONDecoder().decode(Stored.self, from: data) {
                 records = Dictionary(stored.records.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last })
@@ -121,6 +127,15 @@ actor WiltedMacMediaService {
                 mediaLog.error("Media accounting was unreadable and was set aside")
             }
         }
+        let link = ServiceLink()
+        uploadQueue = WiltedMacMediaUploadQueue(
+            fileURL: queueURL, now: now, uploadRetryDelay: uploadRetryDelay, sleep: sleep,
+            reportRequest: reportRequest, write: queueWrite
+        ) { intent, isRetry in
+            guard let service = link.service else { throw CancellationError() }
+            try await service.attemptQueued(intent, isRetry: isRetry)
+        }
+        link.service = self
     }
 
     // MARK: - Entry points (serialized: one upload or withdrawal at a time)
@@ -133,8 +148,14 @@ actor WiltedMacMediaService {
     /// Queues one media intent behind the work already queued and returns at once, so a sync round
     /// never waits on an upload and a request sent during one is still read in the next round.
     @discardableResult
-    func enqueue(_ intent: LibraryIntent) -> Task<Void, Never> {
-        chained { await self.process(intent) }
+    func enqueue(_ intent: LibraryIntent) async -> Task<Void, Never> {
+        if case .requestMedia = intent.action {
+            do { return try await uploadQueue.admit(intent) } catch {
+                mediaLog.error("Media request was not queued and is not served: \(String(describing: error), privacy: .public)")
+                return Task {}
+            }
+        }
+        return chained { await self.process(intent) }
     }
 
     /// Queues a sweep unless one is already waiting, and returns at once.
@@ -148,16 +169,16 @@ actor WiltedMacMediaService {
     }
 
     /// Waits for every queued request and sweep like `drain()`, but ends any wait for iCloud
-    /// throttling at once, as a failed request, so shutdown does not sit behind it.
+    /// throttling at once so shutdown does not sit behind it. A request that was waiting stays
+    /// queued and is served on the next launch.
     func drainEndingThrottleWaits() async {
-        abandoningThrottleWaits = true
-        throttleWait?.cancel()
+        await uploadQueue.drainEndingThrottleWaits()
         await tail?.value
-        abandoningThrottleWaits = false
     }
 
     /// Waits for every queued request and sweep.
     func drain() async {
+        await uploadQueue.drain()
         await tail?.value
     }
 
@@ -204,12 +225,6 @@ actor WiltedMacMediaService {
 
     private func process(_ intent: LibraryIntent) async {
         switch intent.action {
-        case let .requestMedia(entryID):
-            guard now().timeIntervalSince(intent.createdAt) <= Self.maximumIntentAge else {
-                mediaLog.notice("Ignored a media request for \(entryID.rawValue, privacy: .public) older than seven days")
-                return
-            }
-            await serve(entryID, for: intent)
         case let .mediaCached(entryID, revisionID, deviceID):
             await acknowledge(entryID: entryID, revisionID: revisionID, deviceID: deviceID)
         default:
@@ -217,7 +232,23 @@ actor WiltedMacMediaService {
         }
     }
 
-    private func serve(_ entryID: ItemID, for intent: LibraryIntent) async {
+    /// One attempt to serve a request the durable queue holds, run in turn with the other work on
+    /// this service. Throws what went wrong, for the queue to retry or fail; reports nothing itself
+    /// beyond the stages of a working attempt.
+    func attemptQueued(_ intent: LibraryIntent, isRetry: Bool) async throws {
+        guard case let .requestMedia(entryID) = intent.action else { return }
+        let outcome = await serialized { () async -> Result<Void, any Error> in
+            do { return .success(try await self.serve(entryID, for: intent, isRetry: isRetry)) } catch { return .failure(error) }
+        }
+        try outcome.get()
+    }
+
+    /// The plain words a device is shown when a request cannot be answered.
+    static let failedDetail = "The Mac could not send the audio. Try again."
+
+    /// Answers one request. Throws, after logging, when it could not; the caller decides whether
+    /// that is a retry or a failure to report. A retry does not repeat the `sending` stage.
+    private func serve(_ entryID: ItemID, for intent: LibraryIntent, isRetry: Bool = false) async throws {
         let requester = intent.deviceID
         do {
             guard let ready = try await source.readyAudio(for: entryID) else {
@@ -255,10 +286,10 @@ actor WiltedMacMediaService {
                 await reportRequest?(intent, .answered, nil)
                 return
             }
-            await reportRequest?(intent, .sending, nil)
+            if !isRetry { await reportRequest?(intent, .sending, nil) }
             mediaLog.notice("Uploading \(ready.byteCount, privacy: .public) bytes of audio for \(entryID.rawValue, privacy: .public)")
             let started = Date()
-            try await upload(offer, from: ready.fileURL)
+            try await transport.publishMedia(offer: offer, fileURL: ready.fileURL)
             mediaLog.notice("Uploaded audio for \(entryID.rawValue, privacy: .public) in \(Date().timeIntervalSince(started), format: .fixed(precision: 1), privacy: .public) s")
             var record = records[key] ?? AssetRecord(key: key, requesters: [], acked: [], touchedAt: now())
             record.requesters.insert(requester)
@@ -272,57 +303,13 @@ actor WiltedMacMediaService {
             lastFailure = nil
             await reportRequest?(intent, .answered, nil)
         } catch {
-            // No offer is published. The device is told in plain words; the typed cause stays in
-            // this Mac's log, because the link record is synced to other devices.
+            // No offer is published. The typed cause stays in this Mac's log, because the link
+            // record the device reads is synced to other devices.
             let cause = Self.typedCause(error)
             lastFailure = cause
             mediaLog.error("Media request for \(entryID.rawValue, privacy: .public) failed: \(cause, privacy: .public)")
-            if !(error is CancellationError) {
-                await reportRequest?(intent, .failed, "The Mac could not send the audio. Try again.")
-            }
+            throw error
         }
-    }
-
-    /// Uploads the audio for `offer`, trying once more after `uploadRetryDelay` when an attempt fails.
-    /// A throttled attempt instead waits until iCloud said it will take uploads again, within
-    /// `maximumThrottleWait` of the first attempt, and does not spend the retry. The last error is thrown.
-    private func upload(_ offer: LibraryMediaOffer, from fileURL: URL) async throws {
-        let entry = offer.entryID.rawValue
-        let throttleDeadline = now().addingTimeInterval(Self.maximumThrottleWait)
-        var retried = false
-        while true {
-            do {
-                try await transport.publishMedia(offer: offer, fileURL: fileURL)
-                return
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let throttled as TransportThrottled where throttled.retryAt <= throttleDeadline {
-                let seconds = max(throttled.retryAt.timeIntervalSince(now()), 1)
-                mediaLog.notice("Upload of audio for \(entry, privacy: .public) throttled; waiting \(seconds, format: .fixed(precision: 0), privacy: .public) s")
-                try await waitOutThrottle(seconds: seconds, else: throttled)
-            } catch {
-                guard !retried else { throw error }
-                retried = true
-                let delay = uploadRetryDelay, cause = Self.typedCause(error)
-                mediaLog.notice("Upload of audio for \(entry, privacy: .public) failed; retrying once in \(delay, privacy: .public): \(cause, privacy: .public)")
-                try await self.sleep(uploadRetryDelay)
-            }
-        }
-    }
-
-    /// Sleeps `seconds`, or throws `throttled` when `drainEndingThrottleWaits()` ends the wait.
-    private func waitOutThrottle(seconds: TimeInterval, else throttled: TransportThrottled) async throws {
-        guard !abandoningThrottleWaits else { throw throttled }
-        let sleep = self.sleep
-        let wait = Task { try await sleep(.seconds(seconds)) }
-        throttleWait = wait
-        defer { throttleWait = nil }
-        do {
-            try await wait.value
-        } catch {
-            throw throttled
-        }
-        if abandoningThrottleWaits { throw throttled }
     }
 
     /// The error's type and value, e.g. `CloudKitSyncError.cloudKit(code: 4, message: "…")`. A
@@ -347,7 +334,7 @@ actor WiltedMacMediaService {
     }
 
     /// Forgets the asset accounting for an entry whose audio is no longer on the transport.
-    private func dropBooks(for entry: String) {
+    func dropBooks(for entry: String) {
         published[entry] = nil
         records = records.filter { $0.key.entryID != entry }
     }
@@ -398,138 +385,9 @@ actor WiltedMacMediaService {
         do { try persist() } catch { mediaLog.error("Could not save media accounting: \(String(describing: error), privacy: .public)") }
     }
 
-    // MARK: - Available offers
-
-    /// Learns the published offers once per launch, so neither a reconcile nor a request that
-    /// arrives before one republishes or re-uploads what iCloud already holds.
-    private func seedOffers() async throws {
-        guard !offersSeeded else { return }
-        for offer in try await transport.mediaOffers() { offered[offer.entryID.rawValue] = offer }
-        offersSeeded = true
-    }
-
-    private func reconcile() async -> Bool {
-        let prepared: [ItemID: WiltedMacReadyAudio]
-        do {
-            prepared = try await source.preparedQueuedAudio()
-            try await seedOffers()
-        } catch {
-            lastFailure = String(describing: error)
-            mediaLog.error("Could not read the prepared Larder to publish offers: \(String(describing: error), privacy: .public)")
-            return false
-        }
-        var desired: [String: LibraryMediaOffer] = [:]
-        for (entryID, audio) in prepared where audio.byteCount <= Self.maximumByteCount && Self.fileSize(audio.fileURL) == audio.byteCount {
-            desired[entryID.rawValue] = try? LibraryMediaOffer(
-                entryID: entryID, revisionID: audio.revisionID, contentHash: audio.contentHash, byteCount: audio.byteCount,
-                mediaType: audio.mediaType, durationSeconds: audio.durationSeconds, state: .available, preparation: audio.preparation
-            )
-        }
-        availableOffers = desired
-        var succeeded = true
-        // A `notReady` offer answers a request rather than describing the Larder, so it is left alone.
-        for (raw, offer) in offered.sorted(by: { $0.key < $1.key }) where desired[raw] == nil && offer.state != .notReady {
-            do {
-                await withdrawTranscript(for: raw)
-                try await transport.publishMedia(offer: .notReady(entryID: offer.entryID), fileURL: URL(fileURLWithPath: "/dev/null"))
-                dropBooks(for: raw)
-                offered[raw] = .notReady(entryID: offer.entryID)
-                mediaLog.notice("Withdrew the offer for \(raw, privacy: .public): it left the Larder or is no longer prepared")
-            } catch {
-                succeeded = false
-                mediaLog.error("Could not withdraw the offer for \(raw, privacy: .public): \(String(describing: error), privacy: .public)")
-            }
-        }
-        for (raw, want) in desired.sorted(by: { $0.key < $1.key }) {
-            if let current = offered[raw], current.revisionID == want.revisionID,
-               current.contentHash == want.contentHash, current.byteCount == want.byteCount,
-               current.mediaType == want.mediaType, current.preparation == want.preparation {
-                if current.state == .available { continue }
-                if current.state == .ready, published[raw] == want.revisionID?.rawValue { continue }
-            }
-            do {
-                try await transport.publishMedia(offer: want, fileURL: URL(fileURLWithPath: "/dev/null"))
-                // A transcript belongs to its revision; a republish of the same revision keeps it.
-                if publishedTranscripts[raw] != want.revisionID?.rawValue { await withdrawTranscript(for: raw) }
-                dropBooks(for: raw)
-                offered[raw] = want
-            } catch {
-                succeeded = false
-                mediaLog.error("Could not publish the available offer for \(raw, privacy: .public): \(String(describing: error), privacy: .public)")
-            }
-        }
-        await publishMissingTranscripts(for: desired)
-        do { try persist() } catch { mediaLog.error("Could not save media accounting: \(String(describing: error), privacy: .public)") }
-        if succeeded { lastFailure = nil }
-        return succeeded
-    }
-
-    /// Publishes the transcript of every prepared Larder entry that has one and is not yet published
-    /// at its revision, without a request. A phone that downloaded audio before transcripts existed
-    /// never asks again, so this is the only way it gets one. Entries without a transcript are left
-    /// alone; a failure is logged and retried by the next reconcile.
-    private func publishMissingTranscripts(for desired: [String: LibraryMediaOffer]) async {
-        var pending: [ItemID: RevisionID] = [:]
-        for (raw, offer) in desired {
-            guard let revisionID = offer.revisionID, publishedTranscripts[raw] != revisionID.rawValue else { continue }
-            pending[offer.entryID] = revisionID
-        }
-        guard !pending.isEmpty else { return }
-        let found: [ItemID: LibraryTranscript]
-        do { found = try await source.transcripts(for: pending) } catch {
-            mediaLog.error("Could not read transcripts to publish: \(String(describing: error), privacy: .public)")
-            return
-        }
-        for (entryID, transcript) in found.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
-            guard transcript.revisionID == pending[entryID] else { continue }
-            do {
-                try await transport.publishTranscript(transcript)
-                publishedTranscripts[entryID.rawValue] = transcript.revisionID.rawValue
-                mediaLog.notice("Published the transcript for \(entryID.rawValue, privacy: .public) without a request")
-            } catch {
-                mediaLog.error("Transcript for \(entryID.rawValue, privacy: .public) was not published: \(String(describing: error), privacy: .public)")
-            }
-        }
-    }
-
-    // MARK: - Transcript (published with the audio, withdrawn with it)
-
-    /// Publishes the Mac's transcript for `revisionID` once. A missing transcript, or a failure,
-    /// never affects the audio: the transcript is retried by the next request for the entry.
-    private func publishTranscript(for entryID: ItemID, revisionID: RevisionID) async {
-        if publishedTranscripts[entryID.rawValue] == revisionID.rawValue { return }
-        do {
-            guard let transcript = try await source.transcript(for: entryID, revisionID: revisionID) else {
-                // A transcript left over from an older revision would never be asked for; drop it.
-                await withdrawTranscript(for: entryID.rawValue)
-                return
-            }
-            try await transport.publishTranscript(transcript)
-            publishedTranscripts[entryID.rawValue] = revisionID.rawValue
-            try persist()
-            mediaLog.notice("Published the transcript for \(entryID.rawValue, privacy: .public)")
-        } catch {
-            mediaLog.error("Transcript for \(entryID.rawValue, privacy: .public) was not published: \(String(describing: error), privacy: .public)")
-        }
-    }
-
-    /// Withdraws a held transcript, logging rather than failing; the audio flow must not depend on it.
-    private func withdrawTranscript(for entryID: String) async {
-        do { try await removeTranscriptIfHeld(for: entryID) } catch {
-            mediaLog.error("Could not withdraw the transcript for \(entryID, privacy: .public): \(String(describing: error), privacy: .public)")
-        }
-    }
-
-    private func removeTranscriptIfHeld(for entryID: String) async throws {
-        guard publishedTranscripts[entryID] != nil else { return }
-        try await transport.removeTranscript(entryID: try ItemID(rawValue: entryID))
-        publishedTranscripts[entryID] = nil
-        try persist()
-    }
-
     // MARK: - Persistence
 
-    private func persist() throws {
+    func persist() throws {
         guard let accountingURL else { return }
         try FileManager.default.createDirectory(at: accountingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let stored = Stored(records: records.values.sorted { ($0.key.entryID, $0.key.revisionID) < ($1.key.entryID, $1.key.revisionID) }, published: published, transcripts: publishedTranscripts)
@@ -540,7 +398,7 @@ actor WiltedMacMediaService {
         }
     }
 
-    private static func fileSize(_ url: URL) -> Int64? {
+    static func fileSize(_ url: URL) -> Int64? {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
     }
 }

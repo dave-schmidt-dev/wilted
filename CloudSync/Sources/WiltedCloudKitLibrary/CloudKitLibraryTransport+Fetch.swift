@@ -6,45 +6,47 @@ import WiltedLibrary
 /// Engine fetch accumulation and complete-batch admission.
 extension CloudKitLibraryTransport {
     public func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
-        let wanted = try Self.stateData(token)
-        await acquire()
-        defer { release() }
-        guard !quarantined else { throw CloudKitSyncError.quarantined }
-        let generation = operationGenerationValue
-        let admittedOwner = observedOwnerToken
-        do {
-            if needsFetchRebuild || wanted != enginePosition || (wanted == nil && !freshNilDriver) {
-                try await replaceDriver(state: wanted)
-                try verifyFetchContext(generation: generation, owner: admittedOwner)
-            }
-            try await observeCurrentOwner(generation: generation)
-            let owner = observedOwnerToken
-            var fullBootstrap = wanted == nil && freshNilDriver
-            let acc: LibraryFetchAccumulator
-            do { acc = try await runFetch(on: driver, epoch: mainEpoch) }
-            catch where Self.isServerReset(error) {
-                log.notice("Library zone or engine state missing on the server; discarding engine state")
-                try await resetAfterServerReset()
+        try await CloudKitOperationContext.$caller.withValue(.poll) {
+            let wanted = try Self.stateData(token)
+            await acquire()
+            defer { release() }
+            guard !quarantined else { throw CloudKitSyncError.quarantined }
+            let generation = operationGenerationValue
+            let admittedOwner = observedOwnerToken
+            do {
+                if needsFetchRebuild || wanted != enginePosition || (wanted == nil && !freshNilDriver) {
+                    try await replaceDriver(state: wanted)
+                    try verifyFetchContext(generation: generation, owner: admittedOwner)
+                }
+                try await observeCurrentOwner(generation: generation)
+                let owner = observedOwnerToken
+                var fullBootstrap = wanted == nil && freshNilDriver
+                let acc: LibraryFetchAccumulator
+                do { acc = try await runFetch(on: driver, epoch: mainEpoch) }
+                catch where Self.isServerReset(error) {
+                    log.notice("Library zone or engine state missing on the server; discarding engine state")
+                    try await resetAfterServerReset()
+                    try verifyFetchContext(generation: generation, owner: owner)
+                    fullBootstrap = freshNilDriver
+                    acc = try await runFetch(on: driver, epoch: mainEpoch)
+                }
+                try await observeCurrentOwner(generation: generation)
                 try verifyFetchContext(generation: generation, owner: owner)
-                fullBootstrap = freshNilDriver
-                acc = try await runFetch(on: driver, epoch: mainEpoch)
+                freshNilDriver = false
+                if !acc.library.isEmpty, acc.state == nil { throw CloudKitSyncError.stateCorrupt }
+                enginePosition = acc.state ?? enginePosition
+                provisionalFetchToken = enginePosition.map(Self.token)
+                return LibraryChangeBatch(
+                    generationID: "\(mapper.zoneID.zoneName):\(resetCount)",
+                    changes: acc.library.values.sorted { ($0.version, $0.change.key.description) < ($1.version, $1.change.key.description) },
+                    token: provisionalFetchToken ?? token,
+                    provenance: owner.map { .init(ownerToken: $0, operationGeneration: generation, isFullBootstrap: fullBootstrap) },
+                    observedPublication: acc.publication)
+            } catch {
+                needsFetchRebuild = true
+                freshNilDriver = false
+                throw failure(error)
             }
-            try await observeCurrentOwner(generation: generation)
-            try verifyFetchContext(generation: generation, owner: owner)
-            freshNilDriver = false
-            if !acc.library.isEmpty, acc.state == nil { throw CloudKitSyncError.stateCorrupt }
-            enginePosition = acc.state ?? enginePosition
-            provisionalFetchToken = enginePosition.map(Self.token)
-            return LibraryChangeBatch(
-                generationID: "\(mapper.zoneID.zoneName):\(resetCount)",
-                changes: acc.library.values.sorted { ($0.version, $0.change.key.description) < ($1.version, $1.change.key.description) },
-                token: provisionalFetchToken ?? token,
-                provenance: owner.map { .init(ownerToken: $0, operationGeneration: generation, isFullBootstrap: fullBootstrap) },
-                observedPublication: acc.publication)
-        } catch {
-            needsFetchRebuild = true
-            freshNilDriver = false
-            throw failure(error)
         }
     }
 

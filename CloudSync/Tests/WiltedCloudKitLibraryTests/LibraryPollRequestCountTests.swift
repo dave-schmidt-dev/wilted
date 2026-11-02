@@ -327,4 +327,119 @@ final class LibraryPollRequestCountTests: XCTestCase {
         let oldSeed = try LibraryRecordMapper().recordID(progressFor: "phone", entryID: item("old-seed")).recordName
         XCTAssertFalse(try XCTUnwrap(requested).contains(oldSeed))
     }
+
+    func testAnIdlePhoneRoundIsOneOperationAndRereadsOffersWhenGenerationMoves() async throws {
+        let (fixture, mac, phone) = try await seeded()
+        let initialOffer = try fixture.offer("ep-1")
+        try await mac.transport.publishMedia(offer: initialOffer, fileURL: try fixture.audioFile())
+
+        // First round: reads offer index and fetches offers
+        let firstResult = try await phone.transport.poll([.deviceRecords, .offers])
+        XCTAssertEqual(firstResult.offers?.map(\.entryID.rawValue), ["ep-1"])
+        XCTAssertEqual(firstResult.offers?.first?.byteCount, 100)
+
+        // Idle rounds: offer generation has not moved, exactly 1 targeted fetch per round
+        let fetchesBefore = await phone.driver.targetedFetches
+        for _ in 0..<10 {
+            let result = try await phone.transport.poll([.deviceRecords, .offers])
+            XCTAssertEqual(result.offers?.map(\.entryID.rawValue), ["ep-1"])
+        }
+        let fetchesAfter = await phone.driver.targetedFetches
+        XCTAssertEqual(fetchesAfter - fetchesBefore, 10, "ten idle rounds: exactly one request per idle round")
+
+        // Mac changes offer state (republishes updated offer): bumps generation in offer index
+        let updatedOffer = try fixture.offer("ep-1", bytes: 200)
+        try await mac.transport.publishMedia(offer: updatedOffer, fileURL: try fixture.audioFile(200))
+
+        // Next phone round: generation moved, so updated offer is fetched
+        let nextResult = try await phone.transport.poll([.deviceRecords, .offers])
+        XCTAssertEqual(nextResult.offers?.first?.byteCount, 200, "offer whose state changed is read by the next idle phone round")
+    }
+
+    func testNoScanWithDirectoryPresent() async throws {
+        let fixture = try MediaFixture()
+        let mac = try fixture.endpoint("mac", writer: true)
+        let directory = LibraryDeviceDirectory(devices: [
+            LibraryDeviceAnnouncement(deviceID: "phone", kind: "iPhone", announcedAt: Date())
+        ])
+        _ = await fixture.server.putEngine(try LibraryRecordMapper().record(deviceDirectory: directory))
+
+        let beforeScopes = await mac.driver.scopes.count
+        let count = try await mac.transport.discoverPeers()
+        let afterScopes = await mac.driver.scopes.count
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(afterScopes, beforeScopes, "no zone scan when device directory is present")
+        XCTAssertTrue(mac.log.states.isEmpty, "no scan engine created when directory is present")
+        let unscoped = await mac.driver.unscopedFetches
+        XCTAssertEqual(unscoped, 0)
+    }
+
+    func testScanAfterThreeFailedDirectoryReads() async throws {
+        let fixture = try MediaFixture()
+        let outbox = CloudKitLibraryOutbox()
+        let server = fixture.server
+        let log = FactoryLog()
+        let baseDriver = FakeMediaDriver(server: server, outbox: outbox)
+        let faultingDriver = FailingFetchDriver(inner: baseDriver)
+        let transport = try CloudKitLibraryTransport(
+            deviceID: "mac", isLibraryWriter: true, driver: faultingDriver,
+            driverFactory: { state in _ = log.record(state); return FakeMediaDriver(server: server, outbox: outbox) },
+            outbox: outbox)
+
+        let directory = LibraryDeviceDirectory(devices: [
+            LibraryDeviceAnnouncement(deviceID: "phone", kind: "iPhone", announcedAt: Date())
+        ])
+        _ = await fixture.server.putEngine(try LibraryRecordMapper().record(deviceDirectory: directory))
+
+        // Fail directory reads: attempts 1 and 2 fail
+        await faultingDriver.setFailFetches(true)
+        for _ in 0..<2 {
+            do {
+                _ = try await transport.discoverPeers()
+                XCTFail("expected directory fetch failure")
+            } catch {}
+        }
+        XCTAssertTrue(log.states.isEmpty, "no scan engine yet before 3rd failure")
+
+        // 3rd failure triggers the scan recovery
+        let discovered = try await transport.discoverPeers()
+        XCTAssertGreaterThanOrEqual(discovered, 1)
+        XCTAssertFalse(log.states.isEmpty, "scan engine created after three consecutive directory read failures")
+        XCTAssertTrue(log.states.contains(nil))
+    }
+}
+
+private actor FailingFetchDriver: CloudKitEngineDriver {
+    private let inner: any CloudKitEngineDriver
+    private var failFetches = false
+
+    init(inner: any CloudKitEngineDriver) {
+        self.inner = inner
+    }
+
+    func setFailFetches(_ value: Bool) { failFetches = value }
+
+    var events: AsyncStream<CloudKitEngineEvent> { get async { await inner.events } }
+    func currentAccountIdentity() async throws -> CloudKitAccountIdentity? { try await inner.currentAccountIdentity() }
+    func ensureZone() async throws { try await inner.ensureZone() }
+    func ensureZone(_ zoneID: CKRecordZone.ID) async throws { try await inner.ensureZone(zoneID) }
+    func fetchChanges() async throws { try await inner.fetchChanges() }
+    func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws { try await inner.fetchChanges(zoneIDs: zoneIDs) }
+    func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] { try await inner.fetchRecords(ids) }
+    func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] {
+        if failFetches { throw CKError(.networkFailure) }
+        return try await inner.fetchRecordsIfPresent(ids, desiredKeys: desiredKeys)
+    }
+    func saveRecordRaw(_ record: CKRecord, progress: @escaping @Sendable (Double) -> Void) async throws {
+        try await inner.saveRecordRaw(record, progress: progress)
+    }
+    func fetchAssetRecordRaw(_ id: CKRecord.ID, assetField: String, to destination: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> CKRecord {
+        try await inner.fetchAssetRecordRaw(id, assetField: assetField, to: destination, progress: progress)
+    }
+    func deleteRecordsRaw(_ ids: [CKRecord.ID]) async throws { try await inner.deleteRecordsRaw(ids) }
+    func sendChanges() async throws { try await inner.sendChanges() }
+    func cancelOperations() async { await inner.cancelOperations() }
+    func resetZoneBootstrap() async { await inner.resetZoneBootstrap() }
+    func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async { await inner.addPendingRecordZoneChanges(changes) }
+    nonisolated func isValidStateData(_ data: Data) -> Bool { inner.isValidStateData(data) }
 }

@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import WiltedCloudKitLibrary
 import WiltedDomain
 import WiltedLibrary
 
@@ -129,6 +130,19 @@ final class LibraryAppModel: ObservableObject {
     /// Wraps the transport this model was given, so every call the phone makes (refresh, handoff,
     /// media, decisions) goes through one gate.
     let transport: any LibraryTransport
+    /// Per-operation CloudKit counters for diagnostics.
+    let operationCounters: CloudKitOperationCounters?
+
+    /// Current CloudKit operation summary snapshot, or nil when counters are unavailable.
+    var operationSummary: CloudKitOperationSummary? {
+        operationCounters?.summary(now: now())
+    }
+
+    /// Status line diagnostics string for Settings.
+    var syncDiagnostics: String? {
+        LibrarySettingsFormat.syncDiagnostics(operationSummary, timeZone: clockFormat.timeZone)
+    }
+
     let throttleGate: TransportGate
     let deviceID: String
     /// "iPad" or "iPhone"; the model family only, which is all the Mac is told and the notice says.
@@ -217,9 +231,11 @@ final class LibraryAppModel: ObservableObject {
         outboxURL: URL? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current,
-        throttleSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
+        throttleSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
+        operationCounters: CloudKitOperationCounters? = nil
     ) {
         self.throttleSleep = throttleSleep
+        self.operationCounters = operationCounters ?? (transport as? CloudKitLibraryTransport)?.counters
         let relay = LibraryThrottleRelay()
         let gate = TransportGate(clock: now, onChange: { state in
             Task { @MainActor in relay.model?.throttleChanged(state) }
@@ -411,6 +427,7 @@ final class LibraryAppModel: ObservableObject {
         }
         var options: LibraryPollOptions = [.deviceRecords, .deviceLink]
         if plan.readsOffers { options.insert(.offers) }
+        if plan.forcesOffers { options.insert(.forceOffers) }
         if !decisions.isEmpty || hasAddAwaitingAnswer { options.insert(.outcomes) }
         let beforePoll = await roundStore.state()
         guard await current() else { return }

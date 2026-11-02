@@ -374,13 +374,21 @@ final class LibraryMediaModelTests: XCTestCase {
         XCTAssertEqual(model.mediaState(for: entryID), .onPhone)
     }
 
-    func testMacThatNeverAnswersFailsAfterTheOfferTimeout() async throws {
-        let timing = LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .milliseconds(80), watchdog: .seconds(30))
+    /// Replaces `testMacThatNeverAnswersFailsAfterTheOfferTimeout`: a silent Mac is a wait with a visible
+    /// time that Cancel ends, not a failure (D8).
+    func testMacThatNeverAnswersWaitsWithAVisibleTimeAndCancelEndsIt() async throws {
+        var timing = LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .milliseconds(80), watchdog: .seconds(30))
+        let held = Gate()
+        timing.retrySleep = { _ in await held.wait() }
         let model = makeModel(timing: timing)
         model.performMediaAction(.request, entryID: entryID)
-        await model.waitForMedia(entryID: entryID)
-        guard case let .failed(reason) = model.mediaState(for: entryID) else { return XCTFail("expected failed") }
-        XCTAssertEqual(reason, "The Mac did not send this episode. Open Wilted on the Mac and try again.")
+        try await eventually("the wait shown") {
+            model.mediaState(for: self.entryID).statusText().hasPrefix("Waiting for the Mac, checking again at")
+        }
+        XCTAssertTrue(model.mediaState(for: entryID).isInFlight, "Cancel stays available while waiting")
+        model.performMediaAction(.cancel, entryID: entryID)
+        XCTAssertEqual(model.mediaState(for: entryID), .available)
+        await held.open()
     }
 
     func testTransientFetchFailuresRetryOnTheirOwnAndShowTheAttempt() async throws {
@@ -406,14 +414,22 @@ final class LibraryMediaModelTests: XCTestCase {
         XCTAssertEqual(counter.count, 3)
     }
 
-    func testStalledDownloadFailsAfterTheWatchdog() async throws {
+    /// Replaces `testStalledDownloadFailsAfterTheWatchdog`: a stall is a passing cause, so the job waits
+    /// for iCloud with a visible time instead of failing.
+    func testStalledDownloadWaitsForICloudAfterTheWatchdog() async throws {
         try await macPublish(makeOffer())
-        let timing = LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .milliseconds(150))
+        var timing = LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .milliseconds(150))
+        let held = Gate()
+        timing.retryDelays = []
+        timing.retrySleep = { _ in await held.wait() }
         let model = makeModel(.neverDelivers, timing: timing)
         model.performMediaAction(.request, entryID: entryID)
-        await model.waitForMedia(entryID: entryID)
-        guard case let .failed(reason) = model.mediaState(for: entryID) else { return XCTFail("expected failed") }
-        XCTAssertTrue(reason.contains("stalled"), reason)
+        try await eventually("the wait shown") {
+            model.mediaState(for: self.entryID).statusText().hasPrefix("Waiting for iCloud, retrying at")
+        }
+        model.performMediaAction(.cancel, entryID: entryID)
+        XCTAssertEqual(model.mediaState(for: entryID), .available)
+        await held.open()
     }
 
     func testCancelReturnsToAvailableAndAllowsANewRequest() async throws {
@@ -529,10 +545,8 @@ final class LibraryMediaModelTests: XCTestCase {
         let model = makeModel(timing: timing, refuseRequests: (times: 2, how: .throttled, counter: counter))
         model.performMediaAction(.request, entryID: entryID)
 
-        try await eventually("the resend shown") {
-            if case let .requested(_, retry, _) = model.mediaState(for: self.entryID),
-               retry == LibraryMediaRetry(attempt: 2, attempts: 4) { return true }
-            return false
+        try await eventually("the wait shown") {
+            model.mediaState(for: self.entryID).statusText().hasPrefix("Waiting for iCloud, retrying at")
         }
         XCTAssertTrue(model.mediaState(for: entryID).isInFlight, "a held request can still be cancelled")
 

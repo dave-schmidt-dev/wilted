@@ -436,21 +436,25 @@ final class MediaFetcherTests: XCTestCase {
         XCTAssertEqual(log.states.last, .cached)
     }
 
-    func testTransientFailureOnEveryAttemptEndsOfflineAfterThree() async throws {
+    func testTransientFailureOnEveryQuickAttemptIsThrownNotReportedAsAFailure() async throws {
         let (inner, source, cache) = try await fixture([1, 2, 3])
         let ready = try offer(for: source)
         try await inner.publishMedia(offer: ready, fileURL: source)
         let script = ScriptedFetch(Array(repeating: URLError(.notConnectedToInternet), count: 5))
-        let sleeps = Recorder<Duration>()
+        let sleeps = Recorder<Duration>(), log = StateLog()
 
-        let outcome = try await MediaFetcher(cache: cache, sleep: { sleeps.append($0) })
-            .fetch(ready, from: FlakyTransport(inner: inner, script: script), admission: await cache.admission(for: ready))
-
-        XCTAssertEqual(outcome, .failed(.deliveryFailed(MediaFetchFailure.offline.rawValue)))
-        guard case let .failed(reason) = outcome else { return XCTFail("\(outcome)") }
-        XCTAssertEqual(reason.fetchFailure, .offline)
-        XCTAssertEqual(script.attempts, 3)
+        do {
+            _ = try await MediaFetcher(cache: cache, sleep: { sleeps.append($0) }).fetch(
+                ready, from: FlakyTransport(inner: inner, script: script), admission: await cache.admission(for: ready),
+                onState: { log.append($0) })
+            XCTFail("a passing cause must reach the caller, not end the request")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .notConnectedToInternet)
+            XCTAssertTrue(MediaFetchErrorClassifier.isTransient(error))
+        }
+        XCTAssertEqual(script.attempts, 3, "the quick attempts are the fetcher's; the longer wait is the caller's")
         XCTAssertEqual(sleeps.values.count, 2)
+        XCTAssertFalse(log.states.contains { if case .failed = $0 { true } else { false } })
     }
 
     func testTerminalFailuresEndAtOnceWithoutRetrying() async throws {
@@ -494,13 +498,23 @@ final class MediaFetcherTests: XCTestCase {
         XCTAssertTrue(sleeps.values.isEmpty)
     }
 
-    func testAClosedGateStretchesTheBackoffUpToItsCap() {
-        XCTAssertEqual(MediaFetcher.backoff(.seconds(2), after: URLError(.timedOut)), .seconds(2))
-        let soon = MediaFetcher.backoff(.seconds(2), after: TransportThrottled(retryAt: Date().addingTimeInterval(30)))
-        XCTAssertTrue(soon > .seconds(29) && soon <= .seconds(30), "\(soon)")
-        let late = MediaFetcher.backoff(.seconds(8), after: TransportThrottled(retryAt: Date().addingTimeInterval(3_600)))
-        XCTAssertEqual(late, .seconds(MediaFetcher.maximumThrottleWait))
-        XCTAssertTrue(MediaFetchErrorClassifier.isTransient(TransportThrottled(retryAt: Date())))
+    func testAClosedGateThrowsTransportThrottled() async throws {
+        let (inner, source, cache) = try await fixture()
+        let ready = try offer(for: source)
+        try await inner.publishMedia(offer: ready, fileURL: source)
+        let retryAt = Date().addingTimeInterval(1_800)
+        let throttledScript = ScriptedFetch([TransportThrottled(retryAt: retryAt)])
+        let throttled = FlakyTransport(inner: inner, script: throttledScript)
+
+        do {
+            _ = try await MediaFetcher(cache: cache)
+                .fetch(ready, from: throttled, admission: await cache.admission(for: ready))
+            XCTFail("expected TransportThrottled to be thrown")
+        } catch let error as TransportThrottled {
+            XCTAssertEqual(error.retryAt, retryAt)
+            XCTAssertTrue(MediaFetchErrorClassifier.isTransient(error))
+        }
+        XCTAssertEqual(throttledScript.attempts, 1, "a closed gate is the caller's wait: no quick retry against it")
     }
 
     // MARK: stall by progress, not elapsed time

@@ -10,7 +10,6 @@ import XCTest
 final class LibraryRequestProgressTests: XCTestCase {
     private var rigs: [HandshakeRig] = []
     private let entry = "a"
-    private var macNotAnswering: String { LibraryAppModel.text(for: MediaFetchFailure.macNotAnswering) }
 
     override func tearDown() async throws {
         for rig in rigs {
@@ -24,8 +23,19 @@ final class LibraryRequestProgressTests: XCTestCase {
         silence: Duration = .seconds(30), queued: Duration = .seconds(30), sending: Duration = .seconds(30),
         answered: Duration = .seconds(30)
     ) -> LibraryMediaTiming {
-        LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: silence, queuedTimeout: queued,
-                           sendingTimeout: sending, answeredTimeout: answered, watchdog: .seconds(30))
+        var timing = LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: silence, queuedTimeout: queued,
+                                        sendingTimeout: sending, answeredTimeout: answered, watchdog: .seconds(30))
+        // A limit now starts a visible wait for the Mac, never a failure; the wait itself is not slept out.
+        timing.retrySleep = { _ in try await Task.sleep(for: .seconds(3600)) }
+        return timing
+    }
+
+    /// Waits for the row to say it is waiting for the Mac, with the time it checks again.
+    private func waitsOnTheMac(_ rig: HandshakeRig) async throws {
+        try await rig.eventually("the row waits for the Mac") {
+            rig.model.mediaState(for: rig.id(self.entry)).statusText().hasPrefix("Waiting for the Mac, checking again at")
+        }
+        XCTAssertTrue(rig.model.mediaState(for: rig.id(entry)).isInFlight, "Cancel stays available while waiting")
     }
 
     private func makeRig(_ timing: LibraryMediaTiming, realClock: Bool = false) async throws -> HandshakeRig {
@@ -47,13 +57,12 @@ final class LibraryRequestProgressTests: XCTestCase {
 
     // MARK: each stage's limit
 
-    func testNoStatusFailsAsMacNotAnsweringAfterTheSilenceLimit() async throws {
+    /// Was `testNoStatusFailsAsMacNotAnsweringAfterTheSilenceLimit`: silence is a wait, not a failure.
+    func testNoStatusWaitsForTheMacAfterTheSilenceLimit() async throws {
         let rig = try await makeRig(timing(silence: .milliseconds(150)))
         let started = ContinuousClock.now
         rig.model.performMediaAction(.request, entryID: rig.id(entry))
-        await rig.model.waitForMedia(entryID: rig.id(entry))
-
-        XCTAssertEqual(rig.model.mediaState(for: rig.id(entry)), .failed(macNotAnswering))
+        try await waitsOnTheMac(rig)
         XCTAssertGreaterThanOrEqual(ContinuousClock.now - started, .milliseconds(150))
     }
 
@@ -72,14 +81,13 @@ final class LibraryRequestProgressTests: XCTestCase {
         XCTAssertEqual(rig.model.mediaState(for: rig.id(entry)), .onPhone, "and the offer still completes it")
     }
 
-    func testAReceivedRequestFailsOnlyAfterTheQueuedLimitWithNoStageChange() async throws {
+    /// Was `testAReceivedRequestFailsOnlyAfterTheQueuedLimitWithNoStageChange`.
+    func testAReceivedRequestWaitsForTheMacOnlyAfterTheQueuedLimitWithNoStageChange() async throws {
         let rig = try await makeRig(timing(queued: .milliseconds(300)))
         let intent = try await request(rig)
         let started = ContinuousClock.now
         try await rig.macReports(.received, intentID: intent, entry: entry)
-        await rig.model.waitForMedia(entryID: rig.id(entry))
-
-        XCTAssertEqual(rig.model.mediaState(for: rig.id(entry)), .failed(macNotAnswering))
+        try await waitsOnTheMac(rig)
         XCTAssertGreaterThanOrEqual(ContinuousClock.now - started, .milliseconds(300))
     }
 
@@ -97,14 +105,13 @@ final class LibraryRequestProgressTests: XCTestCase {
         XCTAssertEqual(rig.model.mediaState(for: rig.id(entry)), .onPhone)
     }
 
-    func testASendingRequestFailsAfterTheSendingLimit() async throws {
+    /// Was `testASendingRequestFailsAfterTheSendingLimit`.
+    func testASendingRequestWaitsForTheMacAfterTheSendingLimit() async throws {
         let rig = try await makeRig(timing(sending: .milliseconds(300)))
         let intent = try await request(rig)
         let started = ContinuousClock.now
         try await rig.macReports(.sending, intentID: intent, entry: entry)
-        await rig.model.waitForMedia(entryID: rig.id(entry))
-
-        XCTAssertEqual(rig.model.mediaState(for: rig.id(entry)), .failed(macNotAnswering))
+        try await waitsOnTheMac(rig)
         XCTAssertGreaterThanOrEqual(ContinuousClock.now - started, .milliseconds(300))
     }
 
@@ -127,14 +134,13 @@ final class LibraryRequestProgressTests: XCTestCase {
         }
     }
 
-    func testAnAnsweredRequestWaitsForTheOfferThenFailsAfterTheAnsweredLimit() async throws {
+    /// Was `testAnAnsweredRequestWaitsForTheOfferThenFailsAfterTheAnsweredLimit`.
+    func testAnAnsweredRequestWaitsForTheOfferThenWaitsForTheMacAfterTheAnsweredLimit() async throws {
         let rig = try await makeRig(timing(answered: .milliseconds(300)))
         let intent = try await request(rig)
         let started = ContinuousClock.now
         try await rig.macReports(.answered, intentID: intent, entry: entry)
-        await rig.model.waitForMedia(entryID: rig.id(entry))
-
-        XCTAssertEqual(rig.model.mediaState(for: rig.id(entry)), .failed(macNotAnswering))
+        try await waitsOnTheMac(rig)
         XCTAssertGreaterThanOrEqual(ContinuousClock.now - started, .milliseconds(300))
     }
 
@@ -153,8 +159,7 @@ final class LibraryRequestProgressTests: XCTestCase {
         let rig = try await makeRig(timing(silence: .milliseconds(200)))
         let intent = try await request(rig)
         try await rig.macReports(.received, intentID: intent + "-other", entry: entry)
-        await rig.model.waitForMedia(entryID: rig.id(entry))
-        XCTAssertEqual(rig.model.mediaState(for: rig.id(entry)), .failed(macNotAnswering), "no status for this request: silence")
+        try await waitsOnTheMac(rig) // no status for this request: silence
     }
 
     func testALaterStageIsNeverReplacedByAnEarlierOne() async throws {

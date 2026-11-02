@@ -5,19 +5,8 @@ import WiltedLibrary
 
 private let tickLog = Logger(subsystem: "com.zerodelta.wilted", category: "LibrarySyncTick")
 
-/// What one refresh reads. The direct `refresh()` (launch, pull, push, account change) is `.full`; a round
-/// of the tick reads the playback records every time and the rest only when it is due.
-struct LibraryRefreshPlan: Sendable, Equatable {
-    /// The library state (the Mac's published Larder), through the sync engine.
-    var readsState: Bool
-    /// The Mac's media offers.
-    var readsOffers: Bool
-    /// Whether the pull-to-refresh spinner shows; the tick's background rounds stay quiet.
-    var showsProgress: Bool
-
-    static let full = LibraryRefreshPlan(readsState: true, readsOffers: true, showsProgress: true)
-    var isFull: Bool { self == .full }
-}
+/// What one refresh reads. Defined in WiltedKit as `SyncTick.RoundPlan`.
+typealias LibraryRefreshPlan = SyncTick.RoundPlan
 
 /// The phone's tick bookkeeping. A class so the model's extension can keep state without stored
 /// properties of its own; touched only on the main actor.
@@ -66,19 +55,20 @@ extension LibraryAppModel {
         await updateSyncTick()
     }
 
-    /// Starts or stops the tick to match whether the phone needs one.
+    /// Starts or adjusts the tick to match the phone's cadence: 30 s while playing, a request is
+    /// pending, or the app is in front; otherwise 5 minutes.
     func updateSyncTick() async {
-        let wanted = tickState.sceneActive || handoffState.reportedPlaying
-        if wanted, tickState.tick == nil {
+        let activeCadence = tickState.sceneActive || handoffState.reportedPlaying || media.values.contains { $0.isInFlight }
+        let interval = activeCadence ? handoffTiming.observeInterval : SyncCadence.phoneIdleInterval
+        if let tick = tickState.tick {
+            await tick.setInterval(interval)
+        } else {
             let tick = SyncTick(
-                interval: handoffTiming.observeInterval, gate: throttleGate, clock: now, sleep: handoffTiming.sleep,
+                interval: interval, gate: throttleGate, clock: now, sleep: handoffTiming.sleep,
                 round: { [weak self] trigger in await self?.syncRound(trigger) })
             tickState.tick = tick
             // Whoever starts the tick has just read, or runs the first round themselves.
             await tick.start(immediately: false)
-        } else if !wanted, let tick = tickState.tick {
-            tickState.tick = nil
-            await tick.stop()
         }
     }
 
@@ -86,21 +76,19 @@ extension LibraryAppModel {
     func syncRound(_ trigger: SyncTick.Trigger) async {
         switch trigger {
         case .refresh:
-            await refresh()
+            await refresh(.full)
         case .timer, .event:
-            await refresh(nextPlan())
+            await refresh(nextPlan(for: trigger))
         }
         await handoffState.interruptions?.syncTick()
     }
 
-    private func nextPlan() -> LibraryRefreshPlan {
+    private func nextPlan(for trigger: SyncTick.Trigger = .timer) -> LibraryRefreshPlan {
         let state = tickState
         state.rounds += 1
         let forced = state.forceFull
         state.forceFull = false
-        let readsState = forced || !decisions.isEmpty || state.rounds % SyncCadence.phoneStateEveryRounds == 0
-        // The offers share the playback records' read (one request), so every round has them.
-        return LibraryRefreshPlan(readsState: readsState, readsOffers: true, showsProgress: false)
+        return .plan(for: trigger, round: state.rounds, forceFull: forced, hasDecisions: !decisions.isEmpty)
     }
 
     /// Keeps the offers a round read, for a request that waits for the Mac's.

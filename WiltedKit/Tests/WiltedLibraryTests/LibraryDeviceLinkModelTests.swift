@@ -39,6 +39,18 @@ final class LibraryDeviceLinkModelTests: XCTestCase {
         XCTAssertEqual(fresh.requests.map(\.intentID), ["old", "r-2", "r-1"], "oldest first")
     }
 
+    func testAnnouncementConstantsAndActiveDevicesFiltering() {
+        XCTAssertEqual(LibraryDeviceAnnouncement.refreshInterval, 7 * 24 * 60 * 60)
+        XCTAssertEqual(LibraryDeviceDirectory.announcementLifetime, 30 * 24 * 60 * 60)
+
+        let directory = LibraryDeviceDirectory(devices: [
+            LibraryDeviceAnnouncement(deviceID: "fresh", kind: "iPhone", announcedAt: at),
+            LibraryDeviceAnnouncement(deviceID: "stale", kind: "iPad", announcedAt: at.addingTimeInterval(-31 * 24 * 60 * 60)),
+        ])
+        let active = directory.activeDevices(asOf: at)
+        XCTAssertEqual(active.map(\.deviceID), ["fresh"])
+    }
+
     func testALinkKeepsAtMostItsLimitOfRequests() throws {
         let many = try (0..<(LibraryDeviceLink.maximumRequests + 5)).map { try status("r-\($0)", .answered, Double($0)) }
         let link = LibraryDeviceLink(deviceID: "ipad", linkedAt: at, requests: many)
