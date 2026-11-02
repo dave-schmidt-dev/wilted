@@ -154,6 +154,8 @@ enum LibraryUITestFixture {
             // The fixture's Mac has already linked the phone, so every scenario starts with downloads on offer.
             defaults.set(try? JSONEncoder().encode(LibrarySavedMacLink(deviceID: "phone", ownerToken: "fixture-owner")),
                          forKey: LibraryAppModel.savedMacLinkKey)
+            // The one-time direct-download step is answered, so its sheet never covers the Larder.
+            defaults.set(true, forKey: LibrarySettingsStore.directDownloadsOnboardingShownKey)
             cache = FileMediaCache(rootURL: scratch.appendingPathComponent("media", isDirectory: true))
             phone = InMemoryLibraryTransport(
                 deviceID: "phone", server: server,
