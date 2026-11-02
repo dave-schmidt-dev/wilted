@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- Download from your Mac over Wi-Fi: when the Mac is nearby, the iPhone fetches prepared audio straight from it over an encrypted local connection only your own devices can open, resumes a cut transfer, can finish in the background, and falls back to iCloud on any failure. The iPhone asks once at onboarding (on by default) and has a switch in Settings; the Mac has a **Direct downloads from this Mac** switch and can stop direct downloads for one iPhone.
+- Settings on the Mac and the iPhone show a diagnostics line counting CloudKit operations per kind.
 - A documented ad-feedback investigation and tuning procedure that preserves available evidence, distinguishes reported positions from verified ad boundaries, and keeps unresolved reports visible through regression checks and listening acceptance.
 - Right-click a prepared episode in the Mac Larder and choose **Show in Finder** to select its prepared audio file, so it can be AirDropped or copied. If the file is gone, the Mac beeps.
 - Mac Settings > Appearance > **Show counts in the sidebar** (off by default) numbers the episodes ready to play beside Larder and the episodes still to decide beside Feeds.
@@ -76,6 +78,7 @@ All notable changes to this project are documented in this file.
 - Episodes now keep their own web page address from the feed's item link: it is read when a feed loads, stored in the library (store schema V15, migrated with the usual backup), and published in the library sync so the phone can offer it. Relative, non-web, credentialed or self-referential links are ignored.
 
 ### Changed
+- iCloud audio requests survive a relaunch on both devices and wait through an iCloud throttle with a time shown instead of failing; Cancel is always available. The apps honour iCloud's retry wait, read offers only when they change, round every 5 minutes on an idle iPhone, and re-announce linked iPhones weekly, cutting steady CloudKit load.
 - Cloud sync stops requesting playback positions for every device and offered episode combination. Active playback and known positions keep their normal cadence; a previously unseen inactive position may take up to 20 minutes to be discovered on a Mac with known peers.
 - Mac Settings > Ad feedback labels a press in the player's words, Ad, Not an ad or Either is fine, instead of Must cut and Must keep.
 - Ad recovery shares one programme-evidence contract across boundary review, tail and credits trimming, late-start recovery, and the final conflict check, preserving the existing cut and original-audio fallback rules.
