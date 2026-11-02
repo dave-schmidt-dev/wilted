@@ -150,10 +150,9 @@ final class LiveBackgroundTransferScheduler: LibraryBackgroundTransferScheduling
     ) throws {
         pending = start
         if !registered {
-            registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.identifier, using: nil) { task in
-                let handle = TaskHandle(task)
-                Task { @MainActor in LiveBackgroundTransferScheduler.shared.launched(handle.task) }
-            }
+            registered = BGTaskScheduler.shared.register(
+                forTaskWithIdentifier: Self.identifier, using: nil,
+                launchHandler: mainActorCallback { (task: BGTask) in LiveBackgroundTransferScheduler.shared.launched(task) })
         }
         guard registered else { return beginExtension(start) }
         let request = BGContinuedProcessingTaskRequest(identifier: Self.identifier, title: title, subtitle: subtitle)
@@ -179,10 +178,27 @@ final class LiveBackgroundTransferScheduler: LibraryBackgroundTransferScheduling
     }
 }
 
-/// Carries the system's task from its launch handler's queue to the main actor, where it is used.
-private final class TaskHandle: @unchecked Sendable {
-    let task: BGTask
-    init(_ task: BGTask) { self.task = task }
+/// Adapts main-actor work for a system callback that runs on the system's own queue. A closure
+/// written inside main-actor code is main-actor isolated, and Swift 6 traps when the system calls it
+/// off the main thread; this one is nonisolated and hops to the main actor.
+nonisolated func mainActorCallback<Value: AnyObject>(
+    _ body: @escaping @MainActor (Value) -> Void
+) -> @Sendable (Value) -> Void {
+    { value in
+        let handle = UncheckedHandle(value)
+        Task { @MainActor in body(handle.value) }
+    }
+}
+
+/// The no-argument form of `mainActorCallback`, for expiration handlers.
+nonisolated func mainActorCallback(_ body: @escaping @MainActor () -> Void) -> @Sendable () -> Void {
+    { Task { @MainActor in body() } }
+}
+
+/// Carries a system object from its callback's queue to the main actor, where it is used.
+private final class UncheckedHandle<Value: AnyObject>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
 }
 
 /// The system's task, adapted. Progress is reported through its `NSProgress`.
@@ -192,7 +208,7 @@ private final class ContinuedTask: LibraryBackgroundTransferTask {
     var expirationHandler: (@MainActor () -> Void)? {
         didSet {
             let handler = expirationHandler
-            task.expirationHandler = { Task { @MainActor in handler?() } }
+            task.expirationHandler = mainActorCallback { handler?() }
         }
     }
 
@@ -214,9 +230,9 @@ private final class ExtensionTask: LibraryBackgroundTransferTask {
     var expirationHandler: (@MainActor () -> Void)?
 
     init() {
-        identifier = UIApplication.shared.beginBackgroundTask(withName: "Wilted audio download") { [weak self] in
-            Task { @MainActor in self?.expirationHandler?() }
-        }
+        identifier = UIApplication.shared.beginBackgroundTask(
+            withName: "Wilted audio download",
+            expirationHandler: mainActorCallback { [weak self] in self?.expirationHandler?() })
     }
 
     func setProgress(completed: Int64, total: Int64) {}
