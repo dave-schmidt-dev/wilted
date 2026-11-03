@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Added
 - Download from your Mac over Wi-Fi: when the Mac is nearby, the iPhone fetches prepared audio straight from it over an encrypted local connection only your own devices can open, resumes a cut transfer, can finish in the background, and falls back to iCloud on any failure. The iPhone asks once at onboarding (on by default) and has a switch in Settings; the Mac has a **Direct downloads from this Mac** switch and can stop direct downloads for one iPhone.
 - Settings on the Mac and the iPhone show a diagnostics line counting CloudKit operations per kind.
+- The iPhone keeps its CloudKit operation counts in a small file (`Library/Logs/cloudkit-operations.log`, at most 1 MB plus one older file), because its system log holds only a few hours. `scripts/pull-iphone-cloudkit-log.sh` copies it over Wi-Fi and prints requests and iCloud limits per launch.
 - A documented ad-feedback investigation and tuning procedure that preserves available evidence, distinguishes reported positions from verified ad boundaries, and keeps unresolved reports visible through regression checks and listening acceptance.
 - Right-click a prepared episode in the Mac Larder and choose **Show in Finder** to select its prepared audio file, so it can be AirDropped or copied. If the file is gone, the Mac beeps.
 - Mac Settings > Appearance > **Show counts in the sidebar** (off by default) numbers the episodes ready to play beside Larder and the episodes still to decide beside Feeds.

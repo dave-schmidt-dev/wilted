@@ -119,7 +119,8 @@ enum LibraryEnvironment {
         }
         let transport = try CloudKitLibraryTransport(
             deviceID: deviceID, isLibraryWriter: false, driver: try factory(state), driverFactory: factory,
-            outbox: outbox, state: cursor, knownOwnerToken: owner, initialReviewHold: initialReviewHold)
+            outbox: outbox, state: cursor, knownOwnerToken: owner, initialReviewHold: initialReviewHold,
+            counters: CloudKitOperationCounters(archive: .standard()))
         return (transport, { await transport.resetAfterAccountChange() }, transport.accountChanges)
 #else
         return (UnavailableLibraryTransport(reason: "iCloud sync is not enabled in this build."), {}, nil)

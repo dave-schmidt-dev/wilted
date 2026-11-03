@@ -230,4 +230,25 @@ final class CloudKitOperationCountersTests: XCTestCase {
         XCTAssertEqual(summary.count(for: .poll, result: .ok), 100)
         XCTAssertEqual(summary.recent.count, 11, "only the last 10 s of records are kept")
     }
+
+    func testTheArchiveKeepsALaunchLineAndEverySummaryAndRotatesWhenFull() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("Logs/cloudkit-operations.log")
+        let base = Date(timeIntervalSince1970: 1_000)
+        let counters = CloudKitOperationCounters(clock: { base }, startLoggingTask: false,
+                                                 archive: CloudKitOperationArchive(url: file, maxBytes: 400))
+        counters.record(caller: .poll, recordCount: 3, bytes: 90, result: .ok)
+        counters.logNoticeSummary()
+
+        let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertTrue(lines[0].hasSuffix(" launch"))
+        XCTAssertTrue(lines[1].contains("since launch: 1 reqs (3 records, 90 B)"), String(lines[1]))
+
+        for _ in 0..<3 { counters.logNoticeSummary() }
+        let backup = file.appendingPathExtension("1")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path), "a full file moves to .1")
+        XCTAssertLessThan(try Data(contentsOf: file).count, 400)
+    }
 }

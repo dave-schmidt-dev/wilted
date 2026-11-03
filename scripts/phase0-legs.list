@@ -36,3 +36,4 @@ test-record-ios-snapshots test-record-ios-snapshots.sh
 test-audio-budget-evidence test-audio-budget-evidence.sh
 test-temp-attribution test-temp-attribution.sh
 test-worktree-setup test-worktree-setup.sh
+test-pull-iphone-cloudkit-log test-pull-iphone-cloudkit-log.sh

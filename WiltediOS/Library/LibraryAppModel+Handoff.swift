@@ -172,6 +172,8 @@ extension LibraryAppModel {
     /// cadence tick may be a long way off.
     func sceneEnteredBackground() async {
         saveLoadedPositionLocally()
+        // The phone may be suspended next; write the counts so far to its operations file.
+        operationCounters?.logNoticeSummary(now: now())
         await sceneBecameBackground()
         await republishUnpublishedPositions()
         guard handoffState.reportedPlaying, let player = handoffState.player else { return }

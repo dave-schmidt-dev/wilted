@@ -201,16 +201,21 @@ public final class CloudKitOperationCounters: @unchecked Sendable {
     private var lastLogTime: Date
     private let log = Logger(subsystem: "com.zerodelta.wilted", category: "CloudKitOperationCounters")
     private var loggingTask: Task<Void, Never>?
+    private let archive: CloudKitOperationArchive?
 
     /// - Parameters:
     ///   - logInterval: the recent window and how often a summary is logged.
     ///   - startLoggingTask: also log on a timer, so an idle app still reports.
+    ///   - archive: also append each summary to this file, starting with a launch line.
     public init(clock: @escaping @Sendable () -> Date = { Date() },
                 logInterval: TimeInterval = 300,
-                startLoggingTask: Bool = true) {
+                startLoggingTask: Bool = true,
+                archive: CloudKitOperationArchive? = nil) {
         self.clock = clock
         self.logInterval = logInterval
         self.lastLogTime = clock()
+        self.archive = archive
+        archive?.append("launch", at: lastLogTime)
         if startLoggingTask {
             self.loggingTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -252,7 +257,9 @@ public final class CloudKitOperationCounters: @unchecked Sendable {
     }
 
     public func logNoticeSummary(now: Date? = nil) {
-        log.notice("\(self.summary(now: now).description, privacy: .public)")
+        let summary = self.summary(now: now)
+        log.notice("\(summary.description, privacy: .public)")
+        archive?.append(summary.description, at: summary.timestamp)
     }
 
     public func reset() {
