@@ -159,11 +159,17 @@ extension WiltedMacModel {
     /// successful read produced, and replacing them with nothing because a
     /// refresh failed would take the library away over a transient error.
     func reloadLibraryRows() async {
-        guard let store else { return }
+        guard let store, !isClosingTemporaryState else { return }
+        await reloadLibraryRows(from: store)
+    }
+
+    private func reloadLibraryRows(from store: LocalLibraryStore) async {
         // Retry a rename-invalidated read once, using a fresh store snapshot and the same
         // decision epoch guard. Reads rejected while a writer is pending wait for settlement.
         for _ in 0..<2 {
+            guard !Task.isCancelled, !isClosingTemporaryState, self.store === store else { return }
             guard let values = try? await loadLibrary(from: store) else { return }
+            guard !Task.isCancelled, !isClosingTemporaryState, self.store === store else { return }
             guard applyEpisodes(values.episodes) else {
                 guard values.episodes.readEpoch < feedRenameReadEpoch else { return }
                 if !pendingFeedRenames.isEmpty {
@@ -180,7 +186,53 @@ extension WiltedMacModel {
         }
     }
 
+    /// Schedules one coalesced repair only when an imported playhead rejected
+    /// a library snapshot. New imports during the repair get one additional
+    /// pass; continued imports cannot recursively create tasks without bound.
+    func scheduleImportedPositionLibraryReload(afterReadEpoch readEpoch: UInt64) {
+        guard readEpoch < importedPlaybackReadEpoch,
+              !isClosingTemporaryState,
+              let store else { return }
+        if importedPositionLibraryReloadTask != nil {
+            if importedPlaybackReadEpoch > importedPositionLibraryReloadTargetEpoch {
+                importedPositionLibraryReloadPending = true
+            }
+            return
+        }
+
+        importedPositionLibraryReloadTargetEpoch = importedPlaybackReadEpoch
+        importedPositionLibraryReloadPending = false
+        importedPositionLibraryReloadTask = Task { @MainActor [weak self, store] in
+            guard let self else { return }
+            defer {
+                self.importedPositionLibraryReloadTask = nil
+                self.importedPositionLibraryReloadTargetEpoch = 0
+                self.importedPositionLibraryReloadPending = false
+            }
+            for _ in 0..<2 {
+                guard !Task.isCancelled, !self.isClosingTemporaryState, self.store === store else { return }
+                self.importedPositionLibraryReloadPending = false
+                self.importedPositionLibraryReloadTargetEpoch = self.importedPlaybackReadEpoch
+                await self.reloadLibraryRows(from: store)
+                guard !Task.isCancelled, !self.isClosingTemporaryState, self.store === store else { return }
+                if !self.importedPositionLibraryReloadPending { return }
+            }
+        }
+    }
+
     func loadLibrary(from store: LocalLibraryStore) async throws
+        -> (articles: [WiltedMacArticle], episodes: LibraryEpisodeRows, subscriptions: [WiltedMacSubscription]) {
+        var values = try await loadLibrarySnapshot(from: store)
+        if values.episodes.readEpoch < importedPlaybackReadEpoch {
+            // An imported playhead arrived while this snapshot was being built.
+            // Retry once so callers that only project articles/subscriptions
+            // also receive the unrelated library changes from the newer read.
+            values = try await loadLibrarySnapshot(from: store)
+        }
+        return values
+    }
+
+    private func loadLibrarySnapshot(from store: LocalLibraryStore) async throws
         -> (articles: [WiltedMacArticle], episodes: LibraryEpisodeRows, subscriptions: [WiltedMacSubscription]) {
         libraryReadEpoch &+= 1
         let readEpoch = libraryReadEpoch
@@ -385,14 +437,15 @@ extension WiltedMacModel {
     }
 
     func loadDismissedEpisodes(from store: LocalLibraryStore) async throws -> [WiltedMacDismissedEpisode] {
-        let snapshot = try await store.podcastLibrarySnapshot()
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
         let feeds = snapshot.feeds
         let displayNames = Dictionary(snapshot.subscriptions.compactMap { subscription in
             subscription.displayName.map { (subscription.feedID, $0) }
         }, uniquingKeysWith: { first, _ in first })
         let episodeByID = Dictionary(uniqueKeysWithValues: snapshot.episodes.map { ($0.itemID, $0) })
-        let preparedItemIDs = Set(snapshot.preparationRuns.map(\.itemID))
-        return try await store.dismissedPodcastEpisodes().map { dismissal in
+        let dismissals = try await store.dismissedPodcastEpisodes()
+        let preparedItemIDs = try await store.preparationHistoryItemIDs(for: dismissals.map(\.episodeID))
+        return dismissals.map { dismissal in
             let episode = episodeByID[dismissal.episodeID]
             // V13's migration placeholder uses the invalid URL and its
             // dismissal time as creation time. It is a durable removal record,

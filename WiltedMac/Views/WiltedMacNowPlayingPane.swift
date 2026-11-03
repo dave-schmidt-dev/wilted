@@ -62,10 +62,7 @@ struct WiltedMacNowPlayingPane: View {
         .accessibilityIdentifier("wilted-now-playing-pane")
         .task(id: model.hasCurrentPlayback) {
             guard model.hasCurrentPlayback else { return }
-            while !Task.isCancelled {
-                model.refreshPlaybackReadout()
-                try? await Task.sleep(for: .seconds(1))
-            }
+            await model.subscribeToPlaybackReadout()
         }
         // Leaving the transcript for Notes and coming back mounts a fresh
         // transcript at its top, so it resumes at the spoken line.

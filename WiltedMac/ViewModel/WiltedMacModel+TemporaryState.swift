@@ -272,6 +272,7 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
         stopBulletinsWithoutResuming()
         cancelPlaybackPresentation()
+        processorRunsRefreshTask?.cancel()
 #endif
         startupTask?.cancel()
         preparationTask?.cancel()
@@ -283,6 +284,7 @@ extension WiltedMacModel {
         fixturePodcastInstallTask?.cancel()
         fixtureInstallTask?.cancel()
         playbackOperationTask?.cancel()
+        importedPositionLibraryReloadTask?.cancel()
         manualCompletionRecoveryTask?.cancel()
         manualCompletionExpiryTask?.cancel()
         larderAdditionTask?.cancel()
@@ -310,6 +312,10 @@ extension WiltedMacModel {
             let fixtureInstall = fixturePodcastInstallTask
             let articleFixtureInstall = fixtureInstallTask
             let playbackOperation = playbackOperationTask
+            let importedPositionReload = importedPositionLibraryReloadTask
+#if canImport(WiltedProducer)
+            let processorRefresh = processorRunsRefreshTask
+#endif
             let completionRecovery = manualCompletionRecoveryTask
             let completionExpiry = manualCompletionExpiryTask
             let larderAddition = larderAdditionTask
@@ -327,7 +333,9 @@ extension WiltedMacModel {
             await fixtureInstall?.value
             await articleFixtureInstall?.value
             await playbackOperation?.value
+            await importedPositionReload?.value
 #if canImport(WiltedProducer)
+            await processorRefresh?.value
             await libraryFollowUps.drain()
 #endif
             await completionRecovery?.value

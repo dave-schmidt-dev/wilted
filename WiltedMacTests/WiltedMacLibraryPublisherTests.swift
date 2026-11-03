@@ -202,10 +202,16 @@ final class WiltedMacLibraryPublisherTests: XCTestCase {
     func testUnrelatedFailureCannotDiscardOtherwiseAcknowledgedCapturedObligation() async throws {
         let fixture = try PublicationScenario(); let pub = fixture.publisher()
         await fixture.transport.setFailure(.unrelated); _ = try await pub.sync()
+        let buildsAfterFailure = await pub.replicatedContentBuildCount
+        let reusesAfterFailure = await pub.replicatedContentReuseCount
         let pending = try await fixture.bytes.store.load(owner: "owner").pending
         XCTAssertFalse(pending?.remaining.isEmpty ?? true); XCTAssertNil(pending?.publishedAt)
         await fixture.transport.setFailure(nil); let retry = try await pub.sync()
         XCTAssertGreaterThan(retry.pushed, 0); XCTAssertNotNil(retry.publication)
+        let buildsAfterRetry = await pub.replicatedContentBuildCount
+        let reusesAfterRetry = await pub.replicatedContentReuseCount
+        XCTAssertEqual(buildsAfterRetry, buildsAfterFailure, "Retry reuses the unchanged projection after a failed send")
+        XCTAssertEqual(reusesAfterRetry, reusesAfterFailure + 1)
     }
 
     func testFlagIsOffUnlessExactlyOne() {
@@ -265,6 +271,37 @@ final class WiltedMacLibraryPublisherTests: XCTestCase {
         XCTAssertEqual(delta.pushed, 3, "retire removal, slot removal for a, slot key move for b")
         XCTAssertEqual(snapshot.entries[id("a")]?.removal, .retired)
         XCTAssertEqual(snapshot.queue.map(\.entryID), [id("b")])
+    }
+
+    func testReplicatedProjectionReuseUsesActualValuesAndIgnoresPlaybackReadout() async throws {
+        let server = makeServer()
+        let source = FakeStateSource(state([episode("a")], queue: ["a"], playback: position("a", seconds: 30)))
+        let pub = publisher(source, server: server)
+        _ = try await pub.sync()
+
+        await source.set(state([episode("a")], queue: ["a"], playback: position("a", seconds: 90)))
+        _ = try await pub.sync()
+        let unchangedBuilds = await pub.replicatedContentBuildCount
+        let readoutReuses = await pub.replicatedContentReuseCount
+        XCTAssertEqual(unchangedBuilds, 1)
+        XCTAssertEqual(readoutReuses, 1, "current playback is not a replicated-content dependency")
+        await source.set(state([episode("a")], queue: ["a"], playback: position("a", seconds: 120)))
+        _ = try await pub.sync()
+        let diffReuses = await pub.stateDiffReuseCount
+        XCTAssertEqual(diffReuses, 1, "unchanged actual dependencies reuse the cached diff")
+
+        await pub.resetForAccount()
+        _ = try await pub.sync()
+        let buildsAfterReset = await pub.replicatedContentBuildCount
+        XCTAssertEqual(buildsAfterReset, 2, "account reset drops projections tied to the prior owner")
+
+        // A value edit with no timestamp token must rebuild and be sent.
+        await source.set(state([episode("a", title: "Edited in place")], queue: ["a"], playback: position("a", seconds: 121)))
+        _ = try await pub.sync()
+        let changedBuilds = await pub.replicatedContentBuildCount
+        let snapshot = await server.currentSnapshot
+        XCTAssertEqual(changedBuilds, 3)
+        XCTAssertEqual(snapshot.entries[id("a")]?.title, "Edited in place")
     }
 
     func testRestartedPublisherResumesFromServerStateWithoutConflicts() async throws {

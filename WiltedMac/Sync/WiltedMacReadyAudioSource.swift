@@ -56,7 +56,7 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
     }
 
     /// Generic ready revisions include raw downloads; only exact preparation proof authorizes export.
-    private static func preparedAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
+    static func preparedAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
         let episodes = Set(snapshot.episodes.map(\.itemID))
         var prepared: [ItemID: WiltedMacReadyAudio] = [:]
         for id in snapshot.podcastQueue.episodeIDs {
@@ -85,16 +85,16 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
     }
 
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
-        let stored = try await store.podcastLibrarySnapshot().transcripts["\(entryID.rawValue)|\(revisionID.rawValue)"]
+        let stored = try await store.transcripts(for: [entryID: revisionID])[entryID]
         guard let stored else { return nil }
         return LibraryTranscript.capped(entryID: entryID, from: stored, cuts: await cuts(for: entryID, revisionID: revisionID))
     }
 
     func transcripts(for revisions: [ItemID: RevisionID]) async throws -> [ItemID: LibraryTranscript] {
-        let stored = try await store.podcastLibrarySnapshot().transcripts
+        let stored = try await store.transcripts(for: revisions)
         var found: [ItemID: LibraryTranscript] = [:]
         for (entryID, revisionID) in revisions {
-            if let value = stored["\(entryID.rawValue)|\(revisionID.rawValue)"],
+            if let value = stored[entryID],
                let capped = LibraryTranscript.capped(
                 entryID: entryID, from: value, cuts: await cuts(for: entryID, revisionID: revisionID)) {
                 found[entryID] = capped

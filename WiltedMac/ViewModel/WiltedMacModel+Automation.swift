@@ -262,8 +262,7 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
     private func hasNonTerminalWorkTicket() async -> Bool {
         guard let store else { return false }
-        guard let tickets = try? await store.workTickets() else { return false }
-        return tickets.contains { !$0.state.isTerminal }
+        return (try? await store.hasNonTerminalWorkTickets()) ?? false
     }
 #endif
 

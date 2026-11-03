@@ -246,10 +246,7 @@ struct WiltedMacPlayerContent: View {
             if layout == .rail, presentation == nil, keyboardFocus == nil {
                 primaryTransportFocused = true
             }
-            while !Task.isCancelled {
-                model.refreshPlaybackReadout()
-                try? await Task.sleep(for: .seconds(1))
-            }
+            await model.subscribeToPlaybackReadout()
         }
         .task(id: focusRequest) {
             guard layout == .rail, let focusRequest else { return }

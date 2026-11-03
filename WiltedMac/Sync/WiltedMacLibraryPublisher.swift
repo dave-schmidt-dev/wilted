@@ -21,6 +21,22 @@ struct LibraryPublishReport: Sendable, Equatable {
     static let disabled = Self(isEnabled: false)
 }
 
+/// Exact inputs to `LibraryStateSnapshot.replicatedContent`; transient playback readout is not
+/// replicated and deliberately does not invalidate this value.
+private struct LibraryStateProjectionInputs: Sendable, Equatable {
+    var feeds: [LibrarySource]
+    var episodes: [LibraryEntry]
+    var queue: [ItemID]
+    var listening: [ListeningRecord]
+
+    init(_ state: LibraryStateSnapshot) {
+        feeds = state.feeds
+        episodes = state.episodes
+        queue = state.queue
+        listening = state.listening
+    }
+}
+
 /// Publishes the Mac's library state through a `LibraryTransport` and, unless the Mac's sync round
 /// already reads intents (`relaysIntents` false), relays inbound intents.
 ///
@@ -60,6 +76,17 @@ actor WiltedMacLibraryPublisher {
     private let deviceID: String
     private let operationID: @Sendable () -> String
     private var epoch: UInt64 = 0
+    /// Owner-controlled generation for every change to the acknowledged local baseline.
+    private var publishedBaselineGeneration: UInt64 = 0
+    private var cachedProjectionInputs: LibraryStateProjectionInputs?
+    private var cachedReplicatedContent: LibrarySnapshot?
+    private var cachedDiffInputs: LibraryStateProjectionInputs?
+    private var cachedDiffBaselineGeneration: UInt64?
+    private var cachedDiff: [LibraryChange]?
+    private(set) var replicatedContentBuildCount = 0
+    private(set) var replicatedContentReuseCount = 0
+    private(set) var stateDiffBuildCount = 0
+    private(set) var stateDiffReuseCount = 0
     private var inFlight = false
     private var envelope: WiltedMacLibraryPublicationEnvelope?
 
@@ -168,18 +195,48 @@ actor WiltedMacLibraryPublisher {
         epoch &+= 1
         envelope = nil
         published = nil
+        publishedBaselineGeneration &+= 1
         versions = [:]
         publishedStats = nil
         deliveredIntentIDs = []
+        cachedProjectionInputs = nil
+        cachedReplicatedContent = nil
+        cachedDiffInputs = nil
+        cachedDiffBaselineGeneration = nil
+        cachedDiff = nil
     }
 
     // MARK: - State
 
     private func publishState(_ state: LibraryStateSnapshot, context: Context,
                               into report: inout LibraryPublishReport) async throws {
-        let current = try state.replicatedContent()
+        let inputs = LibraryStateProjectionInputs(state)
+        let current: LibrarySnapshot
+        if cachedProjectionInputs == inputs, let cachedReplicatedContent {
+            current = cachedReplicatedContent
+            replicatedContentReuseCount += 1
+        } else {
+            current = try state.replicatedContent()
+            cachedProjectionInputs = inputs
+            cachedReplicatedContent = current
+            replicatedContentBuildCount += 1
+        }
         let baseline = try await seededBaseline(context: context)
-        let changes = envelope?.pending?.remaining ?? LibraryStateDiffer.diff(from: baseline, to: current)
+        let changes: [LibraryChange]
+        if let pending = envelope?.pending {
+            changes = pending.remaining
+        } else if cachedDiffInputs == inputs,
+                  cachedDiffBaselineGeneration == publishedBaselineGeneration,
+                  let cachedDiff {
+            changes = cachedDiff
+            stateDiffReuseCount += 1
+        } else {
+            changes = LibraryStateDiffer.diff(from: baseline, to: current)
+            cachedDiffInputs = inputs
+            cachedDiffBaselineGeneration = publishedBaselineGeneration
+            cachedDiff = changes
+            stateDiffBuildCount += 1
+        }
         if publicationStore != nil, envelope?.pending == nil, !changes.isEmpty {
             var next = envelope!
             next.pending = WiltedMacLibraryPublicationPending(
@@ -210,6 +267,7 @@ actor WiltedMacLibraryPublisher {
             if let change = changesByKey[ack.key] { next = next.applying(change) }
         }
         published = next
+        if !accepted.isEmpty { publishedBaselineGeneration &+= 1 }
         report.acknowledged = accepted.count
         for failure in result.failures {
             switch failure.disposition {
@@ -284,6 +342,7 @@ actor WiltedMacLibraryPublisher {
         try await verify(context)
         versions = seededVersions
         published = snapshot
+        publishedBaselineGeneration &+= 1
         return snapshot
     }
 

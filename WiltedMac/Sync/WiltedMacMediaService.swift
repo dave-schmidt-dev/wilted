@@ -387,13 +387,32 @@ actor WiltedMacMediaService {
 
     // MARK: - Persistence
 
+    private var lastDurableData: Data?
+
     func persist() throws {
         guard let accountingURL else { return }
+        let stored = Stored(
+            records: records.values.sorted { ($0.key.entryID, $0.key.revisionID) < ($1.key.entryID, $1.key.revisionID) },
+            published: published,
+            transcripts: publishedTranscripts
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(stored)
+        if data == lastDurableData { return }
         try FileManager.default.createDirectory(at: accountingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let stored = Stored(records: records.values.sorted { ($0.key.entryID, $0.key.revisionID) < ($1.key.entryID, $1.key.revisionID) }, published: published, transcripts: publishedTranscripts)
-        let data = try JSONEncoder().encode(stored)
-        let result = try accountingWrite(data, accountingURL)
-        if case let .replacedDirectorySyncUncertain(failure) = result {
+        let result: DurableFile.ReplacementResult
+        do {
+            result = try accountingWrite(data, accountingURL)
+        } catch {
+            lastDurableData = nil
+            throw error
+        }
+        switch result {
+        case .durable:
+            lastDurableData = data
+        case .replacedDirectorySyncUncertain(let failure):
+            lastDurableData = nil
             mediaLog.warning("Media accounting landed but its folder sync is uncertain: \(failure.description, privacy: .public)")
         }
     }

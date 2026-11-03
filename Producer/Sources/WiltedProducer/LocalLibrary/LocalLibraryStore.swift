@@ -23,6 +23,35 @@ public actor LocalLibraryStore {
     /// flat as the library grows instead of scaling with episode count.
     var podcastLibrarySnapshotFetchCount = 0
 
+    /// Number of transcript payload decode attempts made by library and exact-key reads.
+    /// Test-only: sync projections must leave this unchanged; targeted export increments only
+    /// for the transcript rows it requested.
+    var transcriptDecodeAttemptCount = 0
+
+    /// Exact-key transcript fetches and rows returned by them. Test-only: export must not pay for
+    /// unrelated transcript records.
+    var targetedTranscriptFetchCount = 0
+    var targetedTranscriptRowsRead = 0
+
+    /// Number of retained preparation journal status decode attempts.
+    /// Test-only: publication metadata reads must not materialize this history.
+    var preparationJournalDecodeAttemptCount = 0
+
+    /// Rows returned by the exact dismissed-item preparation-history lookup.
+    /// Test-only: it must be bounded to the requested dismissed IDs.
+    var dismissedPreparationHistoryRowsRead = 0
+
+    /// Preparation-history rows returned by candidate/detail pages, plus the
+    /// largest single page. These are materialized rows, not SQLite scan counts.
+    var preparationRunRowsRead = 0
+    var preparationRunMaximumBatchRows = 0
+
+    /// Current-status history rows returned by targeted attempt-prefix or
+    /// batched request-ID queries. These count materialized results, not
+    /// SQLite scan counts.
+    var preparationStatusRowsRead = 0
+    var preparationStatusMaximumBatchRows = 0
+
     /// Number of ledger, high-water and summary fetches made by the lifetime
     /// statistics write and read paths since this store opened. Test-only:
     /// proves each checkpoint and summary read costs a constant number of
@@ -33,6 +62,10 @@ public actor LocalLibraryStore {
     /// this store opened. Test-only: proves preparation writes do not scan
     /// unrelated journal history.
     var preparationJournalLookupRowsRead = 0
+
+    /// Rows returned by targeted work-ticket lookups and existence queries.
+    /// This counts result rows, not SQLite rows scanned.
+    var targetedWorkTicketRowsRead = 0
 
     /// Number of journal rows materialized by preparation history maintenance.
     /// Test-only: proves invalidation reads do not grow with retained depth.

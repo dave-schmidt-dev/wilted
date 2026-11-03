@@ -75,6 +75,11 @@ final class WiltedMacMediaSnapshotProjectionTests: XCTestCase {
         corruptTranscript.timing = "invalid-timing"
         corruptTranscript.cues = Data([0xFF, 0xFE, 0xFD])
         context.insert(corruptTranscript)
+        let unrelatedItem = try ItemID(rawValue: "projection-unrelated-transcript")
+        let unrelatedRevision = try RevisionID(rawValue: "projection-unrelated-revision")
+        context.insert(try LocalLibrarySchemaV7Models.TranscriptRecord(Transcript(
+            itemID: unrelatedItem, revisionID: unrelatedRevision, availability: .available,
+            text: "Unrequested transcript body", updatedAt: timestamp)))
 
         // Insert corrupt PreparationRecord that fails JSON decoding
         let corruptPrep = try LocalLibrarySchemaV3Models.PreparationRecord(PreparationJournalEntry(
@@ -88,10 +93,16 @@ final class WiltedMacMediaSnapshotProjectionTests: XCTestCase {
         let beforeFull = await store.podcastLibrarySnapshotFetchCount
         _ = try await store.podcastLibrarySnapshot()
         let fullCost = await store.podcastLibrarySnapshotFetchCount - beforeFull
+        let transcriptDecodesAfterFull = await store.transcriptDecodeAttemptCount
+        let journalDecodesAfterFull = await store.preparationJournalDecodeAttemptCount
         let beforePublication = await store.podcastLibrarySnapshotFetchCount
         _ = try await store.podcastLibrarySnapshot(profile: .publication)
         let publicationCost = await store.podcastLibrarySnapshotFetchCount - beforePublication
         XCTAssertEqual(fullCost - publicationCost, 2, "Publication omits transcript and preparation-journal fetches")
+        let transcriptDecodesAfterPublication = await store.transcriptDecodeAttemptCount
+        let journalDecodesAfterPublication = await store.preparationJournalDecodeAttemptCount
+        XCTAssertEqual(transcriptDecodesAfterPublication, transcriptDecodesAfterFull)
+        XCTAssertEqual(journalDecodesAfterPublication, journalDecodesAfterFull)
 
         let localSource = WiltedMacLocalReadyAudioSource(store: store)
 
@@ -104,12 +115,32 @@ final class WiltedMacMediaSnapshotProjectionTests: XCTestCase {
         XCTAssertEqual(ready.revisionID, revisionID)
         XCTAssertEqual(ready.fileURL, fileURL)
         XCTAssertEqual(ready.byteCount, 256)
+        let transcriptDecodesAfterSingle = await store.transcriptDecodeAttemptCount
+        let journalDecodesAfterSingle = await store.preparationJournalDecodeAttemptCount
+        XCTAssertEqual(transcriptDecodesAfterSingle, transcriptDecodesAfterFull)
+        XCTAssertEqual(journalDecodesAfterSingle, journalDecodesAfterFull)
 
         let beforeQueued = await store.podcastLibrarySnapshotFetchCount
         let queued = try await localSource.preparedQueuedAudio()
         let queuedCost = await store.podcastLibrarySnapshotFetchCount - beforeQueued
         XCTAssertEqual(queuedCost, publicationCost, "Queued ready audio also omits the two display payload fetches")
         XCTAssertEqual(queued[itemID]?.revisionID, revisionID)
+        let transcriptDecodesAfterQueue = await store.transcriptDecodeAttemptCount
+        let journalDecodesAfterQueue = await store.preparationJournalDecodeAttemptCount
+        XCTAssertEqual(transcriptDecodesAfterQueue, transcriptDecodesAfterFull)
+        XCTAssertEqual(journalDecodesAfterQueue, journalDecodesAfterFull)
+
+        let combinedSource = WiltedMacLibraryReadyAudioSource(store: store)
+        let beforeCombinedQueue = await store.podcastLibrarySnapshotFetchCount
+        _ = try await combinedSource.preparedQueuedAudio()
+        let combinedQueueCost = await store.podcastLibrarySnapshotFetchCount - beforeCombinedQueue
+        XCTAssertEqual(combinedQueueCost, publicationCost,
+            "Podcast and Wilted-owned ready audio share one snapshot")
+        let beforeCombinedSingle = await store.podcastLibrarySnapshotFetchCount
+        _ = try await combinedSource.readyAudio(for: itemID)
+        let combinedSingleCost = await store.podcastLibrarySnapshotFetchCount - beforeCombinedSingle
+        XCTAssertEqual(combinedSingleCost, publicationCost,
+            "A ready-audio lookup never takes a second snapshot for other media")
 
         // Exact requested reads report corruption; the full snapshot intentionally skips bad rows.
         do {
@@ -122,13 +153,44 @@ final class WiltedMacMediaSnapshotProjectionTests: XCTestCase {
         try await store.save(transcript: Transcript(itemID: itemID, revisionID: revisionID,
             availability: .available, text: exportText, updatedAt: timestamp))
         let beforeExport = await store.podcastLibrarySnapshotFetchCount
+        let beforeTargetedFetches = await store.targetedTranscriptFetchCount
+        let beforeTargetedRows = await store.targetedTranscriptRowsRead
+        let beforeTargetedDecodes = await store.transcriptDecodeAttemptCount
         let requestedValue = try await localSource.transcript(for: itemID, revisionID: revisionID)
-        let exportCost = await store.podcastLibrarySnapshotFetchCount - beforeExport
-        XCTAssertEqual(exportCost, fullCost, "Explicit transcript export retains the full snapshot read")
+        let snapshotFetchesAfterExport = await store.podcastLibrarySnapshotFetchCount
+        let targetedFetchesAfterExport = await store.targetedTranscriptFetchCount
+        let targetedRowsAfterExport = await store.targetedTranscriptRowsRead
+        let targetedDecodesAfterExport = await store.transcriptDecodeAttemptCount
+        XCTAssertEqual(snapshotFetchesAfterExport, beforeExport,
+            "Explicit transcript export does not rebuild a library snapshot")
+        XCTAssertEqual(targetedFetchesAfterExport - beforeTargetedFetches, 1)
+        XCTAssertEqual(targetedRowsAfterExport - beforeTargetedRows, 1)
+        XCTAssertEqual(targetedDecodesAfterExport - beforeTargetedDecodes, 1)
         let requested = try XCTUnwrap(requestedValue)
         XCTAssertEqual(requested.entryID, itemID)
         XCTAssertEqual(requested.revisionID, revisionID)
         XCTAssertEqual(requested.plainText, exportText, "Requested export still decodes its saved payload")
+    }
+
+    func testAbsentTranscriptIsRecheckedAndVisibleAfterItArrives() async throws {
+        let (store, dir) = try makeStore("projection-absent-transcript")
+        let (itemID, revisionID, _) = try await seedPodcastEpisode(in: store, directory: dir, guid: "late")
+        let source = WiltedMacLocalReadyAudioSource(store: store)
+
+        let first = try await source.transcript(for: itemID, revisionID: revisionID)
+        XCTAssertNil(first)
+        let rowsAfterMiss = await store.targetedTranscriptRowsRead
+        let decodesAfterMiss = await store.transcriptDecodeAttemptCount
+
+        let text = "This transcript was saved after the first lookup."
+        try await store.save(transcript: Transcript(itemID: itemID, revisionID: revisionID,
+            availability: .available, text: text, updatedAt: timestamp))
+        let second = try await source.transcript(for: itemID, revisionID: revisionID)
+        XCTAssertEqual(second?.plainText, text)
+        let rowsAfterArrival = await store.targetedTranscriptRowsRead
+        let decodesAfterArrival = await store.transcriptDecodeAttemptCount
+        XCTAssertEqual(rowsAfterArrival - rowsAfterMiss, 1)
+        XCTAssertEqual(decodesAfterArrival - decodesAfterMiss, 1)
     }
 
     func testPreparedAudioProofGuardsPreserveExclusions() async throws {

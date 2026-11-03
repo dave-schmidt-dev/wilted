@@ -321,6 +321,10 @@ final class WiltedMacModel {
     }
     var coordinator: PreparationCoordinator?
     var playback: PlaybackController?
+    /// One readout clock shared by whichever player surfaces are mounted.
+    @ObservationIgnored var playbackReadoutClock: WiltedMacPlaybackReadoutClock?
+    @ObservationIgnored var seamMarkerScheduleCountForTesting = 0
+    @ObservationIgnored var playbackProjectionWriteCountForTesting = 0
     /// Why CloudKit calls are paused (rate limited, unavailable) and until when; nil while they run.
     /// Set by the library sync's shared gate, shown in the Sync settings card.
     var libraryThrottle: TransportGateState?
@@ -338,6 +342,12 @@ final class WiltedMacModel {
     /// boundary so a snapshot that began beforehand cannot publish over it.
     var libraryReadEpoch: UInt64 = 0
     var lastAppliedLibraryReadEpoch: UInt64 = 0
+    /// Imported playback writes invalidate older whole-library reads, but
+    /// should only cause a follow-up read when one of those reads is rejected.
+    @ObservationIgnored var importedPlaybackReadEpoch: UInt64 = 0
+    @ObservationIgnored var importedPositionLibraryReloadTask: Task<Void, Never>?
+    @ObservationIgnored var importedPositionLibraryReloadTargetEpoch: UInt64 = 0
+    @ObservationIgnored var importedPositionLibraryReloadPending = false
     /// Exact Feed rows whose durable decision has started. This is separate
     /// from Larder admission retry state because a decision failure stays
     /// selected and retryable instead of becoming an automatic arrival.
@@ -435,6 +445,11 @@ final class WiltedMacModel {
     /// model just accepted visible until the journal catches up.
     var projectedProcessorRuns: [String: WiltedMacProcessorRun] = [:]
     var processorRunsRefreshGeneration: UInt64 = 0
+    /// Coalesces overlapping durable Processor history refreshes.
+    @ObservationIgnored var processorRunsRefreshTask: Task<Void, Never>?
+    @ObservationIgnored var processorRunsRefreshReadCountForTesting = 0
+    @ObservationIgnored var processorRunsRefreshAfterRunsReadForTesting:
+        (@MainActor (LocalLibraryStore, UInt64) async -> Void)?
     /// Queue reads are independent actor calls. A late read from an older
     /// mutation must not overwrite the snapshot published for a newer one.
     var podcastQueueRefreshGeneration: UInt64 = 0
@@ -658,6 +673,7 @@ final class WiltedMacModel {
 
     isolated deinit {
 #if canImport(WiltedProducer)
+        playbackReadoutClock?.stop()
         // Deinitialization cannot await. Capture task and root values only,
         // then let a post-model task settle writers before deleting an owned
         // root. The closures do not capture `self`, so this cannot resurrect
@@ -677,6 +693,8 @@ final class WiltedMacModel {
             fixturePodcastInstallTask,
             fixtureInstallTask,
             playbackOperationTask,
+            importedPositionLibraryReloadTask,
+            processorRunsRefreshTask,
             manualCompletionRecoveryTask,
             manualCompletionExpiryTask,
             larderAdditionTask,

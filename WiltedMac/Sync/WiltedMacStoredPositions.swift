@@ -42,14 +42,13 @@ enum WiltedMacStoredPositions {
 
 #if canImport(WiltedProducer)
 extension WiltedMacModelHandoffPlayer {
-    /// One read of the store's library snapshot and queue; empty when either fails, so a bad read
-    /// publishes nothing and the next pass retries.
+    /// One publication-profile snapshot carries both the queue and playback proof; empty when the
+    /// read fails, so a bad read publishes nothing and the next pass retries.
     func storedPositions() async -> [HandoffCoordinator.StoredPosition] {
         guard let store = model?.store,
-              let snapshot = try? await store.podcastLibrarySnapshot(),
-              let queue = try? await store.podcastQueueState().episodeIDs else { return [] }
+              let snapshot = try? await store.podcastLibrarySnapshot(profile: .publication) else { return [] }
         return WiltedMacStoredPositions.derive(
-            queue: queue, retired: Set(snapshot.retiredAtByEpisode.keys),
+            queue: snapshot.podcastQueue.episodeIDs, retired: Set(snapshot.retiredAtByEpisode.keys),
             readyRevisions: snapshot.readyRevisions.mapValues(\.revision.revisionID),
             playbackStates: snapshot.playbackStates,
             completed: Set(snapshot.listeningStates.values.filter { $0.completedAt != nil }.map(\.episodeID)),

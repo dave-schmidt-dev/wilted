@@ -10,8 +10,10 @@ extension LocalLibraryStore {
     /// whatever stage it last reached, rather than being dropped. A process
     /// that died mid-synthesis is exactly the run a reader most wants to see.
     public func preparationRuns(limit: Int = 200) throws -> [PreparationRunSummary] {
+        guard limit > 0 else { return [] }
         let context = ModelContext(container)
-        return try allPreparationRunSummaries(in: context).prefix(max(0, limit)).map { $0 }
+        if limit == Int.max { return try allPreparationRunSummaries(in: context) }
+        return try preparationRunSummaries(limit: limit, in: context)
     }
 
     /// Every recorded preparation attempt, newest first, with no cap.
@@ -31,32 +33,41 @@ extension LocalLibraryStore {
             // interrupted preparation and showing a phantom failed job.
             guard !record.requestID.hasPrefix(Self.forcedRedownloadRequestPrefix),
                   !record.requestID.hasPrefix(Self.resetPreparationRequestPrefix) else { continue }
+            preparationJournalDecodeAttemptCount += 1
             guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
                   let itemID = try? ItemID(rawValue: record.itemID) else { continue }
             byRequest[record.requestID + (status.attempt.map { "|" + $0.key } ?? ""), default: []].append(
                 PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
             )
         }
-        return byRequest.compactMap { _, entries -> PreparationRunSummary? in
-            let ordered = entries.sorted(by: preparationEntryPrecedes)
-            guard let first = ordered.first, let last = ordered.last else { return nil }
-            let terminal = ordered.last(where: { $0.status.terminal })?.status
-            let representative = terminal ?? last.status
-            return PreparationRunSummary(
-                requestID: last.requestID,
-                itemID: last.itemID,
-                startedAt: first.status.emittedAt,
-                updatedAt: last.status.emittedAt,
-                stage: representative.stage,
-                detail: representative.detail,
-                fraction: representative.fraction,
-                isTerminal: terminal != nil,
-                outcome: terminal?.terminalResult?.outcome,
-                failure: terminal?.terminalResult?.error,
-                entries: ordered
-            )
+        return byRequest.values.compactMap(preparationRunSummary)
+            .sorted(by: preparationRunSummaryPrecedes)
+    }
+
+    /// The canonical projection from event rows to one complete run summary.
+    func preparationRunSummary(_ entries: [PreparationJournalEntry]) -> PreparationRunSummary? {
+        let ordered = entries.sorted(by: preparationEntryPrecedes)
+        guard let first = ordered.first, let last = ordered.last else { return nil }
+        let terminal = ordered.last(where: { $0.status.terminal })?.status
+        let representative = terminal ?? last.status
+        return PreparationRunSummary(
+            requestID: last.requestID, itemID: last.itemID,
+            startedAt: first.status.emittedAt, updatedAt: last.status.emittedAt,
+            stage: representative.stage, detail: representative.detail,
+            fraction: representative.fraction, isTerminal: terminal != nil,
+            outcome: terminal?.terminalResult?.outcome, failure: terminal?.terminalResult?.error,
+            entries: ordered
+        )
+    }
+
+    /// Keeps equal-time run rows deterministic after grouping their events.
+    func preparationRunSummaryPrecedes(_ lhs: PreparationRunSummary, _ rhs: PreparationRunSummary) -> Bool {
+        if lhs.updatedAt.date != rhs.updatedAt.date { return lhs.updatedAt.date > rhs.updatedAt.date }
+        if let left = lhs.entries.last, let right = rhs.entries.last {
+            if preparationEntryPrecedes(left, right) { return false }
+            if preparationEntryPrecedes(right, left) { return true }
         }
-        .sorted { $0.updatedAt.date > $1.updatedAt.date }
+        return lhs.id < rhs.id
     }
 
     /// One batched, indexed read of everything the Larder projection needs.
@@ -165,6 +176,7 @@ extension LocalLibraryStore {
         if profile == .full {
             podcastLibrarySnapshotFetchCount += 1
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>()) {
+                transcriptDecodeAttemptCount += 1
                 guard let transcript = try? decodeTranscript(record) else { continue }
                 transcripts["\(record.itemID)|\(record.revisionID)"] = transcript
             }

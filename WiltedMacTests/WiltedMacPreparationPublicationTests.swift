@@ -6,6 +6,42 @@ import WiltedProducer
 import XCTest
 @testable import WiltedMac
 
+@MainActor
+private final class ProcessorRunsRefreshGate {
+    private var shouldHold = true
+    private var didHold = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func holdFirstReadAfterReturn() async {
+        guard shouldHold else { return }
+        shouldHold = false
+        didHold = true
+        let waiters = heldWaiters
+        heldWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        await withCheckedContinuation { releaseContinuation = $0 }
+    }
+
+    func waitUntilHeld() async {
+        guard !didHold else { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private struct ProcessorRunsRefreshFixture {
+    let store: LocalLibraryStore
+    let itemID: ItemID
+    let requestID: String
+    let entryID: String
+    let emittedAt: Timestamp
+}
+
 final class WiltedMacPreparationPublicationTests: XCTestCase {
     @MainActor
     func testSourcePublishesExactBackingAndClearsForUnacknowledgedIntakeWithdrawalAndSuccess() async throws {
@@ -333,5 +369,138 @@ final class WiltedMacPreparationPublicationTests: XCTestCase {
         XCTAssertNil(unproven?.revisionID)
         XCTAssertNil(WiltedMacPreparationPublication.status(.init(requestSequence: 11, attemptCount: 0,
             state: .running, updatedAt: now)))
+    }
+
+    @MainActor
+    func testProcessorRefreshCoalescesChangesIntoOneLatestFollowUp() async throws {
+        let fixture = try await makeProcessorRunsRefreshFixture(
+            directoryName: "processor-refresh-coalesced", title: "Show", detail: "older status"
+        )
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await model.close() }
+        model.store = fixture.store
+        let gate = ProcessorRunsRefreshGate()
+        model.processorRunsRefreshAfterRunsReadForTesting = { _, _ in await gate.holdFirstReadAfterReturn() }
+
+        model.refreshProcessorRuns()
+        await gate.waitUntilHeld()
+        let newestStatus = try PreparationStatus(
+            stage: .synthesizing, detail: "latest status", cancellable: true,
+            emittedAt: Timestamp(fixture.emittedAt.date.addingTimeInterval(1))
+        )
+        try await fixture.store.record(preparation: .init(
+            id: fixture.entryID, itemID: fixture.itemID, requestID: fixture.requestID, status: newestStatus
+        ))
+        model.refreshProcessorRuns()
+        model.refreshProcessorRuns()
+        model.refreshProcessorRuns()
+
+        let refreshTask = try XCTUnwrap(model.processorRunsRefreshTask)
+        gate.release()
+        await refreshTask.value
+
+        XCTAssertEqual(model.processorRunsRefreshReadCountForTesting, 2,
+                       "overlapping refresh requests share one in-flight pass and one latest follow-up")
+        XCTAssertEqual(model.processorRuns.count, 1)
+        XCTAssertEqual(model.processorRuns.first?.detail, "latest status")
+        XCTAssertEqual(model.processorRuns.first?.title, "Show")
+        XCTAssertNil(model.processorRunsRefreshTask)
+    }
+
+    @MainActor
+    func testProcessorRefreshDiscardsAReadFromAReplacedStore() async throws {
+        let old = try await makeProcessorRunsRefreshFixture(
+            directoryName: "processor-refresh-old-store", title: "Old title", detail: "stale store"
+        )
+        let current = try await makeProcessorRunsRefreshFixture(
+            directoryName: "processor-refresh-new-store", title: "Current title", detail: "current store"
+        )
+        XCTAssertEqual(old.itemID, current.itemID)
+
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await model.close() }
+        model.store = old.store
+        let gate = ProcessorRunsRefreshGate()
+        model.processorRunsRefreshAfterRunsReadForTesting = { _, _ in await gate.holdFirstReadAfterReturn() }
+
+        model.refreshProcessorRuns()
+        await gate.waitUntilHeld()
+        model.store = current.store
+        let refreshTask = try XCTUnwrap(model.processorRunsRefreshTask)
+        gate.release()
+        await refreshTask.value
+
+        XCTAssertEqual(model.processorRunsRefreshReadCountForTesting, 2,
+                       "the obsolete store result is discarded before refreshing the replacement")
+        XCTAssertEqual(model.processorRuns.count, 1)
+        XCTAssertEqual(model.processorRuns.first?.detail, "current store")
+        XCTAssertEqual(model.processorRuns.first?.title, "Current title")
+    }
+
+    @MainActor
+    func testCloseCancelsAndJoinsAProcessorRefreshHeldAfterItsRead() async throws {
+        let fixture = try await makeProcessorRunsRefreshFixture(
+            directoryName: "processor-refresh-close", title: "Show", detail: "held read"
+        )
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        model.store = fixture.store
+        let gate = ProcessorRunsRefreshGate()
+        model.processorRunsRefreshAfterRunsReadForTesting = { _, _ in await gate.holdFirstReadAfterReturn() }
+
+        model.refreshProcessorRuns()
+        await gate.waitUntilHeld()
+        let refreshTask = try XCTUnwrap(model.processorRunsRefreshTask)
+        var didClose = false
+        let closeTask = Task { @MainActor in
+            await model.close()
+            didClose = true
+        }
+        let closing = await waitUntil { model.isClosingTemporaryState }
+        XCTAssertTrue(closing)
+        XCTAssertTrue(refreshTask.isCancelled)
+        XCTAssertFalse(didClose, "close must wait for the cancelled refresh to leave its held read")
+
+        gate.release()
+        await closeTask.value
+        XCTAssertTrue(didClose)
+        XCTAssertNil(model.processorRunsRefreshTask)
+    }
+
+    @MainActor
+    private func makeProcessorRunsRefreshFixture(
+        directoryName: String, title: String, detail: String
+    ) async throws -> ProcessorRunsRefreshFixture {
+        let directory = wiltedTemporaryDirectory(directoryName)
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let articleURL = URL(string: "https://example.test/processor-refresh")!
+        let itemID = try ItemID.derive(from: articleURL)
+        let emittedAt = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let article = try Article(
+            itemID: itemID, canonicalURL: articleURL, title: title, source: "Example", createdAt: emittedAt
+        )
+        try await store.save(article: article)
+        let requestID = "article-prepare|\(itemID.rawValue)"
+        let entryID = requestID + "|extracting#1"
+        let status = try PreparationStatus(
+            stage: .extracting, detail: detail, cancellable: true, emittedAt: emittedAt
+        )
+        try await store.record(preparation: .init(
+            id: entryID, itemID: itemID, requestID: requestID, status: status
+        ))
+        return ProcessorRunsRefreshFixture(
+            store: store, itemID: itemID, requestID: requestID, entryID: entryID, emittedAt: emittedAt
+        )
+    }
+
+    @MainActor
+    private func waitUntil(
+        _ condition: @MainActor () -> Bool,
+        iterations: Int = 2_000
+    ) async -> Bool {
+        for _ in 0..<iterations {
+            if condition() { return true }
+            await Task.yield()
+        }
+        return condition()
     }
 }

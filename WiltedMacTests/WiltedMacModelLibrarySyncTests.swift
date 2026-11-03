@@ -103,6 +103,31 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         await controller.close(); await model.close()
     }
 
+    func testElapsedReadoutDoesNotChangePublicationInputsButCompletionStillDoes() async throws {
+        let (model, store) = try await bootstrapped("library-sync-readout-normalization")
+        let ids = try await seedEpisodes(store)
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+        await model.reloadLibraryRowsForTesting()
+        let index = try XCTUnwrap(model.episodes.firstIndex { $0.id == ids[0].rawValue })
+        model.episodes[index].playbackSeconds = 20
+        model.articles = [WiltedMacArticle(
+            id: "article-readout", title: "Article", source: "Feed",
+            url: URL(string: "https://example.test/article")!, isReady: true,
+            durationSeconds: 120, playbackSeconds: 20)]
+        let before = model.librarySyncPublicationInputs()
+
+        model.episodes[index].playbackSeconds = 21
+        model.articles[0].playbackSeconds = 21
+        XCTAssertEqual(model.librarySyncPublicationInputs(), before,
+            "elapsed readout changes do not schedule a state-only publication")
+
+        model.articles[0].isPlayed = true
+        XCTAssertNotEqual(model.librarySyncPublicationInputs(), before,
+            "durable completion remains a publication dependency")
+        await model.close()
+    }
+
     func testPublicationIdentityExportMatchesFullSnapshotWithRawAliasesAndManualChoice() async throws {
         let (model, store) = try await bootstrapped("library-sync-profile-aliases")
         let ids = try await seedEpisodes(store)

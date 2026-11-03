@@ -90,7 +90,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
             subsystem: "com.apple.example"
         )
         let box = LockedLogEntries([debug, info, notice, error, fault, otherError])
-        let archive = WiltedMacLogArchive(file: file, source: { box.snapshot })
+        let archive = WiltedMacLogArchive(file: file, source: { _ in box.snapshot })
 
         let written = await archive.archivePass()
 
@@ -183,7 +183,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         let first = makeEntry("once-first-marker", date: base)
         let second = makeEntry("once-second-marker", date: base.addingTimeInterval(1))
         let box = LockedLogEntries([first, second])
-        let archive = WiltedMacLogArchive(file: file, source: { box.snapshot })
+        let archive = WiltedMacLogArchive(file: file, source: { _ in box.snapshot })
 
         let firstCount = await archive.archivePass()
         XCTAssertEqual(firstCount, 2)
@@ -219,7 +219,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         )
         let marker = "failed-write-marker"
         let box = LockedLogEntries([makeEntry(marker, date: Date(timeIntervalSince1970: 1_700_000_000))])
-        let archive = WiltedMacLogArchive(file: file, source: { box.snapshot })
+        let archive = WiltedMacLogArchive(file: file, source: { _ in box.snapshot })
 
         let failed = await archive.archivePass()
         XCTAssertEqual(failed, 0)
@@ -279,7 +279,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         let markers = ["mid-a-marker", "mid-b-marker", "mid-c-marker", "mid-d-marker"]
         let entries = markers.enumerated().map { makeEntry($1, date: base.addingTimeInterval(Double($0))) }
         let box = LockedLogEntries([entries[0]])
-        let archive = WiltedMacLogArchive(file: file, source: { box.snapshot })
+        let archive = WiltedMacLogArchive(file: file, source: { _ in box.snapshot })
         let firstCount = await archive.archivePass()
         XCTAssertEqual(firstCount, 1)
 
@@ -318,7 +318,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         let first = makeEntry("short-first-marker", date: base)
         let second = makeEntry("short-second-marker", date: base.addingTimeInterval(1))
         let box = LockedLogEntries([first])
-        let archive = WiltedMacLogArchive(file: file, source: { box.snapshot })
+        let archive = WiltedMacLogArchive(file: file, source: { _ in box.snapshot })
         let firstCount = await archive.archivePass()
         XCTAssertEqual(firstCount, 1)
 
@@ -339,7 +339,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         let early = makeEntry("late-early-marker", date: base.addingTimeInterval(10))
         let newest = makeEntry("late-newest-marker", date: base.addingTimeInterval(100))
         let box = LockedLogEntries([early, newest])
-        let archive = WiltedMacLogArchive(file: file, source: { box.snapshot })
+        let archive = WiltedMacLogArchive(file: file, source: { _ in box.snapshot })
         let firstCount = await archive.archivePass()
         XCTAssertEqual(firstCount, 2)
 
@@ -361,7 +361,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         let date = Date(timeIntervalSince1970: 1_700_000_000)
         let first = makeEntry("order-first-marker", date: date)
         let box = LockedLogEntries([first])
-        let archive = WiltedMacLogArchive(file: file, source: { box.snapshot })
+        let archive = WiltedMacLogArchive(file: file, source: { _ in box.snapshot })
         let firstCount = await archive.archivePass()
         XCTAssertEqual(firstCount, 1)
 
@@ -384,7 +384,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
             category: "ArchiveTests",
             components: [.init(literal: "nan-marker position=", placeholder: "%f", argument: .double(.nan))]
         )
-        let archive = WiltedMacLogArchive(file: file, source: { [entry] })
+        let archive = WiltedMacLogArchive(file: file, source: { _ in [entry] })
 
         let firstCount = await archive.archivePass()
         let secondCount = await archive.archivePass()
@@ -394,13 +394,13 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         XCTAssertEqual(try lines(at: file.url).filter { $0.contains("nan-marker") }.count, 1)
     }
 
-    private func makeDirectory(_ name: String) throws -> URL {
+    func makeDirectory(_ name: String) throws -> URL {
         let directory = wiltedTemporaryDirectory("log-archive-\(name)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
 
-    private func makeFile(
+    func makeFile(
         _ name: String,
         maximumBytes: Int,
         backupCount: Int
@@ -412,13 +412,13 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         )
     }
 
-    private func makeLines(count: Int) -> [String] {
+    func makeLines(count: Int) -> [String] {
         (0..<count).map { index in
             "archive-line-\(index)-" + String(repeating: "x", count: 24)
         }
     }
 
-    private func makeEntry(
+    func makeEntry(
         _ marker: String,
         date: Date,
         level: WiltedMacLogArchiveEntry.Level = .error,
@@ -439,18 +439,18 @@ final class WiltedMacLogArchiveTests: XCTestCase {
         )
     }
 
-    private func fileSize(_ url: URL) throws -> Int {
+    func fileSize(_ url: URL) throws -> Int {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return (attributes[.size] as? NSNumber)?.intValue ?? 0
     }
 
-    private func lines(at url: URL) throws -> [String] {
+    func lines(at url: URL) throws -> [String] {
         try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n")
             .map(String.init)
     }
 
-    private func archiveURLs(for file: WiltedMacRotatingLogFile) -> [URL] {
+    func archiveURLs(for file: WiltedMacRotatingLogFile) -> [URL] {
         let backups = (1...max(1, file.backupCount)).map { file.backupURL($0) }
         return ([file.url] + backups).filter {
             FileManager.default.fileExists(atPath: $0.path)
@@ -458,7 +458,7 @@ final class WiltedMacLogArchiveTests: XCTestCase {
     }
 }
 
-private final class LockedLogEntries: @unchecked Sendable {
+final class LockedLogEntries: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [WiltedMacLogArchiveEntry]
 

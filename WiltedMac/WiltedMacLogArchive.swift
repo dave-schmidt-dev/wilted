@@ -304,7 +304,7 @@ struct WiltedMacRotatingLogFile: Sendable {
 
 /// Actor that coordinates reading from OSLogStore and archiving entries to rotating disk files.
 actor WiltedMacLogArchive {
-    typealias Source = @Sendable () throws -> [WiltedMacLogArchiveEntry]
+    typealias Source = @Sendable (_ since: Date?) throws -> [WiltedMacLogArchiveEntry]
 
     static let subsystemPrefix = "com.zerodelta.wilted"
     private static let logger = Logger(subsystem: "com.zerodelta.wilted.mac", category: "LogArchive")
@@ -334,10 +334,20 @@ actor WiltedMacLogArchive {
 
     /// Reads warning-and-above entries for Wilted subsystems from the current process's unified log store.
     static func currentProcessSource() -> Source {
-        return { @Sendable in
+        return { @Sendable since in
             let store = try OSLogStore(scope: .currentProcessIdentifier)
-            let position = store.position(timeIntervalSinceLatestBoot: 0)
-            let predicate = NSPredicate(format: "subsystem BEGINSWITH %@ AND messageType >= %d", subsystemPrefix, 16)
+            let position: OSLogPosition
+            let predicate: NSPredicate
+            if let since {
+                position = store.position(date: since)
+                predicate = NSPredicate(
+                    format: "subsystem BEGINSWITH %@ AND messageType >= %d AND date >= %@",
+                    subsystemPrefix, 16, since as NSDate
+                )
+            } else {
+                position = store.position(timeIntervalSinceLatestBoot: 0)
+                predicate = NSPredicate(format: "subsystem BEGINSWITH %@ AND messageType >= %d", subsystemPrefix, 16)
+            }
             let entries = try store.getEntries(at: position, matching: predicate)
             var result: [WiltedMacLogArchiveEntry] = []
             for entry in entries {
@@ -357,18 +367,20 @@ actor WiltedMacLogArchive {
 
     /// Executes an archive pass and returns the number of lines written.
     ///
-    /// Each pass sees every entry since launch, so a line is written only while this
-    /// pass has seen it more often than earlier passes wrote it, within `lateness` of
-    /// the newest written entry. Lines are written one at a time and counted only after
-    /// they land, so a failed write is retried next pass without duplicating the rest.
+    /// The query starts at `lateness` before the newest written entry (or the beginning if
+    /// none have been written), so a line is written only while this pass has seen it more
+    /// often than earlier passes wrote it, within `lateness` of the newest written entry.
+    /// Lines are written one at a time and counted only after they land, so a failed write
+    /// is retried next pass without duplicating the rest.
     @discardableResult
     func archivePass() async -> Int {
         let source = self.source
+        let cursor = newestWritten?.addingTimeInterval(-Self.lateness)
         let rawEntries: [WiltedMacLogArchiveEntry]
         do {
             rawEntries = try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
-                    do { continuation.resume(returning: try source()) } catch { continuation.resume(throwing: error) }
+                    do { continuation.resume(returning: try source(cursor)) } catch { continuation.resume(throwing: error) }
                 }
             }
         } catch {
@@ -380,6 +392,10 @@ actor WiltedMacLogArchive {
         let sorted = filtered.enumerated().sorted { a, b in
             a.element.date != b.element.date ? a.element.date < b.element.date : a.offset < b.offset
         }.map(\.element)
+        // `source` suspends this actor. Another archive pass may finish while it is
+        // suspended, advance `newestWritten`, and prune older duplicate counts. Apply
+        // the current horizon after resuming so a late overlapping pass cannot replay
+        // entries that the newer pass already wrote and pruned.
         let horizon = newestWritten?.addingTimeInterval(-Self.lateness)
 
         var seen: [WrittenLine: Int] = [:]

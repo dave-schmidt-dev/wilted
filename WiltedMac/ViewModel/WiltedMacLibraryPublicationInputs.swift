@@ -29,13 +29,18 @@ extension WiltedMacModel {
             queue: podcastQueueIDs,
             episodes: episodes.map { episode in
                 var value = episode
+                value.playbackSeconds = 0
                 if case .downloading = value.downloadState {
                     value.downloadState = .downloading(received: 0, expected: nil)
                 }
                 return .init(row: value, manualCompletionOperationID: episode.manualCompletionOperationID)
             },
             associations: episodeAssociations,
-            articles: articles,
+            articles: articles.map { article in
+                var value = article
+                value.playbackSeconds = 0
+                return value
+            },
             dismissed: dismissedEpisodes
         )
     }

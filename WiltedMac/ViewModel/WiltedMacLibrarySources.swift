@@ -208,12 +208,13 @@ struct WiltedMacLibraryReadyAudioSource: WiltedMacReadyAudioSource {
     private var podcasts: WiltedMacLocalReadyAudioSource { WiltedMacLocalReadyAudioSource(store: store) }
 
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? {
-        if let audio = try await podcasts.readyAudio(for: entryID) { return audio }
-        return try await ownAudio()[entryID]
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
+        return combinedAudio(in: snapshot)[entryID]
     }
 
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
-        try await podcasts.preparedQueuedAudio().merging(ownAudio()) { podcast, _ in podcast }
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
+        return combinedAudio(in: snapshot)
     }
 
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
@@ -224,8 +225,12 @@ struct WiltedMacLibraryReadyAudioSource: WiltedMacReadyAudioSource {
         try await podcasts.transcripts(for: revisions)
     }
 
-    private func ownAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
-        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
+    private func combinedAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
+        WiltedMacLocalReadyAudioSource.preparedAudio(in: snapshot)
+            .merging(ownAudio(in: snapshot)) { podcast, _ in podcast }
+    }
+
+    private func ownAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
         let live = Set(snapshot.articles.filter { !$0.isDeleted }.map(\.itemID))
             .union(snapshot.audiobooks.filter { !$0.isRemoved }.map(\.itemID))
         var ready: [ItemID: WiltedMacReadyAudio] = [:]

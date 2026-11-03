@@ -269,6 +269,68 @@ extension LocalLibraryStoreTests {
         XCTAssertLessThanOrEqual(requiresAfter - requiresBefore, 1)
     }
 
+    func testMeasurePreparationStatusAndRunReadsAcrossSyntheticHistoryDepths() async throws {
+        for depth in [100, 800] {
+            let fixture = try await makeBuriedPreparationHistory(
+                depth: depth, name: "preparation-read-timing-\(depth)")
+            defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
+
+            let journalRows = try preparationHistoryRowCount(
+                in: fixture.store.container, requestID: fixture.requestID)
+            XCTAssertEqual(journalRows, depth * 3 + 2)
+
+            let current = try await fixture.store.currentPreparationStatuses(for: [fixture.itemID])
+            XCTAssertEqual(current[fixture.itemID]?.status?.attempt?.requestSequence, depth + 1)
+            let expectedRunCount = min(depth + 1, 200)
+            let runs = try await fixture.store.preparationRuns()
+            XCTAssertEqual(runs.count, expectedRunCount)
+
+            // Warm both paths, then record elapsed time without a machine-specific threshold.
+            _ = try await fixture.store.currentPreparationStatuses(for: [fixture.itemID])
+            let statusStart = DispatchTime.now().uptimeNanoseconds
+            for _ in 0..<5 {
+                _ = try await fixture.store.currentPreparationStatuses(for: [fixture.itemID])
+            }
+            let statusSeconds = Double(DispatchTime.now().uptimeNanoseconds - statusStart) / 5_000_000_000
+
+            _ = try await fixture.store.preparationRuns()
+            let runsStart = DispatchTime.now().uptimeNanoseconds
+            for _ in 0..<5 {
+                _ = try await fixture.store.preparationRuns()
+            }
+            let runsSeconds = Double(DispatchTime.now().uptimeNanoseconds - runsStart) / 5_000_000_000
+
+            if ProcessInfo.processInfo.environment["WILTED_MEASURE"] == "1" {
+                print("measure.preparationReads depth=\(depth) journalRows=\(journalRows) "
+                      + "displayRuns=\(expectedRunCount) currentStatusMeanSeconds=\(String(format: "%.6f", statusSeconds)) "
+                      + "preparationRunsMeanSeconds=\(String(format: "%.6f", runsSeconds))")
+            }
+        }
+    }
+
+    func testDisplayedRunsPageSharedRequestHistoryAndDecodeOnlySelectedAttempts() async throws {
+        let fixture = try await makeBuriedPreparationHistory(depth: 800, name: "display-shared-request-pages")
+        defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
+        let expectedRows = try preparationHistoryRowCount(in: fixture.store.container, requestID: fixture.requestID)
+        let rowsBefore = await fixture.store.preparationRunRowsRead
+        let decodesBefore = await fixture.store.preparationJournalDecodeAttemptCount
+
+        let runs = try await fixture.store.preparationRuns()
+
+        let rowsRead = await fixture.store.preparationRunRowsRead - rowsBefore
+        let decodedStatuses = await fixture.store.preparationJournalDecodeAttemptCount - decodesBefore
+        let largestPage = await fixture.store.preparationRunMaximumBatchRows
+        XCTAssertEqual(expectedRows, 2_402)
+        XCTAssertEqual(runs.count, 200)
+        XCTAssertTrue(runs.allSatisfy { $0.entries.count == 3 }, "Selected run details remain complete")
+        XCTAssertEqual(Set(runs.map(\.id)).count, 200)
+        XCTAssertEqual(rowsRead, expectedRows + 768,
+            "The full shared request history and three bounded candidate pages are returned")
+        XCTAssertLessThanOrEqual(largestPage, 256, "No individual fetch materializes the complete history")
+        XCTAssertEqual(decodedStatuses, 600,
+            "The 200 selected attempts' three events are decoded once across discovery and detail assembly")
+    }
+
     func testPreparationHistoryForcedRedownloadCompletionClearsOnlyThatItemsMarkers() async throws {
         let fixture = try await makePreparationHistoryDownload("marker-completion")
         defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }

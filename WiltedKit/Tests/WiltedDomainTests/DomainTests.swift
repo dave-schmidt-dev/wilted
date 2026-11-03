@@ -362,10 +362,16 @@ final class DomainTests: XCTestCase {
     }
 
     func testTimestampRoundTripAlwaysUsesUTCZ() throws {
-        let timestamp = try Timestamp(iso8601: "2026-08-17T12:00:00.125Z")
-        let data = try JSONEncoder().encode(timestamp)
-        XCTAssertEqual(String(decoding: data, as: UTF8.self), #""2026-08-17T12:00:00.125Z""#)
-        XCTAssertEqual(try JSONDecoder().decode(Timestamp.self, from: data), timestamp)
+        let fractional = try Timestamp(iso8601: "2026-08-17T12:00:00.125Z")
+        let fractionalData = try JSONEncoder().encode(fractional)
+        XCTAssertEqual(String(decoding: fractionalData, as: UTF8.self), #""2026-08-17T12:00:00.125Z""#)
+        XCTAssertEqual(try JSONDecoder().decode(Timestamp.self, from: fractionalData), fractional)
+
+        let whole = try Timestamp(iso8601: "2026-08-17T12:00:00Z")
+        let wholeData = try JSONEncoder().encode(whole)
+        XCTAssertEqual(String(decoding: wholeData, as: UTF8.self), #""2026-08-17T12:00:00Z""#)
+        XCTAssertEqual(try JSONDecoder().decode(Timestamp.self, from: wholeData), whole)
+
         XCTAssertThrowsError(try Timestamp(iso8601: "2026-08-17T08:00:00-04:00"))
     }
 

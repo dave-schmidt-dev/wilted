@@ -22,27 +22,36 @@ extension LocalLibraryStore {
         }
     }
 
-    /// Reads preparation tickets in one kind batch, then filters exact allowed
-    /// backing identities before bounded generation/Ready reads; never run history.
+    /// Reads only allowed ticket identities, then reads each current attempt's
+    /// latest status before its bounded Ready/outcome proof.
     public func currentPreparationStatuses(for itemIDs: [ItemID]) throws -> [ItemID: CurrentPreparationStatus] {
         let allowedItems = Set(itemIDs)
         guard !allowedItems.isEmpty else { return [:] }
         let preparationKind = WorkTicketKind.podcastPreparation.rawValue
+        let ticketIDs = Set(allowedItems.map { preparationKind + "|" + $0.rawValue })
         let context = ModelContext(container)
         let query = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
-            predicate: #Predicate { $0.kind == preparationKind }
+            predicate: #Predicate { ticketIDs.contains($0.id) }
         )
         let tickets = try context.fetch(query)
         #if DEBUG
         Self.preparationPublicationReadObserver?("tickets", tickets.count)
         #endif
-        var result: [ItemID: CurrentPreparationStatus] = [:]
+        var ticketValues: [(itemID: ItemID, state: WorkTicketState, record: LocalLibrarySchemaV12Models.WorkTicketRecord,
+                            attempt: PreparationAttemptIdentity?)] = []
+        var attempts: [ItemID: PreparationAttemptIdentity] = [:]
         for ticket in tickets {
             guard let itemID = try? ItemID(rawValue: ticket.subjectID), allowedItems.contains(itemID),
                   let state = WorkTicketState(rawValue: ticket.state) else { continue }
-            let attempt = try? PreparationAttemptIdentity(requestSequence: ticket.requestSequence, attemptCount: ticket.attemptCount)
-            let entries = try attempt.map { try preparationJournal(for: PodcastPreparationPipeline.requestID(for: itemID), attempt: $0) } ?? []
-            let latest = entries.last?.status
+            let attempt = try? PreparationAttemptIdentity(requestSequence: ticket.requestSequence,
+                attemptCount: ticket.attemptCount)
+            ticketValues.append((itemID, state, ticket, attempt))
+            if let attempt { attempts[itemID] = attempt }
+        }
+        let latestByItem = try latestPreparationEntries(for: attempts, in: context)
+        var result: [ItemID: CurrentPreparationStatus] = [:]
+        for (itemID, state, ticket, _) in ticketValues {
+            let latest = latestByItem[itemID]?.status
             // A ticket or terminal alone cannot clear status. Success must name this
             // item's current Ready revision and its current durable preparation outcome.
             let boundSuccessRevision = latest?.terminalResult.flatMap {

@@ -268,90 +268,12 @@ extension WiltedMacModel {
     /// Reloads the preparation run history behind the Processor destination.
     func refreshProcessorRuns() {
 #if canImport(WiltedProducer)
-        guard let store else { return }
+        guard !isClosingTemporaryState else { return }
         processorRunsRefreshGeneration &+= 1
-        let generation = processorRunsRefreshGeneration
-        Task { [weak self] in
+        guard processorRunsRefreshTask == nil, store != nil else { return }
+        processorRunsRefreshTask = Task { [weak self] in
             guard let self else { return }
-            guard let runs = try? await store.preparationRuns() else { return }
-            // Episodes prepare through the same journal as articles, so the
-            // history has to be able to name both kinds of item.
-            var titles = Dictionary(
-                uniqueKeysWithValues: ((try? await store.articles()) ?? [])
-                    .map { ($0.itemID.rawValue, ($0.title, $0.source)) }
-            )
-            let feedTitles = Dictionary(
-                uniqueKeysWithValues: ((try? await store.podcastFeeds()) ?? []).map { ($0.itemID, $0.title) }
-            )
-            for episode in (try? await store.podcastEpisodes()) ?? [] {
-                titles[episode.itemID.rawValue] = (episode.title, feedTitles[episode.feedID] ?? "Podcast")
-            }
-            for dismissal in (try? await store.dismissedPodcastEpisodes()) ?? [] {
-                titles[dismissal.episodeID.rawValue] = (
-                    dismissal.title ?? "Removed podcast episode",
-                    dismissal.feedID.flatMap { feedTitles[$0] } ?? "Removed podcast"
-                )
-            }
-            let durableRuns = runs.map { run in
-                let known = titles[run.itemID.rawValue]
-                let outcome: WiltedMacProcessorRun.Outcome = if !run.isTerminal {
-                    .running
-                } else {
-                    switch run.outcome {
-                    case .succeeded: .succeeded
-                    case .cancelled: .cancelled
-                    default: .failed
-                    }
-                }
-                let isPodcast = run.requestID.hasPrefix(Self.podcastRequestPrefix)
-                let events = Self.processorEvents(for: run)
-                let detail = run.failure?.message ?? run.detail
-                let timeline = run.entries.last(where: { $0.status.terminal })?.status.timeline
-                return WiltedMacProcessorRun(
-                    id: run.id,
-                    itemID: run.itemID.rawValue,
-                    isPodcast: isPodcast,
-                    // A run that failed before extraction never learned a
-                    // title, so the item identity is all there is to name it.
-                    title: known?.0 ?? "Unknown item",
-                    source: known?.1 ?? run.itemID.rawValue,
-                    stage: run.stage.rawValue,
-                    detail: detail,
-                    narrative: Self.processorNarrative(isPodcast: isPodcast, outcome: outcome, detail: detail,
-                                                       events: events),
-                    fraction: run.fraction,
-                    outcome: outcome,
-                    updatedAt: run.updatedAt.date,
-                    events: events,
-                    timeline: timeline
-                )
-            }
-            guard generation == self.processorRunsRefreshGeneration else { return }
-
-            let trackedItemIDs = Set(self.podcastPreparationTasks.keys)
-            self.projectedProcessorRuns = self.projectedProcessorRuns.filter {
-                trackedItemIDs.contains($0.key)
-            }
-            var mergedRuns = durableRuns.filter { run in
-                guard run.isPodcast, trackedItemIDs.contains(run.itemID) else { return true }
-                guard let projected = self.projectedProcessorRuns[run.itemID] else {
-                    // A queued task has not reached the journal yet. Do not
-                    // redraw the failed row from its previous attempt.
-                    return false
-                }
-                // The durable row wins once it is at least as new as the
-                // projection, including a terminal row written at completion.
-                return run.updatedAt >= projected.updatedAt
-            }
-            for projected in self.projectedProcessorRuns.values
-                where trackedItemIDs.contains(projected.itemID)
-                    && !mergedRuns.contains(where: {
-                        $0.isPodcast == projected.isPodcast && $0.itemID == projected.itemID
-                            && $0.updatedAt >= projected.updatedAt
-                    }) {
-                mergedRuns.insert(projected, at: 0)
-            }
-            self.processorRuns = mergedRuns
+            await self.drainProcessorRunsRefreshes()
         }
 #endif
     }

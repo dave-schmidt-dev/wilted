@@ -83,6 +83,28 @@ extension LocalLibraryStore {
         )
     }
 
+    /// Fetches one ticket through its unique durable key.
+    private func workTicketRecord(id: String, in context: ModelContext) throws -> LocalLibrarySchemaV12Models.WorkTicketRecord? {
+        var query = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+            predicate: #Predicate { $0.id == id }
+        )
+        query.fetchLimit = 1
+        let records = try context.fetch(query)
+        targetedWorkTicketRowsRead += records.count
+        return records.first
+    }
+
+    /// Reads only the highest sequence row when a caller has no reserved sequence.
+    private func highestWorkTicketSequence(in context: ModelContext) throws -> Int {
+        var query = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+            sortBy: [SortDescriptor(\.requestSequence, order: .reverse)]
+        )
+        query.fetchLimit = 1
+        let records = try context.fetch(query)
+        targetedWorkTicketRowsRead += records.count
+        return records.first?.requestSequence ?? 0
+    }
+
     /// All persisted work tickets, in no particular order.
     public func workTickets() throws -> [WorkTicket] {
         let context = ModelContext(container)
@@ -90,10 +112,30 @@ extension LocalLibraryStore {
             .compactMap(Self.decodeWorkTicket)
     }
 
+    /// Whether any recognized ticket is still waiting or running.
+    public func hasNonTerminalWorkTickets() throws -> Bool {
+        let kindValues = Set(WorkTicketKind.allCases.map(\.rawValue))
+        let pending = WorkTicketState.pending.rawValue
+        let deferred = WorkTicketState.deferred.rawValue
+        let running = WorkTicketState.running.rawValue
+        var query = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+            predicate: #Predicate {
+                kindValues.contains($0.kind)
+                    && ($0.state == pending || $0.state == deferred || $0.state == running)
+            }
+        )
+        query.fetchLimit = 1
+        let records = try ModelContext(container).fetch(query)
+        targetedWorkTicketRowsRead += records.count
+        return !records.isEmpty
+    }
+
     /// The persisted ticket for one `(kind, subjectID)`, or nil if none exists.
     public func workTicket(kind: WorkTicketKind, subjectID: String) throws -> WorkTicket? {
         let id = "\(kind.rawValue)|\(subjectID)"
-        return try workTickets().first { $0.id == id }
+        let context = ModelContext(container)
+        guard let record = try workTicketRecord(id: id, in: context) else { return nil }
+        return Self.decodeWorkTicket(record)
     }
 
     /// Overwrites the ticket matching `ticket.id`, or inserts it if absent.
@@ -104,8 +146,7 @@ extension LocalLibraryStore {
     @discardableResult
     public func upsertWorkTicket(_ ticket: WorkTicket) throws -> WorkTicket {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
-        if let existing = records.first(where: { $0.id == ticket.id }) {
+        if let existing = try workTicketRecord(id: ticket.id, in: context) {
             existing.apply(ticket)
         } else {
             context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
@@ -134,14 +175,18 @@ extension LocalLibraryStore {
     ) throws -> WorkTicket {
         let context = ModelContext(container)
         let id = "\(kind.rawValue)|\(subjectID)"
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
-        if let existing = records.first(where: { $0.id == id }) {
+        if let existing = try workTicketRecord(id: id, in: context) {
             guard let decoded = Self.decodeWorkTicket(existing) else {
                 throw LocalLibraryStoreError.invalidPodcastState("corrupt work ticket row")
             }
             return decoded
         }
-        let nextSequence = requestSequence ?? ((records.map(\.requestSequence).max() ?? 0) + 1)
+        let nextSequence: Int
+        if let requestSequence {
+            nextSequence = requestSequence
+        } else {
+            nextSequence = try highestWorkTicketSequence(in: context) + 1
+        }
         let ticket = WorkTicket(
             kind: kind, subjectID: subjectID, resolvedItemID: resolvedItemID,
             requestSequence: nextSequence, state: .pending, attemptCount: 0,
@@ -236,8 +281,7 @@ extension LocalLibraryStore {
     ) throws -> WorkTicket? {
         let context = ModelContext(container)
         let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
-            .first(where: { $0.id == id }),
+        guard let record = try workTicketRecord(id: id, in: context),
               record.requestSequence == requestSequence, record.attemptCount == attemptCount,
               record.state == WorkTicketState.running.rawValue else { return nil }
         let download = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
@@ -269,8 +313,7 @@ extension LocalLibraryStore {
     ) throws -> WorkTicket? {
         let context = ModelContext(container)
         let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
-        guard let record = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
-            .first(where: { $0.id == id }),
+        guard let record = try workTicketRecord(id: id, in: context),
               record.requestSequence == requestSequence, record.attemptCount == attemptCount,
               record.failureKind == WorkTicketFailure.interrupted.rawValue,
               record.state == WorkTicketState.pending.rawValue || record.state == WorkTicketState.failed.rawValue,
@@ -305,9 +348,8 @@ extension LocalLibraryStore {
         subjectID: String, requestSequence: Int, attemptCount: Int, at now: Timestamp
     ) throws -> WorkTicket? {
         let context = ModelContext(container)
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
         let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
-        guard let record = records.first(where: { $0.id == id }),
+        guard let record = try workTicketRecord(id: id, in: context),
               var ticket = Self.decodeWorkTicket(record),
               ticket.requestSequence == requestSequence, ticket.attemptCount == attemptCount,
               ticket.failureKind == WorkTicketFailure.interrupted.rawValue else { return nil }
@@ -325,7 +367,7 @@ extension LocalLibraryStore {
             download.failureKind = nil
             download.updatedAt = now.date
         } else { context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(claim)) }
-        ticket.requestSequence = (records.map(\.requestSequence).max() ?? 0) + 1
+        ticket.requestSequence = try highestWorkTicketSequence(in: context) + 1
         ticket.state = .running
         // This sequence is a new user request, whose first transfer is one;
         // previous request attempts cannot exhaust its interruption budget.
@@ -356,8 +398,7 @@ extension LocalLibraryStore {
     ) throws -> WorkTicket {
         let context = ModelContext(container)
         let id = "\(kind.rawValue)|\(subjectID)"
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
-        let existingRecord = records.first(where: { $0.id == id })
+        let existingRecord = try workTicketRecord(id: id, in: context)
 
         var ticket: WorkTicket
         if let existingRecord {
@@ -366,7 +407,12 @@ extension LocalLibraryStore {
             }
             ticket = decoded
         } else {
-            let nextSequence = requestSequence ?? ((records.map(\.requestSequence).max() ?? 0) + 1)
+            let nextSequence: Int
+            if let requestSequence {
+                nextSequence = requestSequence
+            } else {
+                nextSequence = try highestWorkTicketSequence(in: context) + 1
+            }
             ticket = WorkTicket(
                 kind: kind, subjectID: subjectID, resolvedItemID: nil,
                 requestSequence: nextSequence, state: .pending, attemptCount: 0,

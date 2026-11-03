@@ -301,9 +301,15 @@ extension WiltedMacModel {
     /// the listener's `refreshNowPlayingReadout`. A caller that is about to
     /// force its own publish passes `shouldPublishNowPlaying: false`, so the
     /// widget is not handed an intermediate state first.
-    func refreshPlaybackReadout(shouldPublishNowPlaying: Bool = true) {
+    func refreshPlaybackReadout(
+        shouldPublishNowPlaying: Bool = true,
+        preservingSeamDeadline: Bool = false
+    ) {
 #if canImport(WiltedProducer)
-        guard let playback else { return }
+        guard let playback else {
+            playbackReadoutClock?.readoutRefreshed()
+            return
+        }
         playbackDurationSeconds = playback.durationSeconds
         // The live engine read, not the checkpointed one. `positionSeconds`
         // only moves on load, seek, and checkpoint, so polling it left the
@@ -319,13 +325,17 @@ extension WiltedMacModel {
         // The one funnel every transport and the player's timer already goes
         // through, so the system readout cannot drift from the on-screen one.
         if shouldPublishNowPlaying { publishNowPlaying() }
-        rescheduleSeamMarker()
+        rescheduleSeamMarker(preservingDeadline: preservingSeamDeadline)
+#if canImport(WiltedProducer)
+        playbackReadoutClock?.readoutRefreshed()
+#endif
     }
 
     /// Replaces the one pending marker with one based on the engine's live state.
     /// The wake-time check below makes a seek or pause harmless even between
     /// the player view's one-second readouts.
-    func rescheduleSeamMarker() {
+    func rescheduleSeamMarker(preservingDeadline: Bool = false) {
+        if preservingDeadline, seamMarkerTask != nil { return }
         cancelSeamMarker()
 
         guard isPodcastPlayback, let episode = currentEpisode else { return }
@@ -354,6 +364,7 @@ extension WiltedMacModel {
         ) else { return }
 
         pendingSeamMarkerForTesting = marker.seam
+        seamMarkerScheduleCountForTesting += 1
         let episodeID = episode.id
         seamMarkerTask = Task { [weak self] in
             do {
@@ -398,11 +409,23 @@ extension WiltedMacModel {
         guard isNowPlaying, let id = loadedPlaybackItemID else { return }
         let position = min(max(0, playbackPositionSeconds), max(0, playbackDurationSeconds))
         if let index = episodes.firstIndex(where: { $0.id == id }) {
-            episodes[index].playbackSeconds = position
-            episodes[index].isPlayed = playbackCompleted
+            if episodes[index].playbackSeconds != position {
+                episodes[index].playbackSeconds = position
+                playbackProjectionWriteCountForTesting += 1
+            }
+            if episodes[index].isPlayed != playbackCompleted {
+                episodes[index].isPlayed = playbackCompleted
+                playbackProjectionWriteCountForTesting += 1
+            }
         } else if let index = articles.firstIndex(where: { $0.id == id }) {
-            articles[index].playbackSeconds = position
-            articles[index].isPlayed = playbackCompleted
+            if articles[index].playbackSeconds != position {
+                articles[index].playbackSeconds = position
+                playbackProjectionWriteCountForTesting += 1
+            }
+            if articles[index].isPlayed != playbackCompleted {
+                articles[index].isPlayed = playbackCompleted
+                playbackProjectionWriteCountForTesting += 1
+            }
         }
     }
 

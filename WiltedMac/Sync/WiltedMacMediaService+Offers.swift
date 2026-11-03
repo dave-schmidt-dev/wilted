@@ -9,6 +9,41 @@ import WiltedProducer
 
 private let offersLog = Logger(subsystem: "com.zerodelta.wilted", category: "MacMedia")
 
+struct WiltedMacPreparedOfferInput: Sendable, Equatable {
+    var entryID: ItemID
+    var audio: WiltedMacReadyAudio
+    /// Captured each reconcile so disappearance, size changes and later arrival invalidate reuse.
+    var fileSize: Int64?
+}
+
+struct WiltedMacOfferProjectionResult: Sendable {
+    var offers: [String: LibraryMediaOffer]
+    var reused: Bool
+}
+
+/// Reuses the last offer projection only when every current typed input and file-size check agrees.
+enum WiltedMacOfferProjection {
+    static func project(
+        inputs: [WiltedMacPreparedOfferInput], existing: [String: LibraryMediaOffer], maximumByteCount: Int64,
+        build: ([WiltedMacPreparedOfferInput]) -> [String: LibraryMediaOffer]
+    ) -> WiltedMacOfferProjectionResult {
+        let eligible = inputs.filter {
+            $0.audio.byteCount <= maximumByteCount && $0.fileSize == $0.audio.byteCount
+        }
+        if existing.count == eligible.count, eligible.allSatisfy({ input in
+            guard let offer = existing[input.entryID.rawValue] else { return false }
+            let audio = input.audio
+            return offer.entryID == input.entryID && offer.revisionID == audio.revisionID
+                && offer.contentHash == audio.contentHash && offer.byteCount == audio.byteCount
+                && offer.mediaType == audio.mediaType && offer.durationSeconds == audio.durationSeconds
+                && offer.state == .available && offer.preparation == audio.preparation
+        }) {
+            return WiltedMacOfferProjectionResult(offers: existing, reused: true)
+        }
+        return WiltedMacOfferProjectionResult(offers: build(eligible), reused: false)
+    }
+}
+
 // The available offers shown for every prepared Larder entry, and the transcripts published
 // with the audio. Split from the request path so each file stays small.
 extension WiltedMacMediaService {
@@ -32,13 +67,24 @@ extension WiltedMacMediaService {
             offersLog.error("Could not read the prepared Larder to publish offers: \(String(describing: error), privacy: .public)")
             return false
         }
-        var desired: [String: LibraryMediaOffer] = [:]
-        for (entryID, audio) in prepared where audio.byteCount <= Self.maximumByteCount && Self.fileSize(audio.fileURL) == audio.byteCount {
-            desired[entryID.rawValue] = try? LibraryMediaOffer(
-                entryID: entryID, revisionID: audio.revisionID, contentHash: audio.contentHash, byteCount: audio.byteCount,
-                mediaType: audio.mediaType, durationSeconds: audio.durationSeconds, state: .available, preparation: audio.preparation
-            )
+        let inputs = prepared.sorted { $0.key.rawValue < $1.key.rawValue }.map { pair in
+            WiltedMacPreparedOfferInput(
+                entryID: pair.key, audio: pair.value, fileSize: Self.fileSize(pair.value.fileURL))
         }
+        let projection = WiltedMacOfferProjection.project(
+            inputs: inputs, existing: availableOffers, maximumByteCount: Self.maximumByteCount
+        ) { eligible in
+            var offers: [String: LibraryMediaOffer] = [:]
+            for input in eligible {
+                let audio = input.audio
+                offers[input.entryID.rawValue] = try? LibraryMediaOffer(
+                    entryID: input.entryID, revisionID: audio.revisionID, contentHash: audio.contentHash,
+                    byteCount: audio.byteCount, mediaType: audio.mediaType, durationSeconds: audio.durationSeconds,
+                    state: .available, preparation: audio.preparation)
+            }
+            return offers
+        }
+        let desired = projection.offers
         availableOffers = desired
         var succeeded = true
         // A `notReady` offer answers a request rather than describing the Larder, so it is left alone.

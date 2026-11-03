@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import SwiftData
 import XCTest
 import WiltedDomain
 @testable import WiltedProducer
@@ -44,9 +45,20 @@ extension LocalLibraryStoreTests {
         }
         let entries = try await store.preparationJournal(for: request, attempt: attempt)
         XCTAssertEqual(entries.count, 256)
+        let statusRowsBefore = await store.preparationStatusRowsRead
+        let statusDecodesBefore = await store.preparationJournalDecodeAttemptCount
         let current = try await store.currentPreparationStatuses(for: [episode.itemID])
+        let statusRowsRead = await store.preparationStatusRowsRead - statusRowsBefore
+        let statusDecodes = await store.preparationJournalDecodeAttemptCount - statusDecodesBefore
+        let maximumStatusBatchRows = await store.preparationStatusMaximumBatchRows
         XCTAssertEqual(current[episode.itemID]?.status?.attempt, attempt)
         XCTAssertEqual(current[episode.itemID]?.status?.fraction, 0.4)
+        XCTAssertGreaterThan(statusRowsRead, 0)
+        XCTAssertLessThanOrEqual(statusRowsRead, 256,
+            "A single current attempt returns only one bounded raw page, not its full request history")
+        XCTAssertLessThanOrEqual(statusDecodes, 2,
+            "Only the latest valid row and the older timestamp boundary need JSON decoding")
+        XCTAssertLessThanOrEqual(maximumStatusBatchRows, 256)
         let other = try ItemID(rawValue: "item-unrelated-exact")
         let absent = try await store.currentPreparationStatuses(for: [other])
         XCTAssertTrue(absent.isEmpty)
@@ -57,6 +69,65 @@ extension LocalLibraryStoreTests {
         let unproven = try await store.currentPreparationStatuses(for: [episode.itemID])
         XCTAssertEqual(unproven[episode.itemID]?.state, .succeeded,
                        "A ticket alone cannot clear status without current Ready/outcome proof")
+    }
+
+    func testCurrentStatusUsesNumericOrdinalAcrossSubmillisecondTieAndSkipsMalformedNewestRow() async throws {
+        let url = makeURL("submillisecond-status-order")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, episode) = try podcastValues()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let now = Timestamp(base)
+        let ticket = try await store.readmitWorkTicket(kind: .podcastPreparation,
+            subjectID: episode.itemID.rawValue, requestSequence: 1, to: .running, at: now)
+        let currentAttempt = try PreparationAttemptIdentity(
+            requestSequence: ticket.requestSequence, attemptCount: ticket.attemptCount)
+        let request = PodcastPreparationPipeline.requestID(for: episode.itemID)
+        let prefix = request + "|" + currentAttempt.key + "|"
+        let context = ModelContext(store.container)
+
+        for sequence in 2...601 {
+            let oldAttempt = try PreparationAttemptIdentity(requestSequence: sequence, attemptCount: 1)
+            let status = try PreparationStatus(stage: .extracting, detail: "retained \(sequence)",
+                cancellable: true, emittedAt: Timestamp(base.addingTimeInterval(-Double(sequence))),
+                attempt: oldAttempt)
+            context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(.init(
+                id: request + "|" + oldAttempt.key + "|extracting#1", itemID: episode.itemID,
+                requestID: request, status: status)))
+        }
+
+        for (ordinal, fraction) in [(10, 0.10), (9, 0.09)] {
+            let rawDate = base.addingTimeInterval(ordinal == 10 ? 0.1231 : 0.1234)
+            let status = try PreparationStatus(stage: .extracting, detail: "ordinal-\(ordinal)",
+                fraction: fraction, cancellable: true, emittedAt: Timestamp(rawDate), attempt: currentAttempt)
+            context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(.init(
+                id: prefix + "extracting#\(ordinal)", itemID: episode.itemID,
+                requestID: request, status: status)))
+        }
+        let malformedDate = base.addingTimeInterval(0.12345)
+        let malformedStatus = try PreparationStatus(stage: .extracting, detail: "malformed",
+            cancellable: true, emittedAt: Timestamp(malformedDate), attempt: currentAttempt)
+        let malformed = try LocalLibrarySchemaV3Models.PreparationRecord(.init(
+            id: prefix + "extracting#11", itemID: episode.itemID, requestID: request, status: malformedStatus))
+        malformed.statusData = Data("{".utf8)
+        context.insert(malformed)
+        try context.save()
+
+        let encoded10 = try JSONEncoder().encode(Timestamp(base.addingTimeInterval(0.1231)))
+        let encoded9 = try JSONEncoder().encode(Timestamp(base.addingTimeInterval(0.1234)))
+        XCTAssertEqual(encoded10, encoded9, "The fixture rows tie after status timestamp serialization")
+
+        let rowsBefore = await store.preparationStatusRowsRead
+        let decodesBefore = await store.preparationJournalDecodeAttemptCount
+        let current = try await store.currentPreparationStatuses(for: [episode.itemID])
+        let rowsRead = await store.preparationStatusRowsRead - rowsBefore
+        let decodes = await store.preparationJournalDecodeAttemptCount - decodesBefore
+        let currentStatus = try XCTUnwrap(current[episode.itemID]?.status)
+        XCTAssertEqual(currentStatus.detail, "ordinal-10")
+        XCTAssertEqual(currentStatus.fraction ?? -1, 0.10, accuracy: 0.0001)
+        XCTAssertEqual(rowsRead, 3,
+            "The current-attempt prefix returns three rows despite 600 retained rows for older attempts")
+        XCTAssertEqual(decodes, 3, "The malformed newest row is skipped and tied valid rows use event order")
     }
 
     func testQueuedDeferredFailedAndCancelledTicketsAreReconciledWithoutLegacyJournalIdentity() async throws {
@@ -151,7 +222,8 @@ extension LocalLibraryStoreTests {
         }) { try await store.currentPreparationStatuses(for: ids) }
         XCTAssertTrue(empty.isEmpty)
         XCTAssertEqual(emptyReads.count("tickets"), 1)
-        XCTAssertEqual(emptyReads.rowsRead("tickets"), 1, "One kind-only batch; excluded subjects are filtered before journal reads")
+        XCTAssertEqual(emptyReads.rowsRead("tickets"), 0,
+            "Exact allowed preparation IDs exclude both another subject and a different ticket kind")
         XCTAssertEqual(emptyReads.count("journal"), 0)
         XCTAssertEqual(emptyReads.count("ready"), 0)
 
@@ -169,7 +241,8 @@ extension LocalLibraryStoreTests {
         }) { try await store.currentPreparationStatuses(for: ids) }
         XCTAssertEqual(Set(active.keys), [ids[0]])
         XCTAssertEqual(activeReads.count("tickets"), 1)
-        XCTAssertEqual(activeReads.rowsRead("tickets"), 2)
+        XCTAssertEqual(activeReads.rowsRead("tickets"), 1,
+            "Only the matching current preparation ticket is returned")
         XCTAssertEqual(activeReads.count("journal"), 1)
         XCTAssertEqual(activeReads.rowsRead("journal"), 1)
         XCTAssertEqual(activeReads.count("ready"), 0)

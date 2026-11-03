@@ -57,17 +57,21 @@ private final class FlakyUploadTransport: LibraryTransport, @unchecked Sendable 
     private var failuresLeft: Int
     private var attempts = 0
     private var uploads = 0
+    private var availableFailuresLeft: Int
+    private var availableCount = 0
     private let failure: @Sendable () -> Error
 
-    init(_ inner: InMemoryLibraryTransport, failing count: Int,
+    init(_ inner: InMemoryLibraryTransport, failing count: Int, failingAvailableOffers: Int = 0,
          with failure: @escaping @Sendable () -> Error = { URLError(.networkConnectionLost) }) {
         self.inner = inner
         failuresLeft = count
+        availableFailuresLeft = failingAvailableOffers
         self.failure = failure
     }
 
     var readyAttempts: Int { lock.withLock { attempts } }
     var readyUploads: Int { lock.withLock { uploads } }
+    var availableAttempts: Int { lock.withLock { availableCount } }
 
     func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
@@ -86,6 +90,16 @@ private final class FlakyUploadTransport: LibraryTransport, @unchecked Sendable 
     }
 
     func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
+        if offer.state == .available {
+            let fails = lock.withLock { () -> Bool in
+                availableCount += 1
+                guard availableFailuresLeft > 0 else { return false }
+                availableFailuresLeft -= 1
+                return true
+            }
+            if fails { throw failure() }
+            return try await inner.publishMedia(offer: offer, fileURL: fileURL)
+        }
         guard offer.state == .ready else { return try await inner.publishMedia(offer: offer, fileURL: fileURL) }
         let fails = lock.withLock { () -> Bool in
             attempts += 1
@@ -128,6 +142,80 @@ final class WiltedMacMediaServiceTests: XCTestCase {
             byteCount: Int64(bytes), mediaType: "audio/mp4", durationSeconds: 60, fileURL: file,
             preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_800_000_000)))
         )
+    }
+
+    func testOfferProjectionReusesExactInputsAndInvalidatesOnMetadataOrFileChange() throws {
+        let directory = wiltedTemporaryDirectory("offer-projection-inputs")
+        let entryID = try id("offer-projection")
+        let audio = try makeAudio(directory, revision: "offer-rev")
+        var buildCount = 0
+        func build(_ inputs: [WiltedMacPreparedOfferInput]) -> [String: LibraryMediaOffer] {
+            buildCount += 1
+            return Dictionary(uniqueKeysWithValues: inputs.compactMap { input in
+                let value = input.audio
+                guard let offer = try? LibraryMediaOffer(
+                    entryID: input.entryID, revisionID: value.revisionID, contentHash: value.contentHash,
+                    byteCount: value.byteCount, mediaType: value.mediaType, durationSeconds: value.durationSeconds,
+                    state: .available, preparation: value.preparation) else { return nil }
+                return (input.entryID.rawValue, offer)
+            })
+        }
+        let input = WiltedMacPreparedOfferInput(entryID: entryID, audio: audio, fileSize: audio.byteCount)
+        let first = WiltedMacOfferProjection.project(
+            inputs: [input], existing: [:], maximumByteCount: WiltedMacMediaService.maximumByteCount, build: build)
+        XCTAssertFalse(first.reused)
+        XCTAssertEqual(buildCount, 1)
+
+        let same = WiltedMacOfferProjection.project(
+            inputs: [input], existing: first.offers, maximumByteCount: WiltedMacMediaService.maximumByteCount, build: build)
+        XCTAssertTrue(same.reused)
+        XCTAssertEqual(buildCount, 1, "unchanged typed inputs reuse the existing offer dictionary")
+
+        let changedAudio = WiltedMacReadyAudio(
+            revisionID: audio.revisionID, contentHash: audio.contentHash, byteCount: audio.byteCount,
+            mediaType: audio.mediaType, durationSeconds: audio.durationSeconds + 1, fileURL: audio.fileURL,
+            preparation: audio.preparation)
+        let changed = WiltedMacOfferProjection.project(
+            inputs: [.init(entryID: entryID, audio: changedAudio, fileSize: audio.byteCount)],
+            existing: same.offers, maximumByteCount: WiltedMacMediaService.maximumByteCount, build: build)
+        XCTAssertFalse(changed.reused, "an in-place duration change rebuilds the projection")
+        XCTAssertEqual(buildCount, 2)
+        XCTAssertEqual(changed.offers[entryID.rawValue]?.durationSeconds, audio.durationSeconds + 1)
+
+        let missing = WiltedMacOfferProjection.project(
+            inputs: [.init(entryID: entryID, audio: changedAudio, fileSize: nil)],
+            existing: changed.offers, maximumByteCount: WiltedMacMediaService.maximumByteCount, build: build)
+        XCTAssertFalse(missing.reused, "a missing file withdraws the cached offer")
+        XCTAssertTrue(missing.offers.isEmpty)
+        let arrived = WiltedMacOfferProjection.project(
+            inputs: [.init(entryID: entryID, audio: changedAudio, fileSize: audio.byteCount)],
+            existing: missing.offers, maximumByteCount: WiltedMacMediaService.maximumByteCount, build: build)
+        XCTAssertFalse(arrived.reused, "a file arrival restores the offer")
+        XCTAssertEqual(buildCount, 4)
+    }
+
+    func testFailedAvailableOfferIsRetriedAfterProjectionReuse() async throws {
+        let rig = rig("media-available-offer-retry")
+        let entry = try id("episode-available-retry")
+        let audio = try makeAudio(rig.directory, revision: "available-retry-revision")
+        rig.source.set(entry, audio)
+        rig.source.setQueued(entry, true)
+        let flaky = FlakyUploadTransport(rig.mac, failing: 0, failingAvailableOffers: 1)
+        let service = WiltedMacMediaService(
+            source: rig.source, transport: flaky, accountingURL: nil,
+            now: { rig.clock.now }, sleep: { _ in })
+
+        let first = await service.reconcile()
+        XCTAssertFalse(first, "A failed offer publish remains a failed reconcile")
+        let cachedAfterFailure = await service.availableOffers
+        XCTAssertEqual(cachedAfterFailure[entry.rawValue]?.revisionID, audio.revisionID)
+        let second = await service.reconcile()
+
+        XCTAssertTrue(second)
+        XCTAssertEqual(flaky.availableAttempts, 2, "The cached projection must not suppress the failed send retry")
+        let offers = try await rig.phone.mediaOffers()
+        XCTAssertEqual(offers.first?.revisionID, audio.revisionID)
+        XCTAssertEqual(offers.first?.state, .available)
     }
 
     struct Rig {

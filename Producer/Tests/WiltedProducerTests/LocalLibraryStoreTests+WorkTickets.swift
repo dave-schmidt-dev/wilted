@@ -94,6 +94,49 @@ extension LocalLibraryStoreTests {
         XCTAssertFalse(WorkTicketState.deferred.isTerminal)
     }
 
+    func testTargetedWorkTicketQueriesReturnOnlyMatchingRowsWithLargeHistory() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let now = Timestamp(Date(timeIntervalSince1970: 1_700_003_500))
+        let context = ModelContext(store.container)
+        for index in 0..<1_000 {
+            let ticket = WorkTicket(kind: .articlePreparation, subjectID: "settled-\(index)",
+                requestSequence: index + 1, state: .succeeded, requestedAt: now, updatedAt: now)
+            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+        }
+        let current = WorkTicket(kind: .podcastPreparation, subjectID: "current-subject",
+            requestSequence: 1_001, state: .pending, requestedAt: now, updatedAt: now)
+        context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(current))
+        try context.save()
+
+        let beforeExact = await store.targetedWorkTicketRowsRead
+        let found = try await store.workTicket(kind: .podcastPreparation, subjectID: "current-subject")
+        XCTAssertEqual(found, Optional(current))
+        let exactRows = await store.targetedWorkTicketRowsRead
+        XCTAssertEqual(exactRows - beforeExact, 1)
+
+        let beforeMissing = await store.targetedWorkTicketRowsRead
+        let missing = try await store.workTicket(kind: .podcastDownload, subjectID: "absent-subject")
+        XCTAssertNil(missing)
+        let missingRows = await store.targetedWorkTicketRowsRead
+        XCTAssertEqual(missingRows - beforeMissing, 0)
+
+        let beforeExists = await store.targetedWorkTicketRowsRead
+        let hasPending = try await store.hasNonTerminalWorkTickets()
+        XCTAssertTrue(hasPending)
+        let activeRows = await store.targetedWorkTicketRowsRead
+        XCTAssertEqual(activeRows - beforeExists, 1)
+
+        var settled = try XCTUnwrap(found)
+        settled.state = .succeeded
+        _ = try await store.upsertWorkTicket(settled)
+        let beforeEmptyExists = await store.targetedWorkTicketRowsRead
+        let hasWaitingWork = try await store.hasNonTerminalWorkTickets()
+        XCTAssertFalse(hasWaitingWork)
+        let noActiveRows = await store.targetedWorkTicketRowsRead
+        XCTAssertEqual(noActiveRows - beforeEmptyExists, 0)
+    }
+
     /// A retry is a new request, but not a second durable row. Its newer
     /// sequence atomically replaces the old terminal attempt, so an old
     /// completion that lands late cannot reopen or overwrite the retry.

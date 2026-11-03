@@ -134,6 +134,14 @@ final class WiltedMacSeamMarkerTests: XCTestCase {
         model.refreshPlaybackReadout()
         let firstSeam = try XCTUnwrap(model.currentRemovedSpans.map(\.preparedSeconds).filter { $0 >= 0.5 }.min())
         XCTAssertEqual(model.pendingSeamMarkerForTesting, firstSeam)
+        let scheduledTasks = model.seamMarkerScheduleCountForTesting
+        model.refreshPlaybackReadout(preservingSeamDeadline: true)
+        XCTAssertEqual(model.seamMarkerScheduleCountForTesting, scheduledTasks,
+                       "elapsed readout refreshes preserve the unchanged seam deadline")
+
+        model.setPlaybackRate(1.5)
+        XCTAssertGreaterThan(model.seamMarkerScheduleCountForTesting, scheduledTasks,
+                             "a rate change replans the seam deadline immediately")
 
         model.marksRemovedAds = false
         XCTAssertNil(model.pendingSeamMarkerForTesting)

@@ -13,13 +13,18 @@ import CloudKit
 #endif
 
 extension WiltedMacModel {
-    /// Rejects a snapshot that began before a durable Feed decision committed.
+    /// Rejects a snapshot older than a committed Feed decision or imported playhead.
     /// Existing fixture arrays intentionally remain source-compatible below.
     @discardableResult
     func applyEpisodes(
         _ loaded: LibraryEpisodeRows, allowsAutomaticAdmissions: Bool = true
     ) -> Bool {
-        guard loaded.readEpoch >= lastAppliedLibraryReadEpoch else { return false }
+        guard loaded.readEpoch >= lastAppliedLibraryReadEpoch else {
+            if loaded.readEpoch < importedPlaybackReadEpoch {
+                scheduleImportedPositionLibraryReload(afterReadEpoch: loaded.readEpoch)
+            }
+            return false
+        }
         lastAppliedLibraryReadEpoch = loaded.readEpoch
         applyEpisodes(loaded.values, allowsAutomaticAdmissions: allowsAutomaticAdmissions)
         return true

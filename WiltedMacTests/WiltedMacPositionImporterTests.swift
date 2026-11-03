@@ -17,18 +17,15 @@ private final class ScriptedImportHost: WiltedMacPositionImportHost {
     var associationOffers: [ItemID: LibraryMediaOffer] = [:]
     private(set) var associationChecks: [ItemID] = []
 
-    func importAssociationContext() async -> (entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) {
-        (associationEntries, associationOffers)
-    }
-
     func associationImportIsCurrent(entryID: ItemID, entries: [LibraryEntry], offers: [ItemID: LibraryMediaOffer]) async -> Bool {
         associationChecks.append(entryID)
         return true
     }
 
-    func importTargets() async -> [ItemID: WiltedMacImportTarget]? {
+    func importProjection() async -> WiltedMacPositionImportProjection? {
         targetReads += 1
-        return targets
+        guard let targets else { return nil }
+        return WiltedMacPositionImportProjection(targets: targets, entries: associationEntries, offers: associationOffers)
     }
 
     func applyRemotePosition(_ request: RemotePositionRequest) async -> RemotePositionOutcome? {
@@ -48,7 +45,9 @@ private final class ControllerImportHost: WiltedMacPositionImportHost {
         self.targets = targets
     }
 
-    func importTargets() async -> [ItemID: WiltedMacImportTarget]? { targets }
+    func importProjection() async -> WiltedMacPositionImportProjection? {
+        WiltedMacPositionImportProjection(targets: targets, entries: [], offers: [:])
+    }
 
     func applyRemotePosition(_ request: RemotePositionRequest) async -> RemotePositionOutcome? {
         try? await controller.applyRemotePosition(request)
@@ -141,6 +140,37 @@ final class WiltedMacPositionImporterTests: XCTestCase {
         XCTAssertEqual(importer.appliedCount, 1)
     }
 
+    func testRejectedCandidateIsReconsideredWhenRemoteOrLocalProofChanges() async throws {
+        let host = ScriptedImportHost()
+        host.targets = [:]
+        let importer = WiltedMacPositionImporter(host: host, deviceID: macID)
+        let phone = try records(position: 300, at: base)
+
+        await importer.handle(phone)
+        XCTAssertTrue(host.requests.isEmpty)
+        XCTAssertEqual(importer.resolutionCountForTesting, 1)
+
+        await importer.handle(phone)
+        XCTAssertEqual(importer.resolutionCountForTesting, 1, "identical rejected candidate and local proof skip resolution")
+
+        let newerPhone = try records(position: 301, at: base.addingTimeInterval(1))
+        await importer.handle(newerPhone)
+        XCTAssertEqual(importer.resolutionCountForTesting, 2, "a changed remote candidate invalidates the rejection")
+
+        // Missing local audio is not settled permanently; a different local revision is still rejected.
+        host.targets = [episode: WiltedMacImportTarget(revision: revisionB, durationSeconds: 1_482)]
+        await importer.handle(newerPhone)
+        XCTAssertEqual(importer.resolutionCountForTesting, 3)
+        XCTAssertTrue(host.requests.isEmpty)
+
+        // The remote record is unchanged; a local ready-revision edit must invalidate the rejection.
+        host.targets = [episode: WiltedMacImportTarget(revision: revisionA, durationSeconds: 1_482)]
+        await importer.handle(newerPhone)
+        XCTAssertEqual(host.requests.map(\.revisionID), [revisionA])
+        XCTAssertEqual(importer.resolutionCountForTesting, 4)
+        XCTAssertEqual(importer.appliedCount, 1)
+    }
+
     func testTheMacsOwnRecordsAreNeverImported() async throws {
         let host = ScriptedImportHost()
         let importer = importer(host)
@@ -213,6 +243,33 @@ final class WiltedMacPositionImporterTests: XCTestCase {
         await rig.server.setClock(base.addingTimeInterval(minutes * 60))
         try await rig.phone.takeover(entryID: episode, revision: revisionA, positionSeconds: position - 30)
         try await rig.phone.paused(at: position)
+    }
+
+    private func playingPhoneRecords(position: Double) throws -> LibraryDeviceRecords {
+        let record = try DevicePlaybackPosition(
+            deviceID: phoneID, entryID: episode, revision: revisionA, positionSeconds: position,
+            isPlaying: true, epoch: 2, publishedAt: base)
+        let observed = ObservedPlayback(record: record, serverModifiedAt: base)
+        return LibraryDeviceRecords(nowPlaying: [observed], progress: [observed])
+    }
+
+    func testPausedMacKeepsAdoptingAnAdvancingPhonePosition() async throws {
+        let rig = try await makeRig(macPosition: 100)
+        let host = ControllerImportHost(controller: rig.controller,
+            targets: [episode: WiltedMacImportTarget(revision: revisionA, durationSeconds: 1_482)])
+        let clock = MutableClock(base.addingTimeInterval(10))
+        let importer = WiltedMacPositionImporter(host: host, deviceID: macID, now: { clock.now })
+        let phone = try playingPhoneRecords(position: 300)
+
+        await importer.handle(phone)
+        let first = try await rig.store.playbackState(for: episode, revisionID: revisionA)
+        clock.advance(10)
+        await importer.handle(phone)
+        let second = try await rig.store.playbackState(for: episode, revisionID: revisionA)
+
+        XCTAssertEqual(first?.positionSeconds, 310)
+        XCTAssertEqual(second?.positionSeconds, 320)
+        XCTAssertEqual(importer.appliedCount, 2)
     }
 
     func testPhoneOnlyListenThenMacResumesAtThePhonesPosition() async throws {
@@ -305,6 +362,43 @@ final class WiltedMacPositionImporterTests: XCTestCase {
 
 
 extension WiltedMacPositionImporterTests {
+    func testRejectedAliasIsReconsideredWhenOfferMetadataChangesInPlace() async throws {
+        let first = try ItemID(rawValue: "alias-memo-A"), second = try ItemID(rawValue: "alias-memo-B")
+        let feed = try ItemID(rawValue: "alias-memo-feed")
+        let association = LibraryEpisodeAssociation(groupID: UUID(), representativeID: first,
+            memberIDs: [first, second], associationVersion: 1, isTerminal: false)
+        let host = ScriptedImportHost()
+        host.associationEntries = try [first, second].map { id in
+            try LibraryEntry(id: id, kind: .podcastEpisode, sourceID: feed, title: "Alias", summary: "",
+                publishedAt: base, episodeAssociation: association)
+        }
+        host.targets = [first: WiltedMacImportTarget(revision: revisionA, durationSeconds: 600)]
+        func offer(_ id: ItemID, revision: RevisionID, bytes: Int64) throws -> LibraryMediaOffer {
+            try LibraryMediaOffer(entryID: id, revisionID: revision,
+                contentHash: "sha256:" + String(repeating: "a", count: 64), byteCount: bytes,
+                mediaType: "audio/mp4", durationSeconds: 600,
+                preparation: LibraryMediaPreparation(preparedAt: Timestamp(base)))
+        }
+        host.associationOffers[first] = try offer(first, revision: revisionA, bytes: 512)
+        host.associationOffers[second] = try offer(second, revision: revisionB, bytes: 513)
+        let record = try DevicePlaybackPosition(deviceID: phoneID, entryID: second, revision: revisionB,
+            positionSeconds: 120, isPlaying: false, epoch: 3, publishedAt: base)
+        let observed = ObservedPlayback(record: record, serverModifiedAt: base)
+        let records = LibraryDeviceRecords(nowPlaying: [observed], progress: [observed])
+        let importer = WiltedMacPositionImporter(host: host, deviceID: macID)
+
+        await importer.handle(records)
+        await importer.handle(records)
+        XCTAssertTrue(host.requests.isEmpty)
+        XCTAssertEqual(importer.resolutionCountForTesting, 1)
+
+        // Same candidate and IDs; corrected audio proof now permits the safe B-to-A translation.
+        host.associationOffers[second] = try offer(second, revision: revisionB, bytes: 512)
+        await importer.handle(records)
+        XCTAssertEqual(importer.resolutionCountForTesting, 2)
+        XCTAssertEqual(host.requests.map(\.itemID), [first])
+    }
+
     func testNewestAssociatedOriginSettlesItsOwnCandidateAcrossRepeatedPolls() async throws {
         let first = try ItemID(rawValue: "alias-A"), second = try ItemID(rawValue: "alias-B")
         let feed = try ItemID(rawValue: "alias-feed")
