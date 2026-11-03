@@ -74,11 +74,24 @@ return to the show: an apparent discussion after one sponsor may introduce the
 next sponsor. Independently recheck any label that implies programme loss before
 diagnosing the engine. Preserve superseded labels and invalidate their scores.
 
-Define source-time `must-cut` and adjacent `must-keep` intervals, with who/what
-verified each, the evidence used, and boundary uncertainty. Listen when original
-audio is available. Transcript-only judgments must say so; model-generated gold
-labels remain provisional until reviewed. Mixed or uncertain cues remain
-protected. Do not copy unreviewed proposals into the accepted corpus.
+Define source-time `must-cut` and adjacent `must-keep` intervals, with the model
+and evidence that verified each, source identity, and boundary uncertainty.
+Manual gold review and human confirmation are not required. Use a fresh full-
+transcript labeling pass, then a separate blind pass before either reviewer sees
+the other's labels; adjudicate differences against the source. Keep the two
+self-promotion policies explicit. Spoken programme introductions, credits and
+participation instructions are not ads merely because they contain a show name
+or call to action.
+
+When original audio is available, re-transcribe missing speech and uncertain
+boundary windows locally and have the model adjudicate that source-bound
+supplement. Preserve the original labels, exact clip offsets, audio/transcript
+hashes and model provenance. Re-transcription is evidence, not a claim that a
+model listened directly or verified every acoustic boundary. Text-only judgments
+must say so. Mixed or still-uncertain passages remain protected; no confidence
+score or agreement count substitutes for source evidence. Independent model
+adjudication can accept labels without a human review step. Never promote a
+reference label directly into a runtime cut or active feed profile.
 
 ## 4. Reproduce and diagnose
 

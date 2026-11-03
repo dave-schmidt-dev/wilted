@@ -4,9 +4,9 @@ The labeller (Opus, reading `transcript.txt`) writes `labels.opus.raw.json` in a
 show's gold folder: segment-resolution times plus the first and last few words
 of each break, quoted from the transcript. This step finds those words in the
 word timings of `transcript.json` and writes `labels.opus.json` with each edge
-on the first word's start and the last word's end, the input the review page
-reads. An edge whose words cannot be found keeps the labeller's time, moved to
-the nearest word boundary, and is flagged so the owner checks it.
+on the first word's start and the last word's end for model adjudication. An
+edge whose words cannot be found keeps the labeller's time, moved to the
+nearest word boundary, and is flagged as uncertain; this is not approval.
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ END_WINDOW = (-20.0, 45.0)
 # ("exceptional." 38.96-41.2), so an end edge stops this long after the word starts.
 LONGEST_WORD_S = 1.2
 GAP_S = 8.0
-# The review page lists a gap only when it is long or beside a break: short music
-# beds inside a story (Radiolab) are not worth the owner's time.
+# Prioritize long gaps and gaps beside breaks for model adjudication;
+# absent transcript text never establishes whether a gap is speech or music.
 REVIEW_GAP_S = 20.0
 NEAR_BREAK_S = 30.0
 
@@ -77,7 +77,7 @@ def untranscribed_gaps(words: list[list], duration: float | None, minimum: float
     """Stretches of at least `minimum` seconds with no transcribed word: music, or speech v3 dropped.
 
     Ad openings over a music bed are often missing from the transcript, so the
-    review page lists these for the owner to listen to.
+    review evidence retains these as unresolved acoustic spans.
     """
     edges = [0.0] + [edge for word in words for edge in (word[0], word_end(word))] + [duration or 0.0]
     gaps = []

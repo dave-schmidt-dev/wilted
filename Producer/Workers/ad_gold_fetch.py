@@ -1,16 +1,17 @@
 """Fetch one recent episode per subscribed feed and transcribe it for the ad gold set.
 
-The gold set is the owner-confirmed answer key for ad detection: Opus proposes
-each episode's ad breaks from its transcript, the owner confirms them in
-`ad_gold_review.py`, and `ad_gold_finish.py` keeps only padded clips around the
-confirmed breaks. Labels are times in the audio, so any future speech-to-text
-model or detector can be scored against them.
+The gold set is a private reference corpus for ad detection. Models propose
+ad breaks from full original transcripts and independently adjudicate them;
+manual owner confirmation is not required. Keep source identity, unresolved
+transcript gaps and acoustic uncertainty explicit. The optional
+`ad_gold_finish.py` retention/export step keeps padded clips around accepted
+breaks and is separate from model review.
 
 This step reads the library read-only for each feed's newest episode, downloads
 its enclosure, and writes per show under the gold root:
 
 - `episode.json`: show, title, ids, enclosure, audio hash and duration.
-- `audio.<ext>`: the downloaded file, kept until the owner confirms the show.
+- `audio.<ext>`: the downloaded file, retained independently of review status.
 - `transcript.json`: parakeet v3 segments and word timings.
 - `transcript.txt`: one `[seconds] text` line per segment, the labeller's input.
 
@@ -300,7 +301,7 @@ def retranscribe_all(root: Path, only: list[str], model: str) -> int:
             continue
         current, previous = folder / "transcript.json", folder / "transcript.previous.json"
         # The first transcript stays the baseline across repeated runs; the
-        # review page reads transcript.json, so a failed run copies it back.
+        # Review tools read transcript.json, so a failed run copies it back.
         if current.exists() and not previous.exists():
             shutil.copy2(current, previous)
         try:

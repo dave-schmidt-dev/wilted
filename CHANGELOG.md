@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Removed
+- Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
+
 ### Added
 - Download from your Mac over Wi-Fi: when the Mac is nearby, the iPhone fetches prepared audio straight from it over an encrypted local connection only your own devices can open, resumes a cut transfer, can finish in the background, and falls back to iCloud on any failure. The iPhone asks once at onboarding (on by default) and has a switch in Settings; the Mac has a **Direct downloads from this Mac** switch and can stop direct downloads for one iPhone.
 - Settings on the Mac and the iPhone show a diagnostics line counting CloudKit operations per kind.

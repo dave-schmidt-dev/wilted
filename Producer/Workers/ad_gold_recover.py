@@ -9,12 +9,11 @@ After `ad_gold_fetch.py --retranscribe` (which keeps the old transcript as
    the labeller, who writes any ads it finds there to `labels.recovered.raw.json`
    in the same format as `labels.opus.raw.json`.
 2. `merge`: snaps those ranges to word timings and appends them to
-   `labels.opus.json` and, when the owner has started reviewing, to
-   `review.json` as pending, reopening a finished show. The owner's decisions
-   are never changed. It also recomputes the gaps the review page lists.
+   `labels.opus.json` and any existing `review.json` as pending, reopening
+   a finished show for model adjudication. Existing decisions are never
+   changed. It also recomputes the unresolved transcript gaps.
 
-Close the review page tab for a show before merging into it: an open page
-saves its own copy of the review on the next click.
+Serialize this merge with other writers of the same review file.
 """
 
 from __future__ import annotations

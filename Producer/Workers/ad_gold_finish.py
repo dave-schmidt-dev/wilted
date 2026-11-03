@@ -1,7 +1,8 @@
 """Finish confirmed shows in the ad gold set: keep padded clips, export the labels.
 
-Once the owner marks a show confirmed in the review page, the full download is
-no longer needed. For each confirmed show this step:
+After independent model adjudication marks a review confirmed, this optional
+retention/export step processes each confirmed show. Confirmation alone does
+not establish that the full source is no longer needed:
 
 1. Cuts one clip per ad break with `PADDING_S` of programme either side
    (overlapping windows merge), as 16 kHz mono Opus, the rate speech-to-text
@@ -40,7 +41,7 @@ def load_json(path: Path):
 
 
 def confirmed_review(folder: Path) -> dict | None:
-    """The show's review when the owner confirmed it and nothing is pending."""
+    """The accepted review when adjudication is complete and nothing is pending."""
     review = load_json(folder / "review.json")
     if not review or review.get("status") != "confirmed":
         return None
