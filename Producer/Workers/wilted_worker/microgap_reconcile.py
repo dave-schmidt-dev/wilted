@@ -11,6 +11,7 @@ from dataclasses import dataclass
 # token frame; callers enable this allowance only for that configured model.
 MICROGAP_ALIGNMENT_FRAME_S = 0.08
 MICROGAP_FRAGMENT_MINIMUM_CHARACTERS = 4
+_TIME_EPSILON_S = 1e-9
 
 
 @dataclass(frozen=True)
@@ -132,11 +133,21 @@ def words_from_segments(
 
 
 def _overlap(left: _Word, right: _Word) -> float:
-    return min(left.end_s, right.end_s) - max(left.start_s, right.start_s)
+    overlap = min(left.end_s, right.end_s) - max(left.start_s, right.start_s)
+    return 0.0 if overlap <= _TIME_EPSILON_S else overlap
 
 
 def _intersects(word: _Word, gap: InterCueGap) -> bool:
-    return word.start_s < gap.end_s and word.end_s > gap.start_s
+    return word.start_s < gap.end_s - _TIME_EPSILON_S and word.end_s > gap.start_s + _TIME_EPSILON_S
+
+
+def _after(left: float, right: float) -> bool:
+    """Compare source times without treating floating-point noise as overlap."""
+    return left > right + _TIME_EPSILON_S
+
+
+def _before(left: float, right: float) -> bool:
+    return left < right - _TIME_EPSILON_S
 
 
 def _unique_anchor_index(anchor: _Word, words: list[_Word], frame_s: float) -> int | None:
@@ -188,7 +199,7 @@ def _fragment_completion(
         left, _immediate_right = left_right
         outer_right_options = [
             (index, word) for index, word in enumerate(baseline)
-            if index != fragment_index and word.start_s >= fragment.end_s
+            if index != fragment_index and not _before(word.start_s, fragment.end_s)
         ]
         if not outer_right_options:
             continue
@@ -230,8 +241,8 @@ def _fragment_completion(
             left_decoded is None
             or right_decoded is None
             or not left_decoded < candidate_index < right_decoded
-            or decoded[left_decoded].end_s > candidate.start_s
-            or candidate.end_s > decoded[right_decoded].start_s
+            or _after(decoded[left_decoded].end_s, candidate.start_s)
+            or _after(candidate.end_s, decoded[right_decoded].start_s)
         ):
             continue
         matches.append((fragment_index, candidate))
@@ -261,7 +272,7 @@ def _independent_edge_addition(
     word = decoded[word_index]
     if word_index == 0 or word_index + 1 >= len(decoded):
         return False
-    if decoded[word_index - 1].end_s > word.start_s or word.end_s > decoded[word_index + 1].start_s:
+    if _after(decoded[word_index - 1].end_s, word.start_s) or _after(word.end_s, decoded[word_index + 1].start_s):
         return False
     overlaps = [
         (index, baseline_word) for index, baseline_word in enumerate(baseline)
@@ -276,8 +287,16 @@ def _independent_edge_addition(
     if shared > frame_s + 1e-9:
         return False
     if anchor_index == left_baseline_anchor_index:
-        return word.start_s < gap.start_s and word.start_s >= gap.start_s - frame_s and word.end_s <= gap.end_s
-    return word.end_s > gap.end_s and word.end_s <= gap.end_s + frame_s and word.start_s >= gap.start_s
+        return (
+            _before(word.start_s, gap.start_s)
+            and not _before(word.start_s, gap.start_s - frame_s)
+            and not _after(word.end_s, gap.end_s)
+        )
+    return (
+        _after(word.end_s, gap.end_s)
+        and not _after(word.end_s, gap.end_s + frame_s)
+        and not _before(word.start_s, gap.start_s)
+    )
 
 
 def reconcile_gap(
@@ -365,7 +384,7 @@ def reconcile_gap(
                     max(base.end_s, min(gap.end_s, word.end_s)),
                 )
             continue
-        if word.start_s < gap.start_s or word.end_s > gap.end_s:
+        if _before(word.start_s, gap.start_s) or _after(word.end_s, gap.end_s):
             return _Decision(state="ambiguous-partial-word")
         additions.append(word)
 

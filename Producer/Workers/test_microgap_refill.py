@@ -216,6 +216,23 @@ class MicrogapReconciliationTests(unittest.TestCase):
         ])
         self.assertEqual([token.text for token in result[1].tokens], ["Toyota", " trucks"])
 
+    def test_fragment_completion_treats_subnanosecond_abutment_as_float_noise(self):
+        original = [
+            segment(("reliable", 0.8, 1.1)),
+            Segment(1.4, 2.2, "yota trucks", (
+                Token("y", 1.4, 1.6), Token("ota", 1.6, 1.8), Token(" trucks", 1.8, 2.1)
+            )),
+        ]
+        decoded = [segment(
+            ("reliable", 0.82, 1.1), (" Toyota", 1.24, 1.800000000000004),
+            (" trucks", 1.8, 2.1),
+        )]
+
+        result = self.run_refill(original, decoded)
+
+        self.assertEqual([item.text for item in result], ["reliable", "Toyota trucks"])
+        self.assertEqual(result[1].tokens[0].text, "Toyota")
+
     def test_fragment_replacement_preserves_late_returned_subtoken_timing(self):
         original = [
             segment(("reliable", 0.8, 1.1)),
