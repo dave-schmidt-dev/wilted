@@ -405,8 +405,9 @@ def join_split_words(segments) -> list:
     continuation tokens is merged into its predecessor whole.
 
     A pair is left alone when either side has no aligned tokens, when the
-    predecessor already ends a sentence, when the fragment does not follow the
-    predecessor's last token in time (an overlapping stitch, not a split word),
+    predecessor already ends a sentence, when the fragment is not contiguous
+    with the predecessor's last token within the alignment tolerance (a gap or
+    overlapping stitch, not a split word),
     or when the segment's text does not begin with the fragment's text. Text
     and tokens that disagree are not a basis for rewriting either.
 
@@ -442,7 +443,7 @@ def _join_onto_previous(previous, segment):
     if split == 0:
         return None
     moved, remaining = tuple(tokens[:split]), tuple(tokens[split:])
-    if float(moved[0].start_s) < float(previous_tokens[-1].end_s) - SPLIT_WORD_CONTIGUITY_TOLERANCE_S:
+    if abs(float(moved[0].start_s) - float(previous_tokens[-1].end_s)) > SPLIT_WORD_CONTIGUITY_TOLERANCE_S:
         return None
     fragment = "".join(token.text for token in moved)
     text = segment.text.lstrip()

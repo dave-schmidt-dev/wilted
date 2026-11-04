@@ -333,16 +333,16 @@ def transcribe_with_daemon(audio_path: Path, model: str = ALIGNED_STT_MODEL):
             duration,
             lambda wav: transcribe.transcribe_audio(wav, model_name=model),
         )
+        # Rejoin only the transcript already present before each exact short
+        # crop; the crop is an independent text island and must stay separate.
+        segments = in_time_order(join_split_words(segments))
         segments = refill_short_opening_gaps(
             audio_path,
             segments,
             duration,
             lambda wav: transcribe.transcribe_audio(wav, model_name=model),
         )
-        # Rejoin words the aligner split across segments before anything, the
-        # aligned cache included, keeps them. A join moves a segment's start
-        # later, which can pass an overlapping neighbour, so order is restored.
-        segments = in_time_order(join_split_words(segments))
+        segments = in_time_order(segments)
     segments = _drop_untimed_segments(segments)
     _worker_reporting.progress("transcript.stt.complete", f"{len(segments)} segments")
     return segments

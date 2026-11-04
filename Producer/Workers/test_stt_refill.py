@@ -282,12 +282,53 @@ class ShortOpeningRefillTests(unittest.TestCase):
         self.assertEqual(len(result), 3)
         self.assertEqual(result[0], opening)
         self.assertEqual(result[-1], closing)
-        self.assertEqual(result[1].text, "New recovered")
-        self.assertAlmostEqual(result[1].start_s, 0.3)
+        self.assertEqual(result[1].text, "opening New recovered")
+        self.assertAlmostEqual(result[1].start_s, 0.2)
         self.assertAlmostEqual(result[1].end_s, 1.0)
         command = mock_run.call_args.args[0]
         self.assertEqual(command[command.index("-ss") + 1], "0.2")
         self.assertEqual(command[command.index("-to") + 1], "2.2")
+
+    @mock.patch("subprocess.run")
+    def test_repeated_words_near_either_edge_are_not_suppressed_by_text(self, _mock_run):
+        source = [
+            FakeSegment(0.0, 0.2, "Again", (FakeToken("Again", 0.0, 0.2),)),
+            FakeSegment(3.2, 3.4, "Again", (FakeToken("Again", 3.2, 3.4),)),
+        ]
+
+        def fake_transcribe(_):
+            return [FakeSegment(0.2, 2.9, "Again Again", (
+                FakeToken(" Again", 0.2, 0.5),
+                FakeToken(" Again", 2.6, 2.9),
+            ))]
+
+        result = stt_refill.refill_short_opening_gaps("dummy.mp3", source, 10.0, fake_transcribe)
+        recovered = next(segment for segment in result if segment.start_s > 0.2 and segment.end_s < 3.2)
+        self.assertEqual(recovered.text, "Again Again")
+        self.assertEqual(len(recovered.tokens), 2)
+
+    @mock.patch("subprocess.run")
+    def test_split_word_fragments_are_joined_inside_one_short_window(self, _mock_run):
+        source = [
+            FakeSegment(0.0, 0.2, "before", (FakeToken("before", 0.0, 0.2),)),
+            FakeSegment(3.2, 3.4, "after", (FakeToken(" after", 3.2, 3.4),)),
+        ]
+
+        def fake_transcribe(_):
+            return [
+                FakeSegment(0.0, 0.2, "cof", (FakeToken("cof", 0.0, 0.2),)),
+                FakeSegment(0.2, 0.4, "fee after", (
+                    FakeToken("fee", 0.2, 0.3), FakeToken(" after", 0.3, 0.4),
+                )),
+            ]
+
+        result = stt_refill.refill_short_opening_gaps("dummy.mp3", source, 10.0, fake_transcribe)
+        recovered = [segment for segment in result if segment.start_s >= 0.2 and segment.start_s < 1.0]
+        self.assertEqual([segment.text for segment in recovered], ["coffee", "after"])
+        self.assertAlmostEqual(recovered[0].start_s, 0.2)
+        self.assertAlmostEqual(recovered[0].end_s, 0.5)
+        self.assertAlmostEqual(recovered[1].start_s, 0.5)
+        self.assertAlmostEqual(recovered[1].end_s, 0.6)
 
     @mock.patch("subprocess.run")
     def test_empty_or_failed_decode_leaves_source_unchanged(self, mock_run):
@@ -349,4 +390,53 @@ class TranscribeWithDaemonRefillTests(unittest.TestCase):
                 ("Recovered middle.", 17.0, 27.0),
                 ("Closing segment.", 50.0, 60.0),
             ],
+        )
+
+    @mock.patch("subprocess.run")
+    def test_short_refill_gap_stays_out_of_neighbor_cues(self, _mock_run):
+        install_fake_wilted()
+        calls = []
+
+        def fake_transcribe_audio(path, model_name=ALIGNED_STT_MODEL, **_):
+            calls.append((path, model_name))
+            if len(calls) == 1:
+                return [
+                    FakeSegment(0.0, 0.2, "Order", (FakeToken("Order", 0.0, 0.2),)),
+                    FakeSegment(3.2, 3.4, "after", (FakeToken(" after", 3.2, 3.4),)),
+                ]
+            return [FakeSegment(0.5, 0.8, "coffee", (FakeToken("coffee", 0.5, 0.8),))]
+
+        sys.modules["wilted.transcribe"].transcribe_audio = fake_transcribe_audio
+        with mock.patch.object(cue_timing, "probe_duration", return_value=10.0):
+            result = transcript_sources.transcribe_with_daemon(Path("sample.mp3"))
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            [(segment.text, segment.start_s, segment.end_s) for segment in result],
+            [("Order", 0.0, 0.2), ("coffee", 0.7, 1.0), ("after", 3.2, 3.4)],
+        )
+        self.assertFalse(any(segment.start_s < 0.7 and segment.end_s > 0.2 for segment in result))
+
+    @mock.patch("subprocess.run")
+    def test_exactly_abutting_short_window_remains_a_separate_cue(self, _mock_run):
+        install_fake_wilted()
+        calls = []
+
+        def fake_transcribe_audio(path, model_name=ALIGNED_STT_MODEL, **_):
+            calls.append((path, model_name))
+            if len(calls) == 1:
+                return [
+                    FakeSegment(0.0, 0.2, "Order", (FakeToken("Order", 0.0, 0.2),)),
+                    FakeSegment(3.2, 3.4, "after", (FakeToken(" after", 3.2, 3.4),)),
+                ]
+            return [FakeSegment(0.0, 0.3, "coffee", (FakeToken("coffee", 0.0, 0.3),))]
+
+        sys.modules["wilted.transcribe"].transcribe_audio = fake_transcribe_audio
+        with mock.patch.object(cue_timing, "probe_duration", return_value=10.0):
+            result = transcript_sources.transcribe_with_daemon(Path("sample.mp3"))
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            [(segment.text, segment.start_s, segment.end_s) for segment in result],
+            [("Order", 0.0, 0.2), ("coffee", 0.2, 0.5), ("after", 3.2, 3.4)],
         )

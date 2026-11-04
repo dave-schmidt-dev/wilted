@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 from . import reporting as _worker_reporting
-from .cue_timing import in_time_order
+from .cue_timing import in_time_order, join_split_words
 
 try:
     from wilted.transcribe import TranscriptionError
@@ -298,10 +298,10 @@ def refill_short_opening_gaps(
     if not gaps:
         return original
 
-    neighbours = _hole_neighbours(original, gaps)
     recovered_segments = []
     total_windows = len(gaps)
     for index, (gap_start, gap_end) in enumerate(gaps, 1):
+        recovered_for_window = []
         _worker_reporting.progress(
             "transcript.stt.short-opening-refill",
             f"{index}/{total_windows} {gap_start:.2f}-{gap_end:.2f}s",
@@ -346,7 +346,6 @@ def refill_short_opening_gaps(
                 if gap_start <= absolute_start < gap_end and absolute_end <= gap_end:
                     kept_tokens.append(dataclasses.replace(token, start_s=absolute_start, end_s=absolute_end))
 
-            kept_tokens = _drop_edge_repeats(kept_tokens, [(gap_start, gap_end)], [neighbours[index - 1]])
             if not kept_tokens:
                 continue
             kept_tokens.sort(key=lambda token: (float(token.start_s), float(token.end_s)))
@@ -357,7 +356,12 @@ def refill_short_opening_gaps(
                 text="".join(token.text for token in kept_tokens).strip(),
                 tokens=tuple(kept_tokens),
             )
-            recovered_segments.append(rebuilt)
+            recovered_for_window.append(rebuilt)
+
+        # This exact crop is an independent transcript island. Repair split
+        # words inside it, but never join its edge tokens to neighbouring source
+        # transcript segments or to another crop.
+        recovered_segments.extend(join_split_words(recovered_for_window))
 
     _worker_reporting.progress(
         "transcript.stt.short-opening-refill.complete",

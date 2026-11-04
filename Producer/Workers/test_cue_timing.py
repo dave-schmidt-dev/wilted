@@ -244,11 +244,22 @@ class SplitWordJoinTests(unittest.TestCase):
     def test_float_noise_between_adjacent_tokens_does_not_block_a_join(self):
         # Parakeet's token end is start plus duration while the next start is
         # its own frame step, so the two can disagree in the last few bits.
+        tolerance = _worker_cue_timing.SPLIT_WORD_CONTIGUITY_TOLERANCE_S
+        for delta in (-tolerance / 2, tolerance / 2):
+            with self.subTest(delta=delta):
+                segments = [
+                    aligned((" This", 0.0, 0.3), (" meas", 19.6, 19.9)),
+                    aligned(("urable", 19.9 + delta, 20.2), (" now", 20.3, 20.6)),
+                ]
+                self.assertEqual([s.text for s in self.join(segments)], ["This measurable", "now"])
+
+    def test_a_positive_pause_between_segments_is_not_a_split_word(self):
         segments = [
-            aligned((" This", 0.0, 0.3), (" meas", 19.6, 19.9)),
-            aligned(("urable", 19.9 - 1e-9, 20.2), (" now", 20.3, 20.6)),
+            aligned((" Order", 0.0, 0.2)),
+            aligned(("coffee", 0.7, 1.0)),
         ]
-        self.assertEqual([s.text for s in self.join(segments)], ["This measurable", "now"])
+        joined = self.join(segments)
+        self.assertEqual(joined, segments)
 
     def test_text_that_disagrees_with_its_tokens_is_not_rewritten(self):
         mismatched = aligned(("urable", 19.9, 20.2), (" now", 20.3, 20.6))
