@@ -272,7 +272,14 @@ def run(request: dict) -> dict:
         _worker_reporting.progress("transcript.absent", "no published or aligned transcript")
 
     output_path, ad_spans, keeps, raw_nominations, ad_audit = audio_path, [], [], [], None
+    ad_profile_observation = None
+    ad_profile_requested_digest = None
+    ad_profile_applied_digest = None
+    ad_profile_status = "absent"
     if remove_ads:
+        _profile, ad_profile_requested_digest, request_profile_status = _worker_ad_removal._validated_request_profile(request)
+        if request_profile_status == "invalid":
+            ad_profile_status = "invalid"
         if not segments or timing != "aligned":
             raise WorkerError("aligned-stt-required", "ad removal requires valid audio-aligned speech-to-text")
         from wilted import llm as llm_module
@@ -288,7 +295,11 @@ def run(request: dict) -> dict:
             warning = f"original audio includes ads: {error}"
             _worker_reporting.progress("ads.uncertain", warning)
             ad_audit = _worker_cue_timing.serialize_ad_audit(
-                _worker_ad_audit.AdAnalysisAudit(incomplete_error=str(error), warning=warning)
+                _worker_ad_removal._set_unconsumed_profile_audit(
+                    _worker_ad_audit.AdAnalysisAudit(incomplete_error=str(error), warning=warning),
+                    request_profile_status,
+                    ad_profile_requested_digest,
+                )
             )
         model_lock = (_worker_gpu_admission.prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
                       if model_available else None)
@@ -296,6 +307,13 @@ def run(request: dict) -> dict:
             output_path, ad_spans, keeps, raw_nominations, ad_audit = _worker_ad_removal.detect_and_cut(
                 request, audio_path, cues, segments, model_lock=model_lock
             )
+            if ad_audit is not None:
+                ad_profile_observation = ad_audit.pop("adProfileObservation", None)
+                ad_profile_status = ad_audit.get("adProfileStatus", ad_profile_status)
+                ad_profile_requested_digest = ad_audit.get(
+                    "adProfileRequestedDigest", ad_profile_requested_digest
+                )
+                ad_profile_applied_digest = ad_audit.get("adProfileAppliedDigest")
         if ad_audit and (ad_audit.get("warning") or ad_audit.get("incompleteError") or ad_audit.get("unresolvedIds")):
             if output_path.resolve() != audio_path.resolve() or ad_spans or keeps:
                 raise WorkerError("ads-uncertain-output-invalid", "uncertain ad removal must retain the whole original audio")
@@ -360,6 +378,10 @@ def run(request: dict) -> dict:
         "languageCode": language,
         "audioPath": str(output_path),
         "audioChanged": str(output_path) != str(audio_path),
+        "adProfileObservation": ad_profile_observation,
+        "adProfileStatus": ad_profile_status,
+        "adProfileRequestedDigest": ad_profile_requested_digest,
+        "adProfileAppliedDigest": ad_profile_applied_digest,
         "adSegments": ad_spans,
         # The exact original-to-output time map, so the caller can move a
         # listener's saved position onto the cut audio instead of losing it.

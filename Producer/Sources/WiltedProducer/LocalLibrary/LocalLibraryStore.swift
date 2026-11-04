@@ -22,6 +22,9 @@ public actor LocalLibraryStore {
     /// this store opened. Test-only: proves the snapshot's read cost stays
     /// flat as the library grows instead of scaling with episode count.
     var podcastLibrarySnapshotFetchCount = 0
+    /// Active subscription epochs last reconciled with the private ad-profile sidecar.
+    /// This cache prevents common library projections from rereading/fsyncing it.
+    var reconciledAdProfileSubscriptionEpochs: [String: Double]?
 
     /// Number of transcript payload decode attempts made by library and exact-key reads.
     /// Test-only: sync projections must leave this unchanged; targeted export increments only

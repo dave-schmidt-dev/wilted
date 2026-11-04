@@ -193,6 +193,10 @@ extension LocalLibraryStore {
             stage = .save
             try Self.reachRemovalStage(.save)
             try context.save()
+            // The subscription transaction is authoritative. A sidecar delete
+            // failure is repaired by startup/snapshot reconciliation, and a
+            // later subscription epoch cannot reuse the old observations.
+            try? removeAdPlacementProfile(feedID: feedID)
             deleteMediaIfUnreferenced(doomedMedia)
             return episodeIDs.count
         }

@@ -144,6 +144,9 @@ extension LocalLibraryStore {
 
         podcastLibrarySnapshotFetchCount += 1
         let subscriptionValues = try subscriptions()
+        // Sidecar reconciliation is private and best-effort; its I/O cannot
+        // make a normal library read fail.
+        try? reconcileAdPlacementProfiles(for: subscriptionValues.filter { feeds[$0.feedID] != nil })
 
         podcastLibrarySnapshotFetchCount += 1
         let podcastQueue = try podcastQueueState()

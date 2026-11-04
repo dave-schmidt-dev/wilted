@@ -427,109 +427,46 @@ def runtime_sources() -> Path:
     return Path(override) if override else DEFAULT_RUNTIME_SOURCES
 
 
+def _replay_worker_functions():
+    """Resolve replay calls through the live worker module for testable parity."""
+    import wilted_pipeline as wp
+    return wp.analyze_ad_detections, wp.prepare_ad_model_lock
+
+
+def replay_analysis(
+    case: dict,
+    *,
+    cache: Path,
+    store: Path = DEFAULT_AD_CORPUS_INPUTS,
+    remove_self_promotion: bool = False,
+    ad_profile: dict | None = None,
+    feed_id: str | None = None,
+    episode_id: str | None = None,
+):
+    """Return live analysis evidence and its independent primary observation."""
+    from ad_corpus_replay import replay_analysis as run_replay_analysis
+    return run_replay_analysis(
+        case, cache=cache, store=store, remove_self_promotion=remove_self_promotion,
+        ad_profile=ad_profile, feed_id=feed_id, episode_id=episode_id,
+    )
+
+
 def replay_spans(
     case: dict,
     *,
     cache: Path,
     store: Path = DEFAULT_AD_CORPUS_INPUTS,
     remove_self_promotion: bool = False,
+    ad_profile: dict | None = None,
+    feed_id: str | None = None,
+    episode_id: str | None = None,
 ):
-    """Re-run the live detector over this case's resolved segments.
-
-    Returns the spans it produced and the serialized audit that travels with
-    every live analysis, or None when neither the pinned store nor the
-    preparation cache holds the case's input.
-
-    The case's input is read from the pinned store first and from the aligned
-    preparation cache only as a fallback, so an unadopted case still replays
-    while an adopted one no longer depends on a working set that evicts.
-
-    The judgement, the safeguards and the refusals all come from
-    `analyze_ad_detections`, which is the same call `detect_and_cut` makes. The
-    corpus deliberately owns none of it: a replay that assembled the passes
-    itself would drift from the app one edit at a time, and it drifted already
-    -- it was missing the coverage refusals and the dropped-anchor audit, so it
-    could score a run the app would have refused outright.
-    """
-    segments, _source = case_segments(case, store=store, cache=cache)
-    if segments is None:
-        return None
-
-    # The worker never sets this up itself -- Swift hands it a PYTHONPATH when it
-    # spawns it -- so a replay has to do the same job or die on `import wilted`.
-    sources = runtime_sources()
-    if not (sources / "wilted" / "ads.py").is_file():
-        raise RuntimeError(
-            f"no Wilted runtime source under {sources}; restore Producer/Runtime/src "
-            "from the repository or set WILTED_PIPELINE_PYTHONPATH to a runtime src directory"
-        )
-    sys.path.insert(0, str(sources))
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import wilted_pipeline as wp  # noqa: PLC0415 - deferred; loading it is expensive
-
-    from wilted import ads as ads_module  # noqa: PLC0415
-    from wilted import llm as llm_module  # noqa: PLC0415
-
-    # `CachedAlignedSegment`, not the archive's `TranscriptSegment`: the worker
-    # hands the detector its own cached type and the two are only duck-typed
-    # alike, so replaying with the other one would measure a call the app never
-    # makes.
-    aligned = [
-        wp.CachedAlignedSegment(
-            text=segment["text"],
-            start_s=float(segment["start_s"]),
-            end_s=float(segment["end_s"]),
-        )
-        for segment in segments
-    ]
-    # `probe_duration` of the original file, which preparation has since
-    # overwritten -- the manifest carries it derived. Both size guards divide by
-    # this, so using the transcript's last cue instead would shift them.
-    total = float(case["audioDurationSeconds"])
-    model = str(llm_module.DEFAULT_GGUF_MODEL)
-    # The archive refuses to build a multi-gigabyte model outside an execution
-    # capability, which the worker claims once around its whole run. A replay
-    # loads the same model for the same reason, so it claims it the same way and
-    # at the same depth -- outside the admission lock, as `main` is outside
-    # `run`. The capability carries a data directory nothing reads; it gets the
-    # one the worker would have derived so the two calls stay identical.
-    from wilted.execution_capability import execution_capability_scope  # noqa: PLC0415
-
-    # The same admission lock a preparation takes, so replaying while the app is
-    # working queues behind it instead of contending for the GPU.
-    lock = wp.prepare_ad_model_lock(model, aligned_stt=False)
-    with execution_capability_scope(owner_id="wilted-ad-corpus-replay", data_dir=cache.parent), \
-            (lock or contextlib.nullcontext()):
-        backend = llm_module.create_backend("gguf", model=model)
-        backend.load()
-        try:
-            # Handed the raw backend, exactly as `detect_and_cut` hands its own:
-            # the audit wrapper is built inside, so the replay cannot wrap it
-            # differently from the run it is reproducing.
-            if remove_self_promotion:
-                analysis = wp.analyze_ad_detections(
-                    ads_module, backend, aligned, total, remove_self_promotion=True
-                )
-            else:
-                analysis = wp.analyze_ad_detections(ads_module, backend, aligned, total)
-        except wp.WorkerError as error:
-            raise ReplayRefused(error.code, str(error)) from error
-        finally:
-            backend.close()
-    # The app's last word on the analysis, so a replay scores what would be
-    # committed: an outcome that keeps the whole original cuts nothing.
-    from wilted_worker.ad_outcome import decide_ad_outcome  # noqa: PLC0415
-
-    detections = list(analysis.detections)
-    outcome = decide_ad_outcome(analysis.audit, detections)
-    if outcome.keep_whole_reason is not None:
-        analysis.audit.incomplete_error = outcome.keep_whole_reason
-        analysis.audit.warning = f"original audio includes ads: {outcome.keep_whole_reason}"
-        detections = []
-    return (
-        [Span(float(ad.start_s), float(ad.end_s)) for ad in detections],
-        wp.serialize_ad_audit(analysis.audit),
+    """Return the existing replay pair while sharing profile-aware analysis."""
+    result = replay_analysis(
+        case, cache=cache, store=store, remove_self_promotion=remove_self_promotion,
+        ad_profile=ad_profile, feed_id=feed_id, episode_id=episode_id,
     )
+    return None if result is None else result[:2]
 
 
 def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPUS_INPUTS,

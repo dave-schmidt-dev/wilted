@@ -122,7 +122,7 @@ def build_effective_cut_map(detections, total_seconds: float) -> tuple[list[tupl
         keeps.append((cursor, total_seconds))
     return merged, build_keep_map(keeps)
 
-def serialize_ad_audit(audit) -> dict:
+def serialize_ad_audit(audit, *, include_profile_observation: bool = False) -> dict:
     """Publish the detector evidence a caller needs in order to trust a result.
 
     Without it, "the detector examined every window and found no
@@ -166,6 +166,13 @@ def serialize_ad_audit(audit) -> dict:
         "incompleteError": audit.incomplete_error,
         "nearEmpty": audit.near_empty,
         "warning": getattr(audit, "warning", None),
+        "adProfileStatus": getattr(audit, "ad_profile_status", "absent"),
+        "adProfileRequestedDigest": getattr(audit, "ad_profile_requested_digest", None),
+        "adProfileAppliedDigest": getattr(audit, "ad_profile_applied_digest", None),
+        "adProfileWindows": int(getattr(audit, "ad_profile_windows", 0)),
+        "adProfileRequests": int(getattr(audit, "ad_profile_requests", 0)),
+        **({"adProfileObservation": audit.ad_profile_observation}
+           if include_profile_observation and getattr(audit, "ad_profile_observation", None) is not None else {}),
     }
 
 def _near_empty_nominations(detections, total_seconds) -> str | None:

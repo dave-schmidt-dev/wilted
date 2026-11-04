@@ -19,7 +19,7 @@ public actor PodcastPreparationPipeline {
     /// Manually bumped when the semantic preparation behavior changes. This is
     /// deliberately independent of the app or UI build number so a launch can
     /// identify old preparation results without invalidating unrelated work.
-    public static let semanticVersion = "podcast-preparation-v13"
+    public static let semanticVersion = "podcast-preparation-v14"
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
     /// but `speech-stack` is still an editable dependency resolved outside it,
@@ -234,6 +234,9 @@ public actor PodcastPreparationPipeline {
             throw PodcastPreparationError.episodeNotDownloaded
         }
 
+        let profileSnapshot = policy.removeAds
+            ? await captureAdProfileSnapshot(for: episode.feedID, onStatus: report) : nil
+        report(adProfileRequestProgress(profileSnapshot, enabled: policy.removeAds))
         let codeRevision = await runner.codeRevision()
         let provenance = provenanceEvidence(sourceRevisionID: stored.revision.revisionID,
                                             sourceHash: stored.revision.contentHash, codeRevision: codeRevision)
@@ -247,9 +250,13 @@ public actor PodcastPreparationPipeline {
             defer { store.inFlightMedia.end(preparedURL) }
             let request = try await workerRequest(episode: episode, audioURL: audioURL, preparedURL: preparedURL,
                                                   sourceHash: stored.revision.contentHash, policy: policy,
-                                                  onStatus: report)
+                                                  profileSnapshot: profileSnapshot, onStatus: report)
             let response = try await runner.run(request: request, onProgress: report)
-            let payload = try Self.decode(response)
+            var payload = try Self.decode(response)
+            validateAdProfileHandshake(&payload, snapshot: profileSnapshot)
+            await persistAdProfileObservation(payload.adProfileObservation, feedID: episode.feedID,
+                                              episodeID: episode.itemID, sourceHash: stored.revision.contentHash,
+                                              snapshot: profileSnapshot, onStatus: report)
             if payload.droppedCueCount > 0 {
                 let totalCues = payload.cues.count + payload.droppedCueCount
                 report(PodcastPreparationProgress(
@@ -257,6 +264,7 @@ public actor PodcastPreparationPipeline {
                     detail: "\(payload.droppedCueCount) of \(totalCues) transcript cues were malformed and left out"
                 ))
             }
+            report(adProfileResultProgress(payload))
             report(Self.resultProgress(payload))
             for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
             let result = try await commit(payload, episode: episode, download: download,
@@ -324,44 +332,6 @@ public actor PodcastPreparationPipeline {
         if let codeRevision { fields["codeRevision"] = codeRevision }
         if let fingerprint = Self.semanticFingerprintResolution { fields["fingerprint"] = fingerprint }
         return try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: fields)
-    }
-
-    /// The worker request for one source file, serialized.
-    func workerRequest(
-        episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
-        policy: PodcastPreparationPolicySnapshot,
-        onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
-    ) async throws -> Data {
-        var request: [String: Any] = [
-            "protocolVersion": 2,
-            "audioPath": audioURL.path,
-            "outputPath": preparedURL.path,
-            "workDir": workDirectory.path,
-            "transcriptPolicy": policy.transcriptPolicy.rawValue,
-            "removeAds": policy.removeAds,
-            "allowSpeechToText": policy.transcriptPolicy != .noLocalSTT,
-            "sourceHash": sourceHash,
-            "alignedTranscriptModel": Self.alignedTranscriptModel,
-        ]
-        // The worker echoes this back into the result it stores. Sending
-        // the sentinel would persist it one layer further out.
-        if let fingerprint = Self.semanticFingerprintResolution {
-            request["pipelineFingerprint"] = fingerprint
-        }
-        // Sent only when on, so every other feed's request is unchanged.
-        if policy.removeSelfPromotion { request["removeSelfPromotion"] = true }
-        if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
-           let published = await fetchPublishedTranscript(for: episode, onStatus: onStatus) {
-            request["publishedTranscript"] = published
-        }
-        // The feed's show notes name the hosts, guests, stories, products,
-        // and sponsors: the worker's glossary for the words speech-to-text
-        // got wrong.
-        if let notes = episode.notes {
-            request["episodeNotes"] = notes
-        }
-        request["episodeTitle"] = episode.title
-        return try JSONSerialization.data(withJSONObject: request)
     }
 
     // MARK: Journal
@@ -464,7 +434,7 @@ public actor PodcastPreparationPipeline {
     /// stays in one place: HTTPS only, bounded, and never handing a credentialed
     /// feed's URL to a second process. A failure is not an error -- it means the
     /// pipeline falls through to speech-to-text, which is the tier below it.
-    private func fetchPublishedTranscript(
+    func fetchPublishedTranscript(
         for episode: PodcastEpisode,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async -> [String: Any]? {

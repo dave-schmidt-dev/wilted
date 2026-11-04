@@ -1,0 +1,75 @@
+{
+  "feedID": "feed-synth-001",
+  "episodeID": "ep-synth-100",
+  "sourceHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "validPayload": {
+    "schemaVersion": 1,
+    "feedID": "feed-synth-001",
+    "revision": 1,
+    "sampleCount": 5,
+    "slots": [
+      {
+        "position": "pre",
+        "startBasisPoints": 0,
+        "endBasisPoints": 500,
+        "entryPhrases": [
+          "thanks for listening",
+          "support comes from"
+        ],
+        "returnPhrases": [
+          "now back to the show"
+        ]
+      },
+      {
+        "position": "mid",
+        "startBasisPoints": 4500,
+        "endBasisPoints": 5500,
+        "entryPhrases": [
+          "quick break"
+        ],
+        "returnPhrases": [
+          "welcome back"
+        ]
+      },
+      {
+        "position": "post",
+        "startBasisPoints": 9500,
+        "endBasisPoints": 10000,
+        "entryPhrases": [
+          "that wraps up our show"
+        ],
+        "returnPhrases": []
+      }
+    ]
+  },
+  "validEnvelope": {
+    "payload": "{\"schemaVersion\":1,\"feedID\":\"feed-synth-001\",\"revision\":1,\"sampleCount\":5,\"slots\":[{\"position\":\"pre\",\"startBasisPoints\":0,\"endBasisPoints\":500,\"entryPhrases\":[\"thanks for listening\",\"support comes from\"],\"returnPhrases\":[\"now back to the show\"]},{\"position\":\"mid\",\"startBasisPoints\":4500,\"endBasisPoints\":5500,\"entryPhrases\":[\"quick break\"],\"returnPhrases\":[\"welcome back\"]},{\"position\":\"post\",\"startBasisPoints\":9500,\"endBasisPoints\":10000,\"entryPhrases\":[\"that wraps up our show\"],\"returnPhrases\":[]}]}",
+    "digest": "c30f57f2c39fcbc52b0e1c2b1e727715282fadf20f258698969ed438a44f07b5"
+  },
+  "validObservation": {
+    "schemaVersion": 1,
+    "feedID": "feed-synth-001",
+    "episodeID": "ep-synth-100",
+    "sourceHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "slots": [
+      {
+        "position": "pre",
+        "startBasisPoints": 0,
+        "endBasisPoints": 500,
+        "entryPhrases": [
+          "support comes from"
+        ],
+        "returnPhrases": [
+          "now back to the show"
+        ]
+      }
+    ]
+  },
+  "validEmptySlotsObservation": {
+    "schemaVersion": 1,
+    "feedID": "feed-synth-001",
+    "episodeID": "ep-synth-100",
+    "sourceHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "slots": []
+  }
+}

@@ -248,6 +248,7 @@ extension LocalLibraryStore {
         guard !records.contains(where: { $0.feedID == subscription.feedID.rawValue }) else { return false }
         context.insert(LocalLibraryCurrentSubscriptionRecord(subscription))
         try context.save()
+        if (try? podcastFeed(for: subscription.feedID)) != nil { try? reconcileAdPlacementProfiles() }
         return true
     }
 

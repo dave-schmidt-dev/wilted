@@ -80,6 +80,12 @@ def analyze_ad_detections(
     experimental_candidates=(),
     experimental_max_additional_model_calls: int = 0,
     remove_self_promotion: bool = False,
+    ad_profile: dict | None = None,
+    ad_profile_digest: str | None = None,
+    ad_profile_status: str = "absent",
+    feed_id: str | None = None,
+    episode_id: str | None = None,
+    source_hash: str | None = None,
 ) -> AdAnalysis:
     """Run the archive detector and every worker safeguard with an auditable result.
 
@@ -121,6 +127,16 @@ def analyze_ad_detections(
         ads_logger.removeHandler(discarded)
         ads_logger.setLevel(previous_level)
         discarded.summarize()
+
+    # Freeze evidence before any profile-guided window is examined. Profile
+    # calls use a separate auditing wrapper and can never teach their own hints.
+    from .feed_profile_runtime import independent_primary_observation
+    primary_observation = None
+    if feed_id and episode_id and source_hash:
+        primary_observation = independent_primary_observation(
+            auditing_backend, segments, feed_id=feed_id, episode_id=episode_id,
+            source_hash=source_hash, total_seconds=total_seconds,
+        )
 
     if auditing_backend.unexpected_error is not None:
         raise auditing_backend.unexpected_error
@@ -245,6 +261,34 @@ def analyze_ad_detections(
             for held in held_spans
         )
     ]
+    profile_windows = 0
+    profile_requests = 0
+    if ad_profile is not None:
+        from .feed_profile_runtime import recover_profile_candidates
+        profile_recovery = recover_profile_candidates(
+            ads_module, auditing_backend, segments, total_seconds, ad_profile,
+            remove_self_promotion=remove_self_promotion,
+            existing_detections=detections,
+            held_spans=held_spans,
+        )
+        profile_windows = profile_recovery.windows
+        profile_requests = profile_recovery.requests
+        if profile_recovery.detections:
+            # Re-run the final policy and content guards across all candidates,
+            # with every profile candidate still subject to the same holds and
+            # aggregate cut ceiling as primary detections.
+            proposed_detections = sorted(
+                [*detections, *profile_recovery.detections], key=lambda item: float(item.start_s)
+            )
+            detections = project_detections_around_blocked_house_regions(
+                proposed_detections, ads_module, held_spans,
+            )
+            detections = enforce_known_house_kind_policy(
+                detections, ads_module, total_seconds, remove_self_promotion, held_spans,
+            )
+            detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
+            detections = reject_programme_conflicts(detections, held_spans)
+
     if dropped_anchor_ids:
         details = ", ".join(
             f"raw anchor ID {anchor_id} at {float(segments[anchor_id].start_s):.3f}s"
@@ -258,6 +302,16 @@ def analyze_ad_detections(
         )
     audit = auditing_backend.audit(detections, segments)
     audit.held_spans = tuple(held_spans)
+    audit.ad_profile_observation = primary_observation
+    profile_was_used = ad_profile is not None and profile_requests > 0
+    audit.ad_profile_status = (
+        "applied" if profile_was_used
+        else (ad_profile_status if ad_profile is None else "absent")
+    )
+    audit.ad_profile_requested_digest = ad_profile_digest
+    audit.ad_profile_applied_digest = ad_profile_digest if profile_was_used else None
+    audit.ad_profile_windows = profile_windows
+    audit.ad_profile_requests = profile_requests
     audit.declined_commercial_evidence_seeds = tuple(
         DeclinedCommercialEvidenceSeed(
             ids=seed_ids,
@@ -301,7 +355,7 @@ def analyze_ad_detections(
         experimental_candidates,
         experimental_max_additional_model_calls,
     )
-    audit.model_requests = auditing_backend.calls
+    audit.model_requests = auditing_backend.calls + profile_requests
     audit.model_failures = auditing_backend.failures
     if audit.unresolved_ids:
         details = ", ".join(str(segment_id) for segment_id in audit.unresolved_ids)
@@ -360,6 +414,39 @@ def _ad_kind_fields(ads_module, kinds) -> dict:
     # placement is required, leaving programme in is not.
     return {"kind": ads_module.AD_KIND_PAID, "kinds": list(kinds), "disposition": "must-cut"}
 
+def _validated_request_profile(request: dict):
+    """Return a validated exact-feed profile, its safe digest and bounded status."""
+    from .feed_profiles import validate_profile
+    feed_id = request.get("feedID")
+    envelope = request.get("adProfile")
+    if envelope is None:
+        return None, None, "absent"
+    digest = envelope.get("digest") if isinstance(envelope, dict) else None
+    safe_digest = digest if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) else None
+    profile = validate_profile(envelope, feed_id)
+    if profile is None:
+        return None, safe_digest, "invalid"
+    return profile, safe_digest, "applied"
+
+
+def _set_unconsumed_profile_audit(audit, status: str, digest: str | None):
+    """Report malformed requests truthfully when analysis exits before use."""
+    audit.ad_profile_status = "invalid" if status == "invalid" else "absent"
+    audit.ad_profile_requested_digest = digest
+    audit.ad_profile_applied_digest = None
+    return audit
+
+
+def _request_source_hash(request: dict) -> str | None:
+    """Accept only a known SHA-256 form and normalize it for observation storage."""
+    value = request.get("sourceHash", request.get("contentHash"))
+    if not isinstance(value, str):
+        return None
+    if value.startswith("sha256:"):
+        value = value[7:]
+    return value if re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+
 def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, *, model_lock=None):
     """Detect ads and rewrite the audio without them.
 
@@ -379,6 +466,10 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         return audio_path, [], [], [], None
 
     model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
+    ad_profile, ad_profile_digest, profile_status = _validated_request_profile(request)
+    feed_id = request.get("feedID") if isinstance(request.get("feedID"), str) else None
+    episode_id = request.get("episodeID") if isinstance(request.get("episodeID"), str) else None
+    source_hash = _request_source_hash(request)
     model_lock = model_lock or _worker_gpu_admission.prepare_ad_model_lock(model, aligned_stt=False)
     # The previous project loads lazily and explicitly, under a coordinator
     # that keeps one model resident at a time. Without `load()` every
@@ -402,7 +493,11 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             reason = f"ad-detection model unavailable: {type(error).__name__}: {error}"
             warning = f"original audio includes ads: {reason}"
             _worker_reporting.progress("ads.uncertain", warning)
-            audit = AdAnalysisAudit(model_failures=1, incomplete_error=reason, warning=warning)
+            audit = _set_unconsumed_profile_audit(
+                AdAnalysisAudit(model_failures=1, incomplete_error=reason, warning=warning),
+                profile_status,
+                ad_profile_digest,
+            )
             return audio_path, [], [], [], serialize_ad_audit(audit)
 
         remove_self_promotion = request.get("removeSelfPromotion") is True
@@ -426,7 +521,11 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                 reason = f"archived classifier contract unavailable: {error}"
                 warning = f"original audio includes ads: {reason}"
                 _worker_reporting.progress("ads.uncertain", warning)
-                audit = AdAnalysisAudit(incomplete_error=reason, warning=warning)
+                audit = _set_unconsumed_profile_audit(
+                    AdAnalysisAudit(incomplete_error=reason, warning=warning),
+                    profile_status,
+                    ad_profile_digest,
+                )
                 return audio_path, [], [], [], serialize_ad_audit(audit)
             raise
 
@@ -444,12 +543,26 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             # never run for it. Both size guards then share this denominator.
             total = _worker_cue_timing.probe_duration(audio_path)
             try:
+                profile_kwargs = {}
+                if ad_profile is not None or profile_status == "invalid":
+                    profile_kwargs.update(
+                        ad_profile=ad_profile,
+                        ad_profile_digest=ad_profile_digest,
+                        ad_profile_status=profile_status,
+                    )
+                if feed_id and episode_id and source_hash:
+                    profile_kwargs.update(
+                        feed_id=feed_id, episode_id=episode_id, source_hash=source_hash,
+                    )
                 if remove_self_promotion:
                     analysis = analyze_ad_detections(
-                        ads_module, counting, segments, total, remove_self_promotion=True
+                        ads_module, counting, segments, total, remove_self_promotion=True,
+                        **profile_kwargs,
                     )
                 else:
-                    analysis = analyze_ad_detections(ads_module, counting, segments, total)
+                    analysis = analyze_ad_detections(
+                        ads_module, counting, segments, total, **profile_kwargs,
+                    )
                 detections = list(analysis.detections)
             except WorkerError as error:
                 if error.code in {
@@ -461,7 +574,9 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                     "ads-context-capacity-unavailable",
                 }:
                     analysis = uncertain_ad_analysis(counting, segments, str(error))
-                    return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
+                    analysis.audit.ad_profile_status = "invalid" if profile_status == "invalid" else "absent"
+                    analysis.audit.ad_profile_requested_digest = ad_profile_digest
+                    return audio_path, [], [], [], serialize_ad_audit(analysis.audit, include_profile_observation=True)
                 raise
             outcome = decide_ad_outcome(analysis.audit, detections)
             if outcome.keep_whole_reason is not None:
@@ -470,7 +585,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
                     counting, segments, outcome.keep_whole_reason,
                     held_spans=analysis.audit.held_spans, proposed_detections=detections, audit=analysis.audit,
                 )
-                return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
+                return audio_path, [], [], [], serialize_ad_audit(analysis.audit, include_profile_observation=True)
             for seed in outcome.left_in:
                 _worker_reporting.progress(
                     "ads.detect.seed.kept",
@@ -485,7 +600,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     _worker_reporting.progress("ads.detect.calls", f"{counting.calls} requests, {counting.failures} failed")
     if not detections:
         _worker_reporting.progress("ads.detect.complete", "0 spans")
-        return audio_path, [], [], [], serialize_ad_audit(analysis.audit)
+        return audio_path, [], [], [], serialize_ad_audit(analysis.audit, include_profile_observation=True)
 
     raw_nominations = []
     for ad in detections:
@@ -508,7 +623,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
             _worker_reporting.progress("ads.uncertain", warning)
             analysis.audit.incomplete_error = reason
             analysis.audit.warning = warning
-            return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit)
+            return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit, include_profile_observation=True)
         raise
 
     if not keeps:
@@ -520,7 +635,7 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         _worker_reporting.progress("ads.uncertain", warning)
         analysis.audit.incomplete_error = reason
         analysis.audit.warning = warning
-        return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit)
+        return audio_path, [], [], raw_nominations, serialize_ad_audit(analysis.audit, include_profile_observation=True)
 
     output_path = Path(request["outputPath"])
     if output_path.resolve() == audio_path.resolve():
@@ -534,4 +649,4 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
         raise WorkerError("cut-output-empty", "ffmpeg produced no playable audio")
     effective = effective_ad_spans(ads_module, raw_nominations, keeps, total)
     _worker_reporting.progress("ads.cut.complete", f"{output_path.stat().st_size} bytes")
-    return output_path, effective, rendered, raw_nominations, serialize_ad_audit(analysis.audit)
+    return output_path, effective, rendered, raw_nominations, serialize_ad_audit(analysis.audit, include_profile_observation=True)

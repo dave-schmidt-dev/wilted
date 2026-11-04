@@ -144,6 +144,23 @@ def install_fake_ads(llm: FakeLLM, detections=()):
         return [(segment_id, segment_id in labels, labels.get(segment_id)) for segment_id in expected_ids]
 
     ads._parse_ad_response = parse_ad_response
+
+    def classify_batch(batch_ids, segments, backend, _window_index, _batch_path,
+                       transcript_text=None, *, remove_self_promotion=False):
+        """Provide the archive classifier seam used by profile-guided replay."""
+        prompt = ads._AD_DETECT_SYSTEM_PROMPT
+        if remove_self_promotion:
+            from wilted_worker.prompts import SELF_PROMOTION_AD_DETECT_SYSTEM_PROMPT
+            prompt = SELF_PROMOTION_AD_DETECT_SYSTEM_PROMPT
+        rendered = transcript_text or "\n".join(
+            f"[ID {index}] {segments[index].text}" for index in batch_ids
+        )
+        response, _tokens = backend.generate(
+            prompt, rendered, response_format=ads._AD_DETECT_RESPONSE_FORMAT
+        )
+        return ads._parse_ad_response(response, batch_ids)
+
+    ads._classify_batch = classify_batch  # noqa: SLF001
     ads._SPONSOR_OPENING_RE = re.compile(  # noqa: SLF001 - matches the legacy module seam
         r"\b(?:this|the)\s+episode\s+is\s+(?:brought\s+to\s+you\s+by|sponsored\s+by)\b"
         r"|\bthis\s+message\s+is\s+brought\s+to\s+you\s+by\b"

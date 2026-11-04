@@ -314,18 +314,24 @@ class OutcomeContractTests(unittest.TestCase):
         segments = [FakeSegment(0, 1, "programme")]
         install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
         install_fake_ads(FakeLLM())
+        requested_digest = "b" * 64
         with mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), \
                 mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
                 mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock") as lock, \
                 redirect_stderr(io.StringIO()) as progress:
             result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
                              "outputPath": "/tmp/not-written.mp3", "removeAds": True,
-                             "llmModel": "/nonexistent/synthetic.gguf", "readableTranscript": False})
+                             "llmModel": "/nonexistent/synthetic.gguf", "readableTranscript": False,
+                             "feedID": "feed-exact-1",
+                             "adProfile": {"payload": "{}", "digest": requested_digest}})
         self.assertEqual(result["report"]["outcome"], "uncertain")
         self.assertEqual(result["audioPath"], str(self.audio))
         self.assertFalse(result["audioChanged"])
         self.assertEqual((result["adSegments"], result["keepIntervals"], result["removedSeconds"]), ([], [], 0.0))
         self.assertEqual(result["report"]["audit"]["modelRequests"], 0)
+        self.assertEqual(result["adProfileStatus"], "invalid")
+        self.assertEqual(result["adProfileRequestedDigest"], requested_digest)
+        self.assertIsNone(result["adProfileAppliedDigest"])
         self.assertIn("original audio includes ads", result["warning"])
         self.assertEqual(result["cues"][0]["startSeconds"], 0)
         lock.assert_not_called()

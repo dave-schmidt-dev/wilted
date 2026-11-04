@@ -40,6 +40,32 @@ class UncertainAdDetectionTests(unittest.TestCase):
                 render.assert_not_called()
                 self.assertTrue(llm.closed)
 
+    def test_early_model_and_contract_failures_preserve_invalid_profile_status(self):
+        requested_digest = "a" * 64
+        request = {
+            **self.request,
+            "feedID": "feed-exact-1",
+            "adProfile": {"payload": "{}", "digest": requested_digest},
+        }
+        scenarios = (
+            (FakeLLM(fail_load=FileNotFoundError("missing GGUF")), False),
+            (FakeLLM(), True),
+        )
+        for llm, break_contract in scenarios:
+            with self.subTest(break_contract=break_contract):
+                ads = install_fake_ads(llm)
+                if break_contract:
+                    del ads._parse_ad_response
+                with redirect_stderr(io.StringIO()), \
+                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
+                    _path, spans, keeps, raw, audit = wp.detect_and_cut(
+                        request, self.audio, [], self.segments
+                    )
+                self.assertEqual((spans, keeps, raw), ([], [], []))
+                self.assertEqual(audit["adProfileStatus"], "invalid")
+                self.assertEqual(audit["adProfileRequestedDigest"], requested_digest)
+                self.assertIsNone(audit["adProfileAppliedDigest"])
+
     def test_production_unresolved_and_invalid_classifier_contract_retain_original(self):
         for code in ("ads-classification-unresolved", "ads-classification-incomplete",
                      "ads-audit-contract-unavailable", "ads-recovery-audit-failed"):

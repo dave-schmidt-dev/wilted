@@ -31,6 +31,10 @@ extension PodcastPreparationPipeline {
         /// `removedSeconds` and the timeline's removed list. A worker that
         /// predates silence trimming sends none.
         var silenceTrims: [Range<Double>] = []
+        var adProfileObservation: PodcastAdProfileObservation? = nil
+        var adProfileStatus: String = "absent"
+        var adProfileRequestedDigest: String? = nil
+        var adProfileAppliedDigest: String? = nil
     }
 
     static func decode(_ data: Data) throws -> WorkerPayload {
@@ -182,6 +186,7 @@ extension PodcastPreparationPipeline {
         }
         let changed = object["audioChanged"] as? Bool ?? false
         let silenceTrims = try silenceIntervals(in: object)
+        let adProfileResult = decodeAdProfileResult(from: object)
         let consistent: Bool
         switch outcome {
         case "cut":
@@ -219,9 +224,14 @@ extension PodcastPreparationPipeline {
             adAuditDiagnostics: outcome == "uncertain" ? diagnosticFields(report["audit"] as? [String: Any] ?? [:]) : [:],
             timeline: timeline,
             droppedCueCount: droppedCueCount,
-            silenceTrims: silenceTrims
+            silenceTrims: silenceTrims,
+            adProfileObservation: adProfileResult.observation,
+            adProfileStatus: adProfileResult.status,
+            adProfileRequestedDigest: adProfileResult.requestedDigest,
+            adProfileAppliedDigest: adProfileResult.appliedDigest
         )
     }
+
 
     /// Pieces of the original the keep map drops that are not advertisements.
     /// Each lies in a gap between kept intervals, beside at most the ads in

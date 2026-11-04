@@ -141,6 +141,12 @@ class AdAnalysisAudit:
     declined_commercial_evidence_seeds: tuple[DeclinedCommercialEvidenceSeed, ...] = ()
     held_spans: tuple[HeldAdSpan, ...] = ()
     warning: str | None = None
+    ad_profile_observation: dict | None = None
+    ad_profile_status: str = "absent"
+    ad_profile_requested_digest: str | None = None
+    ad_profile_applied_digest: str | None = None
+    ad_profile_windows: int = 0
+    ad_profile_requests: int = 0
 
 @dataclass(frozen=True)
 class AdAnalysis:

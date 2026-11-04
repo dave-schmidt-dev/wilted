@@ -85,6 +85,9 @@ extension PodcastPreparationPipeline {
             await onJournaled()
             throw PodcastPreparationError.readyAudioChanged
         }
+        let profileSnapshot = policy.removeAds
+            ? await captureAdProfileSnapshot(for: episode.feedID, onStatus: report) : nil
+        report(adProfileRequestProgress(profileSnapshot, enabled: policy.removeAds))
         let codeRevision = await runner.codeRevision()
 
         /// Records a run that changed nothing: one provenance row naming the
@@ -153,15 +156,21 @@ extension PodcastPreparationPipeline {
             store.inFlightMedia.begin(preparedURL)
             defer { store.inFlightMedia.end(preparedURL) }
             let request = try await workerRequest(episode: episode, audioURL: staged.url, preparedURL: preparedURL,
-                                                  sourceHash: staged.contentHash, policy: policy, onStatus: report)
+                                                  sourceHash: staged.contentHash, policy: policy,
+                                                  profileSnapshot: profileSnapshot, onStatus: report)
             let response = try await runner.run(request: request, onProgress: report)
-            let payload = try Self.decode(response)
+            var payload = try Self.decode(response)
+            validateAdProfileHandshake(&payload, snapshot: profileSnapshot)
+            await persistAdProfileObservation(payload.adProfileObservation, feedID: episode.feedID,
+                                              episodeID: episode.itemID, sourceHash: staged.contentHash,
+                                              snapshot: profileSnapshot, onStatus: report)
             if payload.droppedCueCount > 0 {
                 let totalCues = payload.cues.count + payload.droppedCueCount
                 report(PodcastPreparationProgress(
                     stage: "transcript.cues.dropped",
                     detail: "\(payload.droppedCueCount) of \(totalCues) transcript cues were malformed and left out"))
             }
+            report(adProfileResultProgress(payload))
             report(Self.resultProgress(payload))
             for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
 
