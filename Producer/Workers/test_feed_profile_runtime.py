@@ -26,8 +26,10 @@ class ScriptedProfileBackend:
         self.ads = ads
         self.ad_ids = set(ad_ids)
         self.ad_labels = {}
+        self.classification_overrides = {}
         self.labels = labels
         self.opening_id = opening_id
+        self.profile_opening_id = None
         self.confirm_id = confirm_id
         self.requests = []
         self.loaded = True
@@ -55,13 +57,17 @@ class ScriptedProfileBackend:
             if self.malformed_classifications:
                 return "not-json", 1
             ids = [int(value) for value in re.findall(r"\[ID (\d+)\]", user_content)]
+            label_map = self.classification_overrides.get(tuple(ids), self.ad_labels)
             return json.dumps({"ads": [
-                [index, self.ad_labels.get(index, "sponsor_read")]
+                [index, label_map.get(index, "sponsor_read")]
                 for index in ids if index in self.ad_ids
             ]}), 1
         if "program_start_id" in properties:
             permitted = properties["program_start_id"].get("enum", [])
-            value = self.opening_id if self.opening_id in permitted else 0
+            opening_id = self.opening_id
+            if "Ad placement profile search hint" in user_content:
+                opening_id = self.profile_opening_id if self.profile_opening_id is not None else opening_id
+            value = opening_id if opening_id in permitted else 0
             return json.dumps({"program_start_id": value}), 1
         if "program_id" in properties:
             permitted = properties["program_id"].get("enum", [])
@@ -224,6 +230,119 @@ class FeedProfileRuntimeTests(unittest.TestCase):
         self.assertEqual(list(confirmation[2]["schema"]["properties"]), ["program_id"])
         self.assertIn(0, confirmation[2]["schema"]["properties"]["program_id"]["enum"])
         self.assertIn(-1, confirmation[2]["schema"]["properties"]["program_id"]["enum"])
+
+    def test_preroll_expansion_rejects_house_unknown_and_held_cues(self):
+        from wilted_worker.ad_audit import HeldAdSpan
+        from wilted_worker.boundary_review import reject_programme_conflicts
+        from wilted_worker.recovery_policy import (
+            enforce_known_house_kind_policy,
+            project_detections_around_blocked_house_regions,
+        )
+        from wilted_worker.span_bounds import enforce_total_ad_share_ceiling
+
+        segments = self.segments(10)
+        segments[0] = self.Segment(0, 10, "Acme begins its read")
+        segments[1] = self.Segment(10, 20, "Visit acme.com for a free trial")
+        segments[2] = self.Segment(20, 30, "Paid newsletter for our members")
+        profile = self.profile(0, 3000, "pre")
+
+        def primary_observation(raw, ad_ids, labels):
+            raw.ad_ids = set(ad_ids)
+            raw.ad_labels = dict(labels)
+            audited = AuditingBackend(raw, self.ads, len(segments))
+            rendered = self.ads._render_segments_bounded(list(range(len(segments))), segments)
+            audited.generate(
+                self.ads._AD_DETECT_SYSTEM_PROMPT, rendered,
+                response_format=self.ads._AD_DETECT_RESPONSE_FORMAT,
+            )
+            raw.requests.clear()
+            return audited
+
+        cases = (
+            # The profile itself labels ID 2 as house material.
+            ("profile-house", {0, 1}, {0: "sponsor_read", 1: "sponsor_read"},
+             {0, 1, 2}, {0: "sponsor_read", 1: "sponsor_read", 2: "self_promo"}, profile, ()),
+            # A prior primary window already knows ID 2 is house, although this
+            # profile's nominated window and classifier omit it.
+            ("primary-house", {0, 1, 2}, {0: "sponsor_read", 1: "sponsor_read", 2: "self_promo"},
+             {0, 1}, {0: "sponsor_read", 1: "sponsor_read"}, self.profile(0, 2000, "pre"), ()),
+            # Q1 cannot expand through a cue with no paid classification.
+            ("unclassified", {0, 1}, {0: "sponsor_read", 1: "sponsor_read"},
+             {0, 1}, {0: "sponsor_read", 1: "sponsor_read"}, self.profile(0, 2000, "pre"), ()),
+            # The original nomination stops at ID 1; a hold on expanded ID 2
+            # must still veto the full preroll candidate.
+            ("held-expansion", {0, 1, 2}, {0: "sponsor_read", 1: "sponsor_read", 2: "sponsor_read"},
+             {0, 1}, {0: "sponsor_read", 1: "sponsor_read"}, self.profile(0, 2000, "pre"),
+             (HeldAdSpan(20, 30, "programme-boundary"),)),
+        )
+        for name, primary_ids, primary_labels, profile_ids, profile_labels, selected_profile, held in cases:
+            with self.subTest(case=name):
+                raw = ScriptedProfileBackend(self.ads, opening_id=0, confirm_id=-1)
+                raw.profile_opening_id = 3
+                baseline = primary_observation(raw, primary_ids, primary_labels)
+                raw.ad_ids = set(profile_ids)
+                raw.ad_labels = dict(profile_labels)
+                recovery = recover_profile_candidates(
+                    self.ads, baseline, segments, 100, selected_profile,
+                    remove_self_promotion=False, held_spans=held,
+                )
+                self.assertEqual(recovery.detections, ())
+                confirmation = next(
+                    row for row in raw.requests
+                    if "program_id" in row[2]["schema"]["properties"]
+                )
+                self.assertIn("Candidate IDs to assess: 0, 1, 2", confirmation[1])
+                self.assertNotIn("Ad placement profile search hint", confirmation[1])
+                final = project_detections_around_blocked_house_regions(
+                    recovery.detections, self.ads, list(held),
+                )
+                final = enforce_known_house_kind_policy(
+                    final, self.ads, 100, False, list(held),
+                )
+                final = enforce_total_ad_share_ceiling(final, 100, list(held))
+                self.assertEqual(reject_programme_conflicts(final, list(held)), [])
+
+        raw = ScriptedProfileBackend(self.ads, opening_id=0, confirm_id=-1)
+        raw.profile_opening_id = 3
+        baseline = primary_observation(raw, {0, 1}, {0: "sponsor_read", 1: "sponsor_read"})
+        raw.ad_ids = {0, 1, 2}
+        raw.ad_labels = {0: "sponsor_read", 1: "sponsor_read", 2: "self_promo"}
+        raw.labels = {0: "programme", 1: "programme", 2: "commercial", 3: "programme"}
+        recovery = recover_profile_candidates(
+            self.ads, baseline, segments, 100, profile,
+            remove_self_promotion=True,
+        )
+        self.assertIn((0.0, 30.0), {
+            (float(ad.start_s), float(ad.end_s)) for ad in recovery.detections
+        })
+        self.assertIn((0.0, 30.0), {
+            (float(ad.start_s), float(ad.end_s)) for ad in enforce_known_house_kind_policy(
+                recovery.detections, self.ads, 100, True, [],
+            )
+        })
+
+    def test_later_profile_house_evidence_vetoes_an_earlier_expansion(self):
+        segments = self.segments(10)
+        segments[0] = self.Segment(0, 10, "Acme begins its read")
+        segments[1] = self.Segment(10, 20, "Visit acme.com for a free trial")
+        segments[2] = self.Segment(20, 30, "Paid newsletter for our members")
+        raw = ScriptedProfileBackend(self.ads, ad_ids={0, 1, 2}, opening_id=0, confirm_id=-1)
+        raw.profile_opening_id = 3
+        raw.ad_labels = {0: "sponsor_read", 1: "sponsor_read", 2: "sponsor_read"}
+        raw.classification_overrides[(2,)] = {2: "self_promo"}
+        baseline = AuditingBackend(raw, self.ads, len(segments))
+        rendered = self.ads._render_segments_bounded(list(range(len(segments))), segments)
+        baseline.generate(
+            self.ads._AD_DETECT_SYSTEM_PROMPT, rendered,
+            response_format=self.ads._AD_DETECT_RESPONSE_FORMAT,
+        )
+        raw.requests.clear()
+        slots = self.profile(0, 2000, "pre")["slots"] + self.profile(2000, 3000, "mid")["slots"]
+        recovery = recover_profile_candidates(
+            self.ads, baseline, segments, 100, {"slots": slots},
+            remove_self_promotion=False,
+        )
+        self.assertEqual(recovery.detections, ())
 
     def test_profile_call_budget_exhaustion_keeps_the_candidate(self):
         segments = self.segments(64)

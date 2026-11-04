@@ -1,9 +1,8 @@
 """Use local feed placement observations as bounded recovery hints.
 
-Profiles only choose which current cues receive an extra generic classification.
-They never enter a model prompt, determine a boundary, or provide preservation
-proof. All accepted candidates receive a fresh current-episode preservation
-review before they can join the ordinary guarded detections.
+Profiles select current cues for extra generic classification. Only a bounded
+placement hint enters preroll Q1; primary classification and blind preservation
+prompts exclude it. Profiles do not establish boundaries or preservation proof.
 """
 from __future__ import annotations
 
@@ -13,6 +12,7 @@ from dataclasses import dataclass
 
 from .ad_audit import AuditingBackend
 from .commercial_preservation import _commercial_envelope_preserved, _prompt_budget_values
+from .interval_geometry import intervals_overlap
 from .nomination import _CallBudgetBackend
 from .reporting import WorkerError
 
@@ -21,6 +21,8 @@ MAX_PROFILE_CALLS = 12
 MAX_WINDOW_IDS = 64
 MAX_WINDOW_CHARS = 12_000
 MAX_PROFILE_CANDIDATE_IDS = 48
+_PAID_AD_LABELS = frozenset({"sponsor_read", "ad_break"})
+_HOUSE_AD_LABELS = frozenset({"self_promo", "newsletter_pitch"})
 
 @dataclass(frozen=True)
 class ProfileRecovery:
@@ -52,8 +54,8 @@ def _slot_windows(profile: dict, segments, total_seconds: float, existing_detect
             continue
 
         # Literal markers can locate a repeated placement when episode length or
-        # insertion timing shifted. They select the window only; never enter a
-        # prompt or authorize its boundaries.
+        # insertion timing shifted. They select the window and may enter bounded
+        # preroll Q1, but never authorize boundaries.
         markers = [
             _normalized_phrase(phrase)
             for phrase in (*slot["entryPhrases"], *slot["returnPhrases"])
@@ -183,7 +185,49 @@ def _split_complete_batches(ads_module, ids, segments):
     return batches
 
 
-def _profile_preroll_boundary(ads_module, backend, segments, program_start_max: int, slot: dict):
+def _known_profile_cut_labels(primary_backend, profile_backend, decisions, remove_self_promotion):
+    """Collect current positive paid cues and disabled-house cues by ID."""
+    paid_ids = set()
+    house_ids = set()
+    for segment_id, is_ad, label in decisions:
+        if label in _HOUSE_AD_LABELS:
+            house_ids.add(segment_id)
+        if is_ad and (label in _PAID_AD_LABELS
+                      or (remove_self_promotion and label in _HOUSE_AD_LABELS)):
+            paid_ids.add(segment_id)
+    for backend in (primary_backend, profile_backend):
+        for lineage in getattr(backend, "lineages", ()):
+            for segment_id, states in lineage.classifications.items():
+                for state in states:
+                    if not state.startswith("ad:"):
+                        continue
+                    label = state[3:]
+                    if label in _HOUSE_AD_LABELS:
+                        house_ids.add(segment_id)
+                    if label in _PAID_AD_LABELS or (
+                        remove_self_promotion and label in _HOUSE_AD_LABELS
+                    ):
+                        paid_ids.add(segment_id)
+    if not remove_self_promotion:
+        paid_ids.difference_update(house_ids)
+    return paid_ids, house_ids
+
+
+def _held_overlap(ids, segments, held_spans):
+    """Return whether any candidate cue overlaps an existing held span."""
+    if not ids:
+        return False
+    start_s = float(segments[ids[0]].start_s)
+    end_s = float(segments[ids[-1]].end_s)
+    return any(intervals_overlap(
+        start_s, end_s, float(span.start_s), float(span.end_s)
+    ) for span in held_spans)
+
+
+def _profile_preroll_boundary(
+    ads_module, backend, segments, program_start_max: int, slot: dict,
+    *, policy_safe_ids=(), disabled_house_ids=(), held_spans=(),
+):
     """Use the profile only as a search hint for Q1, then require blind Q2 confirmation."""
     from .commercial_seeds import _constrained_id
     from .constants import PREROLL_COLD_OPEN_MAX_ID, PREROLL_RECOVERY_MINIMUM_SECONDS
@@ -259,6 +303,14 @@ def _profile_preroll_boundary(ads_module, backend, segments, program_start_max: 
             or confirmed["program_id"] not in {-1, *candidate_ids}):
         raise ValueError("profile opening confirmation returned an invalid ID")
     if confirmed["program_id"] != -1:
+        return None
+    # Q1/Q2 find a possible boundary but do not classify paid versus house.
+    # Accept expansion only when every cue already has current paid evidence,
+    # no known disabled-house label, and no prior hold.
+    safe_ids = set(policy_safe_ids)
+    house_ids = set(disabled_house_ids)
+    if (any(index not in safe_ids or index in house_ids for index in candidate_ids)
+            or _held_overlap(candidate_ids, segments, held_spans)):
         return None
     return candidate_ids
 
@@ -381,7 +433,16 @@ def recover_profile_candidates(
             windows_used += 1
             continue
         windows_used += 1
-        runs = _contiguous_runs(window_decisions, ads_module, segments, remove_self_promotion)
+        policy_safe_ids, disabled_house_ids = _known_profile_cut_labels(
+            backend, profile_audit, window_decisions, remove_self_promotion,
+        )
+        nomination_decisions = [
+            (segment_id, False, None)
+            if not remove_self_promotion and segment_id in disabled_house_ids
+            else (segment_id, is_ad, label)
+            for segment_id, is_ad, label in window_decisions
+        ]
+        runs = _contiguous_runs(nomination_decisions, ads_module, segments, remove_self_promotion)
         for run in runs:
             if call_budget.calls >= MAX_PROFILE_CALLS:
                 continue
@@ -397,7 +458,12 @@ def recover_profile_candidates(
                     if slot["position"] != "pre":
                         continue
                     candidate_ids = _profile_preroll_boundary(
-                        ads_module, bounded, segments, run.end_id, slot
+                        ads_module, bounded, segments, run.end_id, slot,
+                        policy_safe_ids=policy_safe_ids,
+                        disabled_house_ids=(
+                            disabled_house_ids if not remove_self_promotion else ()
+                        ),
+                        held_spans=held_spans,
                     )
                     if not candidate_ids or not _profile_preroll_preserved(
                         segments, candidate_ids
@@ -410,6 +476,8 @@ def recover_profile_candidates(
                         nominate=False,
                     )
                 if not verified_ids:
+                    continue
+                if _held_overlap(verified_ids, segments, held_spans):
                     continue
                 first, last = verified_ids[0], verified_ids[-1]
                 start_s = float(segments[first].start_s)
@@ -425,6 +493,18 @@ def recover_profile_candidates(
                 ))
             except Exception:  # noqa: BLE001 - uncertainty leaves this candidate audible
                 continue
+    if not remove_self_promotion:
+        _paid_ids, known_house_ids = _known_profile_cut_labels(
+            backend, profile_audit, (), remove_self_promotion,
+        )
+        recovered = [
+            ad for ad in recovered
+            if not any(
+                float(ad.start_s) < float(segments[index].end_s)
+                and float(ad.end_s) > float(segments[index].start_s)
+                for index in known_house_ids
+            )
+        ]
     return ProfileRecovery(
         tuple(recovered), windows_used, call_budget.calls, profile_audit.failures
     )
