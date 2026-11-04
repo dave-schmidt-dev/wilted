@@ -18,6 +18,7 @@ from .constants import (
 from .ad_audit import OpeningReviewReceipt, ValidatedQuoteEvidence
 from .interval_geometry import intervals_overlap
 from .prompts import PREROLL_PROGRAM_START_PROMPT, WHOLE_PASSAGE_PROMPT
+from .review_diagnostics import opening_failure_reason
 
 MAX_REVIEW_CHARS = 12_000
 RIGHT_COMPARISON_CUES = 14
@@ -430,7 +431,7 @@ def recover_source_checked_preroll(
         _record_unresolved_opening_prefix(
             segments, attempted_q1_ids or window_ids, held_spans, total_seconds,
         )
-        _worker_reporting.progress("ads.detect.preroll.skipped", f"opening nomination failed: {type(error).__name__}")
+        _worker_reporting.progress("ads.detect.preroll.skipped", f"opening nomination failed: reason={opening_failure_reason(error)}")
         return list(detections)
 
     boundary_id = q1["program_start_id"]
@@ -494,7 +495,7 @@ def recover_source_checked_preroll(
         )
         _record_opening_hold(held_spans, candidate_start, candidate_end,
                              "boundary-review-unresolved", total_seconds)
-        _worker_reporting.progress("ads.detect.preroll.skipped", f"whole-opening review failed: {type(error).__name__}")
+        _worker_reporting.progress("ads.detect.preroll.skipped", f"whole-opening review failed: reason={opening_failure_reason(error)}")
         return list(detections)
 
     _record_programme_evidence(

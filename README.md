@@ -16,6 +16,8 @@ Association source-generation reads compare creation instants at the existing ca
 
 Preparation uses private per-feed placement profiles, introduced in v14, to nominate passages for independent local ad review. New subscriptions start unknown and learn from the first valid, profile-independent analysis; later preparations use one immutable snapshot. Reviewed imports and learned observations stay separate in `ad-placement-profiles.json` beside the library, keyed by exact feed and subscription identity. Profiles never directly authorize cuts or trigger re-preparation. See [the profile workflow](docs/ad-feedback-workflow.md#7-feed-ad-profile-workflow-and-validation) for limits, import and verification.
 
+Closing, boundary and oversized-span cue-ID reviews now use complete cues and the exact measured request for inference. Oversized requests preserve the reviewed passage before any model call, so an unanswered closing review does not invalidate confirmed cuts elsewhere. Opening failures record fixed reason codes for context, JSON, IDs and source-quote validation without raw responses. An unresolved opening still preserves the whole original. This change does not establish the causes of historical opening failures or the separate Swift timeline rejection.
+
 ## Current B6.1 evidence boundary
 
 The B6.1 Siri source checkpoint is accepted locally: 228/228 current executions across 12 classes, including eight real-AVAudioPlayer cases, closed the first review's coverage gap; the focused Low self-check accepted the reviewed corrections and the 32 extracted auto-continue test bodies remain unchanged. This does not establish any physical request, installed build, cached bytes, or owner event, and it does not accept Phase 5 or the whole B6.1 worktree.

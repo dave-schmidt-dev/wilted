@@ -456,11 +456,20 @@ def recover_sparse_commercial_reads(
 
 def _constrained_id(ads_module, backend, prompt, field, window_ids, permitted, segments):
     """Ask one bounded ID question and return a validated supplied ID."""
-    response, _tokens = ads_module._generate_constrained_response(  # noqa: SLF001
+    from .commercial_preservation import _generate_review
+
+    # Never review a head/tail excerpt as though it were the complete cue.
+    # Measurement rejects an oversized request before the auditing generation
+    # path can mistake a local, unanswered review for a failed model run.
+    rendered = "\n".join(
+        ads_module._segment_prefix(index, segments[index]) + segments[index].text
+        for index in window_ids
+    )
+    response, _tokens = _generate_review(
         backend,
         prompt,
-        ads_module._render_segments_bounded(window_ids, segments),  # noqa: SLF001
-        ads_module._id_response_format(field, permitted),  # noqa: SLF001
+        rendered,
+        response_format=ads_module._id_response_format(field, permitted),  # noqa: SLF001
     )
     parsed = json.loads(response)
     if not isinstance(parsed, dict) or set(parsed) != {field}:

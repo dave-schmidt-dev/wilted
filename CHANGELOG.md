@@ -168,6 +168,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Closing and other cue-ID ad reviews measure the complete request before inference. An oversized closing review preserves its audio without discarding independently confirmed cuts elsewhere. Opening-review failures now record bounded reason codes without model replies or transcript text.
 - Opening ad recovery reviews complete passages with source-exact evidence while keeping uncertain gaps audible. Preparation rechecks short gaps in the opening transcript for missed speech before classifying ads, and older cached transcripts are refreshed. Later profile suggestions respect the reviewed gaps, and the preparation journal retains a compact evidence receipt without raw quotes. Partially overlapping feed-profile windows now retain the unique cues from each window.
 - Ad removal lead-in recovery walks backward from verified break cores and extends only across contiguous commercial cues, stopping at any programme or mixed cue rather than cutting across earlier programme lines to an isolated commercial match.
 - Ad recovery now blocks candidates tagged with the known house-promotion kind or house label when show-promotion removal is disabled, carries known kinds through merges, and prevents later recovery from re-cutting those held regions. This metadata safeguard does not classify untagged promotion, which may still be recovered as paid advertising.
