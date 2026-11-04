@@ -12,6 +12,7 @@ from wilted_worker.ad_removal import analyze_ad_detections
 from wilted_worker.cue_timing import serialize_ad_audit
 from wilted_worker.feed_profile_runtime import (
     MAX_PROFILE_CALLS,
+    MAX_PROFILE_WINDOWS,
     ProfileRecovery,
     _slot_windows,
     independent_primary_observation,
@@ -115,6 +116,112 @@ class FeedProfileRuntimeTests(unittest.TestCase):
         ids, _rendered, slot = windows[0]
         self.assertEqual(ids, (3, 4, 5))
         self.assertEqual(slot["position"], "mid")
+
+    def test_adjacent_partially_overlapping_slots_keep_unique_cues(self):
+        segments = self.segments(10)
+        profile = {
+            "schemaVersion": 1,
+            "feedID": "feed-exact-1",
+            "revision": 1,
+            "sampleCount": 1,
+            "slots": [
+                {
+                    "position": "mid",
+                    "startBasisPoints": 3000,
+                    "endBasisPoints": 6000,
+                    "entryPhrases": [],
+                    "returnPhrases": [],
+                },
+                {
+                    "position": "mid",
+                    "startBasisPoints": 5000,
+                    "endBasisPoints": 8000,
+                    "entryPhrases": [],
+                    "returnPhrases": [],
+                },
+            ],
+        }
+        windows = _slot_windows(profile, segments, 100, ())
+        self.assertEqual(len(windows), 2)
+        first_ids, _first_rendered, _first_slot = windows[0]
+        second_ids, _second_rendered, _second_slot = windows[1]
+        self.assertEqual(first_ids, (3, 4, 5))
+        self.assertEqual(second_ids, (5, 6, 7))
+        self.assertEqual(set(first_ids) & set(second_ids), {5})
+        self.assertEqual(set(second_ids) - set(first_ids), {6, 7})
+
+    def test_exact_duplicate_and_fully_covered_slots_are_skipped(self):
+        segments = self.segments(10)
+        profile = {
+            "schemaVersion": 1,
+            "feedID": "feed-exact-1",
+            "revision": 1,
+            "sampleCount": 1,
+            "slots": [
+                {
+                    "position": "mid",
+                    "startBasisPoints": 3000,
+                    "endBasisPoints": 6000,
+                    "entryPhrases": [],
+                    "returnPhrases": [],
+                },
+                {
+                    "position": "mid",
+                    "startBasisPoints": 3000,
+                    "endBasisPoints": 6000,
+                    "entryPhrases": [],
+                    "returnPhrases": [],
+                },
+                {
+                    "position": "mid",
+                    "startBasisPoints": 4000,
+                    "endBasisPoints": 6000,
+                    "entryPhrases": [],
+                    "returnPhrases": [],
+                },
+                {
+                    "position": "mid",
+                    "startBasisPoints": 5000,
+                    "endBasisPoints": 8000,
+                    "entryPhrases": [],
+                    "returnPhrases": [],
+                },
+                {
+                    "position": "mid",
+                    "startBasisPoints": 4000,
+                    "endBasisPoints": 7000,
+                    "entryPhrases": [],
+                    "returnPhrases": [],
+                },
+            ],
+        }
+        windows = _slot_windows(profile, segments, 100, ())
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(windows[0][0], (3, 4, 5))
+        self.assertEqual(windows[1][0], (5, 6, 7))
+
+    def test_window_limit_still_holds(self):
+        segments = self.segments(12)
+        profile = {
+            "schemaVersion": 1,
+            "feedID": "feed-exact-1",
+            "revision": 1,
+            "sampleCount": 1,
+            "slots": [
+                {"position": "mid", "startBasisPoints": 0, "endBasisPoints": 2000, "entryPhrases": [], "returnPhrases": []},
+                {"position": "mid", "startBasisPoints": 1000, "endBasisPoints": 3000, "entryPhrases": [], "returnPhrases": []},
+                {"position": "mid", "startBasisPoints": 2000, "endBasisPoints": 4000, "entryPhrases": [], "returnPhrases": []},
+                {"position": "mid", "startBasisPoints": 3000, "endBasisPoints": 5000, "entryPhrases": [], "returnPhrases": []},
+                {"position": "mid", "startBasisPoints": 4000, "endBasisPoints": 6000, "entryPhrases": [], "returnPhrases": []},
+                {"position": "mid", "startBasisPoints": 5000, "endBasisPoints": 7000, "entryPhrases": [], "returnPhrases": []},
+            ],
+        }
+        windows = _slot_windows(profile, segments, 100, ())
+        self.assertEqual(len(windows), MAX_PROFILE_WINDOWS)
+        self.assertEqual(
+            [w[0] for w in windows],
+            [(0, 1), (1, 2), (2, 3), (3, 4)],
+        )
 
     def test_literal_marker_can_shift_the_profile_window_within_a_bounded_range(self):
         segments = self.segments(12)

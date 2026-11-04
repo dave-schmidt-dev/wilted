@@ -268,9 +268,9 @@ class KnownAdKindRecoveryTests(unittest.TestCase):
             return resize(*args, **kwargs)
 
         with redirect_stderr(io.StringIO()), mock.patch.object(
-            _worker_ad_removal._worker_edge_recovery,
-            "recover_transcript_start_preroll",
-            lambda _ads, _backend, _segments, current: [*current, detections[0]],
+            _worker_ad_removal._worker_preroll_passage_review,
+            "recover_source_checked_preroll",
+            lambda _ads, _backend, _segments, current, *_args, **_kwargs: [*current, detections[0]],
         ), mock.patch.object(
             _worker_ad_removal._worker_span_bounds,
             "resize_oversized_ad_spans",

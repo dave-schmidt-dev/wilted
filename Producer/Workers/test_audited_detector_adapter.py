@@ -58,7 +58,7 @@ class AuditedDetectorAdapterTests(AuditedDetectorAdapterMixinB, unittest.TestCas
                 ("recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
                 ("recover_sparse_commercial_reads", _passthrough_detections),
                 ("recover_commercial_evidence_reads", _passthrough_detections),
-                ("recover_transcript_start_preroll", _passthrough_detections),
+                ("recover_source_checked_preroll", _passthrough_detections),
                 ("recover_transcript_end_postroll", _passthrough_detections),
                 # This one reports what the review vouched for alongside them.
                 ("resize_oversized_ad_spans", _passthrough_reviewed_detections),
@@ -200,17 +200,16 @@ class AuditedDetectorAdapterTests(AuditedDetectorAdapterMixinB, unittest.TestCas
         self.assertEqual(len(analysis.detections), 1)
 
     def test_the_recovery_passes_run_in_the_order_the_worker_defines(self):
-        # The order is the contract, not an implementation detail: the start
-        # and end recoveries nominate spans that the resize pass then bounds,
-        # so resizing first would bound spans that do not exist yet. It lives
+        # The order is the contract, not an implementation detail: legacy edge
+        # and size recoveries finish before the source-checked opening owner,
+        # so later legacy merges cannot broaden its cue-level cuts. It lives
         # here rather than in the corpus tests because both the live path and
         # the replay reach it only through this entry -- which is the point of
         # there being one entry.
         order = []
         for name in ("recover_unclaimed_explicit_sponsor_reads", "recover_commercial_evidence_reads",
-                     "recover_sparse_commercial_reads",
-                     "recover_transcript_start_preroll",
-                     "recover_transcript_end_postroll", "resize_oversized_ad_spans"):
+                     "recover_sparse_commercial_reads", "recover_transcript_end_postroll",
+                     "resize_oversized_ad_spans", "recover_source_checked_preroll"):
             def record(*args, _name=name, **_kwargs):
                 order.append(_name)
                 if _name == "resize_oversized_ad_spans":
@@ -230,9 +229,9 @@ class AuditedDetectorAdapterTests(AuditedDetectorAdapterMixinB, unittest.TestCas
             "recover_unclaimed_explicit_sponsor_reads",
             "recover_commercial_evidence_reads",
             "recover_sparse_commercial_reads",
-            "recover_transcript_start_preroll",
             "recover_transcript_end_postroll",
             "resize_oversized_ad_spans",
+            "recover_source_checked_preroll",
         ])
 
 

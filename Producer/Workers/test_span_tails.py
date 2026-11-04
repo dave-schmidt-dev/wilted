@@ -36,6 +36,7 @@ from worker_test_support import *
 from worker_test_support import synthetic_render
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
+from wilted_worker import prompts as worker_prompts
 from wilted_worker import ad_audit as _worker_ad_audit
 from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import cue_timing as _worker_cue_timing
@@ -315,15 +316,11 @@ class LegacySponsorRecoveryTests(unittest.TestCase):
             [(keep.start_s, keep.end_s) for keep in keeps],
             [(0.0, 212.25), (248.75, 300.0)],
         )
-        # Three calls: the classifier, the resumption probe, and the tail
-        # straddle probe the span-tail safeguard asks about segment 1, whose
-        # end the recovered span lands on. That probe cannot read this
-        # fixture's seed answer, so it returns no verdict and the boundary
-        # above is the untrimmed one.
-        self.assertEqual(
-            llm.requests,
-            [ads._AD_DETECT_RESPONSE_FORMAT, {"type": "json_object"}, {"type": "json_object"}],
-        )
+        # Q1 shares the program_start_id schema with unrelated recovery calls;
+        # assert its prompt owner explicitly instead of counting formats.
+        self.assertEqual(llm.requests[0], ads._AD_DETECT_RESPONSE_FORMAT)
+        self.assertEqual(llm.request_prompts.count(wp.PREROLL_PROGRAM_START_PROMPT), 1)
+        self.assertEqual(llm.request_prompts[2], worker_prompts.BOUNDARY_SEGMENT_PROMPT)
 
     def test_positive_seed_without_sponsor_opening_is_editorial_content(self):
         llm = FakeLLM(answer=json.dumps({"ads": [{"confidence": 0.97}]}))

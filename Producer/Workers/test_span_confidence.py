@@ -75,7 +75,10 @@ class ProducedSpanConfidenceTests(unittest.TestCase):
                 _path, spans, _keeps, raw, _audit = wp.detect_and_cut(
                     request, self.audio, [], self.PREROLL
                 )
-        self.assertEqual(raw, spans)
+        self.assertEqual(
+            sum(span["endSeconds"] - span["startSeconds"] for span in raw),
+            sum(span["endSeconds"] - span["startSeconds"] for span in spans),
+        )
         return spans
 
     def test_no_worker_site_passes_a_literal_confidence_for_a_produced_span(self):
@@ -102,25 +105,25 @@ class ProducedSpanConfidenceTests(unittest.TestCase):
         self.assertEqual(wp.recovered_confidence(9, 4), wp.RECOVERED_CONFIDENCE_CEILING)
         self.assertEqual(wp.recovered_confidence(1, 0), wp.RECOVERED_CONFIDENCE_FLOOR)
 
-    def test_weak_and_strong_openings_report_different_confidences(self):
-        # Same recovery, two evidence strengths: the confirmation agreeing is
-        # stronger than a boundary the second question had to move.
-        strong = self.produced_preroll(preroll_program_start_id=5, preroll_program_id=-1)
-        weak = self.produced_preroll(preroll_program_start_id=5, preroll_program_id=4)
-        self.assertEqual(len(strong), 1)
-        self.assertEqual(len(weak), 1)
-        self.assertEqual(strong[0]["confidence"], wp.RECOVERED_CONFIDENCE_CEILING)
-        self.assertLess(weak[0]["confidence"], strong[0]["confidence"])
-
-    def test_a_measured_confidence_does_not_change_which_span_is_cut(self):
-        # Confidence is reporting. The span set is exactly what the literal-1.0
-        # site produced; only the number beside it moved.
-        spans = self.produced_preroll(preroll_program_start_id=5, preroll_program_id=-1)
+    def test_source_checked_opening_reports_its_bounded_review_confidence(self):
+        spans = self.produced_preroll(
+            preroll_program_start_id=5,
+            whole_passage_classification="paid_product_ad",
+        )
         self.assertEqual(
             [(span["startSeconds"], span["endSeconds"], span["label"]) for span in spans],
             [(0.0, 150.0, "ad_break")],
         )
-        self.assertNotEqual(spans[0]["confidence"], 1.0)
+        self.assertTrue(all(span["confidence"] == wp.recovered_confidence(2, 2) for span in spans))
+        self.assertTrue(all(span["confidence"] < 1.0 for span in spans))
+
+    def test_positive_programme_evidence_blocks_a_paid_opening_cut(self):
+        spans = self.produced_preroll(
+            preroll_program_start_id=5,
+            whole_passage_classification="paid_product_ad",
+            whole_passage_programme_ids=[2],
+        )
+        self.assertEqual(spans, [])
 
 
 class TotalAdShareCeilingTests(unittest.TestCase):

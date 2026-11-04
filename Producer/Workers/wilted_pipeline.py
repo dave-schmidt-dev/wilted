@@ -129,7 +129,7 @@ from wilted_worker.cue_timing import segments_to_cues
 from wilted_worker.cue_timing import serialize_ad_audit
 from wilted_worker.cue_timing import serialize_keep_map
 from wilted_worker.cue_timing import validate_aligned_segments
-from wilted_worker.edge_recovery import recover_transcript_start_preroll
+from wilted_worker.preroll_passage_review import recover_source_checked_preroll
 from wilted_worker.glossary import GLOSSARY_MAXIMUM_TERMS
 from wilted_worker.glossary import apply_glossary
 from wilted_worker.glossary import build_glossary

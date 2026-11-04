@@ -31,6 +31,7 @@ from wilted_worker import reporting as _worker_reporting
 from wilted_worker import span_bounds as _worker_span_bounds
 from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
+from wilted_worker.preroll_passage_review import WHOLE_PASSAGE_PROMPT, _response_schema
 from worker_test_support import *
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
@@ -175,8 +176,18 @@ class WorkerPromptContractTests(unittest.TestCase):
         for name, prompt in self.worker_prompts():
             with self.subTest(prompt=name):
                 backend = self.backend()
+                if prompt == WHOLE_PASSAGE_PROMPT:
+                    backend.bind_segment_count(2)
+                    content = (
+                        "Candidate IDs: 0\nComparison-only IDs: 1\nTranscript cues:\n"
+                        "[ID 0] commercial cue\n[ID 1] programme cue"
+                    )
+                    response_format = _response_schema([0, 1])
+                else:
+                    content = "[ID 0] first\n[ID 1] second\n[ID 2] third\n"
+                    response_format = None
                 try:
-                    backend.generate(prompt, content, response_format=None)
+                    backend.generate(prompt, content, response_format=response_format)
                 except wp.WorkerError as error:  # pragma: no cover - the failure we are locking out
                     self.fail(f"{name} tripped the audit contract guard: {error}")
                 except Exception:
@@ -185,6 +196,37 @@ class WorkerPromptContractTests(unittest.TestCase):
                     backend.contract_errors, [],
                     f"{name} recorded a contract error, which aborts the whole preparation",
                 )
+
+    def test_whole_passage_prompt_rejects_unbounded_or_mismatched_requests(self):
+        valid_content = (
+            "Candidate IDs: 0\nComparison-only IDs: 1\nTranscript cues:\n"
+            "[ID 0] commercial cue\n[ID 1] programme cue"
+        )
+        invalid_requests = (
+            (valid_content, {"type": "json_object"}, 2),
+            (valid_content.replace("Comparison-only IDs: 1", "Comparison-only IDs: 2"),
+             _response_schema([0, 1]), 3),
+            (valid_content.replace("Candidate IDs: 0", "Candidate IDs: 0,1"),
+             _response_schema([0, 1]), 2),
+            (valid_content + "x" * 12_001, _response_schema([0, 1]), 2),
+            (
+                "Candidate IDs: 0\nComparison-only IDs: "
+                + ",".join(map(str, range(1, 16)))
+                + "\nTranscript cues:\n"
+                + "\n".join(f"[ID {value}] cue" for value in range(16)),
+                _response_schema(list(range(16))),
+                16,
+            ),
+        )
+        for content, response_format, segment_count in invalid_requests:
+            with self.subTest(content=content.splitlines()[0], segment_count=segment_count):
+                backend = self.backend()
+                backend.bind_segment_count(segment_count)
+                with self.assertRaises(wp.WorkerError):
+                    backend.generate(
+                        WHOLE_PASSAGE_PROMPT, content, response_format=response_format
+                    )
+                self.assertEqual(len(backend.contract_errors), 1)
 
     def test_the_rescan_prompt_reaches_the_model_under_the_contract_guard(self):
         # The exemption has to let the prompt through to the model, not merely

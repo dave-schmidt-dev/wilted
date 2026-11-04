@@ -473,7 +473,7 @@ class AdjacentAdPodContinuationTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=8)
         outside = self.analyze(llm, just_outside)
         self.assertEqual([(ad.start_s, ad.end_s) for ad in outside.detections], [(6.720, 88.800)])
-        self.assertFalse(any(request.get("field") == "program_start_id" for request in llm.requests))
+        self.assertNotIn(wp.AD_POD_CONTINUATION_PROMPT, llm.request_prompts)
 
     def test_out_of_window_or_over_budget_continuation_never_extends_the_cut(self):
         too_many = [*self.SEGMENTS[:6]]
@@ -489,7 +489,7 @@ class AdjacentAdPodContinuationTests(unittest.TestCase):
         llm = FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=8)
         analysis = self.analyze(llm, oversized)
         self.assertEqual([(ad.start_s, ad.end_s) for ad in analysis.detections], [(6.720, 88.800)])
-        self.assertFalse(any(request.get("field") == "program_start_id" for request in llm.requests))
+        self.assertNotIn(wp.AD_POD_CONTINUATION_PROMPT, llm.request_prompts)
 
     def test_an_unverified_or_non_sponsor_detection_never_nominates_its_neighbour(self):
         detection = FakeAd(6.720, 88.800, label="ad_break")
@@ -502,4 +502,4 @@ class AdjacentAdPodContinuationTests(unittest.TestCase):
             [(ad.start_s, ad.end_s, ad.label) for ad in analysis.detections],
             [(6.720, 88.800, detection.label)],
         )
-        self.assertFalse(any(request.get("field") == "program_start_id" for request in llm.requests))
+        self.assertNotIn(wp.AD_POD_CONTINUATION_PROMPT, llm.request_prompts)

@@ -26,6 +26,7 @@ from . import commercial_seeds as _worker_commercial_seeds
 from . import cue_timing as _worker_cue_timing
 from . import edge_recovery as _worker_edge_recovery
 from . import gpu_admission as _worker_gpu_admission
+from . import preroll_passage_review as _worker_preroll_passage_review
 from . import prompts
 from . import reporting as _worker_reporting
 from . import silence_trim as _worker_silence_trim
@@ -195,9 +196,6 @@ def analyze_ad_detections(
         total_seconds, preliminary_audit,
         remove_self_promotion, held_spans,
     )
-    detections = _worker_edge_recovery.recover_transcript_start_preroll(
-        ads_module, auditing_backend, segments, detections
-    )
     detections = _worker_tail_recovery.recover_transcript_end_postroll(
         ads_module, auditing_backend, segments, detections, total_seconds,
     )
@@ -245,6 +243,20 @@ def analyze_ad_detections(
     )
     detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
     detections = reject_programme_conflicts(detections, held_spans)
+    detections = _worker_preroll_passage_review.recover_source_checked_preroll(
+        ads_module, auditing_backend, segments, detections,
+        total_seconds, remove_self_promotion, held_spans,
+    )
+    # Whole-opening evidence can add positive programme and house holds. Run
+    # the shared guards before feed profiles get their bounded fallback pass.
+    detections = project_detections_around_blocked_house_regions(
+        detections, ads_module, held_spans,
+    )
+    detections = enforce_known_house_kind_policy(
+        detections, ads_module, total_seconds, remove_self_promotion, held_spans,
+    )
+    detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
+    detections = reject_programme_conflicts(detections, held_spans)
     dropped_anchor_ids = [
         anchor_id
         for anchor_id in explicit_anchor_ids
@@ -276,20 +288,21 @@ def analyze_ad_detections(
         profile_requests = profile_recovery.requests
         profile_failures = profile_recovery.failures
         if profile_recovery.detections:
-            # Re-run the final policy and content guards across all candidates,
-            # with every profile candidate still subject to the same holds and
-            # aggregate cut ceiling as primary detections.
             proposed_detections = sorted(
                 [*detections, *profile_recovery.detections], key=lambda item: float(item.start_s)
             )
-            detections = project_detections_around_blocked_house_regions(
-                proposed_detections, ads_module, held_spans,
-            )
-            detections = enforce_known_house_kind_policy(
-                detections, ads_module, total_seconds, remove_self_promotion, held_spans,
-            )
-            detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
-            detections = reject_programme_conflicts(detections, held_spans)
+            detections = proposed_detections
+
+    # The same final policy and programme guards always apply, whether or not
+    # an ad profile was present or proposed additional spans.
+    detections = project_detections_around_blocked_house_regions(
+        detections, ads_module, held_spans,
+    )
+    detections = enforce_known_house_kind_policy(
+        detections, ads_module, total_seconds, remove_self_promotion, held_spans,
+    )
+    detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
+    detections = reject_programme_conflicts(detections, held_spans)
 
     if dropped_anchor_ids:
         details = ", ".join(

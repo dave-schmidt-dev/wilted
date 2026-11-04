@@ -35,6 +35,7 @@ from worker_test_support import *
 from worker_test_support import synthetic_render
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
+from wilted_worker.preroll_passage_review import WHOLE_PASSAGE_PROMPT
 from wilted_worker import ad_audit as _worker_ad_audit
 from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import cue_timing as _worker_cue_timing
@@ -446,11 +447,10 @@ class AdDetectionMixinC:
         self.assertEqual(recovered, [])
         self.assertIn("closing review failed", details["ads.detect.postroll.skipped"])
 
-    def test_a_shortened_span_survives_the_size_guard_and_is_cut(self):
-        # End to end: the opening review passes because the detection already
-        # starts at the first second, the resize shortens it, and the guard
-        # that would have dropped it whole now finds it plausible.
-        llm = FakeLLM(preroll_program_start_id=9, preroll_program_id=-1, boundary_starts_program=False)
+    def test_unreviewed_oversized_span_is_still_dropped(self):
+        # A malformed legacy boundary answer cannot use the oversized-span
+        # path to claim an opening; the fail-closed size guard keeps the input.
+        llm = FakeLLM(answer="not json")
         install_fake_ads(llm, detections=[FakeAd(0.0, 456.88, label="sponsor_read")])
         stream = io.StringIO()
         with tempfile.TemporaryDirectory() as directory:
@@ -460,17 +460,12 @@ class AdDetectionMixinC:
                 path, spans, keeps, raw, _audit = wp.detect_and_cut(
                     request, self.audio, [], self.OVERSIZED
                 )
-        self.assertEqual(path, output)
-        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 180.0,
-                                  "label": "sponsor_read", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
-        self.assertEqual(raw, spans)
-        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(180.0, 563.17)])
-        stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
-        self.assertIn("ads.detect.span.resized", stages)
-        self.assertNotIn("ads.detect.span.rejected", stages)
+        self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+        self.assertNotIn(WHOLE_PASSAGE_PROMPT, llm.request_prompts)
 
-    def test_an_opening_the_detector_already_claimed_is_not_reviewed_again(self):
-        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
+    def test_a_zero_starting_detection_does_not_hide_unreviewed_opening_cues(self):
+        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1,
+                      whole_passage_classification="paid_product_ad")
         install_fake_ads(llm, detections=[FakeAd(0.0, 51.9)])
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "prepared.mp3"
@@ -480,11 +475,15 @@ class AdDetectionMixinC:
                     request, self.audio, [], self.PREROLL
                 )
         self.assertEqual(path, output)
-        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 51.9,
-                                  "label": "sponsor", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
+        self.assertEqual(spans, [
+            {"startSeconds": 0.25, "endSeconds": 6.1, "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9},
+            {"startSeconds": 6.4, "endSeconds": 51.9, "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9},
+        ])
         self.assertEqual(raw, spans)
-        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(51.9, 200.0)])
-        self.assertEqual([r for r in llm.requests if r.get("field") == "program_start_id"], [])
+        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [
+            (0.0, 0.25), (6.1, 6.4), (51.9, 200.0),
+        ])
+        self.assertIn(WHOLE_PASSAGE_PROMPT, llm.request_prompts)
 
     def test_an_unanswered_opening_review_never_cuts(self):
         llm = FakeLLM(fail_generate=None)
@@ -497,7 +496,7 @@ class AdDetectionMixinC:
         # `answer` is the detector's own "[]", which is not an ID object: a
         # malformed completion leaves the audio alone rather than guessing.
         self.assertEqual(spans, [])
-        self.assertIn("opening review failed", stream.getvalue())
+        self.assertIn("opening nomination failed", stream.getvalue())
 
     def test_counting_backend_trips_on_a_majority_of_failures_not_all_of_them(self):
         llm = FakeLLM(loaded=True)

@@ -67,6 +67,10 @@ class FakeLLM:
     commercial_conflict_answers: list[str] = field(default_factory=list)
     commercial_prefix_role_answer: str | None = None
     commercial_prefix_cue_answer: str | None = None
+    whole_passage_answer: str | None = None
+    whole_passage_classification: str = "unknown"
+    whole_passage_commercial_ids: list[int] | None = None
+    whole_passage_programme_ids: list[int] | None = None
     preroll_continuation_id: int | None = None
     preroll_continuation_answer: str | None = None
     # The closing review asks the same confirmation twice when the first answer
@@ -103,6 +107,39 @@ class FakeLLM:
             _worker_prompts.SELF_PROMOTION_AD_DETECT_CORRECTION_PROMPT,
         }:
             return self.classifier_answer, 1
+        if system_prompt == _worker_prompts.WHOLE_PASSAGE_PROMPT:
+            if self.whole_passage_answer is not None:
+                return self.whole_passage_answer, 1
+            candidate_text, _separator, cue_text = user_content.partition("Transcript cues:\n")
+            candidate_line = re.search(r"^Candidate IDs: ([0-9,]+)$", candidate_text, re.MULTILINE)
+            candidate_ids = (
+                [int(value) for value in candidate_line.group(1).split(",")]
+                if candidate_line else []
+            )
+            cue_texts = {
+                int(match.group(1)): match.group(2)
+                for match in re.finditer(r"^\[ID (\d+)\] (.*)$", cue_text, re.MULTILINE)
+            }
+            requested = self.whole_passage_commercial_ids
+            if requested is None and self.whole_passage_classification == "paid_product_ad":
+                requested = candidate_ids
+            quote_re = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
+            quote_items = []
+            commercial_ids = []
+            for segment_id in requested or []:
+                text = cue_texts.get(segment_id, "")
+                words = list(quote_re.finditer(text))
+                if not words:
+                    continue
+                quote = text[words[0].start():words[min(11, len(words) - 1)].end()]
+                commercial_ids.append(segment_id)
+                quote_items.append({"id": segment_id, "quote": quote})
+            return json.dumps({
+                "classification": self.whole_passage_classification,
+                "commercial_evidence_ids": commercial_ids,
+                "programme_evidence_ids": self.whole_passage_programme_ids or [],
+                "commercial_quotes": quote_items,
+            }), 1
         if system_prompt == wp.COMMERCIAL_PREFIX_ROLE_PROMPT:
             return self.commercial_prefix_role_answer or self.answer, 1
         if system_prompt == wp.COMMERCIAL_PREFIX_CUE_PROMPT:

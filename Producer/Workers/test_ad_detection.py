@@ -44,6 +44,8 @@ from wilted_worker import reporting as _worker_reporting
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_ad_detection_b import AdDetectionMixinB
 from worker_test_ad_detection_c import AdDetectionMixinC
+from wilted_worker import prompts as worker_prompts
+from wilted_worker.preroll_passage_review import WHOLE_PASSAGE_PROMPT
 
 class AdDetectionTests(AdDetectionMixinB, AdDetectionMixinC, unittest.TestCase):
     """The TWiT 1098 regression: a backend that was never loaded classified
@@ -65,12 +67,13 @@ class AdDetectionTests(AdDetectionMixinB, AdDetectionMixinC, unittest.TestCase):
         self.assertTrue(llm.loaded)
         self.assertTrue(llm.closed)
         self.assertEqual((spans, keeps, raw), ([], [], []))
-        # Constrained JSON is how the tuned prompts were accepted; the proxy
-        # must not strip the keyword on its way through. The last two requests
-        # are the opening and closing reviews, which every episode gets once.
-        self.assertEqual(llm.requests, [ads._AD_DETECT_RESPONSE_FORMAT,
-                                        {"field": "program_start_id", "ids": [0, 1]},
-                                        {"field": "advertising_start_id", "ids": [-1, 0, 1]}])
+        # Each late review retains its constrained response contract even
+        # though postroll recovery now runs before the source-checked opening.
+        by_prompt = dict(zip(llm.request_prompts, llm.requests))
+        self.assertEqual(by_prompt[wp.PREROLL_PROGRAM_START_PROMPT],
+                         {"field": "program_start_id", "ids": [0, 1]})
+        self.assertEqual(by_prompt[worker_prompts.POSTROLL_PROGRAM_END_PROMPT],
+                         {"field": "advertising_start_id", "ids": [-1, 0, 1]})
 
     def test_sponsor_opening_compatibility_is_installed_before_detection(self):
         llm = FakeLLM()
@@ -419,7 +422,8 @@ class AdDetectionTests(AdDetectionMixinB, AdDetectionMixinC, unittest.TestCase):
     ]
 
     def test_a_produced_pre_roll_is_cut_even_though_no_stage_called_it_an_ad(self):
-        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
+        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1,
+                      whole_passage_classification="paid_product_ad")
         install_fake_ads(llm)
         stream = io.StringIO()
         with tempfile.TemporaryDirectory() as directory:
@@ -429,16 +433,20 @@ class AdDetectionTests(AdDetectionMixinB, AdDetectionMixinC, unittest.TestCase):
                 path, spans, keeps, raw, _audit = wp.detect_and_cut(
                     request, self.audio, [], self.PREROLL
                 )
-        # The cut runs to where the program begins, not to the last
-        # advertising cue: the thirty-two seconds between them are the spot's
-        # own music bed, and leaving them is leaving the advertisement in.
+        # Only source-backed lexical cue intervals are cut. The inter-cue and
+        # ASR gaps remain audible, as does the show beginning at 84.5 seconds.
         self.assertEqual(path, output)
-        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 84.5,
-                                  "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
+        self.assertEqual(spans, [
+            {"startSeconds": 0.25, "endSeconds": 6.1, "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9},
+            {"startSeconds": 6.4, "endSeconds": 51.9, "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9},
+        ])
         self.assertEqual(raw, spans)
-        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(84.5, 200.0)])
+        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [
+            (0.0, 0.25), (6.1, 6.4), (51.9, 200.0),
+        ])
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
-        self.assertIn("ads.detect.preroll", stages)
+        self.assertIn("ads.detect.preroll.accepted", stages)
+        self.assertIn(WHOLE_PASSAGE_PROMPT, llm.request_prompts)
 
 
 
@@ -449,7 +457,8 @@ class AdDetectionTests(AdDetectionMixinB, AdDetectionMixinC, unittest.TestCase):
         # advertisement and left the spot's first thirteen seconds in front of
         # it, so the episode opened on an insurance commercial. A span that
         # starts after the first second does not mean the opening is handled.
-        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1)
+        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=-1,
+                      whole_passage_classification="paid_product_ad")
         install_fake_ads(llm, detections=[FakeAd(6.4, 51.9)])
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "prepared.mp3"
@@ -458,14 +467,17 @@ class AdDetectionTests(AdDetectionMixinB, AdDetectionMixinC, unittest.TestCase):
                 path, spans, keeps, raw, _audit = wp.detect_and_cut(
                     request, self.audio, [], self.PREROLL
                 )
-        # One span, from the first second to where the program begins: the
-        # recovered opening absorbs the partial detection rather than sitting
-        # beside it.
+        # The review refines the broad detection to exact spoken cue intervals
+        # while preserving the inter-cue gaps and the following programme.
         self.assertEqual(path, output)
-        self.assertEqual(spans, [{"startSeconds": 0.0, "endSeconds": 84.5,
-                                  "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9}])
+        self.assertEqual(spans, [
+            {"startSeconds": 0.25, "endSeconds": 6.1, "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9},
+            {"startSeconds": 6.4, "endSeconds": 51.9, "label": "ad_break", "kind": "paid advertising", "kinds": ["paid advertising"], "disposition": "must-cut", "confidence": 0.9},
+        ])
         self.assertEqual(raw, spans)
-        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(84.5, 200.0)])
+        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [
+            (0.0, 0.25), (6.1, 6.4), (51.9, 200.0),
+        ])
 
 
 
@@ -474,7 +486,7 @@ class AdDetectionTests(AdDetectionMixinB, AdDetectionMixinC, unittest.TestCase):
         install_fake_ads(llm)
         original = llm.generate
 
-        def flaky(system_prompt, user_content, *, response_format=None):
+        def flaky(system_prompt, user_content, *, response_format=None, prepared_prompt=None):
             # One lucky call, then broken again: a Metal fault does not heal
             # because one completion got through, and the opening review that
             # follows detection is asked of the same dead backend.
@@ -482,7 +494,8 @@ class AdDetectionTests(AdDetectionMixinB, AdDetectionMixinC, unittest.TestCase):
             if system_prompt == "archive ad classifier correction":
                 llm.fail_generate = None
             try:
-                return original(system_prompt, user_content, response_format=response_format)
+                return original(system_prompt, user_content, response_format=response_format,
+                                prepared_prompt=prepared_prompt)
             finally:
                 llm.fail_generate = failure
 

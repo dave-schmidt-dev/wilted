@@ -89,7 +89,8 @@ def _slot_windows(profile: dict, segments, total_seconds: float, existing_detect
         if not _uncovered_ids(ids, segments, existing_detections, ()):
             # Existing source detections cover every cue in this window.
             continue
-        if any(ids[0] <= window[0][-1] and ids[-1] >= window[0][0] for window in windows):
+        selected_ids = {index for window in windows for index in window[0]}
+        if selected_ids and set(ids).issubset(selected_ids):
             continue
         rendered = "\n".join(
             f"[ID {index}] [{float(segments[index].start_s):.3f}s - "

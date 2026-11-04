@@ -258,12 +258,50 @@ class AuditingBackend(CountingBackend):
         self.contract_errors.append(detail)
         raise WorkerError("ads-audit-contract-unavailable", detail)
 
+    def _validate_whole_passage_request(self, user_content: str, response_format) -> None:
+        """Require the opening review's fixed, source-ordered context envelope."""
+        from .preroll_passage_review import MAX_REVIEW_CHARS, RIGHT_COMPARISON_CUES, _response_schema
+        from .constants import PREROLL_RECOVERY_MAX_SEGMENTS
+
+        header = re.match(
+            r"Candidate IDs: ([0-9]+(?:,[0-9]+)*)\n"
+            r"Comparison-only IDs: ([0-9]+(?:,[0-9]+)*)\n"
+            r"Transcript cues:\n",
+            user_content,
+        )
+        if (header is None or self._segment_count is None
+                or len(user_content) > MAX_REVIEW_CHARS):
+            self._contract_failure("whole-passage review lacks its bounded candidate envelope")
+        candidate_ids = tuple(int(value) for value in header.group(1).split(","))
+        comparison_ids = tuple(int(value) for value in header.group(2).split(","))
+        boundary = len(candidate_ids)
+        if (
+            not candidate_ids
+            or candidate_ids != tuple(range(boundary))
+            or boundary >= PREROLL_RECOVERY_MAX_SEGMENTS
+            or not comparison_ids
+            or len(comparison_ids) > RIGHT_COMPARISON_CUES
+            or comparison_ids != tuple(range(boundary, boundary + len(comparison_ids)))
+            or comparison_ids[-1] >= self._segment_count
+            or len(comparison_ids) != min(RIGHT_COMPARISON_CUES, self._segment_count - boundary)
+        ):
+            self._contract_failure("whole-passage review IDs are outside its opening/context bounds")
+        expected_ids = (*candidate_ids, *comparison_ids)
+        rendered_ids = _rendered_global_ids(user_content)
+        cue_ids = tuple(int(value) for value in re.findall(r"^\[ID (\d+)\] ", user_content, re.MULTILINE))
+        if rendered_ids != expected_ids or cue_ids != expected_ids:
+            self._contract_failure("whole-passage review cues do not match its candidate/context IDs")
+        if response_format != _response_schema(list(expected_ids)):
+            self._contract_failure("whole-passage review used an unrecognized bounded response schema")
+
     def generate(self, system_prompt: str, user_content: str, *, response_format=None, prepared_prompt=None):
         rendered_ids = _rendered_global_ids(user_content)
         classification = system_prompt in self._classification_prompts
         schema_matches = response_format == self._classification_response_format
         if classification and not schema_matches:
             self._contract_failure("archived classifier request used an unrecognized response schema")
+        if system_prompt == prompts.WHOLE_PASSAGE_PROMPT:
+            self._validate_whole_passage_request(user_content, response_format)
         classification_shaped = bool(
             rendered_ids
             and system_prompt not in self._worker_prompts

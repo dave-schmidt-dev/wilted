@@ -371,17 +371,19 @@ class AdDetectionMixinB:
         # The second question is the guard against cutting a cold open: it is
         # handed only the passage the first answer nominated, and finding the
         # hosts inside it withdraws the whole span.
-        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=1)
+        llm = FakeLLM(preroll_program_start_id=2, preroll_program_id=1,
+                      whole_passage_classification="programme")
         install_fake_ads(llm)
         stream = io.StringIO()
         with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-            _path, spans, _keeps, _raw, _audit = wp.detect_and_cut(
+            _path, spans, _keeps, _raw, audit = wp.detect_and_cut(
                 self.request, self.audio, [], self.PREROLL
             )
         self.assertEqual(spans, [])
-        skipped = [json.loads(line) for line in stream.getvalue().splitlines()
-                   if json.loads(line)["stage"] == "ads.detect.preroll.skipped"]
-        self.assertIn("program content at 1", skipped[0]["detail"])
+        self.assertIn(
+            {"reason": "programme-boundary", "startSeconds": 0.25, "endSeconds": 84.5},
+            audit["heldSpans"],
+        )
 
     def test_a_show_that_opens_on_itself_is_never_asked_twice(self):
         llm = FakeLLM(preroll_program_start_id=0)

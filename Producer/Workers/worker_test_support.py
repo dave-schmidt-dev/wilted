@@ -30,6 +30,7 @@ from wilted_worker import commercial_recovery as _worker_commercial_recovery
 from wilted_worker import commercial_seeds as _worker_commercial_seeds
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import edge_recovery as _worker_edge_recovery
+from wilted_worker import preroll_passage_review as _worker_preroll_passage_review
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
@@ -44,7 +45,14 @@ from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import transcript_sources as _worker_transcript_sources
 
-_WORKER_PATCH_MODULES = {'recover_commercial_evidence_reads': _worker_commercial_seeds, 'recover_sparse_commercial_reads': _worker_commercial_seeds, 'recover_transcript_end_postroll': _worker_tail_recovery, 'recover_transcript_start_preroll': _worker_edge_recovery, 'recover_unclaimed_explicit_sponsor_reads': _worker_commercial_recovery, 'resize_oversized_ad_spans': _worker_span_bounds}
+_WORKER_PATCH_MODULES = {
+    'recover_commercial_evidence_reads': _worker_commercial_seeds,
+    'recover_sparse_commercial_reads': _worker_commercial_seeds,
+    'recover_transcript_end_postroll': _worker_tail_recovery,
+    'recover_source_checked_preroll': _worker_preroll_passage_review,
+    'recover_unclaimed_explicit_sponsor_reads': _worker_commercial_recovery,
+    'resize_oversized_ad_spans': _worker_span_bounds,
+}
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

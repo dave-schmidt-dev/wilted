@@ -22,6 +22,7 @@ from wilted_worker import commercial_recovery as _worker_commercial_recovery
 from wilted_worker import commercial_seeds as _worker_commercial_seeds
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import edge_recovery as _worker_edge_recovery
+from wilted_worker import preroll_passage_review as _worker_preroll_passage_review
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
@@ -136,10 +137,13 @@ class RunTests(unittest.TestCase):
         # request time serves a longer file than the one the publisher
         # transcribed. Every timestamp after the insertion is then wrong, and
         # the ad cut aims at conversation instead of at the advertisement.
-        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]},
-                            transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "aligned words")]})
+        install_fake_wilted({"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]})
         with redirect_stderr(io.StringIO()) as stream, mock.patch.object(
             _worker_cue_timing, "probe_duration", return_value=3700.0
+        ), mock.patch.object(
+            _worker_transcript_sources,
+            "transcribe_with_daemon",
+            return_value=[FakeSegment(0, 1, "aligned words")],
         ):
             result = wp.run({"audioPath": str(self.audio), "removeAds": False,
                              "readableTranscript": False, "publishedTranscript": self.PUBLISHED})
@@ -494,7 +498,7 @@ class CommercialEvidenceAuditTests(unittest.TestCase):
             for module, name, passthrough in (
                 (_worker_commercial_recovery, "recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
                 (_worker_commercial_seeds, "recover_sparse_commercial_reads", _passthrough_detections),
-                (_worker_edge_recovery, "recover_transcript_start_preroll", _passthrough_detections),
+                (_worker_preroll_passage_review, "recover_source_checked_preroll", _passthrough_detections),
                 (_worker_tail_recovery, "recover_transcript_end_postroll", _passthrough_detections),
             )
         ]
@@ -530,7 +534,7 @@ class CommercialEvidenceAuditTests(unittest.TestCase):
                 (_worker_commercial_recovery, "recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
                 (_worker_commercial_seeds, "recover_commercial_evidence_reads", _passthrough_detections),
                 (_worker_commercial_seeds, "recover_sparse_commercial_reads", _passthrough_detections),
-                (_worker_edge_recovery, "recover_transcript_start_preroll", _passthrough_detections),
+                (_worker_preroll_passage_review, "recover_source_checked_preroll", _passthrough_detections),
                 (_worker_tail_recovery, "recover_transcript_end_postroll", _passthrough_detections),
             )
         ]
