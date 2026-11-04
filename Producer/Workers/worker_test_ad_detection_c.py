@@ -67,7 +67,11 @@ class AdDetectionMixinC:
         # to leave alone: a short news-alert episode that really is mostly
         # advertising.
         segments = [FakeSegment(index * 20.0, index * 20.0 + 20.0, f"segment {index}") for index in range(28)]
-        llm = FakeLLM(preroll_program_start_id=-1, preroll_program_id=-1)
+        llm = FakeLLM(
+            preroll_program_start_id=0,
+            oversized_program_start_id=-1,
+            preroll_program_id=-1,
+        )
         install_fake_ads(llm, detections=[FakeAd(6.72, 250.0, label="sponsor_read")])
         stream = io.StringIO()
         with tempfile.TemporaryDirectory() as directory:
@@ -486,15 +490,15 @@ class AdDetectionMixinC:
         self.assertIn(WHOLE_PASSAGE_PROMPT, llm.request_prompts)
 
     def test_an_unanswered_opening_review_never_cuts(self):
-        llm = FakeLLM(fail_generate=None)
+        llm = FakeLLM(preroll_program_start_id=True)
         install_fake_ads(llm)
         stream = io.StringIO()
         with redirect_stderr(stream), mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
             _path, spans, _keeps, _raw, _audit = wp.detect_and_cut(
                 self.request, self.audio, [], self.PREROLL
             )
-        # `answer` is the detector's own "[]", which is not an ID object: a
-        # malformed completion leaves the audio alone rather than guessing.
+        # A boolean is not a source-order ID: malformed nomination preserves
+        # the opening rather than letting later proposals cut it.
         self.assertEqual(spans, [])
         self.assertIn("opening nomination failed", stream.getvalue())
 

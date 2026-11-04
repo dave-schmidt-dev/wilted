@@ -23,6 +23,7 @@ from . import cue_timing as _worker_cue_timing
 from . import reporting as _worker_reporting
 from .constants import ALIGNED_STT_CACHE_MAXIMUM_ENTRIES, ALIGNED_STT_CACHE_SCHEMA_VERSION, ALIGNED_STT_MODEL, PUBLISHED_TRANSCRIPT_GAP_FLOOR_S, PUBLISHED_TRANSCRIPT_GAP_FRACTION, TIMED_MEDIA_TYPES
 from .cue_timing import CachedAlignedSegment, in_time_order, join_split_words
+from .microgap_refill import MICROGAP_ALIGNMENT_FRAME_S, refill_intercue_microgaps
 from .stt_refill import refill_holes, refill_short_opening_gaps
 
 CUE_MARKUP_PATTERN = re.compile(r"<[^>]*>")
@@ -341,6 +342,13 @@ def transcribe_with_daemon(audio_path: Path, model: str = ALIGNED_STT_MODEL):
             segments,
             duration,
             lambda wav: transcribe.transcribe_audio(wav, model_name=model),
+        )
+        segments = refill_intercue_microgaps(
+            audio_path,
+            segments,
+            duration,
+            lambda wav: transcribe.transcribe_audio(wav, model_name=model),
+            frame_tolerance_s=MICROGAP_ALIGNMENT_FRAME_S if model == ALIGNED_STT_MODEL else 0.0,
         )
         segments = in_time_order(segments)
     segments = _drop_untimed_segments(segments)

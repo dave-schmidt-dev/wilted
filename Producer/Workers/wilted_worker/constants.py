@@ -219,8 +219,8 @@ ALIGNED_STT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 # rebuilt; its requests are served with ALIGNED_STT_MODEL rather than refused.
 ALIGNED_STT_PREVIOUS_MODEL = "mlx-community/parakeet-tdt-1.1b"
 
-# Version 4 transcripts also refill bounded short lexical gaps near the opening.
-ALIGNED_STT_CACHE_SCHEMA_VERSION = 4
+# Version 6 transcripts reconcile microgaps with complete-cue alignment evidence.
+ALIGNED_STT_CACHE_SCHEMA_VERSION = 6
 
 # Parakeet computes a token's end as its start plus its duration, and the next
 # token's start from its own frame step, so two adjacent tokens can disagree by

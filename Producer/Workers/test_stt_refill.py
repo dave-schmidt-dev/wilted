@@ -404,13 +404,17 @@ class TranscribeWithDaemonRefillTests(unittest.TestCase):
                     FakeSegment(0.0, 0.2, "Order", (FakeToken("Order", 0.0, 0.2),)),
                     FakeSegment(3.2, 3.4, "after", (FakeToken(" after", 3.2, 3.4),)),
                 ]
-            return [FakeSegment(0.5, 0.8, "coffee", (FakeToken("coffee", 0.5, 0.8),))]
+            if len(calls) == 2:
+                return [FakeSegment(0.5, 0.8, "coffee", (FakeToken("coffee", 0.5, 0.8),))]
+            return []
 
         sys.modules["wilted.transcribe"].transcribe_audio = fake_transcribe_audio
         with mock.patch.object(cue_timing, "probe_duration", return_value=10.0):
             result = transcript_sources.transcribe_with_daemon(Path("sample.mp3"))
 
-        self.assertEqual(len(calls), 2)
+        # The production owner makes one bounded contextual microgap pass
+        # after the exact short-gap refill; this fixture returns it empty.
+        self.assertEqual(len(calls), 3)
         self.assertEqual(
             [(segment.text, segment.start_s, segment.end_s) for segment in result],
             [("Order", 0.0, 0.2), ("coffee", 0.7, 1.0), ("after", 3.2, 3.4)],
@@ -440,3 +444,33 @@ class TranscribeWithDaemonRefillTests(unittest.TestCase):
             [(segment.text, segment.start_s, segment.end_s) for segment in result],
             [("Order", 0.0, 0.2), ("coffee", 0.2, 0.5), ("after", 3.2, 3.4)],
         )
+
+    @mock.patch("subprocess.run")
+    def test_microgap_word_is_recovered_as_a_bounded_separate_cue(self, _mock_run):
+        install_fake_wilted()
+        calls = []
+
+        def fake_transcribe_audio(path, model_name=ALIGNED_STT_MODEL, **_):
+            calls.append((path, model_name))
+            if len(calls) == 1:
+                return [
+                    FakeSegment(0.8, 1.2, "Left", (FakeToken("Left", 0.8, 1.2),)),
+                    FakeSegment(1.8, 2.4, "Right", (FakeToken("Right", 1.8, 2.4),)),
+                ]
+            return [FakeSegment(
+                0.9, 2.1, "Left At Right",
+                (FakeToken("Left", 0.9, 1.15), FakeToken(" At", 1.4, 1.55),
+                 FakeToken(" Right", 1.85, 2.1)),
+            )]
+
+        sys.modules["wilted.transcribe"].transcribe_audio = fake_transcribe_audio
+        with mock.patch.object(cue_timing, "probe_duration", return_value=10.0):
+            result = transcript_sources.transcribe_with_daemon(Path("sample.mp3"))
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            [(item.text, item.start_s, item.end_s) for item in result],
+            [("Left", 0.8, 1.2), ("At", 1.4, 1.55), ("Right", 1.8, 2.4)],
+        )
+        self.assertFalse(any(item.start_s < 1.4 and item.end_s > 1.2 for item in result))
+        self.assertFalse(any(item.start_s < 1.8 and item.end_s > 1.55 for item in result))

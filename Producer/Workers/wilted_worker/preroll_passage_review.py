@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -177,6 +178,68 @@ def _measured_generate(backend, system_prompt: str, user_content: str, response_
     )
 
 
+def _generate_preroll_nomination(backend, ads_module, segments, cue_ids, attempted_ids=None):
+    """Fit Q1 to a complete-cue prefix, then infer once from that measurement."""
+    fitted_ids = list(cue_ids)
+    if isinstance(attempted_ids, list):
+        attempted_ids[:] = fitted_ids
+    measure = getattr(backend, "measure_prompt", None)
+    if not callable(measure):
+        raise ValueError("opening review requires a measured prompt budget")
+
+    def render(ids):
+        return "\n".join(
+            ads_module._segment_prefix(index, segments[index])
+            + str(getattr(segments[index], "text", "") or "")
+            for index in ids
+        )
+
+    q1_text = render(fitted_ids)
+    while len(q1_text) > MAX_REVIEW_CHARS and len(fitted_ids) > 2:
+        fitted_ids.pop()
+        q1_text = render(fitted_ids)
+    if isinstance(attempted_ids, list):
+        attempted_ids[:] = fitted_ids
+    if len(q1_text) > MAX_REVIEW_CHARS:
+        raise ValueError("opening nomination cannot fit two complete cues within its text bound")
+
+    while True:
+        if isinstance(attempted_ids, list):
+            attempted_ids[:] = fitted_ids
+        response_format = ads_module._id_response_format("program_start_id", fitted_ids)
+        try:
+            prepared = measure(
+                PREROLL_PROGRAM_START_PROMPT, q1_text, response_format=response_format,
+            )
+        except ValueError as error:
+            try:
+                token_count, context_size, output_reserve = _prompt_budget_values(error)
+            except ValueError:
+                # Missing or invalid measurements are not evidence that trimming helps.
+                raise error
+            if token_count + output_reserve <= context_size:
+                raise error
+            capacity_error = error
+        else:
+            token_count, context_size, output_reserve = _prompt_budget_values(prepared)
+            if token_count + output_reserve <= context_size:
+                return (
+                    fitted_ids,
+                    backend.generate(
+                        PREROLL_PROGRAM_START_PROMPT,
+                        q1_text,
+                        response_format=response_format,
+                        prepared_prompt=prepared,
+                    ),
+                )
+            capacity_error = ValueError("opening nomination exceeds the measured model context")
+
+        if len(fitted_ids) <= 2:
+            raise capacity_error
+        fitted_ids.pop()
+        q1_text = render(fitted_ids)
+
+
 def _known_house_ids(backend, detections, ads_module, segments) -> set[int]:
     """Collect observed house classifications from the primary source pass."""
     house_ids: set[int] = set()
@@ -231,6 +294,26 @@ def _record_opening_hold(held_spans, start_s: float, end_s: float, reason: str,
         return
     from .boundary_review import record_held_span
     record_held_span(held_spans, start_s, end_s, reason, total_seconds)
+
+
+def _record_unresolved_opening_prefix(segments, cue_ids, held_spans, total_seconds) -> None:
+    """Hold every possible candidate prefix when Q1 cannot provide a boundary."""
+    if not isinstance(held_spans, list) or not cue_ids:
+        return
+    duration = float(total_seconds)
+    if not math.isfinite(duration) or duration <= 0:
+        return
+    try:
+        end_s = float(segments[cue_ids[-1]].start_s)
+    except (IndexError, TypeError, ValueError, AttributeError):
+        end_s = duration
+    if not math.isfinite(end_s):
+        end_s = duration
+    end_s = min(duration, max(0.0, end_s))
+    if end_s > 0:
+        _record_opening_hold(
+            held_spans, 0.0, end_s, "boundary-review-unresolved", duration,
+        )
 
 
 def _without_opening(ads_module, detections, start_s: float, end_s: float):
@@ -333,24 +416,20 @@ def recover_source_checked_preroll(
     if len(window_ids) < 2:
         return list(detections)
 
+    attempted_q1_ids = list(window_ids)
     try:
-        q1_text = "\n".join(
-            ads_module._segment_prefix(index, segments[index])
-            + str(getattr(segments[index], "text", "") or "")
-            for index in window_ids
-        )
-        if len(q1_text) > MAX_REVIEW_CHARS:
-            raise ValueError("opening nomination is over the complete-text bound")
-        q1_format = ads_module._id_response_format("program_start_id", window_ids)
-        q1_response, _tokens = _measured_generate(
-            backend, PREROLL_PROGRAM_START_PROMPT, q1_text, q1_format,
+        q1_ids, (q1_response, _tokens) = _generate_preroll_nomination(
+            backend, ads_module, segments, window_ids, attempted_q1_ids,
         )
         q1 = json.loads(q1_response)
         if (not isinstance(q1, dict) or set(q1) != {"program_start_id"}
                 or type(q1["program_start_id"]) is not int
-                or q1["program_start_id"] not in window_ids):
+                or q1["program_start_id"] not in q1_ids):
             raise ValueError("opening nomination returned an invalid boundary ID")
     except Exception as error:  # noqa: BLE001 - an unanswered review never adds a cut
+        _record_unresolved_opening_prefix(
+            segments, attempted_q1_ids or window_ids, held_spans, total_seconds,
+        )
         _worker_reporting.progress("ads.detect.preroll.skipped", f"opening nomination failed: {type(error).__name__}")
         return list(detections)
 

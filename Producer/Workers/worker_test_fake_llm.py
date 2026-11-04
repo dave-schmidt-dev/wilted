@@ -52,6 +52,7 @@ class FakeLLM:
     left_boundary_include: bool | None = None
     left_boundary_answer: str | None = None
     preroll_program_start_id: int | None = None
+    oversized_program_start_id: int | None = None
     adjacent_program_start_id: int | None = None
     adjacent_program_start_answer: str | None = None
     preroll_program_id: int | None = None
@@ -233,7 +234,16 @@ class FakeLLM:
                              ("advertisement_evidence_id", self.rescan_evidence_id),
                              ("program_id", self.preroll_program_id)):
             if field_name == name:
-                return (json.dumps({name: answer}) if answer is not None else self.answer), 1
+                if (name == "program_start_id"
+                        and system_prompt == _worker_prompts.OVERSIZED_SPAN_PROGRAM_START_PROMPT
+                        and self.oversized_program_start_id is not None):
+                    return json.dumps({name: self.oversized_program_start_id}), 1
+                if answer is not None:
+                    return json.dumps({name: answer}), 1
+                if (name == "program_start_id"
+                        and system_prompt == _worker_prompts.PREROLL_PROGRAM_START_PROMPT):
+                    return json.dumps({name: 0}), 1
+                return self.answer, 1
         if response_format and (
             response_format.get("field") == "include" or "include" in properties
         ):

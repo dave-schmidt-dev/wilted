@@ -19,6 +19,8 @@ from wilted_worker.ad_outcome import decide_ad_outcome
 from wilted_worker.ad_removal import analyze_ad_detections
 from wilted_worker.boundary_review import reject_programme_conflicts
 from wilted_worker.preroll_passage_review import (
+    MAX_REVIEW_CHARS,
+    PREROLL_PROGRAM_START_PROMPT,
     WHOLE_PASSAGE_PROMPT,
     _response_schema,
     _validate_response,
@@ -26,6 +28,16 @@ from wilted_worker.preroll_passage_review import (
 )
 from wilted_worker.cue_timing import serialize_ad_audit
 from wilted_worker.recovery_policy import project_detections_around_blocked_house_regions
+
+
+class MeasuredPromptOverflow(ValueError):
+    """The synthetic backend's exact measured prompt exceeded its context."""
+
+    def __init__(self, token_count, context_size, output_reserve):
+        self.token_count = token_count
+        self.context_size = context_size
+        self.output_reserve = output_reserve
+        super().__init__("measured prompt exceeds synthetic context")
 
 
 class ReviewBackend:
@@ -36,20 +48,36 @@ class ReviewBackend:
         self.lineages = []
         self.requests = []
         self.measured = []
+        self.measured_preparations = []
         self.loaded = True
         self.context_size = 8192
         self.output_reserve = 1024
+        self.prompt_context_sizes = {}
+        self.prompt_output_reserves = {}
+        self.raise_capacity_errors = False
         self.fail_measure_prompt = None
 
     def measure_prompt(self, system, content, *, response_format=None):
         self.measured.append((system, content, response_format))
         if self.fail_measure_prompt == system:
             raise ValueError("measured request exceeds context")
-        return types.SimpleNamespace(
-            token_count=max(1, (len(system) + len(content)) // 4),
-            context_size=self.context_size,
-            output_reserve=self.output_reserve,
+        payload = system + "\n" + content + "\n" + json.dumps(
+            response_format or {}, sort_keys=True,
         )
+        token_count = max(1, (len(payload) + 3) // 4)
+        context_size = self.prompt_context_sizes.get(system, self.context_size)
+        output_reserve = self.prompt_output_reserves.get(system, self.output_reserve)
+        if (self.raise_capacity_errors
+                and token_count + output_reserve > context_size):
+            raise MeasuredPromptOverflow(token_count, context_size, output_reserve)
+        prepared = types.SimpleNamespace(
+            token_count=token_count,
+            context_size=context_size,
+            output_reserve=output_reserve,
+            request_key=(system, content, json.dumps(response_format or {}, sort_keys=True)),
+        )
+        self.measured_preparations.append(prepared)
+        return prepared
 
     def generate(self, system, content, *, response_format=None, prepared_prompt=None):
         self.requests.append((system, content, response_format, prepared_prompt))
@@ -305,6 +333,111 @@ class WholePassageRecoveryTests(unittest.TestCase):
                 self.assertEqual(detections, [])
                 self.assertEqual(len(backend.requests), 1 if mode == "overflow" else 2)
 
+    def test_oversized_q1_fits_complete_cue_prefix_and_keeps_q2_context_full(self):
+        segments = make_segments()
+        backend = ReviewBackend(passage=whole_answer(
+            segments, (0, 1, 2), programme_ids=(8,),
+        ))
+        backend.prompt_context_sizes[PREROLL_PROGRAM_START_PROMPT] = 315
+        backend.prompt_output_reserves[PREROLL_PROGRAM_START_PROMPT] = 70
+        backend.raise_capacity_errors = True
+
+        _ads, detections = self.review(backend, segments)
+
+        q1 = backend.requests[0]
+        q1_ids = q1[2]["ids"]
+        expected_q1 = "\n".join(
+            _ads._segment_prefix(index, segments[index]) + segments[index].text
+            for index in q1_ids
+        )
+        self.assertEqual(q1_ids, [0, 1, 2, 3])
+        self.assertEqual(q1[1], expected_q1)
+        self.assertIs(q1[3], next(
+            prepared for prepared in backend.measured_preparations
+            if prepared.request_key == (
+                q1[0], q1[1], json.dumps(q1[2], sort_keys=True),
+            )
+        ))
+        self.assertNotIn(segments[8].text, q1[1])
+        q1_attempts = [item for item in backend.measured if item[0] == PREROLL_PROGRAM_START_PROMPT]
+        self.assertGreater(len(q1_attempts), 1)
+        self.assertLessEqual(len(q1_attempts), 20)
+        q1_attempt_ids = [response_format["ids"] for _system, _text, response_format in q1_attempts]
+        self.assertTrue(all(ids == list(range(len(ids))) for ids in q1_attempt_ids))
+        self.assertEqual(len([request for request in backend.requests
+                             if request[0] == PREROLL_PROGRAM_START_PROMPT]), 1)
+
+        q2 = backend.requests[1]
+        self.assertEqual(q2[0], WHOLE_PASSAGE_PROMPT)
+        self.assertIn("Candidate IDs: 0,1,2", q2[1])
+        self.assertIn("Comparison-only IDs: " + ",".join(map(str, range(3, 17))), q2[1])
+        self.assertIn(f"[ID 8] {segments[8].text}", q2[1])
+        for index in range(17):
+            self.assertIn(f"[ID {index}] {segments[index].text}", q2[1])
+        self.assertNotIn(f"[ID 17] {segments[17].text}", q2[1])
+        self.assertEqual(len(backend.requests), 2)
+        self.assertEqual([(ad.start_s, ad.end_s) for ad in detections], [
+            (0.0, 4.0), (6.0, 10.0), (12.0, 16.0),
+        ])
+
+    def test_character_pressure_drops_only_trailing_complete_q1_cues(self):
+        segments = make_segments()
+        for index in (17, 18, 19):
+            segments[index].text = f"late source cue {index} " + "additional words " * 360
+        backend = ReviewBackend(passage=whole_answer(
+            segments, (0, 1, 2), programme_ids=(8,),
+        ))
+        backend.prompt_context_sizes[PREROLL_PROGRAM_START_PROMPT] = 100_000
+
+        self.review(backend, segments)
+
+        q1 = backend.requests[0]
+        self.assertEqual(q1[2]["ids"], list(range(18)))
+        self.assertLessEqual(len(q1[1]), MAX_REVIEW_CHARS)
+        self.assertIn(segments[17].text, q1[1])
+        self.assertNotIn("late source cue 18", q1[1])
+        self.assertNotIn("late source cue 19", q1[1])
+        self.assertEqual(len([item for item in backend.measured
+                             if item[0] == PREROLL_PROGRAM_START_PROMPT]), 1)
+        q2 = backend.requests[1]
+        self.assertEqual(q2[0], WHOLE_PASSAGE_PROMPT)
+        self.assertIn("Comparison-only IDs: " + ",".join(map(str, range(3, 17))), q2[1])
+        self.assertNotIn("[ID 17]", q2[1])
+
+    def test_two_cue_budget_overflow_keeps_first_cue_and_never_infers(self):
+        segments = make_segments()
+        segments[0].text = "mandatory opening cue " + "dense source words " * 180
+        backend = ReviewBackend()
+        backend.prompt_context_sizes[PREROLL_PROGRAM_START_PROMPT] = 350
+        backend.prompt_output_reserves[PREROLL_PROGRAM_START_PROMPT] = 100
+        backend.raise_capacity_errors = True
+
+        held = []
+        _ads, detections = self.review(backend, segments, held=held)
+
+        q1_attempts = [item for item in backend.measured if item[0] == PREROLL_PROGRAM_START_PROMPT]
+        self.assertEqual(q1_attempts[-1][2]["ids"], [0, 1])
+        self.assertIn(segments[0].text, q1_attempts[-1][1])
+        self.assertEqual(len(q1_attempts), 19)
+        self.assertEqual(backend.requests, [])
+        self.assertEqual(detections, [])
+        self.assertEqual(
+            [(span.start_s, span.end_s, span.reason) for span in held],
+            [(0.0, 6.0, "boundary-review-unresolved")],
+        )
+
+    def test_unavailable_q1_measurement_fails_without_prefix_trimming(self):
+        segments = make_segments()
+        backend = ReviewBackend()
+        backend.fail_measure_prompt = PREROLL_PROGRAM_START_PROMPT
+
+        _ads, detections = self.review(backend, segments)
+
+        self.assertEqual(len(backend.measured), 1)
+        self.assertEqual(backend.measured[0][2]["ids"], list(range(20)))
+        self.assertEqual(backend.requests, [])
+        self.assertEqual(detections, [])
+
     def test_empty_input_and_boundary_at_first_cue_make_no_passage_request(self):
         backend = ReviewBackend(boundary_id=0)
         ads = install_fake_ads(backend)
@@ -313,15 +446,22 @@ class WholePassageRecoveryTests(unittest.TestCase):
         ), [])
         self.assertEqual(backend.requests, [])
         segments = make_segments()
-        self.assertEqual(self.review(backend, segments)[1], [])
+        held = []
+        self.assertEqual(self.review(backend, segments, held=held)[1], [])
         self.assertEqual(len(backend.requests), 1)
+        self.assertEqual(held, [])
 
     def test_malformed_nomination_and_under_minimum_candidate_stop_before_q2(self):
         segments = make_segments()
         malformed = ReviewBackend()
         malformed.boundary_response = '{"program_start_id":true}'
-        self.review(malformed, segments)
+        held = []
+        self.review(malformed, segments, held=held)
         self.assertEqual(len(malformed.requests), 1)
+        self.assertEqual(
+            [(span.start_s, span.end_s, span.reason) for span in held],
+            [(0.0, 114.0, "boundary-review-unresolved")],
+        )
 
         short_segments = make_segments()
         short_segments[2].start_s = 9.0
@@ -383,10 +523,21 @@ class SourceCheckedProfileInteractionTests(unittest.TestCase):
         FakeSegment(50.0, 60.0, "Welcome to the show"),
     ]
 
-    def analyze(self, profile_proposals=None, *, classification="paid_product_ad"):
+    def analyze(
+        self,
+        profile_proposals=None,
+        *,
+        classification="paid_product_ad",
+        total_seconds=100.0,
+        q1_boundary_id=3,
+        q1_answer=None,
+        q1_measure_error=None,
+        q1_context_size=None,
+        q1_output_reserve=50,
+    ):
         llm = FakeLLM(
             loaded=True,
-            preroll_program_start_id=3,
+            preroll_program_start_id=q1_boundary_id,
             whole_passage_classification=classification,
             whole_passage_commercial_ids=[0, 1],
         )
@@ -401,13 +552,51 @@ class SourceCheckedProfileInteractionTests(unittest.TestCase):
                 tuple(profile_proposals or ()), windows=1, requests=1,
             ),
         ) if profile_proposals is not None else nullcontext()
-        with inference, redirect_stderr(io.StringIO()):
+        measurement = nullcontext()
+        nomination_response = nullcontext()
+        if q1_answer is not None:
+            original_generate = llm.generate
+
+            def generated(system, content, *, response_format=None, prepared_prompt=None):
+                if system == PREROLL_PROGRAM_START_PROMPT:
+                    return q1_answer, 1
+                return original_generate(
+                    system, content, response_format=response_format,
+                    prepared_prompt=prepared_prompt,
+                )
+
+            nomination_response = mock.patch.object(llm, "generate", side_effect=generated)
+        if q1_measure_error is not None or q1_context_size is not None:
+            original_measure = llm.measure_prompt
+
+            def measured(system, content, *, response_format=None):
+                if system != PREROLL_PROGRAM_START_PROMPT:
+                    return original_measure(system, content, response_format=response_format)
+                if q1_measure_error is not None:
+                    raise q1_measure_error
+                payload = system + "\n" + content + "\n" + json.dumps(
+                    response_format or {}, sort_keys=True,
+                )
+                token_count = max(1, (len(payload) + 3) // 4)
+                if token_count + q1_output_reserve > q1_context_size:
+                    raise MeasuredPromptOverflow(
+                        token_count, q1_context_size, q1_output_reserve,
+                    )
+                return types.SimpleNamespace(
+                    token_count=token_count,
+                    context_size=q1_context_size,
+                    output_reserve=q1_output_reserve,
+                    request_key=(system, content, json.dumps(response_format or {}, sort_keys=True)),
+                )
+
+            measurement = mock.patch.object(llm, "measure_prompt", side_effect=measured)
+        with inference, measurement, nomination_response, redirect_stderr(io.StringIO()):
             analysis = analyze_ad_detections(
-                ads, llm, self.SEGMENTS, 100.0,
+                ads, llm, self.SEGMENTS, total_seconds,
                 ad_profile=profile,
             )
         outcome = decide_ad_outcome(analysis.audit, analysis.detections)
-        cuts, keeps = cue_timing.build_effective_cut_map(analysis.detections, 100.0)
+        cuts, keeps = cue_timing.build_effective_cut_map(analysis.detections, total_seconds)
         return analysis, outcome, cuts, keeps
 
     def assert_source_checked_cuts_and_paid_tail(self, analysis, outcome, cuts, keeps):
@@ -432,6 +621,62 @@ class SourceCheckedProfileInteractionTests(unittest.TestCase):
     def test_no_profile_path_keeps_the_same_source_checked_geometry(self):
         result = self.analyze()
         self.assert_source_checked_cuts_and_paid_tail(*result)
+
+    def test_unanswered_q1_holds_profile_fallback_for_short_and_long_episodes(self):
+        for duration in (200.0, 1000.0):
+            with self.subTest(duration=duration):
+                analysis, outcome, cuts, _keeps = self.analyze(
+                    [FakeAd(0.0, 45.0, "profile_candidate", 0.6)],
+                    total_seconds=duration,
+                    q1_measure_error=ValueError("measured prompt unavailable"),
+                )
+                self.assertEqual(cuts, [(0.0, 45.0), (60.0, 80.0)])
+                self.assertIsNotNone(outcome.keep_whole_reason)
+                self.assertIsNone(analysis.audit.opening_review)
+                self.assertTrue(any(
+                    held.reason == "boundary-review-unresolved"
+                    and (held.start_s, held.end_s) == (0.0, 50.0)
+                    for held in analysis.audit.held_spans
+                ))
+
+    def test_malformed_q1_holds_profile_fallback(self):
+        analysis, outcome, cuts, _keeps = self.analyze(
+            [FakeAd(0.0, 45.0, "profile_candidate", 0.6)],
+            total_seconds=200.0,
+            q1_answer='{"program_start_id":true}',
+        )
+        self.assertEqual(cuts, [(0.0, 45.0), (60.0, 80.0)])
+        self.assertIsNotNone(outcome.keep_whole_reason)
+        self.assertTrue(any(
+            held.reason == "boundary-review-unresolved"
+            and (held.start_s, held.end_s) == (0.0, 50.0)
+            for held in analysis.audit.held_spans
+        ))
+
+    def test_q1_minimum_budget_overflow_holds_profile_fallback(self):
+        analysis, outcome, cuts, _keeps = self.analyze(
+            [FakeAd(0.0, 45.0, "profile_candidate", 0.6)],
+            total_seconds=200.0,
+            q1_context_size=220,
+            q1_output_reserve=50,
+        )
+        self.assertEqual(cuts, [(0.0, 45.0), (60.0, 80.0)])
+        self.assertIsNotNone(outcome.keep_whole_reason)
+        self.assertTrue(any(
+            held.reason == "boundary-review-unresolved"
+            and (held.start_s, held.end_s) == (0.0, 20.0)
+            for held in analysis.audit.held_spans
+        ))
+
+    def test_successful_zero_boundary_remains_no_opening_and_no_hold(self):
+        analysis, outcome, cuts, _keeps = self.analyze(
+            [FakeAd(0.0, 45.0, "profile_candidate", 0.6)],
+            total_seconds=200.0,
+            q1_boundary_id=0,
+        )
+        self.assertEqual(cuts, [(0.0, 45.0), (60.0, 80.0)])
+        self.assertIsNone(outcome.keep_whole_reason)
+        self.assertFalse(analysis.audit.held_spans)
 
     def test_accepted_opening_receipt_is_bounded_digest_only_and_serialized(self):
         analysis, _outcome, _cuts, _keeps = self.analyze()
