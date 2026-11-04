@@ -58,6 +58,15 @@ retain newest three and all younger than 30 days, and require read-only
 `quick_check`. Manual, preimport, recovery, unknown, live database/WAL/media
 paths are preserved.
 
+## November 4 explicit disposal
+
+The owner subsequently directed deletion of all 79 bundles that the initial
+audit retained for missing metadata or unknown outcomes. They were removed
+without a new archive. The current disposition is recorded in
+`.logs/retention-reassessment-2026-11-04/removal-receipt.json`; original cleanup
+receipts describe the earlier preservation, not current availability. The
+weekly policy for future unknown results remains unchanged.
+
 ## Recovery
 
 For new weekly archives, restore into a new directory:

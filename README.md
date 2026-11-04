@@ -125,7 +125,7 @@ git worktree remove "$base/wt" && rmdir "$base"
 
 Create ephemeral Wilted scratch below the inherited `$TMPDIR` with a unique `mktemp -d` path, register cleanup before starting child work, stop/reap owned children, and preserve only cited evidence under `.logs/`. The native and Phase 0 gates remove their own scratch on normal exit and handled signals; before starting, they sweep only root-level `wilted-*` entries at least 24 hours old with an explicit ownership marker, an inactive owner, and no holders, while historical unmarked or borrowed spec directories are preserved. The active-tree check `scripts/check-no-global-tmp.py` rejects hard-coded absolute global temporary-root references in operational scripts and documentation. Captain and worker procedures are recorded in the internal plan overlay and bounded-task template; those templates require caller-shell cleanup and reuse of shared `.build` caches.
 
-Implementation notes and verification records are retained in [`.logs/leak-repair-2026-09-28/`](.logs/leak-repair-2026-09-28/).
+Final verification is retained in the [midnight receipt](.logs/leak-repair-2026-09-28/midnight-final-receipt.txt) and [captain acceptance](.logs/leak-repair-2026-09-28/captain-acceptance.json). The obsolete zero-test result bundle was removed at the owner’s request on 2026-11-04.
 
 ## Scope
 
