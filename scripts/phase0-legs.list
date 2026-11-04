@@ -18,6 +18,7 @@ test-install-mac-contract test-install-mac-contract.sh
 test-source-stamp test-source-stamp.sh
 test-temp-sweep test-temp-sweep.sh
 test-storage-retention test-storage-retention.sh
+test-storage-retention-policy test-storage-retention-policy.sh
 test-temp-leaks test-temp-leaks.sh
 test-full-run-lock test-full-run-lock.sh
 test-git-hooks test-git-hooks.sh

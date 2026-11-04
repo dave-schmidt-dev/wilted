@@ -8,6 +8,7 @@ All notable changes to this project are documented in this file.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 
 ### Added
+- Weekly local storage maintenance compacts old development evidence, bounds idle build caches to a 4-GiB target, and retains the newest three automatic database backups plus all backups younger than 30 days. Original library media and ad feedback stay untouched.
 - Ad removal uses private feed profiles to find recurring ad placements. New feeds learn automatically during preparation, with each proposed cut checked against the current episode.
 - Download from your Mac over Wi-Fi: when the Mac is nearby, the iPhone fetches prepared audio straight from it over an encrypted local connection only your own devices can open, resumes a cut transfer, can finish in the background, and falls back to iCloud on any failure. The iPhone asks once at onboarding (on by default) and has a switch in Settings; the Mac has a **Direct downloads from this Mac** switch and can stop direct downloads for one iPhone.
 - Settings on the Mac and the iPhone show a diagnostics line counting CloudKit operations per kind.

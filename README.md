@@ -242,6 +242,12 @@ The detailed implementation plans are maintained locally outside this public rep
 
 For future delivery diagnostics, `scripts/retain-delivery-evidence.py SOURCE DESTINATION` copies logs, named receipts, and result bundles without source or build caches. Run temporary spec commands through `scripts/with-spec-scratch.sh COMMAND ...` so their new scratch directory is removed on exit or signal. `scripts/collect-storage-backlog.py` reports retained archives, `.build`, and `wilted-spec*` scratch directories without deleting them.
 
+## Storage retention
+
+`make retention-report` previews the weekly policy; `make retention-apply` applies it when due. `make retention-install` installs the local schedule. [Storage retention](docs/storage-retention.md) describes the 14-day evidence compaction, 4-GiB idle build-cache target, backup retention, exclusions and recovery. The app library, media and original ad feedback are outside this cleanup. Cold builds can take longer after cache eviction.
+
+Historical evidence paths removed by the November 4 cleanup remain mapped in `.logs/retention-audit-2026-11-04/file-decisions.json` and `.logs/retention-other-2026-11-04/decisions.json`, with verified replacement packs and standalone Git source blobs in the protected retention directories. These maps support old `HISTORY.md` references; current README, INVARIANTS and TASKS evidence stays at its cited path.
+
 ## Workflows
 
 The B6.1 original Tasks 3.1 and 3.2 local source-scope gate is accepted: 80 current Mac cases, unchanged 17-case phone decision coverage, two Standard assessments, and the focused Low self-check. The corrected Phase 5 default validation and exact 20-run Sync20 are qualified. Standard review and whole CLEAR remain pending; the default validation explicitly defers macOS UI. This does not establish installation, device behavior, or owner acceptance.

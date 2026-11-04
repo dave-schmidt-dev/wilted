@@ -11,18 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-MARKERS = ("receipt", "result", "authorization", "status", "manifest")
-RECEIPT_SUFFIXES = {".json", ".jsonl", ".md", ".status", ".txt"}
-
-
-def evidence_kind(path: Path) -> str | None:
-    name = path.name.lower()
-    if name.endswith((".log", ".xcactivitylog")):
-        return "log"
-    if path.suffix.lower() in RECEIPT_SUFFIXES and any(marker in name for marker in MARKERS):
-        return "receipt"
-    return None
-
+from retention.evidence import evidence_kind
 
 def is_within(path: Path, parent: Path) -> bool:
     try:

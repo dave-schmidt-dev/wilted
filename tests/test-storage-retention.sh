@@ -21,6 +21,8 @@ mkdir -p "$repo/.logs/delivery" "$repo/.build/Products" "$repo/Logs/Test/Run.xcr
 printf 'log\n' >"$repo/.logs/delivery/gate.log"
 printf '{"status":"ok"}\n' >"$repo/.logs/delivery/gate-result.json"
 printf 'source\n' >"$repo/source.swift"
+printf 'snapshot\n' >"$repo/.logs/delivery/source-snapshot.zip"
+printf 'runtime\n' >"$repo/.logs/delivery/storage-retention.log"
 printf 'build\n' >"$repo/.build/Products/build.log"
 printf 'summary\n' >"$repo/Logs/Test/Run.xcresult/Data/summary.log"
 printf 'nonreceipt\n' >"$repo/Logs/Test/Run.xcresult/Data/ordinary.json"
@@ -30,6 +32,8 @@ archive="$test_root/archive/storage-retained-fixture"
 if python3 "$retainer" "$repo" "$archive" >"$test_root/retain.out" 2>&1; then pass 'retainer completed'; else fail 'retainer failed'; cat "$test_root/retain.out" >&2; fi
 [[ -f "$archive/.logs/delivery/gate.log" ]] && pass 'log retained' || fail 'log missing'
 [[ -f "$archive/.logs/delivery/gate-result.json" ]] && pass 'named receipt retained' || fail 'receipt missing'
+[[ -f "$archive/.logs/delivery/source-snapshot.zip" ]] && pass 'source snapshot evidence retained' || fail 'source snapshot evidence missing'
+[[ ! -e "$archive/.logs/delivery/storage-retention.log" ]] && pass 'rotated retention runtime log excluded' || fail 'retention runtime log copied'
 [[ -f "$archive/Logs/Test/Run.xcresult/Data/summary.log" ]] && pass 'xcresult retained' || fail 'xcresult missing'
 [[ ! -e "$archive/source.swift" && ! -e "$archive/.build" ]] && pass 'source and .build excluded' || fail 'source or .build copied'
 [[ ! -e "$archive/.logs/delivery/link.log" ]] && pass 'symlink skipped' || fail 'symlink copied'
