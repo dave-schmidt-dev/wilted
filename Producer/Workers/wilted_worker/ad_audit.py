@@ -147,6 +147,7 @@ class AdAnalysisAudit:
     ad_profile_applied_digest: str | None = None
     ad_profile_windows: int = 0
     ad_profile_requests: int = 0
+    ad_profile_failures: int = 0
 
 @dataclass(frozen=True)
 class AdAnalysis:

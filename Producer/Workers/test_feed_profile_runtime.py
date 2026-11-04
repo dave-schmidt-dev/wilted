@@ -4,11 +4,15 @@ from __future__ import annotations
 import json
 import re
 import unittest
+from unittest import mock
 
 from worker_test_support import load_runtime_ads
 from wilted_worker.ad_audit import AuditingBackend
+from wilted_worker.ad_removal import analyze_ad_detections
+from wilted_worker.cue_timing import serialize_ad_audit
 from wilted_worker.feed_profile_runtime import (
     MAX_PROFILE_CALLS,
+    ProfileRecovery,
     _slot_windows,
     independent_primary_observation,
     recover_profile_candidates,
@@ -28,6 +32,8 @@ class ScriptedProfileBackend:
         self.requests = []
         self.loaded = True
         self.malformed_classifications = False
+        self.fail_classification = False
+        self.classification_failures = 0
         self.measurements = 0
 
     def measure_prompt(self, system_prompt, user_content, *, response_format=None):
@@ -43,6 +49,9 @@ class ScriptedProfileBackend:
             self.ads._AD_DETECT_SYSTEM_PROMPT, self.ads._AD_DETECT_CORRECTION_PROMPT,
             SELF_PROMOTION_AD_DETECT_SYSTEM_PROMPT, SELF_PROMOTION_AD_DETECT_CORRECTION_PROMPT,
         }:
+            if self.fail_classification:
+                self.classification_failures += 1
+                raise RuntimeError("synthetic profile inference failure")
             if self.malformed_classifications:
                 return "not-json", 1
             ids = [int(value) for value in re.findall(r"\[ID (\d+)\]", user_content)]
@@ -63,6 +72,8 @@ class ScriptedProfileBackend:
             return json.dumps({"labels": {
                 str(index): (self.labels or {}).get(int(index), "programme") for index in ids
             }}), 1
+        if "classification" in properties:
+            return json.dumps({"classification": "commercial"}), 1
         raise AssertionError(f"Unexpected profile prompt: {system_prompt[:60]}")
 
 
@@ -154,6 +165,39 @@ class FeedProfileRuntimeTests(unittest.TestCase):
         self.assertNotIn("startBasisPoints", preservation[0][1])
         self.assertNotIn("previous sampled opening", preservation[0][1])
 
+    def test_mixed_paid_and_house_run_keeps_disabled_house_audio(self):
+        segments = self.segments(30)
+        segments[3] = self.Segment(30, 40, "An Acme sponsor read begins")
+        segments[4] = self.Segment(40, 50, "Visit acme.com for a free trial")
+        segments[5] = self.Segment(50, 60, "Paid newsletter for our members; subscribe today")
+        raw = ScriptedProfileBackend(self.ads, ad_ids={3, 4, 5}, labels={
+            3: "sponsor_read", 4: "sponsor_read", 5: "self_promo",
+        })
+        raw.ad_labels = {3: "sponsor_read", 4: "sponsor_read", 5: "self_promo"}
+        raw.labels = {
+            1: "programme", 2: "programme", 3: "commercial", 4: "commercial",
+            5: "commercial", 6: "programme",
+        }
+        baseline = AuditingBackend(raw, self.ads, len(segments))
+        recovery = recover_profile_candidates(
+            self.ads, baseline, segments, 300, self.profile(1000, 2000),
+            remove_self_promotion=False,
+        )
+        self.assertEqual(
+            [(item.start_s, item.end_s, item.label) for item in recovery.detections],
+            [(30.0, 50.0, "sponsor_read")],
+        )
+
+    def test_profile_recovery_counts_actual_backend_failures(self):
+        raw = ScriptedProfileBackend(self.ads)
+        raw.fail_classification = True
+        baseline = AuditingBackend(raw, self.ads, 10)
+        recovery = recover_profile_candidates(
+            self.ads, baseline, self.segments(), 100, self.profile(),
+        )
+        self.assertGreater(recovery.failures, 0)
+        self.assertEqual(recovery.failures, raw.classification_failures)
+
     def test_preroll_q1_uses_profile_hint_but_cold_open_q2_sees_blind_right_context(self):
         segments = self.segments(8)
         segments[0] = self.Segment(0, 10, "A paid spot begins")
@@ -242,6 +286,27 @@ class FeedProfileRuntimeTests(unittest.TestCase):
         )
         after = independent_primary_observation(baseline, segments, **kwargs)
         self.assertEqual(after, before)
+
+    def test_total_audit_counts_profile_model_failures_and_exposes_split(self):
+        raw = ScriptedProfileBackend(self.ads)
+        with mock.patch(
+            "wilted_worker.feed_profile_runtime.recover_profile_candidates",
+            return_value=ProfileRecovery((), windows=1, requests=2, failures=1),
+        ):
+            analysis = analyze_ad_detections(
+                self.ads, raw, [self.Segment(0, 100, "programme cue")],
+                100, ad_profile=self.profile(),
+            )
+        self.assertEqual(analysis.audit.ad_profile_requests, 2)
+        self.assertEqual(analysis.audit.ad_profile_failures, 1)
+        self.assertEqual(analysis.audit.model_failures, 1)
+        self.assertEqual(
+            analysis.audit.model_requests,
+            analysis.audit.classifier_requests + analysis.audit.ad_profile_requests,
+        )
+        serialized = serialize_ad_audit(analysis.audit)
+        self.assertEqual(serialized["adProfileFailures"], 1)
+        self.assertEqual(serialized["modelFailures"], 1)
 
 
 if __name__ == "__main__":

@@ -171,6 +171,7 @@ def serialize_ad_audit(audit, *, include_profile_observation: bool = False) -> d
         "adProfileAppliedDigest": getattr(audit, "ad_profile_applied_digest", None),
         "adProfileWindows": int(getattr(audit, "ad_profile_windows", 0)),
         "adProfileRequests": int(getattr(audit, "ad_profile_requests", 0)),
+        "adProfileFailures": int(getattr(audit, "ad_profile_failures", 0)),
         **({"adProfileObservation": audit.ad_profile_observation}
            if include_profile_observation and getattr(audit, "ad_profile_observation", None) is not None else {}),
     }

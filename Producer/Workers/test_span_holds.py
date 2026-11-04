@@ -348,6 +348,17 @@ class SpanCeilingTests(unittest.TestCase):
         self.assertEqual(result, [])
         self.assertEqual([span.reason for span in held], ["total-share-ceiling"] * 2)
 
+    def test_total_share_ceiling_counts_overlapping_recovery_union_once(self):
+        detections = [
+            FakeAd(20.0, 48.0, label="sponsor_read"),
+            FakeAd(60.0, 87.0, label="sponsor_read"),
+            FakeAd(40.0, 50.0, label="sponsor_read"),
+        ]
+        held = []
+        result = span_bounds.enforce_total_ad_share_ceiling(detections, 100.0, held)
+        self.assertEqual(result, detections)
+        self.assertEqual(held, [])
+
 
 if __name__ == "__main__":
     unittest.main()

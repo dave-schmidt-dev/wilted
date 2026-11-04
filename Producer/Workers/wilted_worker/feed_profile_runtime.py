@@ -29,6 +29,7 @@ class ProfileRecovery:
     detections: tuple[object, ...]
     windows: int
     requests: int
+    failures: int = 0
 
 
 def _normalized_phrase(value: str) -> str:
@@ -105,7 +106,13 @@ def _contiguous_runs(decisions, ads_module, segments, remove_self_promotion):
     positive = []
     for segment_id, is_ad, label in decisions:
         if is_ad:
-            positive.append((segment_id, label))
+            current_label = label or "ad_break"
+            if positive and (
+                segment_id != positive[-1][0] + 1 or current_label != positive[-1][1]
+            ):
+                runs.append(positive)
+                positive = []
+            positive.append((segment_id, current_label))
         elif positive:
             runs.append(positive)
             positive = []
@@ -115,7 +122,7 @@ def _contiguous_runs(decisions, ads_module, segments, remove_self_promotion):
     result = []
     for run in runs:
         ids = tuple(item[0] for item in run)
-        label = next((value for _index, value in run if value), "ad_break")
+        label = run[0][1]
         if len(ids) > MAX_PROFILE_CANDIDATE_IDS:
             continue
         if label in {"self_promo", "newsletter_pitch"} and not remove_self_promotion:
@@ -418,7 +425,9 @@ def recover_profile_candidates(
                 ))
             except Exception:  # noqa: BLE001 - uncertainty leaves this candidate audible
                 continue
-    return ProfileRecovery(tuple(recovered), windows_used, call_budget.calls)
+    return ProfileRecovery(
+        tuple(recovered), windows_used, call_budget.calls, profile_audit.failures
+    )
 
 
 def independent_primary_observation(backend, segments, *, feed_id: str, episode_id: str, source_hash: str, total_seconds: float | None = None):

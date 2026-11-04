@@ -263,6 +263,7 @@ def analyze_ad_detections(
     ]
     profile_windows = 0
     profile_requests = 0
+    profile_failures = 0
     if ad_profile is not None:
         from .feed_profile_runtime import recover_profile_candidates
         profile_recovery = recover_profile_candidates(
@@ -273,6 +274,7 @@ def analyze_ad_detections(
         )
         profile_windows = profile_recovery.windows
         profile_requests = profile_recovery.requests
+        profile_failures = profile_recovery.failures
         if profile_recovery.detections:
             # Re-run the final policy and content guards across all candidates,
             # with every profile candidate still subject to the same holds and
@@ -312,6 +314,7 @@ def analyze_ad_detections(
     audit.ad_profile_applied_digest = ad_profile_digest if profile_was_used else None
     audit.ad_profile_windows = profile_windows
     audit.ad_profile_requests = profile_requests
+    audit.ad_profile_failures = profile_failures
     audit.declined_commercial_evidence_seeds = tuple(
         DeclinedCommercialEvidenceSeed(
             ids=seed_ids,
@@ -356,7 +359,7 @@ def analyze_ad_detections(
         experimental_max_additional_model_calls,
     )
     audit.model_requests = auditing_backend.calls + profile_requests
-    audit.model_failures = auditing_backend.failures
+    audit.model_failures = auditing_backend.failures + profile_failures
     if audit.unresolved_ids:
         details = ", ".join(str(segment_id) for segment_id in audit.unresolved_ids)
         raise WorkerError(

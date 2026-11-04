@@ -7,6 +7,7 @@ import fcntl
 import html
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -266,11 +267,38 @@ def reject_implausible_ad_spans(
     return kept
 
 
+def _union_ad_seconds(detections, total_seconds):
+    """Count removed source time once even when nominations overlap."""
+    intervals = []
+    for ad in detections:
+        try:
+            start_s, end_s = float(ad.start_s), float(ad.end_s)
+        except (AttributeError, TypeError, ValueError):
+            return math.inf
+        if not (math.isfinite(start_s) and math.isfinite(end_s)
+                and 0 <= start_s < end_s and start_s < total_seconds):
+            return math.inf
+        intervals.append((start_s, min(end_s, total_seconds)))
+    if not intervals:
+        return 0.0
+
+    intervals.sort()
+    total = 0.0
+    start_s, end_s = intervals[0]
+    for next_start, next_end in intervals[1:]:
+        if next_start <= end_s:
+            end_s = max(end_s, next_end)
+        else:
+            total += end_s - start_s
+            start_s, end_s = next_start, next_end
+    return total + end_s - start_s
+
+
 def enforce_total_ad_share_ceiling(detections, total_seconds, held_spans=None):
     """Hold every final detection if recovery leaves the total over its ceiling."""
     if total_seconds <= 0 or not detections:
         return detections
-    total_removed = sum(float(ad.end_s) - float(ad.start_s) for ad in detections)
+    total_removed = _union_ad_seconds(detections, total_seconds)
     share = total_removed / total_seconds
     if share <= MAXIMUM_TOTAL_AD_SHARE:
         return detections
