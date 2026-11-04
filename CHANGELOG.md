@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Removed
+- Weekly maintenance now expires inactive, uncited incomplete or unknown Xcode results after 14 quiet days without archiving them, retaining small deletion receipts.
 - Removed 79 obsolete local Xcode result bundles and reconciled their evidence references after explicit owner approval.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 

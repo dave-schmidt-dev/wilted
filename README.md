@@ -248,6 +248,8 @@ For future delivery diagnostics, `scripts/retain-delivery-evidence.py SOURCE DES
 
 `make retention-report` previews the weekly policy; `make retention-apply` applies it when due. `make retention-install` installs the local schedule. [Storage retention](docs/storage-retention.md) describes the 14-day evidence compaction, 4-GiB idle build-cache target, backup retention, exclusions and recovery. The app library, media and original ad feedback are outside this cleanup. Cold builds can take longer after cache eviction.
 
+Unpinned, inactive Xcode result bundles with missing root metadata or explicitly unknown outcomes expire after 14 quiet days without an archive; a small deletion receipt remains. Reader and attachment-export errors on bundles with root metadata keep the source for a later retry.
+
 Historical evidence paths removed by the November 4 cleanup remain mapped in `.logs/retention-audit-2026-11-04/file-decisions.json` and `.logs/retention-other-2026-11-04/decisions.json`, with verified replacement packs and standalone Git source blobs in the protected retention directories. These maps support old `HISTORY.md` references; current README, INVARIANTS and TASKS evidence stays at its cited path.
 
 ## Workflows

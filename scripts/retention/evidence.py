@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 from .core import (ArchiveError, archive_paths, check_deadline, ensure_safe_path,
@@ -216,9 +217,61 @@ def _open_reference(path: Path) -> tuple[bool, str]:
     return True, "open-or-liveness-unknown"
 
 
+def _expire_incomplete(path: Path, expected: object, root: Path, reason: str,
+                       now: float, deadline: float | None) -> dict[str, object]:
+    """Delete an old incomplete result with fresh safeguards and a durable receipt."""
+    logs = _logs_root(root)
+    pins = pinned_paths(root)
+    if pins is None or protected(path, repo=root, pins=pins) or any(
+            path == pin or path in pin.parents for pin in pins):
+        raise ArchiveError("incomplete-result-protected")
+    if now - _newest_mtime(path, logs, deadline) < QUIET_SECONDS:
+        raise ArchiveError("incomplete-result-too-recent")
+    busy, busy_reason = _open_reference(path)
+    if busy:
+        raise ArchiveError(busy_reason)
+    if not verify_tree(path, expected, root=logs, deadline=deadline):
+        raise ArchiveError("incomplete-result-changed")
+    allocated = sum((path / entry[0]).stat().st_blocks * 512
+                    for entry in expected.entries if entry[1] == "file")
+    receipt = {"source_path": path.relative_to(root).as_posix(), "reason": reason,
+               "allocated_bytes": allocated, "source_sha256": expected.digest,
+               "archive_created": False, "status": "pending", "recorded_at": now}
+    directory = ensure_safe_path(logs, logs / "retained-evidence")
+    target = directory / ("expired-result-" + uuid.uuid4().hex + ".json")
+
+    def write_receipt() -> None:
+        temporary = target.with_suffix(".partial")
+        try:
+            with temporary.open("x") as stream:
+                json.dump(receipt, stream, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+            descriptor = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    write_receipt()  # Failure to retain intent prevents deletion.
+    remove_tree_verified(path, expected, root=logs, deadline=deadline)
+    receipt["status"] = "removed"
+    try:
+        write_receipt()
+    except OSError:
+        # The durable pending receipt survives; the enclosing run must still
+        # report the completed deletion rather than a misleading source skip.
+        receipt["receipt_status"] = "pending-confirmation"
+    return {**receipt, "receipt": str(target)}
+
+
 def compact(repo: Path, archive: Path, *, now: float | None = None, apply: bool = False,
             deadline: float | None = None) -> dict[str, object]:
-    """Create verified compact replacements, then remove unchanged originals."""
+    """Archive old evidence or expire incomplete results with deletion receipts."""
     now = time.time() if now is None else now
     try:
         selected = candidates(repo, now, deadline)
@@ -263,6 +316,7 @@ def compact(repo: Path, archive: Path, *, now: float | None = None, apply: bool 
     if evidence_root.is_symlink() or evidence_root.stat().st_dev != logs.stat().st_dev:
         return {**result, "status": "skipped", "reason": "retention-root-unsafe"}
     removed: list[str] = []
+    discarded: list[dict[str, object]] = []
     retained_packs: list[str] = []
     total_files = 0
     total_bytes = 0
@@ -281,11 +335,21 @@ def compact(repo: Path, archive: Path, *, now: float | None = None, apply: bool 
         kind = evidence_kind(path)
         manifest: dict[str, object] | None = None
         try:
+            if kind == "xcresult" and not (path / "Info.plist").exists():
+                discarded.append(_expire_incomplete(
+                    path, snapshots[path], root, "missing-root-metadata", now, deadline))
+                removed.append(str(path))
+                continue
             if kind in {"xcresult", "logarchive", "source-archive"}:
                 prefix = hashlib.sha256(path.relative_to(root).as_posix().encode()).hexdigest()[:16]
                 stage = evidence_root / f".export-{prefix}-{os.getpid()}-{index}"
                 export = export_bundle(path, stage, deadline=deadline)
                 if export.get("status") != "compacted":
+                    if kind == "xcresult" and export.get("reason") == "xcresult-status-unknown":
+                        discarded.append(_expire_incomplete(
+                            path, snapshots[path], root, "unknown-test-outcome", now, deadline))
+                        removed.append(str(path))
+                        continue
                     skipped.append({"path": str(path), "reason": str(export.get("reason", "export-retained"))})
                     continue
                 expected = snapshots[path]
@@ -396,6 +460,7 @@ def compact(repo: Path, archive: Path, *, now: float | None = None, apply: bool 
 
     return {"status": "removed" if removed else "kept", "selected": [str(p) for p in selected],
             "removed": removed, "skipped": skipped, "archives": retained_packs,
+            "discarded": discarded,
             "files": total_files, "unique_bytes": total_bytes}
 
 

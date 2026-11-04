@@ -9,18 +9,23 @@ then invokes `/usr/bin/python3`. Due state prevents login-triggered repeats.
 
 The policy never sweeps source, `.git`, media, feedback originals, README /
 INVARIANTS / TASKS evidence, pinned evidence, or reserved retention outputs.
-Evidence is archived into a verified compressed archive before deletion.
+Ordinary evidence is archived into a verified compressed archive before deletion.
 Archives contain a manifest mapping original paths to SHA-256 content members;
 duplicate bytes are stored once. A failed archive, changed identity, symlink,
-mount boundary, busy lock, unreadable result, or uncertain liveness skips the
-item.
+mount boundary, busy lock, failed export, or uncertain liveness skips the item.
+After 14 quiet days, an unpinned, inactive test bundle with missing root metadata
+or an explicitly unknown test outcome is deleted without an archive. Each such
+deletion leaves a small receipt under `.logs/retained-evidence/expired-result-*.json`
+with its path, reason, source digest and allocated bytes. Age, citations,
+liveness and source identity are checked again before deletion. A reader or
+attachment-export failure on a bundle with root metadata retains the bundle.
 
 ## Policy
 
 | Category | Retention |
 | --- | --- |
 | Development logs and source snapshots | After 14 quiet days, preserve verified compressed recovery material before removing raw copies. |
-| Test results | After 14 quiet days, keep summaries, full test trees and all failure attachments; retain unreadable or unknown bundles. |
+| Test results | After 14 quiet days, archive summaries, full test trees and failure attachments for known outcomes. Delete bundles with missing root metadata or explicitly unknown outcomes without archiving; keep a deletion receipt. |
 | System log archives | Replace only after successful Wilted-filtered export. |
 | Build caches | Whole-unit least-recently-used eviction toward 4 GiB, only after 24 idle hours and all shared locks/liveness checks. |
 | Automatic migration backups | Keep newest three and every copy younger than 30 days; retained copies must pass integrity checks. |
@@ -65,7 +70,8 @@ audit retained for missing metadata or unknown outcomes. They were removed
 without a new archive. The current disposition is recorded in
 `.logs/retention-reassessment-2026-11-04/removal-receipt.json`; original cleanup
 receipts describe the earlier preservation, not current availability. The
-weekly policy for future unknown results remains unchanged.
+weekly policy now expires future incomplete or unknown results after 14 quiet
+days, subject to the protections above.
 
 ## Recovery
 

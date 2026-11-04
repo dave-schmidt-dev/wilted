@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import tempfile
 import tarfile
 import unittest
@@ -279,6 +280,135 @@ class BundleExportTests(unittest.TestCase):
         result = bundles.export_bundle(self.source, destination)
         self.assertEqual(result["reason"], "destination-exists")
         self.assertEqual((destination / "sentinel").read_text(), "keep")
+
+
+class IncompleteExpiryTests(unittest.TestCase):
+    """Exercise weekly disposal through the real selector, exporter and remover."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="wilted-expiry-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.source = self.root / ".logs/old.xcresult"
+        self.source.mkdir(parents=True)
+        self.payload = self.source / "raw.bin"
+        self.payload.write_bytes(b"obsolete diagnostics")
+        self.archive = self.root / ".logs/retained-evidence/weekly"
+        self.now = time.time()
+        self.age()
+
+    def age(self) -> None:
+        for path in [*self.source.rglob("*"), self.source]:
+            os.utime(path, (self.now - 15 * 86400,) * 2)
+
+    def with_metadata(self) -> None:
+        (self.source / "Info.plist").write_text("fixture metadata")
+        self.age()
+
+    def run_policy(self, *, reply="unknown", apply=True, hook=None):
+        def run(command, deadline):
+            del deadline
+            if hook:
+                hook()
+            if reply == "error":
+                return subprocess.CompletedProcess(command, 1, b"", b"reader unavailable")
+            return subprocess.CompletedProcess(command, 0, json.dumps({"result": reply}).encode(), b"")
+        with patch.object(evidence, "_open_reference", return_value=(False, "")), \
+                patch.object(bundles, "_run", side_effect=run), \
+                patch.object(evidence, "archive_paths", side_effect=AssertionError("must not archive")):
+            return evidence.compact(self.root, self.archive, now=self.now, apply=apply)
+
+    def assert_disposed(self, report, reason) -> None:
+        self.assertFalse(self.source.exists())
+        self.assertEqual(report["removed"], [str(self.source)])
+        self.assertEqual(report["archives"], [])
+        receipt = json.loads(Path(report["discarded"][0]["receipt"]).read_text())
+        self.assertEqual(receipt["status"], "removed")
+        self.assertEqual(receipt["reason"], reason)
+        self.assertFalse(receipt["archive_created"])
+        self.assertGreater(receipt["allocated_bytes"], 0)
+
+    def test_missing_metadata_expires_without_export_or_archive(self):
+        self.assert_disposed(self.run_policy(), "missing-root-metadata")
+
+    def test_explicit_unknown_outcome_expires_without_archive(self):
+        self.with_metadata()
+        self.assert_disposed(self.run_policy(), "unknown-test-outcome")
+
+    def test_generic_reader_failure_is_retained(self):
+        self.with_metadata()
+        report = self.run_policy(reply="error")
+        self.assertTrue(self.source.exists())
+        self.assertEqual(report["removed"], [])
+
+    def test_recent_nested_file_is_retained(self):
+        os.utime(self.payload, (self.now,) * 2)
+        self.assertEqual(self.run_policy()["selected"], [])
+        self.assertTrue(self.payload.exists())
+
+    def test_dry_run_does_not_delete_or_write_disposal_receipt(self):
+        self.assertEqual(self.run_policy(apply=False)["status"], "dry-run")
+        self.assertTrue(self.source.exists())
+        self.assertFalse(self.archive.parent.exists())
+
+    def test_directory_citation_is_retained(self):
+        (self.root / "README.md").write_text("Evidence: `.logs/old.xcresult/`.")
+        self.assertEqual(self.run_policy()["selected"], [])
+        self.assertTrue(self.source.exists())
+
+    def test_descendant_citation_is_retained(self):
+        (self.root / "TASKS.md").write_text("Evidence: `.logs/old.xcresult/raw.bin`.")
+        self.assertEqual(self.run_policy()["removed"], [])
+        self.assertTrue(self.source.exists())
+
+    def test_busy_bundle_is_retained(self):
+        with patch.object(evidence, "_open_reference", return_value=(True, "busy")):
+            report = evidence.compact(self.root, self.archive, now=self.now, apply=True)
+        self.assertEqual(report.get("removed", []), [])
+        self.assertTrue(self.source.exists())
+
+    def test_liveness_is_rechecked_before_disposal(self):
+        with patch.object(evidence, "_open_reference", side_effect=[(False, ""), (True, "busy")]):
+            report = evidence.compact(self.root, self.archive, now=self.now, apply=True)
+        self.assertEqual(report["removed"], [])
+        self.assertTrue(self.source.exists())
+
+    def test_changed_source_is_retained(self):
+        self.with_metadata()
+        report = self.run_policy(hook=lambda: self.payload.write_bytes(b"active generation"))
+        self.assertEqual(report["removed"], [])
+        self.assertEqual(self.payload.read_bytes(), b"active generation")
+
+    def test_new_citation_during_export_is_retained(self):
+        self.with_metadata()
+        report = self.run_policy(hook=lambda: (self.root / "README.md").write_text(
+            "Keep `.logs/old.xcresult/`."))
+        self.assertEqual(report["removed"], [])
+        self.assertTrue(self.source.exists())
+
+    def test_receipt_failure_prevents_disposal(self):
+        with patch.object(evidence.os, "replace", side_effect=OSError("receipt unavailable")):
+            report = self.run_policy()
+        self.assertEqual(report["removed"], [])
+        self.assertTrue(self.source.exists())
+
+    def test_confirmation_failure_still_reports_actual_deletion(self):
+        replace = os.replace
+        calls = []
+
+        def fail_confirmation(source, target):
+            calls.append(target)
+            if len(calls) == 2:
+                raise OSError("confirmation unavailable")
+            return replace(source, target)
+
+        with patch.object(evidence.os, "replace", side_effect=fail_confirmation):
+            report = self.run_policy()
+        self.assertFalse(self.source.exists())
+        self.assertEqual(report["removed"], [str(self.source)])
+        self.assertEqual(report["discarded"][0]["receipt_status"], "pending-confirmation")
+        self.assertEqual(json.loads(Path(report["discarded"][0]["receipt"]).read_text())["status"],
+                         "pending")
 
 
 if __name__ == "__main__":
