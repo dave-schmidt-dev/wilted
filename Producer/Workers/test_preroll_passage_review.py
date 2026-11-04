@@ -1,13 +1,22 @@
 """Fail-closed unit coverage for whole-opening ad recognition."""
 from __future__ import annotations
 
+import hashlib
+import io
 import json
+import re
 import types
 import unittest
+from contextlib import nullcontext, redirect_stderr
+from unittest import mock
 
 from worker_test_fake_ads import FakeAd, install_fake_ads
+from worker_test_fake_llm import FakeLLM
 from worker_test_support import FakeSegment
 from wilted_worker import cue_timing
+from wilted_worker import feed_profile_runtime
+from wilted_worker.ad_outcome import decide_ad_outcome
+from wilted_worker.ad_removal import analyze_ad_detections
 from wilted_worker.boundary_review import reject_programme_conflicts
 from wilted_worker.preroll_passage_review import (
     WHOLE_PASSAGE_PROMPT,
@@ -15,6 +24,7 @@ from wilted_worker.preroll_passage_review import (
     _validate_response,
     recover_source_checked_preroll,
 )
+from wilted_worker.cue_timing import serialize_ad_audit
 from wilted_worker.recovery_policy import project_detections_around_blocked_house_regions
 
 
@@ -361,4 +371,91 @@ class WholePassageRecoveryTests(unittest.TestCase):
         checked = reject_programme_conflicts(detections, held)
         self.assertEqual(checked, [])
         self.assertEqual(len(cue_timing.build_effective_cut_map(checked, 300.0)[0]), 0)
+
+
+class SourceCheckedProfileInteractionTests(unittest.TestCase):
+    """The final analysis and cut map retain whole-opening source gaps."""
+
+    SEGMENTS = [
+        FakeSegment(5.0, 10.0, "Paid game advertisement"),
+        FakeSegment(20.0, 30.0, "Order the game online"),
+        FakeSegment(30.0, 35.0, "..."),
+        FakeSegment(50.0, 60.0, "Welcome to the show"),
+    ]
+
+    def analyze(self, profile_proposals=None, *, classification="paid_product_ad"):
+        llm = FakeLLM(
+            loaded=True,
+            preroll_program_start_id=3,
+            whole_passage_classification=classification,
+            whole_passage_commercial_ids=[0, 1],
+        )
+        ads = install_fake_ads(llm, detections=[
+            FakeAd(60.0, 80.0, "sponsor_read", 0.97, ("paid advertising",)),
+        ])
+        profile = {"slots": []} if profile_proposals is not None else None
+        inference = mock.patch.object(
+            feed_profile_runtime,
+            "recover_profile_candidates",
+            return_value=feed_profile_runtime.ProfileRecovery(
+                tuple(profile_proposals or ()), windows=1, requests=1,
+            ),
+        ) if profile_proposals is not None else nullcontext()
+        with inference, redirect_stderr(io.StringIO()):
+            analysis = analyze_ad_detections(
+                ads, llm, self.SEGMENTS, 100.0,
+                ad_profile=profile,
+            )
+        outcome = decide_ad_outcome(analysis.audit, analysis.detections)
+        cuts, keeps = cue_timing.build_effective_cut_map(analysis.detections, 100.0)
+        return analysis, outcome, cuts, keeps
+
+    def assert_source_checked_cuts_and_paid_tail(self, analysis, outcome, cuts, keeps):
+        self.assertIsNone(outcome.keep_whole_reason)
+        self.assertIsNotNone(analysis.audit.opening_review)
+        self.assertEqual(cuts, [(5.0, 10.0), (20.0, 30.0), (60.0, 80.0)])
+        self.assertIn((0.0, 5.0), [(keep.start_s, keep.end_s) for keep in keeps])
+        self.assertIn((10.0, 20.0), [(keep.start_s, keep.end_s) for keep in keeps])
+        self.assertIn((30.0, 60.0), [(keep.start_s, keep.end_s) for keep in keeps])
+        tail = next(ad for ad in analysis.detections if ad.start_s == 60.0)
+        self.assertEqual((tail.end_s, tail.label, tail.confidence), (80.0, "sponsor_read", 0.97))
+        self.assertEqual(tuple(tail.kinds), ("paid advertising",))
+
+    def test_profile_recut_cannot_restore_leading_or_intercue_gap(self):
+        result = self.analyze([FakeAd(0.0, 30.0, "profile_candidate", 0.6)])
+        self.assert_source_checked_cuts_and_paid_tail(*result)
+
+    def test_profile_recut_cannot_restore_punctuation_or_opening_tail_gaps(self):
+        result = self.analyze([FakeAd(0.0, 45.0, "profile_candidate", 0.6)])
+        self.assert_source_checked_cuts_and_paid_tail(*result)
+
+    def test_no_profile_path_keeps_the_same_source_checked_geometry(self):
+        result = self.analyze()
+        self.assert_source_checked_cuts_and_paid_tail(*result)
+
+    def test_accepted_opening_receipt_is_bounded_digest_only_and_serialized(self):
+        analysis, _outcome, _cuts, _keeps = self.analyze()
+        receipt = serialize_ad_audit(analysis.audit)["openingReview"]
+        self.assertEqual(receipt["schemaVersion"], 1)
+        self.assertEqual(receipt["status"], "accepted")
+        self.assertEqual(receipt["candidateEndSeconds"], 50.0)
+        self.assertEqual(receipt["candidateCueCount"], 3)
+        self.assertEqual(receipt["quoteCount"], 2)
+        self.assertEqual(receipt["coveredCueIDs"], [0, 1])
+        self.assertRegex(receipt["quoteEvidenceDigest"], r"^[0-9a-f]{64}$")
+        canonical = json.dumps(
+            receipt["validatedQuotes"], sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertEqual(receipt["quoteEvidenceDigest"], hashlib.sha256(canonical).hexdigest())
+        serialized = json.dumps(receipt)
+        self.assertNotIn("Paid game advertisement", serialized)
+        self.assertNotIn("Order the game online", serialized)
+
+    def test_mixed_or_unknown_opening_has_no_accepted_receipt(self):
+        for classification in ("mixed", "unknown"):
+            with self.subTest(classification=classification):
+                analysis, outcome, _cuts, _keeps = self.analyze(classification=classification)
+                self.assertIsNotNone(outcome.keep_whole_reason)
+                self.assertIsNone(analysis.audit.opening_review)
+                self.assertNotIn("openingReview", serialize_ad_audit(analysis.audit))
 

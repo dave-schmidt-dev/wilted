@@ -243,9 +243,11 @@ def analyze_ad_detections(
     )
     detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
     detections = reject_programme_conflicts(detections, held_spans)
+    source_checked_openings = []
     detections = _worker_preroll_passage_review.recover_source_checked_preroll(
         ads_module, auditing_backend, segments, detections,
         total_seconds, remove_self_promotion, held_spans,
+        source_checked_openings,
     )
     # Whole-opening evidence can add positive programme and house holds. Run
     # the shared guards before feed profiles get their bounded fallback pass.
@@ -293,6 +295,10 @@ def analyze_ad_detections(
             )
             detections = proposed_detections
 
+    detections = _worker_preroll_passage_review.apply_source_checked_opening_constraints(
+        ads_module, detections, source_checked_openings,
+    )
+
     # The same final policy and programme guards always apply, whether or not
     # an ad profile was present or proposed additional spans.
     detections = project_detections_around_blocked_house_regions(
@@ -317,6 +323,8 @@ def analyze_ad_detections(
         )
     audit = auditing_backend.audit(detections, segments)
     audit.held_spans = tuple(held_spans)
+    if source_checked_openings:
+        audit.opening_review = source_checked_openings[0].receipt
     audit.ad_profile_observation = primary_observation
     profile_was_used = ad_profile is not None and profile_requests > 0
     audit.ad_profile_status = (

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from . import reporting as _worker_reporting
@@ -13,6 +14,7 @@ from .constants import (
     PREROLL_RECOVERY_MAX_SEGMENTS,
     PREROLL_RECOVERY_MINIMUM_SECONDS,
 )
+from .ad_audit import OpeningReviewReceipt, ValidatedQuoteEvidence
 from .interval_geometry import intervals_overlap
 from .prompts import PREROLL_PROGRAM_START_PROMPT, WHOLE_PASSAGE_PROMPT
 
@@ -24,6 +26,16 @@ ROLES = ("paid_product_ad", "house_promo", "programme", "mixed", "unknown")
 
 _WORD_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
 _HOUSE_LABELS = frozenset({"self_promo", "newsletter_pitch"})
+
+
+@dataclass(frozen=True)
+class SourceCheckedOpening:
+    """Accepted opening extent and the exact lexical cuts it authorizes."""
+
+    start_s: float
+    end_s: float
+    cuts: tuple[object, ...]
+    receipt: OpeningReviewReceipt
 
 
 def _response_schema(all_ids: list[int]) -> dict[str, Any]:
@@ -241,6 +253,64 @@ def _without_opening(ads_module, detections, start_s: float, end_s: float):
     return sorted(result, key=lambda ad: float(ad.start_s))
 
 
+def apply_source_checked_opening_constraints(ads_module, detections, openings):
+    """Keep later proposals inside accepted opening cuts, preserving tails.
+
+    Profiles may nominate a broad cut that overlaps an already reviewed
+    opening. Inside that extent, their coverage is intersected with the exact
+    lexical intervals accepted by the whole-passage review. Pieces after the
+    reviewed extent keep their original metadata.
+    """
+    result = list(detections)
+    for opening in openings:
+        proposals = list(result)
+        retained = []
+        for ad in proposals:
+            ad_start, ad_end = float(ad.start_s), float(ad.end_s)
+            if ad_end <= opening.start_s or ad_start >= opening.end_s:
+                retained.append(ad)
+                continue
+            kinds = tuple(ads_module.ad_segment_kinds(ad))
+            if ad_start < opening.start_s:
+                retained.append(ads_module.AdSegment(
+                    ad_start, opening.start_s, float(ad.confidence), ad.label, kinds=kinds,
+                ))
+            if ad_end > opening.end_s:
+                retained.append(ads_module.AdSegment(
+                    opening.end_s, ad_end, float(ad.confidence), ad.label, kinds=kinds,
+                ))
+
+        allowed_cuts = []
+        for source_cut in opening.cuts:
+            cut_start, cut_end = float(source_cut.start_s), float(source_cut.end_s)
+            covered = sorted(
+                (max(cut_start, float(ad.start_s)), min(cut_end, float(ad.end_s)))
+                for ad in proposals
+                if intervals_overlap(
+                    cut_start, cut_end, float(ad.start_s), float(ad.end_s),
+                )
+            )
+            merged_coverage = []
+            for start_s, end_s in covered:
+                if merged_coverage and start_s <= merged_coverage[-1][1]:
+                    merged_coverage[-1] = (
+                        merged_coverage[-1][0], max(merged_coverage[-1][1], end_s),
+                    )
+                else:
+                    merged_coverage.append((start_s, end_s))
+            kinds = tuple(ads_module.ad_segment_kinds(source_cut))
+            allowed_cuts.extend(
+                source_cut if start_s == cut_start and end_s == cut_end
+                else ads_module.AdSegment(
+                    start_s, end_s, float(source_cut.confidence), source_cut.label, kinds=kinds,
+                )
+                for start_s, end_s in merged_coverage
+                if start_s < end_s
+            )
+        result = sorted([*retained, *allowed_cuts], key=lambda ad: float(ad.start_s))
+    return result
+
+
 def recover_source_checked_preroll(
     ads_module: Any,
     backend: Any,
@@ -249,6 +319,7 @@ def recover_source_checked_preroll(
     total_seconds: float,
     remove_self_promotion: bool = False,
     held_spans=(),
+    source_checked_openings: list[SourceCheckedOpening] | None = None,
 ):
     """Review a full nominated opening and cut only source cue intervals."""
     if not segments:
@@ -387,6 +458,41 @@ def recover_source_checked_preroll(
             kinds=(ads_module.AD_KIND_PAID,),
         ))
 
+    validated_quotes = tuple(sorted(
+        (
+            ValidatedQuoteEvidence(
+                int(item["id"]), tuple(int(value) for value in item["coveredIDs"]),
+                int(item["wordCount"]), str(item["sha256"]),
+            )
+            for item in judgment["validatedQuoteMetadata"]
+        ),
+        key=lambda item: item.id,
+    ))
+    canonical_quotes = [
+        {
+            "id": item.id,
+            "coveredIDs": list(item.covered_ids),
+            "wordCount": item.word_count,
+            "sha256": item.sha256,
+        }
+        for item in validated_quotes
+    ]
+    quote_evidence_digest = hashlib.sha256(json.dumps(
+        canonical_quotes, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    receipt = OpeningReviewReceipt(
+        schema_version=1,
+        status="accepted",
+        candidate_end_s=candidate_end,
+        candidate_cue_count=len(candidate_ids),
+        quote_count=len(validated_quotes),
+        covered_cue_ids=tuple(sorted({
+            value for item in validated_quotes for value in item.covered_ids
+        })),
+        quote_evidence_digest=quote_evidence_digest,
+        validated_quotes=validated_quotes,
+    )
+
     # The opening review replaces coarse existing spans inside its candidate.
     # Their portions outside the reviewed extent remain intact.
     # Accepted opening ownership starts at the file boundary even when the
@@ -394,6 +500,10 @@ def recover_source_checked_preroll(
     # unobserved leading sliver removed beside the source-checked cue cuts.
     retained = _without_opening(ads_module, detections, 0.0, candidate_end)
     result = sorted([*retained, *cuts], key=lambda ad: float(ad.start_s))
+    if isinstance(source_checked_openings, list):
+        source_checked_openings.append(SourceCheckedOpening(
+            0.0, candidate_end, tuple(cuts), receipt,
+        ))
     _worker_reporting.progress(
         "ads.detect.preroll.accepted",
         f"paid opening accepted across {len(lexical_ids)} source cues; positive gaps preserved",

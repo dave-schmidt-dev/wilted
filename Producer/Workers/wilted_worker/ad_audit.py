@@ -121,6 +121,30 @@ class HeldAdSpan:
     reason: str
 
 
+@dataclass(frozen=True)
+class ValidatedQuoteEvidence:
+    """Sanitized source-quote evidence retained without the quoted words."""
+
+    id: int
+    covered_ids: tuple[int, ...]
+    word_count: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class OpeningReviewReceipt:
+    """Bounded proof that a source-checked opening review was accepted."""
+
+    schema_version: int
+    status: str
+    candidate_end_s: float
+    candidate_cue_count: int
+    quote_count: int
+    covered_cue_ids: tuple[int, ...]
+    quote_evidence_digest: str
+    validated_quotes: tuple[ValidatedQuoteEvidence, ...]
+
+
 @dataclass
 class AdAnalysisAudit:
     """Evidence recorded around the archive detector's otherwise opaque retries."""
@@ -140,6 +164,7 @@ class AdAnalysisAudit:
     near_empty: str | None = None
     declined_commercial_evidence_seeds: tuple[DeclinedCommercialEvidenceSeed, ...] = ()
     held_spans: tuple[HeldAdSpan, ...] = ()
+    opening_review: OpeningReviewReceipt | None = None
     warning: str | None = None
     ad_profile_observation: dict | None = None
     ad_profile_status: str = "absent"

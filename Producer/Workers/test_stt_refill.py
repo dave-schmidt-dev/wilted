@@ -222,8 +222,91 @@ class RefillHolesTests(unittest.TestCase):
         self.assertEqual(result_ffmpeg_fail, segments)
 
 
+class ShortOpeningRefillTests(unittest.TestCase):
+    """Tests for bounded exact-window lexical gap recovery."""
+
+    def test_gap_ignores_punctuation_and_rejects_invalid_times(self):
+        segment = FakeSegment(0.0, 3.0, "before . after", (
+            FakeToken("before", 0.0, 0.2),
+            FakeToken(".", 1.4, 1.5),
+            FakeToken("after", 2.2, 2.4),
+            FakeToken("invalid", float("nan"), 2.8),
+            FakeToken("outside", 3.0, 3.1),
+            FakeToken("zero", 2.7, 2.7),
+        ))
+        self.assertEqual(stt_refill.find_short_opening_gaps([segment], 3.0), [(0.2, 2.2)])
+
+    def test_gap_bounds_opening_limit_and_maximum_window_count(self):
+        bounded = [
+            FakeSegment(0.0, 2.4, "", (FakeToken("first", 0.0, 0.2), FakeToken("second", 2.2, 2.4))),
+            FakeSegment(20.0, 32.4, "", (FakeToken("third", 20.0, 20.2), FakeToken("fourth", 32.2, 32.4))),
+        ]
+        self.assertEqual(
+            stt_refill.find_short_opening_gaps(bounded, 400.0),
+            [(0.2, 2.2), (20.2, 32.2)],
+        )
+        too_wide = FakeSegment(40.0, 54.5, "", (
+            FakeToken("fifth", 40.0, 40.2), FakeToken("sixth", 54.4, 54.5),
+        ))
+        self.assertEqual(stt_refill.find_short_opening_gaps([too_wide], 100.0), [])
+        self.assertEqual(stt_refill.find_short_opening_gaps(bounded, float("inf")), [])
+
+        tokens = []
+        for index in range(12):
+            start = float(index * 4)
+            tokens.append(FakeToken("word", start, start + 0.1))
+        tokens.extend((FakeToken("late", 301.0, 301.1), FakeToken("end", 304.0, 304.1)))
+        gaps = stt_refill.find_short_opening_gaps([FakeSegment(0.0, 304.1, "", tuple(tokens))], 400.0)
+        self.assertEqual(len(gaps), stt_refill.SHORT_OPENING_MAX_WINDOWS)
+        self.assertLessEqual(gaps[-1][1], stt_refill.SHORT_OPENING_LIMIT_S)
+
+    @mock.patch("subprocess.run")
+    def test_exact_unpadded_window_keeps_only_returned_tokens_inside_gap(self, mock_run):
+        opening = FakeSegment(0.0, 0.2, "opening", (FakeToken("opening", 0.0, 0.2),))
+        closing = FakeSegment(2.2, 2.4, "closing", (FakeToken("closing", 2.2, 2.4),))
+        source = [opening, closing]
+        calls = []
+
+        def fake_transcribe(path):
+            calls.append(path)
+            return [FakeSegment(0.0, 2.1, "opening New recovered . outside", (
+                FakeToken(" opening", 0.0, 0.08),
+                FakeToken(" New", 0.1, 0.2),
+                FakeToken(" recovered", 0.4, 0.8),
+                FakeToken(".", 0.9, 1.0),
+                FakeToken(" outside", 1.9, 2.1),
+            ))]
+
+        result = stt_refill.refill_short_opening_gaps("dummy.mp3", source, 10.0, fake_transcribe)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0], opening)
+        self.assertEqual(result[-1], closing)
+        self.assertEqual(result[1].text, "New recovered")
+        self.assertAlmostEqual(result[1].start_s, 0.3)
+        self.assertAlmostEqual(result[1].end_s, 1.0)
+        command = mock_run.call_args.args[0]
+        self.assertEqual(command[command.index("-ss") + 1], "0.2")
+        self.assertEqual(command[command.index("-to") + 1], "2.2")
+
+    @mock.patch("subprocess.run")
+    def test_empty_or_failed_decode_leaves_source_unchanged(self, mock_run):
+        source = [
+            FakeSegment(0.0, 0.2, "before", (FakeToken("before", 0.0, 0.2),)),
+            FakeSegment(2.2, 2.4, "after", (FakeToken("after", 2.2, 2.4),)),
+        ]
+        self.assertEqual(stt_refill.refill_short_opening_gaps("dummy.mp3", source, 10.0, lambda _: []), source)
+
+        def failing(_):
+            raise stt_refill.TranscriptionError("mock failure")
+
+        self.assertEqual(stt_refill.refill_short_opening_gaps("dummy.mp3", source, 10.0, failing), source)
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["ffmpeg"])
+        self.assertEqual(stt_refill.refill_short_opening_gaps("dummy.mp3", source, 10.0, lambda _: []), source)
+
+
 class TranscribeWithDaemonRefillTests(unittest.TestCase):
-    """Tests that transcribe_with_daemon invokes refill_holes."""
+    """Tests that transcribe_with_daemon invokes both refill passes."""
 
     @mock.patch("subprocess.run")
     def test_transcribe_with_daemon_recovers_hole_text(self, mock_run):
@@ -239,22 +322,26 @@ class TranscribeWithDaemonRefillTests(unittest.TestCase):
                     make_continuous_segment(0.0, 10.0, "Opening segment."),
                     make_continuous_segment(50.0, 60.0, "Closing segment."),
                 ]
-            # Second call for the refill window (7.0 to 53.0)
-            return [
+            if len(calls) == 2:
+                # Second call for the long refill window (7.0 to 53.0).
+                return [
                 FakeSegment(
                     10.0,
                     20.0,
                     "Recovered middle.",
                     (FakeToken(" Recovered", 10.0, 15.0), FakeToken(" middle.", 15.0, 20.0)),
                 ),
-            ]
+                ]
+            # Any short lexical-gap recheck is bounded; this fixture returns no
+            # additional speech for those windows.
+            return []
 
         sys.modules["wilted.transcribe"].transcribe_audio = fake_transcribe_audio
 
         with mock.patch.object(cue_timing, "probe_duration", return_value=60.0):
             result = transcript_sources.transcribe_with_daemon(Path("sample.mp3"))
 
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(
             [(s.text, s.start_s, s.end_s) for s in result],
             [

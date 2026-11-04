@@ -221,7 +221,7 @@ extension PodcastPreparationPipeline {
                                                           outputStartSeconds: $0.outputStartSeconds) },
             adRemovalOutcome: outcome,
             warning: outcome == "uncertain" ? (report["warning"] as? String).map { String($0.prefix(768)) } : nil,
-            adAuditDiagnostics: outcome == "uncertain" ? diagnosticFields(report["audit"] as? [String: Any] ?? [:]) : [:],
+            adAuditDiagnostics: auditDiagnostics(outcome: outcome, audit: report["audit"] as? [String: Any]),
             timeline: timeline,
             droppedCueCount: droppedCueCount,
             silenceTrims: silenceTrims,
@@ -254,7 +254,7 @@ extension PodcastPreparationPipeline {
         }
     }
 
-    private static func diagnosticFields(_ audit: [String: Any]) -> [String: String] {
+    static func diagnosticFields(_ audit: [String: Any]) -> [String: String] {
         var fields: [String: String] = [:]
         for key in ["modelRequests", "modelFailures", "classifierValidRequests", "classifierInvalidRequests"] {
             if let count = audit[key] as? Int { fields[key] = String(count) }

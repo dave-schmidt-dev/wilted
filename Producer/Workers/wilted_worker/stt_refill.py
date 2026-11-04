@@ -35,6 +35,10 @@ WINDOW_MAXIMUM_S = 60.0
 # hundred milliseconds differently, so one can land just inside the hole. A
 # recovered word this close to an edge that repeats the word across it is dropped.
 EDGE_REPEAT_S = 1.5
+SHORT_OPENING_LIMIT_S = 300.0
+SHORT_OPENING_GAP_MINIMUM_S = 2.0
+SHORT_OPENING_GAP_MAXIMUM_S = 12.0
+SHORT_OPENING_MAX_WINDOWS = 8
 
 
 def find_holes(
@@ -195,7 +199,7 @@ def _drop_edge_repeats(tokens, holes, neighbours) -> list:
         start = float(word[0].start_s)
         key = _word_key(word)
         repeat = any(
-            hole_start < start < hole_end
+            hole_start <= start < hole_end
             and (
                 (key == before and start - hole_start < EDGE_REPEAT_S)
                 or (key == after and hole_end - start < EDGE_REPEAT_S)
@@ -205,6 +209,161 @@ def _drop_edge_repeats(tokens, holes, neighbours) -> list:
         if not repeat:
             kept.extend(word)
     return kept
+
+
+def find_short_opening_gaps(
+    segments,
+    duration_s: float,
+    *,
+    opening_limit_s: float = SHORT_OPENING_LIMIT_S,
+) -> list[tuple[float, float]]:
+    """Find bounded internal lexical gaps near the start of an audio source.
+
+    Punctuation-only tokens do not count as speech coverage. Only valid timed
+    lexical tokens can bound a gap; leading and trailing silence are excluded.
+    Token spans are capped like the existing long-hole detector so a stretched
+    alignment does not conceal missing speech.
+    """
+    try:
+        duration = float(duration_s)
+        opening_limit = min(float(opening_limit_s), duration)
+    except (TypeError, ValueError, OverflowError):
+        return []
+    if not math.isfinite(duration) or not math.isfinite(opening_limit) or duration <= 0 or opening_limit <= 0:
+        return []
+
+    spans: list[tuple[float, float]] = []
+    for segment in segments or ():
+        for token in getattr(segment, "tokens", None) or ():
+            if not any(character.isalnum() for character in str(getattr(token, "text", ""))):
+                continue
+            try:
+                start = float(token.start_s)
+                end = float(token.end_s)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
+            if (
+                not math.isfinite(start)
+                or not math.isfinite(end)
+                or start < 0.0
+                or end <= start
+                or end > duration
+                or start >= opening_limit
+            ):
+                continue
+            spans.append((start, min(end, start + LONGEST_TOKEN_S)))
+
+    if len(spans) < 2:
+        return []
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    gaps = []
+    for (_, previous_end), (next_start, _) in zip(merged, merged[1:]):
+        gap_start = max(0.0, previous_end)
+        gap_end = min(opening_limit, next_start)
+        gap_length = gap_end - gap_start
+        within_minimum = gap_length >= SHORT_OPENING_GAP_MINIMUM_S or math.isclose(
+            gap_length, SHORT_OPENING_GAP_MINIMUM_S, abs_tol=1e-9
+        )
+        within_maximum = gap_length <= SHORT_OPENING_GAP_MAXIMUM_S or math.isclose(
+            gap_length, SHORT_OPENING_GAP_MAXIMUM_S, abs_tol=1e-9
+        )
+        if within_minimum and within_maximum:
+            gaps.append((gap_start, gap_end))
+            if len(gaps) >= SHORT_OPENING_MAX_WINDOWS:
+                break
+    return gaps
+
+
+def refill_short_opening_gaps(
+    audio_path: Path | str,
+    segments,
+    duration_s: float,
+    transcribe_window,
+) -> list:
+    """Decode exact short lexical gaps within the first five minutes.
+
+    Each source gap is one unpadded, unmerged decode window. Only returned
+    tokens with valid timings inside that gap are added. Missing audio,
+    failed decodes, empty output, and invalid timestamps leave the transcript
+    unchanged. Work is bounded to eight windows per source.
+    """
+    original = list(segments or ())
+    gaps = find_short_opening_gaps(original, duration_s)
+    if not gaps:
+        return original
+
+    neighbours = _hole_neighbours(original, gaps)
+    recovered_segments = []
+    total_windows = len(gaps)
+    for index, (gap_start, gap_end) in enumerate(gaps, 1):
+        _worker_reporting.progress(
+            "transcript.stt.short-opening-refill",
+            f"{index}/{total_windows} {gap_start:.2f}-{gap_end:.2f}s",
+        )
+        try:
+            with tempfile.TemporaryDirectory(prefix="wilted-stt-opening-refill-") as tmp_dir:
+                wav_path = Path(tmp_dir) / "window.wav"
+                cmd = [
+                    "ffmpeg", "-nostdin", "-v", "error",
+                    "-ss", str(gap_start), "-to", str(gap_end), "-i", str(audio_path),
+                    "-ac", "1", "-ar", "16000", str(wav_path),
+                ]
+                subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+                window_segments = transcribe_window(wav_path)
+        except (subprocess.SubprocessError, OSError, TranscriptionError) as error:
+            logger.warning("Short opening STT refill window %.2f-%.2fs failed: %s", gap_start, gap_end, error)
+            _worker_reporting.progress(
+                "transcript.stt.short-opening-refill.failed",
+                f"{gap_start:.2f}-{gap_end:.2f}s: {error}",
+            )
+            continue
+
+        for segment in window_segments or ():
+            kept_tokens = []
+            for token in getattr(segment, "tokens", None) or ():
+                try:
+                    relative_start = float(token.start_s)
+                    relative_end = float(token.end_s)
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    continue
+                if (
+                    not math.isfinite(relative_start)
+                    or not math.isfinite(relative_end)
+                    or relative_start < 0.0
+                    or relative_end <= relative_start
+                    or relative_end > gap_end - gap_start
+                    or not any(character.isalnum() for character in str(getattr(token, "text", "")))
+                ):
+                    continue
+                absolute_start = relative_start + gap_start
+                absolute_end = relative_end + gap_start
+                if gap_start <= absolute_start < gap_end and absolute_end <= gap_end:
+                    kept_tokens.append(dataclasses.replace(token, start_s=absolute_start, end_s=absolute_end))
+
+            kept_tokens = _drop_edge_repeats(kept_tokens, [(gap_start, gap_end)], [neighbours[index - 1]])
+            if not kept_tokens:
+                continue
+            kept_tokens.sort(key=lambda token: (float(token.start_s), float(token.end_s)))
+            rebuilt = dataclasses.replace(
+                segment,
+                start_s=float(kept_tokens[0].start_s),
+                end_s=float(kept_tokens[-1].end_s),
+                text="".join(token.text for token in kept_tokens).strip(),
+                tokens=tuple(kept_tokens),
+            )
+            recovered_segments.append(rebuilt)
+
+    _worker_reporting.progress(
+        "transcript.stt.short-opening-refill.complete",
+        f"{len(recovered_segments)} segments in {total_windows} windows",
+    )
+    return in_time_order(original + recovered_segments)
 
 
 def refill_holes(

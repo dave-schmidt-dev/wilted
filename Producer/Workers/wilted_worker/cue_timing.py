@@ -130,6 +130,28 @@ def serialize_ad_audit(audit, *, include_profile_observation: bool = False) -> d
     same JSON. The request counts and unresolved identifiers below are what
     tell those two apart, so they travel with every completed analysis.
     """
+    from .ad_audit import OpeningReviewReceipt
+    opening_review = getattr(audit, "opening_review", None)
+    opening_payload = None
+    if isinstance(opening_review, OpeningReviewReceipt) and opening_review.status == "accepted":
+        opening_payload = {
+            "schemaVersion": int(opening_review.schema_version),
+            "status": opening_review.status,
+            "candidateEndSeconds": float(opening_review.candidate_end_s),
+            "candidateCueCount": int(opening_review.candidate_cue_count),
+            "quoteCount": int(opening_review.quote_count),
+            "coveredCueIDs": [int(value) for value in opening_review.covered_cue_ids],
+            "quoteEvidenceDigest": opening_review.quote_evidence_digest,
+            "validatedQuotes": [
+                {
+                    "id": int(item.id),
+                    "coveredIDs": [int(value) for value in item.covered_ids],
+                    "wordCount": int(item.word_count),
+                    "sha256": item.sha256,
+                }
+                for item in opening_review.validated_quotes
+            ],
+        }
     return {
         "classifierRequests": int(audit.classifier_requests),
         "classifierValidRequests": int(audit.classifier_valid_requests),
@@ -172,6 +194,7 @@ def serialize_ad_audit(audit, *, include_profile_observation: bool = False) -> d
         "adProfileWindows": int(getattr(audit, "ad_profile_windows", 0)),
         "adProfileRequests": int(getattr(audit, "ad_profile_requests", 0)),
         "adProfileFailures": int(getattr(audit, "ad_profile_failures", 0)),
+        **({"openingReview": opening_payload} if opening_payload is not None else {}),
         **({"adProfileObservation": audit.ad_profile_observation}
            if include_profile_observation and getattr(audit, "ad_profile_observation", None) is not None else {}),
     }
