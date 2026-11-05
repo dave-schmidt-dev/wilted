@@ -77,13 +77,26 @@ extension PodcastPreparationPipeline {
             return nil
         }
 
+        // quoteOrigin is optional for receipts emitted before origin tracking.
+        let quoteOrigin: String
+        if let rawOrigin = review["quoteOrigin"] {
+            guard let origin = rawOrigin as? String,
+                  ["initial", "literal-repair"].contains(origin) else {
+                return nil
+            }
+            quoteOrigin = origin
+        } else {
+            quoteOrigin = "unreported"
+        }
+
         let first16 = ids.prefix(maximumDiagnosticOpeningReviewIDs)
         let first16String = first16.map(String.init).joined(separator: ",")
         let omittedCount = max(0, ids.count - first16.count)
         let endString = String(candidateEnd)
 
         let summary = "end=\(endString);candidateCount=\(candidateCueCount);quoteCount=\(quoteCount);"
-            + "coveredIDs=\(first16String);omittedIDCount=\(omittedCount);digest=\(digest)"
+            + "quoteOrigin=\(quoteOrigin);coveredIDs=\(first16String);"
+            + "omittedIDCount=\(omittedCount);digest=\(digest)"
 
         guard summary.count <= 256 else { return nil }
         return summary

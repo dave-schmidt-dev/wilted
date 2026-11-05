@@ -17,6 +17,7 @@ struct PodcastOpeningReviewDiagnosticsTests {
         quoteCount: Any = 2,
         coveredCueIDs: Any = [0, 1, 2],
         quoteEvidenceDigest: Any = validDigest,
+        quoteOrigin: Any? = nil,
         extraFields: [String: Any] = [:]
     ) -> [String: Any] {
         var dict: [String: Any] = [
@@ -28,6 +29,9 @@ struct PodcastOpeningReviewDiagnosticsTests {
             "coveredCueIDs": coveredCueIDs,
             "quoteEvidenceDigest": quoteEvidenceDigest,
         ]
+        if let quoteOrigin {
+            dict["quoteOrigin"] = quoteOrigin
+        }
         dict.merge(extraFields) { _, new in new }
         return dict
     }
@@ -102,7 +106,8 @@ struct PodcastOpeningReviewDiagnosticsTests {
         let response = Self.cutResponse(openingReview: receipt)
         let payload = try PodcastPreparationPipeline.decode(JSONSerialization.data(withJSONObject: response))
 
-        let expectedSummary = "end=15.0;candidateCount=10;quoteCount=2;coveredIDs=0,1,2;omittedIDCount=0;digest=\(Self.validDigest)"
+        let expectedSummary = "end=15.0;candidateCount=10;quoteCount=2;"
+            + "quoteOrigin=unreported;coveredIDs=0,1,2;omittedIDCount=0;digest=\(Self.validDigest)"
         #expect(payload.adAuditDiagnostics["openingReview"] == expectedSummary)
 
         let progress = PodcastPreparationPipeline.resultProgress(payload)
@@ -141,6 +146,23 @@ struct PodcastOpeningReviewDiagnosticsTests {
         #expect(uncertainProgress.evidence?.fields["incompleteError"] != nil)
     }
 
+    @Test func quoteOriginIsBoundedAndLegacyMissingOriginIsAccepted() {
+        let legacy = Self.validOpeningReview()
+        let legacySummary = PodcastPreparationPipeline.openingReviewDiagnosticSummary(legacy)
+        #expect(legacySummary?.contains("quoteOrigin=unreported") == true)
+
+        for origin in ["initial", "literal-repair"] {
+            let receipt = Self.validOpeningReview(quoteOrigin: origin)
+            let summary = PodcastPreparationPipeline.openingReviewDiagnosticSummary(receipt)
+            #expect(summary?.contains("quoteOrigin=\(origin)") == true)
+        }
+
+        for invalidOrigin: Any in ["model", 7, NSNull()] {
+            let receipt = Self.validOpeningReview(quoteOrigin: invalidOrigin)
+            #expect(PodcastPreparationPipeline.openingReviewDiagnosticSummary(receipt) == nil)
+        }
+    }
+
     @Test func malformedReceiptIgnoredWithoutFailingAudio() throws {
         let invalidReceipts: [(name: String, receipt: [String: Any])] = [
             ("bool schemaVersion", Self.validOpeningReview(schemaVersion: true)),
@@ -171,6 +193,8 @@ struct PodcastOpeningReviewDiagnosticsTests {
             ("long digest", Self.validOpeningReview(quoteEvidenceDigest: Self.validDigest + "a")),
             ("uppercase digest", Self.validOpeningReview(quoteEvidenceDigest: Self.validDigest.uppercased())),
             ("non-hex digest", Self.validOpeningReview(quoteEvidenceDigest: String(repeating: "z", count: 64))),
+            ("unknown quoteOrigin", Self.validOpeningReview(quoteOrigin: "model")),
+            ("non-string quoteOrigin", Self.validOpeningReview(quoteOrigin: 7)),
         ]
 
         for (name, receipt) in invalidReceipts {

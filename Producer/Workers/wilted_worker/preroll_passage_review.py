@@ -1,10 +1,9 @@
 """Source-checked paid-ad review for a nominated episode opening."""
 from __future__ import annotations
 
-import hashlib
 import json
+import hashlib
 import math
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,18 +14,18 @@ from .constants import (
     PREROLL_RECOVERY_MAX_SEGMENTS,
     PREROLL_RECOVERY_MINIMUM_SECONDS,
 )
-from .ad_audit import OpeningReviewReceipt, ValidatedQuoteEvidence
+from .ad_audit import OpeningReviewReceipt
 from .interval_geometry import intervals_overlap
 from .prompts import PREROLL_PROGRAM_START_PROMPT, WHOLE_PASSAGE_PROMPT
 from .review_diagnostics import opening_failure_reason
+from .opening_review_response import (
+    _WORD_RE, response_schema as _response_schema, validate_response as _validate_response,
+    build_quote_repair_request, quote_repair_allowed, validated_quote_evidence,
+    repair_quotes_match_literals,
+)
 
 MAX_REVIEW_CHARS = 12_000
 RIGHT_COMPARISON_CUES = 14
-MAX_QUOTE_WORDS = 12
-MAX_QUOTE_CUES = 3
-ROLES = ("paid_product_ad", "house_promo", "programme", "mixed", "unknown")
-
-_WORD_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
 _HOUSE_LABELS = frozenset({"self_promo", "newsletter_pitch"})
 
 
@@ -38,130 +37,6 @@ class SourceCheckedOpening:
     end_s: float
     cuts: tuple[object, ...]
     receipt: OpeningReviewReceipt
-
-
-def _response_schema(all_ids: list[int]) -> dict[str, Any]:
-    """Build the strict, measured experiment response contract."""
-    properties = {
-        "classification": {"type": "string", "enum": list(ROLES)},
-        "commercial_evidence_ids": {
-            "type": "array", "items": {"type": "integer", "enum": all_ids},
-        },
-        "programme_evidence_ids": {
-            "type": "array", "items": {"type": "integer", "enum": all_ids},
-        },
-        "commercial_quotes": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "integer", "enum": all_ids},
-                    "quote": {"type": "string"},
-                },
-                "required": ["id", "quote"],
-                "additionalProperties": False,
-            },
-        },
-    }
-    return {
-        "type": "json_object",
-        "schema": {
-            "type": "object", "properties": properties,
-            "required": list(properties), "additionalProperties": False,
-        },
-    }
-
-
-def _quote_covered_ids(anchor: int, quote: str, candidate_ids: tuple[int, ...], segments) -> tuple[int, ...] | None:
-    """Match exact source text across up to 3 cues, starting in the cited cue."""
-    if anchor not in candidate_ids:
-        return None
-    if not _WORD_RE.findall(quote) or len(_WORD_RE.findall(quote)) > MAX_QUOTE_WORDS:
-        return None
-    candidate_positions = {segment_id: position for position, segment_id in enumerate(candidate_ids)}
-    position = candidate_positions[anchor]
-    cue_ids = candidate_ids[position:position + MAX_QUOTE_CUES]
-    texts = [str(getattr(segments[index], "text", "") or "") for index in cue_ids]
-    source = " ".join(texts)
-    anchor_end = len(texts[0])
-    match_start = source.find(quote)
-    while match_start >= 0:
-        match_end = match_start + len(quote)
-        if match_start < anchor_end:
-            owners = []
-            cue_start = 0
-            for index, text in zip(cue_ids, texts):
-                cue_end = cue_start + len(text)
-                if cue_end > match_start and cue_start < match_end:
-                    owners.append(index)
-                cue_start = cue_end + 1
-            if owners and owners[0] == anchor and len(owners) <= MAX_QUOTE_CUES:
-                return tuple(owners)
-        match_start = source.find(quote, match_start + 1)
-    return None
-
-
-def _validate_response(raw: str, candidate_ids: tuple[int, ...], all_ids: list[int], segments) -> dict[str, Any]:
-    """Validate shape, source IDs, and quote provenance without fuzzy matching."""
-    parsed = json.loads(raw)
-    fields = {
-        "classification", "commercial_evidence_ids", "programme_evidence_ids",
-        "commercial_quotes",
-    }
-    if not isinstance(parsed, dict) or set(parsed) != fields:
-        raise ValueError("whole-passage response has an invalid shape")
-    if parsed["classification"] not in ROLES or not isinstance(parsed["classification"], str):
-        raise ValueError("whole-passage classification is invalid")
-    allowed_ids = set(all_ids)
-    for name in ("commercial_evidence_ids", "programme_evidence_ids"):
-        values = parsed[name]
-        if (not isinstance(values, list)
-                or any(type(value) is not int or value not in allowed_ids for value in values)
-                or len(values) != len(set(values))):
-            raise ValueError(f"{name} contains invalid or duplicate IDs")
-    if not isinstance(parsed["commercial_quotes"], list):
-        raise ValueError("commercial_quotes is not an array")
-
-    quote_anchors: set[int] = set()
-    quote_metadata = []
-    for item in parsed["commercial_quotes"]:
-        if (not isinstance(item, dict) or set(item) != {"id", "quote"}
-                or type(item["id"]) is not int or item["id"] not in allowed_ids
-                or item["id"] in quote_anchors):
-            raise ValueError("commercial quote has an invalid or duplicate ID")
-        quote, anchor = item["quote"], item["id"]
-        if not isinstance(quote, str) or not quote.strip() or len(_WORD_RE.findall(quote)) > MAX_QUOTE_WORDS:
-            raise ValueError("commercial quote is empty or exceeds 12 words")
-        covered_ids = _quote_covered_ids(anchor, quote, candidate_ids, segments)
-        if covered_ids is None:
-            raise ValueError("commercial quote does not match exact candidate source words")
-        quote_anchors.add(anchor)
-        quote_metadata.append({
-            "id": anchor, "coveredIDs": list(covered_ids),
-            "wordCount": len(_WORD_RE.findall(quote)),
-            "sha256": hashlib.sha256(quote.encode("utf-8")).hexdigest(),
-        })
-
-    commercial_ids = parsed["commercial_evidence_ids"]
-    if not set(commercial_ids).issubset(quote_anchors):
-        raise ValueError("commercial evidence ID has no validated exact quote")
-    candidate_set = set(candidate_ids)
-    candidate_commercial = sorted(candidate_set.intersection(commercial_ids))
-    candidate_programme = sorted(candidate_set.intersection(parsed["programme_evidence_ids"]))
-    eligible = (
-        parsed["classification"] == "paid_product_ad"
-        and bool(candidate_commercial)
-        and not candidate_programme
-    )
-    return {
-        "classification": parsed["classification"],
-        "commercialEvidenceIDs": sorted(commercial_ids),
-        "programmeEvidenceIDs": sorted(parsed["programme_evidence_ids"]),
-        "candidateCommercialEvidenceIDs": candidate_commercial,
-        "candidateProgrammeEvidenceIDs": candidate_programme,
-        "validatedQuoteMetadata": quote_metadata,
-        "eligiblePaidCandidate": eligible,
-    }
 
 
 def _measured_generate(backend, system_prompt: str, user_content: str, response_format: dict):
@@ -475,13 +350,34 @@ def recover_source_checked_preroll(
     known_house = _known_house_ids(backend, detections, ads_module, segments)
     disabled_house = (not remove_self_promotion and bool(known_house.intersection(candidate_ids)))
     if disabled_house:
-        _record_opening_hold(held_spans, candidate_start, candidate_end,
-                             "house-promotion-disabled", total_seconds)
+        for segment_id in sorted(known_house.intersection(candidate_ids)):
+            segment = segments[segment_id]
+            _record_opening_hold(
+                held_spans, float(segment.start_s), float(segment.end_s),
+                "house-promotion-disabled", total_seconds,
+            )
     if candidate_has_hold or disabled_house:
         _worker_reporting.progress("ads.detect.preroll.skipped", "opening overlaps a held or disabled-house cue")
         return list(detections)
 
     response = None
+    quote_origin = "initial"
+
+    def fail_opening_review(raw, error):
+        _record_programme_evidence(
+            raw, all_ids, candidate_start, candidate_end, segments,
+            held_spans, total_seconds,
+        )
+        _record_opening_hold(
+            held_spans, candidate_start, candidate_end,
+            "boundary-review-unresolved", total_seconds,
+        )
+        _worker_reporting.progress(
+            "ads.detect.preroll.skipped",
+            f"whole-opening review failed: reason={opening_failure_reason(error)}",
+        )
+        return list(detections)
+
     try:
         response_format = _response_schema(all_ids)
         response, _tokens = _measured_generate(
@@ -489,14 +385,51 @@ def recover_source_checked_preroll(
         )
         judgment = _validate_response(response, candidate_ids, all_ids, segments)
     except Exception as error:  # noqa: BLE001 - malformed or failed review keeps the source
-        _record_programme_evidence(
-            response, all_ids, candidate_start, candidate_end, segments,
-            held_spans, total_seconds,
-        )
-        _record_opening_hold(held_spans, candidate_start, candidate_end,
-                             "boundary-review-unresolved", total_seconds)
-        _worker_reporting.progress("ads.detect.preroll.skipped", f"whole-opening review failed: reason={opening_failure_reason(error)}")
-        return list(detections)
+        if (
+            response is not None
+            and isinstance(error, ValueError)
+            and str(error) in {
+                "commercial quote is empty or exceeds 12 words",
+                "commercial quote does not match exact candidate source words",
+            }
+            and quote_repair_allowed(response, candidate_ids, all_ids)
+        ):
+            try:
+                repair_request = build_quote_repair_request(
+                    prompt, response, candidate_ids, all_ids, segments,
+                )
+                if repair_request is None:
+                    raise ValueError("opening quote repair has no safe exact literals")
+                repair_prompt, repair_response_format, repair_quote_options = repair_request
+                if len(repair_prompt) > MAX_REVIEW_CHARS:
+                    raise ValueError("opening quote repair exceeds its text bound")
+                repaired_response, _tokens = _measured_generate(
+                    backend, WHOLE_PASSAGE_PROMPT,
+                    repair_prompt,
+                    repair_response_format,
+                )
+                repaired_judgment = _validate_response(
+                    repaired_response, candidate_ids, all_ids, segments,
+                )
+                original = json.loads(response)
+                repaired = json.loads(repaired_response)
+                if (
+                    repaired.get("classification") != original.get("classification")
+                    or repaired.get("commercial_evidence_ids") != original.get("commercial_evidence_ids")
+                    or repaired.get("programme_evidence_ids") != original.get("programme_evidence_ids")
+                ):
+                    raise ValueError("opening quote repair changed decision")
+                if not repair_quotes_match_literals(
+                    repaired_response, tuple(original["commercial_evidence_ids"]),
+                    repair_quote_options,
+                ):
+                    raise ValueError("opening quote repair used an unoffered literal")
+                response, judgment = repaired_response, repaired_judgment
+                quote_origin = "literal-repair"
+            except Exception as repair_error:  # noqa: BLE001 - repair remains fail-closed
+                return fail_opening_review(response, repair_error)
+        else:
+            return fail_opening_review(response, error)
 
     _record_programme_evidence(
         response, all_ids, candidate_start, candidate_end, segments,
@@ -538,16 +471,7 @@ def recover_source_checked_preroll(
             kinds=(ads_module.AD_KIND_PAID,),
         ))
 
-    validated_quotes = tuple(sorted(
-        (
-            ValidatedQuoteEvidence(
-                int(item["id"]), tuple(int(value) for value in item["coveredIDs"]),
-                int(item["wordCount"]), str(item["sha256"]),
-            )
-            for item in judgment["validatedQuoteMetadata"]
-        ),
-        key=lambda item: item.id,
-    ))
+    validated_quotes = validated_quote_evidence(judgment["validatedQuoteMetadata"])
     canonical_quotes = [
         {
             "id": item.id,
@@ -571,6 +495,7 @@ def recover_source_checked_preroll(
         })),
         quote_evidence_digest=quote_evidence_digest,
         validated_quotes=validated_quotes,
+        quote_origin=quote_origin,
     )
 
     # The opening review replaces coarse existing spans inside its candidate.

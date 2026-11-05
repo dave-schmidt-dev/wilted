@@ -170,6 +170,11 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- A paid opening with malformed evidence quotes gets one source-bound quote repair while retaining its classification, evidence IDs, programme protections and strict final validation.
+- Adjacent-ad recovery independently checks proposed extensions before cutting programme, and known house-promotion cues no longer shield unrelated confirmed advertisements.
+- Programme-conflict and excessive-ad-share refusals preserve their held-span diagnostics instead of becoming unrelated dropped-anchor failures.
+- A seed wholly inside a kept house promotion no longer suppresses unrelated confirmed ad cuts when no cut overlaps that promotion.
+- Preparation accepts valid reports containing a positive kept gap between a pause and an ad; rejection logs now distinguish outcome and timeline failures using categories and counts.
 - Closing and other cue-ID ad reviews measure the complete request before inference. An oversized closing review preserves its audio without discarding independently confirmed cuts elsewhere. Opening-review failures now record bounded reason codes without model replies or transcript text.
 - Opening ad recovery reviews complete passages with source-exact evidence while keeping uncertain gaps audible. Preparation rechecks short gaps in the opening transcript for missed speech before classifying ads, and older cached transcripts are refreshed. Later profile suggestions respect the reviewed gaps, and the preparation journal retains a compact evidence receipt without raw quotes. Partially overlapping feed-profile windows now retain the unique cues from each window.
 - Ad removal lead-in recovery walks backward from verified break cores and extends only across contiguous commercial cues, stopping at any programme or mixed cue rather than cutting across earlier programme lines to an isolated commercial match.

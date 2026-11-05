@@ -32,6 +32,7 @@ WHOLE_ORIGINAL_HOLD_REASONS = frozenset(
 _RESOLVING_HOLD_REASONS = frozenset(
     {"sponsor-prefix-programme-found", "programme-boundary"}
 )
+_HOUSE_POLICY_HOLD_REASON = "house-promotion-disabled"
 
 # The only unresolved seed that can stay audible on its own: review neither
 # confirmed nor declined it. A seed beside a cut stays in too: the cut was
@@ -56,12 +57,35 @@ class AdOutcome:
 
 
 def _resolved_by_hold(
-    seed: DeclinedCommercialEvidenceSeed, audit: AdAnalysisAudit
+    seed: DeclinedCommercialEvidenceSeed, audit: AdAnalysisAudit, detections
 ) -> bool:
-    """A positively preserved mixed cue resolves its own CTA evidence."""
-    return any(
+    """Resolve only evidence positively preserved by a safe containing hold."""
+    if any(
         held.reason in _RESOLVING_HOLD_REASONS
         and interval_contains(held.start_s, held.end_s, seed.start_s, seed.end_s)
+        for held in audit.held_spans
+    ):
+        return True
+    containing_house_holds = tuple(
+        held for held in audit.held_spans
+        if held.reason == _HOUSE_POLICY_HOLD_REASON
+        and interval_contains(held.start_s, held.end_s, seed.start_s, seed.end_s)
+    )
+    return bool(containing_house_holds) and not any(
+        intervals_overlap(float(ad.start_s), float(ad.end_s), held.start_s, held.end_s)
+        for held in containing_house_holds
+        for ad in detections
+    )
+
+
+def _policy_hold_conflict(seed, audit, detections) -> bool:
+    return any(
+        held.reason == _HOUSE_POLICY_HOLD_REASON
+        and interval_contains(held.start_s, held.end_s, seed.start_s, seed.end_s)
+        and any(
+            intervals_overlap(float(ad.start_s), float(ad.end_s), held.start_s, held.end_s)
+            for ad in detections
+        )
         for held in audit.held_spans
     )
 
@@ -84,12 +108,14 @@ def decide_ad_outcome(audit: AdAnalysisAudit, detections) -> AdOutcome:
     unresolved = tuple(
         seed
         for seed in audit.declined_commercial_evidence_seeds
-        if seed.reason != "review-declined" and not _resolved_by_hold(seed, audit)
+        if seed.reason != "review-declined"
+        and not _resolved_by_hold(seed, audit, detections)
     )
     if not unresolved:
         return AdOutcome(None)
     local = bool(detections) and all(
         seed.reason == _LOCAL_SEED_REASON
+        and not _policy_hold_conflict(seed, audit, detections)
         and not any(
             intervals_overlap(float(ad.start_s), float(ad.end_s), seed.start_s, seed.end_s)
             for ad in detections

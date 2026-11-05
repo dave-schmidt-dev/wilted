@@ -263,6 +263,20 @@ extension PodcastPreparationPipelineTests {
         #expect(try Self.decodeResponse(response).adRemovalOutcome == "uncertain")
     }
 
+    @Test func retainsHousePromotionHeldReasonInBoundedDiagnostics() throws {
+        var response = uncertainResponse()
+        var report = response["report"] as! [String: Any]
+        var audit = report["audit"] as! [String: Any]
+        audit["heldSpans"] = [["reason": "house-promotion-disabled",
+                               "startSeconds": 2.0, "endSeconds": 5.0]]
+        report["audit"] = audit
+        response["report"] = report
+        let payload = try Self.decodeResponse(response)
+        let summary = try #require(payload.adAuditDiagnostics["heldSpans"])
+        #expect(summary.contains("house-promotion-disabled@2.0-5.0"))
+        #expect(summary.contains("invalid=0"))
+    }
+
     private static func decodeResponse(_ response: [String: Any]) throws -> PodcastPreparationPipeline.WorkerPayload {
         try PodcastPreparationPipeline.decode(JSONSerialization.data(withJSONObject: response))
     }

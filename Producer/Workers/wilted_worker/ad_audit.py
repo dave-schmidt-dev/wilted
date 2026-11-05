@@ -19,6 +19,7 @@ import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
 from . import prompts
 from .constants import CUT_TOOLS
 from .interval_geometry import interval_contains
@@ -143,6 +144,7 @@ class OpeningReviewReceipt:
     covered_cue_ids: tuple[int, ...]
     quote_evidence_digest: str
     validated_quotes: tuple[ValidatedQuoteEvidence, ...]
+    quote_origin: Literal["initial", "literal-repair"] | None = None
 
 
 @dataclass
@@ -252,6 +254,8 @@ class AuditingBackend(CountingBackend):
         self.lineages: list[_ClassificationLineage] = []
         self._pending: _ClassificationLineage | None = None
         self.contract_errors: list[str] = []
+        self._opening_quote_prompts: dict[tuple[tuple[int, ...], str], int] = {}
+        self._opening_quote_repairs: dict[tuple[tuple[int, ...], str], int] = {}
         self.commercial_review_states: dict[int, str] = {}
         prompts = (
             getattr(ads_module, "_AD_DETECT_SYSTEM_PROMPT", None),
@@ -287,6 +291,10 @@ class AuditingBackend(CountingBackend):
         """Require the opening review's fixed, source-ordered context envelope."""
         from .preroll_passage_review import MAX_REVIEW_CHARS, RIGHT_COMPARISON_CUES, _response_schema
         from .constants import PREROLL_RECOVERY_MAX_SEGMENTS
+        from .opening_review_response import (
+            QUOTE_REPAIR_BLOCK, is_quote_repair_schema_refinement,
+            parse_quote_repair_request,
+        )
 
         header = re.match(
             r"Candidate IDs: ([0-9]+(?:,[0-9]+)*)\n"
@@ -316,8 +324,28 @@ class AuditingBackend(CountingBackend):
         cue_ids = tuple(int(value) for value in re.findall(r"^\[ID (\d+)\] ", user_content, re.MULTILINE))
         if rendered_ids != expected_ids or cue_ids != expected_ids:
             self._contract_failure("whole-passage review cues do not match its candidate/context IDs")
-        if response_format != _response_schema(list(expected_ids)):
-            self._contract_failure("whole-passage review used an unrecognized bounded response schema")
+        base_schema = _response_schema(list(expected_ids))
+        repair = parse_quote_repair_request(user_content, candidate_ids, expected_ids)
+        opening_key = (
+            (candidate_ids, repair["basePrompt"])
+            if repair is not None else (candidate_ids, user_content)
+        )
+        if repair is None:
+            if QUOTE_REPAIR_BLOCK in user_content or response_format != base_schema:
+                self._contract_failure("whole-passage review used an unrecognized bounded response schema")
+            self._opening_quote_prompts[opening_key] = (
+                self._opening_quote_prompts.get(opening_key, 0) + 1
+            )
+            return
+        seen = self._opening_quote_prompts.get(opening_key, 0)
+        repaired = self._opening_quote_repairs.get(opening_key, 0)
+        if (repaired >= seen
+                or not is_quote_repair_schema_refinement(
+                    base_schema, response_format, repair["commercialIDs"],
+                    repair["quoteOptions"],
+                )):
+            self._contract_failure("whole-passage quote repair is not a single quote-only refinement")
+        self._opening_quote_repairs[opening_key] = repaired + 1
 
     def generate(self, system_prompt: str, user_content: str, *, response_format=None, prepared_prompt=None):
         rendered_ids = _rendered_global_ids(user_content)

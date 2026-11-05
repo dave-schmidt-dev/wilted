@@ -101,6 +101,21 @@ def silence_contract_payloads():
         with tempfile.TemporaryDirectory(prefix="wilted-silence-contract-") as directory:
             payload = run_preparation(directory, segments, duration, silences, detections=detections)
         results.append({"scenario": name, "payload": payload})
+    keeps = serialize_keep_map(build_keep_map([(0.0, 4.0), (9.999, 10.0), (20.0, 30.0)]))
+    ads = [{"startSeconds": 10.0, "endSeconds": 20.0, "label": "sponsor_read", "confidence": 0.9}]
+    results.append({
+        "scenario": "positive-millisecond-programme-gap",
+        "payload": {
+            "ok": True, "protocolVersion": 2, "timing": "none",
+            "audioPath": "/tmp/trimmed-edge.mp3", "audioChanged": True,
+            "durationSeconds": 14.001, "removedSeconds": 10.0,
+            "adSegments": ads, "keepIntervals": keeps,
+            "silenceTrims": silence_trim.silence_trim_spans(keeps, ads, 30.0),
+            "report": {"outcome": "cut", "rawNominations": ads,
+                       "audit": wp.serialize_ad_audit(AdAnalysisAudit(
+                           classifier_requests=1, classifier_valid_requests=1, model_requests=1))}
+        }
+    })
     return results
 
 
@@ -288,7 +303,8 @@ class SilenceResultTests(SilenceTrimTestCase):
 
     def test_real_trimmed_payloads_carry_the_silence_contract(self):
         results = silence_contract_payloads()
-        self.assertEqual([entry["scenario"] for entry in results], ["silence-only", "ads-and-silence"])
+        self.assertEqual([entry["scenario"] for entry in results],
+                         ["silence-only", "ads-and-silence", "positive-millisecond-programme-gap"])
         for entry in results:
             self.assertTrue(entry["payload"]["audioChanged"])
             self.assertTrue(entry["payload"]["silenceTrims"])

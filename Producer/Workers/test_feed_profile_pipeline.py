@@ -35,12 +35,15 @@ class FeedProfilePipelineTests(unittest.TestCase):
             audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
             request = {
                 "protocolVersion": 2, "audioPath": str(audio),
+                "workDir": directory,
                 "outputPath": str(Path(directory) / "profile-observation.mp3"),
                 "removeAds": True, "alignedTranscriptModel": wp.ALIGNED_STT_MODEL,
                 "feedID": "feed-exact-1", "episodeID": "episode-exact-1",
                 "sourceHash": "sha256:" + source_hash, "adProfile": profile,
             }
             result = self._run(request, segments)
+            cache = Path(directory) / "wilted-pipeline" / "aligned-stt-cache"
+            self.assertTrue(list(cache.glob("*.json")), "fixture cache must be owned by its temporary directory")
             self.assertEqual(result["adProfileStatus"], "applied")
             self.assertEqual(result["adProfileRequestedDigest"], profile["digest"])
             self.assertEqual(result["adProfileAppliedDigest"], profile["digest"])

@@ -21,8 +21,14 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
-from .boundary_review import complete_fragment_visible, record_held_span, review_candidate_span
+from .boundary_review import (
+    complete_fragment_visible,
+    overlaps_programme_boundary,
+    record_held_span,
+    review_candidate_span,
+)
 from .commercial_seeds import _constrained_id
+from .continuation_review import verify_adjacent_commercial_extension
 from .constants import AD_POD_CONTINUATION_MAX_GAP_SECONDS, AD_POD_CONTINUATION_MAX_SECONDS, AD_POD_CONTINUATION_MAX_SEGMENTS, COMMERCIAL_RECOVERY_CONTEXT_CHARS, MAXIMUM_SINGLE_AD_SHARE, MAXIMUM_TOTAL_AD_SHARE, MAXIMUM_UNCONFIRMED_AD_SHARE, MINIMUM_PROGRAMME_SHARE, OVERSIZED_SPAN_RESIZE_MAX_SEGMENTS
 from .interval_geometry import intervals_overlap
 from .prompts import AD_POD_CONTINUATION_PROMPT, OVERSIZED_SPAN_CONFIRM_PROMPT, OVERSIZED_SPAN_RESCAN_PROMPT
@@ -294,14 +300,20 @@ def _union_ad_seconds(detections, total_seconds):
     return total + end_s - start_s
 
 
-def enforce_total_ad_share_ceiling(detections, total_seconds, held_spans=None):
-    """Hold every final detection if recovery leaves the total over its ceiling."""
+def enforce_total_ad_share_ceiling(detections, total_seconds, held_spans=None, retired_detections=None):
+    """Hold every final detection if recovery leaves the total over its ceiling.
+
+    An optional ledger records every supplied cut only when this guard's actual
+    over-ceiling decision clears them all.
+    """
     if total_seconds <= 0 or not detections:
         return detections
     total_removed = _union_ad_seconds(detections, total_seconds)
     share = total_removed / total_seconds
     if share <= MAXIMUM_TOTAL_AD_SHARE:
         return detections
+    if retired_detections is not None:
+        retired_detections.extend(detections)
     for ad in detections:
         record_held_span(
             held_spans, ad.start_s, ad.end_s, "total-share-ceiling", total_seconds
@@ -418,14 +430,35 @@ def recover_adjacent_ad_pod_continuations(
                     "total-share-ceiling", total_seconds,
                 )
                 continue
-        except Exception as error:  # noqa: BLE001 - incomplete review preserves the verified cut
+            proposed_ids = tuple(range(first, program_start_id))
+            if any(
+                overlaps_programme_boundary(
+                    held_spans,
+                    segments[segment_id].start_s,
+                    segments[segment_id].end_s,
+                )
+                for segment_id in proposed_ids
+            ):
+                continue
+            if not verify_adjacent_commercial_extension(
+                ads_module,
+                backend,
+                segments,
+                total_seconds,
+                proposed_ids,
+                held_spans,
+            ):
+                continue
+        except Exception:  # noqa: BLE001 - incomplete review preserves the verified cut
             _worker_reporting.progress(
                 "ads.detect.pod-continuation.skipped",
-                f"adjacent review preserved the existing cut: {type(error).__name__}: {error}",
+                "adjacent review preserved the existing cut",
             )
             continue
+        kinds = tuple(getattr(ad, "kinds", ()) or ())
         recovered[index] = ads_module.AdSegment(
-            float(ad.start_s), extension_end, float(ad.confidence), ad.label
+            float(ad.start_s), extension_end, float(ad.confidence), ad.label,
+            kinds=kinds,
         )
         _worker_reporting.progress(
             "ads.detect.pod-continuation",

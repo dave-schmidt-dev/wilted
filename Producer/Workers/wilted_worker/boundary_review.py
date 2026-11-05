@@ -192,11 +192,19 @@ def review_candidate_span(
     return hold()
 
 
-def reject_programme_conflicts(detections, held_spans):
-    """Keep the episode whole if later recovery crosses a positive keep cue."""
+def reject_programme_conflicts(detections, held_spans, retired_detections=None):
+    """Keep the episode whole if later recovery crosses a positive keep cue.
+
+    When a positive conflict clears the supplied cuts, optionally record every
+    cut that this guard deliberately retired. This intent ledger is internal
+    evidence for the final anchor audit; it does not change the returned cuts
+    or the held-span report.
+    """
     conflicts = [ad for ad in detections
                  if overlaps_programme_boundary(held_spans, ad.start_s, ad.end_s)]
     if conflicts:
+        if retired_detections is not None:
+            retired_detections.extend(detections)
         if held_spans is not None:
             held_spans.extend(HeldAdSpan(float(ad.start_s), float(ad.end_s), "programme-boundary-conflict")
                               for ad in conflicts)

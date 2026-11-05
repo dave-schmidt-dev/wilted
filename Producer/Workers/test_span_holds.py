@@ -31,6 +31,74 @@ from worker_test_support import FakeSegment, install_fake_wilted, wp
 
 
 class HeldSeedFallbackTests(unittest.TestCase):
+    def test_policy_seed_resolution_preserves_containment_and_global_holds(self):
+        separate = (FakeAd(400, 420),)
+        hold = HeldAdSpan(0, 125.08, "house-promotion-disabled")
+        for start, end, holds, should_keep in (
+            (0, 125.08, (hold,), False),
+            (120, 130, (hold,), True),
+            (200, 210, (hold,), True),
+            (60, 65, (), True),
+            (60, 65, (hold, HeldAdSpan(200, 210, "boundary-review-unresolved")), True),
+            (60, 65, (hold, HeldAdSpan(200, 210, "programme-boundary-conflict")), True),
+        ):
+            seed = DeclinedCommercialEvidenceSeed(ids=(1,), start_s=start, end_s=end,
+                                                   reason="dropped-after-proposal")
+            with self.subTest(start=start, end=end, holds=holds):
+                outcome = decide_ad_outcome(AdAnalysisAudit(
+                    held_spans=holds, declined_commercial_evidence_seeds=(seed,),
+                ), separate)
+                self.assertEqual(outcome.keep_whole_reason is not None, should_keep)
+
+    def test_house_policy_hold_resolves_only_contained_seed_without_overlap(self):
+        seed = DeclinedCommercialEvidenceSeed(
+            ids=(1,), start_s=60.32, end_s=65.04, reason="dropped-after-proposal",
+        )
+        hold = HeldAdSpan(0.0, 125.08, "house-promotion-disabled")
+        separate_cut = (FakeAd(400.0, 420.0, label="sponsor_read"),)
+        self.assertEqual(
+            decide_ad_outcome(
+                AdAnalysisAudit(
+                    declined_commercial_evidence_seeds=(seed,),
+                    held_spans=(hold,),
+                ),
+                separate_cut,
+            ),
+            AdOutcome(None),
+        )
+        overlapping_cut = (FakeAd(100.0, 140.0, label="sponsor_read"),)
+        self.assertEqual(
+            decide_ad_outcome(
+                AdAnalysisAudit(
+                    declined_commercial_evidence_seeds=(seed,),
+                    held_spans=(hold,),
+                ),
+                overlapping_cut,
+            ).keep_whole_reason,
+            "ad review could not safely resolve all proposed commercial spans",
+        )
+
+    def test_any_overlapping_containing_house_hold_blocks_resolution(self):
+        seed = DeclinedCommercialEvidenceSeed(
+            ids=(1,), start_s=40.0, end_s=50.0, reason="dropped-after-proposal",
+        )
+        first = HeldAdSpan(0.0, 80.0, "house-promotion-disabled")
+        second = HeldAdSpan(20.0, 100.0, "house-promotion-disabled")
+        overlapping_one = (FakeAd(5.0, 10.0, label="sponsor_read"),)
+        for holds in ((first, second), (second, first)):
+            with self.subTest(holds=holds):
+                outcome = decide_ad_outcome(
+                    AdAnalysisAudit(
+                        declined_commercial_evidence_seeds=(seed,),
+                        held_spans=holds,
+                    ),
+                    overlapping_one,
+                )
+                self.assertEqual(
+                    outcome.keep_whole_reason,
+                    "ad review could not safely resolve all proposed commercial spans",
+                )
+
     def run_detection(self, root, seed, held):
         audio = root / "source.mp3"
         output = root / "cut.mp3"
@@ -268,6 +336,31 @@ class LocalUnresolvedSeedTests(unittest.TestCase):
 
 
 class SpanCeilingTests(unittest.TestCase):
+    def test_share_retirement_ledger_records_only_actual_over_ceiling_clears(self):
+        for detection, total in (([FakeAd(0.0, 29.0)], 50.0), ([FakeAd(0.0, 30.0)], 50.0)):
+            held = []
+            retired = []
+            self.assertIs(
+                span_bounds.enforce_total_ad_share_ceiling(
+                    detection, total, held, retired_detections=retired,
+                ),
+                detection,
+            )
+            self.assertEqual(held, [])
+            self.assertEqual(retired, [])
+
+        over = [FakeAd(0.0, 31.0), FakeAd(40.0, 70.0)]
+        held = []
+        retired = []
+        self.assertEqual(
+            span_bounds.enforce_total_ad_share_ceiling(
+                over, 100.0, held, retired_detections=retired,
+            ),
+            [],
+        )
+        self.assertEqual(retired, over)
+        self.assertEqual([span.reason for span in held], ["total-share-ceiling"] * len(over))
+
     def test_rescan_ad_evidence_alone_needs_fresh_full_fragment_confirmation(self):
         segments = [FakeSegment(i * 20.0, (i + 1) * 20.0, f"cue {i}") for i in range(5)]
         ad = FakeAd(0.0, 100.0)

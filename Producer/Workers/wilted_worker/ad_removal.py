@@ -172,6 +172,7 @@ def analyze_ad_detections(
         )
 
     held_spans = []
+    guard_retirements = []
     commercial_recovery_backend = _CallBudgetBackend(
         auditing_backend, COMMERCIAL_RECOVERY_MAX_ADDITIONAL_CALLS
     )
@@ -241,8 +242,12 @@ def analyze_ad_detections(
     detections = enforce_known_house_kind_policy(
         detections, ads_module, total_seconds, remove_self_promotion, held_spans,
     )
-    detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
-    detections = reject_programme_conflicts(detections, held_spans)
+    detections = enforce_total_ad_share_ceiling(
+        detections, total_seconds, held_spans, retired_detections=guard_retirements,
+    )
+    detections = reject_programme_conflicts(
+        detections, held_spans, retired_detections=guard_retirements,
+    )
     source_checked_openings = []
     detections = _worker_preroll_passage_review.recover_source_checked_preroll(
         ads_module, auditing_backend, segments, detections,
@@ -257,24 +262,12 @@ def analyze_ad_detections(
     detections = enforce_known_house_kind_policy(
         detections, ads_module, total_seconds, remove_self_promotion, held_spans,
     )
-    detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
-    detections = reject_programme_conflicts(detections, held_spans)
-    dropped_anchor_ids = [
-        anchor_id
-        for anchor_id in explicit_anchor_ids
-        if sponsor_anchor_is_covered(anchor_id, segments, proposed_detections)
-        and not sponsor_anchor_is_covered(anchor_id, segments, detections)
-        and not any(
-            held.reason in {"sponsor-prefix-programme-found", "programme-boundary",
-                            "total-share-ceiling", "programme-boundary-conflict",
-                            "house-promotion-disabled"}
-            and intervals_overlap(
-                held.start_s, held.end_s,
-                float(segments[anchor_id].start_s), float(segments[anchor_id].end_s),
-            )
-            for held in held_spans
-        )
-    ]
+    detections = enforce_total_ad_share_ceiling(
+        detections, total_seconds, held_spans, retired_detections=guard_retirements,
+    )
+    detections = reject_programme_conflicts(
+        detections, held_spans, retired_detections=guard_retirements,
+    )
     profile_windows = 0
     profile_requests = 0
     profile_failures = 0
@@ -307,9 +300,21 @@ def analyze_ad_detections(
     detections = enforce_known_house_kind_policy(
         detections, ads_module, total_seconds, remove_self_promotion, held_spans,
     )
-    detections = enforce_total_ad_share_ceiling(detections, total_seconds, held_spans)
-    detections = reject_programme_conflicts(detections, held_spans)
+    detections = enforce_total_ad_share_ceiling(
+        detections, total_seconds, held_spans, retired_detections=guard_retirements,
+    )
+    detections = reject_programme_conflicts(
+        detections, held_spans, retired_detections=guard_retirements,
+    )
 
+    # Only cuts a canonical whole-original guard deliberately retired explain a lost anchor.
+    dropped_anchor_ids = [
+        anchor_id
+        for anchor_id in explicit_anchor_ids
+        if sponsor_anchor_is_covered(anchor_id, segments, proposed_detections)
+        and not sponsor_anchor_is_covered(anchor_id, segments, detections)
+        and not sponsor_anchor_is_covered(anchor_id, segments, guard_retirements)
+    ]
     if dropped_anchor_ids:
         details = ", ".join(
             f"raw anchor ID {anchor_id} at {float(segments[anchor_id].start_s):.3f}s"

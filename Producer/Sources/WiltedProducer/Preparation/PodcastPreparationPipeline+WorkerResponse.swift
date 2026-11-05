@@ -200,7 +200,18 @@ extension PodcastPreparationPipeline {
         default:
             consistent = !changed && removed.isEmpty && kept.isEmpty && silenceTrims.isEmpty
         }
-        guard consistent, timelineMatchesKeepMap(removed: removed, kept: kept, silence: silenceTrims) else {
+        if !consistent {
+            logReportConsistencyRejection(.outcomeShape,
+                                          removedCount: removed.count,
+                                          keptCount: kept.count,
+                                          silenceCount: silenceTrims.count)
+            throw PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")
+        }
+        if !timelineMatchesKeepMap(removed: removed, kept: kept, silence: silenceTrims) {
+            logReportConsistencyRejection(.keepMap,
+                                          removedCount: removed.count,
+                                          keptCount: kept.count,
+                                          silenceCount: silenceTrims.count)
             throw PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")
         }
         return WorkerPayload(
@@ -360,12 +371,6 @@ extension PodcastPreparationPipeline {
             + "idsOmittedByLength=\(retainedIDCounts.reduce(0, +));seeds=[]"
     }
 
-    private static func isKnownHeldReason(_ reason: String) -> Bool {
-        ["programme-boundary", "credits-boundary-unresolved", "programme-boundary-conflict",
-         "boundary-review-unresolved", "sponsor-prefix-programme-found", "total-share-ceiling",
-         "pod-continuation-bracket"].contains(reason)
-    }
-
     private static func isKnownDeclinedReason(_ reason: String) -> Bool {
         ["review-declined", "review-unresolved", "dropped-after-proposal"].contains(reason)
     }
@@ -442,43 +447,6 @@ extension PodcastPreparationPipeline {
         guard let start = raw["startSeconds"] as? Double, let end = raw["endSeconds"] as? Double,
               raw["label"] is String, let confidence = raw["confidence"] as? Double else { return false }
         return start.isFinite && end.isFinite && confidence.isFinite && start >= 0 && end > start
-    }
-
-    /// Every gap in the keep map must be exactly the advertisements and
-    /// trimmed pauses inside it. A pause beside an ad shares that ad's gap,
-    /// so touching pieces join only when one of them is a pause; two touching
-    /// ads stay separate pieces and still fail, as they always have.
-    private static func timelineMatchesKeepMap(
-        removed: [PreparationStatus.PreparationTimeline.RemovedInterval],
-        kept: [PreparationStatus.PreparationTimeline.KeptInterval],
-        silence: [Range<Double>] = []
-    ) -> Bool {
-        guard !removed.isEmpty || !kept.isEmpty else { return true }
-        let orderedKept = kept.sorted { $0.originalStartSeconds < $1.originalStartSeconds }
-        let pieces = (removed.map { (start: $0.originalStartSeconds, end: $0.originalEndSeconds, pause: false) }
-            + silence.map { (start: $0.lowerBound, end: $0.upperBound, pause: true) })
-            .sorted { $0.start < $1.start }
-        var dropped: [(start: Double, end: Double)] = []
-        var previousWasPause = false
-        for piece in pieces {
-            if let last = dropped.last, abs(piece.start - last.end) <= 0.001, previousWasPause || piece.pause {
-                dropped[dropped.count - 1].end = piece.end
-            } else {
-                dropped.append((piece.start, piece.end))
-            }
-            previousWasPause = piece.pause
-        }
-        var expected: [(Double, Double)] = []
-        var cursor = 0.0
-        for keep in orderedKept {
-            if keep.originalStartSeconds > cursor { expected.append((cursor, keep.originalStartSeconds)) }
-            cursor = keep.originalEndSeconds
-        }
-        let end = max(cursor, dropped.last?.end ?? 0)
-        if cursor < end { expected.append((cursor, end)) }
-        return expected.count == dropped.count && zip(expected, dropped).allSatisfy {
-            abs($0.0 - $1.start) <= 0.001 && abs($0.1 - $1.end) <= 0.001
-        }
     }
 
     private static func intervalObjects(named name: String, in object: [String: Any]) throws -> [[String: Any]] {

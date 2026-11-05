@@ -287,15 +287,97 @@ class WholePassageRecoveryTests(unittest.TestCase):
         self.assertTrue(any(span.reason == "house-promotion-disabled"
                             and span.start_s == 0.0 and span.end_s == 18.0 for span in held))
 
+    def test_enabled_house_removal_preserves_old_detection_and_programme_evidence(self):
+        segments = make_segments()
+        old = [FakeAd(0.0, 18.0, "self_promo")]
+        for programme_ids in ((), (1,)):
+            backend = ReviewBackend(passage=whole_answer(
+                segments, (0, 1, 2), classification="house_promo",
+                commercial_ids=(), programme_ids=programme_ids, quotes={},
+            ))
+            held = []
+            with self.subTest(programme_ids=programme_ids):
+                _ads, detections = self.review(
+                    backend, segments, old, remove_self_promotion=True, held=held,
+                )
+                self.assertEqual(detections, old)
+                self.assertFalse(any(span.reason == "house-promotion-disabled"
+                                     for span in held))
+                if programme_ids:
+                    self.assertTrue(any(
+                        span.reason == "programme-boundary" and span.start_s == 6.0
+                        and span.end_s == 10.0 for span in held
+                    ))
+                    self.assertEqual(reject_programme_conflicts(detections, held), [])
+                else:
+                    self.assertEqual(held, [])
+
     def test_known_house_cue_blocks_paid_review_when_house_removal_is_disabled(self):
         segments = make_segments()
         backend = ReviewBackend(passage=whole_answer(segments, (0, 1, 2)))
         backend.lineages = [types.SimpleNamespace(
             classifications={1: {"ad:self_promo"}},
         )]
-        _ads, detections = self.review(backend, segments, remove_self_promotion=False)
-        self.assertEqual(detections, [])
+        held = []
+        old = [
+            FakeAd(0.0, 4.0, "sponsor_read"),
+            FakeAd(6.0, 10.0, "sponsor_read"),
+            FakeAd(12.0, 16.0, "sponsor_read"),
+        ]
+        _ads, detections = self.review(
+            backend, segments,
+            detections=old,
+            remove_self_promotion=False, held=held,
+        )
+        self.assertEqual(detections, old)
         self.assertEqual(len(backend.requests), 1)
+        self.assertEqual(
+            [(span.start_s, span.end_s, span.reason) for span in held],
+            [(6.0, 10.0, "house-promotion-disabled")],
+        )
+        self.assertEqual(
+            [
+                (ad.start_s, ad.end_s)
+                for ad in project_detections_around_blocked_house_regions(
+                    detections=[
+                        FakeAd(0.0, 4.0, "sponsor_read"),
+                        FakeAd(6.0, 10.0, "sponsor_read"),
+                        FakeAd(12.0, 16.0, "sponsor_read"),
+                    ],
+                    ads_module=_ads,
+                    held_spans=held,
+                )
+            ],
+            [(0.0, 4.0), (12.0, 16.0)],
+        )
+
+    def test_known_house_holds_never_bridge_paid_cues_or_positive_gaps(self):
+        segments = make_segments()
+        backend = ReviewBackend(passage=whole_answer(segments, (0, 1, 2, 3)))
+        backend.lineages = [types.SimpleNamespace(
+            classifications={0: {"ad:self_promo"}, 2: {"ad:newsletter_pitch"}},
+        )]
+        held = []
+        old = [
+            FakeAd(0.0, 4.0, "sponsor_read"),
+            FakeAd(6.0, 10.0, "sponsor_read"),
+            FakeAd(12.0, 16.0, "sponsor_read"),
+        ]
+        ads, detections = self.review(
+            backend, segments,
+            detections=old,
+            remove_self_promotion=False, held=held,
+        )
+        self.assertEqual(detections, old)
+        self.assertEqual(
+            [(span.start_s, span.end_s) for span in held],
+            [(0.0, 4.0), (12.0, 16.0)],
+        )
+        self.assertEqual(
+            [(ad.start_s, ad.end_s) for ad in
+             project_detections_around_blocked_house_regions(detections, ads, held)],
+            [(6.0, 10.0)],
+        )
 
     def test_any_existing_hold_in_candidate_including_point_hold_blocks_review(self):
         segments = make_segments()
@@ -686,6 +768,7 @@ class SourceCheckedProfileInteractionTests(unittest.TestCase):
         self.assertEqual(receipt["candidateEndSeconds"], 50.0)
         self.assertEqual(receipt["candidateCueCount"], 3)
         self.assertEqual(receipt["quoteCount"], 2)
+        self.assertEqual(receipt["quoteOrigin"], "initial")
         self.assertEqual(receipt["coveredCueIDs"], [0, 1])
         self.assertRegex(receipt["quoteEvidenceDigest"], r"^[0-9a-f]{64}$")
         canonical = json.dumps(
@@ -703,4 +786,3 @@ class SourceCheckedProfileInteractionTests(unittest.TestCase):
                 self.assertIsNotNone(outcome.keep_whole_reason)
                 self.assertIsNone(analysis.audit.opening_review)
                 self.assertNotIn("openingReview", serialize_ad_audit(analysis.audit))
-

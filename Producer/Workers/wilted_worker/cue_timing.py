@@ -142,6 +142,9 @@ def serialize_ad_audit(audit, *, include_profile_observation: bool = False) -> d
             "quoteCount": int(opening_review.quote_count),
             "coveredCueIDs": [int(value) for value in opening_review.covered_cue_ids],
             "quoteEvidenceDigest": opening_review.quote_evidence_digest,
+            **({"quoteOrigin": opening_review.quote_origin}
+               if getattr(opening_review, "quote_origin", None)
+               in {"initial", "literal-repair"} else {}),
             "validatedQuotes": [
                 {
                     "id": int(item.id),

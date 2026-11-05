@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import cue_timing as _worker_cue_timing
+from wilted_worker.ad_audit import AdAnalysis, AdAnalysisAudit, DeclinedCommercialEvidenceSeed, HeldAdSpan
 from worker_test_support import *
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
@@ -39,6 +40,81 @@ class UncertainAdDetectionTests(unittest.TestCase):
                 self.assertTrue(audit["warning"].startswith("original audio includes ads:"))
                 render.assert_not_called()
                 self.assertTrue(llm.closed)
+
+    def test_production_whole_original_serializes_canonical_holds(self):
+        llm = FakeLLM()
+        install_fake_ads(llm)
+        audit = AdAnalysisAudit(
+            held_spans=(
+                HeldAdSpan(20.0, 25.0, "programme-boundary"),
+                HeldAdSpan(10.0, 30.0, "programme-boundary-conflict"),
+            ),
+            declined_commercial_evidence_seeds=(
+                DeclinedCommercialEvidenceSeed(
+                    ids=(4,), start_s=40.0, end_s=50.0, reason="dropped-after-proposal",
+                ),
+            ),
+        )
+        analysis = AdAnalysis((), audit)
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
+                mock.patch.object(_worker_ad_removal, "analyze_ad_detections", return_value=analysis), \
+                mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
+            path, spans, keeps, raw, serialized = wp.detect_and_cut(
+                self.request, self.audio, [], self.segments
+            )
+
+        self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+        self.assertEqual(
+            serialized["heldSpans"],
+            [
+                {"reason": "programme-boundary", "startSeconds": 20.0, "endSeconds": 25.0},
+                {"reason": "programme-boundary-conflict", "startSeconds": 10.0, "endSeconds": 30.0},
+            ],
+        )
+        self.assertEqual(
+            serialized["declinedCommercialEvidenceSeeds"][0]["reason"],
+            "dropped-after-proposal",
+        )
+        self.assertTrue(serialized["warning"].startswith("original audio includes ads:"))
+        self.assertIsNotNone(serialized["incompleteError"])
+        render.assert_not_called()
+
+    def test_production_share_refusal_serializes_retired_holds(self):
+        llm = FakeLLM()
+        install_fake_ads(llm)
+        audit = AdAnalysisAudit(
+            held_spans=tuple(
+                HeldAdSpan(start, end, "total-share-ceiling")
+                for start, end in ((10.0, 29.0), (40.0, 59.0), (70.0, 89.0), (100.0, 170.0))
+            ),
+            declined_commercial_evidence_seeds=(
+                DeclinedCommercialEvidenceSeed(
+                    ids=(4,), start_s=40.0, end_s=50.0, reason="dropped-after-proposal",
+                ),
+            ),
+        )
+        analysis = AdAnalysis((), audit)
+        with redirect_stderr(io.StringIO()), \
+                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0), \
+                mock.patch.object(_worker_ad_removal, "analyze_ad_detections", return_value=analysis), \
+                mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
+            path, spans, keeps, raw, serialized = wp.detect_and_cut(
+                self.request, self.audio, [], self.segments
+            )
+
+        self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
+        self.assertEqual(len(serialized["heldSpans"]), 4)
+        self.assertTrue(all(
+            span["reason"] == "total-share-ceiling"
+            for span in serialized["heldSpans"]
+        ))
+        self.assertEqual(
+            serialized["declinedCommercialEvidenceSeeds"][0]["reason"],
+            "dropped-after-proposal",
+        )
+        self.assertTrue(serialized["warning"].startswith("original audio includes ads:"))
+        render.assert_not_called()
 
     def test_early_model_and_contract_failures_preserve_invalid_profile_status(self):
         requested_digest = "a" * 64

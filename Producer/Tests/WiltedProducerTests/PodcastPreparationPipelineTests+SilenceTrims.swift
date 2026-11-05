@@ -166,6 +166,60 @@ extension PodcastPreparationPipelineTests {
         }
     }
 
+    @Test func acceptsAOneMillisecondKeptGapWithoutChangingItsBoundaries() throws {
+        let keeps = [Self.keep(0, 4, at: 0), Self.keep(9.999, 10, at: 4),
+                     Self.keep(20, 30, at: 4.001)]
+        for (ad, pause) in [(10.0..<20.0, 4.0..<9.999), (4.0..<9.999, 10.0..<20.0)] {
+            let payload = try Self.decodeSilence(Self.edgeContractResponse(
+                ads: [ad], keeps: keeps, silence: [pause], duration: 14.001
+            ))
+            #expect(payload.keepIntervals.map { $0.startSeconds..<$0.endSeconds } ==
+                    [0..<4, 9.999..<10, 20..<30])
+            #expect(payload.silenceTrims == [pause])
+        }
+    }
+
+    @Test func aLeadingPauseDoesNotPermitTwoTouchingAdsInOneGap() throws {
+        let response = Self.edgeContractResponse(
+            ads: [2..<4, 4..<6], keeps: [Self.keep(6, 10, at: 0)], silence: [0..<2], duration: 4
+        )
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")) {
+            try Self.decodeSilence(response)
+        }
+    }
+
+    @Test func pauseAdJoinsRetainEndpointToleranceInsideOneGap() throws {
+        for endpoint in [Double(10).nextDown, Double(10).nextUp] {
+            let response = Self.edgeContractResponse(
+                ads: [4..<endpoint], keeps: [Self.keep(0, 4, at: 0), Self.keep(20, 30, at: 4)],
+                silence: [10..<20], duration: 14
+            )
+            #expect(try Self.decodeSilence(response).keepIntervals.count == 2)
+        }
+        let overlap = Self.edgeContractResponse(
+            ads: [4..<11], keeps: [Self.keep(0, 4, at: 0), Self.keep(20, 30, at: 4)],
+            silence: [10..<20], duration: 14
+        )
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")) {
+            try Self.decodeSilence(overlap)
+        }
+    }
+
+    private static func edgeContractResponse(
+        ads intervals: [Range<Double>], keeps: [[String: Any]], silence: [Range<Double>], duration: Double
+    ) -> [String: Any] {
+        let ads: [[String: Any]] = intervals.map {
+            ["startSeconds": $0.lowerBound, "endSeconds": $0.upperBound,
+             "label": "sponsor_read", "confidence": 0.9]
+        }
+        return ["ok": true, "protocolVersion": 2, "timing": "none", "audioPath": "/synthetic/edge.mp3",
+                "audioChanged": true, "durationSeconds": duration,
+                "removedSeconds": intervals.reduce(0.0) { $0 + $1.upperBound - $1.lowerBound },
+                "adSegments": ads, "keepIntervals": keeps,
+                "silenceTrims": silence.map { Self.interval($0.lowerBound, $0.upperBound) },
+                "report": ["outcome": "cut", "rawNominations": ads, "audit": WorkerStub.cleanAudit()]]
+    }
+
     @Test func aPositionInsideATrimmedPauseResumesWhereTheSpeechDoes() throws {
         let payload = try Self.decodeSilence(Self.silenceOnlyResponse())
         let keeps = payload.keepIntervals
@@ -240,7 +294,8 @@ extension PodcastPreparationPipelineTests {
         process.waitUntilExit()
         #expect(process.terminationStatus == 0, "Python silence contract failed: \(String(decoding: errorBytes, as: UTF8.self))")
         let entries = try #require(JSONSerialization.jsonObject(with: bytes) as? [[String: Any]])
-        #expect(entries.compactMap { $0["scenario"] as? String } == ["silence-only", "ads-and-silence"])
+        #expect(entries.compactMap { $0["scenario"] as? String } ==
+                ["silence-only", "ads-and-silence", "positive-millisecond-programme-gap"])
         var payloads: [PodcastPreparationPipeline.WorkerPayload] = []
         for entry in entries {
             let response = try #require(entry["payload"] as? [String: Any])
@@ -250,10 +305,15 @@ extension PodcastPreparationPipelineTests {
         #expect(silenceOnly.adRemovalOutcome == "noAds" && silenceOnly.audioChanged)
         #expect(silenceOnly.adSegments.isEmpty && silenceOnly.removedSeconds == 0)
         #expect(silenceOnly.silenceTrims.count == 5)
-        let withAds = try #require(payloads.last)
+        try #require(payloads.count == 3)
+        let withAds = payloads[1]
         #expect(withAds.adRemovalOutcome == "cut")
         #expect(withAds.adSegments.map { $0.startSeconds..<$0.endSeconds } == [20..<40])
         #expect(withAds.removedSeconds == 20)
         #expect(withAds.silenceTrims.count == 4)
+        let edge = payloads[2]
+        #expect(edge.keepIntervals.map { $0.startSeconds..<$0.endSeconds } ==
+                [0..<4, 9.999..<10, 20..<30])
+        #expect(edge.silenceTrims == [4..<9.999])
     }
 }

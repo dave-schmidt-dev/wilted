@@ -443,6 +443,8 @@ class AdjacentAdPodContinuationTests(unittest.TestCase):
         analysis = self.analyze(FakeLLM(
             preroll_program_start_id=0,
             adjacent_program_start_id=8,
+            commercial_ad_ids=list(range(8)),
+            commercial_programme_ids=[8, 9],
         ))
         self.assertEqual(
             [(ad.start_s, ad.end_s, ad.label) for ad in analysis.detections],
@@ -465,7 +467,11 @@ class AdjacentAdPodContinuationTests(unittest.TestCase):
     def test_only_a_gap_at_or_below_the_three_second_boundary_is_reviewed(self):
         just_inside = [*self.SEGMENTS]
         just_inside[6] = FakeSegment(91.800, 105.000, just_inside[6].text)
-        inside = self.analyze(FakeLLM(preroll_program_start_id=0, adjacent_program_start_id=8), just_inside)
+        inside = self.analyze(FakeLLM(
+            preroll_program_start_id=0, adjacent_program_start_id=8,
+            commercial_ad_ids=list(range(8)),
+            commercial_programme_ids=[8, 9],
+        ), just_inside)
         self.assertEqual([(ad.start_s, ad.end_s) for ad in inside.detections], [(6.720, 122.840)])
 
         just_outside = [*self.SEGMENTS]
