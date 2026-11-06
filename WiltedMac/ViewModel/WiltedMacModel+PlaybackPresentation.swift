@@ -99,7 +99,7 @@ extension WiltedMacModel {
             transcriptResult = .failure(error)
         }
         guard ownsPlaybackPresentation(owner) else { return }
-        // Nil when the journal holds no timeline for the revision, which also hides ad feedback.
+        // No timeline means no cut-specific verdicts; Ad here still names the loaded revision.
         var spans: [WiltedMacRemovedSpan]?
         if includesCuts {
             if let timeline = try? await store.latestPreparationTimeline(

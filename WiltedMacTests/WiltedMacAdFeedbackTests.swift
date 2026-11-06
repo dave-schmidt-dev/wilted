@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import WiltedDomain
 import WiltedLibrary
 import XCTest
@@ -10,6 +12,72 @@ import XCTest
 @MainActor
 final class WiltedMacAdFeedbackTests: XCTestCase {
     private let clock = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func testLoadedPodcastWithoutTimelineStillOffersAdHere() async throws {
+        let (model, _, episode) = makePlaybackCommandModel()
+        addTeardownBlock { await model.close() }
+        XCTAssertFalse(model.offersAdFeedback, "a revision must actually be loaded")
+        await loadPausedThroughOwner(model, episode)
+        await model.waitForPlaybackPresentationForTesting()
+        model.removedSpansByEpisode[episode.id] = nil
+
+        XCTAssertTrue(model.offersAdFeedback, "missing cut metadata must not hide missed-ad reporting")
+        XCTAssertNil(model.adFeedbackNearbyCut, "no cut-specific verdict without a known cut")
+        model.removedSpansByEpisode[episode.id] = []
+        XCTAssertTrue(model.offersAdFeedback, "a known empty cut list also permits Ad here")
+        model.currentPodcastEpisodeID = "another-episode"
+        XCTAssertFalse(model.offersAdFeedback, "selection must match the loaded audio")
+        model.currentPodcastEpisodeID = episode.id
+        model.isPodcastPlayback = false
+        XCTAssertFalse(model.offersAdFeedback, "non-podcast playback still has no ad feedback")
+    }
+
+    func testAdHereWithoutTimelineFilesTheLiveRevisionAndUnmappedPosition() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        addTeardownBlock { await model.close() }
+        await loadPausedThroughOwner(model, episode)
+        await model.waitForPlaybackPresentationForTesting()
+        let revisionID = try XCTUnwrap(model.playback?.revisionID)
+        model.removedSpansByEpisode[episode.id] = nil
+        // A failed metadata read must not prevent filing what the listener heard.
+        model.store = nil
+        backend.currentTime = 7.25
+        model.playbackPositionSeconds = 500
+
+        await model.recordAdFeedback(.adHere)
+
+        let saved = try XCTUnwrap(model.adFeedback.counted.last)
+        XCTAssertEqual(saved.itemID, episode.id)
+        XCTAssertEqual(saved.revisionID, revisionID.rawValue)
+        XCTAssertEqual(saved.playedSeconds, 7.25)
+        XCTAssertEqual(saved.mapping, .unmapped)
+        XCTAssertNil(saved.originalSeconds)
+        XCTAssertNil(saved.nearestCut)
+    }
+
+    func testMissingTimelineRendersAdHereWithoutCutVerdicts() async throws {
+        let (model, _, episode) = makePlaybackCommandModel()
+        addTeardownBlock { await model.close() }
+        await loadPausedThroughOwner(model, episode)
+        await model.waitForPlaybackPresentationForTesting()
+        model.removedSpansByEpisode[episode.id] = nil
+        let bar = WiltedMacAdFeedbackBar(model: model)
+            .padding(12)
+            .frame(width: 420, height: 64)
+            .background(Color.white)
+            .environment(\.colorScheme, .light)
+        let words = try WiltedMacHeadless.recognizedText(bar, size: CGSize(width: 420, height: 64))
+            .joined(separator: " ").lowercased()
+        XCTAssertTrue(words.contains("ad here"), words)
+        XCTAssertFalse(words.contains("good cut"), words)
+        XCTAssertFalse(words.contains("not an ad"), words)
+        let bitmap = try WiltedMacHeadless.render(bar, size: CGSize(width: 420, height: 64))
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+        attachment.name = "ad-here-without-timeline"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
 
     /// 0..<100 kept, 100..<160 cut, 160..<300 kept (prepared 100..<240).
     private func timeline() throws -> PreparationStatus.PreparationTimeline {

@@ -2,6 +2,8 @@
 
 Local-first native Mac/iOS personal audio system: the Mac is the daily-use producer and player, while the deferred iOS listener receives and plays qualified media.
 
+Mac **Ad here** remains available for a loaded podcast even when its cut timeline is missing. Cut-specific verdicts still require a known cut; a report without a timeline keeps the heard revision and played position without guessing an original timestamp.
+
 Background sync uses metadata-only library projections and exact transcript reads. Unchanged publication and media-offer projections reuse their prior values, while account changes, changed eligibility and failed sends remain retryable. Timestamp parsing and formatting share locked formatters. Player surfaces share one readout clock that stops while paused; transport events still refresh immediately. Log archiving queries only the recent overlap after its first written entry, and unchanged media accounting skips replacement only after confirmed durable success. These are source behaviors; installed CPU and memory improvements require a fresh measurement of the installed build.
 
 Mac transcript, preparation cuts and post-start queue presentation run outside the serialized audio-command tail. Presentation uses the exact loaded item/revision and selection generation; Pause retains its request, superseded results cannot publish, and close cancels and joins the model ledger. Synthetic traces separate backend-call timing from actor admission, fetch and decode; the qualified 50ms pre-audio target does not measure rendered or audible latency (timings only measure dispatch-to-audio-call, never audible proof).

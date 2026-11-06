@@ -7,11 +7,12 @@ import WiltedProducer
 
 /// Ad feedback from the Now Playing pane and from the phone, filed in the review inbox.
 extension WiltedMacModel {
-    /// True while a prepared podcast revision is loaded, the only audio feedback can be about.
-    /// `removedSpansByEpisode` holds a value exactly when the journal has that revision's timeline.
+    /// A loaded podcast revision can receive feedback even when its cut timeline is unavailable.
+    /// The inbox retains the played position and revision without inventing an original-time mapping.
     var offersAdFeedback: Bool {
-        guard isPodcastPlayback, let id = currentPodcastEpisodeID, playback?.revisionID != nil else { return false }
-        return removedSpansByEpisode[id] != nil
+        guard isPodcastPlayback, let id = currentPodcastEpisodeID,
+              playback?.itemID?.rawValue == id, playback?.revisionID != nil else { return false }
+        return true
     }
 
     /// The cut the listener has just heard, inside `AdFeedbackWindow`; Good cut and Not an ad
