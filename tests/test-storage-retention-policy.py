@@ -498,7 +498,7 @@ def test_cache_safety_and_locks(scratch: Path) -> None:
     unrelated = (
         "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
         "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper (GPU).app/Contents/MacOS/Google Chrome Helper (GPU)",
-        "/Users/dave/.agent/bin/agy",
+        "/Users/example/.agent/bin/agy",
         "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
     )
     with mock.patch("retention.caches.subprocess.run", return_value=ps_result(*unrelated)) as probe:
