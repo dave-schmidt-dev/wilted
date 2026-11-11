@@ -79,6 +79,50 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
         add(attachment)
     }
 
+    /// A narrow window has no side pane: the rail and the full-window player are then the only
+    /// players on screen, and each must offer Ad here.
+    func testNarrowWindowPlayersOfferAdHere() async throws {
+        let (model, _, episode) = makePlaybackCommandModel()
+        addTeardownBlock { await model.close() }
+        await loadPausedThroughOwner(model, episode)
+        await model.waitForPlaybackPresentationForTesting()
+        let width = WiltedMacShellLayout.windowMinimumWidth() - WiltedMacShellLayout.railWidth
+        let players: [(String, AnyView, CGFloat)] = [
+            ("rail", AnyView(WiltedMacCompactPlayer(model: model)), 300),
+            ("full-window", AnyView(WiltedMacFullWindowPlayer(
+                model: model, presentation: .constant(.transcript), onSelect: { _ in }, onCollapse: { _ in })), 700),
+        ]
+        for (name, player, height) in players {
+            let words = try WiltedMacHeadless.recognizedText(player, size: CGSize(width: width, height: height))
+                .joined(separator: " ").lowercased()
+            XCTAssertTrue(words.contains("ad here"), "\(name): \(words)")
+            let bitmap = try WiltedMacHeadless.render(player, size: CGSize(width: width, height: height))
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+            attachment.name = "ad-here-narrow-\(name)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
+    /// Narrower than its one-row form, the bar wraps rather than pushing a button past the edge.
+    func testAdFeedbackBarWrapsEveryButtonAtNarrowWidth() async throws {
+        let (model, _, episode) = makePlaybackCommandModel()
+        addTeardownBlock { await model.close() }
+        await loadPausedThroughOwner(model, episode)
+        await model.waitForPlaybackPresentationForTesting()
+        model.removedSpansByEpisode[episode.id] = [WiltedMacRemovedSpan(
+            id: 0, preparedSeconds: 0, originalStartSeconds: 0, originalEndSeconds: 30, label: "ad_break")]
+        model.playbackPositionSeconds = 2
+        XCTAssertNotNil(model.adFeedbackNearbyCut)
+        let size = CGSize(width: 190, height: 140)
+        let words = try WiltedMacHeadless.recognizedText(WiltedMacAdFeedbackBar(model: model), size: size)
+            .joined(separator: " ").lowercased()
+        for label in ["ad here", "good cut", "not an ad"] {
+            XCTAssertTrue(words.contains(label), "\(label): \(words)")
+        }
+    }
+
     /// 0..<100 kept, 100..<160 cut, 160..<300 kept (prepared 100..<240).
     private func timeline() throws -> PreparationStatus.PreparationTimeline {
         try PreparationStatus.PreparationTimeline(

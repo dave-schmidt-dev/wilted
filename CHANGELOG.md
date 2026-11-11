@@ -171,6 +171,7 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - The Mac player keeps **Ad here** available when loaded podcast audio has no cut timeline, so missed ads can still be reported.
+- A narrow Mac window, such as one sized for a phone over remote desktop, now shows **Ad here**, **Good cut** and **Not an ad** in the bottom player and the full-window player; before, only the side pane had them, and a narrow window has no side pane.
 - A paid opening with malformed evidence quotes gets one source-bound quote repair while retaining its classification, evidence IDs, programme protections and strict final validation.
 - Adjacent-ad recovery independently checks proposed extensions before cutting programme, and known house-promotion cues no longer shield unrelated confirmed advertisements.
 - Programme-conflict and excessive-ad-share refusals preserve their held-span diagnostics instead of becoming unrelated dropped-anchor failures.

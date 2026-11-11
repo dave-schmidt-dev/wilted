@@ -206,6 +206,12 @@ struct WiltedMacPlayerContent: View {
                 }
             }
 
+            // Under the scrubber here too, as in the side pane: a narrow window has no side pane,
+            // so the rail and the full-window player are then the only places to give ad feedback.
+            #if canImport(WiltedProducer)
+            WiltedMacAdFeedbackBar(model: model)
+            #endif
+
             if model.playbackError != nil,
                model.playbackCommands.pending?.usesPlayPauseButtonFeedback != true {
                 // The status is the sole fault sentence. This container keeps

@@ -2,41 +2,60 @@ import SwiftUI
 import WiltedLibrary
 
 #if canImport(WiltedProducer)
-/// Ad-removal feedback under the Now Playing scrubber: "Ad here" at the playhead, and "Good cut" or
-/// "Not an ad" just after a cut. A press is acknowledged at once, in words, with Undo
-/// (`WiltedMacModel+AdFeedback`); the entries wait in Settings > Ad feedback for review.
+/// Ad-removal feedback under the scrubber of every form of the Mac player (side pane, rail and
+/// full window): "Ad here" at the playhead, and "Good cut" or "Not an ad" just after a cut. A press
+/// is acknowledged at once, in words, with Undo (`WiltedMacModel+AdFeedback`); the entries wait in
+/// Settings > Ad feedback for review.
 struct WiltedMacAdFeedbackBar: View {
     @Bindable var model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let feedback = model.adFeedback
-        if model.offersAdFeedback || feedback.acknowledgement != nil {
-            HStack(spacing: WiltedTheme.Spacing.small) {
-                if model.offersAdFeedback {
-                    button(.adHere)
-                    if model.adFeedbackNearbyCut != nil {
-                        button(.goodCut)
-                        button(.notAnAd)
+        let acknowledgement = model.adFeedback.acknowledgement
+        if model.offersAdFeedback || acknowledgement != nil {
+            // One row where it fits. Narrower, the buttons wrap and the acknowledgement takes its
+            // own line, so no button is pushed past the edge.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    buttons
+                    Spacer(minLength: 0)
+                    if let acknowledgement { status(acknowledgement) }
+                }
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                    if model.offersAdFeedback { WiltedMacFlowLayout { buttons } }
+                    if let acknowledgement {
+                        HStack(spacing: WiltedTheme.Spacing.small) { status(acknowledgement) }
                     }
                 }
-                Spacer(minLength: 0)
-                if let acknowledgement = feedback.acknowledgement {
-                    Text(acknowledgement.text)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier("wilted-player-ad-feedback-status")
-                    if acknowledgement.saved {
-                        Button("Undo") { Task { await feedback.undo() } }
-                            .controlSize(.small)
-                            .disabled(feedback.isSaving)
-                            .help("Take back this feedback")
-                            .accessibilityIdentifier("wilted-player-ad-feedback-undo")
-                    }
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-player-ad-feedback")
+        }
+    }
+
+    @ViewBuilder private var buttons: some View {
+        if model.offersAdFeedback {
+            button(.adHere)
+            if model.adFeedbackNearbyCut != nil {
+                button(.goodCut)
+                button(.notAnAd)
+            }
+        }
+    }
+
+    @ViewBuilder private func status(_ acknowledgement: WiltedMacAdFeedbackController.Acknowledgement) -> some View {
+        let feedback = model.adFeedback
+        Text(acknowledgement.text)
+            .wiltedFont(.utility)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            .accessibilityIdentifier("wilted-player-ad-feedback-status")
+        if acknowledgement.saved {
+            Button("Undo") { Task { await feedback.undo() } }
+                .controlSize(.small)
+                .disabled(feedback.isSaving)
+                .help("Take back this feedback")
+                .accessibilityIdentifier("wilted-player-ad-feedback-undo")
         }
     }
 
