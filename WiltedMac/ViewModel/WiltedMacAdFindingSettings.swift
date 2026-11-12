@@ -21,10 +21,25 @@ final class WiltedMacAdFindingSettings {
         var id: String { feedID }
     }
 
+    /// Runs the label-only backfill and reports progress. A nil summary means
+    /// labelling is not available in this launch.
+    typealias BackfillRun = @MainActor (
+        @escaping @Sendable (LabellerBackfill.Progress) -> Void
+    ) async -> LabellerBackfill.Summary?
+
+    /// What the Prepared episodes row is doing.
+    enum BackfillState: Equatable {
+        case idle
+        case checking
+        case running(done: Int, total: Int)
+        case ended(String)
+    }
+
     private let preferences: UserDefaults
     private let keyStore: any LabellerKeyStoring
     private let now: @Sendable () -> Date
     private let showsProvider: @MainActor () -> [Show]
+    private let backfill: BackfillRun?
 
     /// The draft in the key field, cleared the moment a key is saved.
     var typedKey = ""
@@ -44,13 +59,19 @@ final class WiltedMacAdFindingSettings {
     private(set) var sheetSent: Set<String> = []
     private var confirmsSwitchOn = false
 
+    /// Live state of the label-only backfill row.
+    private(set) var backfillState: BackfillState = .idle
+    private var backfillTask: Task<Void, Never>?
+
     init(preferences: UserDefaults, keyStore: any LabellerKeyStoring,
          now: @escaping @Sendable () -> Date = Date.init,
-         shows: @escaping @MainActor () -> [Show]) {
+         shows: @escaping @MainActor () -> [Show],
+         backfill: BackfillRun? = nil) {
         self.preferences = preferences
         self.keyStore = keyStore
         self.now = now
         self.showsProvider = shows
+        self.backfill = backfill
         hasKey = keyStore.hasKey()
         isOnlineFindingOn = AdLabellerPreferences(preferences: preferences).isEnabled
     }
@@ -86,6 +107,7 @@ final class WiltedMacAdFindingSettings {
     /// Removes the stored key. The policy answers no key, so online ad finding
     /// stops until a key is saved again; the switch keeps its position.
     func removeKey() {
+        stopBackfill()
         try? keyStore.remove()
         hasKey = keyStore.hasKey()
     }
@@ -99,6 +121,7 @@ final class WiltedMacAdFindingSettings {
         guard !isConfirming else { return }
         switchMessage = nil
         guard on else {
+            stopBackfill()
             isOnlineFindingOn = false
             labeller.isEnabled = false
             return
@@ -208,4 +231,44 @@ final class WiltedMacAdFindingSettings {
     /// Requests sent to the provider today, and the daily cap.
     var requestsToday: Int { LabellerRequestCounter(preferences: preferences, now: now).count }
     var dailyCap: Int { LabellerRequestCounter(preferences: preferences, now: now).cap }
+
+    // MARK: Backfill
+
+    /// Whether the Prepared episodes row can offer Label now.
+    var offersBackfill: Bool { backfill != nil && hasKey && isOnlineFindingOn }
+
+    /// Whether a backfill Task is checking or labelling.
+    var isBackfilling: Bool {
+        switch backfillState {
+        case .checking, .running: true
+        case .idle, .ended: false
+        }
+    }
+
+    /// Starts one label-only backfill when the row offers it and none is running.
+    func startBackfill() {
+        guard offersBackfill, !isBackfilling, let backfill else { return }
+        backfillState = .checking
+        backfillTask = Task {
+            let summary = await backfill { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    switch self.backfillState {
+                    case .checking, .running:
+                        self.backfillState = .running(done: progress.done, total: progress.total)
+                    case .idle, .ended:
+                        break
+                    }
+                }
+            }
+            self.backfillState = .ended(Self.backfillEndedMessage(for: summary))
+            self.backfillTask = nil
+        }
+    }
+
+    /// Cancels the in-flight backfill Task; the run ends through its own
+    /// cancelled summary.
+    func stopBackfill() {
+        backfillTask?.cancel()
+    }
 }

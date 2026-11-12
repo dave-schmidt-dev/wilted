@@ -35,6 +35,10 @@ struct WiltedMacAdFindingSettingsView: View {
                     value: "\(model.requestsToday) of \(model.dailyCap)",
                     identifier: "wilted-ad-finding-requests"
                 )
+                if model.offersBackfill {
+                    Divider()
+                    backfillRow
+                }
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -103,10 +107,59 @@ struct WiltedMacAdFindingSettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var backfillRow: some View {
+        HStack(spacing: WiltedTheme.Spacing.small) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text(backfillStatusText)
+                    .wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-ad-finding-backfill-status")
+                switch model.backfillState {
+                case .ended(let message):
+                    Text(message)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-ad-finding-backfill-message")
+                case .checking:
+                    ProgressView().controlSize(.small)
+                case .running(let done, let total):
+                    ProgressView(value: Double(done), total: Double(max(total, 1)))
+                case .idle:
+                    EmptyView()
+                }
+            }
+            Spacer(minLength: WiltedTheme.Spacing.large)
+            switch model.backfillState {
+            case .checking, .running:
+                Button("Stop") { model.stopBackfill() }
+                    .accessibilityIdentifier("wilted-ad-finding-backfill-stop")
+            case .idle, .ended:
+                Button("Label now") { model.startBackfill() }
+                    .accessibilityIdentifier("wilted-ad-finding-backfill-start")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-ad-finding-backfill")
+    }
+
+    private var backfillStatusText: String {
+        switch model.backfillState {
+        case .idle, .ended:
+            return "Prepared episodes"
+        case .checking:
+            return "Checking stored transcripts"
+        case .running(let done, let total):
+            return "Labelling \(min(done + 1, total)) of \(total)"
+        }
+    }
+
     private var help: WiltedMacHelpContent {
         WiltedMacHelpContent(title: "Ad finding", text:
             "Only the shows you confirm here are sent: their transcripts go to the online labeller to find ads. "
-            + "Private or subscriber shows stay on this Mac, and shows you add later stay on this Mac until you confirm them here.")
+            + "Private or subscriber shows stay on this Mac, and shows you add later stay on this Mac until you confirm them here. "
+            + "Label now sends the transcripts still stored on this Mac for episodes you already prepared; it changes no audio.")
     }
 }
 

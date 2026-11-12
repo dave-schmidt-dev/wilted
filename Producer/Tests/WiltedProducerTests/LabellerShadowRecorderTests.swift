@@ -466,4 +466,198 @@ struct LabellerShadowRecorderTests {
         #expect(FileManager.default.fileExists(atPath: recordURL.path) == false)
         #expect(try readAttempts(directory: recordsDirectory).isEmpty)
     }
+
+    // MARK: Awaited labelling
+
+    /// A directory for tests that need no pipeline fixture.
+    private func makeDirectory(_ name: String) throws -> URL {
+        let url = OwnedTestTemp.root
+            .appendingPathComponent("LabellerShadowRecorderTests-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func labelInput(episodeID: String, cueFile: CueFile?) -> LabellerShadowRecorder.ShadowInput {
+        LabellerShadowRecorder.ShadowInput(
+            episodeID: episodeID,
+            feedID: Self.feedID.rawValue,
+            feedURL: Self.feedURL,
+            feedTitle: Self.showTitle,
+            audioURL: URL(string: "https://cdn.example.test/e1.mp3"),
+            durationSeconds: 12,
+            cuesPath: cueFile?.path,
+            cuesDigest: cueFile?.digest,
+            engineOutcome: "cut",
+            engineCutSpans: [LabellerShadowRecorder.ShadowSpan(start: 3, end: 7.5)]
+        )
+    }
+
+    @Test func labelWritesNothingForInactiveAndNotRouted() async throws {
+        let directory = try makeDirectory("label-local")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sender = StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))])
+        let cueFile = try writeCueFile(to: directory)
+        let input = labelInput(episodeID: "episode-label", cueFile: cueFile)
+
+        // Inactive: the global switch is off.
+        let (offDefaults, offName) = makeDefaults()
+        defer { offDefaults.removePersistentDomain(forName: offName) }
+        let off = makeRecorder(defaults: offDefaults, sender: sender, recordsDirectory: directory, shadow: true)
+        AdLabellerPreferences(preferences: offDefaults).isEnabled = false
+        #expect(await off.label(input) == .inactive)
+        #expect(await off.localReason(for: input) == .switchOff)
+
+        // Not routed: the show is not confirmed for online labelling.
+        let (localDefaults, localName) = makeDefaults()
+        defer { localDefaults.removePersistentDomain(forName: localName) }
+        let local = makeRecorder(defaults: localDefaults, sender: sender, recordsDirectory: directory,
+                                  shadow: true, confirmed: false)
+        #expect(await local.label(input) == .notRouted(.notConfirmed))
+        #expect(await local.localReason(for: input) == .notConfirmed)
+
+        #expect(sender.requestCount == 0, "neither outcome sends anything")
+        #expect(try readAttempts(directory: directory).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: directory
+            .appendingPathComponent(LabellerShadowRecorder.recordFileName(for: "episode-label")).path))
+    }
+
+    @Test func labelRecordsARemoteComparisonAndReturnsRecorded() async throws {
+        let directory = try makeDirectory("label-recorded")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (defaults, defaultsName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let sender = StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))])
+        let recorder = makeRecorder(defaults: defaults, sender: sender, recordsDirectory: directory, shadow: true)
+        let cueFile = try writeCueFile(to: directory)
+
+        let outcome = await recorder.label(labelInput(episodeID: "episode-label", cueFile: cueFile))
+        #expect(outcome == .recorded)
+        #expect(sender.requestCount == 1)
+        #expect(await recorder.localReason(for: labelInput(episodeID: "episode-label", cueFile: cueFile)) == nil)
+
+        let record = try readRecord(directory: directory, episodeID: try ItemID(rawValue: "episode-label"))
+        #expect(record["route"] as? String == "remote")
+        #expect(record["failureKind"] == nil)
+        #expect((record["proposedBreaks"] as? [[String: Any]])?.count == 1)
+        #expect(try readAttempts(directory: directory).first?["outcome"] as? String == "recorded")
+    }
+
+    @Test func labelReturnsTheFailureKindItRecords() async throws {
+        let directory = try makeDirectory("label-failed")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (defaults, defaultsName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let sender = StubSender(outcomes: [.fail(LabellerFailure.rateLimited(retryAfter: nil))])
+        let recorder = makeRecorder(defaults: defaults, sender: sender, recordsDirectory: directory, shadow: true)
+        let cueFile = try writeCueFile(to: directory)
+
+        let outcome = await recorder.label(labelInput(episodeID: "episode-label", cueFile: cueFile))
+        #expect(outcome == .failed(kind: "rate-limited"))
+        let record = try readRecord(directory: directory, episodeID: try ItemID(rawValue: "episode-label"))
+        #expect(record["failureKind"] as? String == "rate-limited")
+        #expect(try readAttempts(directory: directory).first?["outcome"] as? String == "rate-limited")
+    }
+
+    @Test func labelReportsCuesUnavailableForAMissingCueFile() async throws {
+        let directory = try makeDirectory("label-cues")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (defaults, defaultsName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let sender = StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))])
+        let recorder = makeRecorder(defaults: defaults, sender: sender, recordsDirectory: directory, shadow: true)
+
+        let outcome = await recorder.label(labelInput(episodeID: "episode-label", cueFile: nil))
+        #expect(outcome == .failed(kind: "cuesUnavailable"))
+        #expect(sender.requestCount == 0)
+        let record = try readRecord(directory: directory, episodeID: try ItemID(rawValue: "episode-label"))
+        #expect(record["failureKind"] as? String == "cuesUnavailable")
+        #expect(try readAttempts(directory: directory).first?["outcome"] as? String == "cuesUnavailable")
+    }
+
+    @Test func labelWritesNothingWhenCancelled() async throws {
+        let directory = try makeDirectory("label-cancel")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (defaults, defaultsName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let sender = StubSender(outcomes: [.hang])
+        let recorder = makeRecorder(defaults: defaults, sender: sender, recordsDirectory: directory, shadow: true)
+        let cueFile = try writeCueFile(to: directory)
+
+        let task = Task { await recorder.label(labelInput(episodeID: "episode-label", cueFile: cueFile)) }
+        var polls = 0
+        while sender.requestCount == 0, polls < 5_000 {
+            try await Task.sleep(for: .milliseconds(2))
+            polls += 1
+        }
+        task.cancel()
+        let outcome = await task.value
+        #expect(outcome == .cancelled)
+        #expect(!FileManager.default.fileExists(atPath: directory
+            .appendingPathComponent(LabellerShadowRecorder.recordFileName(for: "episode-label")).path))
+        #expect(try readAttempts(directory: directory).isEmpty)
+    }
+
+    @Test func liveScheduleRecordsDoNotGainSourceOrEngineVersion() async throws {
+        let directory = try makeDirectory("label-live")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (defaults, defaultsName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let sender = StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))])
+        let recorder = makeRecorder(defaults: defaults, sender: sender, recordsDirectory: directory, shadow: true)
+        let cueFile = try writeCueFile(to: directory)
+
+        await recorder.schedule(labelInput(episodeID: "episode-live", cueFile: cueFile))
+        await recorder.waitForIdle()
+
+        let record = try readRecord(directory: directory, episodeID: try ItemID(rawValue: "episode-live"))
+        #expect(record["source"] == nil, "live records carry no source")
+        #expect(record["engineVersion"] == nil, "live records carry no engine version")
+    }
+
+    @Test func requestsRemainingIsTheCapMinusTodayCount() async throws {
+        let (defaults, defaultsName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let directory = try makeDirectory("label-cap")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sender = StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))])
+        let recorder = makeRecorder(defaults: defaults, sender: sender, recordsDirectory: directory,
+                                     shadow: true, dailyCap: 2)
+        #expect(await recorder.requestsRemaining == 2)
+        _ = await recorder.label(labelInput(episodeID: "episode-cap", cueFile: try writeCueFile(to: directory)))
+        #expect(await recorder.requestsRemaining == 1)
+    }
+
+    @Test func hasLabelledRecordIsTrueOnlyForARemoteRecordWithoutFailure() async throws {
+        let directory = try makeDirectory("label-has")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (defaults, defaultsName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let cueFile = try writeCueFile(to: directory)
+        let episodeID = try ItemID(rawValue: "episode-has")
+
+        // No record at all.
+        let absent = makeRecorder(defaults: defaults, sender: StubSender(outcomes: []),
+                                  recordsDirectory: directory, shadow: true)
+        #expect(await absent.hasLabelledRecord(episodeID: episodeID.rawValue) == false)
+
+        // A local record is not a labelled one.
+        let local = makeRecorder(defaults: defaults, sender: StubSender(outcomes: []),
+                                 recordsDirectory: directory, shadow: true, confirmed: false)
+        await local.schedule(labelInput(episodeID: episodeID.rawValue, cueFile: cueFile))
+        #expect(await local.hasLabelledRecord(episodeID: episodeID.rawValue) == false)
+
+        // A failed remote record is not a labelled one.
+        let failed = makeRecorder(defaults: defaults,
+                                  sender: StubSender(outcomes: [.fail(LabellerFailure.keyRejected)]),
+                                  recordsDirectory: directory, shadow: true)
+        _ = await failed.label(labelInput(episodeID: episodeID.rawValue, cueFile: cueFile))
+        #expect(await failed.hasLabelledRecord(episodeID: episodeID.rawValue) == false)
+
+        // A recorded comparison is.
+        let recorded = makeRecorder(defaults: defaults,
+                                     sender: StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))]),
+                                     recordsDirectory: directory, shadow: true)
+        _ = await recorded.label(labelInput(episodeID: episodeID.rawValue, cueFile: cueFile))
+        #expect(await recorded.hasLabelledRecord(episodeID: episodeID.rawValue) == true)
+    }
 }

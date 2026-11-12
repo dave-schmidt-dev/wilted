@@ -55,6 +55,12 @@ public actor LabellerShadowRecorder {
         public var engineOutcome: String
         /// The spans the engine cut, in seconds on the original clock.
         public var engineCutSpans: [ShadowSpan]
+        /// Where the input came from: nil on the live path, "backfill" for the
+        /// label-only backfill over stored transcripts.
+        public var source: String?
+        /// The engine version that produced the committed cut, when the
+        /// journal records one. Nil on the live path.
+        public var engineVersion: String?
 
         public init(
             episodeID: String,
@@ -66,7 +72,9 @@ public actor LabellerShadowRecorder {
             cuesPath: String?,
             cuesDigest: String?,
             engineOutcome: String,
-            engineCutSpans: [ShadowSpan]
+            engineCutSpans: [ShadowSpan],
+            source: String? = nil,
+            engineVersion: String? = nil
         ) {
             self.episodeID = episodeID
             self.feedID = feedID
@@ -78,14 +86,32 @@ public actor LabellerShadowRecorder {
             self.cuesDigest = cuesDigest
             self.engineOutcome = engineOutcome
             self.engineCutSpans = engineCutSpans
+            self.source = source
+            self.engineVersion = engineVersion
         }
+    }
+
+    /// What one awaited labelling call produced. ``schedule(_:)`` reports
+    /// nothing; this is how the backfill counts its batch.
+    public enum LabelOutcome: Equatable, Sendable {
+        /// A comparison record was written.
+        case recorded
+        /// The attempt ran and failed; the kind is a ``LabellerFailure`` kind
+        /// or `cuesUnavailable`.
+        case failed(kind: String)
+        /// The policy kept the episode local; nothing was written.
+        case notRouted(RemoteLabellingLocalReason)
+        /// Shadow is not active; nothing was written.
+        case inactive
+        /// The task was cancelled; nothing was written.
+        case cancelled
     }
 
     /// The record schema this version writes.
     private static let schemaVersion = 1
     /// The failure kind recorded when the cue file is missing, unreadable or
     /// does not match its digest.
-    private static let cuesUnavailableKind = "cuesUnavailable"
+    static let cuesUnavailableKind = "cuesUnavailable"
     /// One line per shadow attempt, beside the records.
     public static let attemptsFileName = "attempts.jsonl"
 
@@ -134,12 +160,7 @@ public actor LabellerShadowRecorder {
     /// background task the pipeline never awaits.
     public func schedule(_ input: ShadowInput) {
         guard isActive else { return }
-        let route = RemoteLabellingPolicy.route(
-            for: RemoteLabellingInput(feedID: input.feedID, feedURL: input.feedURL,
-                                      feedTitle: input.feedTitle, audioURL: input.audioURL),
-            context: RemoteLabellingContext(preferences: preferences, hasKey: keyStore.hasKey(),
-                                             counter: counter))
-        switch route {
+        switch route(for: input) {
         case .local(let reason):
             var fields = commonFields(input, route: "local")
             fields["routeReason"] = reason.rawValue
@@ -147,10 +168,7 @@ public actor LabellerShadowRecorder {
             appendAttempt(episodeID: input.episodeID, outcome: "local")
         case .remote:
             // Read now, not in the task: the next preparation overwrites the file.
-            guard let path = input.cuesPath, let expected = input.cuesDigest,
-                  let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                  let cues = try? JSONDecoder().decode([LabellerCue].self, from: data),
-                  Self.sha256Hex(data) == expected else {
+            guard let cues = readCues(input) else {
                 var fields = remoteFields(input, cueCount: nil, requestSeconds: 0, requestCount: 0)
                 fields["failureKind"] = Self.cuesUnavailableKind
                 writeRecord(fields, episodeID: input.episodeID)
@@ -160,6 +178,50 @@ public actor LabellerShadowRecorder {
             let id = UUID()
             tasks[id] = Task { await run(input: input, cues: cues, attemptID: id) }
         }
+    }
+
+    /// Labels one episode in the caller's task and returns what happened.
+    ///
+    /// Unlike ``schedule(_:)`` this writes no record and no attempt line when
+    /// shadow is inactive or the policy keeps the episode local: the backfill
+    /// that awaits it counts skips itself. Every other outcome is recorded
+    /// exactly as `schedule` records it. A cancelled task writes nothing and
+    /// reports ``LabelOutcome/cancelled``.
+    public func label(_ input: ShadowInput) async -> LabelOutcome {
+        guard isActive else { return .inactive }
+        if case .local(let reason) = route(for: input) { return .notRouted(reason) }
+        guard let cues = readCues(input) else {
+            var fields = remoteFields(input, cueCount: nil, requestSeconds: 0, requestCount: 0)
+            fields["failureKind"] = Self.cuesUnavailableKind
+            writeRecord(fields, episodeID: input.episodeID)
+            appendAttempt(episodeID: input.episodeID, outcome: Self.cuesUnavailableKind)
+            return .failed(kind: Self.cuesUnavailableKind)
+        }
+        return await perform(input: input, cues: cues)
+    }
+
+    /// The policy's reason for keeping this episode local right now, or nil
+    /// when it would be sent. Writes nothing.
+    public func localReason(for input: ShadowInput) -> RemoteLabellingLocalReason? {
+        if case .local(let reason) = route(for: input) { return reason }
+        return nil
+    }
+
+    /// Whether a readable record already exists for the episode that went
+    /// remote and produced a comparison. Such an episode needs no second
+    /// request; one whose record failed may be labelled again.
+    public func hasLabelledRecord(episodeID: String) -> Bool {
+        let url = recordsDirectory.appendingPathComponent(Self.recordFileName(for: episodeID))
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["route"] as? String) == "remote",
+              object["failureKind"] == nil else { return false }
+        return true
+    }
+
+    /// How many labelling requests today's cap still allows.
+    public var requestsRemaining: Int {
+        max(0, counter.cap - counter.count)
     }
 
     /// Cancels every running shadow task. A cancelled task writes nothing.
@@ -201,12 +263,39 @@ public actor LabellerShadowRecorder {
 
     // MARK: One attempt
 
+    /// The policy's route for one input, against the owner's current choices.
+    private func route(for input: ShadowInput) -> RemoteLabellingRoute {
+        RemoteLabellingPolicy.route(
+            for: RemoteLabellingInput(feedID: input.feedID, feedURL: input.feedURL,
+                                      feedTitle: input.feedTitle, audioURL: input.audioURL),
+            context: RemoteLabellingContext(preferences: preferences, hasKey: keyStore.hasKey(),
+                                             counter: counter))
+    }
+
+    /// Reads the cue file and checks its digest. Nil when the file is
+    /// missing, unreadable, undecodable or does not match its digest.
+    private func readCues(_ input: ShadowInput) -> [LabellerCue]? {
+        guard let path = input.cuesPath, let expected = input.cuesDigest,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let cues = try? JSONDecoder().decode([LabellerCue].self, from: data),
+              Self.sha256Hex(data) == expected else { return nil }
+        return cues
+    }
+
+    /// `schedule`'s tracked wrapper around the shared core.
+    private func run(input: ShadowInput, cues: [LabellerCue], attemptID: UUID) async {
+        defer { tasks[attemptID] = nil }
+        _ = await perform(input: input, cues: cues)
+    }
+
     /// One shadow attempt: build the prompt, send once, parse, retry at most
     /// once on an unusable answer while the daily cap allows it, then record
     /// the outcome. A cancelled attempt writes nothing.
-    private func run(input: ShadowInput, cues: [LabellerCue], attemptID: UUID) async {
-        defer { tasks[attemptID] = nil }
-        guard !Task.isCancelled else { return }
+    ///
+    /// The one core `schedule`'s background task and `label`'s awaited call
+    /// share.
+    private func perform(input: ShadowInput, cues: [LabellerCue]) async -> LabelOutcome {
+        guard !Task.isCancelled else { return .cancelled }
         let counter = self.counter
         let sender = self.sender
         let request = LabellerRequest(
@@ -230,7 +319,7 @@ public actor LabellerShadowRecorder {
                 reply = EpisodeLabeller.parse(reply: second.text, cues: cues, duration: input.durationSeconds)
             }
             let requestSeconds = now().timeIntervalSince(started)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return .cancelled }
             switch reply {
             case .success(let parsed):
                 var fields = remoteFields(input, cueCount: cues.count, requestSeconds: requestSeconds,
@@ -249,21 +338,25 @@ public actor LabellerShadowRecorder {
                 if let tokens = usage.reasoningTokens { fields["reasoningTokens"] = tokens }
                 writeRecord(fields, episodeID: input.episodeID)
                 appendAttempt(episodeID: input.episodeID, outcome: "recorded")
+                return .recorded
             case .failure(let failure):
                 writeRecord(failureFields(input, kind: failure.kind, cueCount: cues.count,
                                           requestSeconds: requestSeconds, requestCount: tally.value),
                             episodeID: input.episodeID)
                 appendAttempt(episodeID: input.episodeID, outcome: failure.kind)
+                return .failed(kind: failure.kind)
             }
         } catch is CancellationError {
-            return
+            return .cancelled
         } catch let failure as LabellerFailure {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return .cancelled }
             recordFailure(input, kind: failure.kind, cueCount: cues.count, started: started, tally: tally)
+            return .failed(kind: failure.kind)
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return .cancelled }
             recordFailure(input, kind: LabellerFailure.temporary.kind, cueCount: cues.count,
                           started: started, tally: tally)
+            return .failed(kind: LabellerFailure.temporary.kind)
         }
     }
 
@@ -278,9 +371,11 @@ public actor LabellerShadowRecorder {
 
     // MARK: Records
 
-    /// The fields every record carries, whatever its route.
+    /// The fields every record carries, whatever its route. `source` and
+    /// `engineVersion` appear only when the input names them, so live
+    /// records stay exactly the bytes they always were.
     private func commonFields(_ input: ShadowInput, route: String) -> [String: Any] {
-        [
+        var fields: [String: Any] = [
             "schemaVersion": Self.schemaVersion,
             "recordedAt": Self.timestamp(now()),
             "episodeID": input.episodeID,
@@ -289,6 +384,9 @@ public actor LabellerShadowRecorder {
             "engineOutcome": input.engineOutcome,
             "engineCutSpans": input.engineCutSpans.map { ["start": $0.start, "end": $0.end] },
         ]
+        if let source = input.source { fields["source"] = source }
+        if let engineVersion = input.engineVersion { fields["engineVersion"] = engineVersion }
+        return fields
     }
 
     /// The fields every remote record carries, whatever its outcome.

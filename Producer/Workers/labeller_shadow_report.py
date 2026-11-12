@@ -118,6 +118,8 @@ def summarise(records: list[dict]) -> dict:
     local = [r for r in records if r.get("route") == "local"]
     failed = [r for r in remote if r.get("failureKind")]
     labelled = [r for r in remote if not r.get("failureKind")]
+    backfilled = [r for r in labelled if r.get("source") == "backfill"]
+    engine_unknown = [r for r in labelled if r.get("engineOutcome") == "unknown"]
     rows = [compare(r) for r in labelled]
     reasoning = [
         row["reasoningTokens"]
@@ -138,6 +140,8 @@ def summarise(records: list[dict]) -> dict:
         ),
         "failures": dict(Counter(str(r["failureKind"]) for r in failed)),
         "labelled": len(labelled),
+        "backfilled": len(backfilled),
+        "engineUnknown": len(engine_unknown),
         "adFree": sum(1 for row in rows if row["breakCount"] == 0),
         "requests": sum(int(r.get("requestCount") or 0) for r in remote),
         "promptTokens": sum(int(r.get("promptTokens") or 0) for r in labelled),
@@ -165,6 +169,13 @@ def render(summary: dict, unreadable: int) -> str:
     lines.append(
         f"Labelled without a failure: {summary['labelled']}, of which no ads found: {summary['adFree']}"
     )
+    if summary["backfilled"]:
+        lines.append(f"Labelled from stored transcripts: {summary['backfilled']}")
+    if summary["engineUnknown"]:
+        lines.append(
+            f"{summary['engineUnknown']} labelled episodes have no engine result on record; "
+            "their engine column reads 0:00"
+        )
     for kind, count in sorted(summary["failures"].items()):
         lines.append(f"  failed, {kind}: {count}")
     lines.append(

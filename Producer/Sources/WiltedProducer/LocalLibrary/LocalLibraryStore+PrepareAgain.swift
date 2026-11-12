@@ -35,7 +35,7 @@ public struct PodcastPrepareAgainCandidate: Equatable, Sendable {
 
 extension LocalLibraryStore {
     /// The evidence kind the pipeline attaches to the worker's own report.
-    private static let workerResultEvidenceKind = "worker-result"
+    static let workerResultEvidenceKind = "worker-result"
     /// Written on the journal row of a prepare-again run that changed nothing:
     /// it refused, or kept the existing cut. Its terminal success names the
     /// ready revision, so this is how a later reader tells it from the run
@@ -131,7 +131,7 @@ extension LocalLibraryStore {
 
     /// One preparation attempt as the journal retains it, reduced to the facts
     /// eligibility needs.
-    private struct JournalAttempt {
+    struct JournalAttempt {
         let entries: [PreparationJournalEntry]
 
         var terminal: PreparationStatus? { entries.last(where: { $0.status.terminal })?.status }
@@ -161,6 +161,11 @@ extension LocalLibraryStore {
             return result?.fields["adRemovalOutcome"].map { $0 == "cut" }
         }
         var timeline: PreparationStatus.PreparationTimeline? { terminal?.timeline }
+        /// The worker's own verdict, when the attempt journalled its report.
+        var adRemovalOutcome: String? {
+            entries.lazy.compactMap(\.status.evidence)
+                .first(where: { $0.kind == LocalLibraryStore.workerResultEvidenceKind })?.fields["adRemovalOutcome"]
+        }
         /// A run that ended by keeping the audio it found, so its success names
         /// the ready revision without having produced it.
         var keptExistingAudio: Bool {
@@ -170,7 +175,7 @@ extension LocalLibraryStore {
 
     /// Every episode's attempts, oldest first, read from one pass over the
     /// journal table. Invalidation markers are scheduling state, not attempts.
-    private func journalAttemptsByEpisode(in context: ModelContext) throws -> [String: [JournalAttempt]] {
+    func journalAttemptsByEpisode(in context: ModelContext) throws -> [String: [JournalAttempt]] {
         let decoder = JSONDecoder()
         var generations: [String: [PreparationJournalEntry]] = [:]
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()) {
