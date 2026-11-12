@@ -106,6 +106,26 @@ class ShadowReportTests(unittest.TestCase):
         self.assertEqual(summary["backfilled"], 1)
         self.assertEqual(summary["engineUnknown"], 1)
 
+    def test_summary_counts_labelled_records_per_transport(self):
+        records = [
+            _remote("e1", [], [], transport="opencode-cli", reasoningTokens=3000),
+            _remote("e2", [], [], transport="opencode-cli", reasoningTokens=5000),
+            _remote("e3", [], [], transport="direct", reasoningTokens=6000),
+            _remote("e4", [], []),
+            _remote("e5", [], [], transport="opencode-cli", failureKind="rate-limited"),
+        ]
+        summary = report.summarise(records)
+        self.assertEqual(
+            summary["transports"],
+            {
+                "opencode-cli": {"labelled": 2, "medianReasoningTokens": 4000},
+                "direct": {"labelled": 2, "medianReasoningTokens": 5500},
+            },
+        )
+        text = report.render(summary, 0)
+        self.assertIn("  labelled via direct: 2, median reasoning tokens 5500", text)
+        self.assertIn("  labelled via opencode-cli: 2, median reasoning tokens 4000", text)
+
     def test_render_mentions_backfill_and_unknown_engine_only_when_present(self):
         backfilled = report.render(
             report.summarise(

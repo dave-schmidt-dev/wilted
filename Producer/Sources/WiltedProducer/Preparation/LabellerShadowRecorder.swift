@@ -119,6 +119,7 @@ public actor LabellerShadowRecorder {
     private let counter: LabellerRequestCounter
     private let keyStore: any LabellerKeyStoring
     private let sender: any LabellerSending
+    private let transport: String
     private let recordsDirectory: URL
     private let now: @Sendable () -> Date
     private var tasks: [UUID: Task<Void, Never>] = [:]
@@ -128,13 +129,14 @@ public actor LabellerShadowRecorder {
     ///   - counter: the daily HTTP request counter the route and retry consult.
     ///   - keyStore: where the provider key is kept; only `hasKey` is read here.
     ///   - sender: performs the labelling request.
+    ///   - transport: the route that sends requests, written to records that reached the sender.
     ///   - recordsDirectory: where records and `attempts.jsonl` are written.
     ///   - now: the clock `recordedAt` and request timing are read from.
     public init(
         preferences: AdLabellerPreferences,
         counter: LabellerRequestCounter,
         keyStore: any LabellerKeyStoring,
-        sender: any LabellerSending,
+        sender: any LabellerSending, transport: String = "direct",
         recordsDirectory: URL,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
@@ -142,6 +144,7 @@ public actor LabellerShadowRecorder {
         self.counter = counter
         self.keyStore = keyStore
         self.sender = sender
+        self.transport = transport
         self.recordsDirectory = recordsDirectory
         self.now = now
     }
@@ -336,14 +339,15 @@ public actor LabellerShadowRecorder {
                 if let tokens = usage.promptTokens { fields["promptTokens"] = tokens }
                 if let tokens = usage.completionTokens { fields["completionTokens"] = tokens }
                 if let tokens = usage.reasoningTokens { fields["reasoningTokens"] = tokens }
+                fields["transport"] = transport
                 writeRecord(fields, episodeID: input.episodeID)
-                appendAttempt(episodeID: input.episodeID, outcome: "recorded")
+                appendAttempt(episodeID: input.episodeID, outcome: "recorded", transport: transport)
                 return .recorded
             case .failure(let failure):
                 writeRecord(failureFields(input, kind: failure.kind, cueCount: cues.count,
                                           requestSeconds: requestSeconds, requestCount: tally.value),
                             episodeID: input.episodeID)
-                appendAttempt(episodeID: input.episodeID, outcome: failure.kind)
+                appendAttempt(episodeID: input.episodeID, outcome: failure.kind, transport: transport)
                 return .failed(kind: failure.kind)
             }
         } catch is CancellationError {
@@ -371,7 +375,7 @@ public actor LabellerShadowRecorder {
             if let type = detail.errorType { fields["providerErrorType"] = type }
         }
         writeRecord(fields, episodeID: input.episodeID)
-        appendAttempt(episodeID: input.episodeID, outcome: kind, detail: detail)
+        appendAttempt(episodeID: input.episodeID, outcome: kind, detail: detail, transport: transport)
     }
 
     // MARK: Records
@@ -414,6 +418,7 @@ public actor LabellerShadowRecorder {
         var fields = remoteFields(input, cueCount: cueCount, requestSeconds: requestSeconds,
                                   requestCount: requestCount)
         fields["failureKind"] = kind
+        fields["transport"] = transport
         return fields
     }
 
@@ -431,8 +436,10 @@ public actor LabellerShadowRecorder {
     }
 
     /// Appends one line per shadow attempt: timestamp, episode ID, outcome kind.
-    private func appendAttempt(episodeID: String, outcome: String, detail: LabellerFailureDetail? = nil) {
+    private func appendAttempt(episodeID: String, outcome: String, detail: LabellerFailureDetail? = nil,
+                               transport: String? = nil) {
         var entry: [String: Any] = ["timestamp": Self.timestamp(now()), "episodeID": episodeID, "outcome": outcome]
+        if let transport { entry["transport"] = transport }
         if let detail {
             entry["httpStatus"] = detail.status
             if let type = detail.errorType { entry["providerErrorType"] = type }

@@ -21,6 +21,7 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     static let levelKey = keyPrefix + "level"
     static let capKey = keyPrefix + "dailyCap"
     static let waitLimitKey = keyPrefix + "waitLimitSeconds"
+    static let useOpenCodeCLIKey = keyPrefix + "useOpenCodeCLI"
 
     public let preferences: UserDefaults
 
@@ -97,6 +98,13 @@ public struct AdLabellerPreferences: @unchecked Sendable {
             return stored > 0 ? stored : Self.defaultWaitLimit
         }
         nonmutating set { preferences.set(newValue, forKey: Self.waitLimitKey) }
+    }
+
+    /// Whether labelling runs the OpenCode command-line tool instead of calling the provider
+    /// over HTTP with a key. Off by default.
+    public var usesOpenCodeCLI: Bool {
+        get { preferences.bool(forKey: Self.useOpenCodeCLIKey) }
+        nonmutating set { preferences.set(newValue, forKey: Self.useOpenCodeCLIKey) }
     }
 
     private static func read(_ key: String, from preferences: UserDefaults) -> [String] {

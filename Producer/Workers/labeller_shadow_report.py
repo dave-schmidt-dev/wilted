@@ -112,6 +112,30 @@ def compare(record: dict) -> dict:
     }
 
 
+def _transport(record: dict) -> str:
+    """The route that produced a record; records written before the field are ``direct``."""
+    return str(record.get("transport") or "direct")
+
+
+def _by_transport(labelled: list[dict]) -> dict:
+    """Labelled count and median reasoning tokens for each transport."""
+    groups: dict[str, list[dict]] = {}
+    for record in labelled:
+        groups.setdefault(_transport(record), []).append(record)
+    result = {}
+    for name, group in groups.items():
+        tokens = [
+            r["reasoningTokens"]
+            for r in group
+            if isinstance(r.get("reasoningTokens"), (int, float))
+        ]
+        result[name] = {
+            "labelled": len(group),
+            "medianReasoningTokens": statistics.median(tokens) if tokens else None,
+        }
+    return result
+
+
 def summarise(records: list[dict]) -> dict:
     """Reduce the records to the counts and comparisons the report prints."""
     remote = [r for r in records if r.get("route") == "remote"]
@@ -141,6 +165,7 @@ def summarise(records: list[dict]) -> dict:
         "failures": dict(Counter(str(r["failureKind"]) for r in failed)),
         "labelled": len(labelled),
         "backfilled": len(backfilled),
+        "transports": _by_transport(labelled),
         "engineUnknown": len(engine_unknown),
         "adFree": sum(1 for row in rows if row["breakCount"] == 0),
         "requests": sum(int(r.get("requestCount") or 0) for r in remote),
@@ -169,6 +194,11 @@ def render(summary: dict, unreadable: int) -> str:
     lines.append(
         f"Labelled without a failure: {summary['labelled']}, of which no ads found: {summary['adFree']}"
     )
+    for name, group in sorted(summary["transports"].items()):
+        line = f"  labelled via {name}: {group['labelled']}"
+        if group["medianReasoningTokens"] is not None:
+            line += f", median reasoning tokens {group['medianReasoningTokens']:.0f}"
+        lines.append(line)
     if summary["backfilled"]:
         lines.append(f"Labelled from stored transcripts: {summary['backfilled']}")
     if summary["engineUnknown"]:
