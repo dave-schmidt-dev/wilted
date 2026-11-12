@@ -16,8 +16,11 @@ final class WiltedMacAdFindingSettings {
     /// One subscribed show the confirm sheet lists.
     struct Show: Identifiable, Equatable, Sendable {
         let feedID: String
+        /// The name the app shows: the owner's own when they renamed the show.
         let title: String
         let feedURL: URL?
+        /// The publisher's title, when it differs from `title`.
+        var publisherTitle: String? = nil
         var id: String { feedID }
     }
 
@@ -169,7 +172,8 @@ final class WiltedMacAdFindingSettings {
     /// nil when the owner may send it.
     func forcedLocalReason(for show: Show) -> RemoteLabellingLocalReason? {
         RemoteLabellingPolicy.forcedLocalReason(for: RemoteLabellingInput(
-            feedID: show.feedID, feedURL: show.feedURL, feedTitle: show.title, audioURL: nil))
+            feedID: show.feedID, feedURL: show.feedURL, feedTitle: show.publisherTitle ?? show.title,
+            customTitle: show.title, audioURL: nil))
     }
 
     /// The forced reason in the plain words the feed page already uses.

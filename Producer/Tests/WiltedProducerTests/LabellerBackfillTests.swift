@@ -453,6 +453,24 @@ struct LabellerBackfillTests {
         #expect(!FileManager.default.fileExists(atPath: exportDirectory(fixture).path))
     }
 
+    /// Regression: the backfill ignored the owner's name for a show.
+    @Test func anEpisodeOnAShowTheOwnerNamedAdFreeIsNotSent() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.remove() }
+        let episodes = [try await addEpisode(fixture, ordinal: 1)]
+        try await fixture.store.save(subscription: PodcastSubscription(
+            feedID: Self.feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)),
+            displayName: "Garden Plus"))
+        let records = try recordsDirectory("custom-name")
+        defer { try? FileManager.default.removeItem(at: records) }
+        let sender = StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))])
+        let recorder = makeRecorder(fixture: fixture, sender: sender, recordsDirectory: records)
+        let summary = await makeBackfill(
+            fixture: fixture, recorder: recorder, worker: CuesExportWorker(script: .export, exports: episodes)).run()
+        #expect(summary == LabellerBackfill.Summary(recorded: 0, failed: 0, remaining: 0, ending: .nothingToLabel))
+        #expect(sender.requestCount == 0)
+    }
+
     @Test func anUnusableAnswerCountsFailedAndContinues() async throws {
         let fixture = try await Fixture.make()
         defer { fixture.remove() }

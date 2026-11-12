@@ -43,6 +43,8 @@ public actor LabellerShadowRecorder {
         public var feedID: String
         public var feedURL: URL?
         public var feedTitle: String
+        /// The owner's own name for the show; used only to keep it local, never in the prompt.
+        public var feedCustomTitle: String?
         public var audioURL: URL?
         /// The episode's duration in seconds, on the original clock the cue
         /// file shares.
@@ -67,6 +69,7 @@ public actor LabellerShadowRecorder {
             feedID: String,
             feedURL: URL?,
             feedTitle: String,
+            feedCustomTitle: String? = nil,
             audioURL: URL?,
             durationSeconds: Double,
             cuesPath: String?,
@@ -80,6 +83,7 @@ public actor LabellerShadowRecorder {
             self.feedID = feedID
             self.feedURL = feedURL
             self.feedTitle = feedTitle
+            self.feedCustomTitle = feedCustomTitle
             self.audioURL = audioURL
             self.durationSeconds = durationSeconds
             self.cuesPath = cuesPath
@@ -269,8 +273,8 @@ public actor LabellerShadowRecorder {
     /// The policy's route for one input, against the owner's current choices.
     private func route(for input: ShadowInput) -> RemoteLabellingRoute {
         RemoteLabellingPolicy.route(
-            for: RemoteLabellingInput(feedID: input.feedID, feedURL: input.feedURL,
-                                      feedTitle: input.feedTitle, audioURL: input.audioURL),
+            for: RemoteLabellingInput(feedID: input.feedID, feedURL: input.feedURL, feedTitle: input.feedTitle,
+                                      customTitle: input.feedCustomTitle, audioURL: input.audioURL),
             context: RemoteLabellingContext(preferences: preferences, hasKey: keyStore.hasKey(),
                                              counter: counter))
     }

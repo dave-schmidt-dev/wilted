@@ -300,11 +300,15 @@ extension PodcastPreparationPipeline {
     ) async -> LabellerShadowRecorder.ShadowInput? {
         guard let shadowRecorder else { return nil }
         guard let feed = (try? await store.podcastFeed(for: episode.feedID)) ?? nil else { return nil }
+        // The owner's name for the show is part of the keep-local check; unread, nothing is sent.
+        let customTitle: String?
+        do { customTitle = try await store.subscription(for: episode.feedID)?.displayName } catch { return nil }
         return LabellerShadowRecorder.ShadowInput(
             episodeID: episode.itemID.rawValue,
             feedID: episode.feedID.rawValue,
             feedURL: feed.canonicalURL,
             feedTitle: feed.title,
+            feedCustomTitle: customTitle,
             audioURL: episode.enclosureURL,
             // The feed's stated length can be short; the cues follow the real audio.
             durationSeconds: max(sourceDuration, episode.durationSeconds ?? 0),

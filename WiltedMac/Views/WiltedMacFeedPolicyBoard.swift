@@ -355,7 +355,8 @@ final class WiltedMacFeedPolicyBoard {
         let subscription = model.subscriptions.first { $0.id == feedID }
         return RemoteLabellingInput(
             feedID: feedID, feedURL: subscription?.feedURL,
-            feedTitle: subscription?.title ?? "", audioURL: nil
+            feedTitle: subscription?.publisherTitle ?? subscription?.title ?? "",
+            customTitle: subscription?.title, audioURL: nil
         )
     }
 

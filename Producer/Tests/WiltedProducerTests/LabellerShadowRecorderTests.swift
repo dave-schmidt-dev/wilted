@@ -521,6 +521,29 @@ struct LabellerShadowRecorderTests {
             .appendingPathComponent(LabellerShadowRecorder.recordFileName(for: "episode-label")).path))
     }
 
+    /// The owner's name for a show decides keep-local but is never part of the request.
+    @Test func theOwnersShowNameKeepsItLocalAndNeverEntersThePrompt() async throws {
+        let directory = try makeDirectory("label-custom-name")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (defaults, defaultsName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let sender = StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))])
+        let recorder = makeRecorder(defaults: defaults, sender: sender, recordsDirectory: directory, shadow: true)
+        let cueFile = try writeCueFile(to: directory)
+
+        var paid = labelInput(episodeID: "episode-paid", cueFile: cueFile)
+        paid.feedCustomTitle = "Garden (ad-free)"
+        #expect(await recorder.localReason(for: paid) == .privateTitle)
+        #expect(await recorder.label(paid) == .notRouted(.privateTitle))
+        #expect(sender.requestCount == 0)
+
+        var renamed = labelInput(episodeID: "episode-renamed", cueFile: cueFile)
+        renamed.feedCustomTitle = "Zebra Nickname"
+        #expect(await recorder.label(renamed) == .recorded)
+        #expect(sender.sentPrompts.count == 1)
+        #expect(sender.sentPrompts.allSatisfy { $0.contains(Self.showTitle) && !$0.contains("Zebra Nickname") })
+    }
+
     @Test func labelRecordsARemoteComparisonAndReturnsRecorded() async throws {
         let directory = try makeDirectory("label-recorded")
         defer { try? FileManager.default.removeItem(at: directory) }

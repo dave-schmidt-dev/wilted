@@ -173,6 +173,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- The online labeller's keep-local rule now reads both the publisher's title and your own name for a show. Before, only the publisher's title decided what was sent while Settings judged your name alone, so a renamed paid feed was listed as sendable and a show you renamed "(ad-free)" could have been sent.
 
 - The online labeller trial now keeps a subscriber feed on this Mac when its private address contains hyphens, underscores or dots, or its title says Plus or ad-free. Before, such a feed could be treated as public.
 - The Mac player keeps **Ad here** available when loaded podcast audio has no cut timeline, so missed ads can still be reported.

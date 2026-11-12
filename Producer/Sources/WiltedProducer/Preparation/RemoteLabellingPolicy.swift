@@ -23,13 +23,18 @@ public enum RemoteLabellingRoute: Sendable, Equatable {
 public struct RemoteLabellingInput: Sendable, Equatable {
     public var feedID: String
     public var feedURL: URL?
+    /// The publisher's title.
     public var feedTitle: String
+    /// The owner's own name for the show, when they renamed it. Checked like the title;
+    /// never sent anywhere.
+    public var customTitle: String?
     public var audioURL: URL?
 
-    public init(feedID: String, feedURL: URL?, feedTitle: String, audioURL: URL?) {
+    public init(feedID: String, feedURL: URL?, feedTitle: String, customTitle: String? = nil, audioURL: URL?) {
         self.feedID = feedID
         self.feedURL = feedURL
         self.feedTitle = feedTitle
+        self.customTitle = customTitle
         self.audioURL = audioURL
     }
 }
@@ -96,7 +101,9 @@ public enum RemoteLabellingPolicy {
         if isCredentialed(feedURL) { return .credentialedURL }
         if let audioURL = input.audioURL, isCredentialed(audioURL) { return .credentialedURL }
         if hasTokenLikePart(feedURL) { return .tokenLikeFeedURL }
-        if hasPrivateWord(input.feedTitle) { return .privateTitle }
+        // Either name can mark a paid feed: a rename must neither hide the publisher's
+        // word nor be ignored when the owner adds one.
+        if hasPrivateWord(input.feedTitle) || hasPrivateWord(input.customTitle ?? "") { return .privateTitle }
         return nil
     }
 

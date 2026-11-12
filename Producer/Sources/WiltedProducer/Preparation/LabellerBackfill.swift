@@ -163,11 +163,14 @@ public struct LabellerBackfill: Sendable {
             guard let episode = try await store.podcastEpisode(for: candidate.episodeID),
                   let feed = try await store.podcastFeed(for: episode.feedID),
                   let export = exportsByHash[candidate.sourceHash] else { continue }
+            // A failed read ends the batch as unavailable rather than sending unchecked.
+            let customTitle = try await store.subscription(for: episode.feedID)?.displayName
             let input = LabellerShadowRecorder.ShadowInput(
                 episodeID: candidate.episodeID.rawValue,
                 feedID: episode.feedID.rawValue,
                 feedURL: feed.canonicalURL,
                 feedTitle: feed.title,
+                feedCustomTitle: customTitle,
                 audioURL: episode.enclosureURL,
                 // The feed's stated length can be short; the cues and the
                 // journal's timeline follow the real audio.

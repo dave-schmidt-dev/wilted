@@ -199,6 +199,23 @@ struct RemoteLabellingPolicyTests {
         }
     }
 
+    /// Regression: the rule read only the publisher's title, so a show the owner renamed
+    /// "(ad-free)" could be sent, while Settings judged the custom name alone.
+    @Test func eitherThePublisherTitleOrTheOwnersNameKeepsAShowLocal() {
+        var renamed = input(title: "Garden Hour")
+        renamed.customTitle = "Garden Hour (ad-free)"
+        #expect(RemoteLabellingPolicy.forcedLocalReason(for: renamed) == .privateTitle)
+        #expect(route(renamed, context()) == .local(.privateTitle))
+
+        var hidden = input(title: "Garden Hour Plus")
+        hidden.customTitle = "Garden Hour"
+        #expect(RemoteLabellingPolicy.forcedLocalReason(for: hidden) == .privateTitle)
+
+        var plain = input(title: "Garden Hour")
+        plain.customTitle = "My Garden Show"
+        #expect(route(plain, context()) == .remote)
+    }
+
     @Test func counterDefaultCapIsSixty() {
         withDefaults { defaults in
             let counter = LabellerRequestCounter(preferences: defaults)

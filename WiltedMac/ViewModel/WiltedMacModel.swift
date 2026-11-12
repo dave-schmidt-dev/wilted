@@ -265,7 +265,7 @@ final class WiltedMacModel {
         preferences: preferences, keyStore: adLabellerKeyStore,
         shows: { [weak self] in
             self?.subscriptions.map {
-                WiltedMacAdFindingSettings.Show(feedID: $0.id, title: $0.title, feedURL: $0.feedURL)
+                WiltedMacAdFindingSettings.Show(feedID: $0.id, title: $0.title, feedURL: $0.feedURL, publisherTitle: $0.publisherTitle)
             } ?? []
         },
         backfill: { [weak self] onProgress in

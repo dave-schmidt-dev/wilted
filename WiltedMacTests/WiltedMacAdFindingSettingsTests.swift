@@ -111,6 +111,23 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
 
     // MARK: Forced-local shows
 
+    /// Regression: Settings judged only the custom name, so a renamed paid feed looked sendable.
+    func testRenamedShowIsForcedLocalByEitherName() throws {
+        let hidden = WiltedMacAdFindingSettings.Show(
+            feedID: "feed-h", title: "Media Hour",
+            feedURL: URL(string: "https://feeds.example.test/feed-h.xml"), publisherTitle: "Media Hour (Premium Feed)")
+        let named = WiltedMacAdFindingSettings.Show(
+            feedID: "feed-n", title: "Garden (ad-free)",
+            feedURL: URL(string: "https://feeds.example.test/feed-n.xml"), publisherTitle: "Garden Hour")
+        let plain = WiltedMacAdFindingSettings.Show(
+            feedID: "feed-q", title: "Nickname",
+            feedURL: URL(string: "https://feeds.example.test/feed-q.xml"), publisherTitle: "Garden Hour")
+        let (model, _, _) = makeModel(shows: { [hidden, named, plain] })
+        XCTAssertEqual(model.forcedLocalReason(for: hidden), .privateTitle)
+        XCTAssertEqual(model.forcedLocalReason(for: named), .privateTitle)
+        XCTAssertNil(model.forcedLocalReason(for: plain))
+    }
+
     func testPolicyForcedShowCannotBeMovedToSent() throws {
         let publicShow = show("feed-a", "Public Show")
         let premium = show("feed-p", "Premium Hour")
