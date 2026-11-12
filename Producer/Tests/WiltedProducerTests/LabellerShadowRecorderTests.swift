@@ -172,10 +172,16 @@ struct LabellerShadowRecorderTests {
         confirmed: Bool = true,
         dailyCap: Int? = nil,
         cueDigest: String? = nil,
+        customName: String? = nil,
         sender: StubSender
     ) async throws -> Run {
         let fixture = try await Fixture()
         try await saveFeed(in: fixture.store)
+        if let customName {
+            try await fixture.store.save(subscription: PodcastSubscription(
+                feedID: Self.feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)),
+                displayName: customName))
+        }
         let (defaults, defaultsName) = makeDefaults()
         let recordsDirectory = try Fixture.temporaryDirectory()
         let recorder = makeRecorder(defaults: defaults, sender: sender, recordsDirectory: recordsDirectory,
@@ -312,6 +318,19 @@ struct LabellerShadowRecorderTests {
         #expect(record["failureKind"] == nil)
         #expect(record["engineOutcome"] as? String == "cut")
         #expect(try readAttempts(directory: run.recordsDirectory).first?["outcome"] as? String == "local")
+    }
+
+    /// Regression: the live path ignored the owner's name for a show.
+    @Test func aShowTheOwnerNamedPlusStaysLocalOnTheLivePath() async throws {
+        let run = try await runPipeline(
+            shadow: true, customName: "Garden Plus",
+            sender: StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))]))
+        defer { run.cleanup() }
+
+        #expect(run.sender.requestCount == 0)
+        let record = try readRecord(directory: run.recordsDirectory, episodeID: run.fixture.episodeID)
+        #expect(record["route"] as? String == "local")
+        #expect(record["routeReason"] as? String == "privateTitle")
     }
 
     @Test func withTheGlobalSwitchOffNothingIsExportedSentOrWritten() async throws {
