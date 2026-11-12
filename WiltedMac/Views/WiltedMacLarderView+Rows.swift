@@ -159,7 +159,7 @@ extension WiltedMacLarderView {
             }
             if model.canPrepareAgain(episode) {
                 Divider()
-                Button("Prepare Again") { model.prepareAgain(episode) }
+                Button(model.prepareAgainMenuTitle(for: episode)) { model.prepareAgain(episode) }
                     .accessibilityIdentifier("wilted-larder-prepare-again-\(episode.id)")
             }
             if WiltedMacEpisodeIdentityReviewRequest.isAvailable(for: episode) {

@@ -22,6 +22,9 @@ struct WiltedMacPrepareAgainRow: Equatable {
     }
 
     var phase: Phase
+    /// Taken from the policy the run was admitted with: when ad removal is off,
+    /// the preparing line says the full episode is being restored.
+    var restoringFullEpisode: Bool = false
 
     var isRunning: Bool {
         if case .note = phase { false } else { true }
@@ -37,7 +40,8 @@ struct WiltedMacPrepareAgainRow: Equatable {
         case .waiting: "Waiting for the preparation in flight"
         case .downloading(let fraction):
             fraction.map { "Downloading the original · \(Int(($0 * 100).rounded()))%" } ?? "Downloading the original"
-        case .preparing: "Removing ads with the current engine"
+        case .preparing:
+            restoringFullEpisode ? "Restoring the full episode" : "Removing ads with the current engine"
         case .note(let text): text
         }
     }
@@ -54,27 +58,36 @@ extension WiltedMacModel {
     }
 
     nonisolated static let prepareAgainConfirmationMessage =
-        "Wilted downloads the original audio where needed and removes ads with the current engine. "
-        + "Your place in each is kept."
+        "Wilted downloads the original audio where needed and prepares each episode with the current engine. "
+        + "Shows marked as having no ads get their full episodes back. Your place in each is kept."
 
     // MARK: Row
 
     /// The row's state when an admitted run starts: a cut keeps its Ready row
     /// and gets the run's own line, anything else shows the usual `.preparing`.
-    func showPreparationAdmitted(_ episodeID: String, queued: Bool, again: Bool) {
+    func showPreparationAdmitted(
+        _ episodeID: String, queued: Bool, again: Bool, restoringFullEpisode: Bool = false
+    ) {
         guard again else {
             updateEpisode(episodeID) {
                 $0.preparationState = .preparing(stage: queued ? Self.preparationQueuedStage : Self.preparingStage)
             }
             return
         }
-        prepareAgainRows[episodeID] = WiltedMacPrepareAgainRow(phase: queued ? .waiting : .downloading(fraction: nil))
+        prepareAgainRows[episodeID] = WiltedMacPrepareAgainRow(
+            phase: queued ? .waiting : .downloading(fraction: nil),
+            restoringFullEpisode: restoringFullEpisode
+        )
     }
 
     /// A queued run reached the slot.
-    func showPreparationStarted(_ episode: WiltedMacEpisode, again: Bool) {
+    func showPreparationStarted(
+        _ episode: WiltedMacEpisode, again: Bool, restoringFullEpisode: Bool = false
+    ) {
         if again {
-            prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(phase: .downloading(fraction: nil))
+            prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(
+                phase: .downloading(fraction: nil), restoringFullEpisode: restoringFullEpisode
+            )
         } else {
             updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparingStage) }
         }
@@ -87,14 +100,20 @@ extension WiltedMacModel {
     }
 
     func showPrepareAgainDownload(_ episodeID: String, _ progress: PodcastDownloadProgress) {
-        switch prepareAgainRows[episodeID]?.phase {
-        case .waiting?, .downloading?:
+        guard let existing = prepareAgainRows[episodeID] else { return }
+        switch existing.phase {
+        case .waiting, .downloading:
             if progress.stage == .completed {
-                prepareAgainRows[episodeID] = WiltedMacPrepareAgainRow(phase: .preparing)
+                prepareAgainRows[episodeID] = WiltedMacPrepareAgainRow(
+                    phase: .preparing, restoringFullEpisode: existing.restoringFullEpisode
+                )
             } else {
                 let fraction = progress.expectedByteCount.flatMap { $0 > 0 ? $0 : nil }
                     .map { min(1, Double(progress.bytesReceived) / Double($0)) }
-                prepareAgainRows[episodeID] = WiltedMacPrepareAgainRow(phase: .downloading(fraction: fraction))
+                prepareAgainRows[episodeID] = WiltedMacPrepareAgainRow(
+                    phase: .downloading(fraction: fraction),
+                    restoringFullEpisode: existing.restoringFullEpisode
+                )
             }
         default: break
         }
@@ -166,16 +185,21 @@ extension WiltedMacModel {
                 episodeID: itemID, policy: policy, attempt: attempt, onJournaled: onJournaled
             ).summary
         }
+        let restoring = !policy.removeAds
         do {
             guard let coordinator = podcastDownloadCoordinator else { throw CancellationError() }
             // A bulk run can wait for hours, and the listener can load the
             // episode meanwhile: its cut is not swapped under the playhead.
             if currentPodcastEpisodeID == episode.id {
                 prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(
-                    phase: .note("Playing now, so it was left as it is"))
+                    phase: .note("Playing now, so it was left as it is"),
+                    restoringFullEpisode: restoring
+                )
                 throw CancellationError()
             }
-            prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(phase: .downloading(fraction: nil))
+            prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(
+                phase: .downloading(fraction: nil), restoringFullEpisode: restoring
+            )
             let throttle = WiltedMacDownloadProgressThrottle()
             let episodeID = episode.id
             let outcome = try await pipeline.prepareAgain(
@@ -197,16 +221,22 @@ extension WiltedMacModel {
             case .prepared(let result):
                 return result.summary
             case .keptExisting(let summary):
-                prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(phase: .note(summary))
+                prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(
+                    phase: .note(summary), restoringFullEpisode: restoring
+                )
                 return summary
             case .refused(let refusal):
-                prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(phase: .note(refusal.message))
+                prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(
+                    phase: .note(refusal.message), restoringFullEpisode: restoring
+                )
                 return refusal.message
             }
         } catch {
             if error is CancellationError, currentPodcastEpisodeID == episode.id {
                 prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(
-                    phase: .note("Playing now, so it was left as it is"))
+                    phase: .note("Playing now, so it was left as it is"),
+                    restoringFullEpisode: restoring
+                )
             }
             // A failed run counts as tried; the offer should reflect it now,
             // not at the next library load.

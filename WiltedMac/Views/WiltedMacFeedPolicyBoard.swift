@@ -333,7 +333,18 @@ final class WiltedMacFeedPolicyBoard {
         guard isLoaded(feedID), !isArticleFeed(feedID) else { return false }
         WiltedMacAdFreeFeedPreference(preferences: model.preferences).set(feedID: feedID, adFree: value)
         if value { adFreeFeedIDs.insert(feedID) } else { adFreeFeedIDs.remove(feedID) }
+        model.adFreeFeedsDidChange()
         return true
+    }
+
+    /// How many cut episodes on this feed the Larder can restore now.
+    func restorableCutCount(_ feedID: String) -> Int {
+        model.episodesToRestore(feedID: feedID).count
+    }
+
+    /// Starts a restore run for each cut episode on the feed that can be restored.
+    func restoreCuts(for feedID: String) {
+        model.restoreCutEpisodes(feedID: feedID)
     }
 
     // MARK: Local-only ad finding

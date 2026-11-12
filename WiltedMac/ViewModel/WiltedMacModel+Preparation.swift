@@ -201,7 +201,10 @@ extension WiltedMacModel {
         // row is corrected below rather than left waiting.
         let queued = preparationGate.isBusy || !podcastPreparationTasks.isEmpty
             || articlePreparationIsPending
-        showPreparationAdmitted(episode.id, queued: queued, again: again != nil)
+        let restoringFullEpisode = again != nil && !policySnapshot.removeAds
+        showPreparationAdmitted(
+            episode.id, queued: queued, again: again != nil, restoringFullEpisode: restoringFullEpisode
+        )
         if queued {
             preparationQueue.enter(WiltedMacWaitingPreparation(
                 id: episode.id, title: episode.title, source: episode.feedTitle
@@ -254,7 +257,11 @@ extension WiltedMacModel {
             defer { gate.release() }
             self?.preparationQueue.leave(episode.id)
             self?.startProjectedProcessorRun(for: episode)
-            if queued { self?.showPreparationStarted(episode, again: again != nil) }
+            if queued {
+                self?.showPreparationStarted(
+                    episode, again: again != nil, restoringFullEpisode: restoringFullEpisode
+                )
+            }
             // Admission is also dispatched when the request is consumed, but
             // that task can race this run after an immediately available gate.
             // Await the same idempotent write before reading its policy.

@@ -164,6 +164,8 @@ final class WiltedMacModel {
     /// with each library load. The only episodes the Larder offers to prepare
     /// again; each says what the run needs (see `PodcastPrepareAgainCandidate`).
     var prepareAgainCandidates: [String: PodcastPrepareAgainCandidate] = [:]
+    /// Counts candidate reads, so only the newest one started is applied.
+    @ObservationIgnored var prepareAgainRefreshGeneration: UInt64 = 0
     /// What a prepare-again run is saying on its Larder row, by episode id.
     var prepareAgainRows: [String: WiltedMacPrepareAgainRow] = [:]
     /// The confirmation before re-preparing every episode that kept its ads.

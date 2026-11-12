@@ -1,5 +1,6 @@
 import Foundation
 import os
+import WiltedDomain
 import WiltedProducer
 
 extension WiltedMacModel {
@@ -56,6 +57,41 @@ extension WiltedMacModel {
         for episode in episodesToPrepareAgain { prepareAgain(episode) }
     }
 
+    /// Whether preparing again would put back a cut made before this show was
+    /// marked as having no ads.
+    func restoresFullEpisode(_ episode: WiltedMacEpisode) -> Bool {
+        guard let candidate = prepareAgainCandidates[episode.id], candidate.isCut else { return false }
+        return WiltedMacAdFreeFeedPreference(preferences: preferences).isAdFree(feedID: episode.feedID)
+    }
+
+    /// Cut episodes on `feedID` that the Larder may restore now: candidates the
+    /// row would offer, with the feed marked ad-free.
+    func episodesToRestore(feedID: String) -> [WiltedMacEpisode] {
+        episodes.filter {
+            $0.feedID == feedID && canPrepareAgain($0) && restoresFullEpisode($0)
+        }
+    }
+
+    /// Starts a prepare-again run for each cut episode on the feed that can be
+    /// restored. No-op while temporary state is closing.
+    func restoreCutEpisodes(feedID: String) {
+        guard !isClosingTemporaryState else { return }
+        for episode in episodesToRestore(feedID: feedID) { prepareAgain(episode) }
+    }
+
+    /// Larder context-menu title for an eligible prepare-again row.
+    func prepareAgainMenuTitle(for episode: WiltedMacEpisode) -> String {
+        restoresFullEpisode(episode) ? "Restore Full Episode" : "Prepare Again"
+    }
+
+    /// Re-reads prepare-again candidates after the ad-free set changes, so cuts
+    /// on a newly marked show appear and disappear with the switch.
+    func adFreeFeedsDidChange() {
+        guard let store else { return }
+        let readEpoch = libraryReadEpoch
+        Task { await refreshEpisodesToPrepareAgain(from: store, readEpoch: readEpoch) }
+    }
+
     /// Reads the episodes the current engine has not prepared, as part of a
     /// library load.
     ///
@@ -64,15 +100,26 @@ extension WiltedMacModel {
     /// episode again. The warning is the one trace, because a control that is
     /// quietly absent is otherwise unexplainable.
     func refreshEpisodesToPrepareAgain(from store: LocalLibraryStore, readEpoch: UInt64) async {
+        let restoring = Set(
+            WiltedMacAdFreeFeedPreference(preferences: preferences).feedIDs
+                .compactMap { try? ItemID(rawValue: $0) }
+        )
+        // Reads can finish out of order (a switch flipped twice, a load beside
+        // a switch): only the newest one started read the current ad-free set.
+        // A read already behind a newer library load would be dropped below;
+        // it must not also retire the read that load started.
+        guard readEpoch == libraryReadEpoch else { return }
+        prepareAgainRefreshGeneration &+= 1
+        let generation = prepareAgainRefreshGeneration
         do {
-            let values = try await store.podcastEpisodesToPrepareAgain()
+            let values = try await store.podcastEpisodesToPrepareAgain(restoringCutsOnFeeds: restoring)
             // The read can outlive a newer library load; that load owns the set.
-            guard readEpoch == libraryReadEpoch else { return }
+            guard readEpoch == libraryReadEpoch, generation == prepareAgainRefreshGeneration else { return }
             prepareAgainCandidates = Dictionary(
                 values.map { ($0.episodeID.rawValue, $0) }, uniquingKeysWith: { first, _ in first }
             )
         } catch {
-            guard readEpoch == libraryReadEpoch else { return }
+            guard readEpoch == libraryReadEpoch, generation == prepareAgainRefreshGeneration else { return }
             prepareAgainCandidates = [:]
             Self.prepareAgainLog.warning(
                 "prepare-again candidates could not be read: \(LogSafeError.describe(error), privacy: .public)"

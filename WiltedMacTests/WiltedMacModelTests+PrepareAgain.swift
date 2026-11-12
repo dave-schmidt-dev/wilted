@@ -175,8 +175,8 @@ extension WiltedMacModelTests {
         XCTAssertEqual(WiltedMacModel.prepareAgainConfirmationTitle(count: 3), "Prepare 3 episodes again?")
         XCTAssertEqual(
             WiltedMacModel.prepareAgainConfirmationMessage,
-            "Wilted downloads the original audio where needed and removes ads with the current engine. "
-                + "Your place in each is kept.")
+            "Wilted downloads the original audio where needed and prepares each episode with the current engine. "
+                + "Shows marked as having no ads get their full episodes back. Your place in each is kept.")
     }
 
     // MARK: A failed re-preparation

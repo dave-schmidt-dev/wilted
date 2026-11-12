@@ -125,6 +125,7 @@ struct WiltedMacFeedPolicyContent: View {
                     .accessibilityIdentifier("wilted-feed-policy-failed")
             }
             if !board.isArticleFeed(feedID) { adFreeRow }
+            if !board.isArticleFeed(feedID) { restoreCutEpisodesRow }
             if !board.isArticleFeed(feedID) { selfPromotionRow }
             if !board.isArticleFeed(feedID) { localOnlyAdsRow }
             WiltedMacFeedRulesEntry(
@@ -187,6 +188,35 @@ struct WiltedMacFeedPolicyContent: View {
             .accessibilityIdentifier("wilted-feed-policy-ad-free")
         }
         .disabled(!board.isLoaded(feedID))
+    }
+
+    /// Title for the restore control: singular for one cut, plural otherwise.
+    static func restoreCutEpisodesTitle(count: Int) -> String {
+        count == 1 ? "Restore 1 Cut Episode" : "Restore \(count) Cut Episodes"
+    }
+
+    /// Shown only when the show is marked ad-free and has cut episodes the Larder
+    /// can put back. Directly under the ad-free row.
+    @ViewBuilder
+    private var restoreCutEpisodesRow: some View {
+        let count = board.restorableCutCount(feedID)
+        if board.isAdFree(feedID), count > 0 {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                // The system button, like Done below: plain text would not read as an action.
+                Button(Self.restoreCutEpisodesTitle(count: count)) { board.restoreCuts(for: feedID) }
+                    .disabled(!board.isLoaded(feedID))
+                    .accessibilityLabel(
+                        "Restore \(count) cut \(count == 1 ? "episode" : "episodes") of \(subscription.title)")
+                    .accessibilityIdentifier("wilted-feed-policy-restore-cuts")
+                Text(
+                    "Wilted cut these before you turned this on. It downloads each original again "
+                    + "and puts back what was cut. Your place in each is kept."
+                )
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     /// Shown only for a podcast feed. Kept out of the grid so its long label does not widen
