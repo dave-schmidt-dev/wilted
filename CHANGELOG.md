@@ -174,6 +174,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- The online labeller trial now keeps a subscriber feed on this Mac when its private address contains hyphens, underscores or dots, or its title says Plus or ad-free. Before, such a feed could be treated as public.
 - The Mac player keeps **Ad here** available when loaded podcast audio has no cut timeline, so missed ads can still be reported.
 - A narrow Mac window, such as one sized for a phone over remote desktop, now shows **Ad here**, **Good cut** and **Not an ad** in the bottom player and the full-window player; before, only the side pane had them, and a narrow window has no side pane.
 - A paid opening with malformed evidence quotes gets one source-bound quote repair while retaining its classification, evidence IDs, programme protections and strict final validation.

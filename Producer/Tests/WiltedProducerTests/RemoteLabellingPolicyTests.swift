@@ -97,6 +97,24 @@ struct RemoteLabellingPolicyTests {
         #expect(route(query, context()) == .local(.tokenLikeFeedURL))
     }
 
+    /// Regression: a subscriber feed whose long token contained separators went remote on
+    /// 2026-11-12, because separators used to exempt a path segment from the token check.
+    @Test func separatedAndVeryLongTokensGoLocal() {
+        let separated = input(feed: "https://plus.example.test/podcast/Zx9Qa7Lm2Kp4Rt6Vy8Bn1Cd3Ef5Gh_7JkLmNoPq-RsTuVw.XyZ012?t=1")
+        #expect(route(separated, context()) == .local(.tokenLikeFeedURL))
+        let longPart = String(repeating: "abcdefgh", count: 8)
+        #expect(route(input(feed: "https://feeds.example.test/\(longPart)/rss"), context()) == .local(.tokenLikeFeedURL))
+        let longSlug = input(feed: "https://feeds.example.test/a-show-about-gardens-and-growing-things-2026/rss")
+        #expect(route(longSlug, context()) == .remote)
+    }
+
+    @Test func plusAndAdFreeTitlesGoLocal() {
+        for title in ["Garden Hour Plus", "Garden Hour (Ad-Free)", "Garden Hour ad free"] {
+            #expect(route(input(title: title), context()) == .local(.privateTitle))
+        }
+        #expect(route(input(title: "Surplus Gardening"), context()) == .remote)
+    }
+
     @Test func ordinaryShapesStayRemote() {
         #expect(route(input(feed: "https://feeds.example.test/Episode-451-Final-Mix"), context()) == .remote)
         #expect(route(input(feed: "https://feeds.example.test/shows/48213/rss"), context()) == .remote)

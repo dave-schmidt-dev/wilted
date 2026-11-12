@@ -72,7 +72,9 @@ public struct RemoteLabellingContext: Sendable, Equatable {
 public enum RemoteLabellingPolicy {
     static let credentialQueryKeys: Set<String> = ["token", "auth", "key", "sig", "signature"]
     static let tokenMinimumLength = 24
-    static let privateTitlePattern = #"\b(premium|private|subscribers?|patrons?|members?)\b"#
+    /// A path segment or query value this long is treated as a token whatever it contains.
+    static let longPartLength = 64
+    static let privateTitlePattern = #"\b(premium|private|subscribers?|patrons?|members?|plus|ad[- ]free)\b"#
 
     public static func route(for input: RemoteLabellingInput, context: RemoteLabellingContext) -> RemoteLabellingRoute {
         if !context.switchOn { return .local(.switchOff) }
@@ -105,8 +107,10 @@ public enum RemoteLabellingPolicy {
         return (parts.queryItems ?? []).contains { credentialQueryKeys.contains($0.name.lowercased()) }
     }
 
-    /// A path segment or query value of 24+ characters, free of hyphen, underscore
-    /// and dot, that mixes letters and digits. Slugs and short publisher IDs pass.
+    /// A path segment or query value that is 64+ characters long, or that has a run of 24+
+    /// characters between hyphens, underscores and dots mixing letters and digits. Separators
+    /// do not hide a token: subscriber feed tokens are often base64url or dotted. Slugs made
+    /// of short words and short publisher IDs pass.
     static func hasTokenLikePart(_ url: URL) -> Bool {
         guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }
         var candidates = parts.path.split(separator: "/").map(String.init)
@@ -115,13 +119,14 @@ public enum RemoteLabellingPolicy {
     }
 
     private static func looksLikeToken(_ part: String) -> Bool {
-        guard part.count >= tokenMinimumLength else { return false }
-        if part.contains(where: { $0 == "-" || $0 == "_" || $0 == "." }) { return false }
-        return part.contains(where: \.isLetter) && part.contains(where: \.isNumber)
+        if part.count >= longPartLength { return true }
+        return part.split(whereSeparator: { $0 == "-" || $0 == "_" || $0 == "." }).contains { run in
+            run.count >= tokenMinimumLength && run.contains(where: \.isLetter) && run.contains(where: \.isNumber)
+        }
     }
 
     /// Whole-word, case-insensitive match (singular or plural), so "Remember This" is not a
-    /// match for "member" while "Members Only" is.
+    /// match for "member" while "Members Only" is. "Plus" and "ad-free" name paid feeds.
     static func hasPrivateWord(_ title: String) -> Bool {
         title.range(of: privateTitlePattern, options: [.regularExpression, .caseInsensitive]) != nil
     }
