@@ -1,0 +1,1152 @@
+{
+ "note": "Synthetic labeller fixtures: invented shows and transcript lines. Prompts are byte-exact outputs of the measured prompt layout.",
+ "pairs": {
+  "short": {
+   "show_title": "The Cobblestone Bench",
+   "cues": [
+    {
+     "id": 0,
+     "start": 0.0,
+     "end": 3.24,
+     "text": "Good morning from the Cobblestone Bench, I'm your host Wrenna Falk."
+    },
+    {
+     "id": 1,
+     "start": 3.24,
+     "end": 10.4,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds."
+    },
+    {
+     "id": 2,
+     "start": 10.4,
+     "end": 17.1,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood."
+    },
+    {
+     "id": 3,
+     "start": 17.1,
+     "end": 21.0,
+     "text": "This segment is brought to you by Brightwick Mattresses."
+    },
+    {
+     "id": 4,
+     "start": 21.0,
+     "end": 26.22,
+     "text": "Brightwick mattresses use cooling woven bamboo layers for a calmer night."
+    },
+    {
+     "id": 5,
+     "start": 26.22,
+     "end": 31.19,
+     "text": "Visit brightwick dot example and enter the code HARBOR for ten percent off."
+    },
+    {
+     "id": 6,
+     "start": 31.19,
+     "end": 37.27,
+     "text": "That is brightwick, and thanks again to Brightwick Mattresses."
+    },
+    {
+     "id": 7,
+     "start": 37.27,
+     "end": 44.11,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks."
+    },
+    {
+     "id": 8,
+     "start": 44.11,
+     "end": 47.13,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn."
+    },
+    {
+     "id": 9,
+     "start": 47.13,
+     "end": 49.79,
+     "text": "Thanks for listening, see you in the potting shed next time."
+    }
+   ],
+   "duration_seconds": 49.79,
+   "prompt": "You label advertising breaks in a podcast transcript. Do not use any tools; answer from the transcript below only.\n\nEach transcript line is `#<segment id> [<start seconds>-<end seconds>] <text>`. The show is: The Cobblestone Bench. Speech-to-text has errors and does not transcribe music.\n\nFind every advertising break in the whole episode. Advertising = third-party sponsor reads (including reads or skits voiced by the hosts), produced commercials, and promos for other shows or networks. Mark promotion of the show's own membership, merch or products as kind \"house-promo\". Not advertising: the show's own intro/outro, credits, listener participation, and ordinary discussion that merely names a product. A return to discussion after one sponsor may only introduce the next sponsor: check each break's end through the next call to action or a clear return to the show. An episode may have no advertising at all; then return an empty list.\n\nReply with JSON only, no prose and no code fence:\n{\"breaks\":[{\"startSegment\":int,\"endSegment\":int,\"kind\":\"sponsor\"|\"network-promo\"|\"house-promo\",\"label\":\"must-cut\"|\"acceptable-cut\",\"advertisers\":[str]}]}\nOne entry per contiguous break. Use \"must-cut\" only when the text clearly is advertising.\n\nTRANSCRIPT:\n#0 [0.00-3.24] Good morning from the Cobblestone Bench, I'm your host Wrenna Falk.\n#1 [3.24-10.40] The quillfern in the north bed finally sprouted a second set of fronds.\n#2 [10.40-17.10] Marrowby recommends mulching the cobbled paths with crushed larchwood.\n#3 [17.10-21.00] This segment is brought to you by Brightwick Mattresses.\n#4 [21.00-26.22] Brightwick mattresses use cooling woven bamboo layers for a calmer night.\n#5 [26.22-31.19] Visit brightwick dot example and enter the code HARBOR for ten percent off.\n#6 [31.19-37.27] That is brightwick, and thanks again to Brightwick Mattresses.\n#7 [37.27-44.11] Our caller Ottoline asked about raised beds built from salvaged ferry planks.\n#8 [44.11-47.13] Frost pockets behind the glasshouse can sink three degrees below the lawn.\n#9 [47.13-49.79] Thanks for listening, see you in the potting shed next time.\n",
+   "reply": "{\"breaks\":[{\"startSegment\":3,\"endSegment\":6,\"kind\":\"sponsor\",\"label\":\"must-cut\",\"advertisers\":[\"Brightwick Mattresses\"]}]}",
+   "expected": {
+    "breaks": [
+     {
+      "startSegment": 3,
+      "endSegment": 6,
+      "kind": "sponsor",
+      "label": "must-cut",
+      "advertisers": [
+       "Brightwick Mattresses"
+      ]
+     }
+    ],
+    "rejected": []
+   }
+  },
+  "long": {
+   "show_title": "The Cobblestone Bench",
+   "cues": [
+    {
+     "id": 0,
+     "start": 0.0,
+     "end": 7.76,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 0."
+    },
+    {
+     "id": 1,
+     "start": 7.76,
+     "end": 15.47,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 1."
+    },
+    {
+     "id": 2,
+     "start": 15.47,
+     "end": 18.28,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 2."
+    },
+    {
+     "id": 3,
+     "start": 18.28,
+     "end": 21.25,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 3."
+    },
+    {
+     "id": 4,
+     "start": 21.25,
+     "end": 28.35,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 4."
+    },
+    {
+     "id": 5,
+     "start": 28.35,
+     "end": 34.9,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 5."
+    },
+    {
+     "id": 6,
+     "start": 34.9,
+     "end": 41.08,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 6."
+    },
+    {
+     "id": 7,
+     "start": 41.08,
+     "end": 45.27,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 7."
+    },
+    {
+     "id": 8,
+     "start": 45.27,
+     "end": 51.1,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 8."
+    },
+    {
+     "id": 9,
+     "start": 51.1,
+     "end": 56.94,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 9."
+    },
+    {
+     "id": 10,
+     "start": 56.94,
+     "end": 62.64,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 10."
+    },
+    {
+     "id": 11,
+     "start": 62.64,
+     "end": 66.01,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 11."
+    },
+    {
+     "id": 12,
+     "start": 66.01,
+     "end": 70.88,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 12."
+    },
+    {
+     "id": 13,
+     "start": 70.88,
+     "end": 75.54,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 13."
+    },
+    {
+     "id": 14,
+     "start": 75.54,
+     "end": 82.02,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 14."
+    },
+    {
+     "id": 15,
+     "start": 82.02,
+     "end": 89.99,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 15."
+    },
+    {
+     "id": 16,
+     "start": 89.99,
+     "end": 97.71,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 16."
+    },
+    {
+     "id": 17,
+     "start": 97.71,
+     "end": 103.2,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 17."
+    },
+    {
+     "id": 18,
+     "start": 103.2,
+     "end": 108.15,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 18."
+    },
+    {
+     "id": 19,
+     "start": 108.15,
+     "end": 112.13,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 19."
+    },
+    {
+     "id": 20,
+     "start": 112.13,
+     "end": 114.83,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 20."
+    },
+    {
+     "id": 21,
+     "start": 114.83,
+     "end": 117.48,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 21."
+    },
+    {
+     "id": 22,
+     "start": 117.48,
+     "end": 122.54,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 22."
+    },
+    {
+     "id": 23,
+     "start": 122.54,
+     "end": 126.79,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 23."
+    },
+    {
+     "id": 24,
+     "start": 126.79,
+     "end": 131.38,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 24."
+    },
+    {
+     "id": 25,
+     "start": 131.38,
+     "end": 138.78,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 25."
+    },
+    {
+     "id": 26,
+     "start": 138.78,
+     "end": 144.17,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 26."
+    },
+    {
+     "id": 27,
+     "start": 144.17,
+     "end": 149.75,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 27."
+    },
+    {
+     "id": 28,
+     "start": 149.75,
+     "end": 153.55,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 28."
+    },
+    {
+     "id": 29,
+     "start": 153.55,
+     "end": 156.18,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 29."
+    },
+    {
+     "id": 30,
+     "start": 156.18,
+     "end": 160.47,
+     "text": "This segment is brought to you by Oakpeel Insurance."
+    },
+    {
+     "id": 31,
+     "start": 160.47,
+     "end": 163.72,
+     "text": "Oakpeel covers fallen trees and flooded cellars with a single plain policy."
+    },
+    {
+     "id": 32,
+     "start": 163.72,
+     "end": 169.03,
+     "text": "Visit oakpeel dot example and enter the code HARBOR for ten percent off."
+    },
+    {
+     "id": 33,
+     "start": 169.03,
+     "end": 177.02,
+     "text": "That is oakpeel, and thanks again to Oakpeel Insurance."
+    },
+    {
+     "id": 34,
+     "start": 177.02,
+     "end": 183.23,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 34."
+    },
+    {
+     "id": 35,
+     "start": 183.23,
+     "end": 186.73,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 35."
+    },
+    {
+     "id": 36,
+     "start": 186.73,
+     "end": 194.14,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 36."
+    },
+    {
+     "id": 37,
+     "start": 194.14,
+     "end": 201.02,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 37."
+    },
+    {
+     "id": 38,
+     "start": 201.02,
+     "end": 207.56,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 38."
+    },
+    {
+     "id": 39,
+     "start": 207.56,
+     "end": 215.05,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 39."
+    },
+    {
+     "id": 40,
+     "start": 215.05,
+     "end": 221.75,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 40."
+    },
+    {
+     "id": 41,
+     "start": 221.75,
+     "end": 228.59,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 41."
+    },
+    {
+     "id": 42,
+     "start": 228.59,
+     "end": 233.04,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 42."
+    },
+    {
+     "id": 43,
+     "start": 233.04,
+     "end": 240.94,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 43."
+    },
+    {
+     "id": 44,
+     "start": 240.94,
+     "end": 248.73,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 44."
+    },
+    {
+     "id": 45,
+     "start": 248.73,
+     "end": 252.12,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 45."
+    },
+    {
+     "id": 46,
+     "start": 252.12,
+     "end": 258.77,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 46."
+    },
+    {
+     "id": 47,
+     "start": 258.77,
+     "end": 265.2,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 47."
+    },
+    {
+     "id": 48,
+     "start": 265.2,
+     "end": 270.24,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 48."
+    },
+    {
+     "id": 49,
+     "start": 270.24,
+     "end": 275.66,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 49."
+    },
+    {
+     "id": 50,
+     "start": 275.66,
+     "end": 280.86,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 50."
+    },
+    {
+     "id": 51,
+     "start": 280.86,
+     "end": 288.45,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 51."
+    },
+    {
+     "id": 52,
+     "start": 288.45,
+     "end": 293.7,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 52."
+    },
+    {
+     "id": 53,
+     "start": 293.7,
+     "end": 300.77,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 53."
+    },
+    {
+     "id": 54,
+     "start": 300.77,
+     "end": 305.22,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 54."
+    },
+    {
+     "id": 55,
+     "start": 305.22,
+     "end": 312.58,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 55."
+    },
+    {
+     "id": 56,
+     "start": 312.58,
+     "end": 320.03,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 56."
+    },
+    {
+     "id": 57,
+     "start": 320.03,
+     "end": 325.07,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 57."
+    },
+    {
+     "id": 58,
+     "start": 325.07,
+     "end": 330.69,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 58."
+    },
+    {
+     "id": 59,
+     "start": 330.69,
+     "end": 338.25,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 59."
+    },
+    {
+     "id": 60,
+     "start": 338.25,
+     "end": 344.73,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 60."
+    },
+    {
+     "id": 61,
+     "start": 344.73,
+     "end": 349.91,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 61."
+    },
+    {
+     "id": 62,
+     "start": 349.91,
+     "end": 353.63,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 62."
+    },
+    {
+     "id": 63,
+     "start": 353.63,
+     "end": 357.92,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 63."
+    },
+    {
+     "id": 64,
+     "start": 357.92,
+     "end": 364.27,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 64."
+    },
+    {
+     "id": 65,
+     "start": 364.27,
+     "end": 367.68,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 65."
+    },
+    {
+     "id": 66,
+     "start": 367.68,
+     "end": 375.17,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 66."
+    },
+    {
+     "id": 67,
+     "start": 375.17,
+     "end": 379.14,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 67."
+    },
+    {
+     "id": 68,
+     "start": 379.14,
+     "end": 386.65,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 68."
+    },
+    {
+     "id": 69,
+     "start": 386.65,
+     "end": 390.85,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 69."
+    },
+    {
+     "id": 70,
+     "start": 390.85,
+     "end": 398.62,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 70."
+    },
+    {
+     "id": 71,
+     "start": 398.62,
+     "end": 405.0,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 71."
+    },
+    {
+     "id": 72,
+     "start": 405.0,
+     "end": 410.27,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 72."
+    },
+    {
+     "id": 73,
+     "start": 410.27,
+     "end": 415.62,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 73."
+    },
+    {
+     "id": 74,
+     "start": 415.62,
+     "end": 421.7,
+     "text": "Before we go on, a word about Lanternfold Seeds."
+    },
+    {
+     "id": 75,
+     "start": 421.7,
+     "end": 427.43,
+     "text": "Lanternfold ships heirloom seed tins within two days of your order."
+    },
+    {
+     "id": 76,
+     "start": 427.43,
+     "end": 431.65,
+     "text": "Browse the catalogue at lanternfold dot example, and use the code MOSS for free postage."
+    },
+    {
+     "id": 77,
+     "start": 431.65,
+     "end": 435.29,
+     "text": "Now, back to the garden."
+    },
+    {
+     "id": 78,
+     "start": 435.29,
+     "end": 440.61,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 78."
+    },
+    {
+     "id": 79,
+     "start": 440.61,
+     "end": 448.25,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 79."
+    },
+    {
+     "id": 80,
+     "start": 448.25,
+     "end": 454.18,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 80."
+    },
+    {
+     "id": 81,
+     "start": 454.18,
+     "end": 457.09,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 81."
+    },
+    {
+     "id": 82,
+     "start": 457.09,
+     "end": 464.1,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 82."
+    },
+    {
+     "id": 83,
+     "start": 464.1,
+     "end": 470.59,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 83."
+    },
+    {
+     "id": 84,
+     "start": 470.59,
+     "end": 478.08,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 84."
+    },
+    {
+     "id": 85,
+     "start": 478.08,
+     "end": 481.63,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 85."
+    },
+    {
+     "id": 86,
+     "start": 481.63,
+     "end": 488.23,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 86."
+    },
+    {
+     "id": 87,
+     "start": 488.23,
+     "end": 491.05,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 87."
+    },
+    {
+     "id": 88,
+     "start": 491.05,
+     "end": 497.14,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 88."
+    },
+    {
+     "id": 89,
+     "start": 497.14,
+     "end": 501.14,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 89."
+    },
+    {
+     "id": 90,
+     "start": 501.14,
+     "end": 504.89,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 90."
+    },
+    {
+     "id": 91,
+     "start": 504.89,
+     "end": 512.21,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 91."
+    },
+    {
+     "id": 92,
+     "start": 512.21,
+     "end": 515.29,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 92."
+    },
+    {
+     "id": 93,
+     "start": 515.29,
+     "end": 520.66,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 93."
+    },
+    {
+     "id": 94,
+     "start": 520.66,
+     "end": 527.86,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 94."
+    },
+    {
+     "id": 95,
+     "start": 527.86,
+     "end": 531.71,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 95."
+    },
+    {
+     "id": 96,
+     "start": 531.71,
+     "end": 535.37,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 96."
+    },
+    {
+     "id": 97,
+     "start": 535.37,
+     "end": 542.71,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 97."
+    },
+    {
+     "id": 98,
+     "start": 542.71,
+     "end": 547.54,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 98."
+    },
+    {
+     "id": 99,
+     "start": 547.54,
+     "end": 553.98,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 99."
+    },
+    {
+     "id": 100,
+     "start": 553.98,
+     "end": 556.66,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 100."
+    },
+    {
+     "id": 101,
+     "start": 556.66,
+     "end": 561.15,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 101."
+    },
+    {
+     "id": 102,
+     "start": 561.15,
+     "end": 564.6,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 102."
+    },
+    {
+     "id": 103,
+     "start": 564.6,
+     "end": 570.8,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 103."
+    },
+    {
+     "id": 104,
+     "start": 570.8,
+     "end": 573.76,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 104."
+    },
+    {
+     "id": 105,
+     "start": 573.76,
+     "end": 581.51,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 105."
+    },
+    {
+     "id": 106,
+     "start": 581.51,
+     "end": 584.15,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 106."
+    },
+    {
+     "id": 107,
+     "start": 584.15,
+     "end": 590.66,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 107."
+    },
+    {
+     "id": 108,
+     "start": 590.66,
+     "end": 593.28,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 108."
+    },
+    {
+     "id": 109,
+     "start": 593.28,
+     "end": 597.19,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 109."
+    },
+    {
+     "id": 110,
+     "start": 597.19,
+     "end": 604.16,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 110."
+    },
+    {
+     "id": 111,
+     "start": 604.16,
+     "end": 607.52,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 111."
+    },
+    {
+     "id": 112,
+     "start": 607.52,
+     "end": 611.03,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 112."
+    },
+    {
+     "id": 113,
+     "start": 611.03,
+     "end": 617.33,
+     "text": "If you enjoy this show, try Soilcast, our sister programme about rural drains and hedges."
+    },
+    {
+     "id": 114,
+     "start": 617.33,
+     "end": 621.95,
+     "text": "Soilcast is available wherever the Cobblestone Bench network is heard."
+    },
+    {
+     "id": 115,
+     "start": 621.95,
+     "end": 624.69,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 115."
+    },
+    {
+     "id": 116,
+     "start": 624.69,
+     "end": 632.64,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 116."
+    },
+    {
+     "id": 117,
+     "start": 632.64,
+     "end": 635.97,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 117."
+    },
+    {
+     "id": 118,
+     "start": 635.97,
+     "end": 638.67,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 118."
+    },
+    {
+     "id": 119,
+     "start": 638.67,
+     "end": 643.06,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 119."
+    },
+    {
+     "id": 120,
+     "start": 643.06,
+     "end": 648.94,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 120."
+    },
+    {
+     "id": 121,
+     "start": 648.94,
+     "end": 655.52,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 121."
+    },
+    {
+     "id": 122,
+     "start": 655.52,
+     "end": 658.64,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 122."
+    },
+    {
+     "id": 123,
+     "start": 658.64,
+     "end": 662.99,
+     "text": "Next week we visit a walled orchard on the Dunmere estuary. Note 123."
+    },
+    {
+     "id": 124,
+     "start": 662.99,
+     "end": 665.66,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 124."
+    },
+    {
+     "id": 125,
+     "start": 665.66,
+     "end": 670.63,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 125."
+    },
+    {
+     "id": 126,
+     "start": 670.63,
+     "end": 677.34,
+     "text": "The quillfern in the north bed finally sprouted a second set of fronds. Note 126."
+    },
+    {
+     "id": 127,
+     "start": 677.34,
+     "end": 683.91,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 127."
+    },
+    {
+     "id": 128,
+     "start": 683.91,
+     "end": 691.37,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 128."
+    },
+    {
+     "id": 129,
+     "start": 691.37,
+     "end": 698.03,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 129."
+    },
+    {
+     "id": 130,
+     "start": 698.03,
+     "end": 705.27,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 130."
+    },
+    {
+     "id": 131,
+     "start": 705.27,
+     "end": 711.65,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 131."
+    },
+    {
+     "id": 132,
+     "start": 711.65,
+     "end": 716.75,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 132."
+    },
+    {
+     "id": 133,
+     "start": 716.75,
+     "end": 720.49,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 133."
+    },
+    {
+     "id": 134,
+     "start": 720.49,
+     "end": 726.62,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 134."
+    },
+    {
+     "id": 135,
+     "start": 726.62,
+     "end": 730.86,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 135."
+    },
+    {
+     "id": 136,
+     "start": 730.86,
+     "end": 733.92,
+     "text": "The pear espalier along the wall wants a hard prune before the sap rises. Note 136."
+    },
+    {
+     "id": 137,
+     "start": 733.92,
+     "end": 738.88,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 137."
+    },
+    {
+     "id": 138,
+     "start": 738.88,
+     "end": 746.19,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 138."
+    },
+    {
+     "id": 139,
+     "start": 746.19,
+     "end": 749.39,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 139."
+    },
+    {
+     "id": 140,
+     "start": 749.39,
+     "end": 755.11,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 140."
+    },
+    {
+     "id": 141,
+     "start": 755.11,
+     "end": 759.77,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 141."
+    },
+    {
+     "id": 142,
+     "start": 759.77,
+     "end": 765.1,
+     "text": "Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 142."
+    },
+    {
+     "id": 143,
+     "start": 765.1,
+     "end": 768.39,
+     "text": "I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 143."
+    },
+    {
+     "id": 144,
+     "start": 768.39,
+     "end": 776.17,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 144."
+    },
+    {
+     "id": 145,
+     "start": 776.17,
+     "end": 780.1,
+     "text": "Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 145."
+    },
+    {
+     "id": 146,
+     "start": 780.1,
+     "end": 785.93,
+     "text": "Compost heaps need turning roughly every fortnight, said Brannoch. Note 146."
+    },
+    {
+     "id": 147,
+     "start": 785.93,
+     "end": 790.74,
+     "text": "Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 147."
+    },
+    {
+     "id": 148,
+     "start": 790.74,
+     "end": 793.34,
+     "text": "Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 148."
+    },
+    {
+     "id": 149,
+     "start": 793.34,
+     "end": 798.91,
+     "text": "Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 149."
+    }
+   ],
+   "duration_seconds": 798.91,
+   "prompt": "You label advertising breaks in a podcast transcript. Do not use any tools; answer from the transcript below only.\n\nEach transcript line is `#<segment id> [<start seconds>-<end seconds>] <text>`. The show is: The Cobblestone Bench. Speech-to-text has errors and does not transcribe music.\n\nFind every advertising break in the whole episode. Advertising = third-party sponsor reads (including reads or skits voiced by the hosts), produced commercials, and promos for other shows or networks. Mark promotion of the show's own membership, merch or products as kind \"house-promo\". Not advertising: the show's own intro/outro, credits, listener participation, and ordinary discussion that merely names a product. A return to discussion after one sponsor may only introduce the next sponsor: check each break's end through the next call to action or a clear return to the show. An episode may have no advertising at all; then return an empty list.\n\nReply with JSON only, no prose and no code fence:\n{\"breaks\":[{\"startSegment\":int,\"endSegment\":int,\"kind\":\"sponsor\"|\"network-promo\"|\"house-promo\",\"label\":\"must-cut\"|\"acceptable-cut\",\"advertisers\":[str]}]}\nOne entry per contiguous break. Use \"must-cut\" only when the text clearly is advertising.\n\nTRANSCRIPT:\n#0 [0.00-7.76] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 0.\n#1 [7.76-15.47] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 1.\n#2 [15.47-18.28] Compost heaps need turning roughly every fortnight, said Brannoch. Note 2.\n#3 [18.28-21.25] The quillfern in the north bed finally sprouted a second set of fronds. Note 3.\n#4 [21.25-28.35] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 4.\n#5 [28.35-34.90] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 5.\n#6 [34.90-41.08] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 6.\n#7 [41.08-45.27] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 7.\n#8 [45.27-51.10] Next week we visit a walled orchard on the Dunmere estuary. Note 8.\n#9 [51.10-56.94] The quillfern in the north bed finally sprouted a second set of fronds. Note 9.\n#10 [56.94-62.64] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 10.\n#11 [62.64-66.01] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 11.\n#12 [66.01-70.88] The quillfern in the north bed finally sprouted a second set of fronds. Note 12.\n#13 [70.88-75.54] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 13.\n#14 [75.54-82.02] Compost heaps need turning roughly every fortnight, said Brannoch. Note 14.\n#15 [82.02-89.99] Compost heaps need turning roughly every fortnight, said Brannoch. Note 15.\n#16 [89.99-97.71] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 16.\n#17 [97.71-103.20] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 17.\n#18 [103.20-108.15] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 18.\n#19 [108.15-112.13] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 19.\n#20 [112.13-114.83] Compost heaps need turning roughly every fortnight, said Brannoch. Note 20.\n#21 [114.83-117.48] The quillfern in the north bed finally sprouted a second set of fronds. Note 21.\n#22 [117.48-122.54] Next week we visit a walled orchard on the Dunmere estuary. Note 22.\n#23 [122.54-126.79] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 23.\n#24 [126.79-131.38] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 24.\n#25 [131.38-138.78] Next week we visit a walled orchard on the Dunmere estuary. Note 25.\n#26 [138.78-144.17] The quillfern in the north bed finally sprouted a second set of fronds. Note 26.\n#27 [144.17-149.75] Next week we visit a walled orchard on the Dunmere estuary. Note 27.\n#28 [149.75-153.55] Next week we visit a walled orchard on the Dunmere estuary. Note 28.\n#29 [153.55-156.18] Compost heaps need turning roughly every fortnight, said Brannoch. Note 29.\n#30 [156.18-160.47] This segment is brought to you by Oakpeel Insurance.\n#31 [160.47-163.72] Oakpeel covers fallen trees and flooded cellars with a single plain policy.\n#32 [163.72-169.03] Visit oakpeel dot example and enter the code HARBOR for ten percent off.\n#33 [169.03-177.02] That is oakpeel, and thanks again to Oakpeel Insurance.\n#34 [177.02-183.23] The quillfern in the north bed finally sprouted a second set of fronds. Note 34.\n#35 [183.23-186.73] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 35.\n#36 [186.73-194.14] The quillfern in the north bed finally sprouted a second set of fronds. Note 36.\n#37 [194.14-201.02] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 37.\n#38 [201.02-207.56] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 38.\n#39 [207.56-215.05] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 39.\n#40 [215.05-221.75] Compost heaps need turning roughly every fortnight, said Brannoch. Note 40.\n#41 [221.75-228.59] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 41.\n#42 [228.59-233.04] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 42.\n#43 [233.04-240.94] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 43.\n#44 [240.94-248.73] Next week we visit a walled orchard on the Dunmere estuary. Note 44.\n#45 [248.73-252.12] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 45.\n#46 [252.12-258.77] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 46.\n#47 [258.77-265.20] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 47.\n#48 [265.20-270.24] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 48.\n#49 [270.24-275.66] Next week we visit a walled orchard on the Dunmere estuary. Note 49.\n#50 [275.66-280.86] Next week we visit a walled orchard on the Dunmere estuary. Note 50.\n#51 [280.86-288.45] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 51.\n#52 [288.45-293.70] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 52.\n#53 [293.70-300.77] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 53.\n#54 [300.77-305.22] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 54.\n#55 [305.22-312.58] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 55.\n#56 [312.58-320.03] Next week we visit a walled orchard on the Dunmere estuary. Note 56.\n#57 [320.03-325.07] The quillfern in the north bed finally sprouted a second set of fronds. Note 57.\n#58 [325.07-330.69] Next week we visit a walled orchard on the Dunmere estuary. Note 58.\n#59 [330.69-338.25] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 59.\n#60 [338.25-344.73] The pear espalier along the wall wants a hard prune before the sap rises. Note 60.\n#61 [344.73-349.91] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 61.\n#62 [349.91-353.63] Compost heaps need turning roughly every fortnight, said Brannoch. Note 62.\n#63 [353.63-357.92] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 63.\n#64 [357.92-364.27] The pear espalier along the wall wants a hard prune before the sap rises. Note 64.\n#65 [364.27-367.68] Next week we visit a walled orchard on the Dunmere estuary. Note 65.\n#66 [367.68-375.17] The pear espalier along the wall wants a hard prune before the sap rises. Note 66.\n#67 [375.17-379.14] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 67.\n#68 [379.14-386.65] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 68.\n#69 [386.65-390.85] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 69.\n#70 [390.85-398.62] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 70.\n#71 [398.62-405.00] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 71.\n#72 [405.00-410.27] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 72.\n#73 [410.27-415.62] Next week we visit a walled orchard on the Dunmere estuary. Note 73.\n#74 [415.62-421.70] Before we go on, a word about Lanternfold Seeds.\n#75 [421.70-427.43] Lanternfold ships heirloom seed tins within two days of your order.\n#76 [427.43-431.65] Browse the catalogue at lanternfold dot example, and use the code MOSS for free postage.\n#77 [431.65-435.29] Now, back to the garden.\n#78 [435.29-440.61] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 78.\n#79 [440.61-448.25] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 79.\n#80 [448.25-454.18] The pear espalier along the wall wants a hard prune before the sap rises. Note 80.\n#81 [454.18-457.09] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 81.\n#82 [457.09-464.10] The pear espalier along the wall wants a hard prune before the sap rises. Note 82.\n#83 [464.10-470.59] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 83.\n#84 [470.59-478.08] Next week we visit a walled orchard on the Dunmere estuary. Note 84.\n#85 [478.08-481.63] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 85.\n#86 [481.63-488.23] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 86.\n#87 [488.23-491.05] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 87.\n#88 [491.05-497.14] Compost heaps need turning roughly every fortnight, said Brannoch. Note 88.\n#89 [497.14-501.14] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 89.\n#90 [501.14-504.89] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 90.\n#91 [504.89-512.21] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 91.\n#92 [512.21-515.29] The pear espalier along the wall wants a hard prune before the sap rises. Note 92.\n#93 [515.29-520.66] Compost heaps need turning roughly every fortnight, said Brannoch. Note 93.\n#94 [520.66-527.86] The quillfern in the north bed finally sprouted a second set of fronds. Note 94.\n#95 [527.86-531.71] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 95.\n#96 [531.71-535.37] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 96.\n#97 [535.37-542.71] Next week we visit a walled orchard on the Dunmere estuary. Note 97.\n#98 [542.71-547.54] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 98.\n#99 [547.54-553.98] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 99.\n#100 [553.98-556.66] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 100.\n#101 [556.66-561.15] Next week we visit a walled orchard on the Dunmere estuary. Note 101.\n#102 [561.15-564.60] The pear espalier along the wall wants a hard prune before the sap rises. Note 102.\n#103 [564.60-570.80] Next week we visit a walled orchard on the Dunmere estuary. Note 103.\n#104 [570.80-573.76] The pear espalier along the wall wants a hard prune before the sap rises. Note 104.\n#105 [573.76-581.51] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 105.\n#106 [581.51-584.15] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 106.\n#107 [584.15-590.66] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 107.\n#108 [590.66-593.28] The pear espalier along the wall wants a hard prune before the sap rises. Note 108.\n#109 [593.28-597.19] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 109.\n#110 [597.19-604.16] The quillfern in the north bed finally sprouted a second set of fronds. Note 110.\n#111 [604.16-607.52] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 111.\n#112 [607.52-611.03] Next week we visit a walled orchard on the Dunmere estuary. Note 112.\n#113 [611.03-617.33] If you enjoy this show, try Soilcast, our sister programme about rural drains and hedges.\n#114 [617.33-621.95] Soilcast is available wherever the Cobblestone Bench network is heard.\n#115 [621.95-624.69] The pear espalier along the wall wants a hard prune before the sap rises. Note 115.\n#116 [624.69-632.64] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 116.\n#117 [632.64-635.97] Compost heaps need turning roughly every fortnight, said Brannoch. Note 117.\n#118 [635.97-638.67] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 118.\n#119 [638.67-643.06] The quillfern in the north bed finally sprouted a second set of fronds. Note 119.\n#120 [643.06-648.94] The pear espalier along the wall wants a hard prune before the sap rises. Note 120.\n#121 [648.94-655.52] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 121.\n#122 [655.52-658.64] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 122.\n#123 [658.64-662.99] Next week we visit a walled orchard on the Dunmere estuary. Note 123.\n#124 [662.99-665.66] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 124.\n#125 [665.66-670.63] The pear espalier along the wall wants a hard prune before the sap rises. Note 125.\n#126 [670.63-677.34] The quillfern in the north bed finally sprouted a second set of fronds. Note 126.\n#127 [677.34-683.91] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 127.\n#128 [683.91-691.37] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 128.\n#129 [691.37-698.03] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 129.\n#130 [698.03-705.27] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 130.\n#131 [705.27-711.65] Compost heaps need turning roughly every fortnight, said Brannoch. Note 131.\n#132 [711.65-716.75] Compost heaps need turning roughly every fortnight, said Brannoch. Note 132.\n#133 [716.75-720.49] The pear espalier along the wall wants a hard prune before the sap rises. Note 133.\n#134 [720.49-726.62] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 134.\n#135 [726.62-730.86] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 135.\n#136 [730.86-733.92] The pear espalier along the wall wants a hard prune before the sap rises. Note 136.\n#137 [733.92-738.88] Compost heaps need turning roughly every fortnight, said Brannoch. Note 137.\n#138 [738.88-746.19] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 138.\n#139 [746.19-749.39] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 139.\n#140 [749.39-755.11] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 140.\n#141 [755.11-759.77] Compost heaps need turning roughly every fortnight, said Brannoch. Note 141.\n#142 [759.77-765.10] Slugs avoid copper tape but nobody can explain why the tape tarnishes so fast. Note 142.\n#143 [765.10-768.39] I tried pickling nasturtium pods and the brine turned a peculiar teal. Note 143.\n#144 [768.39-776.17] Compost heaps need turning roughly every fortnight, said Brannoch. Note 144.\n#145 [776.17-780.10] Thistlewick Nursery has a rare bluebell cultivar arriving in March. Note 145.\n#146 [780.10-785.93] Compost heaps need turning roughly every fortnight, said Brannoch. Note 146.\n#147 [785.93-790.74] Frost pockets behind the glasshouse can sink three degrees below the lawn. Note 147.\n#148 [790.74-793.34] Our caller Ottoline asked about raised beds built from salvaged ferry planks. Note 148.\n#149 [793.34-798.91] Marrowby recommends mulching the cobbled paths with crushed larchwood. Note 149.\n",
+   "reply": "{\"breaks\":[{\"startSegment\":30,\"endSegment\":33,\"kind\":\"sponsor\",\"label\":\"must-cut\",\"advertisers\":[\"Oakpeel Insurance\"]},{\"startSegment\":74,\"endSegment\":76,\"kind\":\"sponsor\",\"label\":\"must-cut\",\"advertisers\":[\"Lanternfold Seeds\"]},{\"startSegment\":113,\"endSegment\":114,\"kind\":\"network-promo\",\"label\":\"must-cut\",\"advertisers\":[\"Soilcast\"]}]}",
+   "expected": {
+    "breaks": [
+     {
+      "startSegment": 30,
+      "endSegment": 33,
+      "kind": "sponsor",
+      "label": "must-cut",
+      "advertisers": [
+       "Oakpeel Insurance"
+      ]
+     },
+     {
+      "startSegment": 74,
+      "endSegment": 76,
+      "kind": "sponsor",
+      "label": "must-cut",
+      "advertisers": [
+       "Lanternfold Seeds"
+      ]
+     },
+     {
+      "startSegment": 113,
+      "endSegment": 114,
+      "kind": "network-promo",
+      "label": "must-cut",
+      "advertisers": [
+       "Soilcast"
+      ]
+     }
+    ],
+    "rejected": []
+   }
+  },
+  "ad_free": {
+   "show_title": "Tideline Letters",
+   "cues": [
+    {
+     "id": 0,
+     "start": 0.0,
+     "end": 3.81,
+     "text": "Welcome to Tideline Letters, readings from old lighthouse logbooks."
+    },
+    {
+     "id": 1,
+     "start": 3.81,
+     "end": 9.3,
+     "text": "Tonight's entry was written by a keeper at Skerryholm in the winter of an unnamed year."
+    },
+    {
+     "id": 2,
+     "start": 9.3,
+     "end": 13.83,
+     "text": "He records the swell, the lamp oil used, and a gull that stole a boiled egg."
+    },
+    {
+     "id": 3,
+     "start": 13.83,
+     "end": 19.65,
+     "text": "The next page is water damaged, so I will read it slowly."
+    },
+    {
+     "id": 4,
+     "start": 19.65,
+     "end": 25.59,
+     "text": "He mentions a supply boat that never came, and a rationed tin of biscuits."
+    },
+    {
+     "id": 5,
+     "start": 25.59,
+     "end": 28.45,
+     "text": "That is the whole entry. Goodnight from the Tideline."
+    }
+   ],
+   "duration_seconds": 28.45,
+   "prompt": "You label advertising breaks in a podcast transcript. Do not use any tools; answer from the transcript below only.\n\nEach transcript line is `#<segment id> [<start seconds>-<end seconds>] <text>`. The show is: Tideline Letters. Speech-to-text has errors and does not transcribe music.\n\nFind every advertising break in the whole episode. Advertising = third-party sponsor reads (including reads or skits voiced by the hosts), produced commercials, and promos for other shows or networks. Mark promotion of the show's own membership, merch or products as kind \"house-promo\". Not advertising: the show's own intro/outro, credits, listener participation, and ordinary discussion that merely names a product. A return to discussion after one sponsor may only introduce the next sponsor: check each break's end through the next call to action or a clear return to the show. An episode may have no advertising at all; then return an empty list.\n\nReply with JSON only, no prose and no code fence:\n{\"breaks\":[{\"startSegment\":int,\"endSegment\":int,\"kind\":\"sponsor\"|\"network-promo\"|\"house-promo\",\"label\":\"must-cut\"|\"acceptable-cut\",\"advertisers\":[str]}]}\nOne entry per contiguous break. Use \"must-cut\" only when the text clearly is advertising.\n\nTRANSCRIPT:\n#0 [0.00-3.81] Welcome to Tideline Letters, readings from old lighthouse logbooks.\n#1 [3.81-9.30] Tonight's entry was written by a keeper at Skerryholm in the winter of an unnamed year.\n#2 [9.30-13.83] He records the swell, the lamp oil used, and a gull that stole a boiled egg.\n#3 [13.83-19.65] The next page is water damaged, so I will read it slowly.\n#4 [19.65-25.59] He mentions a supply boat that never came, and a rationed tin of biscuits.\n#5 [25.59-28.45] That is the whole entry. Goodnight from the Tideline.\n",
+   "reply": "{\"breaks\":[]}",
+   "expected": {
+    "breaks": [],
+    "rejected": []
+   }
+  },
+  "bad_cue_id": {
+   "show_title": "Paperwasp Hour",
+   "cues": [
+    {
+     "id": 0,
+     "start": 0.0,
+     "end": 3.8,
+     "text": "You are listening to Paperwasp Hour, a show about tiny engines."
+    },
+    {
+     "id": 1,
+     "start": 3.8,
+     "end": 6.87,
+     "text": "Our guest builds model steam turbines from tin cans."
+    },
+    {
+     "id": 2,
+     "start": 6.87,
+     "end": 11.55,
+     "text": "She says the secret is patient soldering."
+    },
+    {
+     "id": 3,
+     "start": 11.55,
+     "end": 14.9,
+     "text": "A word from Copperlatch Locks."
+    },
+    {
+     "id": 4,
+     "start": 14.9,
+     "end": 17.77,
+     "text": "Copperlatch makes shed locks that open only to the right ring of keys."
+    },
+    {
+     "id": 5,
+     "start": 17.77,
+     "end": 22.48,
+     "text": "Order at copperlatch dot example with the code WASP."
+    },
+    {
+     "id": 6,
+     "start": 22.48,
+     "end": 30.03,
+     "text": "Back to the bench and the turbine problem."
+    }
+   ],
+   "duration_seconds": 30.03,
+   "prompt": "You label advertising breaks in a podcast transcript. Do not use any tools; answer from the transcript below only.\n\nEach transcript line is `#<segment id> [<start seconds>-<end seconds>] <text>`. The show is: Paperwasp Hour. Speech-to-text has errors and does not transcribe music.\n\nFind every advertising break in the whole episode. Advertising = third-party sponsor reads (including reads or skits voiced by the hosts), produced commercials, and promos for other shows or networks. Mark promotion of the show's own membership, merch or products as kind \"house-promo\". Not advertising: the show's own intro/outro, credits, listener participation, and ordinary discussion that merely names a product. A return to discussion after one sponsor may only introduce the next sponsor: check each break's end through the next call to action or a clear return to the show. An episode may have no advertising at all; then return an empty list.\n\nReply with JSON only, no prose and no code fence:\n{\"breaks\":[{\"startSegment\":int,\"endSegment\":int,\"kind\":\"sponsor\"|\"network-promo\"|\"house-promo\",\"label\":\"must-cut\"|\"acceptable-cut\",\"advertisers\":[str]}]}\nOne entry per contiguous break. Use \"must-cut\" only when the text clearly is advertising.\n\nTRANSCRIPT:\n#0 [0.00-3.80] You are listening to Paperwasp Hour, a show about tiny engines.\n#1 [3.80-6.87] Our guest builds model steam turbines from tin cans.\n#2 [6.87-11.55] She says the secret is patient soldering.\n#3 [11.55-14.90] A word from Copperlatch Locks.\n#4 [14.90-17.77] Copperlatch makes shed locks that open only to the right ring of keys.\n#5 [17.77-22.48] Order at copperlatch dot example with the code WASP.\n#6 [22.48-30.03] Back to the bench and the turbine problem.\n",
+   "reply": "{\"breaks\":[{\"startSegment\":3,\"endSegment\":5,\"kind\":\"sponsor\",\"label\":\"must-cut\",\"advertisers\":[\"Copperlatch Locks\"]},{\"startSegment\":40,\"endSegment\":9999,\"kind\":\"sponsor\",\"label\":\"must-cut\",\"advertisers\":[\"Nonexistent Brand\"]}]}",
+   "expected": {
+    "breaks": [
+     {
+      "startSegment": 3,
+      "endSegment": 5,
+      "kind": "sponsor",
+      "label": "must-cut",
+      "advertisers": [
+       "Copperlatch Locks"
+      ]
+     }
+    ],
+    "rejected": [
+     {
+      "break": {
+       "startSegment": 40,
+       "endSegment": 9999,
+       "kind": "sponsor",
+       "label": "must-cut",
+       "advertisers": [
+        "Nonexistent Brand"
+       ]
+      },
+      "reason": "unknown cue ID"
+     }
+    ]
+   }
+  }
+ }
+}

@@ -27,6 +27,7 @@ struct WiltedMacSettingsView: View {
             appearanceCard.id("settings-appearance")
             WiltedMacLifetimeStatisticsCard(model: model).id("settings-statistics")
             automationCard.id("settings-automation")
+            WiltedMacAdFindingSettingsView(model: model.adFinding).id("settings-ad-finding")
             WiltedMacAdFeedbackCard(feedback: model.adFeedback).id("settings-ad-feedback")
             WiltedMacReportsCard(model: model, location: location).id("settings-reports")
             syncCard.id("settings-sync")

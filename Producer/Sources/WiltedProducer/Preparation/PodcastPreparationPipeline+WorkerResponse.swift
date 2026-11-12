@@ -35,6 +35,10 @@ extension PodcastPreparationPipeline {
         var adProfileStatus: String = "absent"
         var adProfileRequestedDigest: String? = nil
         var adProfileAppliedDigest: String? = nil
+        /// The canonical aligned cue list the worker exported for the
+        /// labelling model, when the request asked for one. Absent otherwise.
+        var labellerCuesPath: String? = nil
+        var labellerCuesDigest: String? = nil
     }
 
     static func decode(_ data: Data) throws -> WorkerPayload {
@@ -239,7 +243,9 @@ extension PodcastPreparationPipeline {
             adProfileObservation: adProfileResult.observation,
             adProfileStatus: adProfileResult.status,
             adProfileRequestedDigest: adProfileResult.requestedDigest,
-            adProfileAppliedDigest: adProfileResult.appliedDigest
+            adProfileAppliedDigest: adProfileResult.appliedDigest,
+            labellerCuesPath: object["labellerCuesPath"] as? String,
+            labellerCuesDigest: object["labellerCuesDigest"] as? String
         )
     }
 

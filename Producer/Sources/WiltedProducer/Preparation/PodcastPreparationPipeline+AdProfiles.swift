@@ -7,6 +7,7 @@ extension PodcastPreparationPipeline {
         episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
         policy: PodcastPreparationPolicySnapshot,
         profileSnapshot: PodcastAdProfileSnapshot?,
+        emitLabellerCues: Bool = false,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> Data {
         var request: [String: Any] = [
@@ -33,6 +34,7 @@ extension PodcastPreparationPipeline {
         }
         // Sent only when on, so every other feed's request is unchanged.
         if policy.removeSelfPromotion { request["removeSelfPromotion"] = true }
+        if emitLabellerCues { request["emitLabellerCues"] = true }
         if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
            let published = await fetchPublishedTranscript(for: episode, onStatus: onStatus) {
             request["publishedTranscript"] = published

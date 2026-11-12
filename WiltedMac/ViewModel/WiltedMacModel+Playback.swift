@@ -259,6 +259,8 @@ extension WiltedMacModel {
         stopTicketDrainTicker()
         cancelSeamMarker()
 #if canImport(WiltedProducer)
+        // A shadow labelling request still running is dropped; a cancelled one writes nothing.
+        if let recorder = adLabellerShadowRecorder { Task { await recorder.cancelAll() } }
         guard let playback else { return }
         // A Stop supersedes any pending start, so nothing starts after quit.
         issuePlaybackCommand(.stop, pending: nil) { [weak self] _ in

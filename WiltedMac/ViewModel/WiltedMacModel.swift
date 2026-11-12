@@ -257,6 +257,19 @@ final class WiltedMacModel {
     /// episode cannot leave the previous episode's cuts on screen.
     var removedSpansByEpisode: [String: [WiltedMacRemovedSpan]] = [:]
     /// The listener's ad-removal feedback and its review inbox (`WiltedMacModel+AdFeedback`).
+    /// The ad labeller's provider key: the Keychain in the real app, memory under tests and fixtures.
+    @ObservationIgnored lazy var adLabellerKeyStore: any LabellerKeyStoring =
+        (fixtureMode || Self.hostsTests) ? InMemoryLabellerKeyStore() : KeychainLabellerKeyStore()
+    /// Settings' Ad finding card. It reads the key store once, so views ask it, not the Keychain.
+    @ObservationIgnored lazy var adFinding = WiltedMacAdFindingSettings(
+        preferences: preferences, keyStore: adLabellerKeyStore,
+        shows: { [weak self] in
+            self?.subscriptions.map {
+                WiltedMacAdFindingSettings.Show(feedID: $0.id, title: $0.title, feedURL: $0.feedURL)
+            } ?? []
+        })
+    /// Records the online labeller's answer beside the engine's result; nil under tests and fixtures.
+    @ObservationIgnored var adLabellerShadowRecorder: LabellerShadowRecorder?
     @ObservationIgnored lazy var adFeedback = WiltedMacAdFeedbackController(inbox: WiltedMacAdFeedbackInbox(
         fileURL: libraryURL.deletingLastPathComponent().appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)))
     var seamMarkerTask: Task<Void, Never>?

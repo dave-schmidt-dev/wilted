@@ -632,19 +632,32 @@ extension WiltedMacModel {
                 PodcastDownloadCoordinator(store: store, libraryDirectory: mediaDirectory)
             }
         }
+        // Shadow labelling never runs under tests or fixtures, so neither can reach the provider.
+        let shadowRecorder = (fixtureMode || Self.hostsTests) ? nil : LabellerShadowRecorder(
+            preferences: AdLabellerPreferences(preferences: preferences),
+            counter: LabellerRequestCounter(preferences: preferences),
+            keyStore: adLabellerKeyStore,
+            sender: LabellerClient(keyStore: adLabellerKeyStore),
+            // Beside the library, not inside the media folder that retention and sync manage.
+            recordsDirectory: mediaDirectory.deletingLastPathComponent()
+                .appendingPathComponent("ad-labeller-shadow", isDirectory: true)
+        )
+        adLabellerShadowRecorder = shadowRecorder
         podcastPreparationPipeline = fixtureMode ? nil : configuredStore.map { store in
             if let podcastPipelineRunnerFactory {
                 return PodcastPreparationPipeline(
                     store: store,
                     workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
                     runner: podcastPipelineRunnerFactory(),
-                    removeAds: removesAdvertisements
+                    removeAds: removesAdvertisements,
+                    shadowRecorder: shadowRecorder
                 )
             }
             return PodcastPreparationPipeline(
                 store: store,
                 workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
-                removeAds: removesAdvertisements
+                removeAds: removesAdvertisements,
+                shadowRecorder: shadowRecorder
             )
         }
         if configuredStore != nil, !fixtureMode { startMorningReportSchedule() }

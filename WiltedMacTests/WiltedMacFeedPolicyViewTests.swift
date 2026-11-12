@@ -432,6 +432,86 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         _ = try capture(gear, "gear", width: 80, height: 80)
     }
 
+    // MARK: Find ads on this Mac only
+
+    /// A podcast feed on a fresh model, with the popover content built for it. The labeller's
+    /// global switch, confirmation and key are the test's to set up on the returned model.
+    private func localOnlyAdsFixture(
+        feedURL: URL, title: String, suffix: String, hasKey: Bool
+    ) throws -> (model: WiltedMacModel, board: WiltedMacFeedPolicyBoard,
+                 content: WiltedMacFeedPolicyContent, feedID: String) {
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL).rawValue
+        let subscription = WiltedMacSubscription(
+            id: feedID, title: title, feedURL: feedURL, episodeCount: 0,
+            subscribedAt: Date(timeIntervalSince1970: 1_700_000_000), enabled: true
+        )
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory(suffix),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        addTeardownBlock { await model.close() }
+        model.subscriptions = [subscription]
+        let board = WiltedMacFeedPolicyBoard(model: model, hasProviderKey: { hasKey })
+        board.loadForPreview(feedID: feedID, isArticleFeed: false, isNews: false)
+        return (model, board, WiltedMacFeedPolicyContent(board: board, subscription: subscription), feedID)
+    }
+
+    func testForcedLocalShowRendersTheSwitchOnDisabledAndTheReasonInPlaceOfTheCaption() throws {
+        // A token-like feed address: the policy keeps this show local whatever the owner's switch says.
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/ledger.xml?feed=a1b2c3d4e5f6g7h8i9j0k1l2"))
+        let fixture = try localOnlyAdsFixture(
+            feedURL: feedURL, title: "The Night Ledger", suffix: "local-only-forced", hasKey: true
+        )
+        let labeller = AdLabellerPreferences(preferences: fixture.model.preferences)
+        labeller.isEnabled = true
+        labeller.setConfirmed(feedID: fixture.feedID, true)
+
+        XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .local(.tokenLikeFeedURL))
+        XCTAssertFalse(fixture.board.findsAdsLocallyOnly(fixture.feedID), "the owner's stored choice is off")
+        XCTAssertEqual(
+            fixture.content.forcedLocalOnlyAdsReason,
+            "This show's address carries a private token, so its transcripts always stay on this Mac."
+        )
+        let source = try WiltedMacHeadless.viewSource("WiltedMacFeedPolicyView.swift")
+        XCTAssertTrue(source.contains("forcedLocalOnlyAdsReason != nil || board.findsAdsLocallyOnly(feedID)"),
+                      "the switch reads on when the policy forces local")
+        XCTAssertTrue(source.contains(".disabled(!board.isLoaded(feedID) || forcedLocalOnlyAdsReason != nil)"),
+                      "the switch cannot be turned off while the policy forces local")
+        XCTAssertTrue(source.contains("\"Find ads on this Mac only for \\(subscription.title)\""))
+        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-feed-policy-local-only-ads\")"))
+        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-feed-policy-ad-route\")"))
+
+        let shown = try WiltedMacHeadless.recognizedText(
+            fixture.content, size: CGSize(width: WiltedMacFeedPolicyContent.width, height: 900)
+        ).joined(separator: " ")
+        XCTAssertTrue(shown.contains("Find ads on this Mac only"), shown)
+        XCTAssertTrue(shown.contains("private token"), shown)
+        XCTAssertTrue(shown.contains("always stay on this Mac"), shown)
+        XCTAssertTrue(shown.contains("Stays on this Mac"), shown)
+        XCTAssertFalse(shown.contains("not sent to the labelling provider"),
+                       "the reason replaces the ordinary caption: \(shown)")
+    }
+
+    func testUnconfirmedShowRendersTheWaitingLineBesideTheOrdinaryCaption() throws {
+        let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/unconfirmed.xml"))
+        let fixture = try localOnlyAdsFixture(
+            feedURL: feedURL, title: "The Morning Ledger", suffix: "local-only-unconfirmed", hasKey: true
+        )
+        let labeller = AdLabellerPreferences(preferences: fixture.model.preferences)
+        labeller.isEnabled = true
+
+        XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .local(.notConfirmed))
+        XCTAssertNil(fixture.content.forcedLocalOnlyAdsReason)
+
+        let shown = try WiltedMacHeadless.recognizedText(
+            fixture.content, size: CGSize(width: WiltedMacFeedPolicyContent.width, height: 900)
+        ).joined(separator: " ")
+        XCTAssertTrue(shown.contains("Find ads on this Mac only"), shown)
+        XCTAssertTrue(shown.contains("transcripts are not sent to the labelling provider"), shown)
+        XCTAssertTrue(shown.contains("Needs your confirmation in Settings"), shown)
+        XCTAssertFalse(shown.contains("Stays on this Mac"), shown)
+    }
+
     // MARK: Fixture
 
     private func makeFixture(

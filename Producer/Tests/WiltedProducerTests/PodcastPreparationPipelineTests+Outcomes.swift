@@ -263,6 +263,32 @@ extension PodcastPreparationPipelineTests {
         #expect(try Self.decodeResponse(response).adRemovalOutcome == "uncertain")
     }
 
+    /// The labeller cue export is optional protocol surface: a response that
+    /// carries it and the same response without it decode to the same
+    /// outcome, and the fields surface only when the worker sent them.
+    @Test func decodesLabellerCueFieldsAsOptionalSurface() throws {
+        var withCues = uncertainResponse()
+        withCues["labellerCuesPath"] = "/tmp/wilted-pipeline/labeller-cues.json"
+        withCues["labellerCuesDigest"] = String(repeating: "a", count: 64)
+        var withoutCues = withCues
+        withoutCues.removeValue(forKey: "labellerCuesPath")
+        withoutCues.removeValue(forKey: "labellerCuesDigest")
+
+        let withPayload = try Self.decodeResponse(withCues)
+        let withoutPayload = try Self.decodeResponse(withoutCues)
+        #expect(withPayload.adRemovalOutcome == withoutPayload.adRemovalOutcome)
+        #expect(withPayload.timing == withoutPayload.timing)
+        #expect(withPayload.audioChanged == withoutPayload.audioChanged)
+        #expect(withPayload.warning == withoutPayload.warning)
+        #expect(withPayload.adSegments.count == withoutPayload.adSegments.count)
+        #expect(withPayload.keepIntervals.count == withoutPayload.keepIntervals.count)
+
+        #expect(withPayload.labellerCuesPath == "/tmp/wilted-pipeline/labeller-cues.json")
+        #expect(withPayload.labellerCuesDigest == String(repeating: "a", count: 64))
+        #expect(withoutPayload.labellerCuesPath == nil)
+        #expect(withoutPayload.labellerCuesDigest == nil)
+    }
+
     @Test func retainsHousePromotionHeldReasonInBoundedDiagnostics() throws {
         var response = uncertainResponse()
         var report = response["report"] as! [String: Any]

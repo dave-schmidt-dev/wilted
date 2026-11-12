@@ -171,6 +171,10 @@ public actor PodcastPreparationPipeline {
     /// `semanticVersion` in the app; a test passes an older one to leave behind
     /// the journal an earlier engine would have written.
     let engineVersion: String
+    /// Records what the online labeller would have cut beside the engine's
+    /// committed result, after the terminal journal row. Shadow never changes
+    /// what the pipeline commits.
+    let shadowRecorder: LabellerShadowRecorder?
 
     public init(
         store: LocalLibraryStore,
@@ -181,7 +185,8 @@ public actor PodcastPreparationPipeline {
         allowSpeechToText: Bool = true,
         now: @escaping @Sendable () -> Date = Date.init,
         appVersion: String? = PodcastPreparationBuildStamp.hostAppVersion(),
-        engineVersion: String = PodcastPreparationPipeline.semanticVersion
+        engineVersion: String = PodcastPreparationPipeline.semanticVersion,
+        shadowRecorder: LabellerShadowRecorder? = nil
     ) {
         self.store = store
         self.runner = runner
@@ -194,6 +199,7 @@ public actor PodcastPreparationPipeline {
         self.now = now
         self.appVersion = appVersion
         self.engineVersion = engineVersion
+        self.shadowRecorder = shadowRecorder
     }
 
     /// The journal key for one episode's preparation history.
@@ -248,9 +254,11 @@ public actor PodcastPreparationPipeline {
             let preparedURL = preparedAudioURL(for: audioURL)
             store.inFlightMedia.begin(preparedURL)
             defer { store.inFlightMedia.end(preparedURL) }
+            let emitLabellerCues = await shadowRecorder?.wantsCues ?? false
             let request = try await workerRequest(episode: episode, audioURL: audioURL, preparedURL: preparedURL,
                                                   sourceHash: stored.revision.contentHash, policy: policy,
-                                                  profileSnapshot: profileSnapshot, onStatus: report)
+                                                  profileSnapshot: profileSnapshot,
+                                                  emitLabellerCues: emitLabellerCues, onStatus: report)
             let response = try await runner.run(request: request, onProgress: report)
             var payload = try Self.decode(response)
             validateAdProfileHandshake(&payload, snapshot: profileSnapshot)
@@ -280,6 +288,11 @@ public actor PodcastPreparationPipeline {
                                   timeline: payload.timeline,
                                   codeRevision: codeRevision)
             await onJournaled()
+            if let shadowRecorder, let input = await shadowInput(episode: episode, payload: payload,
+                                                                 result: result,
+                                                                 sourceDuration: stored.revision.durationSeconds) {
+                await shadowRecorder.schedule(input)
+            }
             return result
         } catch {
             await writes.drain()

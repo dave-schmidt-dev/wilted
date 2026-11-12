@@ -59,6 +59,7 @@ from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import edge_recovery as _worker_edge_recovery
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
+from wilted_worker import labeller_cues as _worker_labeller_cues
 from wilted_worker import nomination as _worker_nomination
 from wilted_worker import prompts as _worker_prompts
 from wilted_worker import reporting as _worker_reporting
@@ -400,6 +401,15 @@ def run(request: dict) -> dict:
             "audit": ad_audit,
         },
     }
+    if request.get("emitLabellerCues") is True and segments and timing == "aligned":
+        # The labelling model reads the aligned segments exactly as the
+        # detector saw them, on the original clock the audio still has.
+        labeller_cues_path, labeller_cues_digest = _worker_labeller_cues.write_labeller_cues(
+            _worker_labeller_cues.build_labeller_cues(segments),
+            Path(request.get("workDir") or tempfile.gettempdir()) / "wilted-pipeline",
+        )
+        result["labellerCuesPath"] = str(labeller_cues_path)
+        result["labellerCuesDigest"] = labeller_cues_digest
     if uncertain_warning is not None:
         result["warning"] = uncertain_warning
         result["report"]["warning"] = uncertain_warning

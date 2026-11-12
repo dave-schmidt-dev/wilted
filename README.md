@@ -282,6 +282,15 @@ When ad removal is on, preparation also shortens long pauses. `wilted_worker/sil
 
 Trimmed pauses are never ads. The ad spans remain the complement of the ad-only keep map; the pauses travel in the result's separate `silenceTrims` list and never enter `adSegments`, `removedSeconds`, the ad lifetime statistic or the timeline's removed list. An episode whose only change is shorter pauses reports `noAds` with changed audio, and the Swift decoder accepts that only with a non-empty `silenceTrims` that, together with the ads, exactly fills every gap in the keep map. A saved position inside a trimmed pause resumes where the speech does. Disabled and uncertain results are never trimmed (W-INV-013). A detection failure keeps the pauses, and a failed silence-only render keeps the original audio; both report an `audio.silence.skipped` warning and the episode is still prepared. The worker provenance is podcast-preparation-v12; already prepared revisions are not re-processed.
 
+## Online ad labeller (shadow trial)
+
+Off by default. When the owner saves a provider key in Mac Settings > Ad finding, turns the switch on and confirms the show list, each newly prepared episode of a confirmed public show is also labelled by an online model (DeepSeek v4.1 Flash at the `low` level through the OpenCode Go endpoint): one streamed request whose body holds only the model name, the level, the streaming options and the prompt (the show title and the timed transcript). The current engine still decides every cut. The labeller's answer is stored beside the engine's result in `~/Library/Application Support/Wilted/ad-labeller-shadow/` (one JSON file per episode plus `attempts.jsonl`; times, labels, short advertiser names and token counts only, never transcript text or the key).
+
+- Routing is `RemoteLabellingPolicy`: local unless the switch is on, a key is saved and the show is confirmed; always local for a show the owner marked **Find ads on this Mac only**, a show whose address is not known, a feed or audio address with sign-in details, a token-like feed address, or a title containing premium, private, subscriber, patron or member. A show added later stays local until confirmed in Settings.
+- `LabellerClient` refuses every redirect, caps the reply at 8 MB and never logs the key; `LabellerRequestCounter` counts every HTTP request against the daily cap (60).
+- `python3 Producer/Workers/labeller_shadow_report.py` prints how many episodes went remote or stayed local (with reasons), failures by kind, the overlap between proposed must-cut breaks and the engine's cuts, and median reasoning tokens against the measured 5.5k.
+- Applying labelled breaks to audio is Phase 2 and needs a charter decision first; see `TASKS.md`.
+
 ## Conventions
 
 - A reported ad-detection failure becomes a corpus case before it becomes a fix; the corpus stores labels and pointers, never episode audio or transcript text.

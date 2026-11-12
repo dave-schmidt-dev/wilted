@@ -286,4 +286,32 @@ extension PodcastPreparationPipeline {
         }
         return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
+
+    // MARK: Shadow labelling
+
+    /// Builds the shadow recorder's input from a committed run, or nil when no
+    /// recorder is attached or the feed cannot be read: shadow is skipped
+    /// rather than allowed to affect the run.
+    func shadowInput(
+        episode: PodcastEpisode,
+        payload: WorkerPayload,
+        result: PodcastPreparationResult,
+        sourceDuration: Double
+    ) async -> LabellerShadowRecorder.ShadowInput? {
+        guard let shadowRecorder else { return nil }
+        guard let feed = (try? await store.podcastFeed(for: episode.feedID)) ?? nil else { return nil }
+        return LabellerShadowRecorder.ShadowInput(
+            episodeID: episode.itemID.rawValue,
+            feedID: episode.feedID.rawValue,
+            feedURL: feed.canonicalURL,
+            feedTitle: feed.title,
+            audioURL: episode.enclosureURL,
+            // The feed's stated length can be short; the cues follow the real audio.
+            durationSeconds: max(sourceDuration, episode.durationSeconds ?? 0),
+            cuesPath: payload.labellerCuesPath,
+            cuesDigest: payload.labellerCuesDigest,
+            engineOutcome: result.adRemovalOutcome,
+            engineCutSpans: result.adSegments.map { .init(start: $0.startSeconds, end: $0.endSeconds) }
+        )
+    }
 }

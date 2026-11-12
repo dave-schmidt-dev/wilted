@@ -21,6 +21,8 @@ final class WiltedMacFeedPolicyBoard {
     private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "FeedPolicy")
 
     let model: WiltedMacModel
+    /// Whether a labeller provider key is saved, injected so no test needs the Keychain.
+    private let hasProviderKey: @MainActor () -> Bool
     private(set) var policies: [String: FeedAutomationPolicy] = [:]
     private(set) var failedFeedIDs: Set<String> = []
     private(set) var loadState: LoadState = .idle
@@ -29,6 +31,8 @@ final class WiltedMacFeedPolicyBoard {
     private(set) var newsFeedIDs: Set<String> = []
     /// The podcast feeds whose preparation also removes the show's own promotion.
     private(set) var selfPromotionFeedIDs: Set<String> = []
+    /// The podcast feeds whose transcripts stay on this Mac rather than going to the labeller.
+    private(set) var localOnlyAdFeedIDs: Set<String> = []
     @ObservationIgnored private var rules: [String: EpisodeMatchRules] = [:]
     @ObservationIgnored private var editors: [String: WiltedMacFeedRulesEditor] = [:]
     @ObservationIgnored private var writeChain: Task<Void, Never>?
@@ -62,9 +66,12 @@ final class WiltedMacFeedPolicyBoard {
         return true
     }
 
-    init(model: WiltedMacModel) {
+    /// `hasProviderKey` is for tests; the app reads the presence Settings already holds.
+    init(model: WiltedMacModel, hasProviderKey: (@MainActor () -> Bool)? = nil) {
         self.model = model
+        self.hasProviderKey = hasProviderKey ?? { [weak model] in model?.adFinding.hasKey ?? false }
         selfPromotionFeedIDs = Set(WiltedMacSelfPromotionPreference(preferences: model.preferences).feedIDs)
+        localOnlyAdFeedIDs = Set(WiltedMacLocalOnlyAdsPreference(preferences: model.preferences).feedIDs)
     }
 
     var loadFailureMessage: String? {
@@ -93,6 +100,8 @@ final class WiltedMacFeedPolicyBoard {
         let reloadID = UUID()
         activeReloadID = reloadID
         loadState = .loading
+        // Settings' confirm sheet writes this set too, so a reload picks its choices up.
+        localOnlyAdFeedIDs = Set(WiltedMacLocalOnlyAdsPreference(preferences: model.preferences).feedIDs)
         await settle()
         do {
             guard isActiveReload(reloadID) else { return }
@@ -307,6 +316,47 @@ final class WiltedMacFeedPolicyBoard {
         WiltedMacSelfPromotionPreference(preferences: model.preferences).set(feedID: feedID, enabled: value)
         if value { selfPromotionFeedIDs.insert(feedID) } else { selfPromotionFeedIDs.remove(feedID) }
         return true
+    }
+
+    // MARK: Local-only ad finding
+
+    func findsAdsLocallyOnly(_ feedID: String) -> Bool { localOnlyAdFeedIDs.contains(feedID) }
+
+    /// Saves whether this podcast feed's transcripts stay on this Mac rather than going to
+    /// the labeller, in the owner's ad labeller preferences. Returns false, changing
+    /// nothing, for a feed that is not loaded or lists articles.
+    @discardableResult
+    func setFindAdsLocallyOnly(_ value: Bool, for feedID: String) -> Bool {
+        guard isLoaded(feedID), !isArticleFeed(feedID) else { return false }
+        WiltedMacLocalOnlyAdsPreference(preferences: model.preferences).set(feedID: feedID, localOnly: value)
+        if value { localOnlyAdFeedIDs.insert(feedID) } else { localOnlyAdFeedIDs.remove(feedID) }
+        return true
+    }
+
+    /// Where the policy sends this feed's transcripts right now: the owner's ad labeller
+    /// preferences, the injected key presence, and the feed's own title and address.
+    func adRoute(for feedID: String) -> RemoteLabellingRoute {
+        RemoteLabellingPolicy.route(
+            for: adRouteInput(for: feedID),
+            context: RemoteLabellingContext(
+                preferences: AdLabellerPreferences(preferences: model.preferences),
+                hasKey: hasProviderKey(),
+                counter: LabellerRequestCounter(preferences: model.preferences)
+            )
+        )
+    }
+
+    /// Why this feed's transcripts can never leave this Mac, whatever the switches say.
+    func forcedLocalAdReason(for feedID: String) -> RemoteLabellingLocalReason? {
+        RemoteLabellingPolicy.forcedLocalReason(for: adRouteInput(for: feedID))
+    }
+
+    private func adRouteInput(for feedID: String) -> RemoteLabellingInput {
+        let subscription = model.subscriptions.first { $0.id == feedID }
+        return RemoteLabellingInput(
+            feedID: feedID, feedURL: subscription?.feedURL,
+            feedTitle: subscription?.title ?? "", audioURL: nil
+        )
     }
 
     /// Fills the board without a store, so a preview or snapshot can render a given state.
