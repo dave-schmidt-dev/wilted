@@ -58,9 +58,20 @@ extension LocalLibraryStore {
     /// the point is to run each episode through the current engine once; a
     /// cancelled attempt does not, since nothing was decided.
     ///
+    /// `restoringCutsOnFeeds` names feeds the owner has since marked as having
+    /// no ads. On those, an episode the current engine already prepared is
+    /// offered too, but only while its journal proves the ready audio had
+    /// something removed: running it again with ad removal off puts that back.
+    /// The proof is the producing attempt's own report, never the fallback that
+    /// treats an unprovable file as a cut, so a restored episode stops being
+    /// offered.
+    ///
     /// One context and one fetch per table, because every Larder load asks
     /// this: the read cost stays flat as the library grows.
-    public func podcastEpisodesToPrepareAgain() throws -> [PodcastPrepareAgainCandidate] {
+    public func podcastEpisodesToPrepareAgain(
+        restoringCutsOnFeeds adFreeFeedIDs: Set<ItemID> = []
+    ) throws -> [PodcastPrepareAgainCandidate] {
+        let adFreeFeeds = Set(adFreeFeedIDs.map(\.rawValue))
         let context = ModelContext(container)
         let attemptsByEpisode = try journalAttemptsByEpisode(in: context)
         let downloads = Dictionary(
@@ -88,11 +99,14 @@ extension LocalLibraryStore {
                   outcome.eligibility != PodcastPreparationEligibility.invalid.rawValue
             else { continue }
             let attempts = attemptsByEpisode[record.id] ?? []
+            let producing = Self.attemptProducing(ready.revisionID, in: attempts)
             if let newest = Self.newestFinishedAttempt(attempts),
                let engine = newest.engineVersion, engine == PodcastPreparationPipeline.semanticVersion {
-                continue
+                let removedSomething = producing.map {
+                    $0.audioChanged == true || !($0.timeline?.removed.isEmpty ?? true)
+                } ?? false
+                guard adFreeFeeds.contains(record.feedID), removedSomething else { continue }
             }
-            let producing = Self.attemptProducing(ready.revisionID, in: attempts)
             let provenanceHash = producing?.sourceHash
             // What the journal cannot prove stays a cut: feeding a cut to the
             // pipeline as if it were the original is the one wrong answer.
