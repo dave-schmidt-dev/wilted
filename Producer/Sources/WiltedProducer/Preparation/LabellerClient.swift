@@ -50,10 +50,25 @@ public struct LabellerResponse: Equatable, Sendable {
 public struct LabellerProgress: Equatable, Sendable {
     public var bytesReceived: Int
     public var answerCharacters: Int
+    /// Set on the one report sent just before a failing HTTP status is thrown.
+    public var failure: LabellerFailureDetail?
 
-    public init(bytesReceived: Int, answerCharacters: Int) {
+    public init(bytesReceived: Int, answerCharacters: Int, failure: LabellerFailureDetail? = nil) {
         self.bytesReceived = bytesReceived
         self.answerCharacters = answerCharacters
+        self.failure = failure
+    }
+}
+
+/// The HTTP status of a refused request and the provider's sanitised error type.
+/// Never carries message text, headers or the key.
+public struct LabellerFailureDetail: Equatable, Sendable {
+    public let status: Int
+    public let errorType: String?
+
+    public init(status: Int, errorType: String?) {
+        self.status = status
+        self.errorType = errorType
     }
 }
 
@@ -162,6 +177,22 @@ public struct LabellerClient: Sendable {
         default:
             return .temporary
         }
+    }
+
+    /// The status and the provider's error type, sanitised. Pure. Reads only
+    /// `error.type` or a top-level `type`; never any message text.
+    public static func failureDetail(status: Int, body: Data) -> LabellerFailureDetail {
+        var raw: String?
+        if let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            if let error = object["error"] as? [String: Any], let type = error["type"] as? String {
+                raw = type
+            } else if let type = object["type"] as? String {
+                raw = type
+            }
+        }
+        let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+        let cleaned = String((raw ?? "").filter { allowed.contains($0) }.prefix(48))
+        return LabellerFailureDetail(status: status, errorType: cleaned.isEmpty ? nil : cleaned)
     }
 
     // MARK: - Request building
@@ -299,6 +330,8 @@ public struct LabellerClient: Sendable {
         try Task.checkCancellation()
         guard let code = status else { throw LabellerFailure.temporary }
         if code != 200 {
+            onProgress(LabellerProgress(bytesReceived: bytesReceived, answerCharacters: text.count,
+                                        failure: Self.failureDetail(status: code, body: body)))
             throw failure(status: code, headers: headers, body: body, now: Date())
         }
         if (contentType ?? "").lowercased().contains("application/json") {

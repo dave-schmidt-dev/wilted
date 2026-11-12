@@ -265,6 +265,38 @@ struct LabellerClientTests {
         #expect(read[kSecMatchLimit as String] as? String == kSecMatchLimitOne as String)
     }
 
+    @Test func failureDetailKeepsOnlyTheStatusAndASanitisedType() {
+        let auth = Data(#"{"error":{"type":"authentication_error","message":"Invalid credential"}}"#.utf8)
+        let detail = LabellerClient.failureDetail(status: 401, body: auth)
+        #expect(detail == LabellerFailureDetail(status: 401, errorType: "authentication_error"))
+        #expect(!String(describing: detail).contains("Invalid credential"))
+
+        let messy = Data(#"{"error":{"type":"bad type!<x>/y","message":"m"}}"#.utf8)
+        #expect(LabellerClient.failureDetail(status: 403, body: messy).errorType == "badtypexy")
+        let topLevel = Data(#"{"type":"overloaded_error"}"#.utf8)
+        #expect(LabellerClient.failureDetail(status: 503, body: topLevel).errorType == "overloaded_error")
+        #expect(LabellerClient.failureDetail(status: 500, body: Data("<html>oops</html>".utf8)).errorType == nil)
+        #expect(LabellerClient.failureDetail(status: 500, body: Data()).errorType == nil)
+        let long = Data(#"{"error":{"type":"\#(String(repeating: "a", count: 60))"}}"#.utf8)
+        #expect(LabellerClient.failureDetail(status: 400, body: long).errorType?.count == 48)
+    }
+
+    @Test func aFailingResponseReportsTheDetailBeforeTheThrow() async throws {
+        let body = Data(#"{"error":{"type":"model_restricted","message":"secret words"}}"#.utf8)
+        LabellerStubProtocol.reset([
+            .respond(status: 403, headers: ["Content-Type": "application/json"]),
+            .send(body),
+        ])
+        let progress = ProgressRecorder()
+        do {
+            _ = try await client().send(request(), onRequestStarted: {}, onProgress: { progress.append($0) })
+            Issue.record("expected a failure")
+        } catch {
+            #expect(error as? LabellerFailure == .keyRejected)
+        }
+        #expect(progress.values.last?.failure == LabellerFailureDetail(status: 403, errorType: "model_restricted"))
+    }
+
     // MARK: - Helpers
 
     private func request() -> LabellerRequest {

@@ -307,7 +307,7 @@ public actor LabellerShadowRecorder {
         let started = now()
         func sendOnce() async throws -> LabellerResponse {
             try await sender.send(request, onRequestStarted: { tally.add(); counter.record() },
-                                 onProgress: { _ in })
+                                 onProgress: { tally.note($0.failure) })
         }
         do {
             let first = try await sendOnce()
@@ -350,7 +350,8 @@ public actor LabellerShadowRecorder {
             return .cancelled
         } catch let failure as LabellerFailure {
             guard !Task.isCancelled else { return .cancelled }
-            recordFailure(input, kind: failure.kind, cueCount: cues.count, started: started, tally: tally)
+            recordFailure(input, kind: failure.kind, cueCount: cues.count, started: started, tally: tally,
+                          detail: tally.detail)
             return .failed(kind: failure.kind)
         } catch {
             guard !Task.isCancelled else { return .cancelled }
@@ -362,11 +363,15 @@ public actor LabellerShadowRecorder {
 
     /// Records a failed attempt with the request timing measured so far.
     private func recordFailure(_ input: ShadowInput, kind: String, cueCount: Int,
-                               started: Date, tally: RequestTally) {
-        writeRecord(failureFields(input, kind: kind, cueCount: cueCount,
-                                  requestSeconds: now().timeIntervalSince(started), requestCount: tally.value),
-                    episodeID: input.episodeID)
-        appendAttempt(episodeID: input.episodeID, outcome: kind)
+                               started: Date, tally: RequestTally, detail: LabellerFailureDetail? = nil) {
+        var fields = failureFields(input, kind: kind, cueCount: cueCount,
+                                   requestSeconds: now().timeIntervalSince(started), requestCount: tally.value)
+        if let detail {
+            fields["httpStatus"] = detail.status
+            if let type = detail.errorType { fields["providerErrorType"] = type }
+        }
+        writeRecord(fields, episodeID: input.episodeID)
+        appendAttempt(episodeID: input.episodeID, outcome: kind, detail: detail)
     }
 
     // MARK: Records
@@ -426,10 +431,13 @@ public actor LabellerShadowRecorder {
     }
 
     /// Appends one line per shadow attempt: timestamp, episode ID, outcome kind.
-    private func appendAttempt(episodeID: String, outcome: String) {
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: ["timestamp": Self.timestamp(now()), "episodeID": episodeID, "outcome": outcome],
-            options: .sortedKeys) else { return }
+    private func appendAttempt(episodeID: String, outcome: String, detail: LabellerFailureDetail? = nil) {
+        var entry: [String: Any] = ["timestamp": Self.timestamp(now()), "episodeID": episodeID, "outcome": outcome]
+        if let detail {
+            entry["httpStatus"] = detail.status
+            if let type = detail.errorType { entry["providerErrorType"] = type }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: entry, options: .sortedKeys) else { return }
         var line = data
         line.append(0x0A)
         do {
@@ -461,6 +469,14 @@ public actor LabellerShadowRecorder {
     private final class RequestTally: @unchecked Sendable {
         private let lock = NSLock()
         private var count = 0
+        private var lastDetail: LabellerFailureDetail?
+
+        func note(_ detail: LabellerFailureDetail?) {
+            guard let detail else { return }
+            lock.withLock { lastDetail = detail }
+        }
+
+        var detail: LabellerFailureDetail? { lock.withLock { lastDetail } }
 
         func add() {
             lock.lock()
