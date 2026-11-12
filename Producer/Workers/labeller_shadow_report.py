@@ -23,7 +23,9 @@ from pathlib import Path
 DEFAULT_DIRECTORY = (
     Path.home() / "Library/Application Support/Wilted/ad-labeller-shadow"
 )
-# Reasoning tokens per episode measured at the "low" level before the trial.
+# Mean reasoning tokens per episode at the "low" level in the pre-trial run of 20
+# longer episodes. Reasoning grows with episode length and that run did not
+# separate low, high and default, so it is context, not a pass mark.
 MEASURED_REASONING_TOKENS = 5500
 REQUIRED_EPISODES = 30
 REQUIRED_AD_FREE = 5
@@ -215,8 +217,8 @@ def render(summary: dict, unreadable: int) -> str:
     if summary["medianReasoningTokens"] is not None:
         lines.append(
             f"Median reasoning tokens per episode: {summary['medianReasoningTokens']:.0f} "
-            f"(measured before the trial: about {MEASURED_REASONING_TOKENS}; a large difference "
-            "means the provider is not applying the level setting)"
+            f"(the pre-trial run averaged about {MEASURED_REASONING_TOKENS} on longer episodes; "
+            "reasoning grows with episode length, so this does not show whether the level is applied)"
         )
     if summary["medianRequestSeconds"] is not None:
         lines.append(f"Median request time: {summary['medianRequestSeconds']:.0f} s")
