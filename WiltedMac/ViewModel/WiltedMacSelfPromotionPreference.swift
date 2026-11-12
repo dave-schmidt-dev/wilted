@@ -44,9 +44,12 @@ struct WiltedMacSelfPromotionPreference {
 #if canImport(WiltedProducer)
 extension WiltedMacModel {
     /// Maps the settings visible when a job is admitted into the worker's
-    /// immutable request shape.
+    /// immutable request shape. `removeAds` overrides the global setting when a
+    /// feed is marked ad-free so preparation leaves that show's audio uncut.
     static func preparationPolicySnapshot(
-        from settings: WiltedAutomationSettings, removeSelfPromotion: Bool = false
+        from settings: WiltedAutomationSettings,
+        removeAds: Bool? = nil,
+        removeSelfPromotion: Bool = false
     ) -> PodcastPreparationPolicySnapshot {
         let transcriptPolicy: PodcastTranscriptPolicy
         switch settings.transcriptPolicy {
@@ -56,18 +59,23 @@ extension WiltedMacModel {
         }
         return PodcastPreparationPolicySnapshot(
             transcriptPolicy: transcriptPolicy,
-            removeAds: settings.removeAds,
+            removeAds: removeAds ?? settings.removeAds,
             removeSelfPromotion: removeSelfPromotion
         )
     }
 
-    /// The same mapping, with the feed's own-promotion choice read from `preferences`.
+    /// The same mapping, with the feed's ad-free and own-promotion choices read from `preferences`.
     static func preparationPolicySnapshot(
         from settings: WiltedAutomationSettings, feedID: String?, preferences: UserDefaults
     ) -> PodcastPreparationPolicySnapshot {
-        preparationPolicySnapshot(
+        // An ad-free show is left uncut, so self-promotion removal has nothing to do.
+        let adFree = WiltedMacAdFreeFeedPreference(preferences: preferences).isAdFree(feedID: feedID)
+        return preparationPolicySnapshot(
             from: settings,
-            removeSelfPromotion: WiltedMacSelfPromotionPreference(preferences: preferences).isEnabled(feedID: feedID)
+            removeAds: adFree ? false : nil,
+            removeSelfPromotion: adFree
+                ? false
+                : WiltedMacSelfPromotionPreference(preferences: preferences).isEnabled(feedID: feedID)
         )
     }
 

@@ -168,6 +168,10 @@ final class WiltedMacModel {
     var prepareAgainRows: [String: WiltedMacPrepareAgainRow] = [:]
     /// The confirmation before re-preparing every episode that kept its ads.
     var isConfirmingPrepareAgainAll = false
+    /// Asked once when a newly added feed looks paid or ad-free, before it is saved.
+    var pendingAdFreeFeedPrompt: WiltedMacAdFreeFeedPrompt?
+    /// Resumes the subscribe loop when the owner answers or the add is cancelled.
+    @ObservationIgnored var adFreeFeedPromptContinuation: CheckedContinuation<Bool, Never>?
     var episodeAssociations: [String: LibraryEpisodeAssociation] = [:]
     var podcastOperationMessage: String?
     /// The episode an Undo button beside `podcastOperationMessage` would

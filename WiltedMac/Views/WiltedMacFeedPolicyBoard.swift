@@ -31,6 +31,8 @@ final class WiltedMacFeedPolicyBoard {
     private(set) var newsFeedIDs: Set<String> = []
     /// The podcast feeds whose preparation also removes the show's own promotion.
     private(set) var selfPromotionFeedIDs: Set<String> = []
+    /// The podcast feeds the owner has marked as already ad-free (preparation leaves audio uncut).
+    private(set) var adFreeFeedIDs: Set<String> = []
     /// The podcast feeds whose transcripts stay on this Mac rather than going to the labeller.
     private(set) var localOnlyAdFeedIDs: Set<String> = []
     @ObservationIgnored private var rules: [String: EpisodeMatchRules] = [:]
@@ -71,6 +73,7 @@ final class WiltedMacFeedPolicyBoard {
         self.model = model
         self.hasProviderKey = hasProviderKey ?? { [weak model] in model?.adFinding.hasKey ?? false }
         selfPromotionFeedIDs = Set(WiltedMacSelfPromotionPreference(preferences: model.preferences).feedIDs)
+        adFreeFeedIDs = Set(WiltedMacAdFreeFeedPreference(preferences: model.preferences).feedIDs)
         localOnlyAdFeedIDs = Set(WiltedMacLocalOnlyAdsPreference(preferences: model.preferences).feedIDs)
     }
 
@@ -315,6 +318,21 @@ final class WiltedMacFeedPolicyBoard {
         guard isLoaded(feedID), !isArticleFeed(feedID) else { return false }
         WiltedMacSelfPromotionPreference(preferences: model.preferences).set(feedID: feedID, enabled: value)
         if value { selfPromotionFeedIDs.insert(feedID) } else { selfPromotionFeedIDs.remove(feedID) }
+        return true
+    }
+
+    // MARK: Ad-free show
+
+    func isAdFree(_ feedID: String) -> Bool { adFreeFeedIDs.contains(feedID) }
+
+    /// Saves whether this podcast feed is already ad-free, so preparation leaves its audio
+    /// uncut, in the Mac's preferences. Returns false, changing nothing, for a feed that is
+    /// not loaded or lists articles.
+    @discardableResult
+    func setAdFree(_ value: Bool, for feedID: String) -> Bool {
+        guard isLoaded(feedID), !isArticleFeed(feedID) else { return false }
+        WiltedMacAdFreeFeedPreference(preferences: model.preferences).set(feedID: feedID, adFree: value)
+        if value { adFreeFeedIDs.insert(feedID) } else { adFreeFeedIDs.remove(feedID) }
         return true
     }
 

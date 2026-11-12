@@ -174,6 +174,7 @@ struct WiltedMacRootView: View {
         .toolbar { wordmark; sidebarToggle; addButton }
         .sheet(isPresented: $model.isPresentingAddSheet) {
             WiltedMacAddSheet(model: model)
+                .modifier(WiltedMacAdFreeFeedPromptAlert(model: model, isActive: true))
         }
         // File > Prepare Again With Current Engine asks once for the whole set,
         // naming how many runs it starts. Each run keeps the listener's place.
@@ -190,6 +191,9 @@ struct WiltedMacRootView: View {
         } message: {
             Text(WiltedMacModel.prepareAgainConfirmationMessage)
         }
+        // The add sheet carries its own copy: a window shows one sheet at a time, so an
+        // alert hung here would wait behind the sheet that is waiting on its answer.
+        .modifier(WiltedMacAdFreeFeedPromptAlert(model: model, isActive: !model.isPresentingAddSheet))
         // One place the chosen size enters the window. Every typographic
         // site reads it back out through `wiltedFont`.
         .environment(\.wiltedTextScale, model.textScale)

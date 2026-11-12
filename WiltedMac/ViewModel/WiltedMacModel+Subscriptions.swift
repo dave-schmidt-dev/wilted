@@ -444,7 +444,8 @@ extension WiltedMacModel {
     func startPodcastRefresh(
         urls: [URL], subscribing: Bool,
         initialMetadataLimit: Int? = nil,
-        requestID: UUID? = nil
+        requestID: UUID? = nil,
+        asksAboutAdFree: Bool = false
     ) {
         guard !isClosingTemporaryState, podcastRefreshTask == nil else { return }
         isRefreshingPodcasts = true
@@ -471,7 +472,8 @@ extension WiltedMacModel {
             }
             do {
                 let result = try await self.refreshPodcastURLs(
-                    urls, subscribing: subscribing, initialMetadataLimit: initialMetadataLimit, requestID: requestID
+                    urls, subscribing: subscribing, initialMetadataLimit: initialMetadataLimit,
+                    requestID: requestID, asksAboutAdFree: asksAboutAdFree
                 )
                 guard self.podcastRefreshOperationID == operationID,
                       requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }

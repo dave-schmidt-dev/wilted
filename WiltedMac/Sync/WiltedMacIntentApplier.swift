@@ -578,7 +578,8 @@ extension WiltedMacModel: WiltedMacDecisionHost {
         let before = subscriptions.count
         podcastFeedDraftStatus = nil
         let priorRequestID = podcastSubscriptionRequestID
-        startPodcastSubscriptionIntake(url)
+        // A phone's add has nobody at the Mac: an unanswered question would hold the one fetch slot.
+        startPodcastSubscriptionIntake(url, asksAboutAdFree: false)
         // An intake that declined leaves no request ID; never read another request's outcome as ours.
         guard let requestID = podcastSubscriptionRequestID, requestID != priorRequestID,
               let task = podcastRefreshTask else { return .failed }

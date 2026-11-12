@@ -124,6 +124,7 @@ struct WiltedMacFeedPolicyContent: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feed-policy-failed")
             }
+            if !board.isArticleFeed(feedID) { adFreeRow }
             if !board.isArticleFeed(feedID) { selfPromotionRow }
             if !board.isArticleFeed(feedID) { localOnlyAdsRow }
             WiltedMacFeedRulesEntry(
@@ -164,7 +165,33 @@ struct WiltedMacFeedPolicyContent: View {
     }
 
     /// Shown only for a podcast feed. Kept out of the grid so its long label does not widen
-    /// the label column the pickers line up against.
+    /// the label column the pickers line up against. Toggle title differs from the visible
+    /// title so OCR sees the row name only once.
+    private var adFreeRow: some View {
+        HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                Text("This show has no ads").wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                Text("Episodes are prepared without ad removal.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: WiltedTheme.Spacing.large)
+            Toggle("Prepare without ad removal", isOn: Binding(
+                get: { board.isAdFree(feedID) }, set: { _ = board.setAdFree($0, for: feedID) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .accessibilityLabel("Prepare \(subscription.title) without ad removal")
+            .accessibilityIdentifier("wilted-feed-policy-ad-free")
+        }
+        .disabled(!board.isLoaded(feedID))
+    }
+
+    /// Shown only for a podcast feed. Kept out of the grid so its long label does not widen
+    /// the label column the pickers line up against. Disabled while the show is marked
+    /// ad-free, because an uncut show has no self-promotion cuts to apply.
     private var selfPromotionRow: some View {
         HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
@@ -184,7 +211,7 @@ struct WiltedMacFeedPolicyContent: View {
             .accessibilityLabel("Remove the show's own promotion from \(subscription.title)")
             .accessibilityIdentifier("wilted-feed-policy-remove-self-promotion")
         }
-        .disabled(!board.isLoaded(feedID))
+        .disabled(!board.isLoaded(feedID) || board.isAdFree(feedID))
     }
 
     /// Shown only for a podcast feed, directly under the own-promotion row. The switch
