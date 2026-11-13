@@ -45,6 +45,9 @@ AD_SEGMENTS = [FakeSegment(0.0, 18.0, "programme opening"), FakeSegment(20.0, 40
                FakeSegment(41.0, 50.0, "programme middle"), FakeSegment(52.0, 57.0, "programme close")]
 AD_SILENCES = [(18.0, 20.0), (40.0, 41.0), (50.0, 52.0), (57.0, 60.0)]
 AD_KEEPS = [(0.0, 18.25), (40.75, 50.25), (51.75, 57.0)]
+# The same break as two cuts that meet at a speech-segment boundary. Segment
+# times come from float sums, so the two sides differ by a rounding error.
+ABUTTING_ADS = [FakeAd(20.0, 30.19999999999999, label="sponsor_read"), FakeAd(30.2, 40.0, label="ad_break")]
 
 
 def silence_report(spans) -> str:
@@ -116,6 +119,9 @@ def silence_contract_payloads():
                            classifier_requests=1, classifier_valid_requests=1, model_requests=1))}
         }
     })
+    with tempfile.TemporaryDirectory(prefix="wilted-silence-contract-") as directory:
+        payload = run_preparation(directory, AD_SEGMENTS, 60.0, AD_SILENCES, detections=ABUTTING_ADS)
+    results.append({"scenario": "abutting-cuts", "payload": payload})
     return results
 
 
@@ -301,10 +307,40 @@ class SilenceResultTests(SilenceTrimTestCase):
         self.assertTrue(all(left[1] == right[0] for left, right in zip(pieces, pieces[1:])))
         self.assertEqual(spans(trimmed["cues"]), [(0.0, 18.0), (18.5, 27.5), (28.0, 33.0)])
 
+    def test_cuts_a_rounding_error_apart_are_reported_as_one_advertisement(self):
+        # The kept sliver between two such cuts rounds to nothing. Trimming
+        # dropped it, the report then showed two touching advertisements, and
+        # the app refused the whole preparation (5 of 17 on 2026-11-13).
+        for name, silences in (("trimmed", AD_SILENCES), ("plain", [])):
+            (self.directory / name).mkdir()
+            stream = io.StringIO()
+            result = run_preparation(self.directory / name, AD_SEGMENTS, 60.0, silences,
+                                     detections=ABUTTING_ADS, stderr=stream)
+            kept = spans(result["keepIntervals"])
+            self.assertEqual(spans(result["adSegments"]), [(20.0, 40.0)], name)
+            self.assertEqual(result["removedSeconds"], 20.0, name)
+            self.assertEqual(kept, AD_KEEPS if silences else [(0.0, 20.0), (40.0, 60.0)], name)
+            pieces = sorted(spans(result["adSegments"]) + spans(result["silenceTrims"]) + kept)
+            self.assertEqual((pieces[0][0], pieces[-1][1]), (0.0, 60.0), name)
+            self.assertTrue(all(left[1] == right[0] for left, right in zip(pieces, pieces[1:])), name)
+            self.assertEqual(stream.getvalue().count('"ads.cut.slivers"'), 1, name)
+
+    def test_a_sliver_at_either_end_joins_its_cut_and_a_real_gap_survives(self):
+        with redirect_stderr(io.StringIO()):
+            _, keeps = _worker_cue_timing.build_effective_cut_map(
+                [FakeAd(0.0003, 20.0), FakeAd(50.0, 59.9996)], 60.0)
+        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(20.0, 50.0)])
+        self.assertEqual(_worker_cue_timing.effective_removed_intervals(keeps, 60.0), [(0.0, 20.0), (50.0, 60.0)])
+        stream = io.StringIO()
+        with redirect_stderr(stream):
+            _, keeps = _worker_cue_timing.build_effective_cut_map([FakeAd(10.0, 20.0), FakeAd(20.5, 30.0)], 60.0)
+        self.assertEqual([(keep.start_s, keep.end_s) for keep in keeps], [(0.0, 10.0), (20.0, 20.5), (30.0, 60.0)])
+        self.assertEqual(stream.getvalue(), "")
+
     def test_real_trimmed_payloads_carry_the_silence_contract(self):
         results = silence_contract_payloads()
         self.assertEqual([entry["scenario"] for entry in results],
-                         ["silence-only", "ads-and-silence", "positive-millisecond-programme-gap"])
+                         ["silence-only", "ads-and-silence", "positive-millisecond-programme-gap", "abutting-cuts"])
         for entry in results:
             self.assertTrue(entry["payload"]["audioChanged"])
             self.assertTrue(entry["payload"]["silenceTrims"])

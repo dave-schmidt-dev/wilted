@@ -295,7 +295,7 @@ extension PodcastPreparationPipelineTests {
         #expect(process.terminationStatus == 0, "Python silence contract failed: \(String(decoding: errorBytes, as: UTF8.self))")
         let entries = try #require(JSONSerialization.jsonObject(with: bytes) as? [[String: Any]])
         #expect(entries.compactMap { $0["scenario"] as? String } ==
-                ["silence-only", "ads-and-silence", "positive-millisecond-programme-gap"])
+                ["silence-only", "ads-and-silence", "positive-millisecond-programme-gap", "abutting-cuts"])
         var payloads: [PodcastPreparationPipeline.WorkerPayload] = []
         for entry in entries {
             let response = try #require(entry["payload"] as? [String: Any])
@@ -305,7 +305,7 @@ extension PodcastPreparationPipelineTests {
         #expect(silenceOnly.adRemovalOutcome == "noAds" && silenceOnly.audioChanged)
         #expect(silenceOnly.adSegments.isEmpty && silenceOnly.removedSeconds == 0)
         #expect(silenceOnly.silenceTrims.count == 5)
-        try #require(payloads.count == 3)
+        try #require(payloads.count == 4)
         let withAds = payloads[1]
         #expect(withAds.adRemovalOutcome == "cut")
         #expect(withAds.adSegments.map { $0.startSeconds..<$0.endSeconds } == [20..<40])
@@ -315,5 +315,10 @@ extension PodcastPreparationPipelineTests {
         #expect(edge.keepIntervals.map { $0.startSeconds..<$0.endSeconds } ==
                 [0..<4, 9.999..<10, 20..<30])
         #expect(edge.silenceTrims == [4..<9.999])
+        // Two cuts a rounding error apart: one advertisement, never two touching.
+        let abutting = payloads[3]
+        #expect(abutting.adRemovalOutcome == "cut")
+        #expect(abutting.adSegments.map { $0.startSeconds..<$0.endSeconds } == [20..<40])
+        #expect(abutting.keepIntervals.count == 3 && abutting.silenceTrims.count == 4)
     }
 }

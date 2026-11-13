@@ -257,7 +257,8 @@ SILENCE_DETECT_MIN_S = 0.25
 # silence, is treated as touching it.
 SILENCE_EDGE_TOLERANCE_S = 0.05
 
-# A kept piece shorter than this is dropped rather than kept as a sliver.
+# A kept piece shorter than this is dropped rather than kept as a sliver, by
+# pause trimming and by the ad cut map alike.
 SILENCE_MIN_KEEP_S = 0.01
 
 # The Mac stores at most 512 kept intervals per preparation; trimming stops

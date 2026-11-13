@@ -20,7 +20,7 @@ from dataclasses import dataclass, is_dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from . import reporting as _worker_reporting
-from .constants import ALIGNED_TIMING_TAIL_ALLOWANCE_S, FFPROBE_TIMEOUT_S, NOMINATED_SECONDS_FLOOR, NOMINATED_SHARE_FLOOR, RENDER_DURATION_TOLERANCE_S, RENDER_PROGRESS_INTERVAL_S, RENDER_TIMEOUT_S, SPLIT_WORD_CONTIGUITY_TOLERANCE_S
+from .constants import ALIGNED_TIMING_TAIL_ALLOWANCE_S, FFPROBE_TIMEOUT_S, NOMINATED_SECONDS_FLOOR, NOMINATED_SHARE_FLOOR, RENDER_DURATION_TOLERANCE_S, RENDER_PROGRESS_INTERVAL_S, RENDER_TIMEOUT_S, SILENCE_MIN_KEEP_S, SPLIT_WORD_CONTIGUITY_TOLERANCE_S
 from .render_graph import keep_segment_graph
 from .reporting import WorkerError
 
@@ -88,9 +88,16 @@ def build_effective_cut_map(detections, total_seconds: float) -> tuple[list[tupl
     then merges across whatever is left between two of them, so a short
     programme interstitial that both neighbours were correctly nominated
     *around* disappears with them. A v2 render owns its whole map instead:
-    overlapping nominations are unioned, every positive programme gap survives
-    at its true length, and the only slack allowed is the small tail overrun an
-    aligned transcript legitimately reports past the encoder's last frame.
+    overlapping nominations are unioned, every programme gap of at least
+    ``SILENCE_MIN_KEEP_S`` survives at its true length, and the only slack
+    allowed is the small tail overrun an aligned transcript legitimately
+    reports past the encoder's last frame.
+
+    A shorter gap is not programme. Two cuts that meet at a speech-segment
+    boundary often differ by a rounding error, and the kept sliver between
+    them cannot be reported: it rounds to nothing, or pause trimming drops it
+    and leaves two advertisements touching, which the app refuses. Such a
+    sliver joins the cut beside it, at the start, between cuts and at the end.
     """
     if not (total_seconds > 0 and total_seconds < float("inf")):
         raise WorkerError("cut-unsafe", "source duration is not finite and positive")
@@ -107,11 +114,23 @@ def build_effective_cut_map(detections, total_seconds: float) -> tuple[list[tupl
         cuts.append((start, min(end, total_seconds)))
     cuts.sort()
     merged: list[tuple[float, float]] = []
+    slivers = 0
     for start, end in cuts:
-        if merged and start <= merged[-1][1]:
+        if merged and start - merged[-1][1] < SILENCE_MIN_KEEP_S:
+            slivers += start > merged[-1][1]
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
+    if merged and 0 < merged[0][0] < SILENCE_MIN_KEEP_S:
+        slivers += 1
+        merged[0] = (0.0, merged[0][1])
+    if merged and 0 < total_seconds - merged[-1][1] < SILENCE_MIN_KEEP_S:
+        slivers += 1
+        merged[-1] = (merged[-1][0], total_seconds)
+    if slivers:
+        _worker_reporting.progress(
+            "ads.cut.slivers", f"{slivers} kept slivers under {SILENCE_MIN_KEEP_S * 1000:g} ms joined to the cut beside them"
+        )
     keeps: list[tuple[float, float]] = []
     cursor = 0.0
     for start, end in merged:
