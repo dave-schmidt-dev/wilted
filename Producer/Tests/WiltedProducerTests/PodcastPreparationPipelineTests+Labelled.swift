@@ -539,6 +539,7 @@ extension PodcastPreparationPipelineTests {
     @Test(arguments: [
         "shadow",
         "routeLocal",
+        "switchOff",
     ])
     func labelledPathSkippedWhenShadowOrLocal(mode: String) async throws {
         let fixture = try await Fixture()
@@ -558,6 +559,8 @@ extension PodcastPreparationPipelineTests {
         switch mode {
         case "shadow":
             labelling = configureLabelling(defaults: defaults, sender: sender, shadow: true)
+        case "switchOff":
+            labelling = configureLabelling(defaults: defaults, sender: sender, enabled: false)
         default:
             labelling = configureLabelling(defaults: defaults, sender: sender, confirmed: false)
         }

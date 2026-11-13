@@ -109,6 +109,7 @@ struct LabelledAcceptanceReplayTests {
             }
             replayed += 1
         }
+        #expect(replayed > 0, "no case folder under cases/ holds a saved reply")
         print("replayed \(replayed) cases")
     }
 
