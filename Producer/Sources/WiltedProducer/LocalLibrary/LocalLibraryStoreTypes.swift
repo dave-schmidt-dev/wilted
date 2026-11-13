@@ -27,8 +27,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v19 = 19
     case v20 = 20
     case v21 = 21
+    case v22 = 22
 
-    public static let current: LocalLibrarySchemaVersion = .v21
+    public static let current: LocalLibrarySchemaVersion = .v22
 }
 
 /// Positive equivalence requires the owner's confirmation of these exact two

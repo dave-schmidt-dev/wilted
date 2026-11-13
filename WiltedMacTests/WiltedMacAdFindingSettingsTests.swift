@@ -204,6 +204,27 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         }
     }
 
+    func testProviderPausedSentenceAppearsOnlyWhilePausedSinceIsStored() throws {
+        let (model, preferences, _) = makeModel(shows: { [] })
+        let labeller = AdLabellerPreferences(preferences: preferences)
+        XCTAssertNil(model.providerPausedSentence)
+
+        let since = Date(timeIntervalSince1970: 1_700_000_000)
+        labeller.recordProviderWaitLimitStop(at: since)
+        labeller.recordProviderWaitLimitStop(at: since)
+        labeller.recordProviderWaitLimitStop(at: since)
+        let sentence = try XCTUnwrap(model.providerPausedSentence)
+        XCTAssertEqual(
+            sentence,
+            LabellerStopReason.providerPaused(since: since).sentence(formatTime: {
+                $0.formatted(date: .omitted, time: .shortened)
+            })
+        )
+
+        labeller.clearProviderPause()
+        XCTAssertNil(model.providerPausedSentence)
+    }
+
     // MARK: Helpers
 
     private func makeModel(shows: @escaping @MainActor () -> [WiltedMacAdFindingSettings.Show])

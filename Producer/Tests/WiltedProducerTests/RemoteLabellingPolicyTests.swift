@@ -13,11 +13,11 @@ struct RemoteLabellingPolicyTests {
 
     private func context(
         on: Bool = true, key: Bool = true, confirmed: Set<String> = ["feed-1"],
-        localOnly: Set<String> = [], capReached: Bool = false
+        localOnly: Set<String> = [], adFree: Set<String> = [], capReached: Bool = false
     ) -> RemoteLabellingContext {
         RemoteLabellingContext(
             switchOn: on, hasKey: key, confirmedFeedIDs: confirmed,
-            localOnlyFeedIDs: localOnly, dailyCapReached: capReached)
+            localOnlyFeedIDs: localOnly, adFreeFeedIDs: adFree, dailyCapReached: capReached)
     }
 
     private func route(_ i: RemoteLabellingInput, _ c: RemoteLabellingContext) -> RemoteLabellingRoute {
@@ -32,6 +32,10 @@ struct RemoteLabellingPolicyTests {
         #expect(route(input(), context(on: false)) == .local(.switchOff))
         #expect(route(input(), context(key: false)) == .local(.noKey))
         #expect(route(input(), context(confirmed: [])) == .local(.notConfirmed))
+        #expect(route(input(), context(adFree: ["feed-1"])) == .local(.adRemovalOff))
+        var withoutAds = input()
+        withoutAds.removeAds = false
+        #expect(route(withoutAds, context()) == .local(.adRemovalOff))
         #expect(route(input(), context(localOnly: ["feed-1"])) == .local(.ownerLocalOnly))
         #expect(route(input(feed: "https://u:p@feeds.example.test/rss"), context()) == .local(.credentialedURL))
         #expect(route(input(feed: "https://feeds.example.test/rss?token=abc"), context()) == .local(.credentialedURL))
@@ -42,7 +46,7 @@ struct RemoteLabellingPolicyTests {
 
     @Test func reasonsHaveStableRawStrings() {
         #expect(RemoteLabellingLocalReason.allCases.map(\.rawValue) == [
-            "switchOff", "noKey", "notConfirmed", "ownerLocalOnly",
+            "switchOff", "noKey", "notConfirmed", "adRemovalOff", "ownerLocalOnly",
             "unknownFeedURL", "credentialedURL", "tokenLikeFeedURL", "privateTitle", "dailyCapReached",
         ])
     }
@@ -52,9 +56,24 @@ struct RemoteLabellingPolicyTests {
         #expect(route(all, context(on: false, key: false, confirmed: [], localOnly: ["feed-1"], capReached: true)) == .local(.switchOff))
         #expect(route(all, context(key: false, confirmed: [], capReached: true)) == .local(.noKey))
         #expect(route(all, context(confirmed: [], capReached: true)) == .local(.notConfirmed))
+        var withoutAds = all
+        withoutAds.removeAds = false
+        #expect(route(withoutAds, context(localOnly: ["feed-1"], capReached: true)) == .local(.adRemovalOff))
+        #expect(route(all, context(localOnly: ["feed-1"], adFree: ["feed-1"], capReached: true)) == .local(.adRemovalOff))
         #expect(route(all, context(localOnly: ["feed-1"], capReached: true)) == .local(.ownerLocalOnly))
         #expect(route(all, context(capReached: true)) == .local(.credentialedURL))
         #expect(route(input(title: "Private"), context(capReached: true)) == .local(.privateTitle))
+    }
+
+    @Test func anAdFreeShowOrEpisodeWithAdRemovalOffStaysLocal() {
+        #expect(route(input(), context(adFree: ["feed-1"])) == .local(.adRemovalOff))
+        var withoutAds = input()
+        withoutAds.removeAds = false
+        #expect(route(withoutAds, context()) == .local(.adRemovalOff))
+        #expect(route(input(), context()) == .remote)
+        #expect(route(input(), context(confirmed: [])) == .local(.notConfirmed))
+        withoutAds.removeAds = false
+        #expect(route(withoutAds, context(confirmed: [])) == .local(.notConfirmed))
     }
 
     @Test func showAddedAfterConfirmationStaysLocal() {
@@ -137,9 +156,13 @@ struct RemoteLabellingPolicyTests {
         withDefaults { defaults in
             let prefs = AdLabellerPreferences(preferences: defaults)
             #expect(!prefs.isEnabled)
-            #expect(prefs.isShadow, "shadow is on until switched off")
+            #expect(!prefs.isShadow, "an unset shadow value reads false")
+            prefs.isShadow = true
+            #expect(prefs.isShadow, "an explicit true still means shadow")
             prefs.isShadow = false
             #expect(!prefs.isShadow)
+            #expect(prefs.providerPauseCount == 0)
+            #expect(prefs.providerPausedSince == nil)
             #expect(prefs.confirmedFeedIDs.isEmpty)
             #expect(prefs.localOnlyFeedIDs.isEmpty)
             #expect(prefs.modelID == "deepseek-v4.1-flash")

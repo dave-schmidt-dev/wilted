@@ -5,6 +5,7 @@ public enum RemoteLabellingLocalReason: String, Sendable, Equatable, CaseIterabl
     case switchOff
     case noKey
     case notConfirmed
+    case adRemovalOff
     case ownerLocalOnly
     case unknownFeedURL
     case credentialedURL
@@ -29,13 +30,19 @@ public struct RemoteLabellingInput: Sendable, Equatable {
     /// never sent anywhere.
     public var customTitle: String?
     public var audioURL: URL?
+    /// Whether this episode was admitted with ad removal on. Off means nothing is sent.
+    public var removeAds: Bool
 
-    public init(feedID: String, feedURL: URL?, feedTitle: String, customTitle: String? = nil, audioURL: URL?) {
+    public init(
+        feedID: String, feedURL: URL?, feedTitle: String, customTitle: String? = nil,
+        audioURL: URL?, removeAds: Bool = true
+    ) {
         self.feedID = feedID
         self.feedURL = feedURL
         self.feedTitle = feedTitle
         self.customTitle = customTitle
         self.audioURL = audioURL
+        self.removeAds = removeAds
     }
 }
 
@@ -45,16 +52,18 @@ public struct RemoteLabellingContext: Sendable, Equatable {
     public var hasKey: Bool
     public var confirmedFeedIDs: Set<String>
     public var localOnlyFeedIDs: Set<String>
+    public var adFreeFeedIDs: Set<String>
     public var dailyCapReached: Bool
 
     public init(
         switchOn: Bool, hasKey: Bool, confirmedFeedIDs: Set<String>,
-        localOnlyFeedIDs: Set<String>, dailyCapReached: Bool
+        localOnlyFeedIDs: Set<String>, adFreeFeedIDs: Set<String> = [], dailyCapReached: Bool
     ) {
         self.switchOn = switchOn
         self.hasKey = hasKey
         self.confirmedFeedIDs = confirmedFeedIDs
         self.localOnlyFeedIDs = localOnlyFeedIDs
+        self.adFreeFeedIDs = adFreeFeedIDs
         self.dailyCapReached = dailyCapReached
     }
 
@@ -64,6 +73,7 @@ public struct RemoteLabellingContext: Sendable, Equatable {
             switchOn: preferences.isEnabled, hasKey: hasKey,
             confirmedFeedIDs: Set(preferences.confirmedFeedIDs),
             localOnlyFeedIDs: Set(preferences.localOnlyFeedIDs),
+            adFreeFeedIDs: Set(preferences.adFreeFeedIDs),
             dailyCapReached: counter.hasReachedCap
         )
     }
@@ -72,7 +82,7 @@ public struct RemoteLabellingContext: Sendable, Equatable {
 /// Pure decision of which route an episode takes. Private or subscriber shows never go remote.
 ///
 /// Rules are checked in this order and the first that holds decides the reason:
-/// switchOff, noKey, notConfirmed, ownerLocalOnly, unknownFeedURL, credentialedURL,
+/// switchOff, noKey, notConfirmed, adRemovalOff, ownerLocalOnly, unknownFeedURL, credentialedURL,
 /// tokenLikeFeedURL, privateTitle, dailyCapReached. Otherwise the route is remote.
 public enum RemoteLabellingPolicy {
     static let credentialQueryKeys: Set<String> = ["token", "auth", "key", "sig", "signature"]
@@ -85,6 +95,7 @@ public enum RemoteLabellingPolicy {
         if !context.switchOn { return .local(.switchOff) }
         if !context.hasKey { return .local(.noKey) }
         if !context.confirmedFeedIDs.contains(input.feedID) { return .local(.notConfirmed) }
+        if !input.removeAds || context.adFreeFeedIDs.contains(input.feedID) { return .local(.adRemovalOff) }
         if context.localOnlyFeedIDs.contains(input.feedID) { return .local(.ownerLocalOnly) }
         if let forced = forcedLocalReason(for: input) { return .local(forced) }
         if context.dailyCapReached { return .local(.dailyCapReached) }

@@ -83,9 +83,11 @@ extension WiltedMacModel {
         case "transcript.absent": "No transcript available."
         case "transcript.remap": "Resynchronising the transcript…"
         case "ads.model.load": "Loading the advertisement classifier…"
-        case "ads.detect.start", "ads.detect.calls", "ads.detect.complete": "Finding advertisements…"
+        case "ads.detect.start", "ads.detect.calls", "ads.detect.complete",
+             "ads.label.start", "ads.label.complete": "Finding advertisements…"
+        case "ads.label.wait": "Ad removal is waiting on the provider…"
+        case "ads.label.stop", "ads.cut.refused", "ads.cut.empty": "Advertisements left in place."
         case "ads.cut.start", "ads.cut.complete": "Removing advertisements…"
-        case "ads.cut.refused", "ads.cut.empty": "Advertisements left in place."
         case "audio.publish": "Storing the prepared audio…"
         case "pipeline.complete": "Prepared."
         default: "Preparing…"

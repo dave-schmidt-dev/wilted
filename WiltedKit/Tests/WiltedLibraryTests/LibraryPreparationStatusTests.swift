@@ -199,7 +199,7 @@ final class LibraryPreparationStatusTests: XCTestCase {
     }
 
     func testEveryStateRoundTripsWithRevisionIDAbsent() throws {
-        for state: LibraryPreparationStatus.State in [.queued, .active, .failed, .cancelled] {
+        for state: LibraryPreparationStatus.State in [.queued, .active, .waiting, .failed, .cancelled] {
             let value = try status(state: state, revisionID: nil)
             let data = try JSONEncoder().encode(value)
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -209,6 +209,24 @@ final class LibraryPreparationStatusTests: XCTestCase {
             XCTAssertNil(decoded.revisionID)
             XCTAssertEqual(try decode(try self.object(entry(status: value))).preparationStatus, value)
         }
+    }
+
+    func testWaitingRoundTripsAndUnknownStateDecodesAbsentWithoutError() throws {
+        let waiting = try status(state: .waiting, stage: "ads.label.wait",
+                                 detail: "Ad removal is waiting on the provider. Retrying at 9:41 AM.")
+        let decoded = try JSONDecoder().decode(
+            LibraryPreparationStatus.self, from: JSONEncoder().encode(waiting)
+        )
+        XCTAssertEqual(decoded, waiting)
+        XCTAssertEqual(decoded.state, .waiting)
+
+        var object = try object(try entry(status: waiting))
+        var report = try XCTUnwrap(object["preparationStatus"] as? [String: Any])
+        report["state"] = "future-state"
+        object["preparationStatus"] = report
+        let entry = try decode(object)
+        XCTAssertNil(entry.preparationStatus)
+        XCTAssertEqual(entry.title, "Title")
     }
 
     private func decode(withFraction value: Double) throws -> LibraryEntry {

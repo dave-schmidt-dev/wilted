@@ -49,7 +49,7 @@ final class LibraryPreparationStatusTests: XCTestCase {
         let fixture = try LibraryViewFixture()
         defer { fixture.tearDown() }
         let model = fixture.model
-        for state in [LibraryPreparationStatus.State.queued, .active, .failed, .cancelled] {
+        for state in [LibraryPreparationStatus.State.queued, .active, .waiting, .failed, .cancelled] {
             model.decisionContent = try snapshot([entry("a", status: status(state))], queue: ["a"])
             model.rebuildRows()
             model.filter = .all
@@ -219,6 +219,38 @@ final class LibraryPreparationStatusTests: XCTestCase {
         XCTAssertNil(queued.progress)
         XCTAssertEqual(LibraryPreparationAnnotation(memberID: id("a"), status: try status(.cancelled)).text,
                        "Preparation cancelled on Mac")
+    }
+
+    func testWaitingAnnotationUsesDetailToneAndOtherCopyPrefix() throws {
+        let detail = "Ad removal is waiting on the provider. Retrying at 9:41 AM. Tried once so far."
+        let known = try LibraryPreparationStatus(
+            attemptID: "generation-3-2", state: .waiting, stage: "ads.label.wait",
+            detail: detail, updatedAt: date)
+        let knownAnnotation = LibraryPreparationAnnotation(memberID: id("a"), status: known)
+        XCTAssertEqual(knownAnnotation.text, detail)
+        XCTAssertEqual(knownAnnotation.tone, .neutral)
+        XCTAssertNil(knownAnnotation.progress)
+
+        let unknownStage = try LibraryPreparationStatus(
+            attemptID: "generation-3-2", state: .waiting, stage: "future-wait",
+            detail: detail, updatedAt: date)
+        XCTAssertEqual(
+            LibraryPreparationAnnotation(memberID: id("a"), status: unknownStage).text,
+            "Waiting on Mac"
+        )
+
+        let emptyDetail = try LibraryPreparationStatus(
+            attemptID: "generation-3-2", state: .waiting, stage: "ads.label.wait",
+            detail: "", updatedAt: date)
+        XCTAssertEqual(
+            LibraryPreparationAnnotation(memberID: id("a"), status: emptyDetail).text,
+            "Waiting on Mac"
+        )
+
+        var other = LibraryPreparationAnnotation(memberID: id("b"), status: known)
+        other.isOtherCopy = true
+        XCTAssertEqual(other.text, "Other copy: " + detail)
+        XCTAssertEqual(other.tone, .neutral)
     }
 
     func testProductionActionsRenderLightDarkAndLargeTextWithStatusAndNoMediaAuthority() async throws {

@@ -192,7 +192,7 @@ final class LocalLibraryStoreCompatibilityTests: XCTestCase {
         let url = directory.appendingPathComponent("library.sqlite")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Keep the newer build's connection open so its sidecars are live.
-        let schema = Schema(versionedSchema: FutureLocalLibrarySchemaV22.self)
+        let schema = Schema(versionedSchema: FutureLocalLibrarySchemaV23.self)
         let futureWriter = try ModelContainer(for: schema, configurations: [
             ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none),
         ])
@@ -472,8 +472,8 @@ extension LocalLibraryStoreCompatibilityTests {
     init(id: String) { self.id = id }
 }
 
-enum FutureLocalLibrarySchemaV22: VersionedSchema {
-    static let versionIdentifier = Schema.Version(22, 0, 0)
+enum FutureLocalLibrarySchemaV23: VersionedSchema {
+    static let versionIdentifier = Schema.Version(23, 0, 0)
     static var models: [any PersistentModel.Type] { LocalLibraryCurrentSchema.models + [FutureSchemaRecord.self] }
 }
 

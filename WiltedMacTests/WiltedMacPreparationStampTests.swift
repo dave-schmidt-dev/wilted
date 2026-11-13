@@ -151,6 +151,93 @@ final class WiltedMacPreparationStampTests: XCTestCase {
             outcome: nil, readyRevisionID: nil, runs: []))
     }
 
+    // MARK: Earlier ad-finding setting
+
+    func testEarlierSettingLineAppearsOnlyForDifferingDigest() throws {
+        let itemID = try makeItemID()
+        let revisionID = try makeRevisionID("7")
+        let recorded = "sha256:" + String(repeating: "aa", count: 32)
+        let other = "sha256:" + String(repeating: "bb", count: 32)
+        let run = try succeededRun(
+            itemID: itemID, revisionID: revisionID,
+            stamp: (appVersion: "0.7.0 (12, abc1234567)",
+                    engineVersion: PodcastPreparationPipeline.semanticVersion,
+                    codeRevision: nil),
+            policyDigest: recorded)
+
+        let differing = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: makeOutcome(itemID: itemID, revisionID: revisionID, policyDigest: recorded),
+            readyRevisionID: revisionID,
+            runs: [run],
+            labelledDigestInForce: other))
+        XCTAssertEqual(differing.earlierAdFindingSetting,
+                       WiltedMacPreparationStamp.earlierAdFindingSettingLine)
+        XCTAssertTrue(differing.displayText?.contains(WiltedMacPreparationStamp.earlierAdFindingSettingLine) == true)
+
+        let equal = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: makeOutcome(itemID: itemID, revisionID: revisionID, policyDigest: recorded),
+            readyRevisionID: revisionID,
+            runs: [run],
+            labelledDigestInForce: recorded))
+        XCTAssertNil(equal.earlierAdFindingSetting)
+
+        let empty = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: makeOutcome(itemID: itemID, revisionID: revisionID, policyDigest: ""),
+            readyRevisionID: revisionID,
+            runs: [try succeededRun(
+                itemID: itemID, revisionID: revisionID,
+                stamp: (appVersion: "0.7.0 (12, abc1234567)",
+                        engineVersion: PodcastPreparationPipeline.semanticVersion,
+                        codeRevision: nil),
+                policyDigest: "")],
+            labelledDigestInForce: other))
+        XCTAssertNil(empty.earlierAdFindingSetting)
+
+        let local = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: makeOutcome(itemID: itemID, revisionID: revisionID, policyDigest: recorded),
+            readyRevisionID: revisionID,
+            runs: [run],
+            labelledDigestInForce: nil))
+        XCTAssertNil(local.earlierAdFindingSetting)
+
+        let olderEngine = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: makeOutcome(itemID: itemID, revisionID: revisionID, policyDigest: recorded),
+            readyRevisionID: revisionID,
+            runs: [try succeededRun(
+                itemID: itemID, revisionID: revisionID,
+                stamp: (appVersion: "0.7.0 (12, abc1234567)",
+                        engineVersion: "podcast-preparation-v11",
+                        codeRevision: nil),
+                policyDigest: recorded)],
+            labelledDigestInForce: other))
+        XCTAssertNil(olderEngine.earlierAdFindingSetting,
+                     "engine-only staleness must not show the earlier-setting line")
+    }
+
+    func testAdsLeftInAppearsOnlyWhenPreparedRunHasLabelStop() throws {
+        let itemID = try makeItemID()
+        let revisionID = try makeRevisionID("c")
+        let outcome = makeOutcome(itemID: itemID, revisionID: revisionID)
+        let sentence = "The provider did not answer in time."
+        let withStop = try succeededRun(
+            itemID: itemID, revisionID: revisionID,
+            stamp: (appVersion: "0.7.0 (12, abc1234567)", engineVersion: "podcast-preparation-v8",
+                    codeRevision: nil),
+            labelStopDetail: sentence)
+        let stamp = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: outcome, readyRevisionID: revisionID, runs: [withStop]))
+        XCTAssertEqual(stamp.adsLeftIn, "Ads left in: \(sentence)")
+        XCTAssertTrue(try XCTUnwrap(stamp.displayText).contains("Ads left in: \(sentence)"))
+
+        let withoutStop = try succeededRun(
+            itemID: itemID, revisionID: revisionID,
+            stamp: (appVersion: "0.7.0 (12, abc1234567)", engineVersion: "podcast-preparation-v8",
+                    codeRevision: nil))
+        let plain = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: outcome, readyRevisionID: revisionID, runs: [withoutStop]))
+        XCTAssertNil(plain.adsLeftIn)
+    }
+
     // MARK: Episode info
 
     func testEpisodeInfoCarriesTheEpisodesStamp() throws {
@@ -181,25 +268,29 @@ final class WiltedMacPreparationStampTests: XCTestCase {
     private func makeOutcome(
         itemID: ItemID, revisionID: RevisionID,
         semanticVersion: String = "podcast-preparation-v8",
-        eligibility: PodcastPreparationEligibility = .current
+        eligibility: PodcastPreparationEligibility = .current,
+        policyDigest: String = "digest"
     ) -> PodcastPreparationOutcome {
         PodcastPreparationOutcome(
-            episodeID: itemID, revisionID: revisionID, policyDigest: "digest",
+            episodeID: itemID, revisionID: revisionID, policyDigest: policyDigest,
             pipelineFingerprint: "fingerprint", semanticVersion: semanticVersion,
             producedAt: when, eligibility: eligibility)
     }
 
-    private func makeEvidence(_ stamp: BuildStamp) throws -> PreparationEvidence {
+    private func makeEvidence(_ stamp: BuildStamp, policyDigest: String? = nil) throws -> PreparationEvidence {
         var fields = ["engineVersion": stamp.engineVersion]
         if let appVersion = stamp.appVersion { fields["appVersion"] = appVersion }
         if let codeRevision = stamp.codeRevision { fields["codeRevision"] = codeRevision }
+        if let policyDigest { fields["policyDigest"] = policyDigest }
         return try PreparationEvidence(
             kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: fields)
     }
 
     private func succeededRun(
         itemID: ItemID, revisionID: RevisionID, stamp: BuildStamp?,
-        updatedAt: Timestamp? = nil
+        updatedAt: Timestamp? = nil,
+        policyDigest: String? = nil,
+        labelStopDetail: String? = nil
     ) throws -> PreparationRunSummary {
         let requestID = WiltedMacModel.podcastRequestPrefix + itemID.rawValue + "|success"
         var entries: [PreparationJournalEntry] = []
@@ -208,7 +299,14 @@ final class WiltedMacPreparationStampTests: XCTestCase {
                 id: requestID + "|start", itemID: itemID, requestID: requestID,
                 status: try PreparationStatus(
                     stage: .preparing, detail: "Starting", cancellable: true,
-                    emittedAt: when, evidence: try makeEvidence(stamp))))
+                    emittedAt: when, evidence: try makeEvidence(stamp, policyDigest: policyDigest))))
+        }
+        if let labelStopDetail {
+            entries.append(PreparationJournalEntry(
+                id: requestID + "|label-stop", itemID: itemID, requestID: requestID,
+                status: try PreparationStatus(
+                    stage: .assembling, detail: labelStopDetail, cancellable: true,
+                    emittedAt: when, step: "ads.label.stop")))
         }
         entries.append(PreparationJournalEntry(
             id: requestID + "|terminal", itemID: itemID, requestID: requestID,

@@ -288,6 +288,20 @@ extension WiltedMacModel {
             )
         }.sorted { LibrarySortKey.title($0.title).localizedStandardCompare(LibrarySortKey.title($1.title)) == .orderedAscending }
         let downloads = snapshot.downloads
+        // The same routing facts the pipeline reads: publisher title and address, the owner's stored name.
+        let prepareAgainFeedMeta = Dictionary(allSubscriptions.map { subscription in
+            let feed = feeds[subscription.feedID]
+            return (subscription.feedID.rawValue, LabelledDigestFeedMeta(
+                feedURL: feed?.canonicalURL,
+                feedTitle: feed?.title ?? "",
+                customTitle: subscription.displayName))
+        }, uniquingKeysWith: { first, _ in first })
+        let digestInForceLookup = labelledDigestInForceLookup(feedMeta: prepareAgainFeedMeta)
+        let labellingWaitsBySubject: [String: LabellingWait] = Dictionary(
+            ((try? await store.deferredWorkTickets(kind: .podcastPreparation)) ?? [])
+                .compactMap { ticket in LabellingWait(ticket).map { (ticket.subjectID, $0) } },
+            uniquingKeysWith: { first, _ in first }
+        )
         var episodeValues: [WiltedMacEpisode] = []
         // Larder projects every subscribed episode, so its preparation
         // evidence cannot use Prep's display-oriented 200-run default --
@@ -355,6 +369,8 @@ extension WiltedMacModel {
             let isReadyMediaAvailable = revision.map {
                 mediaAvailabilityChecker.fileExists(atPath: $0.mediaURL.path)
             } ?? false
+            // Only prepared audio can be stale, so an unprepared episode costs no routing check.
+            let digestInForce = outcome == nil ? nil : digestInForceLookup(episode.feedID, episode.enclosureURL)
             episodeValues.append(WiltedMacEpisode(
                 id: episode.itemID.rawValue, title: episode.title, feedTitle: feedTitle,
                 summary: Self.episodeSummary(notes: episode.notes, fallback: episode.author ?? feedTitle),
@@ -377,7 +393,9 @@ extension WiltedMacModel {
                 preparationStamp: WiltedMacPreparationStamp.make(
                     outcome: outcome,
                     readyRevisionID: revision?.revision.revisionID,
-                    runs: runsByItem[episode.itemID] ?? []
+                    runs: runsByItem[episode.itemID] ?? [],
+                    labelledDigestInForce: digestInForce,
+                    labellingWait: labellingWaitsBySubject[episode.itemID.rawValue]
                 ),
                 feedID: episode.feedID.rawValue,
                 feedURL: episode.feedURL,
@@ -395,7 +413,8 @@ extension WiltedMacModel {
         let projectedEpisodeValues = Self.applyingPendingEpisodeCompletions(
             episodeValues, projections: episodeCompletionProjections
         )
-        await refreshEpisodesToPrepareAgain(from: store, readEpoch: readEpoch)
+        await refreshEpisodesToPrepareAgain(
+            from: store, readEpoch: readEpoch, feedMeta: prepareAgainFeedMeta)
         return (articleValues, LibraryEpisodeRows(values: projectedEpisodeValues, readEpoch: readEpoch),
                 allSubscriptionValues.map(applyingPendingFeedRename).map(applyingPendingFeedEnabled))
     }

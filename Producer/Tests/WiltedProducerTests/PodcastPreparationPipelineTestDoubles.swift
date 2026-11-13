@@ -77,7 +77,8 @@ actor WorkerStub: PodcastPipelineRunning {
         progress.forEach(onProgress)
         var answer = response
         answer["protocolVersion"] = decoded["protocolVersion"] as? Int ?? 2
-        if answer["ok"] as? Bool == true, answer["report"] == nil {
+        // Staged labelled replies already carry their own shape; do not invent a local audit.
+        if answer["ok"] as? Bool == true, answer["report"] == nil, answer["adStage"] == nil {
             let changed = (answer["audioChanged"] as? Bool) ?? (writesCutAudio != nil)
             let removeAds = decoded["removeAds"] as? Bool ?? true
             let outcome = !removeAds ? "disabled" : (changed ? "cut" : "noAds")
@@ -109,6 +110,77 @@ actor ProbingWorker: PodcastPipelineRunning {
         onProgress(PodcastPreparationProgress(stage: "worker.start"))
         try await probe()
         throw PodcastPreparationError.workerUnavailable("probe")
+    }
+}
+
+/// Scripted multi-call worker for the labelled transcript → cut path.
+actor LabelledStageWorker: PodcastPipelineRunning {
+    typealias Handler = @Sendable (_ request: [String: Any], _ callIndex: Int) throws -> (response: [String: Any], cutAudio: Data?)
+
+    private let handler: Handler
+    private var requests: [Data] = []
+    private var callIndex = 0
+
+    init(handler: @escaping Handler) {
+        self.handler = handler
+    }
+
+    func allRequests() -> [Data] { requests }
+
+    func run(
+        request payload: Data,
+        onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
+    ) async throws -> Data {
+        let decoded = try JSONSerialization.jsonObject(with: payload) as? [String: Any] ?? [:]
+        requests.append(payload)
+        let index = callIndex
+        callIndex += 1
+        onProgress(PodcastPreparationProgress(stage: "worker.start"))
+        let answer = try handler(decoded, index)
+        var response = answer.response
+        response["protocolVersion"] = decoded["protocolVersion"] as? Int ?? 2
+        if let body = answer.cutAudio, let outputPath = decoded["outputPath"] as? String {
+            try body.write(to: URL(fileURLWithPath: outputPath))
+            response["audioPath"] = outputPath
+        }
+        return try JSONSerialization.data(withJSONObject: response)
+    }
+}
+
+/// Stands in for ``LabellerSending`` with scripted replies.
+final class LabellerSenderStub: LabellerSending, @unchecked Sendable {
+    enum Outcome: Sendable {
+        case respond(LabellerResponse)
+        case fail(LabellerFailure)
+    }
+
+    private let lock = NSLock()
+    private var outcomes: [Outcome]
+    private(set) var requests: [LabellerRequest] = []
+
+    init(outcomes: [Outcome]) {
+        self.outcomes = outcomes
+    }
+
+    var requestCount: Int { lock.withLock { requests.count } }
+
+    func send(
+        _ request: LabellerRequest,
+        onRequestStarted: @escaping @Sendable () -> Void,
+        onProgress: @escaping @Sendable (LabellerProgress) -> Void
+    ) async throws -> LabellerResponse {
+        let index = lock.withLock {
+            requests.append(request)
+            return requests.count - 1
+        }
+        onRequestStarted()
+        let outcome = lock.withLock {
+            outcomes.indices.contains(index) ? outcomes[index] : outcomes.last ?? .fail(.temporary)
+        }
+        switch outcome {
+        case .respond(let response): return response
+        case .fail(let failure): throw failure
+        }
     }
 }
 

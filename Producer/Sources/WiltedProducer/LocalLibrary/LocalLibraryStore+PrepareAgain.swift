@@ -66,10 +66,19 @@ extension LocalLibraryStore {
     /// treats an unprovable file as a cut, so a restored episode stops being
     /// offered.
     ///
+    /// `labelledDigestInForce` supplies the digest a fresh labelled cut would
+    /// store for that feed and audio address, or nil when routed local. An
+    /// episode the current engine already prepared is also offered when that
+    /// digest is non-nil and differs from the newest finished attempt's
+    /// recorded digest (journal `policyDigest` evidence when present, else the
+    /// ready revision's outcome row). An empty recorded digest is judged by
+    /// engine version only.
+    ///
     /// One context and one fetch per table, because every Larder load asks
     /// this: the read cost stays flat as the library grows.
     public func podcastEpisodesToPrepareAgain(
-        restoringCutsOnFeeds adFreeFeedIDs: Set<ItemID> = []
+        restoringCutsOnFeeds adFreeFeedIDs: Set<ItemID> = [],
+        labelledDigestInForce: (@Sendable (_ feedID: ItemID, _ audioURL: URL) -> String?)? = nil
     ) throws -> [PodcastPrepareAgainCandidate] {
         let adFreeFeeds = Set(adFreeFeedIDs.map(\.rawValue))
         let context = ModelContext(container)
@@ -105,7 +114,16 @@ extension LocalLibraryStore {
                 let removedSomething = producing.map {
                     $0.audioChanged == true || !($0.timeline?.removed.isEmpty ?? true)
                 } ?? false
-                guard adFreeFeeds.contains(record.feedID), removedSomething else { continue }
+                let restoreCuts = adFreeFeeds.contains(record.feedID) && removedSomething
+                let digestStale: Bool = {
+                    guard let labelledDigestInForce,
+                          let feedID = try? ItemID(rawValue: record.feedID) else { return false }
+                    let recorded = newest.policyDigest ?? outcome.policyDigest
+                    return LabelledPolicyDigestInForce.isStale(
+                        recordedDigest: recorded,
+                        digestInForce: labelledDigestInForce(feedID, enclosureURL))
+                }()
+                guard restoreCuts || digestStale else { continue }
             }
             let provenanceHash = producing?.sourceHash
             // What the journal cannot prove stays a cut: feeding a cut to the
@@ -159,6 +177,12 @@ extension LocalLibraryStore {
             entries.lazy.compactMap(\.status.evidence)
                 .filter { $0.kind == LocalLibraryStore.pipelineProvenanceEvidenceKind }
                 .compactMap { $0.fields["engineVersion"] }.first(where: { !$0.isEmpty })
+        }
+        /// Journalled digest for this attempt when present (including empty).
+        var policyDigest: String? {
+            entries.lazy.compactMap(\.status.evidence)
+                .filter { $0.kind == LocalLibraryStore.pipelineProvenanceEvidenceKind }
+                .compactMap { $0.fields["policyDigest"] }.first
         }
         var sourceHash: String? {
             entries.lazy.compactMap(\.status.evidence)

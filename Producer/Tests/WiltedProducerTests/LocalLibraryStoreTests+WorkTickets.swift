@@ -102,11 +102,11 @@ extension LocalLibraryStoreTests {
         for index in 0..<1_000 {
             let ticket = WorkTicket(kind: .articlePreparation, subjectID: "settled-\(index)",
                 requestSequence: index + 1, state: .succeeded, requestedAt: now, updatedAt: now)
-            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+            context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(ticket))
         }
         let current = WorkTicket(kind: .podcastPreparation, subjectID: "current-subject",
             requestSequence: 1_001, state: .pending, requestedAt: now, updatedAt: now)
-        context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(current))
+        context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(current))
         try context.save()
 
         let beforeExact = await store.targetedWorkTicketRowsRead
@@ -588,5 +588,174 @@ extension LocalLibraryStoreTests {
         XCTAssertNil(dismissedKindAfter)
         XCTAssertNil(retiredAtAfterRetired)
         XCTAssertNil(retiredAtAfterDismissed)
+    }
+}
+
+extension LocalLibraryStoreTests {
+    // MARK: - V22 running-ticket deferral
+
+    private func deferralTime(_ offset: TimeInterval) -> Timestamp {
+        Timestamp(Date(timeIntervalSince1970: 1_700_009_000 + offset))
+    }
+
+    /// A deferral keeps the request's place and identity; only a resume
+    /// spends an attempt, and a newer request starts its own deferral record.
+    func testDeferRunningWorkTicketKeepsRequestIdentityAndCountsDeferrals() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let policy = Data("admitted-policy".utf8)
+        _ = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: "ep", requestSequence: 5,
+            policySnapshot: policy, to: .pending, at: deferralTime(0))
+        let running = try await store.applyWorkTicketTransition(kind: .podcastPreparation, subjectID: "ep",
+            requestSequence: 5, to: .running, at: deferralTime(10))
+        XCTAssertEqual(running.attemptCount, 1)
+
+        let first = try await store.deferRunningWorkTicket(subjectID: "ep", requestSequence: 5, attemptCount: 1,
+            until: deferralTime(130), reason: .providerRateLimited, at: deferralTime(20))
+        let deferred = try XCTUnwrap(first)
+        XCTAssertEqual(deferred.state, .deferred)
+        XCTAssertEqual(deferred.nextEligibleAt, deferralTime(130))
+        XCTAssertEqual(deferred.requestedAt, deferralTime(0), "intake time is the request's, not the deferral's")
+        XCTAssertEqual(deferred.requestSequence, 5)
+        XCTAssertEqual(deferred.attemptCount, 1, "a deferral spends no attempt")
+        XCTAssertEqual(deferred.policySnapshot, policy)
+        XCTAssertEqual(deferred.failureKind, WorkTicketDeferralReason.providerRateLimited.rawValue)
+        XCTAssertEqual(deferred.firstDeferredAt, deferralTime(20))
+        XCTAssertEqual(deferred.deferralCount, 1)
+        let persisted = try await store.workTicket(kind: .podcastPreparation, subjectID: "ep")
+        XCTAssertEqual(persisted, deferred)
+
+        // The resume goes through the ordinary admission write, which opens a
+        // new generation by spending one attempt.
+        let resumed = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: "ep",
+            requestSequence: 5, to: .running, at: deferralTime(130))
+        XCTAssertEqual(resumed.attemptCount, 2)
+        XCTAssertEqual(resumed.firstDeferredAt, deferralTime(20))
+        let second = try await store.deferRunningWorkTicket(subjectID: "ep", requestSequence: 5, attemptCount: 2,
+            until: deferralTime(430), reason: .providerUnavailable, at: deferralTime(140))
+        XCTAssertEqual(second?.attemptCount, 2)
+        XCTAssertEqual(second?.requestedAt, deferralTime(0))
+        XCTAssertEqual(second?.firstDeferredAt, deferralTime(20), "the wait is measured from the first deferral")
+        XCTAssertEqual(second?.deferralCount, 2)
+        XCTAssertEqual(second?.nextEligibleAt, deferralTime(430))
+
+        let newer = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: "ep",
+            requestSequence: 6, to: .pending, at: deferralTime(200))
+        XCTAssertNil(newer.firstDeferredAt)
+        XCTAssertNil(newer.deferralCount)
+        XCTAssertNil(newer.nextEligibleAt)
+    }
+
+    /// Only the owner of the running generation may park it, and every other
+    /// writer keeps the forward-only rule.
+    func testDeferRunningWorkTicketRefusesStaleWritersAndOtherWritersStayForwardOnly() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let running = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: "ep",
+            requestSequence: 5, to: .running, at: deferralTime(0))
+        for (sequence, attempt) in [(4, 1), (6, 1), (5, 0), (5, 2)] {
+            let refused = try await store.deferRunningWorkTicket(subjectID: "ep", requestSequence: sequence,
+                attemptCount: attempt, until: deferralTime(600), reason: .dailyRequestCap, at: deferralTime(5))
+            XCTAssertNil(refused, "sequence \(sequence) attempt \(attempt) is not the running generation")
+        }
+        let missing = try await store.deferRunningWorkTicket(subjectID: "other", requestSequence: 5, attemptCount: 1,
+            until: deferralTime(600), reason: .dailyRequestCap, at: deferralTime(5))
+        XCTAssertNil(missing)
+        _ = try await store.readmitWorkTicket(kind: .podcastDownload, subjectID: "dl", requestSequence: 7,
+            to: .running, at: deferralTime(0))
+        let download = try await store.deferRunningWorkTicket(subjectID: "dl", requestSequence: 7, attemptCount: 1,
+            until: deferralTime(600), reason: .dailyRequestCap, at: deferralTime(5))
+        XCTAssertNil(download, "only preparation tickets are deferred")
+        let unchanged = try await store.workTicket(kind: .podcastPreparation, subjectID: "ep")
+        XCTAssertEqual(unchanged, running, "a refused deferral writes nothing, not even updatedAt")
+
+        // A late admission write still cannot drag a running ticket backward.
+        for late in [WorkTicketState.pending, .deferred] {
+            do {
+                _ = try await store.applyWorkTicketTransition(kind: .podcastPreparation, subjectID: "ep",
+                    requestSequence: 5, to: late, at: deferralTime(6))
+                XCTFail("\(late) over running must be refused")
+            } catch LocalLibraryStoreError.invalidWorkTicketTransition {}
+        }
+        XCTAssertFalse(WorkTicketState.running.canTransition(to: .deferred))
+        XCTAssertFalse(WorkTicketState.running.canTransition(to: .pending))
+        let afterLate = try await store.workTicket(kind: .podcastPreparation, subjectID: "ep")
+        XCTAssertEqual(afterLate, running)
+
+        let deferred = try await store.deferRunningWorkTicket(subjectID: "ep", requestSequence: 5, attemptCount: 1,
+            until: deferralTime(600), reason: .providerUsageLimit, at: deferralTime(7))
+        XCTAssertNotNil(deferred)
+        let again = try await store.deferRunningWorkTicket(subjectID: "ep", requestSequence: 5, attemptCount: 1,
+            until: deferralTime(900), reason: .providerUsageLimit, at: deferralTime(8))
+        XCTAssertNil(again, "a ticket no longer running cannot be deferred again")
+        let attempt = try PreparationAttemptIdentity(requestSequence: 5, attemptCount: 1)
+        let finished = try await store.finishPreparationAttempt(subjectID: "ep", attempt: attempt,
+            state: .succeeded, at: deferralTime(9))
+        XCTAssertNil(finished, "the parked generation's late terminal write is fenced off")
+        let afterFinish = try await store.workTicket(kind: .podcastPreparation, subjectID: "ep")
+        XCTAssertEqual(afterFinish, deferred)
+    }
+
+    /// W-INV-036: across a relaunch a deferred generation stays open and
+    /// deferred with its time; its resume makes it a superseded generation.
+    func testDeferredGenerationSurvivesReconciliationAndRestartClosure() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, episode) = try podcastValues()
+        let subjectID = episode.itemID.rawValue
+        let running = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: subjectID,
+            requestSequence: 3, to: .running, at: deferralTime(0))
+        let attempt = try PreparationAttemptIdentity(requestSequence: 3, attemptCount: running.attemptCount)
+        let requestID = PodcastPreparationPipeline.requestID(for: episode.itemID)
+        let active = try PreparationStatus(stage: .extracting, detail: "labelling", cancellable: true,
+            emittedAt: deferralTime(1), attempt: attempt)
+        try await store.record(preparation: .init(id: requestID + "|" + attempt.key + "|extracting#1",
+            itemID: episode.itemID, requestID: requestID, status: active))
+        let deferred = try await store.deferRunningWorkTicket(subjectID: subjectID, requestSequence: 3,
+            attemptCount: attempt.attemptCount, until: deferralTime(3_600), reason: .providerRateLimited,
+            at: deferralTime(2))
+
+        let reconciliation = try await store.reconcileWorkTickets(now: deferralTime(60), sequenceFloor: 0,
+            importedDeferrals: [])
+        XCTAssertEqual(reconciliation.closedRunCount, 0)
+        let afterReconcile = try await store.workTicket(kind: .podcastPreparation, subjectID: subjectID)
+        XCTAssertEqual(afterReconcile, deferred, "deferred, same time, same attempt")
+        let runsBefore = try await store.preparationRuns()
+        let run = try XCTUnwrap(runsBefore.first)
+        let closed = try await store.closeInactivePreparationRun(run, at: deferralTime(60), detail: "Interrupted")
+        XCTAssertFalse(closed, "a waiting generation is not an interrupted one")
+        let runsAfter = try await store.preparationRuns()
+        XCTAssertFalse(try XCTUnwrap(runsAfter.first).isTerminal)
+        let status = try await store.currentPreparationStatuses(for: [episode.itemID])[episode.itemID]
+        XCTAssertEqual(status?.state, .deferred)
+        XCTAssertEqual(status?.attemptCount, attempt.attemptCount)
+
+        _ = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: subjectID,
+            requestSequence: 3, to: .running, at: deferralTime(3_600))
+        let superseded = try await store.closeInactivePreparationRun(run, at: deferralTime(3_601), detail: "Interrupted")
+        XCTAssertTrue(superseded, "once resumed, the parked generation is superseded and closes append-only")
+    }
+
+    /// A resume spends an attempt, so a ticket that waited three times is on
+    /// attempt 4. Quitting mid-run must return it to pending, not fail it.
+    func testInterruptedRunAfterDeferralsIsNotClosedAsExhausted() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        for attempt in 1...4 {
+            let running = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: "ep",
+                requestSequence: 5, to: .running, at: deferralTime(Double(attempt * 100)))
+            XCTAssertEqual(running.attemptCount, attempt)
+            guard attempt < 4 else { break }
+            let deferred = try await store.deferRunningWorkTicket(subjectID: "ep", requestSequence: 5,
+                attemptCount: attempt, until: deferralTime(Double(attempt * 100 + 50)),
+                reason: .providerUnavailable, at: deferralTime(Double(attempt * 100 + 1)))
+            XCTAssertEqual(deferred?.deferralCount, attempt)
+        }
+        _ = try await store.reconcileWorkTickets(now: deferralTime(500), sequenceFloor: 0, importedDeferrals: [])
+        let interrupted = try await store.workTicket(kind: .podcastPreparation, subjectID: "ep")
+        XCTAssertEqual(interrupted?.state, .pending, "three waits and one interrupted run are not four failures")
+        XCTAssertEqual(interrupted?.attemptCount, 5)
+        XCTAssertEqual(interrupted?.deferralCount, 3)
+        XCTAssertEqual(interrupted?.firstDeferredAt, deferralTime(101))
     }
 }

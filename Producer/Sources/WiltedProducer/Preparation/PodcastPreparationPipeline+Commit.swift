@@ -12,6 +12,7 @@ extension PodcastPreparationPipeline {
         downloadedRevision: AudioRevision,
         audioURL: URL,
         policy: PodcastPreparationPolicySnapshot,
+        labelledProvenance: LabelledRunProvenance? = nil,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PodcastPreparationResult {
         let sourceContribution = LifetimeStatisticContribution(
@@ -34,7 +35,7 @@ extension PodcastPreparationPipeline {
                                                  updatedAt: Timestamp(now()))
             let outcome = PodcastPreparationOutcome(
                 episodeID: episode.itemID, revisionID: downloadedRevision.revisionID,
-                policyDigest: Self.policyDigest(policy),
+                policyDigest: Self.policyDigest(policy, labelled: labelledProvenance),
                 pipelineFingerprint: Self.semanticFingerprintResolution,
                 semanticVersion: Self.semanticVersion, producedAt: Timestamp(now())
             )
@@ -93,7 +94,7 @@ extension PodcastPreparationPipeline {
                                                 duration: duration)
         let outcome = PodcastPreparationOutcome(
             episodeID: episode.itemID, revisionID: revisionID,
-            policyDigest: Self.policyDigest(policy),
+            policyDigest: Self.policyDigest(policy, labelled: labelledProvenance),
             pipelineFingerprint: Self.semanticFingerprintResolution,
             semanticVersion: Self.semanticVersion, producedAt: Timestamp(now())
         )
@@ -132,13 +133,31 @@ extension PodcastPreparationPipeline {
         try? FileManager.default.removeItem(at: audioURL)
     }
 
+    /// Attaches a bounded policy digest to journal evidence fields.
+    static func attachPolicyDigest(_ digest: String?, to fields: inout [String: String]) {
+        guard let digest, !digest.isEmpty, digest.count <= 256 else { return }
+        fields["policyDigest"] = digest
+    }
+
     /// Folds the self-promotion choice in only when on, so every outcome
-    /// prepared without it keeps the digest it was stored with.
-    static func policyDigest(_ policy: PodcastPreparationPolicySnapshot) -> String {
+    /// prepared without it keeps the digest it was stored with. A remote
+    /// labelled outcome also folds the route, model, level and prompt version;
+    /// a local outcome's digest is unchanged.
+    static func policyDigest(
+        _ policy: PodcastPreparationPolicySnapshot,
+        labelled: LabelledRunProvenance? = nil
+    ) -> String {
         var hasher = SHA256()
         hasher.update(data: Data(policy.transcriptPolicy.rawValue.utf8))
         hasher.update(data: Data([0, policy.removeAds ? 1 : 0]))
         if policy.removeSelfPromotion { hasher.update(data: Data([0]) + Data("removeSelfPromotion".utf8)) }
+        if let labelled {
+            hasher.update(data: Data([0]) + Data("labelledRoute".utf8))
+            hasher.update(data: Data(labelled.route.utf8))
+            hasher.update(data: Data([0]) + Data(labelled.modelID.utf8))
+            hasher.update(data: Data([0]) + Data(labelled.level.utf8))
+            hasher.update(data: Data([0]) + Data(labelled.promptVersion.utf8))
+        }
         return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
@@ -296,7 +315,8 @@ extension PodcastPreparationPipeline {
         episode: PodcastEpisode,
         payload: WorkerPayload,
         result: PodcastPreparationResult,
-        sourceDuration: Double
+        sourceDuration: Double,
+        removeAds: Bool
     ) async -> LabellerShadowRecorder.ShadowInput? {
         guard let shadowRecorder else { return nil }
         guard let feed = (try? await store.podcastFeed(for: episode.feedID)) ?? nil else { return nil }
@@ -315,7 +335,8 @@ extension PodcastPreparationPipeline {
             cuesPath: payload.labellerCuesPath,
             cuesDigest: payload.labellerCuesDigest,
             engineOutcome: result.adRemovalOutcome,
-            engineCutSpans: result.adSegments.map { .init(start: $0.startSeconds, end: $0.endSeconds) }
+            engineCutSpans: result.adSegments.map { .init(start: $0.startSeconds, end: $0.endSeconds) },
+            removeAds: removeAds
         )
     }
 }

@@ -636,15 +636,17 @@ extension WiltedMacModel {
         // The owner may route labelling through the signed-in OpenCode command-line tool
         // instead of the saved key. Its private home sits in the temporary directory so the
         // working directory the tool reports to the provider carries no account name.
-        let labellerUsesCLI = AdLabellerPreferences(preferences: preferences).usesOpenCodeCLI
+        let labellerPreferences = AdLabellerPreferences(preferences: preferences)
+        let labellerCounter = LabellerRequestCounter(preferences: preferences)
+        let labellerUsesCLI = labellerPreferences.usesOpenCodeCLI
             && OpenCodeCLILabellerSender.isAvailable()
         let labellerSender: any LabellerSending = labellerUsesCLI
             ? OpenCodeCLILabellerSender(homeDirectory: FileManager.default.temporaryDirectory
                 .appendingPathComponent("wilted-labeller-cli", isDirectory: true))
             : LabellerClient(keyStore: adLabellerKeyStore)
         let shadowRecorder = (fixtureMode || Self.hostsTests) ? nil : LabellerShadowRecorder(
-            preferences: AdLabellerPreferences(preferences: preferences),
-            counter: LabellerRequestCounter(preferences: preferences),
+            preferences: labellerPreferences,
+            counter: labellerCounter,
             keyStore: adLabellerKeyStore,
             sender: labellerSender,
             transport: labellerUsesCLI ? OpenCodeCLILabellerSender.transportName : "direct",
@@ -653,6 +655,13 @@ extension WiltedMacModel {
                 .appendingPathComponent("ad-labeller-shadow", isDirectory: true)
         )
         adLabellerShadowRecorder = shadowRecorder
+        let appLabellingServices: PodcastLabellingServices? = (fixtureMode || Self.hostsTests) ? nil : PodcastLabellingServices(
+            preferences: labellerPreferences,
+            counter: labellerCounter,
+            keyStore: adLabellerKeyStore,
+            sender: labellerSender
+        )
+        let labellingServices = podcastLabellingServicesFactory?() ?? appLabellingServices
         podcastPreparationPipeline = fixtureMode ? nil : configuredStore.map { store in
             if let podcastPipelineRunnerFactory {
                 return PodcastPreparationPipeline(
@@ -660,14 +669,16 @@ extension WiltedMacModel {
                     workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
                     runner: podcastPipelineRunnerFactory(),
                     removeAds: removesAdvertisements,
-                    shadowRecorder: shadowRecorder
+                    shadowRecorder: shadowRecorder,
+                    labelling: labellingServices
                 )
             }
             return PodcastPreparationPipeline(
                 store: store,
                 workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
                 removeAds: removesAdvertisements,
-                shadowRecorder: shadowRecorder
+                shadowRecorder: shadowRecorder,
+                labelling: labellingServices
             )
         }
         if configuredStore != nil, !fixtureMode { startMorningReportSchedule() }

@@ -486,6 +486,10 @@ def detect_and_cut(request: dict, audio_path: Path, cues: list[dict], segments, 
     analyzed the transcript; it is `None` only when there were no segments to
     analyze.
     """
+    if request.get("adStage") == "cut":
+        from .labelled_outcome import cut_from_labelled_breaks
+        return cut_from_labelled_breaks(request, audio_path, cues, segments)
+
     from wilted import ads as ads_module
     from wilted import llm as llm_module
 

@@ -39,6 +39,8 @@ extension PodcastPreparationPipeline {
         /// labelling model, when the request asked for one. Absent otherwise.
         var labellerCuesPath: String? = nil
         var labellerCuesDigest: String? = nil
+        /// Breaks the labelled cut stage left audible. Empty on the local path.
+        var labelledLeftIn: [LabelledLeftInBreak] = []
     }
 
     static func decode(_ data: Data) throws -> WorkerPayload {
@@ -63,12 +65,35 @@ extension PodcastPreparationPipeline {
         // that never reached the model at all, both report `noAds`. Only the
         // audit separates them, so an outcome that claims the detector ran is
         // refused unless the evidence for that claim arrives with it.
+        let auditObject = report["audit"] as? [String: Any]
+        let isLabelled = auditObject?["adEngine"] as? String == "labelled"
         if outcome == "disabled" {
             guard !(report["audit"] is [String: Any]) else {
                 throw PodcastPreparationError.malformedWorkerResponse("disabled ad removal reported detector evidence")
             }
+        } else if isLabelled {
+            guard let auditObject, isLabelledAudit(auditObject, outcome: outcome) else {
+                throw PodcastPreparationError.malformedWorkerResponse("missing or invalid labelled ad-removal audit")
+            }
+            if outcome == "uncertain" {
+                guard let warning = report["warning"] as? String,
+                      warning.hasPrefix("original audio includes ads:"),
+                      !warning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      warning == auditObject["warning"] as? String,
+                      let changed = object["audioChanged"] as? NSNumber,
+                      CFGetTypeID(changed) == CFBooleanGetTypeID(), !changed.boolValue,
+                      let removed = object["removedSeconds"] as? NSNumber,
+                      CFGetTypeID(removed) != CFBooleanGetTypeID(), removed.doubleValue == 0,
+                      let ads = object["adSegments"] as? [[String: Any]], ads.isEmpty,
+                      let keeps = object["keepIntervals"] as? [[String: Any]], keeps.isEmpty,
+                      let duration = object["durationSeconds"] as? NSNumber,
+                      CFGetTypeID(duration) != CFBooleanGetTypeID(),
+                      duration.doubleValue.isFinite, duration.doubleValue > 0 else {
+                    throw PodcastPreparationError.malformedWorkerResponse("invalid uncertain ad-removal evidence")
+                }
+            }
         } else if outcome == "uncertain" {
-            guard let audit = report["audit"] as? [String: Any],
+            guard let audit = auditObject,
                   isDiagnosticAudit(audit),
                   let warning = report["warning"] as? String,
                   warning.hasPrefix("original audio includes ads:"),
@@ -86,7 +111,7 @@ extension PodcastPreparationPipeline {
                 throw PodcastPreparationError.malformedWorkerResponse("invalid uncertain ad-removal evidence")
             }
         } else {
-            guard let audit = report["audit"] as? [String: Any],
+            guard let audit = auditObject,
                   let modelRequests = audit["modelRequests"] as? Int, modelRequests > 0,
                   let modelFailures = audit["modelFailures"] as? Int, modelFailures >= 0,
                   let experimentalRequests = audit["experimentalRequests"] as? Int, experimentalRequests == 0,
@@ -245,7 +270,8 @@ extension PodcastPreparationPipeline {
             adProfileRequestedDigest: adProfileResult.requestedDigest,
             adProfileAppliedDigest: adProfileResult.appliedDigest,
             labellerCuesPath: object["labellerCuesPath"] as? String,
-            labellerCuesDigest: object["labellerCuesDigest"] as? String
+            labellerCuesDigest: object["labellerCuesDigest"] as? String,
+            labelledLeftIn: isLabelled ? decodeLabelledLeftIn(auditObject) : []
         )
     }
 

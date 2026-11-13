@@ -135,8 +135,8 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
         let store = try LocalLibraryStore(url: url)
         let version = await store.schemaVersion
         let backupValue = await store.migrationBackupURL
-        XCTAssertEqual(version, .v21)
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(21))
+        XCTAssertEqual(version, .current)
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(LocalLibrarySchemaVersion.current.rawValue))
         let backup = try XCTUnwrap(backupValue, "a V20 store is backed up before it migrates")
         XCTAssertEqual(try Data(contentsOf: backup), original, "the retained backup is the checkpointed V20 source")
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: backup), .known(20))
@@ -212,7 +212,7 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
         let reopened = try LocalLibraryStore(url: url)
         let backup = await reopened.migrationBackupURL
         XCTAssertNil(backup, "a current store opens without another backup")
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(21))
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(LocalLibrarySchemaVersion.current.rawValue))
         XCTAssertEqual(try LocalLibraryStore.tableRowCounts(at: url), counts)
         XCTAssertEqual(try siblingDirectories(of: url), siblings)
         let playback = try await reopened.playbackState(for: fixture.article.itemID,
@@ -226,7 +226,7 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
         let original = try Data(contentsOf: url)
         let counts = try LocalLibraryStore.tableRowCounts(at: url)
         let hooks = LocalLibraryOpenHooks(afterMigration: {
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(21))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(LocalLibrarySchemaVersion.current.rawValue))
             throw InjectedMigrationFailure()
         })
         var retained: URL?

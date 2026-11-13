@@ -328,6 +328,22 @@ extension WiltedMacModel {
                     kind: .podcastPreparation, subjectID: episode.id,
                     requestSequence: requestSequence, state: .cancelled, expectedAttempt: attempt, requiresAttempt: true
                 )
+            } catch let waiting as PodcastPreparationError where waiting.isLabellerWaiting {
+                // The store already holds the deferred ticket; writing a transition here
+                // would end the wait. The ticket-drain tick parks and resumes it.
+                // Republish so the iPhone replaces any lingering queued/active status for
+                // this acknowledged generation (same attempt ID; LibraryStateDiffer still
+                // emits an entry change because state/detail moved).
+                let stage: String
+                if let store = self?.store,
+                   let ticket = try? await store.workTicket(kind: .podcastPreparation, subjectID: episode.id),
+                   let wait = LabellingWait(ticket) {
+                    stage = WiltedMacLabellerWait.rowLabel(wait)
+                } else {
+                    stage = Self.preparationQueuedStage
+                }
+                self?.updateEpisode(episode.id) { $0.preparationState = .preparing(stage: stage) }
+                self?.librarySyncController?.requestPublish()
             } catch {
                 // The row shows a short cause beside Retry; the log that led
                 // to it stays with the run.

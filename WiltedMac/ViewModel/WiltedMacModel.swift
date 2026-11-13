@@ -461,6 +461,8 @@ final class WiltedMacModel {
     let podcastDownloadTransportFactory: WiltedMacPodcastDownloadTransportFactory?
     let podcastMediaValidatorFactory: WiltedMacPodcastMediaValidatorFactory?
     let podcastPipelineRunnerFactory: WiltedMacPodcastPipelineRunnerFactory?
+    /// Tests inject labelling services (stub sender); nil means the app's own, which are absent under test.
+    let podcastLabellingServicesFactory: (@Sendable () -> PodcastLabellingServices)?
     var podcastPreparationTasks: [String: Task<Void, Never>] = [:]
     /// The journal is written by the preparation actor, so it can be a few
     /// hops behind the action that admitted a run. Keep the active run the
@@ -582,6 +584,7 @@ final class WiltedMacModel {
          podcastDownloadTransportFactory: WiltedMacPodcastDownloadTransportFactory? = nil,
          podcastMediaValidatorFactory: WiltedMacPodcastMediaValidatorFactory? = nil,
          podcastPipelineRunnerFactory: WiltedMacPodcastPipelineRunnerFactory? = nil,
+         podcastLabellingServicesFactory: (@Sendable () -> PodcastLabellingServices)? = nil,
          pipelineFingerprint: String? = nil,
          pipelineFingerprintResolution: (@Sendable () async -> String?)? = nil,
          staleInvalidationOverride: WiltedMacStaleInvalidation? = nil,
@@ -640,6 +643,7 @@ final class WiltedMacModel {
         self.podcastDownloadTransportFactory = podcastDownloadTransportFactory
         self.podcastMediaValidatorFactory = podcastMediaValidatorFactory
         self.podcastPipelineRunnerFactory = podcastPipelineRunnerFactory
+        self.podcastLabellingServicesFactory = podcastLabellingServicesFactory
         self.pipelineFingerprint = pipelineFingerprint
         self.pipelineFingerprintResolution = pipelineFingerprintResolution ?? { pipelineFingerprint }
         self.invalidationRules = invalidationRules

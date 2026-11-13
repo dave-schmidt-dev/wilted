@@ -1,4 +1,5 @@
 import Foundation
+import WiltedProducer
 
 /// The podcast feeds the owner has marked as already ad-free: preparation leaves
 /// their audio uncut.
@@ -7,7 +8,7 @@ import Foundation
 /// no library schema change. Stored as a sorted array of feed IDs; the key is
 /// removed once no feed has the option on.
 struct WiltedMacAdFreeFeedPreference {
-    static let preferenceKey = "wilted.feeds.adFree"
+    static let preferenceKey = AdLabellerPreferences.adFreeFeedsKey
 
     let preferences: UserDefaults
 

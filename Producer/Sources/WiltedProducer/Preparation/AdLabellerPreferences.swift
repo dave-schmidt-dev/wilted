@@ -12,6 +12,8 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     public static let defaultDailyCap = 60
     /// Two hours.
     public static let defaultWaitLimit: TimeInterval = 2 * 60 * 60
+    /// Feed IDs the owner marked as already ad-free (`WiltedMacAdFreeFeedPreference`).
+    public static let adFreeFeedsKey = "wilted.feeds.adFree"
 
     static let enabledKey = keyPrefix + "enabled"
     static let confirmedKey = keyPrefix + "confirmedFeedIDs"
@@ -22,6 +24,10 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     static let capKey = keyPrefix + "dailyCap"
     static let waitLimitKey = keyPrefix + "waitLimitSeconds"
     static let useOpenCodeCLIKey = keyPrefix + "useOpenCodeCLI"
+    static let pauseCountKey = keyPrefix + "providerPauseCount"
+    static let pausedSinceKey = keyPrefix + "providerPausedSince"
+    /// Consecutive wait-limit stops on temporary failures after which the provider counts as paused.
+    public static let pauseThreshold = 3
 
     public let preferences: UserDefaults
 
@@ -35,10 +41,11 @@ public struct AdLabellerPreferences: @unchecked Sendable {
         nonmutating set { preferences.set(newValue, forKey: Self.enabledKey) }
     }
 
-    /// Shadow mode: labels are requested and compared but never applied. On until it is
-    /// switched off explicitly, so turning the global switch on can never change audio by itself.
+    /// Shadow mode: labels are requested and compared but never applied. Off unless it is
+    /// switched on explicitly, so labelled cuts apply once the global switch is on and the
+    /// show is confirmed.
     public var isShadow: Bool {
-        get { preferences.object(forKey: Self.shadowKey) == nil || preferences.bool(forKey: Self.shadowKey) }
+        get { preferences.bool(forKey: Self.shadowKey) }
         nonmutating set { preferences.set(newValue, forKey: Self.shadowKey) }
     }
 
@@ -47,6 +54,9 @@ public struct AdLabellerPreferences: @unchecked Sendable {
 
     /// Feed IDs the owner keeps local regardless of the switch, sorted.
     public var localOnlyFeedIDs: [String] { Self.read(Self.localOnlyKey, from: preferences) }
+
+    /// Feed IDs the owner marked as already ad-free, sorted. Read-only here; the Mac preference writes them.
+    public var adFreeFeedIDs: [String] { Self.read(Self.adFreeFeedsKey, from: preferences) }
 
     public func isConfirmed(feedID: String) -> Bool { confirmedFeedIDs.contains(feedID) }
 
@@ -88,9 +98,8 @@ public struct AdLabellerPreferences: @unchecked Sendable {
         nonmutating set { preferences.set(max(0, newValue), forKey: Self.capKey) }
     }
 
-    /// Reserved for the apply phase and read by nothing in the shadow trial: how long an
-    /// episode would wait for the provider, in seconds, before its original audio is published
-    /// with the reason. The shadow request uses `LabellerClient`'s own fixed time limit.
+    /// How long an episode waits for the provider, in seconds, before its original audio is
+    /// published with the reason. The shadow request uses `LabellerClient`'s own fixed time limit.
     public var waitLimit: TimeInterval {
         get {
             guard preferences.object(forKey: Self.waitLimitKey) != nil else { return Self.defaultWaitLimit }
@@ -105,6 +114,28 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     public var usesOpenCodeCLI: Bool {
         get { preferences.bool(forKey: Self.useOpenCodeCLIKey) }
         nonmutating set { preferences.set(newValue, forKey: Self.useOpenCodeCLIKey) }
+    }
+
+    /// Consecutive tickets that ended at the wait limit on temporary provider failures.
+    public var providerPauseCount: Int { max(0, preferences.integer(forKey: Self.pauseCountKey)) }
+
+    /// When the provider was paused: the third wait-limit stop in a row. Nil while it answers.
+    public var providerPausedSince: Date? { preferences.object(forKey: Self.pausedSinceKey) as? Date }
+
+    /// Counts one ticket that ended at the wait limit on a temporary failure; the
+    /// third in a row sets the paused-since time to `now`.
+    public func recordProviderWaitLimitStop(at now: Date) {
+        let count = providerPauseCount + 1
+        preferences.set(count, forKey: Self.pauseCountKey)
+        if count >= Self.pauseThreshold, providerPausedSince == nil {
+            preferences.set(now, forKey: Self.pausedSinceKey)
+        }
+    }
+
+    /// Clears the count and the paused-since time; any successful labelling request does.
+    public func clearProviderPause() {
+        preferences.removeObject(forKey: Self.pauseCountKey)
+        preferences.removeObject(forKey: Self.pausedSinceKey)
     }
 
     private static func read(_ key: String, from preferences: UserDefaults) -> [String] {

@@ -7,12 +7,14 @@ import WiltedDomain
 /// command, and an absent or malformed value leaves the entry fully usable. The Mac is
 /// the only writer. Unknown versions, unknown states and out-of-bounds metadata decode as
 /// absent so an older reader keeps the entry; an unknown bounded stage stays generic text.
-/// `updatedAt` dates the last producer report, not a heartbeat or proof the Mac is
-/// online. The producer reconciles attempts on restart and clears successful or
-/// withdrawn work; readers must not derive media authority or liveness from it.
+/// `waiting` means ad removal is parked until a provider retry time; an older iPhone that
+/// does not know that state simply shows no status line. `updatedAt` dates the last
+/// producer report, not a heartbeat or proof the Mac is online. The producer reconciles
+/// attempts on restart and clears successful or withdrawn work; readers must not derive
+/// media authority or liveness from it.
 public struct LibraryPreparationStatus: Codable, Sendable, Equatable {
     public enum State: String, Codable, Sendable {
-        case queued, active, failed, cancelled
+        case queued, active, waiting, failed, cancelled
     }
 
     public static let currentVersion = 1

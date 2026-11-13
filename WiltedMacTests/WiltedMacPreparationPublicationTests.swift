@@ -466,6 +466,194 @@ final class WiltedMacPreparationPublicationTests: XCTestCase {
         XCTAssertNil(model.processorRunsRefreshTask)
     }
 
+    /// Runs that deferred themselves this session are parked by the drain
+    /// tick: a stale one is skipped, a later request prepares while the
+    /// earlier one waits, and once its time passes it starts exactly once.
+    @MainActor
+    func testRunDeferredInSessionWaitsForItsTimeWhileALaterRequestPreparesThenStartsOnce() async throws {
+        let runner = DeferralRecordingRunner()
+        let (model, store, ids) = try await deferralModel(["parked", "other", "stale"], runner: runner)
+        let parked = ids["parked"]!, other = ids["other"]!, stale = ids["stale"]!
+        let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+        let otherTime = now.addingTimeInterval(600), parkedTime = now.addingTimeInterval(3_600)
+        var sequences: [String: Int] = [:]
+        // Each run reached the worker and then deferred itself, in click order.
+        for (id, until) in [(parked, parkedTime), (other, otherTime), (stale, otherTime)] {
+            let sequence = model.nextPreparationRequestSequence()
+            sequences[id] = sequence
+            let running = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: id,
+                requestSequence: sequence, policySnapshot: deferralSnapshot, to: .running, at: Timestamp(now))
+            let deferred = try await store.deferRunningWorkTicket(subjectID: id, requestSequence: sequence,
+                attemptCount: running.attemptCount, until: Timestamp(until), reason: .providerRateLimited)
+            XCTAssertEqual(deferred?.state, .deferred)
+        }
+        // A newer request for `stale`, held in memory and not yet saved, makes its ticket stale.
+        _ = model.reservePreparationRequest(for: stale)
+
+        await model.parkDeferredPreparationTickets()
+        await model.parkDeferredPreparationTickets()
+        XCTAssertEqual(model.deferredAutomaticPreparations.map(\.episodeID).sorted(), [other, parked].sorted(),
+                       "each current ticket parks once; the stale one not at all")
+        XCTAssertEqual(model.deferredAutomaticPreparations.first { $0.episodeID == parked }?.notBefore, parkedTime)
+        XCTAssertEqual(model.preparationQueue.entries.filter { $0.id == parked }.count, 1)
+        XCTAssertTrue(model.podcastPreparationTasks.isEmpty)
+
+        model.startEligibleAutomaticPreparations(at: otherTime.addingTimeInterval(1))
+        XCTAssertNil(model.podcastPreparationTasks[parked], "a deferred ticket is skipped before its time")
+        let otherStarts = try await waitForStarts(of: other, count: 1, runner: runner, model: model)
+        XCTAssertEqual(otherStarts, 1, "a later request prepares while the earlier one waits")
+        let parkedEarly = await runner.starts(of: parked)
+        XCTAssertEqual(parkedEarly, 0)
+        let waiting = try await store.workTicket(kind: .podcastPreparation, subjectID: parked)
+        XCTAssertEqual(waiting?.state, .deferred)
+        XCTAssertEqual(waiting?.attemptCount, 1)
+
+        let after = parkedTime.addingTimeInterval(1)
+        await model.parkDeferredPreparationTickets()
+        model.startEligibleAutomaticPreparations(at: after)
+        let parkedStarts = try await waitForStarts(of: parked, count: 1, runner: runner, model: model)
+        XCTAssertEqual(parkedStarts, 1, "the next tick after its time starts it without owner action")
+        let resumed = try await store.workTicket(kind: .podcastPreparation, subjectID: parked)
+        XCTAssertEqual(resumed?.requestSequence, sequences[parked], "it resumes as the same request")
+        XCTAssertEqual(resumed?.attemptCount, 2)
+        await model.parkDeferredPreparationTickets()
+        model.startEligibleAutomaticPreparations(at: after)
+        await model.waitForPodcastPreparationOperationsForTesting()
+        let repeated = await runner.starts(of: parked)
+        XCTAssertEqual(repeated, 1, "a started ticket is not parked or started again")
+        let staleStarts = await runner.starts(of: stale)
+        XCTAssertEqual(staleStarts, 0)
+        XCTAssertFalse(model.deferredAutomaticPreparations.contains { $0.episodeID == stale })
+    }
+
+    /// W-INV-036: a generation that went running and then deferred itself is
+    /// waiting, not interrupted. A restart keeps it open and unpublished with
+    /// its ticket deferred to the same time, prepares other work, and resumes
+    /// it as the next generation of the same request once its wait ends.
+    @MainActor
+    func testRestartKeepsADeferredGenerationOpenAndUnpublishedUntilItsWaitEnds() async throws {
+        let runner = DeferralRecordingRunner()
+        let snapshot = deferralSnapshot
+        let until = Timestamp(Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down) + 3_600))
+        let (model, store, ids) = try await deferralModel(["parked", "other"], runner: runner) { store, ids in
+            let itemID = try ItemID(rawValue: ids["parked"]!)
+            let now = Timestamp(Date())
+            let running = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: itemID.rawValue,
+                requestSequence: 5, policySnapshot: snapshot, to: .running, at: now)
+            let attempt = try PreparationAttemptIdentity(requestSequence: 5, attemptCount: running.attemptCount)
+            let requestID = PodcastPreparationPipeline.requestID(for: itemID)
+            try await store.record(preparation: .init(id: requestID + "|" + attempt.key + "|extracting#1",
+                itemID: itemID, requestID: requestID, status: PreparationStatus(stage: .extracting,
+                    detail: "labelling", cancellable: true, emittedAt: now, attempt: attempt)))
+            _ = try await store.deferRunningWorkTicket(subjectID: itemID.rawValue, requestSequence: 5,
+                attemptCount: running.attemptCount, until: until, reason: .providerRateLimited, at: now)
+            try await store.upsertWorkTicket(WorkTicket(kind: .podcastPreparation, subjectID: ids["other"]!,
+                requestSequence: 6, state: .pending, policySnapshot: snapshot, requestedAt: now, updatedAt: now))
+        }
+        let parked = try ItemID(rawValue: ids["parked"]!)
+        let ticket = try await store.workTicket(kind: .podcastPreparation, subjectID: parked.rawValue)
+        XCTAssertEqual(ticket?.state, .deferred, "reconciliation keeps the ticket deferred")
+        XCTAssertEqual(ticket?.nextEligibleAt, until)
+        XCTAssertEqual(ticket?.attemptCount, 1)
+        XCTAssertEqual(ticket?.deferralCount, 1)
+        let requestID = PodcastPreparationPipeline.requestID(for: parked)
+        let runs = try await store.preparationRuns().filter { $0.requestID == requestID }
+        XCTAssertEqual(runs.count, 1)
+        let run = try XCTUnwrap(runs.first)
+        XCTAssertFalse(run.isTerminal, "restart closure leaves the waiting generation open")
+        XCTAssertEqual(run.entries.count, 1)
+        XCTAssertFalse(run.entries.contains { $0.id.hasSuffix("|interrupted") })
+        // The only Ready revision is the downloaded source; no prepared output exists.
+        if let source = try await store.readyRevision(for: parked) {
+            let outcome = try await store.preparationOutcome(for: parked, revisionID: source.revision.revisionID)
+            XCTAssertNil(outcome)
+        }
+        XCTAssertEqual(model.episodes.first { $0.id == parked.rawValue }?.preparationState.isPrepared, false)
+        let current = try await store.currentPreparationStatuses(for: [parked])[parked]
+        XCTAssertEqual(current?.state, .deferred)
+        let published = try XCTUnwrap(current.flatMap { WiltedMacPreparationPublication.status($0) })
+        XCTAssertEqual(published.state, .waiting, "a provider wait is named, with no prepared revision")
+        XCTAssertEqual(published.stage, "ads.label.wait")
+        XCTAssertNil(published.revisionID)
+        XCTAssertEqual(model.deferredAutomaticPreparations.first { $0.episodeID == parked.rawValue }?.notBefore,
+                       until.date)
+        XCTAssertNil(model.podcastPreparationTasks[parked.rawValue])
+        let otherStarts = try await waitForStarts(of: ids["other"]!, count: 1, runner: runner, model: model)
+        XCTAssertEqual(otherStarts, 1, "other work prepares while the deferred generation waits")
+        let parkedEarly = await runner.starts(of: parked.rawValue)
+        XCTAssertEqual(parkedEarly, 0)
+
+        model.startEligibleAutomaticPreparations(at: until.date.addingTimeInterval(1))
+        let parkedStarts = try await waitForStarts(of: parked.rawValue, count: 1, runner: runner, model: model)
+        XCTAssertEqual(parkedStarts, 1)
+        let resumed = try await store.workTicket(kind: .podcastPreparation, subjectID: parked.rawValue)
+        XCTAssertEqual(resumed?.requestSequence, 5)
+        XCTAssertEqual(resumed?.attemptCount, 2)
+    }
+
+    private var deferralSnapshot: Data {
+        try! JSONEncoder().encode(PodcastPreparationPolicySnapshot(transcriptPolicy: .alwaysTranscribe, removeAds: false))
+    }
+
+    /// A live model over downloaded, kept episodes whose worker is `runner`;
+    /// `seed` writes tickets and journal entries before bootstrap reads them.
+    @MainActor
+    private func deferralModel(
+        _ names: [String], runner: DeferralRecordingRunner,
+        seed: @escaping @Sendable (LocalLibraryStore, [String: String]) async throws -> Void = { _, _ in }
+    ) async throws -> (WiltedMacModel, LocalLibraryStore, [String: String]) {
+        let directory = wiltedTemporaryDirectory("preparation-deferral")
+        let feedURL = URL(string: "https://example.test/preparation-deferral.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let created = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        var ids: [String: String] = [:]
+        for name in names {
+            ids[name] = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: name,
+                enclosureURL: URL(string: "https://example.test/\(name).mp3")!).rawValue
+        }
+        let episodeIDs = ids
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: directory,
+            storeBootstrap: { url in
+                let store = try LocalLibraryStore(url: url)
+                try await store.save(feed: PodcastFeed(itemID: feedID, canonicalURL: feedURL,
+                    title: "Deferral", createdAt: created))
+                try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
+                for name in names {
+                    let id = try ItemID(rawValue: episodeIDs[name]!)
+                    try await WiltedMacModelTests.addDownloadedUnpreparedEpisode(id, guid: name, feedID: feedID,
+                        feedURL: feedURL, enclosureURL: URL(string: "https://example.test/\(name).mp3")!,
+                        publishedAt: created.date, directory: directory, store: store, created: created)
+                    try await store.addPodcastQueueEpisode(id)
+                }
+                try await seed(store, episodeIDs)
+                return store
+            }, podcastDownloadTransportFactory: {
+                FailingPodcastDownloadTransport(enclosureURL: URL(string: "https://example.test/unused.mp3")!, statusCode: 404)
+            }, podcastPipelineRunnerFactory: { runner }, pipelineFingerprintResolution: { nil },
+            staleInvalidationOverride: { _, _ in PodcastPreparationInvalidationResult(forcedRedownloadEpisodeIDs: []) },
+            preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await model.close() }
+        model.setAutomationSettings(WiltedAutomationSettings(refreshPolicy: .manual,
+            downloadPolicy: .manual, processingPolicy: .manual, transcriptPolicy: .alwaysTranscribe, removeAds: true))
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        XCTAssertEqual(model.startupState, .ready)
+        return (model, try XCTUnwrap(model.store), ids)
+    }
+
+    /// Waits until `id`'s worker starts reach `count` and its run has left the task table.
+    @MainActor
+    private func waitForStarts(
+        of id: String, count: Int, runner: DeferralRecordingRunner, model: WiltedMacModel
+    ) async throws -> Int {
+        var starts = await runner.starts(of: id)
+        for _ in 0..<250 where starts < count || model.podcastPreparationTasks[id] != nil {
+            try await Task.sleep(for: .milliseconds(20))
+            starts = await runner.starts(of: id)
+        }
+        return starts
+    }
+
     @MainActor
     private func makeProcessorRunsRefreshFixture(
         directoryName: String, title: String, detail: String
@@ -503,4 +691,18 @@ final class WiltedMacPreparationPublicationTests: XCTestCase {
         }
         return condition()
     }
+}
+
+/// Records which episode each worker request named, then ends that run at
+/// once, so the single preparation slot is free for the next one.
+private actor DeferralRecordingRunner: PodcastPipelineRunning {
+    private var episodeIDs: [String] = []
+
+    func run(request: Data, onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void) async throws -> Data {
+        let fields = try JSONSerialization.jsonObject(with: request) as? [String: Any]
+        episodeIDs.append(fields?["episodeID"] as? String ?? "")
+        throw CancellationError()
+    }
+
+    func starts(of id: String) -> Int { episodeIDs.filter { $0 == id }.count }
 }

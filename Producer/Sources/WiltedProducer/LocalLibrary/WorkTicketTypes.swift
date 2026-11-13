@@ -76,6 +76,11 @@ public struct WorkTicket: Codable, Equatable, Sendable {
     public var runID: String?
     public var requestedAt: Timestamp
     public var updatedAt: Timestamp
+    /// When `deferRunningWorkTicket` first parked this request; nil until it
+    /// has. A wait limit is measured from here, not from the latest deferral.
+    public var firstDeferredAt: Timestamp?
+    /// How many times this request has been deferred; nil until the first.
+    public var deferralCount: Int?
 
     /// `"<kind>|<subjectID>"`, matching the persisted record's unique key.
     public var id: String { "\(kind.rawValue)|\(subjectID)" }
@@ -85,13 +90,15 @@ public struct WorkTicket: Codable, Equatable, Sendable {
                 failureKind: String? = nil, lastFailureMessage: String? = nil,
                 nextEligibleAt: Timestamp? = nil, policySnapshot: Data? = nil,
                 processingPolicy: Data? = nil, runID: String? = nil,
-                requestedAt: Timestamp, updatedAt: Timestamp) {
+                requestedAt: Timestamp, updatedAt: Timestamp,
+                firstDeferredAt: Timestamp? = nil, deferralCount: Int? = nil) {
         self.kind = kind; self.subjectID = subjectID; self.resolvedItemID = resolvedItemID
         self.requestSequence = requestSequence; self.state = state; self.attemptCount = attemptCount
         self.failureKind = failureKind; self.lastFailureMessage = lastFailureMessage
         self.nextEligibleAt = nextEligibleAt; self.policySnapshot = policySnapshot
         self.processingPolicy = processingPolicy; self.runID = runID
         self.requestedAt = requestedAt; self.updatedAt = updatedAt
+        self.firstDeferredAt = firstDeferredAt; self.deferralCount = deferralCount
     }
 }
 
@@ -101,6 +108,21 @@ public struct WorkTicket: Codable, Equatable, Sendable {
 /// up on a ticket rather than retrying it.
 public enum WorkTicketFailure: String, Codable, Equatable, Sendable {
     case interrupted
+}
+
+/// Why `deferRunningWorkTicket` parked a running request. Stored in the
+/// ticket's `failureKind`, so no value may equal a `PodcastDownloadFailureKind`
+/// or `WorkTicketFailure` raw value: reconciliation reads `terminal` and
+/// `interrupted` there, and a deferral must never be read as either.
+public enum WorkTicketDeferralReason: String, Codable, Equatable, Sendable, CaseIterable {
+    /// The labelling provider asked the caller to slow down.
+    case providerRateLimited = "deferred-rate-limited"
+    /// The labelling provider failed in a way that may pass on its own.
+    case providerUnavailable = "deferred-provider-unavailable"
+    /// The provider account's usage limit was reached.
+    case providerUsageLimit = "deferred-usage-limit"
+    /// This device's own daily request cap was reached.
+    case dailyRequestCap = "deferred-daily-cap"
 }
 
 /// One preferences-held deferred automatic preparation, translated into the

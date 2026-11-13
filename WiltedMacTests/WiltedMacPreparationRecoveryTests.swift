@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 import WiltedDomain
@@ -20,7 +21,7 @@ final class WiltedMacPreparationRecoveryTests: XCTestCase {
         var nextEligible: Timestamp?
     }
 
-    private func fixture(_ jobs: [Job], holdGate: Bool = true, runner: RecoverySleepingRunner = RecoverySleepingRunner(), forcedRedownload: Set<String> = []) async throws -> (WiltedMacModel, LocalLibraryStore, [String: String]) {
+    private func fixture(_ jobs: [Job], holdGate: Bool = true, runner: any PodcastPipelineRunning = RecoverySleepingRunner(), forcedRedownload: Set<String> = [], labelling: (@Sendable () -> PodcastLabellingServices)? = nil) async throws -> (WiltedMacModel, LocalLibraryStore, [String: String]) {
         let directory = wiltedTemporaryDirectory("pending-preparation-launch")
         let feedURL = URL(string: "https://example.test/pending-preparation-launch.xml")!
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
@@ -63,7 +64,7 @@ final class WiltedMacPreparationRecoveryTests: XCTestCase {
                 return store
             }, podcastDownloadTransportFactory: {
                 FailingPodcastDownloadTransport(enclosureURL: URL(string: "https://example.test/forced.mp3")!, statusCode: 404)
-            }, podcastPipelineRunnerFactory: { runner },
+            }, podcastPipelineRunnerFactory: { runner }, podcastLabellingServicesFactory: labelling,
             pipelineFingerprintResolution: { forcedRedownload.isEmpty ? nil : "recovery-test-fingerprint" },
             staleInvalidationOverride: { _, _ in
                 PodcastPreparationInvalidationResult(forcedRedownloadEpisodeIDs: try forcedRedownload.map {
@@ -374,6 +375,50 @@ final class WiltedMacPreparationRecoveryTests: XCTestCase {
         }
     }
 
+    /// A provider that asks Wilted to wait leaves the ticket deferred with its time and the
+    /// episode queued, not failed: the run ends with the waiting error and writes no transition.
+    func testLabellerWaitLeavesTheTicketDeferredAndTheEpisodeNotFailed() async throws {
+        let directory = wiltedTemporaryDirectory("labeller-wait")
+        let cues = [LabellerCue(id: 0, start: 0, end: 5, text: "Synthetic opening line.")]
+        let cueData = try JSONEncoder().encode(cues)
+        let cuePath = directory.appendingPathComponent("cues.json")
+        try cueData.write(to: cuePath)
+        let digest = SHA256.hash(data: cueData).map { String(format: "%02x", $0) }.joined()
+        let feedID = try ItemID.derivePodcastFeed(from: URL(string: "https://example.test/pending-preparation-launch.xml")!)
+        let defaultsName = "WiltedMacPreparationRecoveryTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: defaultsName) }
+        let preferences = AdLabellerPreferences(preferences: defaults)
+        preferences.isEnabled = true
+        preferences.setConfirmed(feedID: feedID.rawValue, true)
+        let services = PodcastLabellingServices(
+            preferences: preferences, counter: LabellerRequestCounter(preferences: defaults),
+            keyStore: InMemoryLabellerKeyStore(key: "synthetic-test-key"), sender: RecoveryRateLimitedSender())
+        let removeAds = try JSONEncoder().encode(PodcastPreparationPolicySnapshot(
+            transcriptPolicy: .noLocalSTT, removeAds: true))
+        let started = Timestamp(Date())
+        let (model, store, ids) = try await fixture(
+            [Job(name: "labeller-wait", sequence: 21, snapshot: removeAds)], holdGate: false,
+            runner: RecoveryTranscriptRunner(cuesPath: cuePath.path, digest: digest), labelling: { services })
+        let id = ids["labeller-wait"]!
+        var ticket = try await store.workTicket(kind: .podcastPreparation, subjectID: id)
+        for _ in 0..<250 where ticket?.state != .deferred || model.podcastPreparationTasks[id] != nil {
+            try await Task.sleep(for: .milliseconds(20))
+            ticket = try await store.workTicket(kind: .podcastPreparation, subjectID: id)
+        }
+        let deferred = try XCTUnwrap(ticket)
+        XCTAssertEqual(deferred.state, .deferred, "the failure ticket write must not replace the store's deferral")
+        XCTAssertEqual(deferred.failureKind, WorkTicketDeferralReason.providerRateLimited.rawValue)
+        XCTAssertEqual(deferred.requestSequence, 21)
+        XCTAssertEqual(deferred.deferralCount, 1)
+        XCTAssertGreaterThan(try XCTUnwrap(deferred.nextEligibleAt).date, started.date.addingTimeInterval(500))
+        let row = try XCTUnwrap(model.episodes.first { $0.id == id })
+        let wait = try XCTUnwrap(LabellingWait(deferred))
+        XCTAssertEqual(row.preparationState, .preparing(stage: WiltedMacLabellerWait.rowLabel(wait)),
+                       "the row names the wait and its retry time, not a plain queue")
+        if case .failed = row.preparationState { XCTFail("a wait is not a failure") }
+    }
+
     func testExcludedRedownloadSourceIsNotAdmittedByRecovery() async throws {
         let (model, store, ids) = try await fixture([Job(name: "excluded", sequence: 5, snapshot: nil)])
         let id = ids["excluded"]!
@@ -390,5 +435,29 @@ private actor RecoverySleepingRunner: PodcastPipelineRunning {
         starts += 1
         try await Task.sleep(for: .seconds(3_600))
         throw CancellationError()
+    }
+}
+
+/// Answers the transcript stage with a fixed cue file, as the worker would.
+private actor RecoveryTranscriptRunner: PodcastPipelineRunning {
+    let cuesPath: String
+    let digest: String
+    init(cuesPath: String, digest: String) { self.cuesPath = cuesPath; self.digest = digest }
+    func run(request: Data, onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void) async throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
+            "ok": true, "protocolVersion": 2, "adStage": "transcript", "timing": "aligned",
+            "durationSeconds": 12, "labellerCuesPath": cuesPath, "labellerCuesDigest": digest,
+        ] as [String: Any])
+    }
+}
+
+/// A provider that always asks to be tried again in ten minutes.
+private struct RecoveryRateLimitedSender: LabellerSending {
+    func send(
+        _ request: LabellerRequest, onRequestStarted: @escaping @Sendable () -> Void,
+        onProgress: @escaping @Sendable (LabellerProgress) -> Void
+    ) async throws -> LabellerResponse {
+        onRequestStarted()
+        throw LabellerFailure.rateLimited(retryAfter: 600)
     }
 }

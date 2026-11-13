@@ -25,7 +25,8 @@ extension WiltedMacModel {
         switch reason {
         case .privateTitle, .tokenLikeFeedURL, .credentialedURL:
             return true
-        default:
+        case .switchOff, .noKey, .notConfirmed, .adRemovalOff, .ownerLocalOnly, .dailyCapReached,
+             .unknownFeedURL, .none:
             return false
         }
     }

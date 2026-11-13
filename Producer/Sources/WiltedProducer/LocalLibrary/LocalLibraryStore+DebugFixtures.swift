@@ -206,7 +206,7 @@ extension LocalLibraryStore {
         let context = ModelContext(container)
         let ticket = WorkTicket(kind: kind, subjectID: subjectID, requestSequence: requestSequence,
                                 requestedAt: requestedAt, updatedAt: requestedAt)
-        context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+        context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(ticket))
         try context.save()
     }
     #endif

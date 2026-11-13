@@ -143,6 +143,38 @@ extension LocalLibraryStoreTests {
             XCTAssertNil(values[episode.itemID]?.status)
         }
     }
+
+    func testCurrentPreparationStatusesExposesLabellingWaitOnlyForLabellingDeferrals() async throws {
+        let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try LocalLibraryStore(url: url)
+        let (_, episode) = try podcastValues()
+        let now = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let retry = Timestamp(Date(timeIntervalSince1970: 1_700_000_120))
+
+        _ = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: episode.itemID.rawValue,
+            requestSequence: 1, to: .running, at: now)
+        let labelled = try await store.deferRunningWorkTicket(
+            subjectID: episode.itemID.rawValue, requestSequence: 1, attemptCount: 1,
+            until: retry, reason: .providerRateLimited, at: now)
+        let labelledStatus = try await store.currentPreparationStatuses(for: [episode.itemID])
+        let wait = try XCTUnwrap(labelledStatus[episode.itemID]?.labellingWait)
+        XCTAssertEqual(wait.reason, .providerRateLimited)
+        XCTAssertEqual(wait.retryAt, retry)
+        XCTAssertEqual(wait.waitCount, 1)
+        XCTAssertEqual(LabellingWait(try XCTUnwrap(labelled)), wait)
+
+        _ = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: episode.itemID.rawValue,
+            requestSequence: 2, to: .deferred, at: now)
+        let offPeak = try await store.currentPreparationStatuses(for: [episode.itemID])
+        XCTAssertEqual(offPeak[episode.itemID]?.state, .deferred)
+        XCTAssertNil(offPeak[episode.itemID]?.labellingWait, "off-peak deferral has no labelling reason")
+
+        _ = try await store.readmitWorkTicket(kind: .podcastPreparation, subjectID: episode.itemID.rawValue,
+            requestSequence: 3, to: .running, at: now)
+        let running = try await store.currentPreparationStatuses(for: [episode.itemID])
+        XCTAssertEqual(running[episode.itemID]?.state, .running)
+        XCTAssertNil(running[episode.itemID]?.labellingWait)
+    }
 }
 
 extension LocalLibraryStoreTests {

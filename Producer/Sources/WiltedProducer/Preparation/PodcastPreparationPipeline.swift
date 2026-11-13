@@ -19,7 +19,7 @@ public actor PodcastPreparationPipeline {
     /// Manually bumped when the semantic preparation behavior changes. This is
     /// deliberately independent of the app or UI build number so a launch can
     /// identify old preparation results without invalidating unrelated work.
-    public static let semanticVersion = "podcast-preparation-v16"
+    public static let semanticVersion = "podcast-preparation-v17"
     /// Includes the external Python packages imported by the worker. The
     /// runtime itself now lives in this repository under `Producer/Runtime`,
     /// but `speech-stack` is still an editable dependency resolved outside it,
@@ -175,6 +175,9 @@ public actor PodcastPreparationPipeline {
     /// committed result, after the terminal journal row. Shadow never changes
     /// what the pipeline commits.
     let shadowRecorder: LabellerShadowRecorder?
+    /// Online labelling used to decide cuts when the remote route applies.
+    /// Nil keeps today's local classifier path for every episode.
+    let labelling: PodcastLabellingServices?
 
     public init(
         store: LocalLibraryStore,
@@ -186,7 +189,8 @@ public actor PodcastPreparationPipeline {
         now: @escaping @Sendable () -> Date = Date.init,
         appVersion: String? = PodcastPreparationBuildStamp.hostAppVersion(),
         engineVersion: String = PodcastPreparationPipeline.semanticVersion,
-        shadowRecorder: LabellerShadowRecorder? = nil
+        shadowRecorder: LabellerShadowRecorder? = nil,
+        labelling: PodcastLabellingServices? = nil
     ) {
         self.store = store
         self.runner = runner
@@ -200,6 +204,7 @@ public actor PodcastPreparationPipeline {
         self.appVersion = appVersion
         self.engineVersion = engineVersion
         self.shadowRecorder = shadowRecorder
+        self.labelling = labelling
     }
 
     /// The journal key for one episode's preparation history.
@@ -244,8 +249,11 @@ public actor PodcastPreparationPipeline {
             ? await captureAdProfileSnapshot(for: episode.feedID, onStatus: report) : nil
         report(adProfileRequestProgress(profileSnapshot, enabled: policy.removeAds))
         let codeRevision = await runner.codeRevision()
+        let route = await labelledAttemptRoute(episode: episode, policy: policy)
+        let attemptDigest = Self.policyDigest(policy, labelled: route.provenance)
         let provenance = provenanceEvidence(sourceRevisionID: stored.revision.revisionID,
-                                            sourceHash: stored.revision.contentHash, codeRevision: codeRevision)
+                                            sourceHash: stored.revision.contentHash, codeRevision: codeRevision,
+                                            policyDigest: attemptDigest)
         report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title, evidence: provenance))
         do {
             // The prepared output exists before its revision record does.
@@ -255,12 +263,12 @@ public actor PodcastPreparationPipeline {
             store.inFlightMedia.begin(preparedURL)
             defer { store.inFlightMedia.end(preparedURL) }
             let emitLabellerCues = await shadowRecorder?.wantsCues ?? false
-            let request = try await workerRequest(episode: episode, audioURL: audioURL, preparedURL: preparedURL,
-                                                  sourceHash: stored.revision.contentHash, policy: policy,
-                                                  profileSnapshot: profileSnapshot,
-                                                  emitLabellerCues: emitLabellerCues, onStatus: report)
-            let response = try await runner.run(request: request, onProgress: report)
-            var payload = try Self.decode(response)
+            let run = try await runPreparationWorker(
+                episode: episode, audioURL: audioURL, preparedURL: preparedURL,
+                sourceHash: stored.revision.contentHash, policy: policy,
+                profileSnapshot: profileSnapshot, emitLabellerCues: emitLabellerCues, route: route,
+                deferral: labelledDeferral(episodeID: episodeID, attempt: attempt, writes: writes), onStatus: report)
+            var payload = run.payload
             validateAdProfileHandshake(&payload, snapshot: profileSnapshot)
             await persistAdProfileObservation(payload.adProfileObservation, feedID: episode.feedID,
                                               episodeID: episode.itemID, sourceHash: stored.revision.contentHash,
@@ -277,7 +285,8 @@ public actor PodcastPreparationPipeline {
             for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
             let result = try await commit(payload, episode: episode, download: download,
                                           downloadedRevision: stored.revision, audioURL: audioURL,
-                                          policy: policy, onStatus: report)
+                                          policy: policy, labelledProvenance: run.labelledProvenance,
+                                          onStatus: report)
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: nil,
                                   revisionID: result.revision.revisionID, summary: result.summary,
@@ -286,14 +295,23 @@ public actor PodcastPreparationPipeline {
                                   sourceHash: stored.revision.contentHash,
                                   sourceURL: audioURL,
                                   timeline: payload.timeline,
-                                  codeRevision: codeRevision)
+                                  codeRevision: codeRevision,
+                                  policyDigest: attemptDigest)
             await onJournaled()
-            if let shadowRecorder, let input = await shadowInput(episode: episode, payload: payload,
+            // Labelled commits already used the remote route; shadow stays for the local path only.
+            if run.labelledProvenance == nil,
+               let shadowRecorder, let input = await shadowInput(episode: episode, payload: payload,
                                                                  result: result,
-                                                                 sourceDuration: stored.revision.durationSeconds) {
+                                                                 sourceDuration: stored.revision.durationSeconds,
+                                                                 removeAds: policy.removeAds) {
                 await shadowRecorder.schedule(input)
             }
             return result
+        } catch let waiting as PodcastPreparationError where waiting.isLabellerWaiting {
+            // The ticket is deferred and its generation stays open: no terminal row.
+            await writes.drain()
+            await onJournaled()
+            throw waiting
         } catch {
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: error, revisionID: nil,
@@ -301,7 +319,8 @@ public actor PodcastPreparationPipeline {
                                   sourceRevisionID: stored.revision.revisionID,
                                   sourceHash: stored.revision.contentHash,
                                   sourceURL: audioURL,
-                                  codeRevision: codeRevision)
+                                  codeRevision: codeRevision,
+                                  policyDigest: attemptDigest)
             await onJournaled()
             throw error
         }
@@ -335,7 +354,10 @@ public actor PodcastPreparationPipeline {
     /// A field that is not known is omitted, because absent reads as "not
     /// recorded", which is true, where a sentinel would later read as a
     /// different pipeline.
-    func provenanceEvidence(sourceRevisionID: RevisionID, sourceHash: String, codeRevision: String?) -> PreparationEvidence? {
+    func provenanceEvidence(
+        sourceRevisionID: RevisionID, sourceHash: String, codeRevision: String?,
+        policyDigest: String? = nil
+    ) -> PreparationEvidence? {
         var fields = [
             "sourceRevisionID": sourceRevisionID.rawValue,
             "sourceHash": sourceHash,
@@ -344,6 +366,7 @@ public actor PodcastPreparationPipeline {
         if let appVersion { fields["appVersion"] = appVersion }
         if let codeRevision { fields["codeRevision"] = codeRevision }
         if let fingerprint = Self.semanticFingerprintResolution { fields["fingerprint"] = fingerprint }
+        Self.attachPolicyDigest(policyDigest, to: &fields)
         return try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: fields)
     }
 
@@ -372,7 +395,8 @@ public actor PodcastPreparationPipeline {
         summary: String? = nil, fingerprint: String? = nil,
         sourceRevisionID: RevisionID? = nil, sourceHash: String? = nil, sourceURL: URL? = nil,
         timeline: PreparationStatus.PreparationTimeline? = nil,
-        codeRevision: String? = nil
+        codeRevision: String? = nil,
+        policyDigest: String? = nil
     ) async {
         let outcome: PreparationOutcome
         let producerError: ProducerError?
@@ -396,15 +420,12 @@ public actor PodcastPreparationPipeline {
                 "sourceHash": sourceHash ?? "",
                 "engineVersion": engineVersion,
             ]
-            if let appVersion {
-                fields["appVersion"] = appVersion
-            }
-            if let codeRevision {
-                fields["codeRevision"] = codeRevision
-            }
+            if let appVersion { fields["appVersion"] = appVersion }
+            if let codeRevision { fields["codeRevision"] = codeRevision }
             if let sourceURL, sourceURL.absoluteString.count <= 256 {
                 fields["sourceURL"] = sourceURL.absoluteString
             }
+            Self.attachPolicyDigest(policyDigest, to: &fields)
             return try? PreparationEvidence(kind: LocalLibraryStore.pipelineProvenanceEvidenceKind, fields: fields)
         })
         guard outcome != .failed || producerError != nil,

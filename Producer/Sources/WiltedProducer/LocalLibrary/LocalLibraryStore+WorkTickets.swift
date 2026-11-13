@@ -70,7 +70,7 @@ extension LocalLibraryStore {
 
     /// Decodes a persisted work-ticket row, dropping it if its `kind` or
     /// `state` raw value is not one this store recognizes.
-    private static func decodeWorkTicket(_ record: LocalLibrarySchemaV12Models.WorkTicketRecord) -> WorkTicket? {
+    static func decodeWorkTicket(_ record: LocalLibrarySchemaV22Models.WorkTicketRecord) -> WorkTicket? {
         guard let kind = WorkTicketKind(rawValue: record.kind),
               let state = WorkTicketState(rawValue: record.state) else { return nil }
         return WorkTicket(
@@ -79,13 +79,14 @@ extension LocalLibraryStore {
             failureKind: record.failureKind, lastFailureMessage: record.lastFailureMessage,
             nextEligibleAt: record.nextEligibleAt.map(Timestamp.init),
             policySnapshot: record.policySnapshot, processingPolicy: record.processingPolicy,
-            runID: record.runID, requestedAt: Timestamp(record.requestedAt), updatedAt: Timestamp(record.updatedAt)
+            runID: record.runID, requestedAt: Timestamp(record.requestedAt), updatedAt: Timestamp(record.updatedAt),
+            firstDeferredAt: record.firstDeferredAt.map(Timestamp.init), deferralCount: record.deferralCount
         )
     }
 
     /// Fetches one ticket through its unique durable key.
-    private func workTicketRecord(id: String, in context: ModelContext) throws -> LocalLibrarySchemaV12Models.WorkTicketRecord? {
-        var query = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+    func workTicketRecord(id: String, in context: ModelContext) throws -> LocalLibrarySchemaV22Models.WorkTicketRecord? {
+        var query = FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>(
             predicate: #Predicate { $0.id == id }
         )
         query.fetchLimit = 1
@@ -96,7 +97,7 @@ extension LocalLibraryStore {
 
     /// Reads only the highest sequence row when a caller has no reserved sequence.
     private func highestWorkTicketSequence(in context: ModelContext) throws -> Int {
-        var query = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+        var query = FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>(
             sortBy: [SortDescriptor(\.requestSequence, order: .reverse)]
         )
         query.fetchLimit = 1
@@ -108,7 +109,7 @@ extension LocalLibraryStore {
     /// All persisted work tickets, in no particular order.
     public func workTickets() throws -> [WorkTicket] {
         let context = ModelContext(container)
-        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        return try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>())
             .compactMap(Self.decodeWorkTicket)
     }
 
@@ -118,7 +119,7 @@ extension LocalLibraryStore {
         let pending = WorkTicketState.pending.rawValue
         let deferred = WorkTicketState.deferred.rawValue
         let running = WorkTicketState.running.rawValue
-        var query = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+        var query = FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>(
             predicate: #Predicate {
                 kindValues.contains($0.kind)
                     && ($0.state == pending || $0.state == deferred || $0.state == running)
@@ -149,7 +150,7 @@ extension LocalLibraryStore {
         if let existing = try workTicketRecord(id: ticket.id, in: context) {
             existing.apply(ticket)
         } else {
-            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+            context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(ticket))
         }
         try context.save()
         return ticket
@@ -193,7 +194,7 @@ extension LocalLibraryStore {
             policySnapshot: policySnapshot, processingPolicy: processingPolicy,
             requestedAt: requestedAt, updatedAt: requestedAt
         )
-        context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+        context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(ticket))
         try context.save()
         return ticket
     }
@@ -443,6 +444,8 @@ extension LocalLibraryStore {
             ticket.policySnapshot = policySnapshot
             ticket.processingPolicy = processingPolicy
             ticket.runID = nil
+            ticket.firstDeferredAt = nil
+            ticket.deferralCount = nil
         }
 
         guard ticket.state.canTransition(to: state) else {
@@ -461,7 +464,7 @@ extension LocalLibraryStore {
         if let existingRecord {
             existingRecord.apply(ticket)
         } else {
-            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+            context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(ticket))
         }
         try context.save()
         return ticket
@@ -519,7 +522,7 @@ extension LocalLibraryStore {
                 try Self.injectWorkTicketReconciliationFailure(for: .importingDeferrals, subjectID: deferral.subjectID)
                 #endif
                 let id = "\(WorkTicketKind.podcastPreparation.rawValue)|\(deferral.subjectID)"
-                let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+                let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>())
                 guard !records.contains(where: { $0.id == id }) else { continue }
                 let nextSequence = max(records.map(\.requestSequence).max() ?? 0, sequenceFloor) + 1
                 let ticket = WorkTicket(
@@ -528,7 +531,7 @@ extension LocalLibraryStore {
                     policySnapshot: deferral.policySnapshot, processingPolicy: deferral.processingPolicy,
                     requestedAt: now, updatedAt: now
                 )
-                context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+                context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(ticket))
                 importedCount += 1
             } catch {
                 recordFailure(error, step: .importingDeferrals, subjectID: deferral.subjectID)
@@ -554,7 +557,7 @@ extension LocalLibraryStore {
                 try Self.injectWorkTicketReconciliationFailure(for: .adoptingDownloads, subjectID: subjectID)
                 #endif
                 let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
-                let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+                let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>())
                 guard !records.contains(where: { $0.id == id }) else { continue }
                 let nextSequence = max(records.map(\.requestSequence).max() ?? 0, sequenceFloor) + 1
                 let ticket = WorkTicket(
@@ -563,7 +566,7 @@ extension LocalLibraryStore {
                     failureKind: download.failureKind?.rawValue,
                     requestedAt: now, updatedAt: now
                 )
-                context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket))
+                context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(ticket))
                 adoptedCount += 1
             } catch {
                 recordFailure(error, step: .adoptingDownloads, subjectID: subjectID)
@@ -578,7 +581,7 @@ extension LocalLibraryStore {
         // gets another attempt; one already marked `.terminal`, or that has
         // now exhausted the retry bound, is closed as failed instead.
         var closedCount = 0
-        let runningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        let runningRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>())
             .filter { $0.state == WorkTicketState.running.rawValue }
         report(.closingInterruptedRuns, 0, runningRecords.count)
         for (index, record) in runningRecords.enumerated() {
@@ -592,7 +595,10 @@ extension LocalLibraryStore {
                     && record.failureKind == WorkTicketFailure.interrupted.rawValue
                 let attemptCount = record.attemptCount + (quitInterruptedDownload ? 0 : 1)
                 let isTerminalClassification = record.failureKind == PodcastDownloadFailureKind.terminal.rawValue
-                if isTerminalClassification || (quitInterruptedDownload ? attemptCount >= 3 : attemptCount > 3) {
+                // A resume after `deferRunningWorkTicket` spends an attempt
+                // though nothing failed, so waits do not count toward the bound.
+                let failedAttempts = attemptCount - (record.deferralCount ?? 0)
+                if isTerminalClassification || (quitInterruptedDownload ? attemptCount >= 3 : failedAttempts > 3) {
                     record.state = WorkTicketState.failed.rawValue
                     record.failureKind = WorkTicketFailure.interrupted.rawValue
                 } else {
@@ -622,14 +628,14 @@ extension LocalLibraryStore {
         // duplicate already terminal is left alone: it already stopped doing
         // work, and step 4 below prunes it in due course.
         var collapsedCount = 0
-        let articleRecords: [LocalLibrarySchemaV12Models.WorkTicketRecord] = try context.fetch(
-            FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>()
+        let articleRecords: [LocalLibrarySchemaV22Models.WorkTicketRecord] = try context.fetch(
+            FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>()
         )
         .filter { $0.kind == WorkTicketKind.articlePreparation.rawValue }
         let groupedByResolution = Dictionary(grouping: articleRecords.filter { $0.resolvedItemID != nil }) {
             $0.resolvedItemID!
         }
-        let duplicateRecords = groupedByResolution.values.flatMap { group -> [LocalLibrarySchemaV12Models.WorkTicketRecord] in
+        let duplicateRecords = groupedByResolution.values.flatMap { group -> [LocalLibrarySchemaV22Models.WorkTicketRecord] in
             guard group.count > 1, let canonical = group.max(by: { $0.requestSequence < $1.requestSequence }) else {
                 return []
             }
@@ -659,8 +665,8 @@ extension LocalLibraryStore {
         // keeping at least the newest 50 of that kind regardless of age.
         var prunedCount = 0
         let cutoff = now.date.addingTimeInterval(-30 * 24 * 60 * 60)
-        let allRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
-        var recordsToPrune: [LocalLibrarySchemaV12Models.WorkTicketRecord] = []
+        let allRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>())
+        var recordsToPrune: [LocalLibrarySchemaV22Models.WorkTicketRecord] = []
         for kind in WorkTicketKind.allCases {
             let terminalRecords = allRecords
                 .filter { $0.kind == kind.rawValue && (WorkTicketState(rawValue: $0.state)?.isTerminal ?? false) }

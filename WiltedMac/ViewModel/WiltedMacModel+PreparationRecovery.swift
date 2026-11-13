@@ -53,6 +53,8 @@ extension WiltedMacModel {
                     Self.preparationRecoveryLog.warning("Missing saved preparation snapshot: \(self.episodeLogContext(ticket.subjectID, requestSequence: ticket.requestSequence, attempt: ticket.attemptCount), privacy: .public)")
                     continue
                 }
+                // A ticket deferred by its own run (`deferRunningWorkTicket`)
+                // waits here for its time like any admission deadline.
                 let waitingForDeadline = ticket.nextEligibleAt.map { $0.date > date } ?? false
                 if let snapshot {
                     // A saved admission without a processing window was already
@@ -69,15 +71,7 @@ extension WiltedMacModel {
                         removeDeferredAutomaticPreparation(episode.id)
                         prepareEpisode(episode, policySnapshot: snapshot)
                     case .deferUntilOffPeak:
-                        // The existing ticker owns both admission deadlines and
-                        // original off-peak windows, using the same saved policy.
-                        adoptAdmittedPreparation(sequence: ticket.requestSequence, for: episode.id)
-                        deferredAutomaticPreparations.removeAll { $0.episodeID == episode.id }
-                        deferredAutomaticPreparations.append(DeferredAutomaticPreparation(
-                            episodeID: episode.id, processingPolicy: admittedProcessing, policySnapshot: snapshot,
-                            notBefore: ticket.nextEligibleAt?.date))
-                        preparationQueue.enter(WiltedMacWaitingPreparation(id: episode.id, title: episode.title, source: episode.feedTitle))
-                        updateEpisode(episode.id) { $0.preparationState = .preparing(stage: Self.preparationQueuedStage) }
+                        parkAdmittedPreparation(episode, ticket: ticket, processing: admittedProcessing, snapshot: snapshot)
                     }
                 } else {
                     // Unadmitted reservations cannot acquire today's policy
@@ -108,6 +102,79 @@ extension WiltedMacModel {
            store === recoveringStore, startupAttemptCount == attempt {
             podcastOperationMessage = "Some saved preparations could not be restored. Prepare them again from Larder."
         }
+    }
+
+    /// Parks preparations their own run deferred while this process was
+    /// running (`deferRunningWorkTicket`), so the ticket-drain tick starts
+    /// each once its time passes without the owner pressing anything.
+    /// Bootstrap parks the ones found at launch through
+    /// `restorePendingPodcastPreparations`; this covers the rest.
+    ///
+    /// Idempotent: a ticket already parked or still running here is skipped.
+    /// A ticket whose request this process has since replaced (a newer
+    /// sequence held in memory and not yet saved) is stale and is skipped.
+    /// Queue fairness: a parked ticket keeps its original request sequence,
+    /// so other tickets prepare while it waits, and once its time passes the
+    /// gate orders it ahead of later requests; it never preempts a run.
+    func parkDeferredPreparationTickets() async {
+        guard !isClosingTemporaryState, let parkingStore = store else { return }
+        let tickets: [WorkTicket]
+        do {
+            tickets = try await parkingStore.deferredWorkTickets(kind: .podcastPreparation)
+                .sorted { $0.requestSequence < $1.requestSequence }
+        } catch {
+            Self.preparationRecoveryLog.warning("Deferred preparation read failed: \(String(describing: error), privacy: .public)")
+            return
+        }
+        for ticket in tickets {
+            guard !isClosingTemporaryState, store === parkingStore else { return }
+            let id = ticket.subjectID
+            guard ticket.nextEligibleAt != nil, podcastPreparationTasks[id] == nil,
+                  !deferredAutomaticPreparations.contains(where: { $0.episodeID == id }),
+                  preparationRequestSequences[id].map({ $0 == ticket.requestSequence }) ?? true,
+                  (preparationPublicationRequests[id]?.requestSequence ?? ticket.requestSequence) <= ticket.requestSequence,
+                  podcastQueueIDs.contains(id), !hiddenEpisodeIDs.contains(id),
+                  let episode = episodes.first(where: { $0.id == id }),
+                  !episode.isAudiobook, episode.removalKind == nil, episode.retiredAt == nil,
+                  episode.downloadState == .completed, !episode.preparationState.isPrepared else { continue }
+            let snapshot: PodcastPreparationPolicySnapshot
+            let processing: WiltedAutomationProcessingPolicy?
+            do {
+                guard let data = ticket.policySnapshot else { continue }
+                snapshot = try JSONDecoder().decode(PodcastPreparationPolicySnapshot.self, from: data)
+                processing = try ticket.processingPolicy.map {
+                    try JSONDecoder().decode(WiltedAutomationProcessingPolicy.self, from: $0)
+                }
+            } catch {
+                Self.preparationRecoveryLog.warning("Invalid deferred preparation policy: \(self.episodeLogContext(id, requestSequence: ticket.requestSequence, attempt: ticket.attemptCount), privacy: .public) error=\(String(describing: error), privacy: .public)")
+                continue
+            }
+            parkAdmittedPreparation(episode, ticket: ticket, processing: processing ?? .immediate, snapshot: snapshot)
+        }
+    }
+
+    /// The existing ticker owns both admission deadlines and original
+    /// off-peak windows, using the same saved policy.
+    private func parkAdmittedPreparation(
+        _ episode: WiltedMacEpisode, ticket: WorkTicket,
+        processing: WiltedAutomationProcessingPolicy, snapshot: PodcastPreparationPolicySnapshot
+    ) {
+        adoptAdmittedPreparation(sequence: ticket.requestSequence, for: episode.id)
+        deferredAutomaticPreparations.removeAll { $0.episodeID == episode.id }
+        deferredAutomaticPreparations.append(DeferredAutomaticPreparation(
+            episodeID: episode.id, processingPolicy: processing, policySnapshot: snapshot,
+            notBefore: ticket.nextEligibleAt?.date))
+        preparationQueue.enter(WiltedMacWaitingPreparation(id: episode.id, title: episode.title, source: episode.feedTitle))
+        let stage: String
+        if let wait = LabellingWait(ticket) {
+            stage = WiltedMacLabellerWait.rowLabel(wait)
+        } else {
+            stage = Self.preparationQueuedStage
+        }
+        updateEpisode(episode.id) { $0.preparationState = .preparing(stage: stage) }
+        // Same call as after `labellerWaiting`: republish the acknowledged generation's
+        // waiting status so a queued/active line does not linger on the iPhone.
+        librarySyncController?.requestPublish()
     }
 }
 #endif

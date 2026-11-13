@@ -365,14 +365,13 @@ final class WiltedMacFeedPolicyBoard {
     /// Where the policy sends this feed's transcripts right now: the owner's ad labeller
     /// preferences, the injected key presence, and the feed's own title and address.
     func adRoute(for feedID: String) -> RemoteLabellingRoute {
-        RemoteLabellingPolicy.route(
-            for: adRouteInput(for: feedID),
-            context: RemoteLabellingContext(
-                preferences: AdLabellerPreferences(preferences: model.preferences),
-                hasKey: hasProviderKey(),
-                counter: LabellerRequestCounter(preferences: model.preferences)
-            )
+        var context = RemoteLabellingContext(
+            preferences: AdLabellerPreferences(preferences: model.preferences),
+            hasKey: hasProviderKey(),
+            counter: LabellerRequestCounter(preferences: model.preferences)
         )
+        context.adFreeFeedIDs = adFreeFeedIDs
+        return RemoteLabellingPolicy.route(for: adRouteInput(for: feedID), context: context)
     }
 
     /// Why this feed's transcripts can never leave this Mac, whatever the switches say.

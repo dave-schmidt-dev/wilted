@@ -11,6 +11,15 @@ public enum PodcastPreparationError: Error, Equatable, LocalizedError, Sendable 
     case preparedAudioUnreadable
     case readyAudioChanged
     case cancelled
+    /// The labelling provider could not answer yet. The ticket is deferred until `until`,
+    /// its journal generation stays open, and the run resumes later. `kind` is the failure's
+    /// stable short name, or `daily-cap`.
+    case labellerWaiting(until: Date, kind: String)
+
+    /// Whether this is the deferral signal rather than a failure.
+    public var isLabellerWaiting: Bool {
+        if case .labellerWaiting = self { true } else { false }
+    }
 
     public var errorDescription: String? {
         switch self {
@@ -32,6 +41,7 @@ public enum PodcastPreparationError: Error, Equatable, LocalizedError, Sendable 
         case .preparedAudioUnreadable: "The prepared audio could not be read back."
         case .readyAudioChanged: "The episode's audio changed while it was being prepared again."
         case .cancelled: "Preparation was cancelled."
+        case .labellerWaiting: "The ad labeller is busy. Wilted will try again later."
         }
     }
 

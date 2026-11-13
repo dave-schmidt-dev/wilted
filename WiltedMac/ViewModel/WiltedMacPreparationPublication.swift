@@ -33,10 +33,25 @@ enum WiltedMacPreparationPublication {
         "transcript.stt.start", "transcript.stt.complete", "transcript.stt.failed", "transcript.absent", "transcript.remap",
         "transcript.glossary.terms", "transcript.glossary.progress", "transcript.glossary.complete",
         "ads.model.load", "ads.detect.start", "ads.detect.calls", "ads.detect.complete",
+        "ads.label.start", "ads.label.complete", "ads.label.wait", "ads.label.stop",
         "ads.cut.start", "ads.cut.complete", "ads.cut.refused", "ads.cut.empty"
     ]
 
-    static func status(_ value: LocalLibraryStore.CurrentPreparationStatus) -> LibraryPreparationStatus? {
+    /// Builds the iPhone-facing status. A deferred labelling wait publishes `.waiting`;
+    /// any other deferred ticket stays `.queued` "Waiting to prepare."
+    static func status(
+        _ value: LocalLibraryStore.CurrentPreparationStatus,
+        formatTime: (Date) -> String = WiltedMacLabellerWait.defaultFormatTime
+    ) -> LibraryPreparationStatus? {
+        if value.state == .deferred, let wait = value.labellingWait {
+            return try? LibraryPreparationStatus(
+                attemptID: "generation-\(value.requestSequence)-\(value.attemptCount)",
+                state: .waiting,
+                stage: "ads.label.wait",
+                detail: WiltedMacLabellerWait.publishedDetail(wait, formatTime: formatTime),
+                updatedAt: value.updatedAt.date
+            )
+        }
         let state: LibraryPreparationStatus.State
         switch value.state {
         case .pending, .deferred: state = .queued
@@ -64,6 +79,7 @@ enum WiltedMacPreparationPublication {
         var detail: String
         switch state {
         case .queued: detail = "Waiting to prepare."
+        case .waiting: detail = "Waiting to prepare."
         case .failed: detail = "Preparation failed. Retry from the Mac."
         case .cancelled: detail = "Preparation cancelled."
         case .active:

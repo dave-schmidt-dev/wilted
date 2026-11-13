@@ -63,6 +63,8 @@ public actor LabellerShadowRecorder {
         /// The engine version that produced the committed cut, when the
         /// journal records one. Nil on the live path.
         public var engineVersion: String?
+        /// Whether the episode was admitted with ad removal on. Off keeps it local.
+        public var removeAds: Bool
 
         public init(
             episodeID: String,
@@ -77,7 +79,8 @@ public actor LabellerShadowRecorder {
             engineOutcome: String,
             engineCutSpans: [ShadowSpan],
             source: String? = nil,
-            engineVersion: String? = nil
+            engineVersion: String? = nil,
+            removeAds: Bool = true
         ) {
             self.episodeID = episodeID
             self.feedID = feedID
@@ -92,6 +95,7 @@ public actor LabellerShadowRecorder {
             self.engineCutSpans = engineCutSpans
             self.source = source
             self.engineVersion = engineVersion
+            self.removeAds = removeAds
         }
     }
 
@@ -274,7 +278,8 @@ public actor LabellerShadowRecorder {
     private func route(for input: ShadowInput) -> RemoteLabellingRoute {
         RemoteLabellingPolicy.route(
             for: RemoteLabellingInput(feedID: input.feedID, feedURL: input.feedURL, feedTitle: input.feedTitle,
-                                      customTitle: input.feedCustomTitle, audioURL: input.audioURL),
+                                      customTitle: input.feedCustomTitle, audioURL: input.audioURL,
+                                      removeAds: input.removeAds),
             context: RemoteLabellingContext(preferences: preferences, hasKey: keyStore.hasKey(),
                                              counter: counter))
     }

@@ -18,6 +18,7 @@ struct LibraryPreparationAnnotation: Equatable, Sendable, Identifiable {
         "transcript.stt.start", "transcript.stt.complete", "transcript.stt.failed", "transcript.absent", "transcript.remap",
         "transcript.glossary.terms", "transcript.glossary.progress", "transcript.glossary.complete",
         "ads.model.load", "ads.detect.start", "ads.detect.calls", "ads.detect.complete",
+        "ads.label.start", "ads.label.complete", "ads.label.wait", "ads.label.stop",
         "ads.cut.start", "ads.cut.complete", "ads.cut.refused", "ads.cut.empty"
     ]
 
@@ -28,6 +29,10 @@ struct LibraryPreparationAnnotation: Equatable, Sendable, Identifiable {
         case .queued: message = "Queued on Mac"
         case .failed: message = "Preparation failed on Mac. Retry from the Mac."
         case .cancelled: message = "Preparation cancelled on Mac"
+        case .waiting:
+            let detail = status.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            message = Self.knownStages.contains(status.stage) && !detail.isEmpty
+                ? detail : "Waiting on Mac"
         case .active:
             let detail = status.detail.trimmingCharacters(in: .whitespacesAndNewlines)
             message = Self.knownStages.contains(status.stage) && !detail.isEmpty
@@ -44,8 +49,8 @@ struct LibraryPreparationAnnotation: Equatable, Sendable, Identifiable {
     var tone: WiltedStatusTone {
         switch status.state {
         case .queued, .active: .active
+        case .waiting, .cancelled: .neutral
         case .failed: .failure
-        case .cancelled: .neutral
         }
     }
 }

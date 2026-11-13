@@ -89,6 +89,8 @@ extension PodcastPreparationPipeline {
             ? await captureAdProfileSnapshot(for: episode.feedID, onStatus: report) : nil
         report(adProfileRequestProgress(profileSnapshot, enabled: policy.removeAds))
         let codeRevision = await runner.codeRevision()
+        let route = await labelledAttemptRoute(episode: episode, policy: policy)
+        let attemptDigest = Self.policyDigest(policy, labelled: route.provenance)
 
         /// Records a run that changed nothing: one provenance row naming the
         /// engine (so it counts as tried), a marker row saying nothing changed,
@@ -97,15 +99,18 @@ extension PodcastPreparationPipeline {
             report(PodcastPreparationProgress(
                 stage: "pipeline.start", detail: episode.title,
                 evidence: provenanceEvidence(sourceRevisionID: source.revisionID, sourceHash: source.contentHash,
-                                             codeRevision: codeRevision)))
+                                             codeRevision: codeRevision, policyDigest: attemptDigest)))
+            var keptFields = ["reason": String(summary.prefix(200))]
+            if attemptDigest.count <= 256 { keptFields["policyDigest"] = attemptDigest }
             let marker = try? PreparationEvidence(kind: LocalLibraryStore.keptExistingAudioEvidenceKind,
-                                                  fields: ["reason": String(summary.prefix(200))])
+                                                  fields: keptFields)
             report(PodcastPreparationProgress(stage: "prepare-again.kept", detail: summary, evidence: marker))
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: nil,
                                   revisionID: old.revision.revisionID, summary: summary, fingerprint: fingerprint,
                                   sourceRevisionID: source.revisionID, sourceHash: source.contentHash,
-                                  sourceURL: candidate.enclosureURL, codeRevision: codeRevision)
+                                  sourceURL: candidate.enclosureURL, codeRevision: codeRevision,
+                                  policyDigest: attemptDigest)
             await onJournaled()
         }
 
@@ -150,16 +155,16 @@ extension PodcastPreparationPipeline {
         report(PodcastPreparationProgress(
             stage: "pipeline.start", detail: episode.title,
             evidence: provenanceEvidence(sourceRevisionID: stagedRevisionID, sourceHash: staged.contentHash,
-                                         codeRevision: codeRevision)))
+                                         codeRevision: codeRevision, policyDigest: attemptDigest)))
         do {
             let preparedURL = preparedAudioURL(for: staged.url)
             store.inFlightMedia.begin(preparedURL)
             defer { store.inFlightMedia.end(preparedURL) }
-            let request = try await workerRequest(episode: episode, audioURL: staged.url, preparedURL: preparedURL,
-                                                  sourceHash: staged.contentHash, policy: policy,
-                                                  profileSnapshot: profileSnapshot, onStatus: report)
-            let response = try await runner.run(request: request, onProgress: report)
-            var payload = try Self.decode(response)
+            let run = try await runPreparationWorker(
+                episode: episode, audioURL: staged.url, preparedURL: preparedURL,
+                sourceHash: staged.contentHash, policy: policy, profileSnapshot: profileSnapshot,
+                emitLabellerCues: false, route: route, deferral: nil, onStatus: report)
+            var payload = run.payload
             validateAdProfileHandshake(&payload, snapshot: profileSnapshot)
             await persistAdProfileObservation(payload.adProfileObservation, feedID: episode.feedID,
                                               episodeID: episode.itemID, sourceHash: staged.contentHash,
@@ -185,14 +190,16 @@ extension PodcastPreparationPipeline {
             }
             let result = try await commitAgain(payload, episode: episode, staged: staged,
                                                stagedRevision: stagedRevision, old: old, kept: kept,
-                                               exact: exact, policy: policy, mayReplace: mayReplace,
-                                               onStatus: report)
+                                               exact: exact, policy: policy,
+                                               labelledProvenance: run.labelledProvenance,
+                                               mayReplace: mayReplace, onStatus: report)
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: nil,
                                   revisionID: result.revision.revisionID, summary: result.summary,
                                   fingerprint: fingerprint, sourceRevisionID: stagedRevisionID,
                                   sourceHash: staged.contentHash, sourceURL: candidate.enclosureURL,
-                                  timeline: payload.timeline, codeRevision: codeRevision)
+                                  timeline: payload.timeline, codeRevision: codeRevision,
+                                  policyDigest: attemptDigest)
             await onJournaled()
             return .prepared(result)
         } catch let refused as PrepareAgainRefused {
@@ -203,7 +210,7 @@ extension PodcastPreparationPipeline {
             await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: error,
                                   revisionID: nil, fingerprint: fingerprint, sourceRevisionID: stagedRevisionID,
                                   sourceHash: staged.contentHash, sourceURL: candidate.enclosureURL,
-                                  codeRevision: codeRevision)
+                                  codeRevision: codeRevision, policyDigest: attemptDigest)
             await onJournaled()
             throw error
         }
@@ -228,6 +235,7 @@ extension PodcastPreparationPipeline {
         kept: [PodcastKeepInterval]?,
         exact: Bool,
         policy: PodcastPreparationPolicySnapshot,
+        labelledProvenance: LabelledRunProvenance? = nil,
         mayReplace: @escaping @Sendable () async -> Bool,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PodcastPreparationResult {
@@ -303,7 +311,8 @@ extension PodcastPreparationPipeline {
             transcript = try Self.transcript(from: payload, itemID: itemID, revisionID: revisionID,
                                              updatedAt: Timestamp(now()))
             let outcome = PodcastPreparationOutcome(
-                episodeID: itemID, revisionID: revisionID, policyDigest: Self.policyDigest(policy),
+                episodeID: itemID, revisionID: revisionID,
+                policyDigest: Self.policyDigest(policy, labelled: labelledProvenance),
                 pipelineFingerprint: Self.semanticFingerprintResolution,
                 semanticVersion: Self.semanticVersion, producedAt: Timestamp(now()))
             var lifetimeStatistics = [LifetimeStatisticContribution(

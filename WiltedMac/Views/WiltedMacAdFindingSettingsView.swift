@@ -29,6 +29,13 @@ struct WiltedMacAdFindingSettingsView: View {
                         .accessibilityIdentifier("wilted-ad-finding-switch-message")
                 }
                 if model.waitingShowCount > 0 { waitingRow }
+                if let paused = model.providerPausedSentence {
+                    WiltedSettingsRow(
+                        "Provider",
+                        value: paused,
+                        identifier: "wilted-ad-finding-provider-paused"
+                    )
+                }
                 Divider()
                 WiltedSettingsRow(
                     "Requests today",

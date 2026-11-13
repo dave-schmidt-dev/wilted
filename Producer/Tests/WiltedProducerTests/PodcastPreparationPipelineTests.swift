@@ -6,7 +6,7 @@ import WiltedDomain
 @Suite("Podcast preparation pipeline")
 struct PodcastPreparationPipelineTests {
     @Test func semanticVersionTracksTheWorkerBehaviour() {
-        #expect(PodcastPreparationPipeline.semanticVersion == "podcast-preparation-v16")
+        #expect(PodcastPreparationPipeline.semanticVersion == "podcast-preparation-v17")
     }
 
     @Test(arguments: [false, true])

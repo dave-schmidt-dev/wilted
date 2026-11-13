@@ -10,7 +10,7 @@ extension LocalLibraryStore {
         if let attempt = entry.status.attempt {
             guard entry.id.hasPrefix(entry.requestID + "|" + attempt.key + "|") else { return }
             let ticketID = WorkTicketKind.podcastPreparation.rawValue + "|" + entry.itemID.rawValue
-            var ticketQuery = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+            var ticketQuery = FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>(
                 predicate: #Predicate { $0.id == ticketID }
             )
             ticketQuery.fetchLimit = 1
@@ -146,7 +146,7 @@ extension LocalLibraryStore {
         let outcomes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
         let readyRevisions = try newestReadyRevisionsByItemID(in: context)
         let preparationKind = WorkTicketKind.podcastPreparation.rawValue
-        let tickets = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(predicate: #Predicate { $0.kind == preparationKind }))
+        let tickets = try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>(predicate: #Predicate { $0.kind == preparationKind }))
         let ticketAttempts: [String: PreparationAttemptIdentity] = Dictionary(tickets.compactMap { ticket in
             (try? PreparationAttemptIdentity(requestSequence: ticket.requestSequence,
                                              attemptCount: ticket.attemptCount)).map { (ticket.subjectID, $0) }

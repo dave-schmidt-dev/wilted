@@ -220,6 +220,7 @@ extension WiltedMacModel {
     /// `automationTicker` rather than folded into it, and deliberately never
     /// stopped by `checkpointForBackground` -- only by actual termination
     /// (`pauseForQuit`), the one moment stopping every ticker is correct.
+    /// Each tick first parks runs deferred this session (`parkDeferredPreparationTickets`).
     ///
     /// A tick with no non-terminal ticket in the store is a no-op: there is
     /// nothing to admit, so `startEligibleAutomaticPreparations` is not even
@@ -236,6 +237,7 @@ extension WiltedMacModel {
                 }
                 guard let self else { return }
                 guard await self.hasNonTerminalWorkTicket() else { continue }
+                await self.parkDeferredPreparationTickets()
                 self.startEligibleAutomaticPreparations()
             }
         }

@@ -20,7 +20,7 @@ extension RemoteLabellingLocalReason {
             "This show's address carries a private token, so its transcripts always stay on this Mac."
         case .privateTitle:
             "This show's title sounds private, so its transcripts always stay on this Mac."
-        case .switchOff, .noKey, .notConfirmed, .ownerLocalOnly, .dailyCapReached:
+        case .switchOff, .noKey, .notConfirmed, .adRemovalOff, .ownerLocalOnly, .dailyCapReached:
             nil
         }
     }

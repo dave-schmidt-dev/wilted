@@ -2,14 +2,14 @@ import Foundation
 import WiltedDomain
 
 extension PodcastPreparationPipeline {
-    /// The worker request for one source file, serialized.
-    func workerRequest(
+    /// The worker request fields for one source file.
+    func workerRequestFields(
         episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
         policy: PodcastPreparationPolicySnapshot,
         profileSnapshot: PodcastAdProfileSnapshot?,
         emitLabellerCues: Bool = false,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
-    ) async throws -> Data {
+    ) async throws -> [String: Any] {
         var request: [String: Any] = [
             "protocolVersion": 2,
             "feedID": episode.feedID.rawValue,
@@ -46,7 +46,21 @@ extension PodcastPreparationPipeline {
             request["episodeNotes"] = notes
         }
         request["episodeTitle"] = episode.title
-        return try JSONSerialization.data(withJSONObject: request)
+        return request
+    }
+
+    /// The worker request for one source file, serialized.
+    func workerRequest(
+        episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
+        policy: PodcastPreparationPolicySnapshot,
+        profileSnapshot: PodcastAdProfileSnapshot?,
+        emitLabellerCues: Bool = false,
+        onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
+    ) async throws -> Data {
+        try JSONSerialization.data(withJSONObject: try await workerRequestFields(
+            episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
+            policy: policy, profileSnapshot: profileSnapshot, emitLabellerCues: emitLabellerCues,
+            onStatus: onStatus))
     }
 
 

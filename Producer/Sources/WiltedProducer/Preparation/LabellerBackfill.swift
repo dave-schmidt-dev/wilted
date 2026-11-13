@@ -181,7 +181,8 @@ public struct LabellerBackfill: Sendable {
                 engineOutcome: candidate.engineOutcome,
                 engineCutSpans: candidate.engineCutSpans,
                 source: "backfill",
-                engineVersion: candidate.engineVersion)
+                engineVersion: candidate.engineVersion,
+                removeAds: candidate.engineOutcome != "disabled")
             if await recorder.hasLabelledRecord(episodeID: candidate.episodeID.rawValue) { continue }
             if await recorder.localReason(for: input) != nil { continue }
             pending.append(input)

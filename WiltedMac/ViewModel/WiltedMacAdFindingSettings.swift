@@ -236,6 +236,14 @@ final class WiltedMacAdFindingSettings {
     var requestsToday: Int { LabellerRequestCounter(preferences: preferences, now: now).count }
     var dailyCap: Int { LabellerRequestCounter(preferences: preferences, now: now).cap }
 
+    /// Listener-facing paused sentence while `providerPausedSince` is stored; nil once cleared.
+    var providerPausedSentence: String? {
+        guard let since = labeller.providerPausedSince else { return nil }
+        return LabellerStopReason.providerPaused(since: since).sentence(formatTime: {
+            $0.formatted(date: .omitted, time: .shortened)
+        })
+    }
+
     // MARK: Backfill
 
     /// Whether the Prepared episodes row can offer Label now.

@@ -99,11 +99,20 @@ extension WiltedMacModel {
     /// good, and an empty set only withholds this session's offer to prepare an
     /// episode again. The warning is the one trace, because a control that is
     /// quietly absent is otherwise unexplainable.
-    func refreshEpisodesToPrepareAgain(from store: LocalLibraryStore, readEpoch: UInt64) async {
+    ///
+    /// `feedMeta` is the feed title, address and custom name for routing when
+    /// the caller's snapshot is newer than `subscriptions` (a library load);
+    /// nil reads those from the model.
+    func refreshEpisodesToPrepareAgain(
+        from store: LocalLibraryStore,
+        readEpoch: UInt64,
+        feedMeta: [String: LabelledDigestFeedMeta]? = nil
+    ) async {
         let restoring = Set(
             WiltedMacAdFreeFeedPreference(preferences: preferences).feedIDs
                 .compactMap { try? ItemID(rawValue: $0) }
         )
+        let digestLookup = labelledDigestInForceLookup(feedMeta: feedMeta)
         // Reads can finish out of order (a switch flipped twice, a load beside
         // a switch): only the newest one started read the current ad-free set.
         // A read already behind a newer library load would be dropped below;
@@ -112,7 +121,10 @@ extension WiltedMacModel {
         prepareAgainRefreshGeneration &+= 1
         let generation = prepareAgainRefreshGeneration
         do {
-            let values = try await store.podcastEpisodesToPrepareAgain(restoringCutsOnFeeds: restoring)
+            let values = try await store.podcastEpisodesToPrepareAgain(
+                restoringCutsOnFeeds: restoring,
+                labelledDigestInForce: digestLookup
+            )
             // The read can outlive a newer library load; that load owns the set.
             guard readEpoch == libraryReadEpoch, generation == prepareAgainRefreshGeneration else { return }
             prepareAgainCandidates = Dictionary(
@@ -125,6 +137,63 @@ extension WiltedMacModel {
                 "prepare-again candidates could not be read: \(LogSafeError.describe(error), privacy: .public)"
             )
         }
+    }
+
+    /// Feed facts the labelled digest-in-force lookup needs for one show.
+    struct LabelledDigestFeedMeta: Sendable {
+        let feedURL: URL?
+        let feedTitle: String
+        let customTitle: String?
+    }
+
+    /// Builds the digest-in-force lookup from a main-actor value snapshot: each
+    /// feed's policy snapshot and routing facts, the labeller preferences and
+    /// key presence. The closure runs on the store's actor and touches no model state.
+    func labelledDigestInForceLookup(
+        feedMeta: [String: LabelledDigestFeedMeta]? = nil
+    ) -> @Sendable (ItemID, URL) -> String? {
+        let settings = automationSettings
+        let labeller = AdLabellerPreferences(preferences: preferences)
+        let hasKey = adFinding.hasKey
+        let feeds: [String: LabelledDigestFeedMeta]
+        if let feedMeta {
+            feeds = feedMeta
+        } else {
+            feeds = Dictionary(subscriptions.map {
+                ($0.id, LabelledDigestFeedMeta(
+                    feedURL: $0.feedURL,
+                    feedTitle: $0.publisherTitle ?? $0.title,
+                    customTitle: $0.displayName))
+            }, uniquingKeysWith: { first, _ in first })
+        }
+        let policies = Dictionary(uniqueKeysWithValues: feeds.keys.map {
+            ($0, Self.preparationPolicySnapshot(from: settings, feedID: $0, preferences: preferences))
+        })
+        return { feedID, audioURL in
+            // A feed the snapshot does not know cannot be routed, so it reads as local.
+            guard let meta = feeds[feedID.rawValue], let policy = policies[feedID.rawValue] else { return nil }
+            return Self.labelledDigestInForce(
+                feedID: feedID.rawValue, audioURL: audioURL, meta: meta,
+                policy: policy, labeller: labeller, hasKey: hasKey)
+        }
+    }
+
+    /// The labelled digest a fresh cut of this feed and audio would store, or nil when local.
+    nonisolated static func labelledDigestInForce(
+        feedID: String,
+        audioURL: URL,
+        meta: LabelledDigestFeedMeta,
+        policy: PodcastPreparationPolicySnapshot,
+        labeller: AdLabellerPreferences,
+        hasKey: Bool
+    ) -> String? {
+        LabelledPolicyDigestInForce.digest(
+            policy: policy,
+            input: RemoteLabellingInput(
+                feedID: feedID, feedURL: meta.feedURL, feedTitle: meta.feedTitle,
+                customTitle: meta.customTitle, audioURL: audioURL, removeAds: policy.removeAds),
+            preferences: labeller,
+            hasKey: hasKey)
     }
 
     private static let prepareAgainLog = Logger(

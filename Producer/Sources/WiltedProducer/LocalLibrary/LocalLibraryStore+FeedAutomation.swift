@@ -308,7 +308,7 @@ extension LocalLibraryStore {
             context.insert(DecisionRecord(episodeID: episodeID, decision: value.decision.rawValue,
                                           source: value.source.rawValue, ruleID: value.ruleID, decidedAt: value.decidedAt.date))
         }
-        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>())
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>())
         let nextSequence = (records.map(\.requestSequence).max() ?? 0) + 1
         var tickets: [WorkTicket] = []
         for (offset, kind) in Array(Set(workTicketKinds.map(\.rawValue))).sorted().compactMap(WorkTicketKind.init(rawValue:)).enumerated() {
@@ -316,7 +316,7 @@ extension LocalLibraryStore {
             guard !records.contains(where: { $0.id == id }) else { continue }
             let ticket = WorkTicket(kind: kind, subjectID: episodeID, resolvedItemID: episodeID,
                                     requestSequence: nextSequence + offset, requestedAt: requestedAt, updatedAt: requestedAt)
-            context.insert(LocalLibrarySchemaV12Models.WorkTicketRecord(ticket)); tickets.append(ticket)
+            context.insert(LocalLibrarySchemaV22Models.WorkTicketRecord(ticket)); tickets.append(ticket)
         }
         #if DEBUG
         try Self.feedAutomationBeforeSave?()

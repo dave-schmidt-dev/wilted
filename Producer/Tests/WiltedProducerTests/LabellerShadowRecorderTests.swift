@@ -540,6 +540,39 @@ struct LabellerShadowRecorderTests {
             .appendingPathComponent(LabellerShadowRecorder.recordFileName(for: "episode-label")).path))
     }
 
+    @Test func anAdFreeFeedOrAdRemovalOffStaysLocalWithNoRequests() async throws {
+        let directory = try makeDirectory("ad-removal-off")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sender = StubSender(outcomes: [.respond(LabellerResponse(text: Self.goodReply, usage: LabellerUsage()))])
+        let cueFile = try writeCueFile(to: directory)
+
+        let (adFreeDefaults, adFreeName) = makeDefaults()
+        defer { adFreeDefaults.removePersistentDomain(forName: adFreeName) }
+        adFreeDefaults.set([Self.feedID.rawValue], forKey: AdLabellerPreferences.adFreeFeedsKey)
+        let adFree = makeRecorder(defaults: adFreeDefaults, sender: sender, recordsDirectory: directory, shadow: true)
+        let adFreeInput = labelInput(episodeID: "episode-ad-free", cueFile: cueFile)
+        #expect(await adFree.localReason(for: adFreeInput) == .adRemovalOff)
+        await adFree.schedule(adFreeInput)
+        await adFree.waitForIdle()
+        #expect(sender.requestCount == 0)
+        let adFreeRecord = try readRecord(directory: directory, episodeID: try ItemID(rawValue: "episode-ad-free"))
+        #expect(adFreeRecord["route"] as? String == "local")
+        #expect(adFreeRecord["routeReason"] as? String == "adRemovalOff")
+
+        let (offDefaults, offName) = makeDefaults()
+        defer { offDefaults.removePersistentDomain(forName: offName) }
+        let off = makeRecorder(defaults: offDefaults, sender: sender, recordsDirectory: directory, shadow: true)
+        var withoutAds = labelInput(episodeID: "episode-remove-ads-off", cueFile: cueFile)
+        withoutAds.removeAds = false
+        #expect(await off.localReason(for: withoutAds) == .adRemovalOff)
+        await off.schedule(withoutAds)
+        await off.waitForIdle()
+        #expect(sender.requestCount == 0)
+        let offRecord = try readRecord(directory: directory, episodeID: try ItemID(rawValue: "episode-remove-ads-off"))
+        #expect(offRecord["route"] as? String == "local")
+        #expect(offRecord["routeReason"] as? String == "adRemovalOff")
+    }
+
     /// The owner's name for a show decides keep-local but is never part of the request.
     @Test func theOwnersShowNameKeepsItLocalAndNeverEntersThePrompt() async throws {
         let directory = try makeDirectory("label-custom-name")

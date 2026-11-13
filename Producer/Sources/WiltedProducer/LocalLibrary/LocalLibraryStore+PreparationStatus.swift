@@ -14,11 +14,17 @@ extension LocalLibraryStore {
         public let state: WorkTicketState
         public let updatedAt: Timestamp
         public let status: PreparationStatus?
+        /// Set only when this ticket is a labelling wait (`WorkTicketDeferralReason`).
+        public let labellingWait: LabellingWait?
 
-        public init(requestSequence: Int, attemptCount: Int, state: WorkTicketState,
-                    updatedAt: Timestamp, status: PreparationStatus? = nil) {
+        public init(
+            requestSequence: Int, attemptCount: Int, state: WorkTicketState,
+            updatedAt: Timestamp, status: PreparationStatus? = nil,
+            labellingWait: LabellingWait? = nil
+        ) {
             self.requestSequence = requestSequence; self.attemptCount = attemptCount
             self.state = state; self.updatedAt = updatedAt; self.status = status
+            self.labellingWait = labellingWait
         }
     }
 
@@ -30,14 +36,14 @@ extension LocalLibraryStore {
         let preparationKind = WorkTicketKind.podcastPreparation.rawValue
         let ticketIDs = Set(allowedItems.map { preparationKind + "|" + $0.rawValue })
         let context = ModelContext(container)
-        let query = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+        let query = FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>(
             predicate: #Predicate { ticketIDs.contains($0.id) }
         )
         let tickets = try context.fetch(query)
         #if DEBUG
         Self.preparationPublicationReadObserver?("tickets", tickets.count)
         #endif
-        var ticketValues: [(itemID: ItemID, state: WorkTicketState, record: LocalLibrarySchemaV12Models.WorkTicketRecord,
+        var ticketValues: [(itemID: ItemID, state: WorkTicketState, record: LocalLibrarySchemaV22Models.WorkTicketRecord,
                             attempt: PreparationAttemptIdentity?)] = []
         var attempts: [ItemID: PreparationAttemptIdentity] = [:]
         for ticket in tickets {
@@ -52,6 +58,12 @@ extension LocalLibraryStore {
         var result: [ItemID: CurrentPreparationStatus] = [:]
         for (itemID, state, ticket, _) in ticketValues {
             let latest = latestByItem[itemID]?.status
+            let labellingWait = LabellingWait(
+                state: state,
+                failureKind: ticket.failureKind,
+                nextEligibleAt: ticket.nextEligibleAt.map(Timestamp.init),
+                deferralCount: ticket.deferralCount
+            )
             // A ticket or terminal alone cannot clear status. Success must name this
             // item's current Ready revision and its current durable preparation outcome.
             let boundSuccessRevision = latest?.terminalResult.flatMap {
@@ -68,9 +80,11 @@ extension LocalLibraryStore {
                 #endif
                 guard let ready = try readyRevision(for: itemID),
                       boundSuccessRevision == nil || ready.revisionID == boundSuccessRevision else {
-                    result[itemID] = CurrentPreparationStatus(requestSequence: ticket.requestSequence,
+                    result[itemID] = CurrentPreparationStatus(
+                        requestSequence: ticket.requestSequence,
                         attemptCount: ticket.attemptCount, state: state,
-                        updatedAt: latest?.emittedAt ?? Timestamp(ticket.updatedAt), status: latest)
+                        updatedAt: latest?.emittedAt ?? Timestamp(ticket.updatedAt),
+                        status: latest, labellingWait: labellingWait)
                     continue
                 }
                 let outcomeID = itemID.rawValue + "|" + ready.revisionID.rawValue
@@ -83,7 +97,8 @@ extension LocalLibraryStore {
             }
             result[itemID] = CurrentPreparationStatus(
                 requestSequence: ticket.requestSequence, attemptCount: ticket.attemptCount, state: state,
-                updatedAt: latest?.emittedAt ?? Timestamp(ticket.updatedAt), status: latest
+                updatedAt: latest?.emittedAt ?? Timestamp(ticket.updatedAt), status: latest,
+                labellingWait: labellingWait
             )
         }
         return result
@@ -122,7 +137,7 @@ extension LocalLibraryStore {
               run.entries.allSatisfy({ $0.itemID == run.itemID && $0.requestID == run.requestID && $0.status.attempt == attempt }) else { return false }
         let context = ModelContext(container)
         let ticketID = WorkTicketKind.podcastPreparation.rawValue + "|" + run.itemID.rawValue
-        var ticketQuery = FetchDescriptor<LocalLibrarySchemaV12Models.WorkTicketRecord>(
+        var ticketQuery = FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>(
             predicate: #Predicate { $0.id == ticketID }
         )
         ticketQuery.fetchLimit = 1
@@ -130,7 +145,10 @@ extension LocalLibraryStore {
         let sameGeneration = ticket.requestSequence == attempt.requestSequence && ticket.attemptCount == attempt.attemptCount
         let superseded = ticket.requestSequence > attempt.requestSequence
             || (ticket.requestSequence == attempt.requestSequence && ticket.attemptCount > attempt.attemptCount)
-        guard superseded || (sameGeneration && ticket.state != WorkTicketState.running.rawValue) else { return false }
+        // W-INV-036: a same-generation deferred ticket parked itself through
+        // `deferRunningWorkTicket` and is waiting, not interrupted; it stays open.
+        guard superseded || (sameGeneration && ticket.state != WorkTicketState.running.rawValue
+            && ticket.state != WorkTicketState.deferred.rawValue) else { return false }
         if sameGeneration, let ready = try readyRevision(for: run.itemID) {
             let outcomeID = run.itemID.rawValue + "|" + ready.revisionID.rawValue
             var outcomeQuery = FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>(
