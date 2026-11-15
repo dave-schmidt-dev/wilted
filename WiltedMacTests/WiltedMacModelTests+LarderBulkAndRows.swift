@@ -385,7 +385,7 @@ extension WiltedMacModelTests {
         XCTAssertFalse(modelSource.contains("larderRowRetirementLabel"))
         XCTAssertFalse(view.contains("replacingOccurrences(of: \"could not be skipped\""),
                        "the view must present the model's completion message verbatim")
-        XCTAssertTrue(modelSource.contains("Undo completion is available for 10 seconds."))
+        XCTAssertTrue(modelSource.contains("undoToast.offer("), "a completion offers its Undo in the toast")
         XCTAssertTrue(modelSource.contains("could not be marked completed."))
         XCTAssertEqual(view.components(separatedBy: "model.removeEpisode(").count - 1, 0,
                        "the destructive path gets no row surface")

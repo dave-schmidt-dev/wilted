@@ -113,6 +113,9 @@ struct WiltedMacRootView: View {
                         }
                     }
                 }
+                // Over the content and clear of the bottom bar. The full-window
+                // player covers this region, so it carries the toast itself.
+                .modifier(WiltedMacUndoToastHost(center: model.undoToast, isPresenting: playerPresentation == nil))
                 if showsBottomBar {
                     Divider()
                     WiltedMacCompactPlayer(
@@ -143,6 +146,7 @@ struct WiltedMacRootView: View {
                         paneState.collapsed(to: section)
                     }
                 )
+                .modifier(WiltedMacUndoToastHost(center: model.undoToast))
             }
         }
         // The full-window player belongs to the destination that presented

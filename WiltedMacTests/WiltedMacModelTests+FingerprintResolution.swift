@@ -299,7 +299,7 @@ extension WiltedMacModelTests {
                       "Feeds' Skip must call the non-destructive exclusion, not removal")
         XCTAssertFalse(source.contains("model.removeEpisode("),
                        "the destructive path must not stay on any row")
-        XCTAssertTrue(source.contains("wilted-podcast-undo-skip"), "and its offline undo must remain offered")
+        XCTAssertTrue(source.contains("wilted-undo-toast-undo"), "and its offline undo must remain offered")
     }
 
     /// 2.4: a Feeds skip is reversible from the same page with no feed check,

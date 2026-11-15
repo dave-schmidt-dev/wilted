@@ -319,6 +319,14 @@ final class WiltedMacModel {
     @ObservationIgnored var manualCompletionSleep: @MainActor (TimeInterval) async throws -> Void = {
         try await Task.sleep(for: .seconds($0))
     }
+    /// The undo toast, on the same injected clock as the completion window.
+    @ObservationIgnored private(set) lazy var undoToast = WiltedMacUndoToastCenter(
+        now: { [weak self] in self?.manualCompletionNow() ?? Date() },
+        sleep: { [weak self] seconds in
+            guard let self else { throw CancellationError() }
+            try await self.manualCompletionSleep(seconds)
+        }
+    )
     var manualCompletionExpiryTask: Task<Void, Never>?
     var manualCompletionExpiryDeadline: Date?
     var manualCompletionExpiryGeneration = UUID()

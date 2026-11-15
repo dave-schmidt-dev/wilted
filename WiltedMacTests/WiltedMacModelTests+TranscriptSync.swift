@@ -235,7 +235,7 @@ extension WiltedMacModelTests {
                        "saying \"I am done with this\" takes it off the shelf, the same as playing it to the end")
         XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == episodeID.rawValue },
                        "retirement is not a dismissal -- nothing was deleted")
-        XCTAssertEqual(model.podcastOperationMessage, "Marked \(episode.title) completed. Undo completion is available for 10 seconds.")
+        XCTAssertEqual(model.undoToast.current?.message, "Marked \(episode.title) completed.")
         XCTAssertFalse(model.isNowPlaying, "the finished item is withdrawn")
     }
 

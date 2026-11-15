@@ -254,6 +254,7 @@ extension WiltedMacModel {
         // longer exist; any other episode's undo is left alone.
         if undoableRemoval?.feedID == subscription.id { undoableRemoval = nil }
         if let skipped = undoableSkip, owned.contains(skipped.id) { undoableSkip = nil }
+        undoToast.withdraw(subjects: owned)
         subscriptions.removeAll { $0.id == subscription.id }
         // The cascade has committed, so a failed reload must not read as a
         // failed removal: the rows above are already gone, and the error is

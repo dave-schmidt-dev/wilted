@@ -91,7 +91,7 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
             .filter { $0.isLetter || $0.isNumber })
     }
 
-    func testFeedsDrawsOneHeadingAndOneMessageWithOneUndoPerOperation() async throws {
+    func testFeedsDrawsOneHeadingAndOneMessageAndLeavesUndoToTheToast() async throws {
         let model = await WiltedMacHeadless.model(self, arguments)
         let episode = try XCTUnwrap(model.feedsEpisodes.first)
         model.podcastOperationMessage = "Skipped Quiet Machines."
@@ -100,7 +100,7 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         let shown = try lines(model).map(\.text)
         XCTAssertEqual(shown.filter { $0 == "Feeds" }.count, 1, "one Feeds heading: \(shown)")
         XCTAssertEqual(shown.filter { $0.contains("Skipped Quiet Machines") }.count, 1, "one operation message: \(shown)")
-        XCTAssertEqual(shown.filter { $0.contains("Undo completion") }.count, 1, "one Undo: \(shown)")
+        XCTAssertFalse(shown.contains { $0.contains("Undo") }, "Undo is the window's toast: \(shown)")
         XCTAssertFalse(shown.contains { $0.hasPrefix("Last updated") }, "the label is Last refreshed")
     }
 

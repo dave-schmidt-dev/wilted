@@ -86,6 +86,7 @@ final class WiltedMacCompletionOptimisticTests: XCTestCase {
         fixture.model.skipEpisode(episode)
 
         XCTAssertNil(fixture.model.undoableSkip, "Undo is not offered before the completion is durable")
+        XCTAssertNil(fixture.model.undoToast.current, "the toast waits for the durable completion too")
         XCTAssertEqual(fixture.model.podcastOperationMessage, "Saving \(episode.title) as completed…",
                        "a queued write must not claim success")
         XCTAssertFalse(fixture.model.larderVisibleEpisodes.contains { $0.id == fixture.episodeID },
@@ -99,8 +100,8 @@ final class WiltedMacCompletionOptimisticTests: XCTestCase {
         await gate.open()
         await WiltedMacHeadless.drainDecisions(fixture.model)
         XCTAssertEqual(fixture.model.undoableSkip?.id, fixture.episodeID)
-        XCTAssertEqual(fixture.model.podcastOperationMessage,
-                       "Marked \(episode.title) completed. Undo completion is available for 10 seconds.")
+        XCTAssertNil(fixture.model.podcastOperationMessage, "the toast says it, so the list's line clears")
+        XCTAssertEqual(fixture.model.undoToast.current?.message, "Marked \(episode.title) completed.")
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.mediaURL.path),
                       "completion keeps the media Undo needs")
     }
@@ -133,13 +134,12 @@ final class WiltedMacCompletionOptimisticTests: XCTestCase {
         model.skipEpisode(refreshed)
         await WiltedMacHeadless.drainDecisions(model)
         let second = try XCTUnwrap(model.undoableSkip)
-        XCTAssertEqual(model.podcastOperationMessage,
-                       "Marked \(episode.title) completed. Undo completion is available for 10 seconds.")
+        XCTAssertEqual(model.undoToast.current?.message, "Marked \(episode.title) completed.")
         clock.advance(10)
         await WiltedMacHeadless.eventually("the expiry task commits the durable seal") {
             model.manualCompletionExpiryTask == nil && model.undoableSkip == nil
         }
-        XCTAssertNil(model.podcastOperationMessage, "the Undo notice leaves the header when its window closes")
+        XCTAssertNil(model.undoToast.current, "the toast never outlasts the window it offers")
         model.undoSkipEpisode(second)
         await WiltedMacHeadless.drainDecisions(model)
         let retired = try await fixture.store.removalKind(for: id)
@@ -367,8 +367,8 @@ final class WiltedMacCompletionOptimisticTests: XCTestCase {
         XCTAssertEqual(windows[try XCTUnwrap(undo.manualCompletionOperationID)], clock.now.addingTimeInterval(10))
         let decision = try await fixture.store.episodeDecision(for: ItemID(rawValue: episode.id))
         XCTAssertEqual(decision?.decidedAt, dated)
-        XCTAssertEqual(model.podcastOperationMessage,
-            "Marked \(episode.title) completed. Undo completion is available for 10 seconds.")
+        XCTAssertEqual(model.undoToast.current?.message, "Marked \(episode.title) completed.")
+        XCTAssertEqual(model.undoToast.current?.availableUntil, clock.now.addingTimeInterval(10))
         clock.advance(9)
         model.undoSkipEpisode(undo)
         await WiltedMacHeadless.drainDecisions(model)
@@ -390,14 +390,13 @@ final class WiltedMacCompletionOptimisticTests: XCTestCase {
         model.finishEpisodes([missing, episode])
         await WiltedMacHeadless.drainDecisions(model)
         XCTAssertEqual(model.undoableSkip?.id, episode.id)
-        XCTAssertEqual(model.podcastOperationMessage,
-            "Marked \(episode.title) completed. Undo completion is available for 10 seconds.")
+        XCTAssertEqual(model.undoToast.current?.message, "Marked \(episode.title) completed.")
     }
 }
 
 /// Deterministic wall clock and cancellable sleeper for the model-owned task.
 @MainActor
-private final class CompletionClock {
+final class CompletionClock {
     var now = Date(timeIntervalSince1970: 1_800_000_000)
     private var sleepers: [UUID: (Date, CheckedContinuation<Void, Error>)] = [:]
 

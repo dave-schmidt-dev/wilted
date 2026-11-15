@@ -174,8 +174,9 @@ enum WiltedMacPodcastOperationMessageLayout {
 
 /// The running report for the last Larder or Feeds action.
 ///
-/// Downloads, preparation, completion, reordering and Undo report from Larder;
-/// feed refreshes report from Feeds and Feed History. Each destination renders
+/// Downloads, preparation, completion and reordering report from Larder; feed
+/// refreshes report from Feeds and Feed History. A finished completion and its
+/// Undo are the undo toast's (`WiltedMacUndoToastView`). Each destination renders
 /// it once near the top of its list, and only one destination is on screen at a
 /// time, which keeps the identifier unique.
 struct WiltedMacPodcastOperationMessage: View {
@@ -201,15 +202,6 @@ struct WiltedMacPodcastOperationMessage: View {
                     }
                     .accessibilityIdentifier("wilted-podcast-undo-removal")
                     .accessibilityLabel("Undo removing \(undoable.title)")
-                }
-                if let skipped = model.undoableSkip {
-                    // Completion can be reversed locally without consulting
-                    // the feed or deleting the episode's media.
-                    Button("Undo completion") {
-                        model.undoSkipEpisode(skipped)
-                    }
-                    .accessibilityIdentifier("wilted-podcast-undo-skip")
-                    .accessibilityLabel("Undo completion of \(skipped.title)")
                 }
             }
         }

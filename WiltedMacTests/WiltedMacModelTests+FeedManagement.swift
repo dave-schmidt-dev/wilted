@@ -143,7 +143,7 @@ extension WiltedMacModelTests {
         try await settle(model)
         XCTAssertEqual(model.episodes.filter { $0.retiredAt == nil }.map(\.feedTitle), ["Beta"])
         XCTAssertTrue(model.episodes.contains { $0.id == unwanted.id && $0.isPlayed && $0.retiredAt != nil })
-        XCTAssertEqual(model.podcastOperationMessage, "Marked \(unwanted.title) completed. Undo completion is available for 10 seconds.")
+        XCTAssertEqual(model.undoToast.current?.message, "Marked \(unwanted.title) completed.")
 
         let relaunched = WiltedMacModel(
             arguments: [],
@@ -160,8 +160,7 @@ extension WiltedMacModelTests {
                        "a removal that only lives in memory reappears here")
     }
 
-    /// The Undo button beside the removal message needs the removed episode's
-    /// identity to restore it. `removeEpisode` must record that identity once
+    /// The undo toast needs the removed episode's identity to restore it. `removeEpisode` must record that identity once
     /// the store confirms receipt-backed completion, not just the optimistic hide.
     func testRemovingAnEpisodeRecordsItForUndo() async throws {
         let directory = temporaryDirectory("episode-remove-undo")
@@ -175,11 +174,11 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.undoableSkip?.id, unwanted.id)
         XCTAssertNotNil(model.undoableSkip?.manualCompletionOperationID)
         XCTAssertTrue(model.dismissedEpisodes.isEmpty)
-        XCTAssertEqual(model.podcastOperationMessage, "Marked \(unwanted.title) completed. Undo completion is available for 10 seconds.")
+        XCTAssertEqual(model.undoToast.current?.message, "Marked \(unwanted.title) completed.")
     }
 
-    /// A second removal must replace the first's undo record: only the most
-    /// recent removal is one keystroke away from being undone.
+    /// A second removal takes over the model's undo record. The toast keeps
+    /// both offers (`testTwoQuickRemovalsCanBothBeUndoneNewestFirst`).
     func testASecondRemovalReplacesTheFirstsUndoRecord() async throws {
         let directory = temporaryDirectory("episode-remove-undo-replace")
 
@@ -195,6 +194,7 @@ extension WiltedMacModelTests {
         try await settle(model)
         XCTAssertEqual(model.undoableSkip?.id, second.id,
                         "the newer removal must own the undo record, not the older one")
+        XCTAssertEqual(model.undoToast.offers.map(\.subjects), [[first.id], [second.id]])
     }
 
     /// The manage actions run detached tasks, so a test has to let the

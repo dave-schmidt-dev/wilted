@@ -287,6 +287,7 @@ extension WiltedMacModel {
         importedPositionLibraryReloadTask?.cancel()
         manualCompletionRecoveryTask?.cancel()
         manualCompletionExpiryTask?.cancel()
+        undoToast.withdrawAll()
         larderAdditionTask?.cancel()
         for task in podcastDownloadTasks.values { task.cancel() }
         for task in podcastPreparationTasks.values { task.cancel() }
