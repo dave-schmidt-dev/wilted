@@ -19,13 +19,13 @@ extension WiltedMacModel {
     /// True when the labelling policy would force the show local for a private title,
     /// token-like feed address, or credentialed address — not for an unknown address alone.
     static func looksAdFree(title: String, feedURL: URL?, feedID: String) -> Bool {
-        let reason = RemoteLabellingPolicy.forcedLocalReason(for: RemoteLabellingInput(
+        let reason = RemoteLabellingPolicy.forcedNotSentReason(for: RemoteLabellingInput(
             feedID: feedID, feedURL: feedURL, feedTitle: title, customTitle: nil, audioURL: nil
         ))
         switch reason {
         case .privateTitle, .tokenLikeFeedURL, .credentialedURL:
             return true
-        case .switchOff, .noKey, .notConfirmed, .adRemovalOff, .ownerLocalOnly, .dailyCapReached,
+        case .switchOff, .noKey, .notConfirmed, .adRemovalOff, .dailyCapReached,
              .unknownFeedURL, .none:
             return false
         }

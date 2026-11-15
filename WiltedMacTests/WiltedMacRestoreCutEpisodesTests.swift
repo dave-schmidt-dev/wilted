@@ -222,7 +222,8 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
     }
 
     /// One downloaded episode the current engine cut, left in a store the Mac
-    /// can bootstrap. Uses the real pipeline with a stub worker.
+    /// can bootstrap. Uses the real pipeline on the labelled path, the only one
+    /// that cuts, with a stub worker and a stub provider.
     private func seedCurrentEngineCut(suffix: String) async throws -> CutSeed {
         let root = wiltedTemporaryDirectory("restore-cut-\(suffix)")
         let work = root.appendingPathComponent("Work", isDirectory: true)
@@ -269,9 +270,16 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
             )
         )
 
+        let defaults = WiltedMacTestPreferences.ephemeral()
+        let labeller = AdLabellerPreferences(preferences: defaults)
+        labeller.isEnabled = true
+        labeller.setConfirmed(feedID: feedID.rawValue, true)
         let pipeline = PodcastPreparationPipeline(
             store: store, workDirectory: work, runner: CuttingPipelineRunner(),
-            now: { Date(timeIntervalSince1970: 1_700_000_200) }
+            now: { Date(timeIntervalSince1970: 1_700_000_200) },
+            labelling: PodcastLabellingServices(
+                preferences: labeller, counter: LabellerRequestCounter(preferences: defaults),
+                keyStore: InMemoryLabellerKeyStore(key: "synthetic-test-key"), sender: SponsorCueSender())
         )
         _ = try await pipeline.prepare(episodeID: episodeID)
         return CutSeed(root: root, store: store, episodeID: episodeID, feedID: feedID)
@@ -327,7 +335,21 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
     }
 }
 
-/// Stands in for the Python worker and removes 3.0–7.5 from a twelve-second episode.
+/// Answers the labelled path's provider with one break over cue 1, the sponsor read.
+private struct SponsorCueSender: LabellerSending {
+    func send(
+        _ request: LabellerRequest, onRequestStarted: @escaping @Sendable () -> Void,
+        onProgress: @escaping @Sendable (LabellerProgress) -> Void
+    ) async throws -> LabellerResponse {
+        onRequestStarted()
+        let reply = #"{"breaks":[{"startSegment":1,"endSegment":1,"kind":"sponsor","label":"must-cut","advertisers":["Invented"]}]}"#
+        return LabellerResponse(text: reply, usage: LabellerUsage())
+    }
+}
+
+/// Stands in for the Python worker on the labelled path: the transcript stage
+/// exports three cues with the sponsor read at 3.0–7.5, and the cut stage
+/// removes it from a twelve-second episode.
 private actor CuttingPipelineRunner: PodcastPipelineRunning {
     private static let cutAudio = Data("shorter-audio-bytes".utf8)
 
@@ -336,9 +358,10 @@ private actor CuttingPipelineRunner: PodcastPipelineRunning {
         onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> Data {
         let decoded = try JSONSerialization.jsonObject(with: payload) as? [String: Any] ?? [:]
+        if decoded["adStage"] as? String == "transcript" { return try Self.transcriptStage(decoded) }
         onProgress(PodcastPreparationProgress(stage: "worker.start"))
         var answer: [String: Any] = [
-            "ok": true, "timing": "aligned", "audioChanged": true, "durationSeconds": 7.5,
+            "ok": true, "adStage": "cut", "timing": "aligned", "audioChanged": true, "durationSeconds": 7.5,
             "text": "Kept words.",
             "cues": [["startSeconds": 0.0, "endSeconds": 3.0, "text": "Kept words."]],
             "removedSeconds": 4.5,
@@ -352,9 +375,11 @@ private actor CuttingPipelineRunner: PodcastPipelineRunning {
                 "outcome": "cut",
                 "rawNominations": [["startSeconds": 3.0, "endSeconds": 7.5, "label": "host read", "confidence": 0.91]],
                 "audit": [
-                    "classifierRequests": 3, "classifierValidRequests": 3, "classifierInvalidRequests": 0,
-                    "exhaustedSingletonLineages": 0, "modelRequests": 3, "modelFailures": 0,
-                    "experimentalRequests": 0, "unresolvedIds": [Int](), "candidates": [[String: Any]](),
+                    "adEngine": "labelled", "breaksProposed": 1, "breaksCut": 1, "breaksLeftIn": 0,
+                    "leftIn": [[String: Any]](), "heldSpans": [[String: Any]](),
+                    "labellerModelID": decoded["labellerModelID"] as? String ?? "",
+                    "labellerLevel": decoded["labellerLevel"] as? String ?? "",
+                    "labellerPromptVersion": decoded["labellerPromptVersion"] as? String ?? "",
                     "incompleteError": NSNull(),
                 ],
             ],
@@ -364,5 +389,23 @@ private actor CuttingPipelineRunner: PodcastPipelineRunning {
             answer["audioPath"] = outputPath
         }
         return try JSONSerialization.data(withJSONObject: answer)
+    }
+
+    private static func transcriptStage(_ request: [String: Any]) throws -> Data {
+        let cues = [
+            LabellerCue(id: 0, start: 0, end: 3, text: "Invented programme talk."),
+            LabellerCue(id: 1, start: 3, end: 7.5, text: "Invented sponsor read."),
+            LabellerCue(id: 2, start: 7.5, end: 12, text: "Invented programme talk."),
+        ]
+        let data = try JSONEncoder().encode(cues)
+        let directory = URL(fileURLWithPath: request["workDir"] as? String ?? NSTemporaryDirectory())
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("restore-labeller-cues.json")
+        try data.write(to: url)
+        return try JSONSerialization.data(withJSONObject: [
+            "ok": true, "protocolVersion": request["protocolVersion"] as? Int ?? 2, "adStage": "transcript",
+            "timing": "aligned", "durationSeconds": 12, "labellerCuesPath": url.path,
+            "labellerCuesDigest": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+        ] as [String: Any])
     }
 }

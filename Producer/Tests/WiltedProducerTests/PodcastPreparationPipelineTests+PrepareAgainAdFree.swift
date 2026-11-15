@@ -44,7 +44,7 @@ extension PodcastPreparationPipelineTests {
     // MARK: Cases
 
     @Test func aCurrentEngineCutOnAnAdFreeFeedIsOfferedAndRestoredWhole() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let adFree: Set<ItemID> = [try feedID()]
         let cut = try await currentCut(fixture, position: 4.5)
@@ -82,7 +82,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aCurrentEngineCutOnAnotherFeedIsNotOffered() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         _ = try await currentCut(fixture, position: nil)
         let other = try ItemID.derivePodcastFeed(
@@ -91,7 +91,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func anAdFreeFeedsEpisodeWithNothingRemovedIsNotOffered() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let worker = WorkerStub(response: Self.uncutResponse(audioURL: fixture.audioURL))
         let result = try await fixture.pipeline(worker).prepare(episodeID: fixture.episodeID)
@@ -100,9 +100,9 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func anAdFreeFeedsUnresolvedEpisodeIsNotOffered() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
-        let worker = WorkerStub(response: Self.uncertainResponse(audioURL: fixture.audioURL))
+        let worker = WorkerStub(response: Fixture.labelledUncertainResponse(audioPath: fixture.audioURL.path))
         _ = try await fixture.pipeline(worker).prepare(episodeID: fixture.episodeID)
         #expect(try await fixture.store.podcastEpisodesToPrepareAgain(restoringCutsOnFeeds: [try feedID()]).isEmpty,
                 "the whole original was kept, so there is nothing to restore")
@@ -112,7 +112,7 @@ extension PodcastPreparationPipelineTests {
     /// must not, or a restored original whose download record drifted would be
     /// offered for ever.
     @Test func aRestoredEpisodeWhoseFileWentMissingIsNotOfferedAgain() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let adFree: Set<ItemID> = [try feedID()]
         _ = try await currentCut(fixture, position: nil)
@@ -129,7 +129,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func anOlderEnginesCutIsOfferedWhetherOrNotTheFeedIsAdFree() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         _ = try await fixture.pipeline(Fixture.cuttingStub(), engineVersion: Self.olderEngine)
             .prepare(episodeID: fixture.episodeID)
@@ -139,7 +139,7 @@ extension PodcastPreparationPipelineTests {
 
     /// A refusal changes nothing, so the cut is still there to restore.
     @Test func aRefusedRestoreStaysOffered() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let adFree: Set<ItemID> = [try feedID()]
         let cut = try await currentCut(fixture, position: 4.5)
@@ -157,7 +157,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aFinishedEpisodeOnAnAdFreeFeedIsNotOffered() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let cut = try await currentCut(fixture, position: nil)
         let finished = Timestamp(Date(timeIntervalSince1970: 1_700_000_500))
@@ -165,5 +165,87 @@ extension PodcastPreparationPipelineTests {
             episodeID: fixture.episodeID, completedAt: finished,
             lastRevisionID: cut.revision.revisionID, updatedAt: finished))
         #expect(try await fixture.store.podcastEpisodesToPrepareAgain(restoringCutsOnFeeds: [try feedID()]).isEmpty)
+    }
+
+    // MARK: Not sent for ad finding
+
+    /// An older engine's labelled cut, offered for Prepare Again.
+    private func olderLabelledCut(_ fixture: Fixture) async throws -> PodcastPrepareAgainCandidate {
+        _ = try await fixture.pipeline(Fixture.cuttingStub(), engineVersion: Self.olderEngine)
+            .prepare(episodeID: fixture.episodeID)
+        return try #require(try await fixture.store.podcastEpisodesToPrepareAgain().first)
+    }
+
+    @Test func prepareAgainOnANotSentShowKeepsTheExistingCutAndSaysWhy() async throws {
+        let fixture = try await Fixture(labelled: true)
+        defer { fixture.remove() }
+        let candidate = try await olderLabelledCut(fixture)
+        let services = try #require(fixture.labelling)
+        services.preferences.isEnabled = false
+        let staged = try fixture.staged(Fixture.originalBody)
+        let worker = WorkerStub(response: Self.uncutResponse(audioURL: staged.url))
+        let outcome = try await fixture.pipeline(worker).prepareAgain(candidate: candidate, stage: { staged })
+
+        guard case .keptExisting(let summary) = outcome else {
+            Issue.record("expected the cut to be kept, got \(outcome)"); return
+        }
+        #expect(summary == "Kept the existing cut. Online ad finding is off.")
+        #expect(summary.contains(RemoteLabellingNotSent.switchOff.sentence))
+        #expect(fixture.sender?.requestCount == 1, "only the first cut was sent")
+        let ready = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
+        #expect(ready.revision.revisionID == candidate.readyRevision.revision.revisionID)
+        let asked = try #require(await worker.lastRequest())
+        let request = try #require(try JSONSerialization.jsonObject(with: asked) as? [String: Any])
+        #expect(request["removeAds"] as? Bool == false)
+    }
+
+    /// The not-sent wording leaves a labelled stop's summary as it was.
+    @Test func prepareAgainAfterALabelledStopKeepsItsSummary() async throws {
+        let fixture = try await Fixture(labelled: true)
+        defer { fixture.remove() }
+        let candidate = try await olderLabelledCut(fixture)
+        try #require(fixture.labelling).preferences.dailyCap = 0
+        let staged = try fixture.staged(Fixture.originalBody)
+        let outcome = try await fixture.pipeline(WorkerStub(response: Self.uncutResponse(audioURL: staged.url)))
+            .prepareAgain(candidate: candidate, stage: { staged })
+
+        guard case .keptExisting(let summary) = outcome else {
+            Issue.record("expected the cut to be kept, got \(outcome)"); return
+        }
+        #expect(summary == "Kept the existing cut: the current engine could not tell which parts were ads")
+    }
+
+    /// A run kept whole while its show was not confirmed recorded the plain
+    /// digest, so confirming the show puts a labelled digest in force and the
+    /// episode is offered again.
+    @Test func anEpisodeKeptWholeWhileUnconfirmedIsOfferedOnceConfirmed() async throws {
+        let fixture = try await Fixture(labelled: true)
+        defer { fixture.remove() }
+        let services = try #require(fixture.labelling)
+        let feed = try feedID()
+        services.preferences.setConfirmed(feedID: feed.rawValue, false)
+        let result = try await fixture.pipeline(WorkerStub(response: Self.uncutResponse(audioURL: fixture.audioURL)))
+            .prepare(episodeID: fixture.episodeID)
+        #expect(result.adRemovalOutcome == "uncertain")
+
+        let episode = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID))
+        let input = RemoteLabellingInput(
+            feedID: feed.rawValue, feedURL: try #require(URL(string: Fixture.feedAddress)),
+            feedTitle: Fixture.labelledShowTitle, audioURL: episode.enclosureURL)
+        let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
+        func inForce() -> String? {
+            LabelledPolicyDigestInForce.digest(
+                policy: policy, input: input, preferences: services.preferences, hasKey: services.keyStore.hasKey())
+        }
+        #expect(inForce() == nil)
+        let unconfirmed = inForce()
+        #expect(try await fixture.store.podcastEpisodesToPrepareAgain(labelledDigestInForce: { _, _ in unconfirmed })
+            .isEmpty)
+
+        services.preferences.setConfirmed(feedID: feed.rawValue, true)
+        let confirmed = try #require(inForce())
+        let offered = try await fixture.store.podcastEpisodesToPrepareAgain(labelledDigestInForce: { _, _ in confirmed })
+        #expect(offered.map(\.episodeID) == [fixture.episodeID])
+        #expect(offered.first?.isCut == false, "the whole original was kept")
     }
 }

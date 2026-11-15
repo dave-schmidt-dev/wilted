@@ -43,7 +43,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func successfulPreparationRecordsBuildStampAndEvidence() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
 
         let appVersion = "0.7.0 (12, abc1234567)"
@@ -66,7 +66,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func throwingRunnerStillYieldsRunCarryingBuildStamp() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
 
         let appVersion = "0.7.0 (12, abc1234567)"
@@ -89,7 +89,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func nilAppVersionRecordsNilInBuildStampAndOmitsAppVersionKeyInEvidence() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
 
         let pipeline = fixture.pipeline(Fixture.cuttingStub(), appVersion: nil)
@@ -165,7 +165,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func prepareWithStubCodeRevisionRecordsBuildStampAndEvidence() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
 
         let stubRevision = "abc1234567-dirty"
@@ -183,7 +183,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func prepareWithDefaultRunnerOmitsCodeRevisionInEvidence() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
 
         let pipeline = fixture.pipeline(Fixture.cuttingStub())

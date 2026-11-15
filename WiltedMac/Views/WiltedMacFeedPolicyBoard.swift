@@ -33,8 +33,8 @@ final class WiltedMacFeedPolicyBoard {
     private(set) var selfPromotionFeedIDs: Set<String> = []
     /// The podcast feeds the owner has marked as already ad-free (preparation leaves audio uncut).
     private(set) var adFreeFeedIDs: Set<String> = []
-    /// The podcast feeds whose transcripts stay on this Mac rather than going to the labeller.
-    private(set) var localOnlyAdFeedIDs: Set<String> = []
+    /// The podcast feeds confirmed to send transcripts to the online ad labeller.
+    private(set) var confirmedAdFeedIDs: Set<String> = []
     @ObservationIgnored private var rules: [String: EpisodeMatchRules] = [:]
     @ObservationIgnored private var editors: [String: WiltedMacFeedRulesEditor] = [:]
     @ObservationIgnored private var writeChain: Task<Void, Never>?
@@ -74,7 +74,7 @@ final class WiltedMacFeedPolicyBoard {
         self.hasProviderKey = hasProviderKey ?? { [weak model] in model?.adFinding.hasKey ?? false }
         selfPromotionFeedIDs = Set(WiltedMacSelfPromotionPreference(preferences: model.preferences).feedIDs)
         adFreeFeedIDs = Set(WiltedMacAdFreeFeedPreference(preferences: model.preferences).feedIDs)
-        localOnlyAdFeedIDs = Set(WiltedMacLocalOnlyAdsPreference(preferences: model.preferences).feedIDs)
+        confirmedAdFeedIDs = Set(AdLabellerPreferences(preferences: model.preferences).confirmedFeedIDs)
     }
 
     var loadFailureMessage: String? {
@@ -104,7 +104,7 @@ final class WiltedMacFeedPolicyBoard {
         activeReloadID = reloadID
         loadState = .loading
         // Settings' confirm sheet writes this set too, so a reload picks its choices up.
-        localOnlyAdFeedIDs = Set(WiltedMacLocalOnlyAdsPreference(preferences: model.preferences).feedIDs)
+        confirmedAdFeedIDs = Set(AdLabellerPreferences(preferences: model.preferences).confirmedFeedIDs)
         await settle()
         do {
             guard isActiveReload(reloadID) else { return }
@@ -347,18 +347,20 @@ final class WiltedMacFeedPolicyBoard {
         model.restoreCutEpisodes(feedID: feedID)
     }
 
-    // MARK: Local-only ad finding
+    // MARK: Ad finding switch
 
-    func findsAdsLocallyOnly(_ feedID: String) -> Bool { localOnlyAdFeedIDs.contains(feedID) }
+    func sendsForAdFinding(_ feedID: String) -> Bool { confirmedAdFeedIDs.contains(feedID) }
 
-    /// Saves whether this podcast feed's transcripts stay on this Mac rather than going to
-    /// the labeller, in the owner's ad labeller preferences. Returns false, changing
-    /// nothing, for a feed that is not loaded or lists articles.
+    /// Saves whether this podcast feed is confirmed for online ad finding,
+    /// in the owner's ad labeller preferences. Returns false, changing nothing,
+    /// for a feed that is not loaded or lists articles.
     @discardableResult
-    func setFindAdsLocallyOnly(_ value: Bool, for feedID: String) -> Bool {
+    func setSendForAdFinding(_ value: Bool, for feedID: String) -> Bool {
         guard isLoaded(feedID), !isArticleFeed(feedID) else { return false }
-        WiltedMacLocalOnlyAdsPreference(preferences: model.preferences).set(feedID: feedID, localOnly: value)
-        if value { localOnlyAdFeedIDs.insert(feedID) } else { localOnlyAdFeedIDs.remove(feedID) }
+        let labeller = AdLabellerPreferences(preferences: model.preferences)
+        // Off is the owner's own choice, so it is remembered: no confirm sheet offers it as sent.
+        if value { labeller.setConfirmed(feedID: feedID, true) } else { labeller.keepBack(feedID: feedID) }
+        if value { confirmedAdFeedIDs.insert(feedID) } else { confirmedAdFeedIDs.remove(feedID) }
         return true
     }
 
@@ -374,9 +376,9 @@ final class WiltedMacFeedPolicyBoard {
         return RemoteLabellingPolicy.route(for: adRouteInput(for: feedID), context: context)
     }
 
-    /// Why this feed's transcripts can never leave this Mac, whatever the switches say.
-    func forcedLocalAdReason(for feedID: String) -> RemoteLabellingLocalReason? {
-        RemoteLabellingPolicy.forcedLocalReason(for: adRouteInput(for: feedID))
+    /// Why this feed is never sent for ad finding, whatever the switches say.
+    func forcedNotSentAdReason(for feedID: String) -> RemoteLabellingNotSentReason? {
+        RemoteLabellingPolicy.forcedNotSentReason(for: adRouteInput(for: feedID))
     }
 
     private func adRouteInput(for feedID: String) -> RemoteLabellingInput {

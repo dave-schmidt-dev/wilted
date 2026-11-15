@@ -60,7 +60,7 @@ extension PodcastPreparationPipelineTests {
     // MARK: Heartbeat stages deduplication
 
     @Test func heartbeatStagesDeduplicateInJournalWhileAllProgressEmitted() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
 
         var progressItems: [PodcastPreparationProgress] = []
@@ -152,5 +152,159 @@ extension PodcastPreparationPipelineTests {
         #expect(entries.first?.id == entryID)
         #expect(entries.first?.status.detail == "newer detail")
         #expect(entries.first?.status.emittedAt == newerTime)
+    }
+
+    // MARK: A show that is not sent keeps its ads and says why
+
+    /// One way a show with ad removal on is not sent for ad finding. Each
+    /// labelled fixture would go online but for this one reason.
+    enum NotSentShow: String, CaseIterable, Sendable {
+        case unknownAddress, signInDetails, privateToken, privateTitle, ownersPrivateName
+        case switchOff, noLabellingServices, noKey, notConfirmed, macOnly
+
+        var reason: RemoteLabellingNotSent {
+            switch self {
+            case .unknownAddress: .unknownAddress
+            case .signInDetails: .signInDetails
+            case .privateToken: .privateToken
+            case .privateTitle, .ownersPrivateName: .privateTitle
+            case .switchOff, .noLabellingServices: .switchOff
+            case .noKey: .noKey
+            case .notConfirmed, .macOnly: .notConfirmed
+            }
+        }
+
+        func fixture() async throws -> Fixture {
+            switch self {
+            case .unknownAddress: return try await Fixture(labelled: true, showTitle: nil)
+            case .signInDetails:
+                return try await Fixture(labelled: true, feedAddress: "https://feeds.example.test/show.xml?auth=invented")
+            case .privateToken:
+                return try await Fixture(
+                    labelled: true, feedAddress: "https://feeds.example.test/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/show.xml")
+            case .privateTitle: return try await Fixture(labelled: true, showTitle: "Invented Members Show")
+            case .noLabellingServices: return try await Fixture()
+            case .ownersPrivateName, .switchOff, .noKey, .notConfirmed, .macOnly: break
+            }
+            let fixture = try await Fixture(labelled: true)
+            do {
+                let services = try #require(fixture.labelling)
+                let feedID = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID)).feedID
+                switch self {
+                case .ownersPrivateName:
+                    try await fixture.store.save(subscription: PodcastSubscription(
+                        feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)),
+                        displayName: "Garden Plus"))
+                case .switchOff: services.preferences.isEnabled = false
+                case .noKey: try services.keyStore.remove()
+                case .notConfirmed: services.preferences.setConfirmed(feedID: feedID.rawValue, false)
+                case .macOnly:
+                    services.preferences.preferences.set(
+                        [feedID.rawValue], forKey: AdLabellerPreferences.keyPrefix + "localOnlyFeedIDs")
+                default: break
+                }
+            } catch {
+                fixture.remove()
+                throw error
+            }
+            return fixture
+        }
+    }
+
+    /// A worker that runs no ad finder: the only answer a not-sent show may get.
+    private static func plainWorker(_ fixture: Fixture) -> WorkerStub {
+        WorkerStub(response: ["ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false])
+    }
+
+    private static func decodedRequests(_ worker: WorkerStub) async throws -> [[String: Any]] {
+        try await worker.allRequests().map { try #require(try JSONSerialization.jsonObject(with: $0) as? [String: Any]) }
+    }
+
+    @Test(arguments: NotSentShow.allCases)
+    func aShowThatIsNotSentKeepsItsAdsAndSaysWhy(show: NotSentShow) async throws {
+        let fixture = try await show.fixture()
+        defer { fixture.remove() }
+        // At the cap a labelled run with a ticket waits for the next day; a not-sent one never does.
+        fixture.labelling?.preferences.dailyCap = 0
+        let ticket = try await fixture.store.readmitWorkTicket(
+            kind: .podcastPreparation, subjectID: fixture.episodeID.rawValue, requestSequence: 1,
+            to: .running, at: Timestamp(Date(timeIntervalSince1970: 1_700_000_150)))
+        let attempt = try PreparationAttemptIdentity(
+            requestSequence: ticket.requestSequence, attemptCount: ticket.attemptCount)
+        let worker = Self.plainWorker(fixture)
+        let statuses = StatusLog()
+        let result = try await fixture.pipeline(worker).prepare(
+            episodeID: fixture.episodeID, attempt: attempt,
+            onStatus: { statuses.append($0.stage, detail: $0.detail) })
+        let reason = show.reason
+
+        let requests = try await Self.decodedRequests(worker)
+        #expect(requests.count == 1, "one worker call")
+        #expect(requests.allSatisfy { $0["removeAds"] as? Bool == false && $0["adStage"] == nil },
+                "no ad finder runs, local or labelled")
+        #expect((fixture.sender?.requestCount ?? 0) == 0, "nothing is sent to the provider")
+        #expect((fixture.labelling?.counter.count ?? 0) == 0, "no request is counted")
+        #expect(result.adRemovalOutcome == "uncertain")
+        #expect(result.warning == "original audio includes ads: \(reason.sentence)")
+        #expect(result.revision.revisionID == fixture.revisionID)
+        #expect(result.mediaURL == fixture.audioURL)
+        #expect(try Data(contentsOf: result.mediaURL) == Fixture.originalBody, "the original audio is published")
+
+        let outcome = try #require(try await fixture.store.preparationOutcome(
+            for: fixture.episodeID, revisionID: result.revision.revisionID))
+        let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
+        #expect(outcome.policyDigest == PodcastPreparationPipeline.policyDigest(policy, labelled: nil),
+                "no labelled provenance: the plain digest is recorded")
+
+        let entries = try await fixture.store.preparationJournal(
+            for: PodcastPreparationPipeline.requestID(for: fixture.episodeID))
+        let notSent = entries.filter { $0.status.step == "ads.not-sent" }
+        #expect(notSent.count == 1)
+        #expect(notSent.first?.status.evidence?.kind == reason.kind)
+        #expect(notSent.first?.status.detail == reason.sentence)
+        #expect(statuses.stages.filter { $0 == "ads.not-sent" }.count == 1)
+        #expect(!statuses.stages.contains("ads.uncertain"), "the labelled path's stop is not taken")
+        #expect(fixture.leftoverLabellerCueFiles().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: fixture.workDirectory
+            .appendingPathComponent("wilted-pipeline/labeller-cues.json").path), "no cues were exported")
+        #expect(try await fixture.store.workTicket(
+            kind: .podcastPreparation, subjectID: fixture.episodeID.rawValue)?.state != .deferred)
+    }
+
+    /// Ad removal off, or a show marked as having no ads, is the plain path
+    /// whatever else would have kept the show from being sent.
+    @Test(arguments: [NotSentShow.switchOff, .noKey, .notConfirmed, .privateTitle], [false, true])
+    func adRemovalOffOrAnAdFreeShowStaysPlain(show: NotSentShow, adFree: Bool) async throws {
+        let fixture = try await show.fixture()
+        defer { fixture.remove() }
+        let services = try #require(fixture.labelling)
+        let feedID = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID)).feedID
+        if adFree { services.preferences.preferences.set([feedID.rawValue], forKey: AdLabellerPreferences.adFreeFeedsKey) }
+        let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: adFree)
+        let worker = Self.plainWorker(fixture)
+        let statuses = StatusLog()
+        let result = try await fixture.pipeline(worker).prepare(
+            episodeID: fixture.episodeID, policy: policy, onStatus: { statuses.append($0.stage) })
+
+        #expect(result.adRemovalOutcome == "disabled")
+        #expect(result.warning == nil)
+        #expect(!statuses.stages.contains("ads.not-sent"))
+        let entries = try await fixture.store.preparationJournal(
+            for: PodcastPreparationPipeline.requestID(for: fixture.episodeID))
+        #expect(!entries.contains { $0.status.step == "ads.not-sent" })
+        #expect(try await Self.decodedRequests(worker).allSatisfy {
+            $0["removeAds"] as? Bool == false && $0["adStage"] == nil })
+        #expect(fixture.sender?.requestCount == 0)
+    }
+
+    /// A private show names its private reason, not a setting the owner could change.
+    @Test func anUnconfirmedShowWithAPrivateTitleNamesItsTitle() async throws {
+        let fixture = try await NotSentShow.privateTitle.fixture()
+        defer { fixture.remove() }
+        let feedID = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID)).feedID
+        try #require(fixture.labelling).preferences.setConfirmed(feedID: feedID.rawValue, false)
+        let result = try await fixture.pipeline(Self.plainWorker(fixture)).prepare(episodeID: fixture.episodeID)
+        #expect(result.warning == RemoteLabellingNotSent.privateTitle.warning)
+        #expect(result.warning?.contains("Turn it on") == false)
     }
 }

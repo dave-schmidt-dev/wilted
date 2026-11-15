@@ -5,16 +5,20 @@ import WiltedDomain
 
 extension PodcastPreparationPipelineTests {
     /// An uncertain response whose global unresolved list is empty still has
-    /// causes worth retaining: held spans and declined commercial seeds.
+    /// causes worth retaining: held spans and declined commercial seeds. A
+    /// labelled one is the cut stage's audit, the only one a preparation can return.
     private static func auditRetentionResponse(
         audioPath: String,
         heldSpans: [[String: Any]],
-        declinedSeeds: [[String: Any]]
+        declinedSeeds: [[String: Any]],
+        labelled: Bool = true
     ) -> [String: Any] {
-        let warning = "original audio includes ads: classifier could not resolve commercial evidence"
-        var audit = WorkerStub.cleanAudit()
+        let reason = "classifier could not resolve commercial evidence"
+        let warning = "original audio includes ads: \(reason)"
+        var audit = labelled
+            ? WorkerStub.labelledAudit(incompleteError: reason, warning: warning) : WorkerStub.cleanAudit()
         audit["unresolvedIds"] = [Int]()
-        audit["incompleteError"] = "classifier could not resolve commercial evidence"
+        audit["incompleteError"] = reason
         audit["warning"] = warning
         audit["heldSpans"] = heldSpans
         audit["declinedCommercialEvidenceSeeds"] = declinedSeeds
@@ -39,7 +43,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func uncertainAuditRetainsHeldAndDeclinedCausesAcrossReopen() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let originalBytes = try Data(contentsOf: fixture.audioURL)
         let response = Self.auditRetentionResponse(
@@ -55,7 +59,8 @@ extension PodcastPreparationPipelineTests {
                 "ids": [4, 9],
                 "startSeconds": 20.25,
                 "endSeconds": 24.0,
-            ]]
+            ]],
+            labelled: true
         )
 
         let payload = try Self.auditRetentionDecode(response)
@@ -102,7 +107,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func cutOutcomeKeepsItsExistingEvidenceWithoutUncertainDiagnostics() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let result = try await fixture.pipeline(Fixture.cuttingStub())
             .prepare(episodeID: fixture.episodeID)
@@ -142,7 +147,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func oversizedAuditArraysStayBoundedCompleteAndContentFree() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let originalBytes = try Data(contentsOf: fixture.audioURL)
         let heldSpans: [[String: Any]] = [
@@ -187,8 +192,15 @@ extension PodcastPreparationPipelineTests {
             ["status": "declined", "reason": "review-declined",
              "ids": [212], "startSeconds": 23.0, "endSeconds": 24.0],
         ]
+        // The labelled audit refuses a held span with an unknown reason outright.
+        let refused = Self.auditRetentionResponse(
+            audioPath: fixture.audioURL.path, heldSpans: heldSpans, declinedSeeds: declinedSeeds, labelled: true
+        )
+        #expect(throws: PodcastPreparationError.self) { _ = try Self.auditRetentionDecode(refused) }
+
+        let knownHeldSpans = heldSpans.filter { ($0["reason"] as? String)?.hasPrefix("SECRET") != true }
         let response = Self.auditRetentionResponse(
-            audioPath: fixture.audioURL.path, heldSpans: heldSpans, declinedSeeds: declinedSeeds
+            audioPath: fixture.audioURL.path, heldSpans: knownHeldSpans, declinedSeeds: declinedSeeds, labelled: true
         )
 
         let first = PodcastPreparationPipeline.resultProgress(try Self.auditRetentionDecode(response))
@@ -206,7 +218,7 @@ extension PodcastPreparationPipelineTests {
                 == second.evidence?.fields["declinedCommercialEvidenceSeeds"])
 
         let held = try #require(evidence.fields["heldSpans"])
-        #expect(held.contains("total=12;examined=8;omittedByCount=4;invalid=1;"))
+        #expect(held.contains("total=11;examined=8;omittedByCount=3;invalid=0;"))
         #expect(held.contains("omittedByLength="))
         #expect(held.contains("programme-boundary@1.25-2.5"))
         #expect(!held.contains("SECRET"))
@@ -226,7 +238,10 @@ extension PodcastPreparationPipelineTests {
         #expect(!declined.contains("model response"))
         #expect(!declined.contains("prompt"))
 
-        let result = try await fixture.pipeline(WorkerStub(response: response))
+        let labelled = response
+        let labelledHeld = held
+
+        let result = try await fixture.pipeline(WorkerStub(response: labelled))
             .prepare(episodeID: fixture.episodeID)
         #expect(result.revision.revisionID == fixture.revisionID)
         #expect(result.mediaURL == fixture.audioURL)
@@ -239,7 +254,13 @@ extension PodcastPreparationPipelineTests {
         let persisted = try #require(
             entries.first { $0.id.contains("|pipeline.result#") }?.status.evidence
         )
-        #expect(persisted.fields["heldSpans"] == held)
+        #expect(persisted.fields.count <= 16)
+        for value in persisted.fields.values {
+            #expect(value.count <= 256)
+            #expect(value.unicodeScalars.allSatisfy { $0.isASCII })
+            #expect(!value.contains("SECRET"))
+        }
+        #expect(persisted.fields["heldSpans"] == labelledHeld)
         #expect(persisted.fields["declinedCommercialEvidenceSeeds"] == declined)
         let terminal = try #require(entries.last { $0.status.terminal })
         #expect(terminal.status.terminalResult?.outcome == .succeeded)
@@ -284,12 +305,13 @@ extension PodcastPreparationPipelineTests {
             declinedSeeds: [["status": "declined", "reason": "review-unresolved",
                              "ids": [3, 4], "startSeconds": 2.0, "endSeconds": 3.0]]
         )
-        let longWarning = "original audio includes ads: " + String(repeating: "w", count: 800)
+        let longIncomplete = String(repeating: "w", count: 800)
+        let longWarning = "original audio includes ads: " + longIncomplete
         var report = try #require(response["report"] as? [String: Any])
         var audit = try #require(report["audit"] as? [String: Any])
         report["warning"] = longWarning
         audit["warning"] = longWarning
-        audit["incompleteError"] = String(repeating: "e", count: 900)
+        audit["incompleteError"] = longIncomplete
         audit["unresolvedIds"] = Array(0..<200)
         report["audit"] = audit
         response["report"] = report
@@ -324,7 +346,7 @@ extension PodcastPreparationPipelineTests {
             _ = try Self.auditRetentionDecode(nonNumeric)
         }
 
-        let nonFinite = Data(#"{"ok":true,"protocolVersion":2,"timing":"none","audioPath":"/tmp/original.mp3","audioChanged":false,"durationSeconds":12.0,"removedSeconds":0.0,"adSegments":[],"keepIntervals":[],"report":{"outcome":"uncertain","rawNominations":[],"warning":"original audio includes ads: classifier could not resolve IDs 0","audit":{"classifierRequests":3,"classifierValidRequests":3,"classifierInvalidRequests":0,"exhaustedSingletonLineages":0,"modelRequests":3,"modelFailures":0,"experimentalRequests":0,"unresolvedIds":[0],"candidates":[],"declinedCommercialEvidenceSeeds":[],"heldSpans":[{"reason":"programme-boundary","startSeconds":1e999,"endSeconds":2.0}],"incompleteError":"classifier could not resolve IDs 0","warning":"original audio includes ads: classifier could not resolve IDs 0"}}}"#.utf8)
+        let nonFinite = Data(#"{"ok":true,"protocolVersion":2,"timing":"none","audioPath":"/tmp/original.mp3","audioChanged":false,"durationSeconds":12.0,"removedSeconds":0.0,"adSegments":[],"keepIntervals":[],"report":{"outcome":"uncertain","rawNominations":[],"warning":"original audio includes ads: unresolved","audit":{"adEngine":"labelled","breaksProposed":0,"breaksCut":0,"breaksLeftIn":0,"leftIn":[],"labellerModelID":"m","labellerLevel":"full","labellerPromptVersion":"1","unresolvedIds":[0],"heldSpans":[{"reason":"programme-boundary","startSeconds":1e999,"endSeconds":2.0}],"incompleteError":"unresolved","warning":"original audio includes ads: unresolved"}}}"#.utf8)
         #expect(throws: PodcastPreparationError.self) {
             _ = try PodcastPreparationPipeline.decode(nonFinite)
         }

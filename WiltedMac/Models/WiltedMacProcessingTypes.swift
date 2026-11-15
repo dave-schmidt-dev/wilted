@@ -27,7 +27,7 @@ struct WiltedMacProcessorRun: Identifiable, Equatable, Sendable {
     /// The last thing the run said, in the pipeline's own words.
     let detail: String
     /// The last thing the run said, in the listener's words: "Finding
-    /// advertisements…" rather than `ads.detect.calls`.
+    /// advertisements…" rather than `ads.label.start`.
     let narrative: String
     let fraction: Double?
     let outcome: Outcome
@@ -82,7 +82,7 @@ struct WiltedMacProcessorRun: Identifiable, Equatable, Sendable {
 struct WiltedMacProcessorEvent: Identifiable, Equatable, Sendable {
     let id: String
     let at: Date
-    /// The pipeline's own stage name, such as `ads.detect.calls`.
+    /// The pipeline's own stage name, such as `ads.label.start`.
     let stage: String
     let detail: String
     let fraction: Double?

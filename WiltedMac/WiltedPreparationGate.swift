@@ -2,13 +2,12 @@ import Foundation
 
 /// Admits one podcast preparation at a time and queues the rest in order.
 ///
-/// Preparation's ad pass takes exclusive hold of the shared GPU for the length
-/// of a detect run. Two preparations that both want it do not politely queue:
-/// each evicts the other's resident speech model and then retries, and the one
-/// that loses the race fails outright when its admission budget runs out. Three
-/// episodes downloaded together therefore cost two whole preparations, with the
-/// journal reading `ads.model.release` / `ads.model.drain` / `ads.model.retry`
-/// while they knocked each other down.
+/// Preparations share one GPU for transcription and the local summary. Two
+/// preparations that both want it do not politely queue: each evicts the
+/// other's resident model and then retries, and the one that loses the race
+/// fails outright when its admission budget runs out. Three episodes
+/// downloaded together would contend and fail while they knocked each other
+/// down.
 ///
 /// So the app admits one and makes the others wait. The waiting is explicit
 /// rather than incidental: a queued caller suspends here, and its row says

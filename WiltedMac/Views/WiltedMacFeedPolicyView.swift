@@ -127,7 +127,7 @@ struct WiltedMacFeedPolicyContent: View {
             if !board.isArticleFeed(feedID) { adFreeRow }
             if !board.isArticleFeed(feedID) { restoreCutEpisodesRow }
             if !board.isArticleFeed(feedID) { selfPromotionRow }
-            if !board.isArticleFeed(feedID) { localOnlyAdsRow }
+            if !board.isArticleFeed(feedID) { sendForAdFindingRow }
             WiltedMacFeedRulesEntry(
                 editor: board.rulesEditor(for: feedID), subscription: subscription, isEnabled: board.isLoaded(feedID),
                 open: openRules
@@ -245,15 +245,15 @@ struct WiltedMacFeedPolicyContent: View {
     }
 
     /// Shown only for a podcast feed, directly under the own-promotion row. The switch
-    /// keeps this show's transcripts off the provider; when the policy already forces
-    /// that, the switch stays on and read-only with the reason in place of the caption.
-    private var localOnlyAdsRow: some View {
+    /// sends this show's transcripts to the provider; when the policy forces it off,
+    /// the switch stays off and read-only with the reason in place of the caption.
+    private var sendForAdFindingRow: some View {
         HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Text("Find ads on this Mac only").wiltedFont(.body)
+                Text("Send this show for ad finding").wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                Text(forcedLocalOnlyAdsReason
-                     ?? "When on, this show's transcripts are not sent to the labelling provider.")
+                Text(forcedNotSentAdsReason
+                     ?? "When on, this show's transcripts go to the labelling provider and its ads are removed. When off, nothing is sent and its ads stay in.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
@@ -263,38 +263,38 @@ struct WiltedMacFeedPolicyContent: View {
                     .accessibilityIdentifier("wilted-feed-policy-ad-route")
             }
             Spacer(minLength: WiltedTheme.Spacing.large)
-            Toggle("Find ads on this Mac only", isOn: Binding(
-                get: { forcedLocalOnlyAdsReason != nil || board.findsAdsLocallyOnly(feedID) },
-                set: { _ = board.setFindAdsLocallyOnly($0, for: feedID) }
+            Toggle("Send this show for ad finding", isOn: Binding(
+                get: { forcedNotSentAdsReason == nil && board.sendsForAdFinding(feedID) },
+                set: { _ = board.setSendForAdFinding($0, for: feedID) }
             ))
             .labelsHidden()
             .toggleStyle(.switch)
-            .accessibilityLabel("Find ads on this Mac only for \(subscription.title)")
-            .accessibilityIdentifier("wilted-feed-policy-local-only-ads")
+            .accessibilityLabel("Send \(subscription.title) for ad finding")
+            .accessibilityIdentifier("wilted-feed-policy-send-for-ad-finding")
         }
-        .disabled(!board.isLoaded(feedID) || forcedLocalOnlyAdsReason != nil)
+        .disabled(!board.isLoaded(feedID) || forcedNotSentAdsReason != nil)
     }
 
-    /// Why the policy keeps this show's transcripts on this Mac whatever the owner's
+    /// Why the policy keeps this show not sent whatever the owner's
     /// switch says. Nil when the owner's switch decides.
-    var forcedLocalOnlyAdsReason: String? {
-        board.forcedLocalAdReason(for: feedID)?.forcedLocalMessage
+    var forcedNotSentAdsReason: String? {
+        board.forcedNotSentAdReason(for: feedID)?.forcedNotSentMessage
     }
 
     /// The line naming where this show's transcripts go right now.
     private var adRouteLine: String {
-        if forcedLocalOnlyAdsReason != nil { return "Stays on this Mac" }
+        if forcedNotSentAdsReason != nil { return "Not sent" }
         return switch board.adRoute(for: feedID) {
         case .remote:
             "Transcripts are sent to the labelling provider"
-        case .local(.switchOff):
+        case .notSent(.switchOff):
             "Online ad finding is off"
-        case .local(.noKey):
+        case .notSent(.noKey):
             "No provider key saved"
-        case .local(.notConfirmed):
-            "Needs your confirmation in Settings"
-        case .local:
-            "Stays on this Mac"
+        case .notSent(.dailyCapReached):
+            "Today's limit for online labelling is reached"
+        case .notSent:
+            "Not sent"
         }
     }
 

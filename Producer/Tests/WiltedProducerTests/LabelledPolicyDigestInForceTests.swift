@@ -20,7 +20,6 @@ struct LabelledPolicyDigestInForceTests {
     private func configure(
         _ defaults: UserDefaults,
         enabled: Bool = true,
-        shadow: Bool = false,
         confirmed: Bool = true,
         hasKey: Bool = true,
         modelID: String = AdLabellerPreferences.defaultModelID,
@@ -30,11 +29,10 @@ struct LabelledPolicyDigestInForceTests {
     ) -> (AdLabellerPreferences, RemoteLabellingInput, PodcastPreparationPolicySnapshot) {
         let preferences = AdLabellerPreferences(preferences: defaults)
         preferences.isEnabled = enabled
-        preferences.isShadow = shadow
         preferences.modelID = modelID
         preferences.level = level
         if confirmed { preferences.setConfirmed(feedID: feedID, true) }
-        if localOnly { preferences.setLocalOnly(feedID: feedID, true) }
+        if localOnly { defaults.set([feedID], forKey: AdLabellerPreferences.keyPrefix + "localOnlyFeedIDs") }
         if adFree { defaults.set([feedID], forKey: AdLabellerPreferences.adFreeFeedsKey) }
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: !adFree)
         let input = RemoteLabellingInput(
@@ -73,27 +71,59 @@ struct LabelledPolicyDigestInForceTests {
         #expect(first != afterLevel)
     }
 
-    @Test(arguments: [
-        "switchOff", "noKey", "shadow", "localOnly", "adFree", "notConfirmed",
-    ])
-    func localRoutesYieldNil(mode: String) {
+    /// One setting for each not-sent reason, plus the stored "Mac only" list.
+    enum NotSentSetup: String, CaseIterable, Sendable {
+        case unknownAddress, signInDetails, privateToken, privateTitle, switchOff, noKey, notConfirmed, macOnly
+
+        var reason: RemoteLabellingNotSent {
+            switch self {
+            case .unknownAddress: .unknownAddress
+            case .signInDetails: .signInDetails
+            case .privateToken: .privateToken
+            case .privateTitle: .privateTitle
+            case .switchOff: .switchOff
+            case .noKey: .noKey
+            case .notConfirmed, .macOnly: .notConfirmed
+            }
+        }
+    }
+
+    @Test(arguments: NotSentSetup.allCases)
+    func everyNotSentReasonYieldsNil(setup: NotSentSetup) {
         let (defaults, name) = defaults()
         defer { defaults.removePersistentDomain(forName: name) }
-        var enabled = true, shadow = false, confirmed = true, hasKey = true, adFree = false, localOnly = false
-        switch mode {
-        case "switchOff": enabled = false
-        case "noKey": hasKey = false
-        case "shadow": shadow = true
-        case "localOnly": localOnly = true
-        case "adFree": adFree = true
-        case "notConfirmed": confirmed = false
-        default: break
+        let (preferences, configured, policy) = configure(
+            defaults, enabled: setup != .switchOff, confirmed: setup != .notConfirmed,
+            hasKey: setup != .noKey, localOnly: setup == .macOnly)
+        var input = configured
+        switch setup {
+        case .unknownAddress: input.feedURL = nil
+        case .signInDetails: input.feedURL = URL(string: "https://feeds.example.invalid/show.xml?auth=invented")
+        case .privateToken: input.feedURL = URL(string: "https://feeds.example.invalid/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/show.xml")
+        case .privateTitle: input.feedTitle = "Invented Members Show"
+        case .switchOff, .noKey, .notConfirmed, .macOnly: break
         }
-        let (preferences, input, policy) = configure(
-            defaults, enabled: enabled, shadow: shadow, confirmed: confirmed,
-            hasKey: hasKey, adFree: adFree, localOnly: localOnly)
+        let hasKey = setup != .noKey
+        let context = RemoteLabellingContext(
+            preferences: preferences, hasKey: hasKey, counter: LabellerRequestCounter(preferences: defaults))
+        #expect(PodcastPreparationPipeline.labellingGate(input: input, context: context) == .notSent(setup.reason))
         #expect(LabelledPolicyDigestInForce.digest(
             policy: policy, input: input, preferences: preferences, hasKey: hasKey) == nil)
+    }
+
+    @Test(arguments: [true, false])
+    func adRemovalOffOrAnAdFreeFeedYieldsNil(adFree: Bool) {
+        let (defaults, name) = defaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let (preferences, configured, configuredPolicy) = configure(defaults, adFree: adFree)
+        var input = configured
+        var policy = configuredPolicy
+        if !adFree {
+            policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: false)
+            input.removeAds = false
+        }
+        #expect(LabelledPolicyDigestInForce.digest(
+            policy: policy, input: input, preferences: preferences, hasKey: true) == nil)
     }
 
     @Test func dailyCapDoesNotChangeDigestInForce() {
@@ -106,11 +136,11 @@ struct LabelledPolicyDigestInForceTests {
         let digest = LabelledPolicyDigestInForce.digest(
             policy: policy, input: input, preferences: preferences, hasKey: true)
         #expect(digest != nil)
-        let live = PodcastPreparationPipeline.labelledRoutingDecision(
-            isShadow: false, input: input,
+        let live = PodcastPreparationPipeline.labellingGate(
+            input: input,
             context: RemoteLabellingContext(
                 preferences: preferences, hasKey: true, counter: counter))
-        #expect(live == .dailyCap)
+        #expect(live == .labelled(.dailyCap))
     }
 
     @Test func isStaleRequiresNonEmptyDifferingDigests() {

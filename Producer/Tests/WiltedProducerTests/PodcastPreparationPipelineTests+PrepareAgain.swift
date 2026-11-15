@@ -64,7 +64,7 @@ extension PodcastPreparationPipelineTests {
     // MARK: Cases
 
     @Test func preparingAgainReplacesTheCutAndCarriesThePlaceExactly() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let oldURL = try #require(try await fixture.store.readyRevision(for: fixture.episodeID)).mediaURL
@@ -102,7 +102,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func theOldCutStaysReadyAndPlayableWhileTheOriginalIsFetched() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let oldURL = try #require(try await fixture.store.readyRevision(for: fixture.episodeID)).mediaURL
@@ -121,7 +121,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aRunOverAnOriginalWithNothingToCutBecomesTheOriginal() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let target = try await candidate(fixture)
@@ -149,7 +149,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aRunThatReachesTheSameCutKeepsTheRevisionAndThePlace() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let target = try await candidate(fixture)
@@ -168,7 +168,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aChangedOriginalIsRefusedWhenThereIsAPlaceToCarry() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let target = try await candidate(fixture)
@@ -192,7 +192,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aChangedOriginalIsFineWhenThereIsNoPlaceToCarry() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: nil)
         let target = try await candidate(fixture)
@@ -208,7 +208,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aPlaceAtTheStartDoesNotGateTheRun() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         _ = try await olderCut(fixture, position: 0)
         let target = try await candidate(fixture)
@@ -222,7 +222,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aCutWithNoRecordOfItsRemovalsIsRefusedBeforeDownloading() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let real = try await candidate(fixture)
@@ -243,7 +243,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func aWorkerFailureLeavesThePlayableCutAndNoStagedFile() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let oldURL = try #require(try await fixture.store.readyRevision(for: fixture.episodeID)).mediaURL
@@ -268,7 +268,7 @@ extension PodcastPreparationPipelineTests {
     /// one, not the place read before it. The new file is flushed to disk
     /// before any record names it.
     @Test func aPlaceSyncedJustBeforeTheSwapIsTheOneCarried() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let target = try await candidate(fixture)
@@ -305,7 +305,7 @@ extension PodcastPreparationPipelineTests {
     /// Stop, or the Mac loading the cut into its player, after the engine has
     /// run but before the swap leaves the library exactly as it was.
     @Test func aRunStoppedAtTheSwapLeavesTheCutAndNoNewFile() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let oldURL = try #require(try await fixture.store.readyRevision(for: fixture.episodeID)).mediaURL
@@ -327,12 +327,12 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func anUncertainResultKeepsTheCut() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let target = try await candidate(fixture)
         let staged = try fixture.staged(Fixture.originalBody)
-        let worker = WorkerStub(response: Self.uncertainResponse(audioURL: staged.url))
+        let worker = WorkerStub(response: Fixture.labelledUncertainResponse(audioPath: staged.url.path))
 
         let outcome = try await fixture.pipeline(worker).prepareAgain(candidate: target, stage: { staged })
         guard case .keptExisting = outcome else { Issue.record("expected the cut to be kept, got \(outcome)"); return }
@@ -347,7 +347,7 @@ extension PodcastPreparationPipelineTests {
     /// A download that fails or is stopped decided nothing, so the episode is
     /// still offered.
     @Test func aFailedOrStoppedDownloadChangesNothingAndStaysOffered() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let old = try await olderCut(fixture, position: 4.5)
         let target = try await candidate(fixture)
@@ -370,13 +370,13 @@ extension PodcastPreparationPipelineTests {
     /// Reproduces the earlier flow in `prepare` itself: an uncertain run keeps
     /// the original, a later run cuts it, and the place follows.
     @Test func anUncertainOriginalPreparedAgainCarriesThePlaceThroughTheCut() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         try await fixture.store.save(playback: try PlaybackState(
             itemID: fixture.episodeID, revisionID: fixture.revisionID, sessionID: "session-1", sequence: 4,
             positionSeconds: 9.0, durationSeconds: 12, completed: false, intent: .progress,
             deviceID: "mac-1", updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_150))))
-        let uncertain = WorkerStub(response: Self.uncertainResponse(audioURL: fixture.audioURL))
+        let uncertain = WorkerStub(response: Fixture.labelledUncertainResponse(audioPath: fixture.audioURL.path))
         let first = try await fixture.pipeline(uncertain, engineVersion: Self.olderEngine)
             .prepare(episodeID: fixture.episodeID)
         #expect(first.revision.revisionID == fixture.revisionID)

@@ -322,7 +322,7 @@ extension WiltedMacModel {
                 let journalled: [(String, PreparationStage, String, Double?)] = [
                     ("pipeline.start", .preparing, episode.title, nil),
                     ("transcript.stt.start", .extracting, "transcript.stt.start", nil),
-                    ("ads.detect.calls", .assembling, "50 requests, 0 failed", nil),
+                    ("ads.label.start", .assembling, "ads.label.start", nil),
                     ("ads.detect.span.1", .assembling, "0:01:20–0:02:10 · host read · 91%", nil),
                     ("ads.cut.complete", .assembling,
                      fixtureEpisodeHasLongTranscript ? "112.00 s removed" : "442.12 s removed", 0.9),

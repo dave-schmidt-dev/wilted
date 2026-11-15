@@ -85,11 +85,8 @@ extension PodcastPreparationPipeline {
             await onJournaled()
             throw PodcastPreparationError.readyAudioChanged
         }
-        let profileSnapshot = policy.removeAds
-            ? await captureAdProfileSnapshot(for: episode.feedID, onStatus: report) : nil
-        report(adProfileRequestProgress(profileSnapshot, enabled: policy.removeAds))
-        let codeRevision = await runner.codeRevision()
         let route = await labelledAttemptRoute(episode: episode, policy: policy)
+        let codeRevision = await runner.codeRevision()
         let attemptDigest = Self.policyDigest(policy, labelled: route.provenance)
 
         /// Records a run that changed nothing: one provenance row naming the
@@ -162,20 +159,15 @@ extension PodcastPreparationPipeline {
             defer { store.inFlightMedia.end(preparedURL) }
             let run = try await runPreparationWorker(
                 episode: episode, audioURL: staged.url, preparedURL: preparedURL,
-                sourceHash: staged.contentHash, policy: policy, profileSnapshot: profileSnapshot,
-                emitLabellerCues: false, route: route, deferral: nil, onStatus: report)
-            var payload = run.payload
-            validateAdProfileHandshake(&payload, snapshot: profileSnapshot)
-            await persistAdProfileObservation(payload.adProfileObservation, feedID: episode.feedID,
-                                              episodeID: episode.itemID, sourceHash: staged.contentHash,
-                                              snapshot: profileSnapshot, onStatus: report)
+                sourceHash: staged.contentHash, policy: policy,
+                route: route, deferral: nil, onStatus: report)
+            let payload = run.payload
             if payload.droppedCueCount > 0 {
                 let totalCues = payload.cues.count + payload.droppedCueCount
                 report(PodcastPreparationProgress(
                     stage: "transcript.cues.dropped",
                     detail: "\(payload.droppedCueCount) of \(totalCues) transcript cues were malformed and left out"))
             }
-            report(adProfileResultProgress(payload))
             report(Self.resultProgress(payload))
             for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
 
@@ -184,7 +176,9 @@ extension PodcastPreparationPipeline {
                         == staged.url.resolvingSymlinksInPath().standardizedFileURL else {
                     throw PodcastPreparationError.malformedWorkerResponse("uncertain result changed the original audio path")
                 }
-                let summary = "Kept the existing cut: the current engine could not tell which parts were ads"
+                // A not-sent show says why; a labelled stop keeps its own wording.
+                let summary = route.notSent.map { "Kept the existing cut. \($0.sentence)" }
+                    ?? "Kept the existing cut: the current engine could not tell which parts were ads"
                 await recordUnchanged(summary, provenanceOf: stagedRevision)
                 return .keptExisting(summary)
             }

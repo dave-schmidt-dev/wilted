@@ -14,7 +14,7 @@ extension WiltedMacModelTests {
             ("transcript.stt.start", "Transcribing the audio…"),
             ("transcript.glossary.progress", "Correcting names from the show notes…"),
             ("transcript.glossary.complete", "Correcting names from the show notes…"),
-            ("ads.detect.start", "Finding advertisements…"),
+            ("ads.detect.complete", "Finding advertisements…"),
             ("ads.label.start", "Finding advertisements…"),
             ("ads.label.complete", "Finding advertisements…"),
             ("ads.label.wait", "Ad removal is waiting on the provider…"),

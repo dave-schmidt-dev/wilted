@@ -61,7 +61,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func prepareReportsAndJournalsDroppedCuesStatus() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
 
         var response = Fixture.cuttingStubResponse()

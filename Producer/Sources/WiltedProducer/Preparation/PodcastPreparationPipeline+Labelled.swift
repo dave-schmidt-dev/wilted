@@ -2,6 +2,22 @@ import CryptoKit
 import Foundation
 import WiltedDomain
 
+/// Sends one labelling request. The shape is exactly ``LabellerClient``'s `send`,
+/// so the real client conforms with an empty extension and tests can stub it.
+public protocol LabellerSending: Sendable {
+    /// Performs one labelling request. `onRequestStarted` fires exactly once,
+    /// immediately before the HTTP request starts, including for calls that
+    /// then fail.
+    func send(
+        _ request: LabellerRequest,
+        onRequestStarted: @escaping @Sendable () -> Void,
+        onProgress: @escaping @Sendable (LabellerProgress) -> Void
+    ) async throws -> LabellerResponse
+}
+
+/// The real client already has exactly this shape.
+extension LabellerClient: LabellerSending {}
+
 /// Preferences, counter, key store and sender the pipeline uses for online labelling.
 public struct PodcastLabellingServices: Sendable {
     public let preferences: AdLabellerPreferences
@@ -58,58 +74,86 @@ extension PodcastPreparationPipeline {
 
     /// The one routing decision an attempt makes: its journalled digest and its
     /// run both read this value, so a setting changed mid-run cannot split them.
+    /// With neither `routing` nor `notSent` set, ad removal is off for this episode.
     struct LabelledAttemptRoute: Sendable {
-        /// Nil keeps the local classifier.
+        /// Remote or daily cap: the labelled path.
         var routing: LabelledRouting?
-        /// Model, level and prompt version the labelled path will use; nil when local.
+        /// Model, level and prompt version the labelled path will use; nil off that path.
         var provenance: LabelledRunProvenance?
+        /// Ad removal is on but the episode is not sent: its original is kept, with this reason.
+        var notSent: RemoteLabellingNotSent?
     }
 
-    /// Shared by ``prepare`` and ``prepareAgain``: local classifier, or transcript → label → cut.
+    /// The gate's three outcomes.
+    enum LabellingGate: Equatable, Sendable {
+        /// Remote or daily cap: transcript, label, cut (or the daily cap's wait or stop).
+        case labelled(LabelledRouting)
+        /// Ad removal off or an ad-free feed: one plain worker call, nothing sent, no warning.
+        case adRemovalOff
+        /// Ad removal on, but the episode is never sent: the whole original, with the reason.
+        case notSent(RemoteLabellingNotSent)
+    }
+
+    /// Shared by ``prepare`` and ``prepareAgain``: the plain path, the not-sent path, or
+    /// transcript → label → cut. No path asks the worker to remove ads without a labelled stage.
     ///
     /// `route` is the attempt's ``labelledAttemptRoute(episode:policy:)``.
     /// `deferral` names the running generation a labelled failure may park; nil
     /// (``prepareAgain``, or a run with no attempt) never defers.
     func runPreparationWorker(
-        episode: PodcastEpisode,
-        audioURL: URL,
-        preparedURL: URL,
-        sourceHash: String,
-        policy: PodcastPreparationPolicySnapshot,
-        profileSnapshot: PodcastAdProfileSnapshot?,
-        emitLabellerCues: Bool,
-        route: LabelledAttemptRoute,
+        episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
+        policy: PodcastPreparationPolicySnapshot, route: LabelledAttemptRoute,
         deferral: LabelledDeferralContext?,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PreparationWorkerRun {
+        if let notSent = route.notSent {
+            onStatus(PodcastPreparationProgress(
+                stage: "ads.not-sent", detail: notSent.sentence,
+                evidence: try? PreparationEvidence(kind: notSent.kind, fields: [:])))
+            let payload = try await keepWholeOriginal(
+                warning: notSent.warning, episode: episode, audioURL: audioURL, preparedURL: preparedURL,
+                sourceHash: sourceHash, policy: policy, onStatus: onStatus)
+            return PreparationWorkerRun(payload: payload, labelledProvenance: nil)
+        }
         if let services = labelling, let routing = route.routing, let provenance = route.provenance {
             return try await runLabelledPreparation(
                 episode: episode, audioURL: audioURL, preparedURL: preparedURL,
-                sourceHash: sourceHash, policy: policy, profileSnapshot: profileSnapshot,
+                sourceHash: sourceHash, policy: policy,
                 services: services, routing: routing, provenance: provenance,
                 deferral: deferral, onStatus: onStatus)
         }
+        // Ad removal is off for this episode. An ad-free feed admitted with ad removal on
+        // still asks the worker for nothing: only a labelled stage may remove ads.
         let request = try await workerRequest(
             episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
-            policy: policy, profileSnapshot: profileSnapshot, emitLabellerCues: emitLabellerCues,
+            policy: Self.adRemovalOff(policy),
             onStatus: onStatus)
         let response = try await runner.run(request: request, onProgress: onStatus)
         return PreparationWorkerRun(payload: try Self.decode(response), labelledProvenance: nil)
     }
 
-    /// Pure gate shared with ``LabelledPolicyDigestInForce``: nil keeps the local
-    /// classifier; ``remote`` or ``dailyCap`` enters the labelled path.
-    static func labelledRoutingDecision(
-        isShadow: Bool,
-        input: RemoteLabellingInput,
-        context: RemoteLabellingContext
-    ) -> LabelledRouting? {
-        guard !isShadow else { return nil }
+    /// Pure gate shared with ``LabelledPolicyDigestInForce``.
+    static func labellingGate(input: RemoteLabellingInput, context: RemoteLabellingContext) -> LabellingGate {
         switch RemoteLabellingPolicy.route(for: input, context: context) {
-        case .remote: return .remote
-        case .local(.dailyCapReached): return .dailyCap
-        case .local: return nil
+        case .remote: return .labelled(.remote)
+        case .notSent(.dailyCapReached): return .labelled(.dailyCap)
+        case .notSent(let reason):
+            // Every other not-sent reason but ad removal off is a not-sent reason.
+            guard let notSent = RemoteLabellingNotSent(reason) else { return .adRemovalOff }
+            return .notSent(notSent)
         }
+    }
+
+    /// The gate's context when the app set up no labelling services: the switch reads as off.
+    static let labellingNotSetUp = RemoteLabellingContext(
+        switchOn: false, hasKey: false, confirmedFeedIDs: [], adFreeFeedIDs: [], dailyCapReached: false)
+
+    /// `policy` with ad removal off; the transcript and self-promotion choices are kept.
+    static func adRemovalOff(_ policy: PodcastPreparationPolicySnapshot) -> PodcastPreparationPolicySnapshot {
+        PodcastPreparationPolicySnapshot(
+            transcriptPolicy: policy.transcriptPolicy,
+            removeAds: false,
+            removeSelfPromotion: policy.removeSelfPromotion)
     }
 
     /// Provenance folded into a labelled outcome; shared so digest-in-force cannot drift.
@@ -122,50 +166,51 @@ extension PodcastPreparationPipeline {
         )
     }
 
-    /// Nil keeps the local classifier. Only the daily cap, of all the local reasons, enters
-    /// the labelled path: it waits for midnight or stops there instead of falling back.
-    private func labelledRouting(
+    /// What the gate knows about this episode's show. A feed or rename the library cannot
+    /// read leaves the address unknown, so a read failure is never sent.
+    private func labellingInput(
         episode: PodcastEpisode,
-        policy: PodcastPreparationPolicySnapshot,
-        services: PodcastLabellingServices
-    ) async -> LabelledRouting? {
-        let preferences = services.preferences
-        guard !preferences.isShadow,
-              let feed = try? await store.podcastFeed(for: episode.feedID) else { return nil }
-        let customTitle: String?
-        do { customTitle = try await store.subscription(for: episode.feedID)?.displayName } catch { return nil }
-        return Self.labelledRoutingDecision(
-            isShadow: false,
-            input: RemoteLabellingInput(
-                feedID: episode.feedID.rawValue, feedURL: feed.canonicalURL, feedTitle: feed.title,
-                customTitle: customTitle, audioURL: episode.enclosureURL, removeAds: policy.removeAds),
-            context: RemoteLabellingContext(
-                preferences: preferences, hasKey: services.keyStore.hasKey(), counter: services.counter))
+        policy: PodcastPreparationPolicySnapshot
+    ) async -> RemoteLabellingInput {
+        var feed: PodcastFeed?
+        var customTitle: String?
+        do {
+            feed = try await store.podcastFeed(for: episode.feedID)
+            customTitle = try await store.subscription(for: episode.feedID)?.displayName
+        } catch {
+            feed = nil
+            customTitle = nil
+        }
+        return RemoteLabellingInput(
+            feedID: episode.feedID.rawValue, feedURL: feed?.canonicalURL, feedTitle: feed?.title ?? "",
+            customTitle: customTitle, audioURL: episode.enclosureURL, removeAds: policy.removeAds)
     }
 
     /// Evaluates the gate once for an attempt and fixes the provenance it will run under.
+    /// Without labelling services the switch reads as off, so nothing can enter the labelled path.
     func labelledAttemptRoute(
         episode: PodcastEpisode,
         policy: PodcastPreparationPolicySnapshot
     ) async -> LabelledAttemptRoute {
-        guard let services = labelling,
-              let routing = await labelledRouting(episode: episode, policy: policy, services: services) else {
-            return LabelledAttemptRoute(routing: nil, provenance: nil)
+        let input = await labellingInput(episode: episode, policy: policy)
+        let context = labelling.map {
+            RemoteLabellingContext(preferences: $0.preferences, hasKey: $0.keyStore.hasKey(), counter: $0.counter)
+        } ?? Self.labellingNotSetUp
+        switch Self.labellingGate(input: input, context: context) {
+        case .labelled(let routing):
+            return LabelledAttemptRoute(
+                routing: routing, provenance: labelling.map { Self.labelledRunProvenance(preferences: $0.preferences) })
+        case .adRemovalOff:
+            return LabelledAttemptRoute()
+        case .notSent(let reason):
+            return LabelledAttemptRoute(notSent: reason)
         }
-        return LabelledAttemptRoute(
-            routing: routing, provenance: Self.labelledRunProvenance(preferences: services.preferences))
     }
 
     private func runLabelledPreparation(
-        episode: PodcastEpisode,
-        audioURL: URL,
-        preparedURL: URL,
-        sourceHash: String,
-        policy: PodcastPreparationPolicySnapshot,
-        profileSnapshot: PodcastAdProfileSnapshot?,
-        services: PodcastLabellingServices,
-        routing: LabelledRouting,
-        provenance: LabelledRunProvenance,
+        episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
+        policy: PodcastPreparationPolicySnapshot, services: PodcastLabellingServices,
+        routing: LabelledRouting, provenance: LabelledRunProvenance,
         deferral: LabelledDeferralContext?,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PreparationWorkerRun {
@@ -178,7 +223,7 @@ extension PodcastPreparationPipeline {
         func original(_ reason: String) async throws -> PreparationWorkerRun {
             let payload = try await wholeOriginal(
                 reason: reason, episode: episode, audioURL: audioURL, preparedURL: preparedURL,
-                sourceHash: sourceHash, policy: policy, profileSnapshot: profileSnapshot, onStatus: onStatus)
+                sourceHash: sourceHash, policy: policy, onStatus: onStatus)
             return PreparationWorkerRun(payload: payload, labelledProvenance: provenance)
         }
         do {
@@ -190,7 +235,7 @@ extension PodcastPreparationPipeline {
             } else {
                 run = try await labelledLoop(
                     episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
-                    policy: policy, profileSnapshot: profileSnapshot, services: services, feedTitle: feedTitle,
+                    policy: policy, services: services, feedTitle: feedTitle,
                     provenance: provenance, deferral: deferral, cached: cached, original: original,
                     onStatus: onStatus)
             }
@@ -205,18 +250,10 @@ extension PodcastPreparationPipeline {
     }
 
     private func labelledLoop(
-        episode: PodcastEpisode,
-        audioURL: URL,
-        preparedURL: URL,
-        sourceHash: String,
-        policy: PodcastPreparationPolicySnapshot,
-        profileSnapshot: PodcastAdProfileSnapshot?,
-        services: PodcastLabellingServices,
-        feedTitle: String,
-        provenance: LabelledRunProvenance,
-        deferral: LabelledDeferralContext?,
-        cached: LabelledTranscript?,
-        original: (String) async throws -> PreparationWorkerRun,
+        episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
+        policy: PodcastPreparationPolicySnapshot, services: PodcastLabellingServices,
+        feedTitle: String, provenance: LabelledRunProvenance, deferral: LabelledDeferralContext?,
+        cached: LabelledTranscript?, original: (String) async throws -> PreparationWorkerRun,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PreparationWorkerRun {
         var cached = cached
@@ -225,7 +262,7 @@ extension PodcastPreparationPipeline {
             do {
                 let payload = try await labelledAttempt(
                     episode: episode, audioURL: audioURL, preparedURL: preparedURL,
-                    sourceHash: sourceHash, policy: policy, profileSnapshot: profileSnapshot,
+                    sourceHash: sourceHash, policy: policy,
                     services: services, feedTitle: feedTitle, provenance: provenance, cached: cached,
                     onStatus: onStatus)
                 return PreparationWorkerRun(payload: payload, labelledProvenance: provenance)
@@ -249,16 +286,9 @@ extension PodcastPreparationPipeline {
     }
 
     private func labelledAttempt(
-        episode: PodcastEpisode,
-        audioURL: URL,
-        preparedURL: URL,
-        sourceHash: String,
-        policy: PodcastPreparationPolicySnapshot,
-        profileSnapshot: PodcastAdProfileSnapshot?,
-        services: PodcastLabellingServices,
-        feedTitle: String,
-        provenance: LabelledRunProvenance,
-        cached: LabelledTranscript?,
+        episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
+        policy: PodcastPreparationPolicySnapshot, services: PodcastLabellingServices,
+        feedTitle: String, provenance: LabelledRunProvenance, cached: LabelledTranscript?,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> WorkerPayload {
         let transcript: LabelledTranscript
@@ -267,7 +297,7 @@ extension PodcastPreparationPipeline {
         } else {
             let stage = try await runTranscriptStage(
                 episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
-                policy: policy, profileSnapshot: profileSnapshot, onStatus: onStatus)
+                policy: policy, onStatus: onStatus)
             transcript = try Self.readLabelledTranscript(stage)
         }
         let cues = transcript.cues
@@ -314,7 +344,7 @@ extension PodcastPreparationPipeline {
             ])))
         let cutFields = try await workerRequestFields(
             episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
-            policy: policy, profileSnapshot: profileSnapshot, emitLabellerCues: false, onStatus: onStatus)
+            policy: policy, onStatus: onStatus)
         var cutRequest = cutFields
         cutRequest["adStage"] = "cut"
         cutRequest["removeAds"] = true
@@ -339,17 +369,13 @@ extension PodcastPreparationPipeline {
     }
 
     private func runTranscriptStage(
-        episode: PodcastEpisode,
-        audioURL: URL,
-        preparedURL: URL,
-        sourceHash: String,
+        episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
         policy: PodcastPreparationPolicySnapshot,
-        profileSnapshot: PodcastAdProfileSnapshot?,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> TranscriptStagePayload {
         var fields = try await workerRequestFields(
             episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
-            policy: policy, profileSnapshot: profileSnapshot, emitLabellerCues: false, onStatus: onStatus)
+            policy: policy, onStatus: onStatus)
         fields["adStage"] = "transcript"
         let data = try JSONSerialization.data(withJSONObject: fields)
         let response = try await runner.run(request: data, onProgress: onStatus)
@@ -359,34 +385,37 @@ extension PodcastPreparationPipeline {
     /// One more ordinary worker call with ad removal off, then mark the outcome uncertain
     /// with `reason` as the warning's explanation.
     private func wholeOriginal(
-        reason: String,
-        episode: PodcastEpisode,
-        audioURL: URL,
-        preparedURL: URL,
-        sourceHash: String,
-        policy: PodcastPreparationPolicySnapshot,
-        profileSnapshot: PodcastAdProfileSnapshot?,
+        reason: String, episode: PodcastEpisode, audioURL: URL, preparedURL: URL,
+        sourceHash: String, policy: PodcastPreparationPolicySnapshot,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> WorkerPayload {
-        let fallbackPolicy = PodcastPreparationPolicySnapshot(
-            transcriptPolicy: policy.transcriptPolicy,
-            removeAds: false,
-            removeSelfPromotion: policy.removeSelfPromotion)
+        let warning = "original audio includes ads: \(reason)"
+        let payload = try await keepWholeOriginal(
+            warning: warning, episode: episode, audioURL: audioURL, preparedURL: preparedURL,
+            sourceHash: sourceHash, policy: policy, onStatus: onStatus)
+        onStatus(PodcastPreparationProgress(stage: "ads.uncertain", detail: warning))
+        return payload
+    }
+
+    /// One ordinary worker call with ad removal off, its outcome marked uncertain: the whole
+    /// original is kept and `warning` says why. Shared by a labelled stop and a not-sent episode.
+    private func keepWholeOriginal(
+        warning: String, episode: PodcastEpisode, audioURL: URL, preparedURL: URL,
+        sourceHash: String, policy: PodcastPreparationPolicySnapshot,
+        onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
+    ) async throws -> WorkerPayload {
         let request = try await workerRequest(
             episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
-            policy: fallbackPolicy, profileSnapshot: nil, emitLabellerCues: false, onStatus: onStatus)
+            policy: Self.adRemovalOff(policy), onStatus: onStatus)
         var payload = try Self.decode(try await runner.run(request: request, onProgress: onStatus))
         payload.adRemovalOutcome = "uncertain"
-        payload.warning = "original audio includes ads: \(reason)"
+        payload.warning = warning
         payload.audioChanged = false
         payload.adSegments = []
         payload.removedSeconds = 0
         payload.keepIntervals = []
         payload.silenceTrims = []
         payload.timeline = try PreparationStatus.PreparationTimeline(removed: [], kept: [])
-        onStatus(PodcastPreparationProgress(
-            stage: "ads.uncertain",
-            detail: payload.warning ?? reason))
         return payload
     }
 

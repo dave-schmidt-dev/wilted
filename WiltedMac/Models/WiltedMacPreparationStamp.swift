@@ -67,7 +67,7 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
     /// currently on the shelf.
     ///
     /// `labelledDigestInForce` is the digest a fresh labelled cut would store
-    /// for this episode right now, or nil when routed local. When the newest
+    /// for this episode right now, or nil when it is not sent for labelling. When the newest
     /// finished attempt ran on the current engine and its recorded digest
     /// differs, the earlier-setting line appears.
     ///

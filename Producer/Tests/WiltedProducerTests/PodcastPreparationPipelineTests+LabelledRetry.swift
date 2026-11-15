@@ -377,12 +377,12 @@ extension PodcastPreparationPipelineTests {
     // MARK: Prepare Again and runs without a generation
 
     @Test func prepareAgainNeverDefersAndKeepsTheExistingCut() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         let (defaults, defaultsName) = makeDefaults()
         defer { fixture.remove(); defaults.removePersistentDomain(forName: defaultsName) }
         let clock = RetryTestClock()
         let sender = LabellerSenderStub(outcomes: [.fail(.rateLimited(retryAfter: 30))])
-        try await saveFeed(in: fixture.store)
+        // The existing cut, made on the labelled path by an older engine.
         _ = try await fixture.pipeline(Fixture.cuttingStub(), engineVersion: "podcast-preparation-v15")
             .prepare(episodeID: fixture.episodeID)
         let candidate = try #require(try await fixture.store.podcastEpisodesToPrepareAgain().first)
@@ -480,26 +480,5 @@ extension PodcastPreparationPipelineTests {
         #expect(cut.adRemovalOutcome == "cut")
         #expect(after.providerPauseCount == 0)
         #expect(after.providerPausedSince == nil)
-    }
-
-    // MARK: Remote by default
-
-    @Test func theLabelledPathRunsWhenShadowIsUnsetAndNotWhenItIsStoredTrue() async throws {
-        for shadow in [nil, true] as [Bool?] {
-            let fixture = try await Fixture()
-            let (defaults, defaultsName) = makeDefaults()
-            defer { fixture.remove(); defaults.removePersistentDomain(forName: defaultsName) }
-            let sender = LabellerSenderStub(outcomes: [
-                .respond(LabellerResponse(text: mustCutReply(), usage: LabellerUsage()))])
-            try await saveFeed(in: fixture.store)
-            let labelling = configureLabelling(defaults: defaults, sender: sender, shadow: shadow)
-            #expect((defaults.object(forKey: AdLabellerPreferences.keyPrefix + "shadow") != nil) == (shadow != nil))
-            let worker = retryWorker(try writeCueFile(to: fixture.workDirectory), fixture: fixture)
-            _ = try await retryPipeline(fixture, runner: worker, labelling: labelling, clock: RetryTestClock())
-                .prepare(episodeID: fixture.episodeID)
-            let stages = try await worker.allRequests().map { try decodeRequest($0)["adStage"] as? String }
-            #expect(stages == (shadow == nil ? ["transcript", "cut"] : [nil]))
-            #expect(sender.requestCount == (shadow == nil ? 1 : 0))
-        }
     }
 }

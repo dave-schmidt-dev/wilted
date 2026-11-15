@@ -28,7 +28,7 @@ extension PodcastPreparationPipelineTests {
     /// cut out of having been deleted along with its revision. A failed re-run
     /// must leave that copy and its transcript exactly where they are.
     @Test func keepsAnAlreadyPreparedRevisionWhenAReRunFails() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let prepared = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
         let before = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
@@ -54,7 +54,7 @@ extension PodcastPreparationPipelineTests {
     /// write succeeding, and it must read back identically across repeated
     /// store reopens (no oscillation).
     @Test func commitPersistsTheOutcomeIndependentlyOfTheJournalAndSurvivesRepeatedReopens() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let result = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
 
@@ -83,13 +83,13 @@ extension PodcastPreparationPipelineTests {
     /// A run that failed while the window was closed still has to leave
     /// evidence, so every status is journalled as well as reported.
     @Test func journalsTheRunSoItsOutcomeOutlivesTheWindow() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let worker = WorkerStub(
             response: Fixture.cuttingStubResponse(), writesCutAudio: Fixture.cuttingAudio,
             progress: [
-                PodcastPreparationProgress(stage: "ads.detect.calls", detail: "1 request, 0 failed"),
-                PodcastPreparationProgress(stage: "ads.detect.calls", detail: "2 requests, 0 failed"),
+                PodcastPreparationProgress(stage: "ads.cut.slivers", detail: "1 sliver"),
+                PodcastPreparationProgress(stage: "ads.cut.slivers", detail: "2 slivers"),
             ]
         )
         _ = try await fixture.pipeline(worker).prepare(episodeID: fixture.episodeID)
@@ -105,7 +105,7 @@ extension PodcastPreparationPipelineTests {
         #expect(ad.status.evidence?.kind == "advertisement")
         #expect(ad.status.evidence?.fields["startSeconds"] == "3.000")
         #expect(ad.status.evidence?.fields["label"] == "host read")
-        #expect(entries.filter { $0.id.contains("|ads.detect.calls#") }.count == 2,
+        #expect(entries.filter { $0.id.contains("|ads.cut.slivers#") }.count == 2,
                 "Repeated worker stages must retain both observations.")
         #expect(Set(entries.map(\.id)).count == entries.count)
         let terminal = try #require(entries.last { $0.status.terminal })
@@ -150,143 +150,71 @@ extension PodcastPreparationPipelineTests {
         }
         let malformedNomination = v2Response(report:
             #"{"outcome":"noAds","rawNominations":[{"startSeconds":9.0,"endSeconds":1.0,"label":"x","confidence":0.5}],"# +
-            #""audit":\#(cleanAuditJSON)}"#)
+            #""audit":\#(labelledAuditJSON)}"#)
         #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or invalid ad-removal report")) {
             _ = try PodcastPreparationPipeline.decode(malformedNomination)
         }
     }
 
-    /// `noAds` from a detector that examined every window and `noAds` from one
-    /// that never reached the model are the same sentence. Only the audit
-    /// separates them, so an outcome without it is not a clean result.
-    @Test func rejectsAnAdRemovalOutcomeThatCannotBeAudited() {
+    /// An outcome that claims ad removal ran requires a valid labelled audit.
+    /// An ad-removal-off reply carries no audit. A local-audit-shaped reply
+    /// is rejected.
+    @Test func rejectsAnAdRemovalOutcomeThatCannotBeAudited() throws {
         let noAudit = v2Response(report: #"{"outcome":"noAds","rawNominations":[]}"#)
-        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")) {
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or invalid labelled ad-removal audit")) {
             _ = try PodcastPreparationPipeline.decode(noAudit)
+        }
+        let localAudit = v2Response(report:
+            #"{"outcome":"noAds","rawNominations":[],"audit":\#(cleanAuditJSON)}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or invalid labelled ad-removal audit")) {
+            _ = try PodcastPreparationPipeline.decode(localAudit)
         }
         let neverRan = v2Response(report:
             #"{"outcome":"noAds","rawNominations":[],"audit":{"modelRequests":0,"modelFailures":0,"# +
             #""experimentalRequests":0,"unresolvedIds":[],"incompleteError":null}}"#)
-        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")) {
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or invalid labelled ad-removal audit")) {
             _ = try PodcastPreparationPipeline.decode(neverRan)
         }
-        let unresolved = v2Response(report:
-            #"{"outcome":"noAds","rawNominations":[],"audit":{"modelRequests":4,"modelFailures":1,"# +
-            #""experimentalRequests":0,"unresolvedIds":[7],"incompleteError":null}}"#)
-        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")) {
-            _ = try PodcastPreparationPipeline.decode(unresolved)
+        let disabledWithAudit = v2Response(report:
+            #"{"outcome":"disabled","rawNominations":[],"audit":\#(labelledAuditJSON)}"#)
+        #expect(throws: PodcastPreparationError.malformedWorkerResponse("disabled ad removal reported detector evidence")) {
+            _ = try PodcastPreparationPipeline.decode(disabledWithAudit)
         }
-        let incomplete = v2Response(report:
-            #"{"outcome":"noAds","rawNominations":[],"audit":{"modelRequests":4,"modelFailures":2,"# +
-            #""experimentalRequests":0,"unresolvedIds":[],"incompleteError":"budget exhausted"}}"#)
-        #expect(throws: PodcastPreparationError.malformedWorkerResponse("missing or unresolved ad-removal audit")) {
-            _ = try PodcastPreparationPipeline.decode(incomplete)
-        }
+
+        let labelled = v2Response(report: #"{"outcome":"noAds","rawNominations":[],"audit":\#(labelledAuditJSON)}"#)
+        let labelledPayload = try PodcastPreparationPipeline.decode(labelled)
+        #expect(labelledPayload.adRemovalOutcome == "noAds")
+
+        let disabled = v2Response(report: #"{"outcome":"disabled","rawNominations":[]}"#)
+        let disabledPayload = try PodcastPreparationPipeline.decode(disabled)
+        #expect(disabledPayload.adRemovalOutcome == "disabled")
     }
 
     /// The outcome label is a claim about the delivered audio, so it has to
     /// agree with the map that describes it.
     @Test func rejectsAV2PayloadWhoseOutcomeContradictsItsTimeline() {
         let cutWithoutACut = v2Response(report:
-            #"{"outcome":"cut","rawNominations":[],"audit":\#(cleanAuditJSON)}"#)
+            #"{"outcome":"cut","rawNominations":[],"audit":\#(labelledAuditJSON)}"#)
         #expect(throws: PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")) {
             _ = try PodcastPreparationPipeline.decode(cutWithoutACut)
         }
         let disabledWithEvidence = v2Response(report:
-            #"{"outcome":"disabled","rawNominations":[],"audit":\#(cleanAuditJSON)}"#)
+            #"{"outcome":"disabled","rawNominations":[],"audit":\#(labelledAuditJSON)}"#)
         #expect(throws: PodcastPreparationError.malformedWorkerResponse("disabled ad removal reported detector evidence")) {
             _ = try PodcastPreparationPipeline.decode(disabledWithEvidence)
         }
     }
 
-    @Test func realPythonUncertainResponsesDecodeUnderTheSwiftContract() throws {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        let python = ProcessInfo.processInfo.environment["WILTED_PIPELINE_PYTHON"]
-            ?? "/opt/homebrew/opt/python@3.15/bin/python3.15"
-        process.arguments = ["-u", "PYTHONPATH", python, "-B", "-c",
-                             "import json; from test_wilted_pipeline import uncertain_contract_payloads; print(json.dumps(uncertain_contract_payloads()))"]
-        process.currentDirectoryURL = root.appendingPathComponent("Producer/Workers")
-        let output = Pipe()
-        let errors = Pipe()
-        process.standardOutput = output
-        process.standardError = errors
-        try process.run()
-        process.waitUntilExit()
-        let bytes = output.fileHandleForReading.readDataToEndOfFile()
-        let errorBytes = errors.fileHandleForReading.readDataToEndOfFile()
-        #expect(process.terminationStatus == 0, "synthetic Python worker contract failed: \(String(decoding: errorBytes, as: UTF8.self))")
-        let entries = try #require(JSONSerialization.jsonObject(with: bytes) as? [[String: Any]])
-        #expect(entries.compactMap { $0["scenario"] as? String } == ["missing-model", "share-ceiling", "declined-unresolved"])
-        for entry in entries {
-            let response = try #require(entry["payload"] as? [String: Any])
-            let payload = try Self.decodeResponse(response)
-            #expect(payload.adRemovalOutcome == "uncertain")
-            #expect(!payload.audioChanged && payload.adSegments.isEmpty && payload.keepIntervals.isEmpty)
-            #expect(payload.warning?.contains("original audio includes ads") == true)
-            #expect(payload.adAuditDiagnostics["incompleteError"]?.isEmpty == false)
-        }
-    }
-
     private func uncertainResponse(audioPath: String = "/tmp/original.mp3") -> [String: Any] {
-        let warning = "original audio includes ads: classifier could not resolve IDs 0, 1"
-        var audit = WorkerStub.cleanAudit()
-        audit["unresolvedIds"] = [0, 1]
-        audit["incompleteError"] = "classifier could not resolve IDs 0, 1"
-        audit["warning"] = warning
-        audit["heldSpans"] = [[String: Any]]()
-        audit["declinedCommercialEvidenceSeeds"] = [[String: Any]]()
-        return ["ok": true, "protocolVersion": 2, "timing": "none", "audioPath": audioPath,
-                "audioChanged": false, "durationSeconds": 12.0, "removedSeconds": 0.0,
-                "adSegments": [[String: Any]](), "keepIntervals": [[String: Any]](),
-                "report": ["outcome": "uncertain", "rawNominations": [[String: Any]](),
-                           "warning": warning, "audit": audit]]
+        Fixture.labelledUncertainResponse(audioPath: audioPath)
     }
 
     @Test func acceptsUncertaintyWithHonestDiagnosticsAndNoCuts() throws {
-        var response = uncertainResponse()
+        let response = uncertainResponse()
         let payload = try Self.decodeResponse(response)
         #expect(payload.adRemovalOutcome == "uncertain")
         #expect(payload.warning?.contains("original audio includes ads") == true)
         #expect(!payload.audioChanged && payload.keepIntervals.isEmpty && payload.adSegments.isEmpty)
-        var report = response["report"] as! [String: Any]
-        var audit = report["audit"] as! [String: Any]
-        audit["modelRequests"] = 0
-        audit["modelFailures"] = 0
-        audit["classifierRequests"] = 0
-        audit["classifierValidRequests"] = 0
-        report["audit"] = audit
-        response["report"] = report
-        #expect(try Self.decodeResponse(response).adRemovalOutcome == "uncertain")
-    }
-
-    /// The labeller cue export is optional protocol surface: a response that
-    /// carries it and the same response without it decode to the same
-    /// outcome, and the fields surface only when the worker sent them.
-    @Test func decodesLabellerCueFieldsAsOptionalSurface() throws {
-        var withCues = uncertainResponse()
-        withCues["labellerCuesPath"] = "/tmp/wilted-pipeline/labeller-cues.json"
-        withCues["labellerCuesDigest"] = String(repeating: "a", count: 64)
-        var withoutCues = withCues
-        withoutCues.removeValue(forKey: "labellerCuesPath")
-        withoutCues.removeValue(forKey: "labellerCuesDigest")
-
-        let withPayload = try Self.decodeResponse(withCues)
-        let withoutPayload = try Self.decodeResponse(withoutCues)
-        #expect(withPayload.adRemovalOutcome == withoutPayload.adRemovalOutcome)
-        #expect(withPayload.timing == withoutPayload.timing)
-        #expect(withPayload.audioChanged == withoutPayload.audioChanged)
-        #expect(withPayload.warning == withoutPayload.warning)
-        #expect(withPayload.adSegments.count == withoutPayload.adSegments.count)
-        #expect(withPayload.keepIntervals.count == withoutPayload.keepIntervals.count)
-
-        #expect(withPayload.labellerCuesPath == "/tmp/wilted-pipeline/labeller-cues.json")
-        #expect(withPayload.labellerCuesDigest == String(repeating: "a", count: 64))
-        #expect(withoutPayload.labellerCuesPath == nil)
-        #expect(withoutPayload.labellerCuesDigest == nil)
     }
 
     @Test func retainsHousePromotionHeldReasonInBoundedDiagnostics() throws {
@@ -318,8 +246,8 @@ extension PodcastPreparationPipelineTests {
             response[key] = value
             #expect(throws: PodcastPreparationError.self) { _ = try Self.decodeResponse(response) }
         }
-        for (key, value) in [("modelRequests", -1 as Any), ("modelFailures", "bad" as Any),
-                             ("experimentalRequests", 1 as Any), ("unresolvedIds", [-1] as Any),
+        for (key, value) in [("breaksProposed", -1 as Any), ("breaksCut", -1 as Any),
+                             ("breaksLeftIn", "bad" as Any), ("leftIn", "bad" as Any),
                              ("incompleteError", NSNull() as Any), ("heldSpans", "bad" as Any)] {
             var response = uncertainResponse()
             var report = response["report"] as! [String: Any]
@@ -344,9 +272,11 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func uncertaintyCompletesWithOriginalAudioAndDurableJournalWarning() async throws {
-        let fixture = try await Fixture()
+        // Only the labelled path can find ads and still be unsure of them.
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
-        let result = try await fixture.pipeline(WorkerStub(response: uncertainResponse(audioPath: fixture.audioURL.path)))
+        let result = try await fixture.pipeline(WorkerStub(
+            response: Fixture.labelledUncertainResponse(audioPath: fixture.audioURL.path)))
             .prepare(episodeID: fixture.episodeID)
         #expect(result.revision.revisionID == fixture.revisionID)
         #expect(result.mediaURL == fixture.audioURL)
@@ -361,15 +291,16 @@ extension PodcastPreparationPipelineTests {
         let evidence = try #require(entries.first { $0.id.contains("|pipeline.result#") })
         #expect(evidence.status.detail.contains("original audio includes ads"))
         #expect(evidence.status.evidence?.fields["warning"]?.contains("original audio includes ads") == true)
-        #expect(evidence.status.evidence?.fields["unresolvedIds"] == "0,1")
-        #expect(evidence.status.evidence?.fields["modelRequests"] == "3")
+        #expect(evidence.status.evidence?.fields["incompleteError"] == "unresolved commercial spans")
+        #expect(evidence.status.evidence?.fields["modelRequests"] == "0")
     }
 
     @Test func rejectsUncertaintyThatNamesDifferentAudioBeforeCommit() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         await #expect(throws: PodcastPreparationError.self) {
-            _ = try await fixture.pipeline(WorkerStub(response: uncertainResponse(audioPath: "/tmp/changed.mp3")))
+            _ = try await fixture.pipeline(WorkerStub(
+                response: Fixture.labelledUncertainResponse(audioPath: "/tmp/changed.mp3")))
                 .prepare(episodeID: fixture.episodeID)
         }
         #expect(try Data(contentsOf: fixture.audioURL) == Data("original-audio-bytes".utf8))
@@ -377,6 +308,11 @@ extension PodcastPreparationPipelineTests {
 
     private var cleanAuditJSON: String {
         #"{"modelRequests":3,"modelFailures":0,"experimentalRequests":0,"unresolvedIds":[],"incompleteError":null}"#
+    }
+
+    private var labelledAuditJSON: String {
+        let data = try! JSONSerialization.data(withJSONObject: WorkerStub.labelledAudit(), options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
     }
 
     private func v2Response(report: String) -> Data {
@@ -388,7 +324,7 @@ extension PodcastPreparationPipelineTests {
     /// attempt as finished while it was still running, and stage rows the new
     /// attempt had not reached yet read as its own.
     @Test func aSecondAttemptStartsWithAnEmptyJournal() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let requestID = PodcastPreparationPipeline.requestID(for: fixture.episodeID)
         _ = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
@@ -431,7 +367,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func rejectsMalformedTimelineBeforeSuccessIsJournalled() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let malformed = WorkerStub(response: [
             "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false,
@@ -520,7 +456,7 @@ extension PodcastPreparationPipelineTests {
 
 extension PodcastPreparationPipelineTests {
     @Test func persistedRunningTicketGenerationIsAttachedToEveryPipelineEvent() async throws {
-        let fixture = try await Fixture(); defer { fixture.remove() }
+        let fixture = try await Fixture(labelled: true); defer { fixture.remove() }
         let ticket = try await fixture.store.readmitWorkTicket(kind: .podcastPreparation,
             subjectID: fixture.episodeID.rawValue, requestSequence: 51, to: .running, at: Timestamp(Date()))
         let attempt = try PreparationAttemptIdentity(requestSequence: ticket.requestSequence, attemptCount: ticket.attemptCount)

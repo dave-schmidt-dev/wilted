@@ -20,20 +20,20 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             route(to: publicShow, preferences: preferences, keyStore: keyStore)
         }
 
-        XCTAssertEqual(routeNow(), .local(.switchOff))
+        XCTAssertEqual(routeNow(), .notSent(.switchOff))
         XCTAssertEqual(model.requestsToday, 0)
         XCTAssertEqual(model.dailyCap, 60)
 
         model.setOnlineFinding(true)
         XCTAssertEqual(model.switchMessage, "Save a provider key first.")
         XCTAssertFalse(model.isOnlineFindingOn, "the switch is refused without a key")
-        XCTAssertEqual(routeNow(), .local(.switchOff))
+        XCTAssertEqual(routeNow(), .notSent(.switchOff))
 
         model.typedKey = "  provider-key-1  "
         model.saveKey(model.typedKey)
         XCTAssertTrue(model.hasKey)
         XCTAssertEqual(model.typedKey, "", "the typed text is cleared once the key is saved")
-        XCTAssertEqual(routeNow(), .local(.switchOff), "a key alone sends nothing")
+        XCTAssertEqual(routeNow(), .notSent(.switchOff), "a key alone sends nothing")
 
         model.setOnlineFinding(true)
         XCTAssertTrue(model.isConfirming, "turning on with nothing confirmed opens the sheet")
@@ -93,7 +93,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         let late = show("feed-c", "Late Show")
         shows.append(late)
         XCTAssertEqual(model.waitingShowCount, 1)
-        XCTAssertEqual(route(to: late, preferences: preferences, keyStore: keyStore), .local(.notConfirmed))
+        XCTAssertEqual(route(to: late, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed))
         XCTAssertEqual(route(to: first, preferences: preferences, keyStore: keyStore), .remote,
                        "an earlier confirmed show keeps its route")
 
@@ -107,6 +107,73 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertEqual(route(to: late, preferences: preferences, keyStore: keyStore), .remote)
         XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs.sorted(),
                        ["feed-a", "feed-b", "feed-c"], "confirming adds to, never replaces, the confirmed set")
+    }
+
+    /// A show the owner kept back under the old "Mac only" choice is neither nudged as
+    /// waiting nor offered as sent by default; only the owner turning it on sends it.
+    func testShowInTheStoredMacOnlyListStartsNotSentInTheSheetAndIsNotWaiting() throws {
+        let publicShow = show("feed-a", "Public Show")
+        let keptBack = show("feed-k", "Kept Back Show")
+        let shows = [publicShow, keptBack]
+        let (model, preferences, keyStore) = makeModel(shows: { shows })
+        let legacyKey = AdLabellerPreferences.keyPrefix + "localOnlyFeedIDs"
+        preferences.set(["feed-k"], forKey: AdLabellerPreferences.keyPrefix + "confirmedFeedIDs")
+        preferences.set(["feed-k"], forKey: legacyKey)
+
+        XCTAssertEqual(model.waitingShows.map(\.feedID), ["feed-a"], "a kept-back show is not waiting for a decision")
+
+        model.saveKey("provider-key-5")
+        model.setOnlineFinding(true)
+        XCTAssertTrue(model.isConfirming, "a show in both stored lists does not count as confirmed")
+        XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-a"])
+        XCTAssertEqual(model.sheetNotSentShows.map(\.feedID), ["feed-k"], "a kept-back show starts as not sent")
+
+        model.confirm()
+        XCTAssertEqual(route(to: publicShow, preferences: preferences, keyStore: keyStore), .remote)
+        XCTAssertEqual(route(to: keptBack, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed))
+        XCTAssertEqual(preferences.stringArray(forKey: legacyKey), ["feed-k"],
+                       "confirming other shows leaves the stored list alone")
+
+        AdLabellerPreferences(preferences: preferences).setConfirmed(feedID: "feed-k", true)
+        XCTAssertEqual(route(to: keptBack, preferences: preferences, keyStore: keyStore), .remote)
+        XCTAssertNil(preferences.object(forKey: legacyKey), "turning the show on removes it from the stored list")
+    }
+
+    /// Regression: a show the owner left unsent in the sheet came back as waiting, and the
+    /// next review offered it as sent by default.
+    func testShowLeftUnsentInTheSheetIsRememberedAndNotOfferedAsSentAgain() throws {
+        let first = show("feed-a", "First Show")
+        let declined = show("feed-d", "Declined Show")
+        var shows = [first, declined]
+        let (model, preferences, keyStore) = makeModel(shows: { shows })
+
+        model.saveKey("provider-key-6")
+        model.setOnlineFinding(true)
+        model.setSheetSent(false, for: declined)
+        model.confirm()
+        XCTAssertEqual(route(to: declined, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed))
+        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).keptBackFeedIDs, ["feed-d"])
+        XCTAssertEqual(model.waitingShowCount, 0, "a show the owner left unsent is decided, not waiting")
+
+        shows.append(show("feed-l", "Late Show"))
+        model.reviewWaitingShows()
+        XCTAssertEqual(model.sheetShows.map(\.feedID), ["feed-l"], "the review never lists the declined show")
+        model.confirm()
+        XCTAssertEqual(route(to: declined, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed),
+                       "confirming later shows does not send the declined one")
+    }
+
+    /// A show the policy forces not sent is not the owner's choice, so it is not kept back:
+    /// once the reason is gone it waits for a decision like any new show.
+    func testPolicyForcedShowLeftUnsentIsNotRecordedAsKeptBack() throws {
+        let publicShow = show("feed-a", "Public Show")
+        let premium = show("feed-p", "Premium Hour")
+        let (model, preferences, _) = makeModel(shows: { [publicShow, premium] })
+
+        model.saveKey("provider-key-7")
+        model.setOnlineFinding(true)
+        model.confirm()
+        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).keptBackFeedIDs, [])
     }
 
     // MARK: Forced-local shows
@@ -123,9 +190,9 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             feedID: "feed-q", title: "Nickname",
             feedURL: URL(string: "https://feeds.example.test/feed-q.xml"), publisherTitle: "Garden Hour")
         let (model, _, _) = makeModel(shows: { [hidden, named, plain] })
-        XCTAssertEqual(model.forcedLocalReason(for: hidden), .privateTitle)
-        XCTAssertEqual(model.forcedLocalReason(for: named), .privateTitle)
-        XCTAssertNil(model.forcedLocalReason(for: plain))
+        XCTAssertEqual(model.forcedNotSentReason(for: hidden), .privateTitle)
+        XCTAssertEqual(model.forcedNotSentReason(for: named), .privateTitle)
+        XCTAssertNil(model.forcedNotSentReason(for: plain))
     }
 
     func testPolicyForcedShowCannotBeMovedToSent() throws {
@@ -139,23 +206,20 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertTrue(model.isConfirming)
         XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-a"],
                        "a forced show does not start as sent")
-        XCTAssertEqual(model.sheetLocalShows.map(\.feedID), ["feed-p"])
-        XCTAssertEqual(model.forcedLocalMessage(for: premium),
-                       "This show's title sounds private, so its transcripts always stay on this Mac.")
+        XCTAssertEqual(model.sheetNotSentShows.map(\.feedID), ["feed-p"])
+        XCTAssertEqual(model.forcedNotSentMessage(for: premium),
+                       "This show's title sounds private, so it is never sent for ad finding.")
 
         model.setSheetSent(true, for: premium)
         XCTAssertFalse(model.sheetSent.contains("feed-p"), "a policy-forced show cannot be toggled to sent")
 
         model.confirm()
-        XCTAssertEqual(model.forcedLocalReason(for: premium), .privateTitle)
-        // The policy answers notConfirmed before the forced reason, because the
-        // forced show never reaches the confirmed set; the forced reason is what
-        // keeps it out of the sent group and locks its toggle.
-        XCTAssertEqual(route(to: premium, preferences: preferences, keyStore: keyStore), .local(.notConfirmed))
+        XCTAssertEqual(model.forcedNotSentReason(for: premium), .privateTitle)
+        // The policy answers the private reason before notConfirmed, so a private
+        // show names why it is never sent whatever the owner's switches say.
+        XCTAssertEqual(route(to: premium, preferences: preferences, keyStore: keyStore), .notSent(.privateTitle))
         XCTAssertEqual(route(to: publicShow, preferences: preferences, keyStore: keyStore), .remote)
         XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs, ["feed-a"])
-        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).localOnlyFeedIDs, [],
-                       "a forced show is not written to the local-only set")
     }
 
     // MARK: Rendering
@@ -185,13 +249,13 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         let sentHeading = try XCTUnwrap(
             texts.firstIndex { $0.contains("Transcripts will be sent") }, "sent heading missing: \(texts)")
         let localHeading = try XCTUnwrap(
-            texts.firstIndex { $0.contains("Stays on this Mac") }, "local heading missing: \(texts)")
+            texts.firstIndex { $0.contains("Not sent") }, "not sent heading missing: \(texts)")
         let sheetText = texts.joined(separator: " ")
-        XCTAssertTrue(sheetText.contains("Shows you add later stay on this Mac until you confirm them here."),
+        XCTAssertTrue(sheetText.contains("Shows you add later are not sent, and keep their ads, until you turn them on."),
                       sheetText)
 
         for (title, expectedHeading) in [
-            ("Public Show", "Transcripts will be sent"), ("Premium Hour", "Stays on this Mac"),
+            ("Public Show", "Transcripts will be sent"), ("Premium Hour", "Not sent"),
         ] {
             let index = try XCTUnwrap(
                 texts.firstIndex { $0.contains(title) }, "\(title) missing from the sheet: \(texts)")

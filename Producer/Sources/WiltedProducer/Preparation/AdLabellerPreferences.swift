@@ -17,7 +17,6 @@ public struct AdLabellerPreferences: @unchecked Sendable {
 
     static let enabledKey = keyPrefix + "enabled"
     static let confirmedKey = keyPrefix + "confirmedFeedIDs"
-    static let shadowKey = keyPrefix + "shadow"
     static let localOnlyKey = keyPrefix + "localOnlyFeedIDs"
     static let modelKey = keyPrefix + "modelID"
     static let levelKey = keyPrefix + "level"
@@ -35,39 +34,42 @@ public struct AdLabellerPreferences: @unchecked Sendable {
         self.preferences = preferences
     }
 
-    /// The global switch. Off by default; while off every feed is labelled locally.
+    /// The global switch. Off by default; while off nothing is sent.
     public var isEnabled: Bool {
         get { preferences.bool(forKey: Self.enabledKey) }
         nonmutating set { preferences.set(newValue, forKey: Self.enabledKey) }
     }
 
-    /// Shadow mode: labels are requested and compared but never applied. Off unless it is
-    /// switched on explicitly, so labelled cuts apply once the global switch is on and the
-    /// show is confirmed.
-    public var isShadow: Bool {
-        get { preferences.bool(forKey: Self.shadowKey) }
-        nonmutating set { preferences.set(newValue, forKey: Self.shadowKey) }
+    /// Feed IDs the owner has confirmed for online labelling, sorted. Empty by default.
+    /// Excludes any feed the owner kept back.
+    public var confirmedFeedIDs: [String] {
+        let confirmed = Set(Self.read(Self.confirmedKey, from: preferences))
+        return confirmed.subtracting(keptBackFeedIDs).sorted()
     }
 
-    /// Feed IDs the owner has confirmed for online labelling, sorted. Empty by default.
-    public var confirmedFeedIDs: [String] { Self.read(Self.confirmedKey, from: preferences) }
-
-    /// Feed IDs the owner keeps local regardless of the switch, sorted.
-    public var localOnlyFeedIDs: [String] { Self.read(Self.localOnlyKey, from: preferences) }
+    /// Feed IDs the owner turned off or left unsent in a confirm sheet, sorted. The stored
+    /// key is the older "Mac only" list, so a show kept back under that switch is here too.
+    /// They read as not confirmed, and no confirm sheet may offer them as sent by default;
+    /// ``setConfirmed(feedID:_:)`` with true is the only thing that removes one.
+    public var keptBackFeedIDs: [String] { Self.read(Self.localOnlyKey, from: preferences) }
 
     /// Feed IDs the owner marked as already ad-free, sorted. Read-only here; the Mac preference writes them.
     public var adFreeFeedIDs: [String] { Self.read(Self.adFreeFeedsKey, from: preferences) }
 
     public func isConfirmed(feedID: String) -> Bool { confirmedFeedIDs.contains(feedID) }
 
-    public func isLocalOnly(feedID: String) -> Bool { localOnlyFeedIDs.contains(feedID) }
-
     public func setConfirmed(feedID: String, _ confirmed: Bool) {
         Self.update(Self.confirmedKey, feedID: feedID, present: confirmed, in: preferences)
+        if confirmed {
+            Self.update(Self.localOnlyKey, feedID: feedID, present: false, in: preferences)
+        }
     }
 
-    public func setLocalOnly(feedID: String, _ localOnly: Bool) {
-        Self.update(Self.localOnlyKey, feedID: feedID, present: localOnly, in: preferences)
+    /// The owner's own "do not send" for a show: not confirmed, and remembered so a later
+    /// confirm sheet neither counts it as waiting nor offers it as sent by default.
+    public func keepBack(feedID: String) {
+        Self.update(Self.confirmedKey, feedID: feedID, present: false, in: preferences)
+        Self.update(Self.localOnlyKey, feedID: feedID, present: true, in: preferences)
     }
 
     /// The provider model ID. A blank stored value falls back to the default.
@@ -99,7 +101,7 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     }
 
     /// How long an episode waits for the provider, in seconds, before its original audio is
-    /// published with the reason. The shadow request uses `LabellerClient`'s own fixed time limit.
+    /// published with the reason.
     public var waitLimit: TimeInterval {
         get {
             guard preferences.object(forKey: Self.waitLimitKey) != nil else { return Self.defaultWaitLimit }

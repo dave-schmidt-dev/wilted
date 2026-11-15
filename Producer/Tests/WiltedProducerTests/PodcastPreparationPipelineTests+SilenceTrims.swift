@@ -26,7 +26,7 @@ extension PodcastPreparationPipelineTests {
                            keep(7.25, 8.75, at: 2.75), keep(10.25, 11.5, at: 4.25)],
          "silenceTrims": [interval(0, 1.5), interval(2.75, 4.25), interval(5.75, 7.25),
                           interval(8.75, 10.25), interval(11.5, 16.5)],
-         "report": ["outcome": "noAds", "rawNominations": [[String: Any]](), "audit": WorkerStub.cleanAudit()]]
+         "report": ["outcome": "noAds", "rawNominations": [[String: Any]](), "audit": WorkerStub.labelledAudit()]]
     }
 
     /// One advertisement at 20-40 s of a minute, with a pause on each side of
@@ -38,7 +38,8 @@ extension PodcastPreparationPipelineTests {
                 "adSegments": [ad],
                 "keepIntervals": [keep(0, 18.25, at: 0), keep(40.75, 50.25, at: 18.25), keep(51.75, 57, at: 27.75)],
                 "silenceTrims": [interval(18.25, 20), interval(40, 40.75), interval(50.25, 51.75), interval(57, 60)],
-                "report": ["outcome": "cut", "rawNominations": [ad], "audit": WorkerStub.cleanAudit()]]
+                "report": ["outcome": "cut", "rawNominations": [ad],
+                           "audit": WorkerStub.labelledAudit(proposed: 1, cut: 1)]]
     }
 
     private static func decodeSilence(_ response: [String: Any]) throws -> PodcastPreparationPipeline.WorkerPayload {
@@ -108,13 +109,8 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func refusesTrimmedPausesBesideAnUncertainResult() throws {
-        let warning = "original audio includes ads: classifier could not resolve IDs 0"
-        var audit = WorkerStub.cleanAudit()
-        audit["unresolvedIds"] = [0]
-        audit["incompleteError"] = "classifier could not resolve IDs 0"
-        audit["warning"] = warning
-        audit["heldSpans"] = [[String: Any]]()
-        audit["declinedCommercialEvidenceSeeds"] = [[String: Any]]()
+        let warning = "original audio includes ads: unresolved commercial spans"
+        let audit = WorkerStub.labelledAudit(incompleteError: "unresolved commercial spans", warning: warning)
         var response: [String: Any] = [
             "ok": true, "protocolVersion": 2, "timing": "none", "audioPath": "/tmp/original.mp3",
             "audioChanged": false, "durationSeconds": 16.5, "removedSeconds": 0.0,
@@ -160,7 +156,8 @@ extension PodcastPreparationPipelineTests {
         let second: [String: Any] = ["startSeconds": 30.0, "endSeconds": 40.0, "label": "two", "confidence": 0.9]
         var response = Self.adsAndSilenceResponse()
         response["adSegments"] = [first, second]
-        response["report"] = ["outcome": "cut", "rawNominations": [first, second], "audit": WorkerStub.cleanAudit()]
+        response["report"] = ["outcome": "cut", "rawNominations": [first, second],
+                              "audit": WorkerStub.labelledAudit(proposed: 2, cut: 2)]
         #expect(throws: PodcastPreparationError.malformedWorkerResponse("inconsistent ad-removal report")) {
             _ = try Self.decodeSilence(response)
         }
@@ -217,7 +214,8 @@ extension PodcastPreparationPipelineTests {
                 "removedSeconds": intervals.reduce(0.0) { $0 + $1.upperBound - $1.lowerBound },
                 "adSegments": ads, "keepIntervals": keeps,
                 "silenceTrims": silence.map { Self.interval($0.lowerBound, $0.upperBound) },
-                "report": ["outcome": "cut", "rawNominations": ads, "audit": WorkerStub.cleanAudit()]]
+                "report": ["outcome": "cut", "rawNominations": ads,
+                           "audit": WorkerStub.labelledAudit(proposed: ads.count, cut: ads.count)]]
     }
 
     @Test func aPositionInsideATrimmedPauseResumesWhereTheSpeechDoes() throws {
@@ -239,7 +237,7 @@ extension PodcastPreparationPipelineTests {
     /// The prepared revision replaces the download, the timeline lists no
     /// advertisement, and a listener parked in a pause resumes at the speech.
     @Test func preparesAnEpisodeWhoseOnlyChangeIsShorterPauses() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         try await fixture.store.save(playback: try PlaybackState(
             itemID: fixture.episodeID, revisionID: fixture.revisionID, sessionID: "session-1", sequence: 4,
@@ -251,7 +249,7 @@ extension PodcastPreparationPipelineTests {
             "adSegments": [[String: Any]](),
             "keepIntervals": [Self.keep(1, 4.75, at: 0), Self.keep(6.75, 11, at: 3.75)],
             "silenceTrims": [Self.interval(0, 1), Self.interval(4.75, 6.75), Self.interval(11, 12)],
-            "report": ["outcome": "noAds", "rawNominations": [[String: Any]](), "audit": WorkerStub.cleanAudit()]
+            "report": ["outcome": "noAds", "rawNominations": [[String: Any]](), "audit": WorkerStub.labelledAudit()]
         ]
         let worker = WorkerStub(response: response, writesCutAudio: Data("trimmed-audio-bytes".utf8))
         let result = try await fixture.pipeline(worker).prepare(episodeID: fixture.episodeID)

@@ -171,12 +171,9 @@ public actor PodcastPreparationPipeline {
     /// `semanticVersion` in the app; a test passes an older one to leave behind
     /// the journal an earlier engine would have written.
     let engineVersion: String
-    /// Records what the online labeller would have cut beside the engine's
-    /// committed result, after the terminal journal row. Shadow never changes
-    /// what the pipeline commits.
-    let shadowRecorder: LabellerShadowRecorder?
     /// Online labelling used to decide cuts when the remote route applies.
-    /// Nil keeps today's local classifier path for every episode.
+    /// Nil reads as the switch being off: an episode with ad removal on is not
+    /// sent and keeps its original audio with the reason.
     let labelling: PodcastLabellingServices?
 
     public init(
@@ -189,7 +186,6 @@ public actor PodcastPreparationPipeline {
         now: @escaping @Sendable () -> Date = Date.init,
         appVersion: String? = PodcastPreparationBuildStamp.hostAppVersion(),
         engineVersion: String = PodcastPreparationPipeline.semanticVersion,
-        shadowRecorder: LabellerShadowRecorder? = nil,
         labelling: PodcastLabellingServices? = nil
     ) {
         self.store = store
@@ -203,7 +199,6 @@ public actor PodcastPreparationPipeline {
         self.now = now
         self.appVersion = appVersion
         self.engineVersion = engineVersion
-        self.shadowRecorder = shadowRecorder
         self.labelling = labelling
     }
 
@@ -245,11 +240,8 @@ public actor PodcastPreparationPipeline {
             throw PodcastPreparationError.episodeNotDownloaded
         }
 
-        let profileSnapshot = policy.removeAds
-            ? await captureAdProfileSnapshot(for: episode.feedID, onStatus: report) : nil
-        report(adProfileRequestProgress(profileSnapshot, enabled: policy.removeAds))
-        let codeRevision = await runner.codeRevision()
         let route = await labelledAttemptRoute(episode: episode, policy: policy)
+        let codeRevision = await runner.codeRevision()
         let attemptDigest = Self.policyDigest(policy, labelled: route.provenance)
         let provenance = provenanceEvidence(sourceRevisionID: stored.revision.revisionID,
                                             sourceHash: stored.revision.contentHash, codeRevision: codeRevision,
@@ -262,17 +254,11 @@ public actor PodcastPreparationPipeline {
             let preparedURL = preparedAudioURL(for: audioURL)
             store.inFlightMedia.begin(preparedURL)
             defer { store.inFlightMedia.end(preparedURL) }
-            let emitLabellerCues = await shadowRecorder?.wantsCues ?? false
             let run = try await runPreparationWorker(
                 episode: episode, audioURL: audioURL, preparedURL: preparedURL,
-                sourceHash: stored.revision.contentHash, policy: policy,
-                profileSnapshot: profileSnapshot, emitLabellerCues: emitLabellerCues, route: route,
+                sourceHash: stored.revision.contentHash, policy: policy, route: route,
                 deferral: labelledDeferral(episodeID: episodeID, attempt: attempt, writes: writes), onStatus: report)
-            var payload = run.payload
-            validateAdProfileHandshake(&payload, snapshot: profileSnapshot)
-            await persistAdProfileObservation(payload.adProfileObservation, feedID: episode.feedID,
-                                              episodeID: episode.itemID, sourceHash: stored.revision.contentHash,
-                                              snapshot: profileSnapshot, onStatus: report)
+            let payload = run.payload
             if payload.droppedCueCount > 0 {
                 let totalCues = payload.cues.count + payload.droppedCueCount
                 report(PodcastPreparationProgress(
@@ -280,7 +266,6 @@ public actor PodcastPreparationPipeline {
                     detail: "\(payload.droppedCueCount) of \(totalCues) transcript cues were malformed and left out"
                 ))
             }
-            report(adProfileResultProgress(payload))
             report(Self.resultProgress(payload))
             for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
             let result = try await commit(payload, episode: episode, download: download,
@@ -298,14 +283,6 @@ public actor PodcastPreparationPipeline {
                                   codeRevision: codeRevision,
                                   policyDigest: attemptDigest)
             await onJournaled()
-            // Labelled commits already used the remote route; shadow stays for the local path only.
-            if run.labelledProvenance == nil,
-               let shadowRecorder, let input = await shadowInput(episode: episode, payload: payload,
-                                                                 result: result,
-                                                                 sourceDuration: stored.revision.durationSeconds,
-                                                                 removeAds: policy.removeAds) {
-                await shadowRecorder.schedule(input)
-            }
             return result
         } catch let waiting as PodcastPreparationError where waiting.isLabellerWaiting {
             // The ticket is deferred and its generation stays open: no terminal row.

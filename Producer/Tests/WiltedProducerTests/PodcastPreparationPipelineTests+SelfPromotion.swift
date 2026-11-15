@@ -69,7 +69,7 @@ extension PodcastPreparationPipelineTests {
 
     @Test(arguments: [false, true])
     func workerRequestCarriesTheOptionOnlyWhenOn(removeSelfPromotion: Bool) async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let stub = WorkerStub(response: [
             "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false,
@@ -90,6 +90,8 @@ extension PodcastPreparationPipelineTests {
         let outcome = try #require(
             try await fixture.store.preparationOutcome(for: fixture.episodeID, revisionID: result.revision.revisionID)
         )
-        #expect(outcome.policyDigest == PodcastPreparationPipeline.policyDigest(policy))
+        // A labelled run's stored digest also binds the labeller that decided it.
+        #expect(outcome.policyDigest
+            == PodcastPreparationPipeline.policyDigest(policy, labelled: fixture.labelledProvenance))
     }
 }

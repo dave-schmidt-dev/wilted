@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
 import math
@@ -20,6 +21,7 @@ from wilted_worker import ad_audit as _worker_ad_audit
 from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import gpu_admission as _worker_gpu_admission
+from wilted_worker import labeller_cues as _worker_labeller_cues
 from wilted_worker import silence_trim
 from wilted_worker.ad_audit import AdAnalysis, AdAnalysisAudit
 from wilted_worker.constants import SILENCE_DETECT_TIMEOUT_S, SILENCE_MAX_KEEP_INTERVALS
@@ -94,15 +96,34 @@ def run_preparation(directory, segments, duration, silences, *, detections=None,
         return wp.run(request)
 
 
+def run_labelled_cut(directory, segments, duration, silences, breaks):
+    """Run the real worker's labelled cut stage with a fake ffmpeg and ``silences``."""
+    audio = Path(directory) / "source.mp3"
+    audio.write_bytes(b"original audio")
+    install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
+    digest = _worker_labeller_cues.serialize_labeller_cues(_worker_labeller_cues.build_labeller_cues(segments))[1]
+    request = {"protocolVersion": 2, "adStage": "cut", "audioPath": str(audio),
+               "outputPath": str(Path(directory) / "prepared.mp3"), "removeAds": True,
+               "labelledBreaks": breaks, "labellerCuesDigest": digest,
+               "labellerModelID": "deepseek-v4.1-flash", "labellerLevel": "low",
+               "labellerPromptVersion": "labeller-prompt-v1", "workDir": str(directory)}
+    with redirect_stderr(io.StringIO()), synthetic_render(duration, silence_report(silences)):
+        return wp.run(request)
+
+
+def labelled_break(start, end, kind="sponsor"):
+    return {"start": start, "end": end, "kind": kind, "label": "must-cut", "advertisers": []}
+
+
 def silence_contract_payloads():
-    """Real worker results with trimmed silence, for the Swift decoder's contract test."""
+    """Real labelled cut-stage results with trimmed silence, for the Swift decoder's contract test."""
     results = []
-    for name, segments, duration, silences, detections in (
-        ("silence-only", BURST_SEGMENTS, 16.5, BURST_SILENCES, None),
-        ("ads-and-silence", AD_SEGMENTS, 60.0, AD_SILENCES, [FakeAd(20.0, 40.0, label="sponsor_read")]),
+    for name, segments, duration, silences, breaks in (
+        ("silence-only", BURST_SEGMENTS, 16.5, BURST_SILENCES, []),
+        ("ads-and-silence", AD_SEGMENTS, 60.0, AD_SILENCES, [labelled_break(20.0, 40.0)]),
     ):
         with tempfile.TemporaryDirectory(prefix="wilted-silence-contract-") as directory:
-            payload = run_preparation(directory, segments, duration, silences, detections=detections)
+            payload = run_labelled_cut(directory, segments, duration, silences, breaks)
         results.append({"scenario": name, "payload": payload})
     keeps = serialize_keep_map(build_keep_map([(0.0, 4.0), (9.999, 10.0), (20.0, 30.0)]))
     ads = [{"startSeconds": 10.0, "endSeconds": 20.0, "label": "sponsor_read", "confidence": 0.9}]
@@ -114,13 +135,14 @@ def silence_contract_payloads():
             "durationSeconds": 14.001, "removedSeconds": 10.0,
             "adSegments": ads, "keepIntervals": keeps,
             "silenceTrims": silence_trim.silence_trim_spans(keeps, ads, 30.0),
+            # The audit of a real one-break labelled cut, so the shape is the worker's own.
             "report": {"outcome": "cut", "rawNominations": ads,
-                       "audit": wp.serialize_ad_audit(AdAnalysisAudit(
-                           classifier_requests=1, classifier_valid_requests=1, model_requests=1))}
+                       "audit": copy.deepcopy(results[1]["payload"]["report"]["audit"])}
         }
     })
     with tempfile.TemporaryDirectory(prefix="wilted-silence-contract-") as directory:
-        payload = run_preparation(directory, AD_SEGMENTS, 60.0, AD_SILENCES, detections=ABUTTING_ADS)
+        payload = run_labelled_cut(directory, AD_SEGMENTS, 60.0, AD_SILENCES,
+                                   [labelled_break(20.0, 30.19999999999999), labelled_break(30.2, 40.0)])
     results.append({"scenario": "abutting-cuts", "payload": payload})
     return results
 

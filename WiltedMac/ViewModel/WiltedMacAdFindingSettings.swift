@@ -24,25 +24,10 @@ final class WiltedMacAdFindingSettings {
         var id: String { feedID }
     }
 
-    /// Runs the label-only backfill and reports progress. A nil summary means
-    /// labelling is not available in this launch.
-    typealias BackfillRun = @MainActor (
-        @escaping @Sendable (LabellerBackfill.Progress) -> Void
-    ) async -> LabellerBackfill.Summary?
-
-    /// What the Prepared episodes row is doing.
-    enum BackfillState: Equatable {
-        case idle
-        case checking
-        case running(done: Int, total: Int)
-        case ended(String)
-    }
-
     private let preferences: UserDefaults
     private let keyStore: any LabellerKeyStoring
     private let now: @Sendable () -> Date
     private let showsProvider: @MainActor () -> [Show]
-    private let backfill: BackfillRun?
 
     /// The draft in the key field, cleared the moment a key is saved.
     var typedKey = ""
@@ -62,19 +47,13 @@ final class WiltedMacAdFindingSettings {
     private(set) var sheetSent: Set<String> = []
     private var confirmsSwitchOn = false
 
-    /// Live state of the label-only backfill row.
-    private(set) var backfillState: BackfillState = .idle
-    private var backfillTask: Task<Void, Never>?
-
     init(preferences: UserDefaults, keyStore: any LabellerKeyStoring,
          now: @escaping @Sendable () -> Date = Date.init,
-         shows: @escaping @MainActor () -> [Show],
-         backfill: BackfillRun? = nil) {
+         shows: @escaping @MainActor () -> [Show]) {
         self.preferences = preferences
         self.keyStore = keyStore
         self.now = now
         self.showsProvider = shows
-        self.backfill = backfill
         hasKey = keyStore.hasKey()
         isOnlineFindingOn = AdLabellerPreferences(preferences: preferences).isEnabled
     }
@@ -110,7 +89,6 @@ final class WiltedMacAdFindingSettings {
     /// Removes the stored key. The policy answers no key, so online ad finding
     /// stops until a key is saved again; the switch keeps its position.
     func removeKey() {
-        stopBackfill()
         try? keyStore.remove()
         hasKey = keyStore.hasKey()
     }
@@ -124,7 +102,6 @@ final class WiltedMacAdFindingSettings {
         guard !isConfirming else { return }
         switchMessage = nil
         guard on else {
-            stopBackfill()
             isOnlineFindingOn = false
             labeller.isEnabled = false
             return
@@ -143,14 +120,14 @@ final class WiltedMacAdFindingSettings {
 
     // MARK: Waiting shows
 
-    /// Subscribed shows in neither the confirmed set nor the local-only set,
-    /// and not forced local by the policy.
+    /// Subscribed shows the owner has not decided: not in the confirmed set, not kept
+    /// back by the owner, and not forced not sent by the policy.
     var waitingShows: [Show] {
         let confirmed = Set(labeller.confirmedFeedIDs)
-        let localOnly = Set(labeller.localOnlyFeedIDs)
+        let keptBack = Set(labeller.keptBackFeedIDs)
         return shows.filter { show in
-            !confirmed.contains(show.feedID) && !localOnly.contains(show.feedID)
-                && forcedLocalReason(for: show) == nil
+            !confirmed.contains(show.feedID) && !keptBack.contains(show.feedID)
+                && forcedNotSentReason(for: show) == nil
         }
     }
 
@@ -166,42 +143,43 @@ final class WiltedMacAdFindingSettings {
 
     /// The sheet's two groups, in subscribed order.
     var sheetSentShows: [Show] { sheetShows.filter { sheetSent.contains($0.feedID) } }
-    var sheetLocalShows: [Show] { sheetShows.filter { !sheetSent.contains($0.feedID) } }
+    var sheetNotSentShows: [Show] { sheetShows.filter { !sheetSent.contains($0.feedID) } }
 
-    /// Why the policy keeps this show on this Mac whatever the owner chooses;
+    /// Why the policy keeps this show not sent whatever the owner chooses;
     /// nil when the owner may send it.
-    func forcedLocalReason(for show: Show) -> RemoteLabellingLocalReason? {
-        RemoteLabellingPolicy.forcedLocalReason(for: RemoteLabellingInput(
+    func forcedNotSentReason(for show: Show) -> RemoteLabellingNotSentReason? {
+        RemoteLabellingPolicy.forcedNotSentReason(for: RemoteLabellingInput(
             feedID: show.feedID, feedURL: show.feedURL, feedTitle: show.publisherTitle ?? show.title,
             customTitle: show.title, audioURL: nil))
     }
 
     /// The forced reason in the plain words the feed page already uses.
-    func forcedLocalMessage(for show: Show) -> String? {
-        forcedLocalReason(for: show)?.forcedLocalMessage
+    func forcedNotSentMessage(for show: Show) -> String? {
+        forcedNotSentReason(for: show)?.forcedNotSentMessage
     }
 
-    /// A show the policy forces local cannot be toggled to sent.
+    /// A show the policy forces not sent cannot be toggled to sent.
     func setSheetSent(_ sent: Bool, for show: Show) {
-        guard forcedLocalReason(for: show) == nil else { return }
+        guard forcedNotSentReason(for: show) == nil else { return }
         if sent { sheetSent.insert(show.feedID) } else { sheetSent.remove(show.feedID) }
     }
 
     /// Writes the sheet's choices: the shows listed as sent into the confirmed
-    /// set (a review adds to it), and the shows switched to local into the
-    /// local-only set. When the sheet opened from the switch, the switch turns
-    /// on here and not before.
+    /// set (a review adds to it), and the shows the owner left unsent as kept back,
+    /// so the next sheet does not offer them as sent. A show the policy forces not
+    /// sent is not the owner's choice and is only left unconfirmed. When the sheet
+    /// opened from the switch, the switch turns on here and not before.
     func confirm() {
         guard isConfirming else { return }
         for show in sheetShows where !sheetSent.contains(show.feedID) {
-            labeller.setConfirmed(feedID: show.feedID, false)
-            if forcedLocalReason(for: show) == nil {
-                labeller.setLocalOnly(feedID: show.feedID, true)
+            if forcedNotSentReason(for: show) == nil {
+                labeller.keepBack(feedID: show.feedID)
+            } else {
+                labeller.setConfirmed(feedID: show.feedID, false)
             }
         }
         for feedID in sheetSent {
             labeller.setConfirmed(feedID: feedID, true)
-            labeller.setLocalOnly(feedID: feedID, false)
         }
         if confirmsSwitchOn {
             isOnlineFindingOn = true
@@ -219,13 +197,13 @@ final class WiltedMacAdFindingSettings {
     }
 
     private func openConfirmSheet(for shows: [Show], confirmingSwitch: Bool) {
-        let localOnly = Set(labeller.localOnlyFeedIDs)
         sheetShows = shows
         confirmsSwitchOn = confirmingSwitch
-        // A show starts sent unless the policy forces it local or the owner
-        // already keeps it local.
+        // A show starts sent unless the policy forces it not sent or the owner
+        // kept it back.
+        let keptBack = Set(labeller.keptBackFeedIDs)
         sheetSent = Set(shows
-            .filter { forcedLocalReason(for: $0) == nil && !localOnly.contains($0.feedID) }
+            .filter { forcedNotSentReason(for: $0) == nil && !keptBack.contains($0.feedID) }
             .map(\.feedID))
         isConfirming = true
     }
@@ -242,45 +220,5 @@ final class WiltedMacAdFindingSettings {
         return LabellerStopReason.providerPaused(since: since).sentence(formatTime: {
             $0.formatted(date: .omitted, time: .shortened)
         })
-    }
-
-    // MARK: Backfill
-
-    /// Whether the Prepared episodes row can offer Label now.
-    var offersBackfill: Bool { backfill != nil && hasKey && isOnlineFindingOn }
-
-    /// Whether a backfill Task is checking or labelling.
-    var isBackfilling: Bool {
-        switch backfillState {
-        case .checking, .running: true
-        case .idle, .ended: false
-        }
-    }
-
-    /// Starts one label-only backfill when the row offers it and none is running.
-    func startBackfill() {
-        guard offersBackfill, !isBackfilling, let backfill else { return }
-        backfillState = .checking
-        backfillTask = Task {
-            let summary = await backfill { [weak self] progress in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    switch self.backfillState {
-                    case .checking, .running:
-                        self.backfillState = .running(done: progress.done, total: progress.total)
-                    case .idle, .ended:
-                        break
-                    }
-                }
-            }
-            self.backfillState = .ended(Self.backfillEndedMessage(for: summary))
-            self.backfillTask = nil
-        }
-    }
-
-    /// Cancels the in-flight backfill Task; the run ends through its own
-    /// cancelled summary.
-    func stopBackfill() {
-        backfillTask?.cancel()
     }
 }

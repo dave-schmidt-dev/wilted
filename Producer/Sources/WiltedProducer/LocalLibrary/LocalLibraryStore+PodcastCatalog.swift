@@ -89,7 +89,6 @@ extension LocalLibraryStore {
             existing.subscribedAt = subscription.subscribedAt.date; existing.enabled = subscription.enabled
         } else { context.insert(LocalLibraryCurrentSubscriptionRecord(subscription)) }
         try context.save()
-        if (try? podcastFeed(for: subscription.feedID)) != nil { try? reconcileAdPlacementProfiles() }
     }
 
     /// Renames only a followed feed. Nil or whitespace restores its current publisher title.

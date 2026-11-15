@@ -417,20 +417,20 @@ extension WiltedMacModelTests {
         }
         let run = PreparationRunSummary(
             requestID: requestID, itemID: itemID, startedAt: Timestamp(when), updatedAt: Timestamp(when),
-            stage: .assembling, detail: "50 requests, 0 failed", fraction: nil, isTerminal: false,
+            stage: .assembling, detail: "2 spans", fraction: nil, isTerminal: false,
             outcome: nil, failure: nil,
             entries: [
                 try entry(requestID + "|transcript.stt.start#1", .extracting, "transcript.stt.start", at: 0),
-                try entry(requestID + "|ads.detect.calls#2", .assembling, "50 requests, 0 failed", at: 60),
+                try entry(requestID + "|ads.detect.complete#2", .assembling, "2 spans", at: 60),
                 try entry(requestID + "|log.warning.1#3", .assembling, "wilted.ads: FA is not enabled", at: 61),
                 try entry("legacy-key-without-prefix", .saving, "Storing", at: 62),
             ]
         )
 
         let events = WiltedMacModel.processorEvents(for: run)
-        XCTAssertEqual(events.map(\.stage), ["transcript.stt.start", "ads.detect.calls", "log.warning.1", "saving"])
+        XCTAssertEqual(events.map(\.stage), ["transcript.stt.start", "ads.detect.complete", "log.warning.1", "saving"])
         XCTAssertEqual(events[0].line, "transcript.stt.start", "a status with no detail is just its stage")
-        XCTAssertEqual(events[1].line, "ads.detect.calls · 50 requests, 0 failed")
+        XCTAssertEqual(events[1].line, "ads.detect.complete · 2 spans")
         XCTAssertEqual(events[2].at, when.addingTimeInterval(61))
 
         // A running podcast run is narrated from its latest real stage; a

@@ -335,14 +335,6 @@ final class WiltedMacPreparationPublicationTests: XCTestCase {
             XCTAssertFalse(status.detail.contains("/Users"))
             XCTAssertEqual(status.stage, "transcript.glossary.progress")
         }
-        for (detail, expected) in [("4 requests, 1 failed", true), ("4 requests, 1 failed\n", false)] {
-            let journal = try PreparationStatus(stage: .assembling, detail: detail, cancellable: true,
-                emittedAt: now, step: "ads.detect.calls")
-            let status = try XCTUnwrap(WiltedMacPreparationPublication.status(.init(
-                requestSequence: 2, attemptCount: 1, state: .running, updatedAt: now, status: journal)))
-            XCTAssertEqual(status.detail.contains("4 requests, 1 failed"), expected)
-            XCTAssertFalse(status.detail.contains("\n"))
-        }
     }
 
     func testCuratedCurrentAttemptStatesNeverExposeWorkerPathsOrErrors() throws {
@@ -678,6 +670,52 @@ final class WiltedMacPreparationPublicationTests: XCTestCase {
         return ProcessorRunsRefreshFixture(
             store: store, itemID: itemID, requestID: requestID, entryID: entryID, emittedAt: emittedAt
         )
+    }
+
+    @MainActor
+    func testNotSentStageReturnsItsOwnStatusTextNotGenericPreparing() {
+        let progress = PodcastPreparationProgress(stage: "ads.not-sent", detail: "Online ad finding is off.")
+        let label = WiltedMacModel.preparationLabel(for: progress)
+        XCTAssertEqual(label, "Leaving ads in")
+        XCTAssertNotEqual(label, "Preparing…")
+    }
+
+    func testNotSentStageIsSupportedHeartbeatStep() throws {
+        let now = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        let journal = try PreparationStatus(
+            stage: .assembling, detail: "Online ad finding is off.", cancellable: true, emittedAt: now,
+            step: "ads.not-sent")
+        let published = try XCTUnwrap(WiltedMacPreparationPublication.status(.init(
+            requestSequence: 1, attemptCount: 1, state: .running, updatedAt: now, status: journal)))
+        XCTAssertEqual(published.stage, "ads.not-sent")
+        XCTAssertEqual(published.detail, "Leaving ads in")
+    }
+
+    func testDetectStageNamesEmittedByLabelledPathMatchStatusText() {
+        let detectStages = ["ads.detect.complete", "ads.label.start", "ads.label.complete"]
+        for stage in detectStages {
+            let label = WiltedMacModel.preparationLabel(for: PodcastPreparationProgress(stage: stage))
+            XCTAssertEqual(label, "Finding advertisements…", "stage: \(stage)")
+        }
+    }
+
+    func testRemovedDetectStagesLoadAndShowGenericStatusWithoutCrashOrRefusal() throws {
+        let removedStages = ["ads.model.load", "ads.detect.start", "ads.detect.calls"]
+        let now = Timestamp(Date())
+        for stage in removedStages {
+            let progress = PodcastPreparationProgress(stage: stage, detail: "legacy detail")
+            let label = WiltedMacModel.preparationLabel(for: progress)
+            XCTAssertEqual(label, "Preparing…", "legacy stage \(stage) must show generic status")
+
+            let journal = try PreparationStatus(
+                stage: .assembling, detail: "legacy detail", cancellable: true,
+                emittedAt: now, step: stage
+            )
+            let status = try XCTUnwrap(WiltedMacPreparationPublication.status(.init(
+                requestSequence: 1, attemptCount: 1, state: .running, updatedAt: now, status: journal
+            )))
+            XCTAssertEqual(status.detail, "Assembling prepared audio.")
+        }
     }
 
     @MainActor

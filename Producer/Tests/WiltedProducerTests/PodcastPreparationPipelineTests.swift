@@ -9,6 +9,56 @@ struct PodcastPreparationPipelineTests {
         #expect(PodcastPreparationPipeline.semanticVersion == "podcast-preparation-v17")
     }
 
+    /// The labelled fixture qualifies for the online labeller on every count,
+    /// and a run through it labels the span the fake worker removes and cuts
+    /// only in the labelled `cut` stage.
+    @Test func labelledFixtureRoutesRemoteAndCutsTheSpanItsProviderLabelled() async throws {
+        let fixture = try await Fixture(labelled: true)
+        defer { fixture.remove() }
+        let episode = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID))
+        let feed = try #require(try await fixture.store.podcastFeed(for: episode.feedID))
+        #expect(RemoteLabellingPolicy.forcedNotSentReason(for: RemoteLabellingInput(
+            feedID: episode.feedID.rawValue, feedURL: feed.canonicalURL, feedTitle: feed.title,
+            audioURL: episode.enclosureURL)) == nil)
+        let worker = WorkerStub(response: Fixture.cuttingStubResponse(), writesCutAudio: Fixture.cuttingAudio)
+        let pipeline = fixture.pipeline(worker)
+        let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
+        let route = await pipeline.labelledAttemptRoute(episode: episode, policy: policy)
+        #expect(route.routing == .remote)
+        #expect(route.provenance == fixture.labelledProvenance)
+
+        let result = try await pipeline.prepare(episodeID: fixture.episodeID)
+
+        let requests = try await worker.allRequests().map {
+            try #require(try JSONSerialization.jsonObject(with: $0) as? [String: Any])
+        }
+        #expect(requests.map { $0["adStage"] as? String } == ["transcript", "cut"])
+        let breaks = try #require(requests.last?["labelledBreaks"] as? [[String: Any]])
+        #expect(breaks.map { [$0["start"] as? Double, $0["end"] as? Double] } == [[3.0, 7.5]])
+        #expect(fixture.sender?.requestCount == 1)
+        #expect(result.adRemovalOutcome == "cut")
+        #expect(result.removedSeconds == 4.5)
+        let outcome = try #require(try await fixture.store.preparationOutcome(
+            for: fixture.episodeID, revisionID: result.revision.revisionID))
+        #expect(outcome.policyDigest == PodcastPreparationPipeline.policyDigest(
+            policy, labelled: fixture.labelledProvenance))
+    }
+
+    /// A labelled test that leaves a labeller cue file behind fails at teardown.
+    @Test func labelledFixtureTeardownFailsALeftoverLabellerCueFile() async throws {
+        let fixture = try await Fixture(labelled: true)
+        let folder = fixture.workDirectory.appendingPathComponent("labeller-cues", isDirectory: true)
+        let name = fixture.episodeID.rawValue + ".1.json"
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("[]".utf8).write(to: folder.appendingPathComponent(name))
+        #expect(fixture.leftoverLabellerCueFiles() == [name])
+
+        withKnownIssue("the teardown check reports the leftover cue file") {
+            fixture.remove()
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.path))
+    }
+
     @Test(arguments: [false, true])
     func everySuccessfulUncutTerminalPathRecordsSourceAudioButNoAdTime(removeAds: Bool) async throws {
         let fixture = try await Fixture()
@@ -27,7 +77,7 @@ struct PodcastPreparationPipelineTests {
     }
 
     @Test func committedCutRecordsOnlyQualifiedRemovedTime() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
 
         _ = try await fixture.pipeline(Fixture.cuttingStub()).prepare(episodeID: fixture.episodeID)
@@ -165,7 +215,7 @@ struct PodcastPreparationPipelineTests {
 
     /// and is handed to the worker as text rather than as a URL.
     @Test func fetchesThePublishedTranscriptAndKeepsItsTiming() async throws {
-        let fixture = try await Fixture(publishesTranscript: true)
+        let fixture = try await Fixture(publishesTranscript: true, labelled: true)
         defer { fixture.remove() }
         let stub = WorkerStub(response: [
             "ok": true, "timing": "aligned", "audioPath": fixture.audioURL.path, "audioChanged": false,
@@ -218,7 +268,8 @@ struct PodcastPreparationPipelineTests {
         argument: (PodcastPreparationPolicySnapshot, String, Bool, Bool)
     ) async throws {
         let (policy, expectedName, expectedRemoveAds, expectedSTT) = argument
-        let fixture = try await Fixture(publishesTranscript: true)
+        // Labelled, so a policy with ad removal on reaches the worker as the cut stage.
+        let fixture = try await Fixture(publishesTranscript: true, labelled: true)
         defer { fixture.remove() }
         let stub = WorkerStub(response: [
             "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false,
@@ -277,7 +328,7 @@ struct PodcastPreparationPipelineTests {
     /// union. Reading the kind off the label here would put the first-label
     /// attribution back that the merge fix removed.
     @Test func adSegmentsCarryTheWorkersRemovalKindRatherThanDerivingItFromTheLabel() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let cutBody = Data("shorter-audio-bytes".utf8)
         let stub = WorkerStub(response: [
@@ -304,7 +355,7 @@ struct PodcastPreparationPipelineTests {
     /// rather than failing a preparation whose audio is already finished.
     @Test func anUnrecognisedOrAbsentRemovalKindReadsAsPaidRatherThanFailingThePreparation() async throws {
         for supplied in [["kind": "sponsored content"], [:]] as [[String: String]] {
-            let fixture = try await Fixture()
+            let fixture = try await Fixture(labelled: true)
             defer { fixture.remove() }
             let cutBody = Data("shorter-audio-bytes".utf8)
             var span: [String: Any] = ["startSeconds": 3.0, "endSeconds": 7.5,
@@ -327,7 +378,7 @@ struct PodcastPreparationPipelineTests {
     /// takes a new revision identity, replaces the download, and the remapped
     /// cues bind to the revision they actually describe.
     @Test func cutAudioBecomesANewRevisionThatTheTranscriptBindsTo() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let cutBody = Data("shorter-audio-bytes".utf8)
         let stub = WorkerStub(response: [
@@ -373,7 +424,7 @@ struct PodcastPreparationPipelineTests {
     /// A listener halfway through an episode keeps their place: the position
     /// moves onto the cut audio rather than being lost with the revision.
     @Test func carriesTheListeningPositionOntoThePreparedAudio() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         try await fixture.store.save(playback: try PlaybackState(
             itemID: fixture.episodeID, revisionID: fixture.revisionID, sessionID: "session-1", sequence: 4,
@@ -394,7 +445,7 @@ struct PodcastPreparationPipelineTests {
 
     /// A position inside a removed advertisement has nowhere honest to land.
     @Test func dropsAPositionThatFellInsideARemovedAdvertisement() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         try await fixture.store.save(playback: try PlaybackState(
             itemID: fixture.episodeID, revisionID: fixture.revisionID, sessionID: "session-1", sequence: 4,
@@ -409,7 +460,7 @@ struct PodcastPreparationPipelineTests {
     /// The original audio is the only copy until the store commits. A store
     /// that rejects the replacement must leave a playable episode behind.
     @Test func keepsTheOriginalAudioWhenTheStoreRefusesTheReplacement() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         // A worker that returns byte-identical audio derives the revision it is
         // meant to be replacing, which the store refuses.
@@ -457,7 +508,7 @@ struct PodcastPreparationPipelineTests {
     /// A worker that claims it cut the audio but leaves nothing behind must not
     /// be believed into a revision that points at a missing file.
     @Test func rejectsCutAudioThatIsNotOnDisk() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let stub = WorkerStub(response: [
             "ok": true, "timing": "none", "audioChanged": true,

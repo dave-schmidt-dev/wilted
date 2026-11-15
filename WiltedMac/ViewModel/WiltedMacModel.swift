@@ -273,12 +273,7 @@ final class WiltedMacModel {
             self?.subscriptions.map {
                 WiltedMacAdFindingSettings.Show(feedID: $0.id, title: $0.title, feedURL: $0.feedURL, publisherTitle: $0.publisherTitle)
             } ?? []
-        },
-        backfill: { [weak self] onProgress in
-            await self?.runAdLabellerBackfill(onProgress: onProgress)
         })
-    /// Records the online labeller's answer beside the engine's result; nil under tests and fixtures.
-    @ObservationIgnored var adLabellerShadowRecorder: LabellerShadowRecorder?
     @ObservationIgnored lazy var adFeedback = WiltedMacAdFeedbackController(inbox: WiltedMacAdFeedbackInbox(
         fileURL: libraryURL.deletingLastPathComponent().appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)))
     var seamMarkerTask: Task<Void, Never>?

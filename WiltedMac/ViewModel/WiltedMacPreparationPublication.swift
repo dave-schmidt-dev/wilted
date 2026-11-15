@@ -32,9 +32,10 @@ enum WiltedMacPreparationPublication {
         "transcript.published.unreachable", "transcript.published.unparseable", "transcript.published.misaligned",
         "transcript.stt.start", "transcript.stt.complete", "transcript.stt.failed", "transcript.absent", "transcript.remap",
         "transcript.glossary.terms", "transcript.glossary.progress", "transcript.glossary.complete",
-        "ads.model.load", "ads.detect.start", "ads.detect.calls", "ads.detect.complete",
+        "ads.detect.complete",
         "ads.label.start", "ads.label.complete", "ads.label.wait", "ads.label.stop",
-        "ads.cut.start", "ads.cut.complete", "ads.cut.refused", "ads.cut.empty"
+        "ads.cut.start", "ads.cut.complete", "ads.cut.refused", "ads.cut.empty",
+        "ads.not-sent"
     ]
 
     /// Builds the iPhone-facing status. A deferred labelling wait publishes `.waiting`;
@@ -96,9 +97,6 @@ enum WiltedMacPreparationPublication {
             detail = WiltedMacModel.preparationLabel(for: PodcastPreparationProgress(stage: step))
             if step == "transcript.glossary.progress",
                status.detail.range(of: #"^[0-9]{1,6} of [0-9]{1,6} cues\z"#, options: .regularExpression) != nil {
-                detail += " " + status.detail + "."
-            } else if step == "ads.detect.calls",
-                      status.detail.range(of: #"^[0-9]{1,6} requests, [0-9]{1,6} failed\z"#, options: .regularExpression) != nil {
                 detail += " " + status.detail + "."
             } else if status.evidence?.kind == "worker-result",
                       let ads = status.evidence?.fields["advertisements"].flatMap(Int.init),

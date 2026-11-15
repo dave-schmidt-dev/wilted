@@ -1,12 +1,12 @@
 import Foundation
 
-/// Why a feed's episode is labelled locally instead of by the online provider.
-public enum RemoteLabellingLocalReason: String, Sendable, Equatable, CaseIterable {
+/// Why a feed's episode is not sent to the online provider. ``RemoteLabellingNotSent``
+/// says what each reason means for an episode with ad removal on.
+public enum RemoteLabellingNotSentReason: String, Sendable, Equatable, CaseIterable {
     case switchOff
     case noKey
     case notConfirmed
     case adRemovalOff
-    case ownerLocalOnly
     case unknownFeedURL
     case credentialedURL
     case tokenLikeFeedURL
@@ -14,10 +14,56 @@ public enum RemoteLabellingLocalReason: String, Sendable, Equatable, CaseIterabl
     case dailyCapReached
 }
 
+/// Why an episode with ad removal on is not sent for ad finding. Its original audio is
+/// kept whole, and the warning, the journal and the app all say why in one fixed sentence.
+public enum RemoteLabellingNotSent: String, Sendable, Equatable, CaseIterable {
+    case unknownAddress = "unknown-address"
+    case signInDetails = "sign-in-details"
+    case privateToken = "private-token"
+    case privateTitle = "private-title"
+    case switchOff = "switch-off"
+    case noKey = "no-key"
+    case notConfirmed = "not-confirmed"
+
+    /// The not-sent reason for a not-sent route. Nil for ad removal off, which has nothing to
+    /// find, and for the daily cap, which stays on the labelled path.
+    public init?(_ reason: RemoteLabellingNotSentReason) {
+        switch reason {
+        case .unknownFeedURL: self = .unknownAddress
+        case .credentialedURL: self = .signInDetails
+        case .tokenLikeFeedURL: self = .privateToken
+        case .privateTitle: self = .privateTitle
+        case .switchOff: self = .switchOff
+        case .noKey: self = .noKey
+        case .notConfirmed: self = .notConfirmed
+        case .adRemovalOff, .dailyCapReached: return nil
+        }
+    }
+
+    /// The journal evidence kind, for example `not-sent-switch-off`.
+    public var kind: String { "not-sent-\(rawValue)" }
+
+    /// Why the episode keeps its ads. Fixed text: it names no address, title or transcript.
+    public var sentence: String {
+        switch self {
+        case .unknownAddress: "This show's address is not known, so it is never sent for ad finding."
+        case .signInDetails: "This show's address carries sign-in details, so it is never sent for ad finding."
+        case .privateToken: "This show's address carries a private token, so it is never sent for ad finding."
+        case .privateTitle: "This show's title sounds private, so it is never sent for ad finding."
+        case .switchOff: "Online ad finding is off."
+        case .noKey: "No provider key is saved."
+        case .notConfirmed: "This show is not sent for ad finding. Turn it on in the show's settings."
+        }
+    }
+
+    /// The durable warning a not-sent episode carries.
+    public var warning: String { "original audio includes ads: \(sentence)" }
+}
+
 /// Where an episode's transcript is labelled.
 public enum RemoteLabellingRoute: Sendable, Equatable {
     case remote
-    case local(RemoteLabellingLocalReason)
+    case notSent(RemoteLabellingNotSentReason)
 }
 
 /// What the policy knows about one episode. Plain values; nothing is read from the library.
@@ -51,18 +97,16 @@ public struct RemoteLabellingContext: Sendable, Equatable {
     public var switchOn: Bool
     public var hasKey: Bool
     public var confirmedFeedIDs: Set<String>
-    public var localOnlyFeedIDs: Set<String>
     public var adFreeFeedIDs: Set<String>
     public var dailyCapReached: Bool
 
     public init(
         switchOn: Bool, hasKey: Bool, confirmedFeedIDs: Set<String>,
-        localOnlyFeedIDs: Set<String>, adFreeFeedIDs: Set<String> = [], dailyCapReached: Bool
+        adFreeFeedIDs: Set<String> = [], dailyCapReached: Bool
     ) {
         self.switchOn = switchOn
         self.hasKey = hasKey
         self.confirmedFeedIDs = confirmedFeedIDs
-        self.localOnlyFeedIDs = localOnlyFeedIDs
         self.adFreeFeedIDs = adFreeFeedIDs
         self.dailyCapReached = dailyCapReached
     }
@@ -72,7 +116,6 @@ public struct RemoteLabellingContext: Sendable, Equatable {
         self.init(
             switchOn: preferences.isEnabled, hasKey: hasKey,
             confirmedFeedIDs: Set(preferences.confirmedFeedIDs),
-            localOnlyFeedIDs: Set(preferences.localOnlyFeedIDs),
             adFreeFeedIDs: Set(preferences.adFreeFeedIDs),
             dailyCapReached: counter.hasReachedCap
         )
@@ -82,8 +125,10 @@ public struct RemoteLabellingContext: Sendable, Equatable {
 /// Pure decision of which route an episode takes. Private or subscriber shows never go remote.
 ///
 /// Rules are checked in this order and the first that holds decides the reason:
-/// switchOff, noKey, notConfirmed, adRemovalOff, ownerLocalOnly, unknownFeedURL, credentialedURL,
-/// tokenLikeFeedURL, privateTitle, dailyCapReached. Otherwise the route is remote.
+/// adRemovalOff (ad removal off or an ad-free feed), unknownFeedURL, credentialedURL,
+/// tokenLikeFeedURL, privateTitle, switchOff, noKey, notConfirmed,
+/// dailyCapReached. Otherwise the route is remote, so remote still needs every check to pass.
+/// A private show names its private reason whatever the owner's switches say.
 public enum RemoteLabellingPolicy {
     static let credentialQueryKeys: Set<String> = ["token", "auth", "key", "sig", "signature"]
     static let tokenMinimumLength = 24
@@ -92,22 +137,21 @@ public enum RemoteLabellingPolicy {
     static let privateTitlePattern = #"\b(premium|private|subscribers?|patrons?|members?|plus|ad[- ]free)\b"#
 
     public static func route(for input: RemoteLabellingInput, context: RemoteLabellingContext) -> RemoteLabellingRoute {
-        if !context.switchOn { return .local(.switchOff) }
-        if !context.hasKey { return .local(.noKey) }
-        if !context.confirmedFeedIDs.contains(input.feedID) { return .local(.notConfirmed) }
-        if !input.removeAds || context.adFreeFeedIDs.contains(input.feedID) { return .local(.adRemovalOff) }
-        if context.localOnlyFeedIDs.contains(input.feedID) { return .local(.ownerLocalOnly) }
-        if let forced = forcedLocalReason(for: input) { return .local(forced) }
-        if context.dailyCapReached { return .local(.dailyCapReached) }
+        if !input.removeAds || context.adFreeFeedIDs.contains(input.feedID) { return .notSent(.adRemovalOff) }
+        if let forced = forcedNotSentReason(for: input) { return .notSent(forced) }
+        if !context.switchOn { return .notSent(.switchOff) }
+        if !context.hasKey { return .notSent(.noKey) }
+        if !context.confirmedFeedIDs.contains(input.feedID) { return .notSent(.notConfirmed) }
+        if context.dailyCapReached { return .notSent(.dailyCapReached) }
         return .remote
     }
 
     /// The reason this show can never go remote, whatever the owner's switches say:
     /// an unknown, credentialed or token-like address, or a private-sounding title. Nil for a
     /// show the owner may choose to send. Settings and the feed view use it to show
-    /// such a show as local before anything is switched on.
-    public static func forcedLocalReason(for input: RemoteLabellingInput) -> RemoteLabellingLocalReason? {
-        // A feed whose address is unknown cannot be checked, so it stays local.
+    /// such a show as not sent before anything is switched on.
+    public static func forcedNotSentReason(for input: RemoteLabellingInput) -> RemoteLabellingNotSentReason? {
+        // A feed whose address is unknown cannot be checked, so it stays not sent.
         guard let feedURL = input.feedURL else { return .unknownFeedURL }
         if isCredentialed(feedURL) { return .credentialedURL }
         if let audioURL = input.audioURL, isCredentialed(audioURL) { return .credentialedURL }

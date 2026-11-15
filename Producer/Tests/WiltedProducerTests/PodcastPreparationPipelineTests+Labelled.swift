@@ -137,7 +137,6 @@ extension PodcastPreparationPipelineTests {
     func configureLabelling(
         defaults: UserDefaults,
         sender: LabellerSenderStub,
-        shadow: Bool? = false,
         enabled: Bool = true,
         confirmed: Bool = true,
         adFree: Bool = false,
@@ -146,7 +145,6 @@ extension PodcastPreparationPipelineTests {
     ) -> PodcastLabellingServices {
         let preferences = AdLabellerPreferences(preferences: defaults)
         preferences.isEnabled = enabled
-        if let shadow { preferences.isShadow = shadow }
         if confirmed { preferences.setConfirmed(feedID: Self.labelledFeedID.rawValue, true) }
         if adFree { defaults.set([Self.labelledFeedID.rawValue], forKey: AdLabellerPreferences.adFreeFeedsKey) }
         if let modelID { preferences.modelID = modelID }
@@ -533,15 +531,15 @@ extension PodcastPreparationPipelineTests {
                 transcriptPolicy: .bestAvailable, removeAds: argument.removeAds))
         let request = try decodeRequest(try #require(await stub.lastRequest()))
         #expect(request["adStage"] == nil)
+        #expect(request["removeAds"] as? Bool == false, "an ad-free feed asks the worker for no ad removal")
         #expect(sender.requestCount == 0)
     }
 
     @Test(arguments: [
-        "shadow",
         "routeLocal",
         "switchOff",
     ])
-    func labelledPathSkippedWhenShadowOrLocal(mode: String) async throws {
+    func labelledPathSkippedWhenNotSent(mode: String) async throws {
         let fixture = try await Fixture()
         let (defaults, defaultsName) = makeDefaults()
         let sender = LabellerSenderStub(outcomes: [
@@ -557,8 +555,6 @@ extension PodcastPreparationPipelineTests {
         ])
         let labelling: PodcastLabellingServices
         switch mode {
-        case "shadow":
-            labelling = configureLabelling(defaults: defaults, sender: sender, shadow: true)
         case "switchOff":
             labelling = configureLabelling(defaults: defaults, sender: sender, enabled: false)
         default:
@@ -572,7 +568,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     @Test func labelledCutWorksThroughPrepareAgain() async throws {
-        let fixture = try await Fixture()
+        let fixture = try await Fixture(labelled: true)
         let (defaults, defaultsName) = makeDefaults()
         let sender = LabellerSenderStub(outcomes: [
             .respond(LabellerResponse(text: mustCutReply(), usage: LabellerUsage()))
@@ -581,7 +577,7 @@ extension PodcastPreparationPipelineTests {
             fixture.remove()
             defaults.removePersistentDomain(forName: defaultsName)
         }
-        try await saveFeed(in: fixture.store)
+        // The existing cut, made on the labelled path by an older engine.
         _ = try await fixture.pipeline(Fixture.cuttingStub(), engineVersion: "podcast-preparation-v15")
             .prepare(episodeID: fixture.episodeID)
         let candidate = try #require(try await fixture.store.podcastEpisodesToPrepareAgain().first)
@@ -672,5 +668,107 @@ extension PodcastPreparationPipelineTests {
         let otherPrompt = LabelledRunProvenance(
             route: "remote", modelID: "model-a", level: "low", promptVersion: "labeller-prompt-v0")
         #expect(PodcastPreparationPipeline.policyDigest(policy, labelled: otherPrompt) != remoteDigest)
+    }
+
+    @Test func decoderAcceptsWorkerReplyWithOrWithoutAdProfileFields() throws {
+        var baseResponse = Self.cutResponse(audioPath: "/tmp/cut.mp3")
+        baseResponse["protocolVersion"] = 2
+
+        let dataWithout = try JSONSerialization.data(withJSONObject: baseResponse)
+        let payloadWithout = try PodcastPreparationPipeline.decode(dataWithout)
+        #expect(payloadWithout.adRemovalOutcome == "cut")
+
+        var responseWith = baseResponse
+        responseWith["adProfileStatus"] = "applied"
+        responseWith["adProfileRequestedDigest"] = String(repeating: "a", count: 64)
+        responseWith["adProfileAppliedDigest"] = String(repeating: "a", count: 64)
+        responseWith["adProfileObservation"] = [
+            "schemaVersion": 1, "feedID": "feed-1", "episodeID": "ep-1",
+            "sourceHash": String(repeating: "b", count: 64), "slots": [],
+        ]
+        let dataWith = try JSONSerialization.data(withJSONObject: responseWith)
+        let payloadWith = try PodcastPreparationPipeline.decode(dataWith)
+        #expect(payloadWith.adRemovalOutcome == "cut")
+    }
+
+    @Test func storeLeavesExistingPlacementProfilesFileUntouched() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let profilesURL = fixture.root.appendingPathComponent("ad-placement-profiles.json")
+        let arbitraryBytes = Data("arbitrary-profile-content-12345".utf8)
+        try arbitraryBytes.write(to: profilesURL)
+        let initialAttrs = try FileManager.default.attributesOfItem(atPath: profilesURL.path)
+        let initialModDate = try #require(initialAttrs[.modificationDate] as? Date)
+
+        let feedID = try ItemID.derivePodcastFeed(from: URL(string: Fixture.feedAddress)!)
+        try await fixture.store.save(subscription: PodcastSubscription(
+            feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        ))
+
+        let worker = WorkerStub(response: [
+            "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false
+        ])
+        _ = try await fixture.pipeline(worker).prepare(
+            episodeID: fixture.episodeID,
+            policy: PodcastPreparationPolicySnapshot(transcriptPolicy: .noLocalSTT, removeAds: false)
+        )
+        _ = try await fixture.store.unsubscribeFromPodcast(feedID: feedID)
+
+        let finalBytes = try Data(contentsOf: profilesURL)
+        let finalAttrs = try FileManager.default.attributesOfItem(atPath: profilesURL.path)
+        let finalModDate = try #require(finalAttrs[.modificationDate] as? Date)
+
+        #expect(finalBytes == arbitraryBytes)
+        #expect(finalModDate == initialModDate)
+    }
+
+    @Test func requestsCarryNoAdProfileKeyOnTranscriptCutAndAdRemovalOff() async throws {
+        let fixture = try await Fixture()
+        let (defaults, defaultsName) = makeDefaults()
+        let sender = LabellerSenderStub(outcomes: [
+            .respond(LabellerResponse(text: mustCutReply(), usage: LabellerUsage()))
+        ])
+        defer {
+            fixture.remove()
+            defaults.removePersistentDomain(forName: defaultsName)
+        }
+        try await saveFeed(in: fixture.store)
+        let cue = try writeCueFile(to: fixture.workDirectory)
+        let worker = LabelledStageWorker { request, _ in
+            let stage = request["adStage"] as? String
+            if stage == "transcript" {
+                return ([
+                    "ok": true, "adStage": "transcript", "timing": "aligned",
+                    "durationSeconds": 12, "labellerCuesPath": cue.path, "labellerCuesDigest": cue.digest,
+                ], nil)
+            }
+            return (Self.cutResponse(audioPath: request["outputPath"] as? String ?? ""), Fixture.cuttingAudio)
+        }
+        let labelling = configureLabelling(defaults: defaults, sender: sender)
+        _ = try await labelledPipeline(fixture, runner: worker, labelling: labelling)
+            .prepare(episodeID: fixture.episodeID)
+
+        let requests = await worker.allRequests()
+        #expect(requests.count == 2)
+        let transcriptReq = try decodeRequest(requests[0])
+        #expect(transcriptReq["adStage"] as? String == "transcript")
+        #expect(transcriptReq["adProfile"] == nil)
+
+        let cutReq = try decodeRequest(requests[1])
+        #expect(cutReq["adStage"] as? String == "cut")
+        #expect(cutReq["adProfile"] == nil)
+
+        let offWorker = WorkerStub(response: [
+            "ok": true, "timing": "none", "audioPath": fixture.audioURL.path, "audioChanged": false
+        ])
+        _ = try await fixture.pipeline(offWorker).prepare(
+            episodeID: fixture.episodeID,
+            policy: PodcastPreparationPolicySnapshot(transcriptPolicy: .noLocalSTT, removeAds: false)
+        )
+        let offReqData = try #require(await offWorker.lastRequest())
+        let offReq = try decodeRequest(offReqData)
+        #expect(offReq["adStage"] == nil)
+        #expect(offReq["removeAds"] as? Bool == false)
+        #expect(offReq["adProfile"] == nil)
     }
 }

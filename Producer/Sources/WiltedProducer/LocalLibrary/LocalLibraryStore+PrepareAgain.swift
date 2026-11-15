@@ -67,7 +67,7 @@ extension LocalLibraryStore {
     /// offered.
     ///
     /// `labelledDigestInForce` supplies the digest a fresh labelled cut would
-    /// store for that feed and audio address, or nil when routed local. An
+    /// store for that feed and audio address, or nil when it is not sent. An
     /// episode the current engine already prepared is also offered when that
     /// digest is non-nil and differs from the newest finished attempt's
     /// recorded digest (journal `policyDigest` evidence when present, else the

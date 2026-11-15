@@ -47,7 +47,7 @@ extension PodcastPreparationPipeline {
             durationSeconds: duration, labellerCuesPath: path, labellerCuesDigest: digest)
     }
 
-    /// Validates a labelled-path audit in place of the local classifier's model and candidate checks.
+    /// Validates a labelled-path audit in place of model and candidate checks.
     static func isLabelledAudit(_ audit: [String: Any], outcome: String) -> Bool {
         guard audit["adEngine"] as? String == "labelled",
               let proposed = labelledNonnegativeInteger(audit["breaksProposed"]),

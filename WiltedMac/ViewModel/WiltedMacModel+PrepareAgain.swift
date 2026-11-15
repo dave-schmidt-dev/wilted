@@ -178,7 +178,7 @@ extension WiltedMacModel {
         }
     }
 
-    /// The labelled digest a fresh cut of this feed and audio would store, or nil when local.
+    /// The labelled digest a fresh cut of this feed and audio would store, or nil when not sent.
     nonisolated static func labelledDigestInForce(
         feedID: String,
         audioURL: URL,

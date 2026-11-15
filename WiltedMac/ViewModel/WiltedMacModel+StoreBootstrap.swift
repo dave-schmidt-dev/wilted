@@ -632,7 +632,6 @@ extension WiltedMacModel {
                 PodcastDownloadCoordinator(store: store, libraryDirectory: mediaDirectory)
             }
         }
-        // Shadow labelling never runs under tests or fixtures, so neither can reach the provider.
         // The owner may route labelling through the signed-in OpenCode command-line tool
         // instead of the saved key. Its private home sits in the temporary directory so the
         // working directory the tool reports to the provider carries no account name.
@@ -644,17 +643,6 @@ extension WiltedMacModel {
             ? OpenCodeCLILabellerSender(homeDirectory: FileManager.default.temporaryDirectory
                 .appendingPathComponent("wilted-labeller-cli", isDirectory: true))
             : LabellerClient(keyStore: adLabellerKeyStore)
-        let shadowRecorder = (fixtureMode || Self.hostsTests) ? nil : LabellerShadowRecorder(
-            preferences: labellerPreferences,
-            counter: labellerCounter,
-            keyStore: adLabellerKeyStore,
-            sender: labellerSender,
-            transport: labellerUsesCLI ? OpenCodeCLILabellerSender.transportName : "direct",
-            // Beside the library, not inside the media folder that retention and sync manage.
-            recordsDirectory: mediaDirectory.deletingLastPathComponent()
-                .appendingPathComponent("ad-labeller-shadow", isDirectory: true)
-        )
-        adLabellerShadowRecorder = shadowRecorder
         let appLabellingServices: PodcastLabellingServices? = (fixtureMode || Self.hostsTests) ? nil : PodcastLabellingServices(
             preferences: labellerPreferences,
             counter: labellerCounter,
@@ -669,7 +657,6 @@ extension WiltedMacModel {
                     workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
                     runner: podcastPipelineRunnerFactory(),
                     removeAds: removesAdvertisements,
-                    shadowRecorder: shadowRecorder,
                     labelling: labellingServices
                 )
             }
@@ -677,7 +664,6 @@ extension WiltedMacModel {
                 store: store,
                 workDirectory: mediaDirectory.appendingPathComponent("preparation", isDirectory: true),
                 removeAds: removesAdvertisements,
-                shadowRecorder: shadowRecorder,
                 labelling: labellingServices
             )
         }
