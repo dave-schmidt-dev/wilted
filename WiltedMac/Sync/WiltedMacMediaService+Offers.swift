@@ -119,6 +119,15 @@ extension WiltedMacMediaService {
             }
         }
         await publishMissingTranscripts(for: desired)
+        if succeeded {
+            do {
+                try await updatePreuploadTargets()
+            } catch {
+                succeeded = false
+                lastFailure = String(describing: error)
+                offersLog.error("Could not update pre-upload targets: \(String(describing: error), privacy: .public)")
+            }
+        }
         do { try persist() } catch { offersLog.error("Could not save media accounting: \(String(describing: error), privacy: .public)") }
         if succeeded { lastFailure = nil }
         return succeeded

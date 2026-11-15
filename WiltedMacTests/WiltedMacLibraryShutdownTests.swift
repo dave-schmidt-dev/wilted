@@ -45,6 +45,7 @@ private actor LibraryShutdownGate {
 private struct ShutdownEmptyAudio: WiltedMacReadyAudioSource {
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? { nil }
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] { [:] }
+    func preparedQueued() async throws -> WiltedMacPreparedQueue { WiltedMacPreparedQueue() }
 }
 
 @MainActor

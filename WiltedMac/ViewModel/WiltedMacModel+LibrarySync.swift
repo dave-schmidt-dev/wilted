@@ -373,7 +373,8 @@ extension WiltedMacModel {
             onDeviceRecords: { records in await importer.handle(records) }, maintenance: inboundMaintenance,
             beforePollerStart: { await previousShutdown?.value },
             onRoundFinished: { [weak self] error in await MainActor.run { self?.recordLibraryCheck(error) } },
-            onDevicesChange: { [weak self] devices in await MainActor.run { self?.recordLinkedDevices(devices) } }
+            onDevicesChange: { [weak self] devices in await MainActor.run { self?.recordLinkedDevices(devices) } },
+            preuploadLimit: WiltedMacMediaService.standardPreuploadLimit
         )
         // Decision intents (keep, skip, mark done, remove from Larder, restore, reorder) go to the applier, which shares
         // the media service's ledger; media intents keep their existing route.

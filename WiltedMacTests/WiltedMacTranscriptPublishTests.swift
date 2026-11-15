@@ -18,6 +18,14 @@ private final class ScriptedTranscriptSource: WiltedMacReadyAudioSource, @unchec
 
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] { lock.withLock { audio } }
 
+    func preparedQueued() async throws -> WiltedMacPreparedQueue {
+        lock.withLock {
+            WiltedMacPreparedQueue(
+                entries: audio.sorted(by: { $0.key.rawValue < $1.key.rawValue }).map { ($0.key, $0.value) },
+                larderIDs: Set(audio.keys))
+        }
+    }
+
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
         lock.withLock { transcripts[entryID].flatMap { $0.revisionID == revisionID ? $0 : nil } }
     }

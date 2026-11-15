@@ -330,4 +330,57 @@ final class WiltedMacMediaSnapshotProjectionTests: XCTestCase {
         let singleBook = try await librarySource.readyAudio(for: bookID)
         XCTAssertEqual(singleBook?.revisionID, bookRevID)
     }
+
+    func testPreparedQueuedInSnapshotReturnsMixedEntriesInQueueOrderAndOmitsFinished() async throws {
+        let (store, dir) = try makeStore("projection-prepared-queued")
+        let (pod1ID, pod1Rev, _) = try await seedPodcastEpisode(in: store, directory: dir, guid: "pod-1")
+        let (podFinishedID, podFinishedRev, _) = try await seedPodcastEpisode(in: store, directory: dir, guid: "pod-finished")
+
+        try await store.saveListening(PodcastListeningState(
+            episodeID: podFinishedID, completedAt: timestamp, lastRevisionID: podFinishedRev, updatedAt: timestamp
+        ))
+
+        let articleURL = URL(string: "https://articles.example.test/post-queue-1")!
+        let articleID = try ItemID.derive(from: articleURL)
+        let article = try Article(itemID: articleID, canonicalURL: articleURL, title: "Post 1", source: "Blog", createdAt: timestamp)
+        try await store.save(article: article)
+        let (articleFile, articleHash) = try dummyAudioFile(in: dir, name: "art-queue.m4a", byteCount: 512)
+        let articleRevID = try RevisionID(rawValue: "rev-art-queue")
+        let articleRevision = try AudioRevision(
+            itemID: articleID, revisionID: articleRevID, durationSeconds: 60, byteCount: 512,
+            contentHash: articleHash, mediaType: "audio/mp4", createdAt: timestamp, schemaVersion: 1
+        )
+        try await store.saveReadyRevision(articleRevision, mediaURL: articleFile)
+
+        let bookID = try ItemID.audiobook(contentDigest: String(repeating: "f", count: 64), layout: "x", volume: 0)
+        let (bookFile, bookHash) = try dummyAudioFile(in: dir, name: "book-queue.m4a", byteCount: 1024)
+        let bookRevID = try RevisionID(rawValue: "rev-book-queue")
+        let bookRevision = try AudioRevision(
+            itemID: bookID, revisionID: bookRevID, durationSeconds: 900, byteCount: 1024,
+            contentHash: bookHash, mediaType: "audio/mp4", createdAt: timestamp, schemaVersion: 1
+        )
+        try await store.saveAudiobookVolumes([
+            AudiobookVolumeSave(
+                itemID: bookID, revision: bookRevision, mediaURL: bookFile, title: "Book Queued", author: "Author",
+                chapters: [AudiobookChapterMark(title: "Ch 1", startSeconds: 0)], sourceFormat: "audio",
+                volumeIndex: 0, volumeCount: 1, createdAt: timestamp.date
+            )
+        ])
+
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [articleID, podFinishedID, pod1ID, bookID], currentEpisodeID: articleID
+        ))
+
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
+        let queued = WiltedMacLibraryReadyAudioSource.preparedQueued(in: snapshot)
+
+        XCTAssertEqual(queued.count, 3)
+        XCTAssertEqual(queued[0].0, articleID)
+        XCTAssertEqual(queued[0].1.revisionID, articleRevID)
+        XCTAssertEqual(queued[1].0, pod1ID)
+        XCTAssertEqual(queued[1].1.revisionID, pod1Rev)
+        XCTAssertEqual(queued[2].0, bookID)
+        XCTAssertEqual(queued[2].1.revisionID, bookRevID)
+        XCTAssertFalse(queued.map(\.0).contains(podFinishedID), "finished episode must be omitted from prepared queued entries")
+    }
 }

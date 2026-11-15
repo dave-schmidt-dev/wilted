@@ -94,6 +94,7 @@ final class WiltedMacLANMediaServerTests: XCTestCase {
     private struct FakeReadySource: WiltedMacReadyAudioSource {
         func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? { nil }
         func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] { [:] }
+        func preparedQueued() async throws -> WiltedMacPreparedQueue { WiltedMacPreparedQueue() }
         func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? { nil }
         func transcripts(for revisions: [ItemID: RevisionID]) async throws -> [ItemID: LibraryTranscript] { [:] }
     }

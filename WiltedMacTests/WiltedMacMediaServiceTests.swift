@@ -8,17 +8,34 @@ import XCTest
 final class ScriptedAudioSource: WiltedMacReadyAudioSource, @unchecked Sendable {
     private let lock = NSLock()
     private var audio: [ItemID: WiltedMacReadyAudio] = [:]
-    private var queue: Set<ItemID> = []
+    private var queue: [ItemID] = []
     private var lookups = 0
 
     func set(_ entryID: ItemID, _ value: WiltedMacReadyAudio?) { lock.withLock { audio[entryID] = value } }
     /// Puts the entry on, or takes it off, the scripted Larder queue.
     func setQueued(_ entryID: ItemID, _ queued: Bool) {
-        lock.withLock { if queued { queue.insert(entryID) } else { queue.remove(entryID) } }
+        lock.withLock {
+            if queued {
+                if !queue.contains(entryID) { queue.append(entryID) }
+            } else {
+                queue.removeAll { $0 == entryID }
+            }
+        }
+    }
+
+    /// Sets the explicit Larder queue order.
+    func setQueueOrder(_ order: [ItemID]) {
+        lock.withLock { queue = order }
     }
 
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
         lock.withLock { audio.filter { queue.contains($0.key) } }
+    }
+
+    func preparedQueued() async throws -> WiltedMacPreparedQueue {
+        lock.withLock {
+            WiltedMacPreparedQueue(entries: queue.compactMap { id in audio[id].map { (id, $0) } }, larderIDs: Set(queue))
+        }
     }
     var lookupCount: Int { lock.withLock { lookups } }
 

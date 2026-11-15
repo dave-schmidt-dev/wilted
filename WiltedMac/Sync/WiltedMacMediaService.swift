@@ -36,6 +36,8 @@ actor WiltedMacMediaService {
     static let maximumByteCount: Int64 = 250 * 1024 * 1024
     /// The wait before the first retry of an upload that failed; later retries wait longer.
     static let defaultUploadRetryDelay: Duration = .seconds(5)
+    /// The standard number of Larder entries to upload ahead of requests.
+    static let standardPreuploadLimit = 10
 
     /// Told each stage of a media request after `received`, so the requesting device can show it.
     typealias RequestReporter = @Sendable (LibraryIntent, LibraryMediaRequestStatus.Stage, String?) async -> Void
@@ -54,7 +56,10 @@ actor WiltedMacMediaService {
         /// Last time a device asked for this revision; the seven days run from here.
         var touchedAt: Date
 
-        var isComplete: Bool { !requesters.isEmpty && requesters.isSubset(of: acked) }
+        var isComplete: Bool {
+            if requesters.isEmpty { return !acked.isEmpty }
+            return requesters.isSubset(of: acked)
+        }
     }
 
     private struct Stored: Codable {
@@ -64,6 +69,8 @@ actor WiltedMacMediaService {
         var published: [String: String]
         /// Entry id to the revision whose transcript is on the transport. Absent in older files.
         var transcripts: [String: String]?
+        /// Entry id to the revision marked delivered. Absent in older files.
+        var delivered: [String: String]?
     }
 
     /// Lets the queue reach its service without keeping it alive, as the queue is built inside `init`.
@@ -88,6 +95,10 @@ actor WiltedMacMediaService {
     private var sweepQueued = false
     private let reportRequest: RequestReporter?
     var lastFailure: String?
+    let preuploadLimit: Int
+    var delivered: [String: String] = [:]
+    /// Current pre-upload targets; nil until the first successful reconcile of a launch.
+    var preuploadTargets: [WiltedMacPreuploadTarget]?
     /// The queue every media request passes through.
     let uploadQueue: WiltedMacMediaUploadQueue
 
@@ -101,6 +112,7 @@ actor WiltedMacMediaService {
     init(
         source: any WiltedMacReadyAudioSource, transport: any LibraryTransport, accountingURL: URL?,
         now: @escaping @Sendable () -> Date = { Date() },
+        preuploadLimit: Int = 0,
         uploadRetryDelay: Duration = WiltedMacMediaService.defaultUploadRetryDelay,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         reportRequest: RequestReporter? = nil,
@@ -114,11 +126,13 @@ actor WiltedMacMediaService {
         self.accountingURL = accountingURL
         self.accountingWrite = accountingWrite
         self.now = now
+        self.preuploadLimit = preuploadLimit
         if let accountingURL, let data = try? Data(contentsOf: accountingURL) {
             if let stored = try? JSONDecoder().decode(Stored.self, from: data) {
                 records = Dictionary(stored.records.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last })
                 published = stored.published
                 publishedTranscripts = stored.transcripts ?? [:]
+                delivered = stored.delivered ?? [:]
             } else {
                 // Unreadable accounting is set aside, not overwritten, and the service starts empty.
                 let aside = accountingURL.appendingPathExtension("corrupt")
@@ -340,8 +354,10 @@ actor WiltedMacMediaService {
     }
 
     private func acknowledge(entryID: ItemID, revisionID: RevisionID, deviceID: String) async {
+        delivered[entryID.rawValue] = revisionID.rawValue
         let key = AssetKey(entryID: entryID.rawValue, revisionID: revisionID.rawValue)
         guard var record = records[key] else {
+            do { try persist() } catch { mediaLog.error("Could not save media accounting: \(String(describing: error), privacy: .public)") }
             mediaLog.notice("Ack from \(deviceID, privacy: .public) for \(entryID.rawValue, privacy: .public) matches no held asset")
             return
         }
@@ -355,7 +371,15 @@ actor WiltedMacMediaService {
     /// record so the next sweep retries it.
     private func cleanup() async {
         let cutoff = now().addingTimeInterval(-Self.timeToLive)
-        for record in records.values.sorted(by: { $0.touchedAt < $1.touchedAt }) where record.isComplete || record.touchedAt <= cutoff {
+        for record in records.values.sorted(by: { $0.touchedAt < $1.touchedAt }) {
+            let isExpired = record.touchedAt <= cutoff
+            guard record.isComplete || isExpired else { continue }
+            if !record.isComplete && isExpired && record.requesters.isEmpty {
+                guard let targets = preuploadTargets else { continue }
+                if targets.contains(where: { $0.entryID.rawValue == record.key.entryID && $0.audio.revisionID.rawValue == record.key.revisionID }) {
+                    continue
+                }
+            }
             let key = record.key
             if published[key.entryID] == key.revisionID {
                 do {
@@ -394,7 +418,8 @@ actor WiltedMacMediaService {
         let stored = Stored(
             records: records.values.sorted { ($0.key.entryID, $0.key.revisionID) < ($1.key.entryID, $1.key.revisionID) },
             published: published,
-            transcripts: publishedTranscripts
+            transcripts: publishedTranscripts,
+            delivered: delivered.isEmpty ? nil : delivered
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

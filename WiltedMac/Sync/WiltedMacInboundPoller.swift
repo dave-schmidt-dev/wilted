@@ -228,6 +228,7 @@ final class WiltedMacInboundRuntime {
         onPollerStop: (@Sendable () async -> Void)? = nil,
         onRoundFinished: WiltedMacInboundPoller.RoundFinished? = nil,
         onDevicesChange: WiltedMacDeviceLinks.OnChange? = nil,
+        preuploadLimit: Int = 0,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -247,7 +248,9 @@ final class WiltedMacInboundRuntime {
         service = WiltedMacMediaService(
             source: source, transport: transport,
             accountingURL: directory.appendingPathComponent("media-accounting.json"),
-            now: now, sleep: sleep,
+            now: now,
+            preuploadLimit: preuploadLimit,
+            sleep: sleep,
             reportRequest: { intent, stage, detail in await links.record(intent, stage: stage, detail: detail) },
             queueURL: directory.appendingPathComponent("media-upload-queue.json")
         )

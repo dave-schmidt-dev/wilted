@@ -209,12 +209,18 @@ struct WiltedMacLibraryReadyAudioSource: WiltedMacReadyAudioSource {
 
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? {
         let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
-        return combinedAudio(in: snapshot)[entryID]
+        return Self.combinedAudio(in: snapshot)[entryID]
     }
 
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
         let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
-        return combinedAudio(in: snapshot)
+        return Self.combinedAudio(in: snapshot)
+    }
+
+    func preparedQueued() async throws -> WiltedMacPreparedQueue {
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
+        return WiltedMacPreparedQueue(
+            entries: Self.preparedQueued(in: snapshot), larderIDs: Set(snapshot.podcastQueue.episodeIDs))
     }
 
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
@@ -225,12 +231,20 @@ struct WiltedMacLibraryReadyAudioSource: WiltedMacReadyAudioSource {
         try await podcasts.transcripts(for: revisions)
     }
 
-    private func combinedAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
+    static func preparedQueued(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [(ItemID, WiltedMacReadyAudio)] {
+        let combined = combinedAudio(in: snapshot)
+        return snapshot.podcastQueue.episodeIDs.compactMap { id in
+            guard let audio = combined[id], snapshot.listeningStates[id]?.completedAt == nil else { return nil }
+            return (id, audio)
+        }
+    }
+
+    static func combinedAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
         WiltedMacLocalReadyAudioSource.preparedAudio(in: snapshot)
             .merging(ownAudio(in: snapshot)) { podcast, _ in podcast }
     }
 
-    private func ownAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
+    static func ownAudio(in snapshot: LocalLibraryStore.PodcastLibrarySnapshot) -> [ItemID: WiltedMacReadyAudio] {
         let live = Set(snapshot.articles.filter { !$0.isDeleted }.map(\.itemID))
             .union(snapshot.audiobooks.filter { !$0.isRemoved }.map(\.itemID))
         var ready: [ItemID: WiltedMacReadyAudio] = [:]

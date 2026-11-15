@@ -17,11 +17,21 @@ struct WiltedMacReadyAudio: Sendable, Equatable {
     var preparation: LibraryMediaPreparation
 }
 
+/// The Larder as one read gives it: prepared entries in queue order, and every entry on it.
+struct WiltedMacPreparedQueue: Sendable {
+    /// Prepared entries that are not completed, in Larder queue order.
+    var entries: [(ItemID, WiltedMacReadyAudio)] = []
+    /// Every entry on the Larder, prepared or not.
+    var larderIDs: Set<ItemID> = []
+}
+
 /// Read-only view of what the Mac has ready. It never starts or triggers preparation.
 protocol WiltedMacReadyAudioSource: Sendable {
     func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio?
     /// Ready audio for every entry on the Larder (queued and not retired), from one read.
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio]
+    /// Ready audio for the Larder's entries in queue order, with the Larder's membership, from one read.
+    func preparedQueued() async throws -> WiltedMacPreparedQueue
     /// The compact transcript the Mac already holds for exactly this revision, or nil.
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript?
     /// The transcripts held for exactly these revisions, from one read; entries without one are absent.
@@ -53,6 +63,14 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
     func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
         let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
         return Self.preparedAudio(in: snapshot)
+    }
+
+    func preparedQueued() async throws -> WiltedMacPreparedQueue {
+        let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
+        let prepared = Self.preparedAudio(in: snapshot)
+        return WiltedMacPreparedQueue(
+            entries: snapshot.podcastQueue.episodeIDs.compactMap { id in prepared[id].map { (id, $0) } },
+            larderIDs: Set(snapshot.podcastQueue.episodeIDs))
     }
 
     /// Generic ready revisions include raw downloads; only exact preparation proof authorizes export.
