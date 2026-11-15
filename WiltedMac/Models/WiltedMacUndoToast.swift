@@ -159,14 +159,23 @@ final class WiltedMacUndoToastCenter {
     }
 
     private func register(_ offer: WiltedMacUndoOffer) {
-        guard let undoManager, let registration = registrations[offer.id] else { return }
-        // Its own group, so each offer is one step of Undo whether or not the run loop groups events.
+        guard let undoManager, let registration = registrations[offer.id],
+              !undoManager.isUndoing, !undoManager.isRedoing else { return }
+        // Each offer is its own closed step of Undo. A window's undo stack otherwise folds a whole
+        // pass of the run loop into one group that stays open until the pass ends: two offers made
+        // in one pass would be undone together, and an offer withdrawn in the pass it was made in
+        // would leave an empty "Undo Mark Completed" behind.
+        let ownsGroup = undoManager.groupingLevel == 0
+        let groupsByEvent = undoManager.groupsByEvent
+        if ownsGroup { undoManager.groupsByEvent = false }
         undoManager.beginUndoGrouping()
         undoManager.registerUndo(withTarget: registration) { [weak self] registration in
             MainActor.assumeIsolated { self?.undo(registration.offerID) }
         }
-        undoManager.setActionName(offer.actionName)
+        // Inside a group something else opened, that change keeps the name it gave the step.
+        if ownsGroup { undoManager.setActionName(offer.actionName) }
         undoManager.endUndoGrouping()
+        if ownsGroup { undoManager.groupsByEvent = groupsByEvent }
     }
 
     private func forget(_ id: UUID) {

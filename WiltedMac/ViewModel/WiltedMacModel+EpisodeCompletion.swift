@@ -147,13 +147,15 @@ extension WiltedMacModel {
             // The toast says what happened and carries its Undo, so the list's own line clears
             // rather than say it twice.
             podcastOperationMessage = nil
-            undoToast.offer(
-                message: committed.count == 1
-                    ? "Marked \(committedEpisode.title) completed."
-                    : "Marked \(committed.count) episodes completed.",
-                actionName: "Mark Completed", subjects: committed,
-                availableUntil: result.undoAvailableUntil
-            ) { [weak self] in self?.undoSkipEpisode(undo) }
+            // A result with no deadline saved no receipt, so there is nothing Undo could reverse.
+            if let deadline = result.undoAvailableUntil {
+                undoToast.offer(
+                    message: committed.count == 1
+                        ? "Marked \(committedEpisode.title) completed."
+                        : "Marked \(committed.count) episodes completed.",
+                    actionName: "Mark Completed", subjects: committed, availableUntil: deadline
+                ) { [weak self] in self?.undoSkipEpisode(undo) }
+            }
             return committed.count == candidates.count
         } catch {
             for episode in candidates { rollbackEpisodeCompletionProjection(episode.id, title: episode.title) }

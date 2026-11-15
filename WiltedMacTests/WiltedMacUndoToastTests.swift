@@ -198,6 +198,31 @@ final class WiltedMacUndoToastTests: XCTestCase {
         XCTAssertEqual(undone.count, 1)
     }
 
+    /// A window's undo stack groups by event. Nothing here turns the run loop, so both offers and
+    /// the withdrawal land in what would be one event group.
+    func testOffersMadeInOnePassOfTheRunLoopAreSeparateStepsOfAWindowsUndo() {
+        let clock = VirtualTime()
+        let center = center(clock)
+        let manager = UndoManager()
+        XCTAssertTrue(manager.groupsByEvent)
+        center.attach(manager)
+        let first = Undone(), second = Undone()
+        offer("A", on: center, counting: first)
+        offer("B", on: center, counting: second)
+        XCTAssertEqual(manager.groupingLevel, 0)
+        XCTAssertTrue(manager.groupsByEvent, "the window's own grouping is left as it was")
+
+        manager.undo()
+        XCTAssertEqual([first.count, second.count], [0, 1], "one Command-Z takes back one removal")
+        XCTAssertEqual(manager.undoMenuItemTitle, "Undo Mark Completed")
+
+        offer("C", on: center, subjects: ["c"])
+        center.withdraw(subjects: ["c"])
+        manager.undo()
+        XCTAssertEqual([first.count, second.count], [1, 1])
+        XCTAssertFalse(manager.canUndo, "an offer withdrawn in the pass it was made in leaves nothing behind")
+    }
+
     func testOffersFollowTheWindowTheyAreAttachedTo() {
         let clock = VirtualTime()
         let center = center(clock)
@@ -262,11 +287,25 @@ final class WiltedMacUndoToastTests: XCTestCase {
         offer("A", on: center, counting: undone)
 
         let manager = try XCTUnwrap(window.undoManager)
+        XCTAssertTrue(manager.groupsByEvent, "a window's undo stack groups by event, unlike the other tests' own")
         await WiltedMacHeadless.eventually("the host hands the window's undo stack to the toast") { manager.canUndo }
         XCTAssertEqual(manager.undoMenuItemTitle, "Undo Mark Completed")
         manager.undo()
         XCTAssertEqual(undone.count, 1)
         XCTAssertNil(center.current)
+
+        // An offer that ran out, or was taken up with the toast's button, leaves Edit > Undo too.
+        offer("B", on: center, counting: undone)
+        XCTAssertTrue(manager.canUndo)
+        XCTAssertEqual(manager.groupingLevel, 0, "the offer is a closed step, not part of an open event group")
+        await clock.advance(by: 5)
+        XCTAssertNil(center.current)
+        XCTAssertFalse(manager.canUndo, "Edit > Undo must not keep a removal the toast no longer offers")
+
+        offer("C", on: center, counting: undone)
+        center.undoCurrent()
+        XCTAssertFalse(manager.canUndo, "the button and the command are one offer")
+        XCTAssertEqual(undone.count, 2)
     }
 
     // MARK: What is drawn
