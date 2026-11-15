@@ -6,6 +6,8 @@ No subprocess, inference, model download, or CloudKit operation occurs here.
 from __future__ import annotations
 
 import contextlib
+import errno
+import fcntl
 import hashlib
 import io
 import json
@@ -21,7 +23,7 @@ from pathlib import Path
 from unittest import mock
 from uuid import uuid4
 
-from worker_test_support import install_fake_wilted, recording_model_lock, wp
+from worker_test_support import install_fake_speech_stack, install_fake_wilted, recording_model_lock, wp
 from worker_test_fake_llm import FakeLLM
 from wilted_worker import gpu_admission
 
@@ -360,6 +362,32 @@ class TranscriptSummaryTests(unittest.TestCase):
                 self.rejected({**self.request("Words"), **changes}, "summary-invalid-request")
         self.factory.assert_not_called()
         self.assertEqual(self.lock_events, [])
+
+    def test_canonical_gpu_lock_is_held_through_backend_close(self):
+        self.gpu.stop()  # this test needs the real admission lock
+        install_fake_speech_stack()
+        state = {"held": False, "close_saw_lock": False}
+
+        def fake_flock(_fd, operation):
+            if operation == fcntl.LOCK_UN:
+                state["held"] = False
+            elif operation & fcntl.LOCK_NB:
+                if state["held"]:
+                    raise BlockingIOError(errno.EAGAIN, "held")
+                state["held"] = True
+
+        original_close = self.backend.close
+
+        def close():
+            state["close_saw_lock"] = state["held"]
+            original_close()
+
+        self.backend.close = close
+        with mock.patch.object(gpu_admission.fcntl, "flock", side_effect=fake_flock), redirect_stderr(io.StringIO()):
+            result = wp.run(self.request("Words"))
+        self.assertTrue(result["ok"])
+        self.assertTrue(state["close_saw_lock"])
+        self.assertFalse(state["held"])
 
     def test_backend_close_failure_is_not_success_and_releases_gpu_lock(self):
         with mock.patch.object(self.backend, "close", side_effect=RuntimeError("private cleanup diagnostic")):

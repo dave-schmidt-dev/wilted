@@ -5,11 +5,14 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Removed
-- The local ad finder is being removed: ads are cut only on a validated reply from the online labeller. A show that is not sent for ad finding (not turned on, no provider key, online ad finding off, or a private or paid-looking feed) keeps its ads, and its episodes say why.
+- The local ad finder (on-device classifier, its recovery rules, corpus replay, placement profiles, the "Find ads on this Mac only" setting, the shadow recorder and "Label now" backfill): ads are cut only on a validated reply from the online labeller.
 - Mac show settings: **Find ads on this Mac only** is replaced by **Send this show for ad finding**. On sends the show's transcripts to the labelling provider; off sends nothing, keeps its ads in, and is remembered, so no later confirm sheet offers the show as sent. Settings > Ad finding no longer has **Label now** or shadow records.
 - Weekly maintenance now expires inactive, uncited incomplete or unknown Xcode results after 14 quiet days without archiving them, retaining small deletion receipts.
 - Removed 79 obsolete local Xcode result bundles and reconciled their evidence references after explicit owner approval.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
+
+### Changed
+- A show that is not sent for online ad finding now keeps its ads and says why, instead of being cut on the Mac.
 
 ### Added
 - The iPhone Larder's Sort menu has Mac order: the list, CarPlay, Siri and the Watch follow the Mac Larder's order as last synced, and the next episode is picked by the Mac's rule. Play order stays the default; the other sorts stay display-only.

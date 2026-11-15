@@ -142,11 +142,6 @@ class StaticAdmissionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn(str(ROOT / 'Producer/Runtime/.venv'), result.stdout)
             self.assertNotIn('/nonexistent/elsewhere', result.stdout)
-        env.pop('WILTED_PIPELINE_PYTHON', None)
-        result = subprocess.run(['make', '-n', 'ad-corpus-replay'], cwd=ROOT,
-                                env=env, text=True, capture_output=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(str(ROOT / 'Producer/Runtime/.venv') + '/bin/python', result.stdout)
 
 unittest.main(argv=['runtime-static-admission'], verbosity=2)
 PY

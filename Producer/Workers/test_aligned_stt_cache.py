@@ -19,30 +19,27 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import commercial_recovery as _worker_commercial_recovery
-from wilted_worker import commercial_seeds as _worker_commercial_seeds
 from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import edge_recovery as _worker_edge_recovery
+from wilted_worker import cut_support as _worker_cut_support
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
+from wilted_worker import labelled_outcome as _worker_labelled_outcome
+from wilted_worker import labeller_cues as _worker_labeller_cues
 from wilted_worker import reporting as _worker_reporting
-from wilted_worker import span_bounds as _worker_span_bounds
-from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
 from worker_test_support import wp
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from wilted_worker.constants import ALIGNED_STT_CACHE_SCHEMA_VERSION
+
+CLEAN_AUDIT = {"adEngine": "labelled", "incompleteError": None, "warning": None,
+               "unresolvedIds": [], "heldSpans": []}
 
 @dataclass
 class AlignedToken:
@@ -108,17 +105,17 @@ class AlignedSTTCacheTests(unittest.TestCase):
         install_fake_wilted()
         install_fake_ads(FakeLLM())
         request.update({
-            "protocolVersion": 2, "removeAds": True,
+            "protocolVersion": 2, "adStage": "cut", "removeAds": True,
             "outputPath": str(Path(self.temporary.name) / "prepared.mp3"),
+            "labelledBreaks": [], "labellerCuesDigest": "dummy",
         })
-        with mock.patch.object(_worker_ad_removal, "detect_and_cut") as detector:
-            with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                    mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
+        with mock.patch.object(_worker_labelled_outcome, "cut_from_labelled_breaks") as detector:
+            with mock.patch.object(_worker_cut_support, "preflight_cut_tools"), \
                     mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()):
                 # The detector is not reached because this stub prevents the
                 # production cut path; its input is still observable below.
                 detector.return_value = (
-                    self.audio, [], [], [], wp.serialize_ad_audit(_worker_ad_audit.AdAnalysisAudit())
+                    self.audio, [], [], [], CLEAN_AUDIT
                 )
                 self.run_pipeline(request)
         segment = detector.call_args.args[3][0]
@@ -208,19 +205,19 @@ class AlignedSTTCacheTests(unittest.TestCase):
     def test_detector_failure_keeps_the_completed_cache_without_returning_success(self):
         install_fake_wilted()
         request = {
-            **self.request, "protocolVersion": 2, "removeAds": True,
+            **self.request, "protocolVersion": 2, "adStage": "cut", "removeAds": True,
             "alignedTranscriptModel": wp.ALIGNED_STT_MODEL,
             "outputPath": str(Path(self.temporary.name) / "prepared.mp3"),
+            "labelledBreaks": [], "labellerCuesDigest": "dummy",
         }
         wp._store_cached_aligned_segments(
             request, request["sourceHash"], request["alignedTranscriptModel"],
             [FakeSegment(0, 1, "cached")],
         )
         install_fake_ads(FakeLLM())
-        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
+        with mock.patch.object(_worker_cut_support, "preflight_cut_tools"), \
                 mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
-                mock.patch.object(_worker_ad_removal, "detect_and_cut", side_effect=wp.WorkerError("ads-down", "detector unavailable")), \
+                mock.patch.object(_worker_labelled_outcome, "cut_from_labelled_breaks", side_effect=wp.WorkerError("ads-down", "detector unavailable")), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
             with self.assertRaises(wp.WorkerError) as raised:
                 wp.run(request)
@@ -290,10 +287,14 @@ class AlignedSTTCacheTests(unittest.TestCase):
         transcribe = sys.modules["wilted.transcribe"]
         original = transcribe.transcribe_audio
         install_fake_ads(FakeLLM())
-        request = {"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
-                   "removeAds": True, "alignedTranscriptModel": "mlx-community/parakeet-tdt-1.1b"}
-        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
+        digest = _worker_labeller_cues.serialize_labeller_cues(
+            _worker_labeller_cues.build_labeller_cues([FakeSegment(0, 1, "programme")])
+        )[1]
+        request = {"protocolVersion": 2, "adStage": "cut", "audioPath": str(self.audio),
+                   "outputPath": str(Path(self.temporary.name) / "cut.mp3"),
+                   "removeAds": True, "alignedTranscriptModel": "mlx-community/parakeet-tdt-1.1b",
+                   "labelledBreaks": [], "labellerCuesDigest": digest}
+        with mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), \
                 mock.patch.object(transcribe, "transcribe_audio",
                                   lambda *a, **k: calls.append(k["model_name"]) or original(*a, **k)), \
@@ -303,7 +304,7 @@ class AlignedSTTCacheTests(unittest.TestCase):
         self.assertEqual(result["report"]["outcome"], "noAds")
         self.assertIn("transcript.stt.model.substituted", progress.getvalue())
 
-        with mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), self.assertRaises(wp.WorkerError) as raised:
+        with mock.patch.object(_worker_cut_support, "preflight_cut_tools"), self.assertRaises(wp.WorkerError) as raised:
             wp.run({**request, "alignedTranscriptModel": "some-other-model"})
         self.assertEqual(raised.exception.code, "aligned-stt-model-required")
 

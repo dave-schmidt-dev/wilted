@@ -46,8 +46,8 @@ Preservation is an explicit intake operation today. Do not claim otherwise.
 
 | Evidence | Permitted conclusion |
 | --- | --- |
-| Exact original aligned transcript, source identity, timeline and known configuration | Detector replay on the retained preparation input; audio-render accuracy still needs audio |
-| Exact original audio, but a newly generated transcript | Retranscription experiment; not reproduction of the old detector input |
+| Exact original aligned transcript, source identity, timeline and known configuration | Labelling again on the retained preparation input; audio-render accuracy still needs audio |
+| Exact original audio, but a newly generated transcript | Retranscription experiment; not reproduction of the old labelling input |
 | Different downloaded audio | New case with new identity and freshly checked labels; original report remains unresolved |
 | Prepared audio or display transcript | Diagnostic listening/content evidence with explicit timeline mapping; cannot reconstruct removed material or prove original-input replay |
 | Report metadata alone | Unresolved report with a concrete recovery action; no guessed verdict |
@@ -91,8 +91,7 @@ model listened directly or verified every acoustic boundary. Text-only judgments
 must say so. Mixed or still-uncertain passages remain protected; no confidence
 score or agreement count substitutes for source evidence. Independent model
 adjudication can accept labels without a human review step. Reference labels must
-never directly become runtime cuts; independently reviewed source phrases and
-timing may serve as bounded nomination hints for active feed profiles.
+never directly become runtime cuts.
 
 ## 4. Reproduce and diagnose
 
@@ -103,18 +102,17 @@ multi-revision reports; never adopt a draft without identity and timing review.
 acquired gap inputs already named in the manifest; it does not automatically
 turn new feedback into cases or establish their labels.
 
-Record both the saved cuts and a current-source replay, each matched to its
-labels' input identity. Recorded scoring requires a successful
+Record the saved cuts, matched to their labels' input identity. Recorded
+scoring (the one mode of `ad_corpus.py`) requires a successful
 preparation with the case's source hash and, when supplied, `revisionID`;
 an unmatched or malformed timeline is unavailable, never a passing empty cut.
-Replay uses the shipping `analyze_ad_detections` path, including the final outcome decision;
-a classifier-only result is a diagnostic, not what the app would cut.
-Use `ad_corpus.py --mode replay --strict --case <case-id>` for a targeted case,
-then the full strict corpus for candidate acceptance. Run with the project's
-runtime interpreter and existing GPU admission lock, deadline, and progress.
+Use `ad_corpus.py --strict --case <case-id>` for a targeted case, then the
+full strict corpus for candidate acceptance. A saved labelling reply is
+replayed through the reply check and the cut stage's break objects by
+`LabelledAcceptanceReplayTests` (Producer package).
 
-Identify the failing stage: transcription, nomination/classification, recovery,
-boundary review, preservation, final outcome, or audio rendering. Retain relevant
+Identify the failing stage: transcription, labelling, reply validation, break
+placement, final outcome, or audio rendering. Retain relevant
 bounded model requests/responses locally when needed to explain a failure;
 never include raw replies in owner journals or public artifacts.
 Compare like-for-like configuration, including self-promotion policy. An unknown
@@ -167,66 +165,3 @@ End each pass with report counts, accepted/rejected changes, measured scope,
 unresolved inputs, and exact next actions. Reconcile any newly arrived feedback
 against the intake snapshot so reports cannot disappear between passes.
 
-## 7. Feed ad profile workflow and validation
-
-Feed ad profiles (`podcast-preparation-v14`) allow recurring sponsor patterns and
-placement windows to nominate candidate ad intervals for independent local model
-verification, without modifying primary classification or bypassing safety guards.
-
-### Contract and storage
-
-- **Location and isolation:** Stored in private `ad-placement-profiles.json` beside
-  `library.sqlite`. Never committed or synced to CloudKit.
-- **Keying and envelopes:** Keyed by exact feed ID and `subscriptionEpoch`. Each
-  profile stores separate imported and learned envelopes, capturing at most 20
-  distinct source episode observations.
-- **Size limits:** Each profile payload is exact UTF-8 JSON + SHA256 digest, bounded
-  to <= 8 KiB. The aggregate profile store is bounded to <= 1 MiB across at most 256 feeds.
-- **Concurrency:** Uses a shared bounded sibling file lock (`flock`) and atomic write
-  replacement. Malformed inputs are rejected fail-closed.
-
-### Profile lifecycle and nomination rules
-
-1. **Subscription startup:** A newly subscribed feed begins with an `unknown` profile
-   record. Unknown is not an ad-free claim.
-2. **Learning phase:** The first independent generic original-source classifications
-   learn bounded placement windows and literal markers across observed episodes.
-3. **Freezing:** Each preparation takes one immutable snapshot of the latest profile.
-   Preparation never triggers automatic re-downloads or re-preparations of existing episodes.
-4. **Reset:** Unsubscribing and resubscribing resets feed evidence and profile records for that feed.
-5. **Nomination limits:** Profiles nominate at most 4 candidate windows using at most
-   12 additional local model calls.
-6. **Independent verification:** Profiles never directly produce cuts. The existing local
-   model independently verifies current-episode ads and confirms preserved programme
-   boundaries within nominated windows.
-7. **Guard preservation:** Primary classification remains unchanged, the engine never
-   learns from profile-added cuts, and all policy, hold-span, and audio render guards
-   remain in force.
-8. **Truthful journaling:** Both ordinary preparation and Prepare Again snapshot profile
-   state before staging, truthfully recording requested and applied digests. Transcript
-   markers are never exported to CloudKit or public journals. Independent analysis evidence
-   may persist even if a later audio commit keeps, refuses, or fails; this records
-   analysis evidence, not a playback success claim.
-
-### Developer profile importer CLI
-
-Checked-in local importer entry point:
-```bash
-Producer/Runtime/.venv/bin/python Producer/Workers/ad_profile_import.py \
-  --library "/path/to/private/library.sqlite" \
-  --profiles "/path/to/private/envelopes.json" \
-  --dry-run
-```
-
-- **Input schema:** `{ "profiles": [ { "payload": "<exact JSON string>", "digest": "<sha256 hex>" } ] }`.
-- **Identity:** Operates strictly on current database feed IDs. Never performs heuristic URL or title matching.
-- **Concurrency & safety:** Shares the bounded sibling flock and atomic store write path; rejects malformed or unverified payloads.
-- **Provenance & privacy:** Prior reviewed source data remains private and gitignored. Automatic profiling requires no human approval; all models run on the local runtime. Imported reference Astra reviews retain distinct provenance. Ordinary users do not need to operate this developer CLI for new feeds.
-
-### Operational validation steps
-
-1. **Verify profile store:** Check that `ad-placement-profiles.json` exists beside `library.sqlite` with appropriate private permissions and size within the 1 MiB / 256-feed ceiling.
-2. **Dry-run validation:** Run the importer with `--dry-run` to validate JSON payload structure, SHA256 digest match, and database feed ID resolution without mutating state.
-3. **Import execution:** Execute the import without `--dry-run`; verify atomic lock acquisition, schema parsing, and payload writing.
-4. **Preparation verification:** Run ordinary preparation or Prepare Again on a profiled feed. Verify in the preparation log/journal that profile state was snapshotted prior to staging and that requested and applied digests match truthfully.
-5. **Nomination bounds check:** Confirm that candidate windows do not exceed 4 intervals or 12 extra model calls, that local model adjudication verified each cut, and that every additional cut passed independent current-episode preservation checks.

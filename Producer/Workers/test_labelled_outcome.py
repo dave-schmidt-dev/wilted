@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from wilted_worker.ad_outcome import UNRESOLVED_SPANS_REASON
+from wilted_worker.cut_support import UNRESOLVED_SPANS_REASON
 from wilted_worker.labelled_outcome import decide_labelled_outcome, serialize_labelled_audit
 
 

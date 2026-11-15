@@ -21,7 +21,6 @@ import sys
 from dataclasses import dataclass
 
 import ad_corpus
-from wilted_worker.constants import AD_POD_CONTINUATION_MAX_SECONDS
 
 # A window only counts as reaching a label when it shares more than this much
 # audio with it. The slop absorbs cue-edge rounding without turning a brush
@@ -42,9 +41,13 @@ class ProximityConfig:
     anchor_labels: frozenset[str] | None
 
 
-# Fixed before any fixture was written. The first copies the existing worker
-# continuation's forward reach so the two can be compared directly; the rest
-# bracket the window sizes being considered for human review only.
+# The forward reach of the removed local finder's pod continuation, kept here so
+# the first configuration still measures that window.
+AD_POD_CONTINUATION_MAX_SECONDS = 90.0
+
+# Fixed before any fixture was written. The first copies that forward reach so
+# the two can be compared directly; the rest bracket the window sizes being
+# considered for human review only.
 CONFIGS = (
     ProximityConfig(
         "after-sponsor-read-continuation-reach",

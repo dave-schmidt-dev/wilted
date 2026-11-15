@@ -21,7 +21,6 @@ Usage:
 from __future__ import annotations
 
 import gc
-import json
 import logging
 import os
 import sys
@@ -420,74 +419,3 @@ def create_backend(
             n_ctx=kwargs.get("n_ctx", 4096),
         )
     raise ValueError(f"Unknown backend type: '{backend_type}'. Use 'gguf' or 'mlx'.")
-
-
-def parse_json_response(response: str) -> dict | list:
-    """Extract and parse JSON from an LLM response.
-
-    Handles common issues: markdown code fences, leading/trailing text.
-
-    Args:
-        response: Raw LLM response text.
-
-    Returns:
-        Parsed JSON object.
-
-    Raises:
-        ValueError: If no valid JSON found in response.
-    """
-    text = response.strip()
-
-    # Strip markdown code fences
-    if "```" in text:
-        lines = text.split("\n")
-        inside = False
-        json_lines = []
-        for line in lines:
-            if line.strip().startswith("```"):
-                inside = not inside
-                continue
-            if inside:
-                json_lines.append(line)
-        if json_lines:
-            text = "\n".join(json_lines).strip()
-
-    # Try direct parse first
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Try to find JSON object or array in the text, tracking string context
-    # so braces inside quoted strings don't confuse the depth counter.
-    for start_char, end_char in [("{", "}"), ("[", "]")]:
-        start = text.find(start_char)
-        if start == -1:
-            continue
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if escape_next:
-                escape_next = False
-                continue
-            if ch == "\\":
-                escape_next = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == start_char:
-                depth += 1
-            elif ch == end_char:
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[start : i + 1])
-                    except json.JSONDecodeError:
-                        break
-
-    raise ValueError(f"No valid JSON found in LLM response: {text[:200]}")

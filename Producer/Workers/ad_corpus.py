@@ -1,22 +1,16 @@
-"""Score the ad detector against hand-labelled real episodes.
+"""Score the cuts a preparation made against hand-labelled real episodes.
 
-The detector's unit tests script the model's answer -- `FakeLLM(preroll_program_start_id=9)`
--- and then check the arithmetic around it. That catches a broken recovery pass
-and cannot catch a wrong judgement, which is what every failure David has
-reported actually is. This module closes that gap: it holds ground truth for
-real episodes and scores what the detector produced against it.
+Unit tests check the arithmetic around a cut and cannot catch a wrong
+judgement, which is what every failure David has reported actually is. This
+module closes that gap: it holds ground truth for real episodes and scores what
+a preparation produced against it.
 
-Two input modes, because they answer different questions:
-
-`recorded` reads the spans a real preparation already committed, out of the
-library database. It needs no model, runs in milliseconds, and answers "is the
-episode in my library still wrong?". It reads mutable local state, so the gate
-does not run it: the gate runs unit tests that score the frozen snapshot each
-manifest case carries, which is deterministic and committed.
-
-`replay` re-runs the live detector over the aligned segments the original run
-consumed, so a fix can be measured before anything is re-prepared. It loads the
-GGUF model and takes minutes, so it is opt-in and never in the gate.
+`recorded` is the one input mode. It reads the spans a real preparation already
+committed, out of the library database. It needs no model, runs in
+milliseconds, and answers "is the episode in my library still wrong?". It reads
+mutable local state, so the gate does not run it: the gate runs unit tests that
+score the frozen snapshot each manifest case carries, which is deterministic
+and committed.
 
 Scoring is asymmetric on purpose. Leaving an advertisement in is an annoyance;
 removing programme content destroys something the listener wanted and cannot
@@ -159,20 +153,6 @@ class CaseVerdict:
     remove_self_promotion: bool = False
 
 
-class ReplayRefused(RuntimeError):
-    """The worker refused to produce an analysis, carrying its refusal code.
-
-    A refusal is a measurement, not a crash: it is the pipeline declining to
-    guess. Raised as its own type so `run` can record which case refused and
-    why without importing the worker at module scope.
-    """
-
-    def __init__(self, code: str, message: str):
-        super().__init__(f"{code}: {message}")
-        self.code = code
-        self.detail = message
-
-
 def load_manifest(path: Path = MANIFEST) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -209,21 +189,6 @@ def _invalid_interval(span: Span, total: float | None) -> str | None:
     if total is not None and span.start >= total:
         return f"starts after the {total:.1f}s episode ends"
     return None
-
-
-def effective_self_promotion(case: dict, setting: str = "manifest") -> bool:
-    """Whether self-promotion removal is active for this case under the run setting.
-
-    Only the JSON boolean true turns it on from the manifest; an explicit CLI 'on'
-    or 'off' overrides what the case declared.
-    """
-    if setting == "on":
-        return True
-    if setting == "off":
-        return False
-    if setting != "manifest":
-        raise ValueError(f"unknown self-promotion setting {setting!r}")
-    return case.get("removeSelfPromotion") is True
 
 
 def resolve_case_labels(case: dict, *, remove_self_promotion: bool) -> dict:
@@ -422,118 +387,33 @@ def case_segments(case: dict, *, store: Path, cache: Path):
 
 
 def runtime_sources() -> Path:
-    """The directory holding `wilted.ads`, resolved the way the app resolves it."""
+    """The Wilted runtime source directory, resolved the way the app resolves it."""
     override = os.environ.get("WILTED_PIPELINE_PYTHONPATH")
     return Path(override) if override else DEFAULT_RUNTIME_SOURCES
 
 
-def _replay_worker_functions():
-    """Resolve replay calls through the live worker module for testable parity."""
-    import wilted_pipeline as wp
-    return wp.analyze_ad_detections, wp.prepare_ad_model_lock
-
-
-def replay_analysis(
-    case: dict,
-    *,
-    cache: Path,
-    store: Path = DEFAULT_AD_CORPUS_INPUTS,
-    remove_self_promotion: bool = False,
-    ad_profile: dict | None = None,
-    feed_id: str | None = None,
-    episode_id: str | None = None,
-):
-    """Return live analysis evidence and its independent primary observation."""
-    from ad_corpus_replay import replay_analysis as run_replay_analysis
-    return run_replay_analysis(
-        case, cache=cache, store=store, remove_self_promotion=remove_self_promotion,
-        ad_profile=ad_profile, feed_id=feed_id, episode_id=episode_id,
-    )
-
-
-def replay_spans(
-    case: dict,
-    *,
-    cache: Path,
-    store: Path = DEFAULT_AD_CORPUS_INPUTS,
-    remove_self_promotion: bool = False,
-    ad_profile: dict | None = None,
-    feed_id: str | None = None,
-    episode_id: str | None = None,
-):
-    """Return the existing replay pair while sharing profile-aware analysis."""
-    result = replay_analysis(
-        case, cache=cache, store=store, remove_self_promotion=remove_self_promotion,
-        ad_profile=ad_profile, feed_id=feed_id, episode_id=episode_id,
-    )
-    return None if result is None else result[:2]
-
-
 def run(mode: str, *, library: Path, cache: Path, store: Path = DEFAULT_AD_CORPUS_INPUTS,
         manifest: Path = MANIFEST, strict: bool = False,
-        self_promotion: str = "manifest", cases: list[str] | None = None) -> list[CaseVerdict]:
+        cases: list[str] | None = None) -> list[CaseVerdict]:
     results: list[CaseVerdict] = []
     manifest_cases = load_manifest(manifest)["cases"]
     if cases is not None:
         selected_ids = set(cases)
         manifest_cases = [c for c in manifest_cases if c["id"] in selected_ids]
     for case in manifest_cases:
-        # Recorded mode scores whatever the library already committed, so the CLI
-        # flag does not change what was run; it resolves labels against the case's
-        # own manifest setting. Replay respects the CLI override.
-        effective_flag = (
-            case.get("removeSelfPromotion") is True
-            if mode == "recorded"
-            else effective_self_promotion(case, self_promotion)
-        )
-        if mode == "replay":
-            # A replay loads a four-gigabyte model and spends minutes per case,
-            # and the only thing it emits meanwhile is the detector's own
-            # journal, which names no case. Two cases running produce one
-            # interleaved stream nobody can attribute until the report lands, so
-            # say whose turn it is first. Stderr, because stdout carries the
-            # report and the `--json` payload.
-            print(f"ad-corpus: replaying {case['id']}", file=sys.stderr, flush=True)
+        # Recorded mode scores whatever the library already committed, so labels
+        # resolve against the case's own manifest setting.
+        effective_flag = case.get("removeSelfPromotion") is True
+        produced = recorded_spans(case, library=library)
         audit = None
-        try:
-            if mode == "recorded":
-                produced = recorded_spans(case, library=library)
-            elif effective_flag:
-                # The keyword travels only when on, as in `detect_and_cut`, and
-                # the setting is resolved here rather than read from the case
-                # inside `replay_spans`, so `--self-promotion off` overrides a
-                # case that opts in.
-                replayed = replay_spans(case, cache=cache, store=store, remove_self_promotion=True)
-                produced, audit = replayed if replayed is not None else (None, None)
-            else:
-                replayed = replay_spans(case, cache=cache, store=store)
-                produced, audit = replayed if replayed is not None else (None, None)
-        except ReplayRefused as refusal:
-            # The pipeline declining to guess is a result, not a crash, and it
-            # belongs against the case that provoked it rather than taking the
-            # rest of the corpus down with it.
-            results.append(CaseVerdict(
-                case_id=case["id"], show=case["show"], passed=False,
-                reason=f"the worker refused this analysis -- {refusal}",
-                remove_self_promotion=effective_flag,
-            ))
-            continue
         if produced is None:
-            if mode == "recorded":
-                missing = f"no valid source-matched successful preparation for {case['itemID']} in {library}"
-                unrunnable = False
-            else:
-                missing = (
-                    f"unrunnable: no pinned input for {case['sourceHash']} in {store}; "
-                    f"no cached transcript for {case['sourceHash']} in {cache}"
-                )
-                unrunnable = True
+            missing = f"no valid source-matched successful preparation for {case['itemID']} in {library}"
             results.append(CaseVerdict(
                 case_id=case["id"], show=case["show"],
                 # Strict is the candidate-measurement mode: a case that did not
                 # run measured nothing, and a corpus that quietly shrinks to the
                 # cases a machine happens to hold is how a fix gets called good.
-                passed=not strict, skipped=not strict, unrunnable=unrunnable,
+                passed=not strict, skipped=not strict, unrunnable=False,
                 reason=missing if strict else missing + " (skipped)",
                 remove_self_promotion=effective_flag,
             ))
@@ -639,8 +519,8 @@ def report(results: list[CaseVerdict]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--mode", choices=("recorded", "replay"), default="recorded",
-                        help="score the library's committed cuts, or re-run the live detector")
+    parser.add_argument("--mode", choices=("recorded",), default="recorded",
+                        help="score the library's committed cuts")
     parser.add_argument("--library", type=Path, default=DEFAULT_LIBRARY)
     parser.add_argument("--cache", type=Path, default=DEFAULT_ALIGNED_CACHE)
     parser.add_argument("--store", type=Path, default=DEFAULT_AD_CORPUS_INPUTS,
@@ -650,8 +530,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strict", action="store_true",
                         help="require every case to run; a missing input fails rather than skips")
     parser.add_argument("--json", action="store_true", help="machine-readable verdicts")
-    parser.add_argument("--self-promotion", choices=("manifest", "on", "off"), default="manifest",
-                        help="remove the show's own promotion: manifest (each case's field), on, or off")
     parser.add_argument("--case", action="append", default=None, metavar="ID",
                         help="run only the named case, in manifest order (repeatable)")
     args = parser.parse_args(argv)
@@ -677,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if unsatisfied else 0
 
     results = run(args.mode, library=args.library, cache=args.cache, store=args.store,
-                  strict=args.strict, self_promotion=args.self_promotion, cases=args.case)
+                  strict=args.strict, cases=args.case)
     if args.json:
         print(json.dumps([{
             "case": r.case_id, "passed": r.passed, "skipped": r.skipped,

@@ -20,10 +20,8 @@ from unittest import mock
 
 import ad_proximity_eval as proximity
 from ad_corpus import Span, load_manifest
-from wilted_worker import ad_removal, cue_timing, transcript_sources
-from worker_test_fake_ads import FakeAd, install_fake_ads
-from worker_test_fake_llm import FakeLLM
-from worker_test_support import FakeSegment, synthetic_render, wp
+from wilted_worker import cue_timing, labeller_cues, labelled_outcome, transcript_sources
+from worker_test_support import FakeSegment, synthetic_render
 
 TOTAL_KEYS = (
     "config", "windows", "windowsWithMissedAd", "missedAds", "missedAdsReached",
@@ -198,11 +196,26 @@ class EngineFixtureTests(unittest.TestCase):
     def expected(label, start, end):
         return {"label": label, "start": start, "end": end, "why": "fixture"}
 
-    def run_engine(self, segments, detections, llm, duration):
-        install_fake_ads(llm, detections=detections)
-        request = {"audioPath": str(self.audio), "outputPath": str(self.output)}
+    def run_engine(self, segments, breaks, duration):
+        """Cut the labelled breaks the way the cut stage does, on synthetic audio."""
+        request = {
+            "audioPath": str(self.audio),
+            "outputPath": str(self.output),
+            "labelledBreaks": [
+                {"start": start, "end": end, "kind": "sponsor",
+                 "label": "must-cut", "advertisers": []}
+                for start, end in breaks
+            ],
+            "labellerCuesDigest": labeller_cues.serialize_labeller_cues(
+                labeller_cues.build_labeller_cues(segments))[1],
+        }
         with redirect_stderr(io.StringIO()), synthetic_render(duration):
-            return wp.detect_and_cut(request, self.audio, [], segments)
+            path, spans, keeps, raw, audit = labelled_outcome.cut_from_labelled_breaks(
+                request, self.audio, [], segments
+            )
+        # The recorded corpus names a paid read `sponsor_read`, and the
+        # proximity configurations key on that label, not on the break kind.
+        return path, [{**span, "label": "sponsor_read"} for span in spans], keeps, raw, audit
 
     @staticmethod
     def cut_spans(ad_spans):
@@ -265,8 +278,7 @@ class EngineFixtureTests(unittest.TestCase):
         segments = self.segments()
         result = self.run_engine(
             segments,
-            [FakeAd(50.0, 60.0, label="sponsor_read")],
-            FakeLLM(adjacent_program_start_id=7),
+            [(50.0, 70.0)],
             200.0,
         )
         _path, ad_spans, keeps, _raw, audit = result
@@ -291,7 +303,7 @@ class EngineFixtureTests(unittest.TestCase):
     def test_an_adjacent_spot_before_the_read_survives_but_is_reached(self):
         segments = self.segments()
         _path, ad_spans, keeps, _raw, _audit = self.run_engine(
-            segments, [FakeAd(50.0, 60.0, label="sponsor_read")], FakeLLM(), 200.0
+            segments, [(50.0, 60.0)], 200.0
         )
         cuts = self.cut_spans(ad_spans)
         # The engine is not told about the preceding spot, and it does not guess.
@@ -316,7 +328,7 @@ class EngineFixtureTests(unittest.TestCase):
     def test_programme_between_two_spots_is_never_bridged(self):
         segments = self.segments()
         _path, ad_spans, keeps, _raw, _audit = self.run_engine(
-            segments, [FakeAd(50.0, 60.0, label="sponsor_read")], FakeLLM(), 200.0
+            segments, [(50.0, 60.0)], 200.0
         )
         self.assert_covers(keeps, 60.0, 120.0)
         cuts = self.cut_spans(ad_spans)
@@ -345,7 +357,7 @@ class EngineFixtureTests(unittest.TestCase):
     def test_programme_on_both_sides_survives_and_is_the_only_thing_flagged(self):
         segments = self.segments()
         _path, ad_spans, keeps, _raw, _audit = self.run_engine(
-            segments, [FakeAd(50.0, 60.0, label="sponsor_read")], FakeLLM(), 200.0
+            segments, [(50.0, 60.0)], 200.0
         )
         self.assert_covers(keeps, 0.0, 50.0)
         self.assert_covers(keeps, 60.0, 200.0)
@@ -402,8 +414,7 @@ class OldPreparedProvenanceTests(unittest.TestCase):
             for segment in preparation["adSegments"]
         ]
         failure = AssertionError("evaluation must not reprocess stored audio")
-        with mock.patch.object(ad_removal, "detect_and_cut", side_effect=failure), \
-                mock.patch.object(
+        with mock.patch.object(
                     transcript_sources, "transcribe_with_daemon", side_effect=failure
                 ), \
                 mock.patch.object(

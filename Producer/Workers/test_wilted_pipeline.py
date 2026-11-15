@@ -16,24 +16,21 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import commercial_recovery as _worker_commercial_recovery
-from wilted_worker import commercial_seeds as _worker_commercial_seeds
+from wilted_worker import cut_support as _worker_cut_support
+from wilted_worker.constants import RENDER_DURATION_TOLERANCE_S
+from wilted_worker import labelled_outcome as _worker_labelled_outcome
+from wilted_worker import labeller_cues as _worker_labeller_cues
 from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import edge_recovery as _worker_edge_recovery
-from wilted_worker import preroll_passage_review as _worker_preroll_passage_review
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
-from wilted_worker import span_bounds as _worker_span_bounds
-from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
+from wilted_worker import cut_support as _worker_cut_support
+from wilted_worker import labelled_outcome as _worker_labelled_outcome
+from wilted_worker import labeller_cues as _worker_labeller_cues
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
@@ -193,32 +190,38 @@ class RunTests(unittest.TestCase):
         # transcript for removal and transcribes the downloaded audio, so the
         # detector must see the aligned words, never the misaligned published
         # ones.
+        segments = [FakeSegment(0, 1, "aligned words")]
         install_fake_wilted(
             {"vtt": [FakeSegment(0, 1, "published"), FakeSegment(3590, 3595, "words")]},
-            transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "aligned words")]},
+            transcriptions={wp.ALIGNED_STT_MODEL: segments},
         )
-        install_fake_ads(FakeLLM())
+        _, digest = _worker_labeller_cues.serialize_labeller_cues(
+            _worker_labeller_cues.build_labeller_cues(segments)
+        )
         with tempfile.TemporaryDirectory(prefix="wilted-misaligned-") as directory, \
                 redirect_stderr(io.StringIO()), \
-                mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
-                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock",
-                                  return_value=contextlib.nullcontext()), \
+                mock.patch.object(_worker_cut_support, "preflight_cut_tools"), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=3700.0), \
-                mock.patch.object(_worker_ad_removal, "detect_and_cut") as detector:
-            detector.return_value = (
-                self.audio, [], [], [], wp.serialize_ad_audit(_worker_ad_audit.AdAnalysisAudit())
+                mock.patch.object(_worker_labelled_outcome, "cut_from_labelled_breaks") as cut_mock:
+            cut_mock.return_value = (
+                self.audio, [], [], [],
+                _worker_labelled_outcome.serialize_labelled_audit(
+                    _worker_labelled_outcome.decide_labelled_outcome([], 3700.0, remove_self_promotion=False), {}
+                ),
             )
             result = wp.run({
                 "protocolVersion": 2,
                 "audioPath": str(self.audio),
                 "outputPath": str(Path(directory) / "prepared.mp3"),
                 "removeAds": True,
+                "adStage": "cut",
+                "labelledBreaks": [],
+                "labellerCuesDigest": digest,
                 "publishedTranscript": self.PUBLISHED,
                 "readableTranscript": False,
             })
-        detector.assert_called_once()
-        detected_segments = detector.call_args.args[3]
+        cut_mock.assert_called_once()
+        detected_segments = cut_mock.call_args.args[3]
         self.assertEqual([segment.text for segment in detected_segments], ["aligned words"])
         self.assertFalse(result["audioChanged"])
         self.assertEqual(result["timing"], "aligned")
@@ -278,77 +281,101 @@ class OutcomeContractTests(unittest.TestCase):
     def setUp(self):
         self.audio = Path(REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py")
 
+    def test_removal_without_ad_stage_and_omitted_fields_both_raise_and_load_no_model(self):
+        llm = FakeLLM()
+        install_fake_ads(llm)
+        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "programme")]})
+        base = {"audioPath": str(self.audio), "outputPath": "/tmp/never-written.mp3"}
+        cases = [
+            ("removeAds true without adStage", {**base, "protocolVersion": 2, "removeAds": True}),
+            ("omitting both removeAds and adStage", {**base, "protocolVersion": 2}),
+            # The refusal comes before the protocol check, so a request that
+            # would otherwise fail on its version is still told why.
+            ("removeAds true with no protocolVersion", {**base, "removeAds": True}),
+            ("omitting everything but the audio", {"audioPath": str(self.audio)}),
+        ]
+        for name, request in cases:
+            with self.subTest(case=name):
+                with mock.patch.object(
+                    _worker_gpu_admission, "prepare_ad_model_lock",
+                    side_effect=AssertionError("the refusal must come before any model lock"),
+                ) as lock, mock.patch.object(
+                    _worker_transcript_sources, "transcribe_with_daemon",
+                    side_effect=AssertionError("the refusal must come before transcription"),
+                ) as transcribe, redirect_stderr(io.StringIO()) as progress:
+                    with self.assertRaises(wp.WorkerError) as raised:
+                        wp.run(request)
+                self.assertEqual(raised.exception.code, "invalid-request")
+                self.assertEqual(str(raised.exception), "local ad finding was removed")
+                self.assertFalse(llm.loaded)
+                self.assertEqual(llm.requests, [])
+                self.assertFalse(lock.called)
+                self.assertFalse(transcribe.called)
+                self.assertNotIn("ads.model", progress.getvalue())
+
+    def test_cut_stage_without_breaks_uses_the_aligned_pass_and_emits_a_report(self):
+        # Was `test_v2_no_ads_uses_the_required_aligned_pass_and_emits_a_report`,
+        # which sent `removeAds` true with no stage and so reached the local
+        # finder. A cut-stage request with no labelled breaks is the same
+        # "examined and found nothing" outcome on the kept path.
+        segments = [FakeSegment(0, 1, "programme")]
+        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
+        digest = _worker_labeller_cues.serialize_labeller_cues(
+            _worker_labeller_cues.build_labeller_cues(segments)
+        )[1]
+        with mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), \
+                mock.patch.object(_worker_cut_support, "preflight_cut_tools"), \
+                redirect_stderr(io.StringIO()):
+            result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
+                             "removeAds": True, "adStage": "cut", "labelledBreaks": [],
+                             "labellerCuesDigest": digest, "alignedTranscriptModel": wp.ALIGNED_STT_MODEL})
+        self.assertEqual(result["timing"], "aligned")
+        self.assertEqual(result["report"]["outcome"], "noAds")
+        self.assertEqual(result["report"]["rawNominations"], [])
+        audit = result["report"]["audit"]
+        self.assertEqual(audit["adEngine"], "labelled")
+        self.assertEqual(audit["unresolvedIds"], [])
+        self.assertEqual(audit["modelRequests"], 0)
+        self.assertIsNone(audit["incompleteError"])
+
     def test_v2_removal_rejects_no_local_stt_before_any_model_work(self):
         transcribe = mock.Mock(side_effect=AssertionError("STT must not start"))
         install_fake_wilted()
         sys.modules["wilted.transcribe"].transcribe_audio = transcribe
-        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal") as preflight, self.assertRaises(wp.WorkerError) as raised:
+        with self.assertRaises(wp.WorkerError) as raised:
             wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
-                    "removeAds": True, "transcriptPolicy": "noLocalSTT"})
+                    "removeAds": True, "adStage": "cut", "labelledBreaks": [], "labellerCuesDigest": "dummy",
+                    "transcriptPolicy": "noLocalSTT"})
         self.assertEqual(raised.exception.code, "aligned-stt-required")
-        preflight.assert_not_called()
         transcribe.assert_not_called()
+
+    def test_transcript_stage_without_local_stt_is_refused_and_writes_no_cue_file(self):
+        transcribe = mock.Mock(side_effect=AssertionError("STT must not start"))
+        install_fake_wilted()
+        sys.modules["wilted.transcribe"].transcribe_audio = transcribe
+        with tempfile.TemporaryDirectory(prefix="wilted-transcript-stage-") as work:
+            with self.assertRaises(wp.WorkerError) as raised:
+                wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "adStage": "transcript",
+                        "workDir": work, "transcriptPolicy": "noLocalSTT"})
+            self.assertEqual(raised.exception.code, "aligned-stt-required")
+            transcribe.assert_not_called()
+            self.assertEqual(list(Path(work).rglob("labeller-cues.json")), [])
 
     def test_v2_removal_rejects_an_output_path_that_aliases_input(self):
         with self.assertRaises(wp.WorkerError) as raised:
             wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": str(self.audio),
-                    "removeAds": True, "transcriptPolicy": "bestAvailable"})
+                    "removeAds": True, "adStage": "cut", "labelledBreaks": [], "labellerCuesDigest": "dummy",
+                    "transcriptPolicy": "bestAvailable"})
         self.assertEqual(raised.exception.code, "cut-output-alias")
-
-    def test_v2_no_ads_uses_the_required_aligned_pass_and_emits_a_report(self):
-        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: [FakeSegment(0, 1, "programme")]})
-        install_fake_ads(FakeLLM())
-        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=wp.contextlib.nullcontext()), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), redirect_stderr(io.StringIO()):
-            result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio), "outputPath": "/tmp/cut.mp3",
-                             "removeAds": True, "alignedTranscriptModel": wp.ALIGNED_STT_MODEL})
-        self.assertEqual(result["timing"], "aligned")
-        self.assertEqual(result["report"]["outcome"], "noAds")
-        self.assertEqual(result["report"]["rawNominations"], [])
-        # "Examined every window and found nothing" has to be distinguishable
-        # from "never reached the model", and only the audit does that.
-        audit = result["report"]["audit"]
-        self.assertGreater(audit["modelRequests"], 0)
-        self.assertEqual(audit["unresolvedIds"], [])
-        self.assertEqual(audit["experimentalRequests"], 0)
-        self.assertIsNone(audit["incompleteError"])
-
-    def test_missing_model_after_valid_audio_returns_uncertain_without_remapping(self):
-        segments = [FakeSegment(0, 1, "programme")]
-        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
-        install_fake_ads(FakeLLM())
-        requested_digest = "b" * 64
-        with mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), \
-                mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
-                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock") as lock, \
-                redirect_stderr(io.StringIO()) as progress:
-            result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
-                             "outputPath": "/tmp/not-written.mp3", "removeAds": True,
-                             "llmModel": "/nonexistent/synthetic.gguf", "readableTranscript": False,
-                             "feedID": "feed-exact-1",
-                             "adProfile": {"payload": "{}", "digest": requested_digest}})
-        self.assertEqual(result["report"]["outcome"], "uncertain")
-        self.assertEqual(result["audioPath"], str(self.audio))
-        self.assertFalse(result["audioChanged"])
-        self.assertEqual((result["adSegments"], result["keepIntervals"], result["removedSeconds"]), ([], [], 0.0))
-        self.assertEqual(result["report"]["audit"]["modelRequests"], 0)
-        self.assertEqual(result["adProfileStatus"], "invalid")
-        self.assertEqual(result["adProfileRequestedDigest"], requested_digest)
-        self.assertIsNone(result["adProfileAppliedDigest"])
-        self.assertIn("original audio includes ads", result["warning"])
-        self.assertEqual(result["cues"][0]["startSeconds"], 0)
-        lock.assert_not_called()
-        self.assertNotIn("transcript.remap", progress.getvalue())
 
     def test_invalid_audio_is_fatal_before_missing_model_fallback(self):
         install_fake_wilted()
-        install_fake_ads(FakeLLM())
-        with mock.patch.object(_worker_ad_audit, "preflight_cut_tools"), \
+        with mock.patch.object(_worker_cut_support, "preflight_cut_tools"), \
                 mock.patch.object(_worker_cue_timing, "probe_duration", side_effect=RuntimeError("decode failed")), \
                 redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
             wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
-                    "outputPath": "/tmp/not-written.mp3", "removeAds": True})
+                    "outputPath": "/tmp/not-written.mp3", "removeAds": True,
+                    "adStage": "cut", "labelledBreaks": [], "labellerCuesDigest": "dummy"})
         self.assertEqual(raised.exception.code, "aligned-stt-unavailable")
 
     def test_aligned_timing_allows_only_the_declared_short_tail(self):
@@ -359,7 +386,7 @@ class OutcomeContractTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "aligned-timing-invalid")
 
     def test_effective_removed_intervals_are_the_exact_keep_complement(self):
-        keeps = wp.build_keep_map([(0, 3), (4, 4.2), (7, 10)])
+        keeps = _worker_cue_timing.build_keep_map([(0, 3), (4, 4.2), (7, 10)])
         self.assertEqual(wp.effective_removed_intervals(keeps, 10), [(3, 4), (4.2, 7)])
 
     def test_aligned_timing_rejects_segments_that_are_not_in_time_order(self):
@@ -417,13 +444,13 @@ class OutcomeContractTests(unittest.TestCase):
     def test_a_wedged_render_reports_progress_and_then_fails_on_its_bound(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr), self.assertRaises(wp.WorkerError) as raised:
-            wp._run_render_with_progress(["sleep", "30"], timeout_s=0.4)
+            _worker_cue_timing._run_render_with_progress(["sleep", "30"], timeout_s=0.4)
         self.assertEqual(raised.exception.code, "cut-render-timeout")
         self.assertIn("ads.cut.render.progress", stderr.getvalue())
 
     def test_a_failing_render_reports_the_encoder_stderr(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised:
-            wp._run_render_with_progress(
+            _worker_cue_timing._run_render_with_progress(
                 ["sh", "-c", "echo 'no such filter' >&2; exit 3"], timeout_s=10.0
             )
         self.assertEqual(raised.exception.code, "cut-render-failed")
@@ -434,7 +461,7 @@ class OutcomeContractTests(unittest.TestCase):
         scratch = REPO_ROOT / ".verify-tmp" / f"render-{os.getpid()}"
         scratch.mkdir(parents=True, exist_ok=True)
         self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
-        keeps = wp.build_keep_map([(0.0, 3.0), (7.5, 12.0)])
+        keeps = _worker_cue_timing.build_keep_map([(0.0, 3.0), (7.5, 12.0)])
         for suffix in (".mp3", ".m4a"):
             source = scratch / f"source{suffix}"
             subprocess.run(
@@ -444,9 +471,9 @@ class OutcomeContractTests(unittest.TestCase):
             )
             output = scratch / f"cut{suffix}"
             with redirect_stderr(io.StringIO()):
-                wp.render_keep_segments(source, output, keeps)
-            measured = wp.probe_duration(output)
-            self.assertAlmostEqual(measured, 7.5, delta=wp.RENDER_DURATION_TOLERANCE_S,
+                _worker_cue_timing.render_keep_segments(source, output, keeps)
+            measured = _worker_cue_timing.probe_duration(output)
+            self.assertAlmostEqual(measured, 7.5, delta=RENDER_DURATION_TOLERANCE_S,
                                    msg=f"{suffix} rendered {measured:.3f}s")
             self.assertGreater(output.stat().st_size, 0)
 
@@ -462,7 +489,7 @@ class OutcomeContractTests(unittest.TestCase):
         source = scratch / "source.mp3"
         source.write_bytes(b"\x00")
         output = scratch / "cut.mp3"
-        keeps = wp.build_keep_map([(0.0, 3.0), (7.5, 12.0)])
+        keeps = _worker_cue_timing.build_keep_map([(0.0, 3.0), (7.5, 12.0)])
         captured: dict[str, list[str]] = {}
 
         def fake_run(command, *, timeout_s):
@@ -471,90 +498,13 @@ class OutcomeContractTests(unittest.TestCase):
 
         with mock.patch.object(_worker_cue_timing, "_run_render_with_progress", side_effect=fake_run), \
              mock.patch.object(_worker_cue_timing, "probe_duration", return_value=7.5):
-            wp.render_keep_segments(source, output, keeps)
+            _worker_cue_timing.render_keep_segments(source, output, keeps)
 
         command = captured["command"]
         filter_complex = command[command.index("-filter_complex") + 1]
         self.assertIn("concat=n=2:v=0:a=1[outc]", filter_complex)
         self.assertIn(";[outc]aresample[outa]", filter_complex)
         self.assertEqual(command[command.index("-map") + 1], "[outa]")
-
-class CommercialEvidenceAuditTests(unittest.TestCase):
-    def test_review_declined_commercial_evidence_seed_is_serialized_without_a_cut(self):
-        segments = [
-            FakeSegment(0.0, 10.0, "programme before"),
-            FakeSegment(10.0, 20.0, "visit acme dot"),
-            FakeSegment(20.0, 30.0, "com to get started today"),
-            FakeSegment(30.0, 40.0, "programme after"),
-        ]
-        llm = FakeLLM(
-            commercial_ad_ids=[1, 2],
-            commercial_programme_ids=[0, 1, 2, 3],
-        )
-        llm.load()
-        ads = install_fake_ads(llm)
-        patches = [
-            mock.patch.object(module, name, passthrough)
-            for module, name, passthrough in (
-                (_worker_commercial_recovery, "recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
-                (_worker_commercial_seeds, "recover_sparse_commercial_reads", _passthrough_detections),
-                (_worker_preroll_passage_review, "recover_source_checked_preroll", _passthrough_detections),
-                (_worker_tail_recovery, "recover_transcript_end_postroll", _passthrough_detections),
-            )
-        ]
-        with contextlib.ExitStack() as stack, redirect_stderr(io.StringIO()):
-            for patcher in patches:
-                stack.enter_context(patcher)
-            analysis = wp.analyze_ad_detections(ads, llm, segments, 400.0)
-        self.assertEqual(analysis.detections, ())
-        self.assertEqual(
-            _worker_cue_timing.serialize_ad_audit(analysis.audit)["declinedCommercialEvidenceSeeds"],
-            [{
-                "status": "declined",
-                "reason": "review-declined",
-                "ids": [1, 2],
-                "startSeconds": 10.0,
-                "endSeconds": 30.0,
-            }],
-        )
-
-    def test_declined_commercial_evidence_seed_is_serialized_without_a_cut(self):
-        segments = [
-            FakeSegment(0.0, 10.0, "programme before"),
-            FakeSegment(10.0, 20.0, "visit acme dot"),
-            FakeSegment(20.0, 30.0, "com to get started today"),
-            FakeSegment(30.0, 40.0, "programme after"),
-        ]
-        llm = FakeLLM()
-        llm.load()
-        ads = install_fake_ads(llm, detections=[FakeAd(0.0, 30.0, label="sponsor_read")])
-        patches = [
-            mock.patch.object(module, name, passthrough)
-            for module, name, passthrough in (
-                (_worker_commercial_recovery, "recover_unclaimed_explicit_sponsor_reads", _passthrough_detections),
-                (_worker_commercial_seeds, "recover_commercial_evidence_reads", _passthrough_detections),
-                (_worker_commercial_seeds, "recover_sparse_commercial_reads", _passthrough_detections),
-                (_worker_preroll_passage_review, "recover_source_checked_preroll", _passthrough_detections),
-                (_worker_tail_recovery, "recover_transcript_end_postroll", _passthrough_detections),
-            )
-        ]
-        with contextlib.ExitStack() as stack, redirect_stderr(io.StringIO()):
-            for patcher in patches:
-                stack.enter_context(patcher)
-            analysis = wp.analyze_ad_detections(ads, llm, segments, 40.0)
-        self.assertTrue(any(request.get("field") == "program_start_id" for request in llm.requests))
-        self.assertEqual(analysis.detections, ())
-        self.assertEqual(
-            _worker_cue_timing.serialize_ad_audit(analysis.audit)["declinedCommercialEvidenceSeeds"],
-            [{
-                "status": "declined",
-                "reason": "dropped-after-proposal",
-                "ids": [1, 2],
-                "startSeconds": 10.0,
-                "endSeconds": 30.0,
-            }],
-        )
-
 
 class ProtocolTests(unittest.TestCase):
     def test_a_malformed_request_is_answered_not_crashed(self):
@@ -569,40 +519,6 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertFalse(json.loads(completed.stdout)["ok"])
 
-def uncertain_contract_payloads():
-    """Emit real worker results from synthetic missing-model and review failures."""
-    audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
-    segments = [FakeSegment(0, 10, "programme before"),
-                FakeSegment(10, 20, "visit acme dot"),
-                FakeSegment(20, 30, "com to get started today"),
-                FakeSegment(30, 40, "programme after")]
-    scenarios = [
-        ("missing-model", FakeLLM(), [], 500.0),
-        ("share-ceiling", FakeLLM(), [FakeAd(0, 180), FakeAd(190, 350), FakeAd(360, 490)], 600.0),
-        ("declined-unresolved", FakeLLM(commercial_ad_ids=[1, 2], commercial_preservation_answer="invalid JSON"), [], 500.0),
-    ]
-    results = []
-    for name, llm, detections, duration in scenarios:
-        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
-        install_fake_ads(llm, detections=detections)
-        request = {"protocolVersion": 2, "audioPath": str(audio),
-                   "outputPath": "/tmp/synthetic-never-rendered.mp3", "removeAds": True,
-                   "readableTranscript": False}
-        with contextlib.ExitStack() as stack, redirect_stderr(io.StringIO()):
-            stack.enter_context(mock.patch.object(_worker_cue_timing, "probe_duration", return_value=duration))
-            stack.enter_context(mock.patch.object(_worker_ad_audit, "preflight_cut_tools"))
-            stack.enter_context(mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()))
-            if name == "share-ceiling":
-                stack.enter_context(mock.patch.object(_worker_span_bounds, "resize_oversized_ad_spans",
-                                                     side_effect=lambda _ads, _backend, _segments, spans, *_args, **_kwargs:
-                                                     (spans, frozenset((ad.start_s, ad.end_s) for ad in spans))))
-            if name != "missing-model":
-                stack.enter_context(mock.patch.object(_worker_ad_audit, "preflight_ad_removal"))
-            else:
-                request["llmModel"] = "/nonexistent/synthetic.gguf"
-            results.append({"scenario": name, "payload": wp.run(request)})
-    return results
-
 class CrossLanguageContractTests(unittest.TestCase):
     """The worker and the Swift domain must agree on which types carry timing.
 
@@ -611,183 +527,9 @@ class CrossLanguageContractTests(unittest.TestCase):
     divergence loses published timing for a whole media type.
     """
 
-    def test_real_uncertain_contract_payloads_have_diagnostic_evidence(self):
-        results = uncertain_contract_payloads()
-        self.assertEqual(len(results), 3)
-        for entry in results:
-            payload = entry["payload"]
-            self.assertEqual(payload["report"]["outcome"], "uncertain", entry["scenario"])
-            self.assertFalse(payload["audioChanged"])
-            self.assertEqual((payload["adSegments"], payload["keepIntervals"]), ([], []))
-        self.assertTrue(results[1]["payload"]["report"]["audit"]["heldSpans"])
-        self.assertEqual(results[2]["payload"]["report"]["audit"]["declinedCommercialEvidenceSeeds"][0]["reason"], "review-unresolved")
-
     def test_timed_media_types_match_the_swift_domain(self):
         source = (REPO_ROOT / "WiltedKit" / "Sources" / "WiltedDomain" / "Models.swift").read_text()
         block = re.search(r"timedMediaTypes:\s*Set<String>\s*=\s*\[(.*?)\]", source, re.S)
         self.assertIsNotNone(block, "timedMediaTypes is no longer where this test looks for it")
         swift_types = set(re.findall(r'"([^"]+)"', block.group(1)))
         self.assertEqual(swift_types, set(wp.TIMED_MEDIA_TYPES))
-
-
-class ActualParserUncertaintyTests(unittest.TestCase):
-    """Qualify real archive parsing and conservative production fallback boundaries."""
-
-    @staticmethod
-    def actual_parser():
-        namespace = {"json": json}
-        runtime = REPO_ROOT / "Producer" / "Runtime" / "src" / "wilted"
-        for filename, names in (("llm.py", {"parse_json_response"}), ("ads.py", {"_parse_ad_response"})):
-            tree = ast.parse((runtime / filename).read_text())
-            nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
-            if filename == "ads.py":
-                nodes += [node for node in tree.body if isinstance(node, ast.Assign)
-                          and any(isinstance(target, ast.Name) and target.id == "_VALID_LABELS" for target in node.targets)]
-            if len(nodes) != (2 if filename == "ads.py" else 1):
-                raise AssertionError("actual parser extraction no longer matches the runtime source")
-            exec(compile(ast.Module(body=nodes, type_ignores=[]), str(runtime / filename), "exec"), namespace)
-        return namespace["_parse_ad_response"]
-
-    def test_actual_parser_wrong_shapes_produce_audited_uncertainty_and_original_bytes(self):
-        parser = self.actual_parser()
-        malformed = ["[]", "null", "{}", '{"ads":{}}', '{"ads":[null]}',
-                     '{"ads":[[true,"sponsor_read"]]}', '{"ads":[[0,{}]]}']
-        audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
-        original = audio.read_bytes()
-        segments = [FakeSegment(0, 2, "programme"), FakeSegment(2, 4, "more programme")]
-        for response in malformed:
-            with self.subTest(response=response):
-                with self.assertRaises(ValueError):
-                    parser(response, [0, 1])
-                install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
-                llm = FakeLLM(classifier_answer=response)
-                ads = install_fake_ads(llm)
-                ads._parse_ad_response = parser
-                def detector(_segments, backend):
-                    for prompt in (ads._AD_DETECT_SYSTEM_PROMPT, ads._AD_DETECT_CORRECTION_PROMPT):
-                        backend.generate(prompt, "[ID 0] programme", response_format=ads._AD_DETECT_RESPONSE_FORMAT)
-                    return [FakeAd(100, 120)]
-                ads.detect_ads = detector
-                with redirect_stderr(io.StringIO()), \
-                        mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=500.0), \
-                        mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()), \
-                        mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
-                    result = wp.run({"protocolVersion": 2, "audioPath": str(audio),
-                                     "outputPath": "/tmp/not-rendered-parser.mp3", "removeAds": True,
-                                     "readableTranscript": False})
-                self.assertEqual(result["report"]["outcome"], "uncertain")
-                self.assertEqual(result["audioPath"], str(audio))
-                self.assertFalse(result["audioChanged"])
-                self.assertEqual(result["report"]["audit"]["unresolvedIds"], [0])
-                self.assertEqual(result["report"]["audit"]["classifierValidRequests"], 0)
-                self.assertIn("original audio includes ads", result["warning"])
-                self.assertEqual(audio.read_bytes(), original)
-                render.assert_not_called()
-
-    def test_parser_coding_type_error_remains_fatal_even_if_archive_retries_it(self):
-        llm = FakeLLM()
-        ads = install_fake_ads(llm)
-        def broken_parser(_response, _ids):
-            raise TypeError("intentional parser implementation defect")
-        ads._parse_ad_response = broken_parser
-        audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
-        with redirect_stderr(io.StringIO()), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=500.0), \
-                self.assertRaisesRegex(TypeError, "intentional parser implementation defect"):
-            wp.detect_and_cut({"outputPath": "/tmp/not-rendered-defect.mp3"}, audio, [],
-                              [FakeSegment(0, 2, "programme")])
-        self.assertTrue(llm.closed)
-
-    def test_share_refusal_keeps_whole_original_despite_independent_confirmed_ad(self):
-        audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
-        original = audio.read_bytes()
-        segments = [FakeSegment(0, 10, "programme before"), FakeSegment(10, 20, "visit acme dot"),
-                    FakeSegment(20, 30, "com to get started today"), FakeSegment(30, 40, "programme after")]
-        scenarios = [("share-refusal", FakeLLM(), [FakeAd(0, 370), FakeAd(400, 420)])]
-        for name, llm, detections in scenarios:
-            with self.subTest(scenario=name):
-                install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
-                install_fake_ads(llm, detections=detections)
-                with redirect_stderr(io.StringIO()), \
-                        mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=600.0), \
-                        mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()), \
-                        mock.patch.object(_worker_span_bounds, "resize_oversized_ad_spans", side_effect=lambda _ads, _backend, _segments, spans, *_args, **_kwargs: (spans, frozenset((ad.start_s, ad.end_s) for ad in spans))), \
-                        mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
-                    result = wp.run({"protocolVersion": 2, "audioPath": str(audio),
-                                     "outputPath": "/tmp/not-rendered-independent.mp3", "removeAds": True,
-                                     "readableTranscript": False})
-                self.assertEqual(result["report"]["outcome"], "uncertain")
-                self.assertEqual((result["adSegments"], result["keepIntervals"], result["removedSeconds"]), ([], [], 0.0))
-                self.assertFalse(result["audioChanged"])
-                self.assertEqual(result["audioPath"], str(audio))
-                self.assertEqual(audio.read_bytes(), original)
-                self.assertIn("original audio includes ads", result["warning"])
-                audit = result["report"]["audit"]
-                self.assertEqual(audit["unresolvedIds"], [])  # Archive coverage resolved; review uncertainty is separate.
-                self.assertTrue(any(span["reason"] == "total-share-ceiling" for span in audit["heldSpans"]))
-                render.assert_not_called()
-
-class ContextCapacityFallbackTests(unittest.TestCase):
-    def test_exact_capacity_failure_in_one_sparse_verifier_keeps_original(self):
-        message = "Requested tokens (4199) exceed context window of 4096"
-        audio = REPO_ROOT / "Producer" / "Workers" / "test_wilted_pipeline.py"
-        original = audio.read_bytes()
-        segments = [FakeSegment(0, 5, "programme intro"), FakeSegment(10, 20, "commercial setup"),
-                    FakeSegment(20, 30, "product details"),
-                    FakeSegment(30, 40, "visit acme dot com to get started today"),
-                    FakeSegment(50, 60, "programme resumes"), FakeSegment(90, 100, "programme ending")]
-        install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
-        llm = FakeLLM(preroll_program_id=-1, postroll_advertising_start_id=-1)
-        ads = install_fake_ads(llm)
-        original_generate = llm.generate
-        failed = []
-        def generate(prompt, content, *, response_format=None, prepared_prompt=None):
-            if prompt == _worker_ad_audit.prompts.COMMERCIAL_ENVELOPE_PRESERVATION_PROMPT and not failed:
-                failed.append(prompt)
-                raise ValueError(message)
-            return original_generate(prompt, content, response_format=response_format, prepared_prompt=prepared_prompt)
-        llm.generate = generate
-        def detector(_segments, backend):
-            rendered = "\n".join(f"[ID {index}] {segment.text}" for index, segment in enumerate(segments))
-            for _ in range(5):
-                backend.generate(ads._AD_DETECT_SYSTEM_PROMPT, rendered, response_format=ads._AD_DETECT_RESPONSE_FORMAT)
-            return [FakeAd(30, 40)]
-        ads.detect_ads = detector
-        with redirect_stderr(io.StringIO()), \
-                mock.patch.object(_worker_ad_audit, "preflight_ad_removal"), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=500.0), \
-                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", return_value=contextlib.nullcontext()), \
-                mock.patch.object(_worker_cue_timing, "_run_render_with_progress") as render:
-            result = wp.run({"protocolVersion": 2, "audioPath": str(audio),
-                             "outputPath": "/tmp/not-rendered-capacity.mp3", "removeAds": True,
-                             "readableTranscript": False})
-        self.assertEqual(len(failed), 1)
-        self.assertEqual(result["report"]["outcome"], "uncertain")
-        self.assertEqual(result["audioPath"], str(audio))
-        self.assertFalse(result["audioChanged"])
-        self.assertEqual((result["adSegments"], result["keepIntervals"], result["removedSeconds"]), ([], [], 0.0))
-        self.assertIn(message, result["warning"])
-        self.assertEqual(audio.read_bytes(), original)
-        audit = result["report"]["audit"]
-        self.assertEqual(audit["modelFailures"], 1)
-        self.assertGreaterEqual(audit["modelRequests"], 7)
-        self.assertLess(audit["modelFailures"] * 2, audit["modelRequests"])
-        self.assertTrue(llm.closed)
-        render.assert_not_called()
-
-    def test_capacity_recognition_does_not_accept_other_value_or_coding_errors(self):
-        errors = [ValueError("coding defect"), ValueError("Requested tokens (4096) exceed context window of 4096"),
-                  ValueError("Requested tokens (10) exceed context window of 4096"),
-                  ValueError("Requested tokens (4199) exceed context window of 0"),
-                  ValueError("Requested tokens (4199) exceed context window of 4096 and unrelated defect"),
-                  TypeError("Requested tokens (4199) exceed context window of 4096"),
-                  AttributeError("Requested tokens (4199) exceed context window of 4096")]
-        for error in errors:
-            with self.subTest(error=repr(error)):
-                backend = _worker_ad_audit.CountingBackend(FakeLLM(loaded=True, fail_generate=error))
-                with self.assertRaises(type(error)):
-                    backend.generate("test", "synthetic")
-                self.assertIs(backend.unexpected_error, error)
-                self.assertIsNone(backend.context_capacity_error)

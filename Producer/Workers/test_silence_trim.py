@@ -17,18 +17,14 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import labeller_cues as _worker_labeller_cues
+from wilted_worker import labelled_outcome as _worker_labelled_outcome
 from wilted_worker import silence_trim
-from wilted_worker.ad_audit import AdAnalysis, AdAnalysisAudit
 from wilted_worker.constants import SILENCE_DETECT_TIMEOUT_S, SILENCE_MAX_KEEP_INTERVALS
 from wilted_worker.cue_timing import build_keep_map, serialize_keep_map
 from wilted_worker.reporting import WorkerError
-from worker_test_fake_ads import FakeAd, install_fake_ads
-from worker_test_fake_llm import FakeLLM
+from worker_test_fake_ads import FakeAd
 from worker_test_support import FakeSegment, install_fake_wilted, synthetic_render, wp
 
 # Four one-second tone bursts: 1.5 s of silence before them, 2 s between them
@@ -80,20 +76,30 @@ def run_preparation(directory, segments, duration, silences, *, detections=None,
     audio = Path(directory) / "source.mp3"
     audio.write_bytes(b"original audio")
     install_fake_wilted(transcriptions={wp.ALIGNED_STT_MODEL: segments})
-    install_fake_ads(FakeLLM())
-    request = {"protocolVersion": 2, "audioPath": str(audio), "outputPath": str(Path(directory) / "prepared.mp3"),
-               "removeAds": True, "readableTranscript": False}
+    digest = _worker_labeller_cues.serialize_labeller_cues(_worker_labeller_cues.build_labeller_cues(segments))[1]
+    breaks = []
+    if detections:
+        for ad in detections:
+            breaks.append({"start": float(ad.start_s), "end": float(ad.end_s), "kind": "sponsor", "label": "must-cut", "advertisers": []})
+    request = {
+        "protocolVersion": 2,
+        "adStage": "cut",
+        "audioPath": str(audio),
+        "outputPath": str(Path(directory) / "prepared.mp3"),
+        "removeAds": True,
+        "labelledBreaks": breaks,
+        "labellerCuesDigest": digest,
+        "labellerModelID": "deepseek-v4.1-flash",
+        "labellerLevel": "low",
+        "labellerPromptVersion": "labeller-prompt-v1",
+        "workDir": str(directory),
+    }
     with contextlib.ExitStack() as stack:
         stack.enter_context(redirect_stderr(stderr if stderr is not None else io.StringIO()))
         stack.enter_context(synthetic_render(duration, silence_report(silences)))
-        stack.enter_context(mock.patch.object(_worker_ad_audit, "preflight_ad_removal"))
-        stack.enter_context(mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock",
-                                              return_value=contextlib.nullcontext()))
-        if detections is not None:
-            audit = AdAnalysisAudit(classifier_requests=4, classifier_valid_requests=4, model_requests=4)
-            stack.enter_context(mock.patch.object(_worker_ad_removal, "analyze_ad_detections",
-                                                  return_value=AdAnalysis(detections=tuple(detections), audit=audit)))
-        return wp.run(request)
+        res = wp.run(request)
+        res.pop("adStage", None)
+        return res
 
 
 def run_labelled_cut(directory, segments, duration, silences, breaks):
@@ -275,10 +281,11 @@ class SilenceFallbackTests(SilenceTrimTestCase):
 
     def test_uncertain_and_disabled_preparations_are_never_trimmed(self):
         warning = "original audio includes ads: model missing"
-        uncertain = wp.serialize_ad_audit(AdAnalysisAudit(incomplete_error="model missing", warning=warning))
+        uncertain = {"adEngine": "labelled", "incompleteError": "model missing", "warning": warning,
+                     "unresolvedIds": [], "heldSpans": []}
         source = self.directory / "source.mp3"
         with mock.patch.object(silence_trim, "detect_silences") as detect, \
-                mock.patch.object(_worker_ad_removal, "detect_and_cut",
+                mock.patch.object(_worker_labelled_outcome, "cut_from_labelled_breaks",
                                   return_value=(source, [], [], [], uncertain)):
             result = run_preparation(self.directory, BURST_SEGMENTS, 16.5, BURST_SILENCES)
             self.assertEqual(result["report"]["outcome"], "uncertain")

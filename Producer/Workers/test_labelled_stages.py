@@ -9,8 +9,6 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import labeller_cues as _worker_labeller_cues
@@ -66,9 +64,7 @@ class LabelledStagesTestCase(unittest.TestCase):
 
 class TranscriptStageTests(LabelledStagesTestCase):
     def test_transcript_stage_returns_cue_path_and_digest_without_cutting(self):
-        with mock.patch.object(_worker_ad_removal, "detect_and_cut") as detect, \
-                mock.patch.object(_worker_ad_audit, "preflight_ad_removal") as preflight, \
-                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock") as lock, \
+        with mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock") as lock, \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=57.0), \
                 redirect_stderr(io.StringIO()):
             result = wp.run({
@@ -90,8 +86,6 @@ class TranscriptStageTests(LabelledStagesTestCase):
         self.assertNotIn("adSegments", result)
         self.assertNotIn("keepIntervals", result)
         self.assertNotIn("report", result)
-        detect.assert_not_called()
-        preflight.assert_not_called()
         lock.assert_not_called()
 
 
@@ -124,10 +118,8 @@ class CutStageTests(LabelledStagesTestCase):
 
         install_fake_ads(FakeLLM())
         import wilted.llm as llm_module
-        with mock.patch.object(_worker_ad_audit, "preflight_ad_removal", side_effect=boom), \
-                mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", side_effect=boom), \
+        with mock.patch.object(_worker_gpu_admission, "prepare_ad_model_lock", side_effect=boom), \
                 mock.patch.object(llm_module, "create_backend", side_effect=boom), \
-                mock.patch.object(_worker_ad_removal, "analyze_ad_detections", side_effect=boom), \
                 redirect_stderr(io.StringIO()), \
                 synthetic_render(60.0):
             result = wp.run(self.cut_request([
@@ -136,7 +128,7 @@ class CutStageTests(LabelledStagesTestCase):
         self.assertEqual(result["report"]["outcome"], "cut")
         self.assertEqual(result["report"]["audit"]["adEngine"], "labelled")
 
-    def test_absent_ad_stage_matches_silence_trim_fixture_spans(self):
+    def test_cut_stage_matches_silence_trim_fixture_spans(self):
         install_fake_ads(FakeLLM())
         with redirect_stderr(io.StringIO()):
             result = run_preparation(
@@ -149,7 +141,6 @@ class CutStageTests(LabelledStagesTestCase):
         self.assertEqual(result["report"]["outcome"], "cut")
         self.assertEqual(spans(result["adSegments"]), [(20.0, 40.0)])
         self.assertEqual(spans(result["keepIntervals"]), AD_KEEPS)
-        self.assertNotIn("adStage", result)
 
 
 if __name__ == "__main__":

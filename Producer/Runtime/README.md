@@ -1,10 +1,9 @@
 # Wilted — preparation runtime
 
 The Python modules the native preparation worker (`../Workers/wilted_pipeline.py`)
-loads: ad detection and removal (`ads`), transcription (`transcribe`), the local
+loads: transcription (`transcribe`), the local
 GGUF/MLX LLM backends (`llm`), the execution-capability gate
-(`execution_capability`), the ffmpeg check (`cache`), and the GGUF repair
-utility (`gguf_repair`). The Mac producer
+(`execution_capability`) and the GGUF repair utility (`gguf_repair`). The Mac producer
 (`../Sources`) launches the worker with `WILTED_PIPELINE_PYTHONPATH` pointing at
 `src/`.
 

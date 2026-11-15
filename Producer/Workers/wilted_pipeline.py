@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Prepare one downloaded podcast episode: transcript, ad detection, ad removal.
+"""Prepare one downloaded podcast episode: transcript, labelled ad cut, silence trim.
 
-This is the bridge to Wilted's project-owned Python runtime. The valuable,
-hard-to-reproduce part is `wilted.ads` -- roughly 1,500 lines of tuned prompts
-and boundary verification -- and the transcript parsers beside it. None of that
-is reimplemented here; this module is the process boundary the native app talks
-to.
+This is the bridge to Wilted's project-owned Python runtime: the process
+boundary the native app talks to.
 
 Protocol, deliberately narrow:
 
@@ -48,134 +45,56 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import ad_runtime_adaptations as _worker_ad_runtime_adaptations
-from wilted_worker import commercial_preservation as _worker_commercial_preservation
-from wilted_worker import commercial_recovery as _worker_commercial_recovery
-from wilted_worker import commercial_seeds as _worker_commercial_seeds
 from wilted_worker import constants as _worker_constants
 from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import edge_recovery as _worker_edge_recovery
+from wilted_worker import cut_support as _worker_cut_support
 from wilted_worker import glossary as _worker_glossary
-from wilted_worker import gpu_admission as _worker_gpu_admission
+from wilted_worker import labelled_outcome as _worker_labelled_outcome
 from wilted_worker import labeller_cues as _worker_labeller_cues
-from wilted_worker import nomination as _worker_nomination
-from wilted_worker import prompts as _worker_prompts
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import silence_trim as _worker_silence_trim
-from wilted_worker import review_formats as _worker_review_formats
-from wilted_worker import span_bounds as _worker_span_bounds
-from wilted_worker import sponsor_evidence as _worker_sponsor_evidence
-from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
-from wilted_worker.ad_audit import AdAnalysis
-from wilted_worker.ad_audit import AdAnalysisAudit
-from wilted_worker.ad_audit import AuditCandidate
-from wilted_worker.ad_audit import AuditingBackend
-from wilted_worker.ad_audit import CountingBackend
-from wilted_worker.ad_audit import preflight_ad_removal
-from wilted_worker.ad_removal import analyze_ad_detections
-from wilted_worker.ad_removal import detect_and_cut
-from wilted_worker.ad_removal import effective_ad_spans
-from wilted_worker.ad_runtime_adaptations import _CONTEXT_AWARE_OVERLAP_MARKER
-from wilted_worker.ad_runtime_adaptations import _PROPORTIONAL_RENDER_MARKER
-from wilted_worker.ad_runtime_adaptations import _proportional_render_budgets
-from wilted_worker.ad_runtime_adaptations import install_context_aware_overlap_resolution
-from wilted_worker.ad_runtime_adaptations import install_legacy_sponsor_opening_compatibility
-from wilted_worker.ad_runtime_adaptations import install_produced_disclaimer_evidence
-from wilted_worker.ad_runtime_adaptations import install_proportional_render_budget
-from wilted_worker.commercial_preservation import _commercial_envelope_preserved
-from wilted_worker.commercial_preservation import recovered_confidence
-from wilted_worker.commercial_seeds import commercial_evidence_seed_ids
-from wilted_worker.commercial_seeds import recover_sparse_commercial_reads
-from wilted_worker.commercial_seeds import sparse_commercial_seeds
-from wilted_worker.commercial_seeds import sparse_pause_envelope
-from wilted_worker.constants import ALIGNED_STT_CACHE_MAXIMUM_ENTRIES
-from wilted_worker.constants import ALIGNED_STT_MODEL, ALIGNED_STT_PREVIOUS_MODEL
-from wilted_worker.constants import COMMERCIAL_PRESERVATION_FLANK_STEPS
-from wilted_worker.constants import COMMERCIAL_RECOVERY_CONTEXT_CHARS
-from wilted_worker.constants import COMMERCIAL_RECOVERY_MAX_CANDIDATES
-from wilted_worker.constants import CUT_TOOLS
-from wilted_worker.constants import EXPLICIT_SPONSOR_CTA_RE
-from wilted_worker.constants import EXPLICIT_SPONSOR_DOT_DOMAIN_RE
-from wilted_worker.constants import EXPLICIT_SPONSOR_LITERAL_DOMAIN_RE
-from wilted_worker.constants import EXPLICIT_SPONSOR_OFFER_CODE_RE
-from wilted_worker.constants import EXPLICIT_SPONSOR_SPOKEN_PATH_RE
-from wilted_worker.constants import MAXIMUM_TOTAL_AD_SHARE
-from wilted_worker.constants import MAXIMUM_UNCONFIRMED_AD_SHARE
-from wilted_worker.constants import MINIMUM_PROGRAMME_SHARE
-from wilted_worker.constants import NOMINATED_SECONDS_FLOOR
-from wilted_worker.constants import NOMINATED_SHARE_FLOOR
-from wilted_worker.constants import PRODUCED_DISCLAIMER_CUE_PATTERN
-from wilted_worker.constants import PROTOCOL_VERSION
-from wilted_worker.constants import RECOVERED_CONFIDENCE_CEILING
-from wilted_worker.constants import RECOVERED_CONFIDENCE_FLOOR
-from wilted_worker.constants import RENDER_DURATION_TOLERANCE_S
-from wilted_worker.constants import STRADDLING_TAIL_MAX_PROBES
-from wilted_worker.constants import STT_EVICTION_BARRIER_TIMEOUT_S
-from wilted_worker.constants import TIMED_MEDIA_TYPES
-from wilted_worker.cue_timing import CachedAlignedSegment
-from wilted_worker.cue_timing import _near_empty_nominations
-from wilted_worker.cue_timing import _run_render_with_progress
-from wilted_worker.cue_timing import build_effective_cut_map
-from wilted_worker.cue_timing import build_keep_map
-from wilted_worker.cue_timing import cues_to_text
-from wilted_worker.cue_timing import effective_removed_intervals
-from wilted_worker.cue_timing import in_time_order
-from wilted_worker.cue_timing import probe_duration
-from wilted_worker.cue_timing import remap_cues
-from wilted_worker.cue_timing import render_keep_segments
-from wilted_worker.cue_timing import segments_to_cues
-from wilted_worker.cue_timing import serialize_ad_audit
-from wilted_worker.cue_timing import serialize_keep_map
-from wilted_worker.cue_timing import validate_aligned_segments
-from wilted_worker.preroll_passage_review import recover_source_checked_preroll
-from wilted_worker.glossary import GLOSSARY_MAXIMUM_TERMS
-from wilted_worker.glossary import apply_glossary
-from wilted_worker.glossary import build_glossary
+from wilted_worker.constants import (
+    ALIGNED_STT_CACHE_MAXIMUM_ENTRIES,
+    ALIGNED_STT_MODEL,
+    ALIGNED_STT_PREVIOUS_MODEL,
+    CUT_TOOLS,
+    PROTOCOL_VERSION,
+    TIMED_MEDIA_TYPES,
+)
+from wilted_worker.cue_timing import (
+    build_effective_cut_map,
+    build_keep_map,
+    cues_to_text,
+    effective_removed_intervals,
+    in_time_order,
+    probe_duration,
+    remap_cues,
+    segments_to_cues,
+    serialize_keep_map,
+    validate_aligned_segments,
+)
+from wilted_worker.cut_support import preflight_cut_tools
 from wilted_worker.glossary import polish_with_notes
-from wilted_worker.gpu_admission import _speech_rpc_with_progress
-from wilted_worker.gpu_admission import prepare_ad_model_lock
-from wilted_worker.nomination import _CallBudgetBackend
-from wilted_worker.nomination import _experimental_speculative_cuts
-from wilted_worker.prompts import AD_POD_CONTINUATION_PROMPT
-from wilted_worker.prompts import BOUNDARY_SEGMENT_TAIL_PROMPT
-from wilted_worker.prompts import COMMERCIAL_CONFLICTING_EVIDENCE_PROMPT
-from wilted_worker.prompts import COMMERCIAL_PREFIX_CUE_PROMPT
-from wilted_worker.prompts import COMMERCIAL_PREFIX_ROLE_PROMPT
-from wilted_worker.prompts import OVERSIZED_SPAN_RESCAN_PROMPT
-from wilted_worker.prompts import PREROLL_CONFIRM_PROMPT
-from wilted_worker.prompts import PREROLL_PROGRAM_START_PROMPT
-from wilted_worker.reporting import DiscardedRuns
-from wilted_worker.reporting import ForwardedWarnings
-from wilted_worker.reporting import WorkerError
-from wilted_worker.reporting import progress
-from wilted_worker.span_bounds import _rescan_unconfirmed_oversized_span
-from wilted_worker.span_bounds import reject_implausible_ad_spans
-from wilted_worker.span_bounds import resize_oversized_ad_spans
-from wilted_worker.sponsor_evidence import consecutive_preroll_start
-from wilted_worker.sponsor_evidence import count_sponsor_name_mentions
-from wilted_worker.sponsor_evidence import explicit_sponsor_anchor_ids
-from wilted_worker.sponsor_evidence import explicit_sponsor_name_phrases
-from wilted_worker.sponsor_evidence import explicit_sponsor_opening_pattern
-from wilted_worker.sponsor_evidence import sponsor_name_recurrence_text
-from wilted_worker.tail_recovery import recover_transcript_end_postroll
-from wilted_worker.tail_recovery import trim_straddling_span_tails
-from wilted_worker.transcript_sources import _aligned_cache_directory
-from wilted_worker.transcript_sources import _aligned_cache_path
-from wilted_worker.transcript_sources import _load_cached_aligned_segments
-from wilted_worker.transcript_sources import _store_cached_aligned_segments
-from wilted_worker.transcript_sources import parse_published_transcript
-from wilted_worker.transcript_sources import published_transcript_matches_audio
+from wilted_worker.reporting import (
+    ForwardedWarnings,
+    WorkerError,
+    progress,
+)
+from wilted_worker.transcript_sources import (
+    _aligned_cache_directory,
+    _aligned_cache_path,
+    _load_cached_aligned_segments,
+    _store_cached_aligned_segments,
+    parse_published_transcript,
+    published_transcript_matches_audio,
+)
 
 def run(request: dict) -> dict:
     if request.get("operation") == "summary":
         from wilted_worker.transcript_summary import run_summary, summary_request_id
         with _worker_reporting.summary_scope(summary_request_id(request)):
             return run_summary(request)
-    if request.get("operation") == "labellerCues":
-        return _worker_labeller_cues.export_labeller_cues(request)
     audio_path = Path(request["audioPath"])
     if not audio_path.exists():
         raise WorkerError("audio-missing", f"no audio at {audio_path}")
@@ -207,6 +126,8 @@ def run(request: dict) -> dict:
     remove_ads = True if ad_stage == "cut" else request.get("removeAds", True)
     if ad_stage == "transcript":
         remove_ads = False
+    if remove_ads and ad_stage not in ("transcript", "cut"):
+        raise WorkerError("invalid-request", "local ad finding was removed")
     need_aligned = remove_ads or ad_stage == "transcript"
     if need_aligned and requested_version != PROTOCOL_VERSION:
         raise WorkerError("protocol-version-required", f"ad removal requires protocolVersion {PROTOCOL_VERSION}")
@@ -222,7 +143,7 @@ def run(request: dict) -> dict:
             raise WorkerError("cut-output-missing", "ad removal requires a distinct outputPath")
         if Path(request["outputPath"]).resolve() == audio_path.resolve():
             raise WorkerError("cut-output-alias", "prepared output must not alias the downloaded audio")
-        _worker_ad_audit.preflight_cut_tools()
+        _worker_cut_support.preflight_cut_tools()
         requested_model = request.get("alignedTranscriptModel", ALIGNED_STT_MODEL)
         if requested_model == ALIGNED_STT_PREVIOUS_MODEL:
             _worker_reporting.progress("transcript.stt.model.substituted", f"{requested_model} -> {ALIGNED_STT_MODEL}")
@@ -309,51 +230,12 @@ def run(request: dict) -> dict:
         }
 
     output_path, ad_spans, keeps, raw_nominations, ad_audit = audio_path, [], [], [], None
-    ad_profile_observation = None
-    ad_profile_requested_digest = None
-    ad_profile_applied_digest = None
-    ad_profile_status = "absent"
     if remove_ads:
-        _profile, ad_profile_requested_digest, request_profile_status = _worker_ad_removal._validated_request_profile(request)
-        if request_profile_status == "invalid":
-            ad_profile_status = "invalid"
         if not segments or timing != "aligned":
             raise WorkerError("aligned-stt-required", "ad removal requires valid audio-aligned speech-to-text")
-        model_available, model_lock = True, None
-        # The cut stage applies an online labeller's breaks: no local model
-        # preflight, GPU lock or model load.
-        if ad_stage != "cut":
-            from wilted import llm as llm_module
-
-            model = request.get("llmModel") or str(llm_module.DEFAULT_GGUF_MODEL)
-            try:
-                _worker_ad_audit.preflight_ad_removal(request)
-            except WorkerError as error:
-                if error.code != "ads-model-missing":
-                    raise
-                model_available = False
-                warning = f"original audio includes ads: {error}"
-                _worker_reporting.progress("ads.uncertain", warning)
-                ad_audit = _worker_cue_timing.serialize_ad_audit(
-                    _worker_ad_removal._set_unconsumed_profile_audit(
-                        _worker_ad_audit.AdAnalysisAudit(incomplete_error=str(error), warning=warning),
-                        request_profile_status,
-                        ad_profile_requested_digest,
-                    )
-                )
-            model_lock = (_worker_gpu_admission.prepare_ad_model_lock(model, aligned_stt=timing == "aligned")
-                          if model_available else None)
-        if model_available:
-            output_path, ad_spans, keeps, raw_nominations, ad_audit = _worker_ad_removal.detect_and_cut(
-                request, audio_path, cues, segments, model_lock=model_lock
-            )
-            if ad_audit is not None:
-                ad_profile_observation = ad_audit.pop("adProfileObservation", None)
-                ad_profile_status = ad_audit.get("adProfileStatus", ad_profile_status)
-                ad_profile_requested_digest = ad_audit.get(
-                    "adProfileRequestedDigest", ad_profile_requested_digest
-                )
-                ad_profile_applied_digest = ad_audit.get("adProfileAppliedDigest")
+        output_path, ad_spans, keeps, raw_nominations, ad_audit = _worker_labelled_outcome.cut_from_labelled_breaks(
+            request, audio_path, cues, segments
+        )
         if ad_audit and (ad_audit.get("warning") or ad_audit.get("incompleteError") or ad_audit.get("unresolvedIds")):
             if output_path.resolve() != audio_path.resolve() or ad_spans or keeps:
                 raise WorkerError("ads-uncertain-output-invalid", "uncertain ad removal must retain the whole original audio")
@@ -418,10 +300,6 @@ def run(request: dict) -> dict:
         "languageCode": language,
         "audioPath": str(output_path),
         "audioChanged": str(output_path) != str(audio_path),
-        "adProfileObservation": ad_profile_observation,
-        "adProfileStatus": ad_profile_status,
-        "adProfileRequestedDigest": ad_profile_requested_digest,
-        "adProfileAppliedDigest": ad_profile_applied_digest,
         "adSegments": ad_spans,
         # The exact original-to-output time map, so the caller can move a
         # listener's saved position onto the cut audio instead of losing it.
@@ -440,15 +318,6 @@ def run(request: dict) -> dict:
             "audit": ad_audit,
         },
     }
-    if request.get("emitLabellerCues") is True and segments and timing == "aligned":
-        # The labelling model reads the aligned segments exactly as the
-        # detector saw them, on the original clock the audio still has.
-        labeller_cues_path, labeller_cues_digest = _worker_labeller_cues.write_labeller_cues(
-            _worker_labeller_cues.build_labeller_cues(segments),
-            Path(request.get("workDir") or tempfile.gettempdir()) / "wilted-pipeline",
-        )
-        result["labellerCuesPath"] = str(labeller_cues_path)
-        result["labellerCuesDigest"] = labeller_cues_digest
     if ad_stage == "cut":
         result["adStage"] = "cut"
     if uncertain_warning is not None:
@@ -514,31 +383,6 @@ def main() -> int:
             warnings.summarize()
             json.dump(result, sys.stdout)
             return 0
-
-    if request.get("operation") == "labellerCues":
-        # A read-only export of stored transcripts: no model, daemon or audio
-        # is involved, and the request's own workDir is the only directory
-        # touched, so the generic temp-dir fallback must not run first.
-        warnings = ForwardedWarnings()
-        logging.getLogger().addHandler(warnings)
-        try:
-            result = run(request)
-        except WorkerError as error:
-            warnings.summarize()
-            json.dump({"ok": False, "operation": "labellerCues", "protocolVersion": PROTOCOL_VERSION,
-                       "code": error.code, "message": str(error)}, sys.stdout)
-            return 1
-        except Exception as error:  # noqa: BLE001 - structured failure reporting
-            warnings.summarize()
-            json.dump({"ok": False, "operation": "labellerCues", "protocolVersion": PROTOCOL_VERSION,
-                       "code": "labeller-cues-failed",
-                       "message": f"Labeller cue export failed ({type(error).__name__})."}, sys.stdout)
-            return 1
-        finally:
-            logging.getLogger().removeHandler(warnings)
-        warnings.summarize()
-        json.dump(result, sys.stdout)
-        return 0
 
     data_dir = Path(request.get("workDir") or tempfile.gettempdir()) / "wilted-pipeline"
     data_dir.mkdir(parents=True, exist_ok=True)

@@ -15,14 +15,18 @@ from pathlib import Path
 from . import cue_timing as _worker_cue_timing
 from . import reporting as _worker_reporting
 from . import silence_trim as _worker_silence_trim
-from .ad_outcome import UNRESOLVED_SPANS_REASON
 from .cue_timing import build_effective_cut_map, render_keep_segments
+from .cut_support import (
+    AD_KIND_HOUSE,
+    AD_KIND_PAID,
+    UNRESOLVED_SPANS_REASON,
+    _ad_kind_fields,
+    effective_ad_spans,
+    enforce_total_ad_share_ceiling,
+)
 from .labeller_cues import build_labeller_cues, serialize_labeller_cues
 from .reporting import WorkerError
-from .span_bounds import enforce_total_ad_share_ceiling
 
-_AD_KIND_PAID = "paid advertising"
-_AD_KIND_HOUSE = "house promotion"
 _CUTTABLE_KINDS = frozenset({"sponsor", "network-promo"})
 _HOUSE_KIND = "house-promo"
 _MUST_CUT = "must-cut"
@@ -65,14 +69,6 @@ class LabelledDecision:
     keep_whole_reason: str | None
     breaks_proposed: int
     held_spans: tuple[tuple[float, float, str], ...] = ()
-
-
-class _KindModule:
-    """Minimal kind vocabulary for ``effective_ad_spans`` / ``_ad_kind_fields``."""
-
-    AD_KIND_PAID = _AD_KIND_PAID
-    AD_KIND_HOUSE = _AD_KIND_HOUSE
-    AD_KIND_CREDITS = "credits"
 
 
 def _advertisers(raw) -> tuple[str, ...]:
@@ -174,7 +170,7 @@ def decide_labelled_outcome(
                 )
             )
             continue
-        kinds = (_AD_KIND_HOUSE,) if kind == _HOUSE_KIND else (_AD_KIND_PAID,)
+        kinds = (AD_KIND_HOUSE,) if kind == _HOUSE_KIND else (AD_KIND_PAID,)
         detections.append(_LabelledDetection(start_s, end_s, kind, kinds))
 
     held: list[tuple[float, float, str]] = []
@@ -257,12 +253,6 @@ def serialize_labelled_audit(decision: LabelledDecision, request: dict) -> dict:
         "candidates": [],
         "declinedCommercialEvidenceSeeds": [],
         "nearEmpty": None,
-        "adProfileStatus": "absent",
-        "adProfileRequestedDigest": None,
-        "adProfileAppliedDigest": None,
-        "adProfileWindows": 0,
-        "adProfileRequests": 0,
-        "adProfileFailures": 0,
     }
     if decision.keep_whole_reason is not None:
         warning = f"original audio includes ads: {decision.keep_whole_reason}"
@@ -309,8 +299,6 @@ def cut_from_labelled_breaks(
         the same shape ``detect_and_cut`` returns.
     """
     del cues  # Call parity with detect_and_cut; edges come from break times.
-    # Lazy import: ``ad_removal`` dispatches into this module.
-    from .ad_removal import _ad_kind_fields, effective_ad_spans
 
     if not segments:
         return audio_path, [], [], [], None
@@ -336,7 +324,7 @@ def cut_from_labelled_breaks(
                 "startSeconds": round(float(ad.start_s), 3),
                 "endSeconds": round(float(ad.end_s), 3),
                 "label": ad.label,
-                **_ad_kind_fields(_KindModule, ad.kinds),
+                **_ad_kind_fields(ad.kinds),
                 "confidence": round(float(ad.confidence), 4),
             }
         )
@@ -375,7 +363,7 @@ def cut_from_labelled_breaks(
     render_keep_segments(audio_path, output_path, rendered)
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise WorkerError("cut-output-empty", "ffmpeg produced no playable audio")
-    effective = effective_ad_spans(_KindModule, raw_nominations, keeps, total)
+    effective = effective_ad_spans(raw_nominations, keeps, total)
     _worker_reporting.progress(
         "ads.cut.complete", f"{output_path.stat().st_size} bytes"
     )

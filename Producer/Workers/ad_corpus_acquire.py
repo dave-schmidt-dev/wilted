@@ -214,7 +214,7 @@ def _heartbeat(label: str, stop: threading.Event) -> None:
 def transcribe_into_cache(audio: Path, source_hash: str, scratch: Path) -> dict:
     """Run the worker's transcription + alignment, caching under `scratch` only."""
     sources = ad_corpus.runtime_sources()
-    if not (sources / "wilted" / "ads.py").is_file():
+    if not (sources / "wilted" / "execution_capability.py").is_file():
         raise RuntimeError(f"no Wilted runtime source under {sources}; set WILTED_PIPELINE_PYTHONPATH")
     sys.path.insert(0, str(sources))
     sys.path.insert(0, str(Path(__file__).resolve().parent))

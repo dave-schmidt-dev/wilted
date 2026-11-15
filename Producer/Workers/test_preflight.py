@@ -19,23 +19,16 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import commercial_recovery as _worker_commercial_recovery
-from wilted_worker import commercial_seeds as _worker_commercial_seeds
+from wilted_worker import constants as _worker_constants
 from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import edge_recovery as _worker_edge_recovery
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
-from wilted_worker import span_bounds as _worker_span_bounds
-from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
+from wilted_worker import constants as _worker_constants
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
@@ -66,40 +59,18 @@ class PreflightTests(unittest.TestCase):
     def test_missing_cut_tools_fail_before_any_work(self):
         with mock.patch.dict(os.environ, {"PATH": "/nonexistent-bin"}), redirect_stderr(io.StringIO()):
             with self.assertRaises(wp.WorkerError) as raised:
-                wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
-                        "outputPath": str(Path(self.tools) / "output.mp3"), "removeAds": True})
+                wp.run({
+                    "protocolVersion": 2,
+                    "audioPath": str(self.audio),
+                    "outputPath": str(Path(self.tools) / "output.mp3"),
+                    "removeAds": True,
+                    "adStage": "cut",
+                    "labelledBreaks": [],
+                    "labellerCuesDigest": "digest",
+                })
         self.assertEqual(raised.exception.code, "cut-tools-missing")
         self.assertIn("ffmpeg", str(raised.exception))
         self.assertEqual(self.stt_calls, [], "speech-to-text ran without ffmpeg present")
-
-    def test_a_named_model_that_is_not_on_disk_fails_first(self):
-        with mock.patch.dict(os.environ, {"PATH": self.tools}):
-            with self.assertRaises(wp.WorkerError) as raised:
-                wp.preflight_ad_removal({"llmModel": "/models/absent.gguf"})
-        self.assertEqual(raised.exception.code, "ads-model-missing")
-
-    def test_the_default_model_is_checked_when_none_is_named(self):
-        self.default_model.unlink()
-        sys.modules["wilted.transcribe"].transcribe_audio = (
-            lambda path, **_: self.stt_calls.append(path) or [FakeSegment(0, 1, "content")]
-        )
-        with mock.patch.dict(os.environ, {"PATH": self.tools}), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), \
-                redirect_stderr(io.StringIO()):
-            result = wp.run({"protocolVersion": 2, "audioPath": str(self.audio),
-                             "outputPath": str(Path(self.tools) / "output.mp3"), "removeAds": True})
-        self.assertEqual(result["report"]["outcome"], "uncertain")
-        self.assertIn(str(self.default_model), result["warning"])
-        self.assertEqual(result["report"]["audit"]["modelRequests"], 0)
-        self.assertEqual(len(self.stt_calls), 1)
-
-    def test_present_tools_and_a_present_default_model_pass(self):
-        with mock.patch.dict(os.environ, {"PATH": self.tools}):
-            wp.preflight_ad_removal({})
-
-    def test_a_hub_spec_is_left_for_the_loader_to_resolve(self):
-        with mock.patch.dict(os.environ, {"PATH": self.tools}):
-            wp.preflight_ad_removal({"llmModel": "hf:some/repo/model.gguf"})
 
     def test_skipping_ad_removal_skips_the_preflight(self):
         install_fake_wilted()
@@ -107,65 +78,12 @@ class PreflightTests(unittest.TestCase):
             result = wp.run({"audioPath": str(self.audio), "removeAds": False, "allowSpeechToText": False})
         self.assertTrue(result["ok"])
 
-    def test_the_single_aligned_stt_pass_finishes_before_eviction_and_ad_model_load(self):
-        events = []
-        transcribe = sys.modules["wilted.transcribe"]
-        install_fake_speech_stack(events=events)
-
-        def transcribe_audio(path, model_name="mlx-community/parakeet-tdt-0.6b-v3", **_):
-            self.assertEqual(model_name, "mlx-community/parakeet-tdt-0.6b-v3")
-            return events.append("aligned") or [FakeSegment(0, 1, "content")]
-
-        llm = FakeLLM()
-        original_load = llm.load
-
-        def load():
-            events.append("ads.load")
-            original_load()
-
-        llm.load = load
-        original_close = llm.close
-
-        def close():
-            events.append("ads.close")
-            original_close()
-
-        llm.close = close
-        ads = install_fake_ads(llm)
-        original_detect = ads.detect_ads
-
-        def detect(segments, backend):
-            events.append("ads.detect")
-            return original_detect(segments, backend)
-
-        ads.detect_ads = detect
-        with mock.patch.object(transcribe, "transcribe_audio", transcribe_audio), \
-                mock.patch.dict(os.environ, {"PATH": self.tools}), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), redirect_stderr(io.StringIO()):
-            wp.run({
-                "protocolVersion": 2,
-                "audioPath": str(self.audio),
-                "outputPath": str(Path(self.tools) / "output.mp3"),
-                "removeAds": True,
-                "llmModel": str(self.default_model),
-            })
-        self.assertEqual(
-            events,
-            [
-                "aligned",
-                "status",
-                "ads.load",
-                "ads.detect",
-                "ads.close",
-            ],
-        )
-
     def test_eviction_barrier_reports_before_and_after_fifo_completion(self):
         events = []
         install_fake_speech_stack(events=events, statuses=({"resident_models": 1}, {"resident_models": 0}))
         stream = io.StringIO()
         with mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(stream):
-            lock = wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True)
+            lock = _worker_gpu_admission.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True)
             with lock:
                 events.append("ads.work")
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
@@ -190,48 +108,35 @@ class PreflightTests(unittest.TestCase):
         client.status = mock.Mock(side_effect=client.DaemonUnavailable("socket absent"))
         stream = io.StringIO()
         with redirect_stderr(stream):
-            lock = wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True)
+            lock = _worker_gpu_admission.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True)
             with lock:
                 events.append("ads.work")
         self.assertEqual(events, ["ads.work"])
         details = [json.loads(line)["detail"] for line in stream.getvalue().splitlines()]
         self.assertIn("speech daemon unavailable; canonical GPU lock is exclusive", details)
 
-    def test_permanent_residency_times_out_and_prevents_ad_model_load(self):
+    def test_permanent_residency_times_out_before_the_model_is_admitted(self):
         events = []
         install_fake_speech_stack(events=events, statuses=({"resident_models": 1},))
-        transcribe = sys.modules["wilted.transcribe"]
-        transcribe.transcribe_audio = lambda path, **_: [FakeSegment(0, 1, "content")]
-        llm = FakeLLM()
-        llm.load = mock.Mock(wraps=llm.load)
-        install_fake_ads(llm)
+
         def clock():
             return 11.0 if "evict:stt" in events else 0.0
 
-        with mock.patch.dict(os.environ, {"PATH": self.tools}), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=1.0), \
-                mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
+        with mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
                 mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(io.StringIO()), \
                 self.assertRaises(wp.WorkerError) as raised:
-            wp.run({
-                "protocolVersion": 2,
-                "audioPath": str(self.audio),
-                "outputPath": str(Path(self.tools) / "output.mp3"),
-                "removeAds": True,
-                "readableTranscript": False,
-                "llmModel": str(self.default_model),
-            })
+            with _worker_gpu_admission.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
+                self.fail("a model that stays resident must not admit another")
         self.assertEqual(raised.exception.code, "ads-model-wait-failed")
         self.assertIn("timed out waiting for exclusive GPU model admission", str(raised.exception))
         self.assertEqual(events, ["status", "evict:stt"])
-        llm.load.assert_not_called()
 
     def test_malformed_residency_status_fails_closed_before_model_load(self):
         events = []
         install_fake_speech_stack(events=events, statuses=({"resident_models": "unknown"},))
         with redirect_stderr(io.StringIO()), self.assertRaises(wp.WorkerError) as raised, \
                 mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-            with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
+            with _worker_gpu_admission.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
                 self.fail("unsafe admission must not yield")
         self.assertEqual(raised.exception.code, "ads-model-wait-failed")
         self.assertIn("invalid speech daemon status", str(raised.exception))
@@ -244,7 +149,7 @@ class PreflightTests(unittest.TestCase):
             statuses=({"resident_models": 0, "in_flight": 2}, {"resident_models": 0, "in_flight": 1}),
         )
         stream = io.StringIO()
-        with redirect_stderr(stream), wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
+        with redirect_stderr(stream), _worker_gpu_admission.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
             events.append("ads.work")
         self.assertEqual(events, ["status", "barrier:echo:wilted-gpu-drained", "status", "ads.work"])
         stages = [json.loads(line)["stage"] for line in stream.getvalue().splitlines()]
@@ -266,7 +171,7 @@ class PreflightTests(unittest.TestCase):
 
         with mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
                 redirect_stderr(io.StringIO()), \
-                wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
+                _worker_gpu_admission.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=True):
             pass
         budgets = [timeout for _name, timeout in rpc_timeouts]
         self.assertGreater(len(budgets), 3)
@@ -290,7 +195,7 @@ class PreflightTests(unittest.TestCase):
                 mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
                 mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(stream), \
                 self.assertRaises(wp.WorkerError) as raised:
-            with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
+            with _worker_gpu_admission.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
                 self.fail("contended lock must not yield")
         self.assertEqual(raised.exception.code, "ads-model-wait-failed")
         self.assertIn("timed out waiting for exclusive GPU model admission", str(raised.exception))
@@ -326,13 +231,13 @@ class PreflightTests(unittest.TestCase):
         with mock.patch.object(_worker_gpu_admission.fcntl, "flock", side_effect=flock), \
                 mock.patch.object(_worker_gpu_admission.time, "monotonic", side_effect=clock), \
                 mock.patch.object(_worker_gpu_admission.time, "sleep"), redirect_stderr(io.StringIO()):
-            with wp.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
+            with _worker_gpu_admission.prepare_ad_model_lock("/models/ad.gguf", aligned_stt=False):
                 events.append("ads.work")
         self.assertEqual(events, ["ads.work"])
-        self.assertGreater(tick[0], wp.STT_EVICTION_BARRIER_TIMEOUT_S)
+        self.assertGreater(tick[0], _worker_constants.STT_EVICTION_BARRIER_TIMEOUT_S)
         # The barrier budget starts when the lock is first held, so the status
         # call that follows a long wait is not already out of time.
-        self.assertGreater(rpc_timeouts[0][1], wp.STT_EVICTION_BARRIER_TIMEOUT_S / 2)
+        self.assertGreater(rpc_timeouts[0][1], _worker_constants.STT_EVICTION_BARRIER_TIMEOUT_S / 2)
 
     def test_speech_rpc_wait_reports_live_progress(self):
         stream = io.StringIO()
@@ -348,7 +253,7 @@ class PreflightTests(unittest.TestCase):
         with mock.patch.object(_worker_gpu_admission, "GPU_LOCK_PROGRESS_INTERVAL_S", 0.005), \
                 mock.patch.object(_worker_gpu_admission, "STT_EVICTION_BARRIER_POLL_INTERVAL_S", 0.001), \
                 redirect_stderr(stream):
-            result = wp._speech_rpc_with_progress(  # noqa: SLF001 - direct invariant regression
+            result = _worker_gpu_admission._speech_rpc_with_progress(  # noqa: SLF001 - direct invariant regression
                 delayed,
                 time.monotonic() + 5,
                 "waiting for test RPC",
@@ -357,60 +262,3 @@ class PreflightTests(unittest.TestCase):
         details = [json.loads(line)["detail"] for line in stream.getvalue().splitlines()]
         self.assertTrue(any("waiting for test RPC" in detail for detail in details))
 
-    def test_canonical_lock_is_held_through_gguf_close(self):
-        install_fake_speech_stack()
-        state = {"held": False, "close_saw_lock": False}
-
-        def fake_flock(_fd, operation):
-            if operation == wp.fcntl.LOCK_UN:
-                state["held"] = False
-            elif operation & wp.fcntl.LOCK_NB:
-                if state["held"]:
-                    raise BlockingIOError(wp.errno.EAGAIN, "held")
-                state["held"] = True
-
-        llm = FakeLLM()
-        original_close = llm.close
-
-        def close():
-            state["close_saw_lock"] = state["held"]
-            original_close()
-
-        llm.close = close
-        install_fake_ads(llm)
-        with mock.patch.object(_worker_gpu_admission.fcntl, "flock", side_effect=fake_flock), redirect_stderr(io.StringIO()), \
-                mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-            wp.detect_and_cut(
-                {"audioPath": str(self.audio)},
-                self.audio,
-                [],
-                [FakeSegment(0, 1, "content")],
-            )
-        self.assertTrue(state["close_saw_lock"])
-        self.assertFalse(state["held"])
-
-    def test_model_lock_releases_after_load_inference_and_close_errors(self):
-        cases = (
-            (FakeLLM(fail_load=RuntimeError("load failed")), "load failed"),
-            (FakeLLM(fail_generate=RuntimeError("inference failed")), "inference failed"),
-            (FakeLLM(), None),
-        )
-        for llm, reason in cases:
-            with self.subTest(reason=reason):
-                install_fake_ads(llm)
-                if reason is None:
-                    llm.close = mock.Mock(side_effect=RuntimeError("close failed"))
-                events = []
-                with redirect_stderr(io.StringIO()), \
-                        mock.patch.object(_worker_cue_timing, "probe_duration", return_value=200.0):
-                    path, spans, keeps, raw, audit = wp.detect_and_cut(
-                        {"audioPath": str(self.audio)},
-                        self.audio,
-                        [],
-                        [FakeSegment(0, 1, "content")],
-                        model_lock=recording_model_lock(events),
-                    )
-                self.assertEqual((path, spans, keeps, raw), (self.audio, [], [], []))
-                if reason is not None:
-                    self.assertIn(reason, audit["incompleteError"])
-                self.assertEqual(events, ["lock.enter", "lock.exit"])

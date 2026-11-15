@@ -30,7 +30,7 @@ output_file="$work_dir/output.log"
 # additions never touch it, while a collection collapse -- a broken conftest, a
 # wrong working directory, a missing dependency -- still fails loudly instead of
 # reporting a green run of nothing.
-readonly MINIMUM_TESTS=190
+readonly MINIMUM_TESTS=135
 
 [[ -d "$runtime_root" ]] || { printf 'missing runtime: %s\n' "$runtime_root" >&2; exit 1; }
 [[ -x "$python_bin" ]] || {

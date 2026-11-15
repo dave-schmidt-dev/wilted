@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
+from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import labeller_cues as _worker_labeller_cues
 from worker_test_support import *
 
@@ -38,6 +40,7 @@ class LabellerCuesExportTests(unittest.TestCase):
 
     def aligned_request(self, **overrides):
         request = {
+            "protocolVersion": 2,
             "audioPath": str(self.audio), "removeAds": False,
             "transcriptPolicy": "alwaysTranscribe", "workDir": self.work_dir,
         }
@@ -54,8 +57,8 @@ class LabellerCuesExportTests(unittest.TestCase):
 
     def test_the_cue_file_content_equals_the_aligned_segments(self):
         self.install_aligned_segments()
-        with redirect_stderr(io.StringIO()):
-            result = wp.run(self.aligned_request(emitLabellerCues=True))
+        with mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), redirect_stderr(io.StringIO()):
+            result = wp.run(self.aligned_request(adStage="transcript"))
         self.assertTrue(result["ok"])
         self.assertEqual(result["timing"], "aligned")
         path = Path(result["labellerCuesPath"])
@@ -69,38 +72,11 @@ class LabellerCuesExportTests(unittest.TestCase):
 
     def test_the_returned_digest_is_recomputed_from_the_file_bytes(self):
         self.install_aligned_segments()
-        with redirect_stderr(io.StringIO()):
-            result = wp.run(self.aligned_request(emitLabellerCues=True))
+        with mock.patch.object(_worker_cue_timing, "probe_duration", return_value=10.0), redirect_stderr(io.StringIO()):
+            result = wp.run(self.aligned_request(adStage="transcript"))
         file_bytes = Path(result["labellerCuesPath"]).read_bytes()
         self.assertEqual(result["labellerCuesDigest"], hashlib.sha256(file_bytes).hexdigest())
 
-    def test_a_request_without_the_flag_produces_no_cue_fields(self):
-        for flag in (None, False):
-            with self.subTest(flag=flag):
-                self.install_aligned_segments()
-                overrides = {"workDir": self.work_dir}
-                if flag is not None:
-                    overrides["emitLabellerCues"] = flag
-                with redirect_stderr(io.StringIO()):
-                    result = wp.run(self.aligned_request(**overrides))
-                self.assertTrue(result["ok"])
-                self.assertNotIn("labellerCuesPath", result)
-                self.assertNotIn("labellerCuesDigest", result)
-                self.assertFalse((Path(self.work_dir) / "wilted-pipeline" / "labeller-cues.json").exists())
-
-    def test_the_flag_without_aligned_segments_writes_nothing(self):
-        install_fake_wilted({"vtt": [FakeSegment(0, 2, "published words")]})
-        with redirect_stderr(io.StringIO()):
-            result = wp.run({
-                "audioPath": str(self.audio), "removeAds": False, "emitLabellerCues": True,
-                "workDir": self.work_dir,
-                "publishedTranscript": {"body": "WEBVTT", "mediaType": "text/vtt",
-                                        "url": "https://x.test/a.vtt"},
-            })
-        self.assertEqual(result["timing"], "published")
-        self.assertNotIn("labellerCuesPath", result)
-        self.assertNotIn("labellerCuesDigest", result)
-        self.assertFalse((Path(self.work_dir) / "wilted-pipeline" / "labeller-cues.json").exists())
 
 if __name__ == "__main__":
     unittest.main()

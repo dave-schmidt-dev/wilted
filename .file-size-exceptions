@@ -3,5 +3,4 @@
 # reasonably be split; "not refactored yet" is not one. Legacy entries record files already
 # over 800 lines when this rule was adopted: split them when next substantially changed,
 # then delete the entry. Entries record a reason, never a line cap.
-Producer/Runtime/src/wilted/ads.py runtime adaptation boundary: workers replace detector module globals; parser and taxonomy fixtures extract this module AST. Preserve those seams until a substantive detector change qualifies an extraction (health review 2026-10-19).
 app/wilted_app_store_connect_bridge.py standalone fixed-broker executable: release-wrapper tests copy only this file and qualify refusal without sibling imports. A package split needs a separately qualified broker/bootstrap contract (health review 2026-10-19).

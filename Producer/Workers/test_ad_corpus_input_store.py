@@ -19,23 +19,14 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import commercial_recovery as _worker_commercial_recovery
-from wilted_worker import commercial_seeds as _worker_commercial_seeds
 from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import edge_recovery as _worker_edge_recovery
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
 from wilted_worker import reporting as _worker_reporting
-from wilted_worker import span_bounds as _worker_span_bounds
-from wilted_worker import tail_recovery as _worker_tail_recovery
 from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
@@ -107,38 +98,6 @@ class AdCorpusInputStoreTests(unittest.TestCase):
             self.corpus.case_segments(self.waveform, store=store, cache=cache),
             (None, None),
         )
-
-    def test_a_case_with_input_in_neither_store_is_unrunnable_not_badly_scored(self):
-        # Two cases, one verdict each: a case that could not run and a case
-        # that ran and lost programme are different failures wanting different
-        # responses, and strict mode must not flatten them into one FAIL.
-        manifest = self.directory("manifest.json")
-        manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text(json.dumps({"cases": [self.waveform, self.pchh]}))
-
-        def replay(case, *, cache, store):
-            if case["id"] == self.waveform["id"]:
-                return None
-            # Ten seconds inside PCHH's must-keep run: it ran, and it scored
-            # badly.
-            return ([self.corpus.Span(40.0, 50.0)], {"modelRequests": 1})
-
-        with mock.patch.object(self.corpus, "replay_spans", replay), \
-                redirect_stderr(io.StringIO()):
-            results = self.corpus.run(
-                "replay", library=Path("/nowhere"), cache=Path("/nowhere"),
-                store=Path("/nowhere"), manifest=manifest, strict=True,
-            )
-        missing = next(result for result in results if result.case_id == self.waveform["id"])
-        scored = next(result for result in results if result.case_id == self.pchh["id"])
-        self.assertTrue(missing.unrunnable)
-        self.assertFalse(missing.skipped)
-        self.assertIn("unrunnable", missing.reason)
-        self.assertFalse(scored.unrunnable)
-        self.assertFalse(scored.skipped)
-        self.assertFalse(scored.passed)
-        self.assertIn("lost", scored.reason)
-        self.assertNotIn("unrunnable", scored.reason)
 
     def test_adopt_copies_manifest_named_entries_and_names_the_unsatisfied_cases(self):
         source = self.directory("snapshot")

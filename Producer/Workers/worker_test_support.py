@@ -24,41 +24,11 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest import mock
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import commercial_recovery as _worker_commercial_recovery
-from wilted_worker import commercial_seeds as _worker_commercial_seeds
 from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import edge_recovery as _worker_edge_recovery
-from wilted_worker import preroll_passage_review as _worker_preroll_passage_review
-from wilted_worker import glossary as _worker_glossary
-from wilted_worker import gpu_admission as _worker_gpu_admission
-from wilted_worker import reporting as _worker_reporting
-from wilted_worker import span_bounds as _worker_span_bounds
-from wilted_worker import tail_recovery as _worker_tail_recovery
-from wilted_worker import transcript_sources as _worker_transcript_sources
-from wilted_worker import ad_audit as _worker_ad_audit
-from wilted_worker import ad_removal as _worker_ad_removal
-from wilted_worker import cue_timing as _worker_cue_timing
-from wilted_worker import glossary as _worker_glossary
-from wilted_worker import gpu_admission as _worker_gpu_admission
-from wilted_worker import reporting as _worker_reporting
-from wilted_worker import transcript_sources as _worker_transcript_sources
-
-_WORKER_PATCH_MODULES = {
-    'recover_commercial_evidence_reads': _worker_commercial_seeds,
-    'recover_sparse_commercial_reads': _worker_commercial_seeds,
-    'recover_transcript_end_postroll': _worker_tail_recovery,
-    'recover_source_checked_preroll': _worker_preroll_passage_review,
-    'recover_unclaimed_explicit_sponsor_reads': _worker_commercial_recovery,
-    'resize_oversized_ad_spans': _worker_span_bounds,
-}
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 WORKER_PATH = REPO_ROOT / "Producer" / "Workers" / "wilted_pipeline.py"
-
-RUNTIME_ADS_PATH = REPO_ROOT / "Producer" / "Runtime" / "src" / "wilted" / "ads.py"
 
 WORKER_PACKAGE_PATH = WORKER_PATH.with_name("wilted_worker")
 
@@ -84,55 +54,6 @@ def load_worker():
     spec.loader.exec_module(module)
     return module
 
-def load_runtime_ads():
-    """Load the vendored `wilted.ads` with its model imports stood in for.
-
-    The gate never imports the real module -- it reaches the model bindings --
-    so the pure confidence arithmetic under test is loaded against minimal
-    stand-ins for `wilted.cache`, `wilted.llm` and `wilted.transcribe`. The
-    stand-ins are removed from `sys.modules` again as soon as the module is
-    loaded: the loaded object keeps its own globals and does not need them to
-    stay, and the rest of the suite must see the module tree it expects.
-    """
-    names = ("wilted", "wilted.cache", "wilted.llm", "wilted.transcribe", "wilted.ads")
-    saved = {name: sys.modules.get(name) for name in names}
-
-    package = types.ModuleType("wilted")
-    package.__path__ = []
-    cache = types.ModuleType("wilted.cache")
-    cache.check_ffmpeg = lambda *args, **kwargs: None
-    llm = types.ModuleType("wilted.llm")
-    llm.LLMBackend = object
-    llm.parse_json_response = json.loads
-    transcript = types.ModuleType("wilted.transcribe")
-
-    @dataclass
-    class TranscriptSegment:
-        start_s: float
-        end_s: float
-        text: str
-        tokens: tuple = ()
-
-    transcript.TranscriptSegment = TranscriptSegment
-    sys.modules.update({
-        "wilted": package,
-        "wilted.cache": cache,
-        "wilted.llm": llm,
-        "wilted.transcribe": transcript,
-    })
-    try:
-        spec = importlib.util.spec_from_file_location("wilted.ads", RUNTIME_ADS_PATH)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules["wilted.ads"] = module
-        spec.loader.exec_module(module)
-    finally:
-        for name, previous in saved.items():
-            if previous is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = previous
-    return module, TranscriptSegment
-
 wp = load_worker()
 
 def worker_namespaces():
@@ -142,19 +63,6 @@ def worker_namespaces():
         if name.startswith("wilted_worker.") and isinstance(module, types.ModuleType):
             namespaces.update(vars(module))
     return namespaces
-
-def _worker_owned_prompts():
-    return {
-        value
-        for name, value in worker_namespaces().items()
-        if name.endswith("_PROMPT") and isinstance(value, str) and value
-    }
-
-def _passthrough_detections(_ads, _backend, _segments, detections, *_args):
-    return detections
-
-def _passthrough_reviewed_detections(_ads, _backend, _segments, detections, *_args, **_kwargs):
-    return detections, frozenset()
 
 @dataclass
 class FakeSegment:
@@ -296,11 +204,9 @@ def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=Non
     package.transcribe = transcribe
     sys.modules["wilted"] = package
     sys.modules["wilted.transcribe"] = transcribe
-    # `from wilted import ads` falls back to sys.modules["wilted.ads"], so a
-    # double left behind by another test would be silently reused here.
-    sys.modules.pop("wilted.ads", None)
+    # A `wilted.llm` double left behind by another test must not be reused here.
     sys.modules.pop("wilted.llm", None)
     install_fake_speech_stack()
     return transcribe
 
-__all__ = ['FakeSegment', 'REPO_ROOT', 'RUNTIME_ADS_PATH', 'WORKER_PACKAGE_PATH', 'WORKER_PATH', 'WORKER_SOURCES', '_WORKER_PATCH_MODULES', '_passthrough_detections', '_passthrough_reviewed_detections', '_worker_owned_prompts', 'install_fake_speech_stack', 'install_fake_wilted', 'load_ad_corpus', 'load_runtime_ads', 'load_worker', 'recording_model_lock', 'synthetic_render', 'worker_namespaces', 'wp']
+__all__ = ['FakeSegment', 'REPO_ROOT', 'WORKER_PACKAGE_PATH', 'WORKER_PATH', 'WORKER_SOURCES', 'install_fake_speech_stack', 'install_fake_wilted', 'load_ad_corpus', 'load_worker', 'recording_model_lock', 'synthetic_render', 'worker_namespaces', 'wp']

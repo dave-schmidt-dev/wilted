@@ -12,74 +12,8 @@ from wilted.llm import (
     MlxBackend,
     _resolve_model_spec,
     create_backend,
-    parse_json_response,
     resolve_gguf_path,
 )
-
-# ---------------------------------------------------------------------------
-# parse_json_response
-# ---------------------------------------------------------------------------
-
-
-class TestParseJsonResponse:
-    def test_plain_json_object(self):
-        result = parse_json_response('{"key": "value"}')
-        assert result == {"key": "value"}
-
-    def test_plain_json_array(self):
-        result = parse_json_response("[1, 2, 3]")
-        assert result == [1, 2, 3]
-
-    def test_json_with_markdown_fences(self):
-        text = '```json\n{"playlist": "Work"}\n```'
-        result = parse_json_response(text)
-        assert result == {"playlist": "Work"}
-
-    def test_json_with_surrounding_text(self):
-        text = 'Here is the result:\n{"playlist": "Fun", "score": 0.8}\nDone.'
-        result = parse_json_response(text)
-        assert result == {"playlist": "Fun", "score": 0.8}
-
-    def test_nested_json(self):
-        text = '{"outer": {"inner": [1, 2]}}'
-        result = parse_json_response(text)
-        assert result == {"outer": {"inner": [1, 2]}}
-
-    def test_no_json_raises(self):
-        with pytest.raises(ValueError, match="No valid JSON"):
-            parse_json_response("This is just plain text.")
-
-    def test_empty_string_raises(self):
-        with pytest.raises(ValueError, match="No valid JSON"):
-            parse_json_response("")
-
-    def test_json_with_whitespace(self):
-        text = '  \n  {"key": "value"}  \n  '
-        result = parse_json_response(text)
-        assert result == {"key": "value"}
-
-    def test_classification_response(self):
-        text = '{"playlist": "Education", "relevance_score": 0.75, "summary": "An article about science."}'
-        result = parse_json_response(text)
-        assert result["playlist"] == "Education"
-        assert result["relevance_score"] == 0.75
-
-    def test_braces_inside_string_values(self):
-        text = 'Here: {"summary": "The {curly braces} article", "score": 1}'
-        result = parse_json_response(text)
-        assert result["summary"] == "The {curly braces} article"
-        assert result["score"] == 1
-
-    def test_markdown_with_language_tag(self):
-        text = '```json\n{"a": 1}\n```'
-        result = parse_json_response(text)
-        assert result == {"a": 1}
-
-    def test_bare_code_fence(self):
-        text = '```\n{"b": 2}\n```'
-        result = parse_json_response(text)
-        assert result == {"b": 2}
-
 
 # ---------------------------------------------------------------------------
 # create_backend factory

@@ -1,4 +1,4 @@
-.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-replay ad-corpus-adopt ad-feedback-drafts retention-report retention-apply retention-install
+.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-adopt ad-feedback-drafts retention-report retention-apply retention-install
 
 # The runtime venv every target shares (Producer/Runtime/Makefile pins the same path).
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/Producer/Runtime/.venv
@@ -118,9 +118,8 @@ ad-corpus:
 	@python3 Producer/Workers/ad_corpus.py --mode recorded
 
 # Pins the corpus's inputs out of a snapshot of the preparation cache, because
-# that cache is a 32-entry LRU working set for preparation and evicts: all
-# three original cases' transcripts were evicted from it and the replay then
-# measured nothing. Takes the snapshot directory, e.g.
+# that cache is a 32-entry LRU working set for preparation and evicts, and a case whose
+# input is gone measures nothing. Takes the snapshot directory, e.g.
 # `make ad-corpus-adopt SOURCE=~/Library/Application\ Support/Wilted/adcorpus-snapshot-2026-09-17`. Copies only entries
 # a manifest case names into ~/Library/Application Support/Wilted/adcorpus-inputs/,
 # reports each by case id, and exits non-zero when the snapshot cannot satisfy
@@ -145,23 +144,3 @@ retention-apply:
 
 retention-install:
 	@python3 scripts/install-storage-retention.py --repo "$(CURDIR)" --apply --activate
-
-# The same scoring, but re-running the live detector over the aligned segments
-# the original run consumed, so a candidate fix can be measured without
-# re-preparing anything. Loads the GGUF model and takes minutes; it takes the
-# same GPU admission lock a preparation takes, so running it while the app is
-# working queues rather than contends. `--strict` because this is the mode a
-# candidate fix is judged in: a case whose input is missing here measured
-# nothing, and a corpus that silently shrinks to whatever this machine holds is
-# how a fix gets called good. Inputs resolve from the pinned store first (see
-# `ad-corpus-adopt`) and the aligned cache only as a fallback. `ad-corpus`
-# stays lenient -- it reads
-# mutable library state and a machine that has prepared neither episode should
-# still be able to run it and read the report.
-# The runtime's own interpreter, not the system one, and resolved from the same
-# variable Swift resolves it from (see `PodcastPreparationPipeline.Configuration
-# .resolved`): the model bindings the detector imports live in that virtualenv
-# and nowhere else. Populate it with `make worktree-setup`.
-ad-corpus-replay:
-	@"$${WILTED_PIPELINE_PYTHON:-$(UV_PROJECT_ENVIRONMENT)/bin/python}" \
-		Producer/Workers/ad_corpus.py --mode replay --strict
