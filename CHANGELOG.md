@@ -15,6 +15,7 @@ All notable changes to this project are documented in this file.
 - A show that is not sent for online ad finding now keeps its ads and says why, instead of being cut on the Mac.
 
 ### Added
+- The Mac has an Activity popover (click the sidebar's sync line) that shows what the Mac is doing in the background, including how many of the episodes it uploads ahead of time are already in iCloud.
 - The iPhone Larder's Sort menu has Mac order: the list, CarPlay, Siri and the Watch follow the Mac Larder's order as last synced, and the next episode is picked by the Mac's rule. Play order stays the default; the other sorts stay display-only.
 - The Mac uploads the next 10 prepared Larder entries that are not finished and not yet on a device to iCloud ahead of time, one at a time, so **Get audio** on the iPhone for those works with the Mac asleep or away; other entries still upload when asked.
 - Removing an episode from the Mac Larder, or marking it completed, now shows a toast at the bottom of the window with **Undo** for 5 seconds, wherever the list is scrolled and on every destination. Edit > Undo (Command-Z) takes back the same thing, and a second removal can be undone as well, newest first. The toast waits while the pointer rests on it or VoiceOver is running, up to the 10 seconds the undo itself lasts. It replaces the **Undo completion** button in the Larder's filter bar and in Feeds, which was easy to miss.

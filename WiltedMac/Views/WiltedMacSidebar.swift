@@ -13,6 +13,8 @@ struct WiltedMacSidebar: View {
     let mode: WiltedMacSidebarMode
     let onSelect: (WiltedMacNavigation) -> Void
     @Environment(\.colorScheme) var colorScheme
+    /// The Activity popover is open. View state: it is not remembered and nothing else opens it.
+    @State private var isActivityPresented = false
 
     var body: some View {
         // No `selection:` binding on purpose. The rows are buttons that set
@@ -48,33 +50,66 @@ struct WiltedMacSidebar: View {
         .modifier(WiltedMacPlaylistPrompts(model: model))
     }
 
-    private var publicationFooter: some View {
-        let summary = WiltedPublicationAge.macSidebarSummary(
+    /// The sync line in words: what the full sidebar draws, and how the footer's help begins.
+    var publicationSummary: String {
+        WiltedPublicationAge.macSidebarSummary(
             model.librarySyncActivity.publication?.publishedAt, verified: model.libraryPublicationVerified,
             held: model.libraryAccountStatus?.needsReview == true)
+    }
+
+    /// Uploads ahead of time are waiting because iCloud has no room for them.
+    var uploadsPausedForStorage: Bool {
+        model.librarySyncActivity.media?.preupload?.pauseReason == .storageFull
+    }
+
+    /// The footer in the warning colour, and the rail's icon as the warning triangle.
+    var publicationNeedsAttention: Bool {
+        model.librarySyncActivity.sendFailed || model.librarySyncActivity.checkFailed || uploadsPausedForStorage
+    }
+
+    /// The footer's tooltip and accessibility label. The rail draws only an icon, so this is
+    /// where its status is read; it ends by saying what a click does.
+    var publicationHelp: String {
         let detail = [model.libraryPublicationDetail, model.libraryPublicationQualifier].compactMap { $0 }.joined(separator: " ")
-        let failed = model.librarySyncActivity.sendFailed || model.librarySyncActivity.checkFailed
-        return Group {
-            if mode == .full {
-                Text(summary)
-                    // Prose fits the actual sidebar in the native proportional caption; shrinking
-                    // the theme's monospaced caption made “sync” unreadable in shipping captures.
-                    .font(.system(size: WiltedTheme.scaled(NSFont.preferredFont(forTextStyle: .caption1).pointSize, scale: model.textScale)))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Image(systemName: failed ? "exclamationmark.triangle" : "iphone")
-                    .wiltedFont(.body)
-                    .frame(maxWidth: .infinity)
+        let paused = uploadsPausedForStorage ? "Uploads ahead of time are paused: iCloud storage is full." : ""
+        return ["\(publicationSummary).", detail, paused, "Click for activity."]
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// The sync line, which opens the Activity popover. A plain button, so it keeps the look of
+    /// the status text it was.
+    private var publicationFooter: some View {
+        Button {
+            isActivityPresented = true
+        } label: {
+            Group {
+                if mode == .full {
+                    Text(publicationSummary)
+                        // Prose fits the actual sidebar in the native proportional caption; shrinking
+                        // the theme's monospaced caption made “sync” unreadable in shipping captures.
+                        .font(.system(size: WiltedTheme.scaled(NSFont.preferredFont(forTextStyle: .caption1).pointSize, scale: model.textScale)))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Image(systemName: publicationNeedsAttention ? "exclamationmark.triangle" : "iphone")
+                        .wiltedFont(.body)
+                        .frame(maxWidth: .infinity)
+                }
             }
+            .foregroundStyle(WiltedTheme.color(publicationNeedsAttention ? .degraded : .secondaryText, scheme: colorScheme))
+            .padding(.horizontal, WiltedTheme.Spacing.small)
+            .padding(.bottom, WiltedTheme.Spacing.small)
+            // On the label, not the Button: a plain button hit-tests only its label's drawn
+            // content, so the space around the text or icon would ignore clicks.
+            .contentShape(Rectangle())
         }
-        .foregroundStyle(WiltedTheme.color(failed ? .degraded : .secondaryText, scheme: colorScheme))
-        .padding(.horizontal, WiltedTheme.Spacing.small)
-        .padding(.bottom, WiltedTheme.Spacing.small)
-        .help("\(summary). \(detail)")
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(summary). \(detail)")
+        .buttonStyle(.plain)
+        .help(publicationHelp)
+        .accessibilityLabel(publicationHelp)
         .accessibilityIdentifier("wilted-sidebar-publication-status")
+        .popover(isPresented: $isActivityPresented, arrowEdge: .trailing) {
+            WiltedMacActivityContent(model: model)
+        }
     }
 
     func row(_ destination: WiltedMacNavigation) -> some View {
