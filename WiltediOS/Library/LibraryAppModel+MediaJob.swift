@@ -173,6 +173,12 @@ extension LibraryAppModel {
         case .notTried, .fellBack: break
         }
 
+        // Audio the Mac uploaded ahead of any request downloads at once, with no request sent.
+        if !job.requestSent, let offer = await uploadedOffer(for: entryID),
+           let step = try await attemptUploadedDownload(offer, job: &job, runID: runID, context: context) {
+            return step
+        }
+
         if !job.requestSent {
             let intent = try LibraryIntent.requestMedia(
                 entryID: entryID, deviceID: deviceID, createdAt: job.intentCreatedAt, id: job.intentID)
@@ -198,6 +204,43 @@ extension LibraryAppModel {
             endMediaJob(job, runID: runID, row: media[entryID])
             return .finished
         }
+        return try await downloadAndFinish(offer, job: &job, runID: runID, context: context, fallsThrough: false) ?? .finished
+    }
+
+    /// The entry's offer when its audio is already uploaded and prepared: from the last sync round's copy
+    /// when that is at most 60 s old, else from one read. Anything else, a failed read included, is nil,
+    /// and the job asks the Mac as before.
+    private func uploadedOffer(for entryID: ItemID) async -> LibraryMediaOffer? {
+        let offer: LibraryMediaOffer?
+        if let readAt = tickState.offersReadAt, now().timeIntervalSince(readAt) <= 60 {
+            offer = tickState.offers[entryID]
+        } else {
+            offer = (try? await transport.mediaOffers())?.first { $0.entryID == entryID }
+        }
+        guard let offer, offer.state == .ready, offer.isPrepared else { return nil }
+        return offer
+    }
+
+    /// Downloads an uploaded offer found ahead of any request, after the prepared-identity check
+    /// `readOffer` makes. Nil when that copy is gone, fails delivery or does not verify: the same pass
+    /// then asks the Mac.
+    private func attemptUploadedDownload(
+        _ offer: LibraryMediaOffer, job: inout LibraryMediaJob, runID: UUID, context: LibraryMediaContext
+    ) async throws -> MediaJobStep? {
+        let entryID = job.entryID
+        let old = await mediaCache.cachedEntries()[entryID]?.preparation?.offer
+        if let old, !Self.samePreparedIdentity(old, offer) { try await mediaCache.revokePreparation(entryID: entryID) }
+        guard isCurrent(entryID, runID), await mediaContextIsCurrent(context, entryID: entryID, live: true) else { return .finished }
+        return try await downloadAndFinish(offer, job: &job, runID: runID, context: context, fallsThrough: true)
+    }
+
+    /// Admits, downloads and verifies `offer`, then ends the job from the result. With `fallsThrough`
+    /// (an offer found without asking), a copy that is gone, fails delivery or mismatches in size or hash
+    /// returns nil with the row back at "sent", so the caller asks the Mac; otherwise never nil.
+    private func downloadAndFinish(
+        _ offer: LibraryMediaOffer, job: inout LibraryMediaJob, runID: UUID, context: LibraryMediaContext, fallsThrough: Bool
+    ) async throws -> MediaJobStep? {
+        let entryID = job.entryID
         guard persist(job: &job, runID: runID, { $0.revisionID = offer.revisionID; $0.stage = .downloading; $0.waits = 0 }),
               let admission = await mediaCache.admission(entryID: entryID, ownerToken: context.ownerToken,
                 libraryScope: Self.mediaLibraryScope, transportGeneration: context.generation),
@@ -221,6 +264,11 @@ extension LibraryAppModel {
             }
             startTranscriptLoad(entryID: entryID, fetchOnMiss: true)
             return .finished
+        case .notReady where fallsThrough, .failed(.deliveryFailed) where fallsThrough,
+             .failed(.byteCountMismatch) where fallsThrough, .failed(.hashMismatch) where fallsThrough:
+            guard persist(job: &job, runID: runID, { $0.stage = .sent; $0.revisionID = nil }) else { return .finished }
+            setMedia(.requested(since: job.requestedSince, stage: job.stage.requestStage), entryID, runID)
+            return nil
         case .notReady:
             setNotPrepared(entryID, runID)
             endMediaJob(job, runID: runID, row: media[entryID])

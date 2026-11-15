@@ -135,11 +135,12 @@ final class LibraryMediaModelTests: XCTestCase {
         MediaHash.prefix + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private func makeOffer(_ data: Data? = nil, hashOf other: Data? = nil) throws -> LibraryMediaOffer {
+    private func makeOffer(_ data: Data? = nil, hashOf other: Data? = nil, state: LibraryMediaOffer.State = .ready) throws -> LibraryMediaOffer {
         let bytes = data ?? payload
         return try LibraryMediaOffer(
             entryID: entryID, revisionID: revisionID, contentHash: hash(other ?? bytes),
             byteCount: Int64(bytes.count), mediaType: "audio/mp4", durationSeconds: 60,
+            state: state,
             preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_000))))
     }
 
@@ -537,7 +538,7 @@ final class LibraryMediaModelTests: XCTestCase {
     }
 
     func testARequestICloudHoldsBackIsSentOnceTheHoldLiftsWithTheSameID() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         let counter = FetchCounter()
         let held = Gate()
         var timing = fast
@@ -551,6 +552,8 @@ final class LibraryMediaModelTests: XCTestCase {
         XCTAssertTrue(model.mediaState(for: entryID).isInFlight, "a held request can still be cancelled")
 
         await held.open()
+        try await eventually("the request is sent") { counter.count == 3 }
+        try await macPublish(makeOffer())
         await model.waitForMedia(entryID: entryID)
         XCTAssertEqual(model.mediaState(for: entryID), .onPhone, "no manual Retry was needed")
         XCTAssertEqual(counter.count, 3)
@@ -559,7 +562,7 @@ final class LibraryMediaModelTests: XCTestCase {
     }
 
     func testARequestICloudRefusesOutrightFailsWithoutRetrying() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         let counter = FetchCounter()
         let model = makeModel(refuseRequests: (times: 1, how: .refused, counter: counter))
         model.performMediaAction(.request, entryID: entryID)

@@ -141,10 +141,11 @@ final class LibraryMediaJobTests: XCTestCase {
         MediaHash.prefix + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private func makeOffer(hashOf other: Data? = nil) throws -> LibraryMediaOffer {
+    private func makeOffer(hashOf other: Data? = nil, state: LibraryMediaOffer.State = .ready) throws -> LibraryMediaOffer {
         try LibraryMediaOffer(
             entryID: entryID, revisionID: revisionID, contentHash: hash(other ?? payload),
             byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 60,
+            state: state,
             preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_000))))
     }
 
@@ -195,12 +196,14 @@ final class LibraryMediaJobTests: XCTestCase {
     // MARK: durability
 
     func testAJobSurvivesRelaunchAndKeepsItsIntentID() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         let hold = Latch()
         let script = Script()
         script.holdFetches(hold)
         let first = makeModel(script: script)
         first.performMediaAction(.request, entryID: entryID)
+        try await eventually("request sent") { (try? await self.requestIDs().isEmpty) == false }
+        try await macPublish(makeOffer())
         try await eventually("downloading") {
             if case .downloading = first.mediaState(for: self.entryID) { return true }
             return false
@@ -253,7 +256,7 @@ final class LibraryMediaJobTests: XCTestCase {
     // MARK: passing causes
 
     func testAThirtyMinuteThrottleEndsCachedNotFailedAndTheRowNamesTheRetryTime() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         let retryAt = Date().addingTimeInterval(1_800)
         let script = Script()
         script.failFetches([TransportThrottled(retryAt: retryAt)])
@@ -261,6 +264,8 @@ final class LibraryMediaJobTests: XCTestCase {
         let sleeps = SleepLog()
         let model = makeModel(script: script, timing: timing(sleeps: sleeps, holding: latch))
         model.performMediaAction(.request, entryID: entryID)
+        try await eventually("request sent") { (try? await self.requestIDs().isEmpty) == false }
+        try await macPublish(makeOffer())
 
         try await eventually("the throttle is kept in the job") { self.savedJob()?.nextAttempt != nil }
         let due = try XCTUnwrap(savedJob()?.nextAttempt)
@@ -278,12 +283,14 @@ final class LibraryMediaJobTests: XCTestCase {
     }
 
     func testATransientSendFailurePastTheOldCapsStillEndsCached() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         let script = Script()
         script.failSends(Array(repeating: offline, count: 7)) // the old cap was 3 retries
         let sleeps = SleepLog()
         let model = makeModel(script: script, timing: timing(sleeps: sleeps))
         model.performMediaAction(.request, entryID: entryID)
+        try await eventually("sends done") { script.sendCount == 8 }
+        try await macPublish(makeOffer())
         await model.waitForMedia(entryID: entryID)
 
         XCTAssertEqual(model.mediaState(for: entryID), .onPhone)
@@ -321,12 +328,14 @@ final class LibraryMediaJobTests: XCTestCase {
     }
 
     func testATransientDownloadFailureRetriesAndEndsCached() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         let script = Script()
         script.failFetches(Array(repeating: offline, count: 4)) // three quick tries, then the job's wait
         let sleeps = SleepLog()
         let model = makeModel(script: script, timing: timing(sleeps: sleeps))
         model.performMediaAction(.request, entryID: entryID)
+        try await eventually("request sent") { (try? await self.requestIDs().isEmpty) == false }
+        try await macPublish(makeOffer())
         await model.waitForMedia(entryID: entryID)
 
         XCTAssertEqual(model.mediaState(for: entryID), .onPhone)
@@ -360,11 +369,13 @@ final class LibraryMediaJobTests: XCTestCase {
     // MARK: terminal causes
 
     func testTheSameVerificationMismatchTwiceEndsFailedAfterOneImmediateRetry() async throws {
-        try await macPublish(makeOffer(hashOf: Data([1, 2, 3])))
+        try await macPublish(makeOffer(hashOf: Data([1, 2, 3]), state: .available))
         let script = Script()
         let sleeps = SleepLog()
         let model = makeModel(script: script, timing: timing(sleeps: sleeps))
         model.performMediaAction(.request, entryID: entryID)
+        try await eventually("request sent") { (try? await self.requestIDs().isEmpty) == false }
+        try await macPublish(makeOffer(hashOf: Data([1, 2, 3])))
         await model.waitForMedia(entryID: entryID)
 
         guard case let .failed(reason) = model.mediaState(for: entryID) else { return XCTFail("expected failed") }
@@ -379,12 +390,14 @@ final class LibraryMediaJobTests: XCTestCase {
     // MARK: cancel, quarantine, reissue
 
     func testCancelSendsNothingMoreAndAStaleRunCannotTouchTheNextJob() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         let hold = Latch()
         let script = Script()
         script.holdFetches(hold)
         let model = makeModel(script: script)
         model.performMediaAction(.request, entryID: entryID)
+        try await eventually("request sent") { (try? await self.requestIDs().isEmpty) == false }
+        try await macPublish(makeOffer())
         try await eventually("downloading") {
             if case .downloading = model.mediaState(for: self.entryID) { return true }
             return false
@@ -395,9 +408,12 @@ final class LibraryMediaJobTests: XCTestCase {
         XCTAssertNil(savedJob())
 
         script.holdFetches(nil)
+        try await macPublish(makeOffer(state: .available))
         model.performMediaAction(.request, entryID: entryID)
         let second = try XCTUnwrap(savedJob())
         hold.release()
+        try await eventually("second request sent") { (try? await self.requestIDs().count) == before.count + 1 }
+        try await macPublish(makeOffer())
         try await Task.sleep(for: .milliseconds(50))
         await model.waitForMedia(entryID: entryID)
 
@@ -458,13 +474,15 @@ final class LibraryMediaJobTests: XCTestCase {
     }
 
     func testASixDayOldIntentIsReissuedOnceUnderANewID() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         var job = LibraryMediaJob(entryID: entryID, intentID: "old-intent", createdAt: Date().addingTimeInterval(-6 * 86_400 - 3_600))
         job.requestSent = true // it was sent, six days ago
         reader.saveJob(job, ownerToken: owner)
 
         let model = makeModel()
         await model.loadLocalState()
+        try await eventually("reissued intent sent") { (try? await self.requestIDs().isEmpty) == false }
+        try await macPublish(makeOffer())
         await model.waitForMedia(entryID: entryID)
 
         let ids = try await requestIDs()
@@ -474,12 +492,14 @@ final class LibraryMediaJobTests: XCTestCase {
     }
 
     func testAFiveDayOldIntentIsKept() async throws {
-        try await macPublish(makeOffer())
+        try await macPublish(makeOffer(state: .available))
         reader.saveJob(
             LibraryMediaJob(entryID: entryID, intentID: "five-days", createdAt: Date().addingTimeInterval(-5 * 86_400)),
             ownerToken: owner)
         let model = makeModel()
         await model.loadLocalState()
+        try await eventually("intent sent") { (try? await self.requestIDs().isEmpty) == false }
+        try await macPublish(makeOffer())
         await model.waitForMedia(entryID: entryID)
         let ids = try await requestIDs()
         XCTAssertEqual(ids, ["five-days"])
