@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 
 ### Added
+- The Mac uploads the next 10 prepared Larder entries that are not finished and not yet on a device to iCloud ahead of time, one at a time, so **Get audio** on the iPhone for those works with the Mac asleep or away; other entries still upload when asked.
 - A podcast feed's settings on the Mac have a **This show has no ads** switch, off by default. Turned on, preparing that feed's episodes leaves the audio uncut. Episodes Wilted already cut are listed under the switch as **Restore N Cut Episodes**, which downloads each original again and puts back what was cut, keeping your place; the same episodes offer **Restore Full Episode** in their Larder menu.
 - Adding a podcast feed on the Mac that looks paid or ad-free (by its title or a private-looking address) now asks, before the feed is saved, whether to exclude it from ad removal. Feeds added from the iPhone are not asked about; use the feed's **This show has no ads** switch.
 - Mac Settings > Ad finding > **Label now** sends the transcripts still stored on this Mac, for episodes prepared earlier, to the online labeller trial, with progress and Stop. It changes no audio and downloads nothing.
