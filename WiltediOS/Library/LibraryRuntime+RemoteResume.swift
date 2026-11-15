@@ -4,9 +4,8 @@ import WiltedDomain
 
 extension LibraryAppModel {
     /// What a play command resumes when nothing is loaded: the first episode on the phone that is not
-    /// completed, in the play order CarPlay, Siri and auto-continue share (in-progress episodes with the
-    /// newest play first, then the not-started ones). Nil when every episode on the phone is completed,
-    /// or none is: a finished episode is never restarted from the car.
+    /// completed, in the model's list order (Play order or Mac order) that CarPlay, Siri and auto-continue share.
+    /// Nil when every episode on the phone is completed, or none is: a finished episode is never restarted from the car.
     var remoteResumeRow: LibraryRow? {
         let finished = logicalFinished
         return playOrderRows.first { LibraryListing.completionDate($0, finished: finished) == nil }

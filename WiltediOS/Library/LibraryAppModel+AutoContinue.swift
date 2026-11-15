@@ -41,8 +41,10 @@ extension LibraryAppModel {
         }
     }
 
-    /// Starts the next episode after `endedID` finished: walks the saved forward sequence suffix,
-    /// skipping completed, removed, media-ineligible, and cache-missing candidates, without wrapping backwards.
+    /// Starts the next episode after `endedID` finished in the model's list order, Play order or Mac order:
+    /// in Play order (or after an audiobook), walks the saved forward sequence suffix without wrapping backwards;
+    /// in Mac order, reads candidate rows from the live queue minus the ended row and audiobooks.
+    /// Skips completed, removed, media-ineligible, and cache-missing candidates.
     /// A candidate whose file disappears between the initial snapshot and the start's own lookup
     /// is skipped the same way, by trying the one after it. Preserves playback speed and stops
     /// cleanly when none remain. A command given meanwhile (pause, play, seek, another start)
@@ -58,9 +60,18 @@ extension LibraryAppModel {
     ) async {
         guard let player = handoffState.player, player.owns(completion) else { return }
         refreshProgress()
-        let forward = handoffState.forwardSequenceIDs
-        guard let endedIndex = forward.firstIndex(where: { sameLogicalEpisode($0, endedID) }) else { return }
-        let suffixIDs = forward[forward.index(after: endedIndex)...]
+        let endedRow = logicalRow(for: endedID) ?? logicalQueued.first { sameLogicalEpisode($0.id, endedID) }
+        let isEndedAudiobook = endedRow?.kind == .audiobook
+        let suffixIDs: [ItemID]
+        if listOrder == .mac, !isEndedAudiobook {
+            suffixIDs = playOrderRows
+                .filter { !sameLogicalEpisode($0.id, endedID) && $0.kind != .audiobook }
+                .map(\.id)
+        } else {
+            let forward = handoffState.forwardSequenceIDs
+            guard let endedIndex = forward.firstIndex(where: { sameLogicalEpisode($0, endedID) }) else { return }
+            suffixIDs = Array(forward[forward.index(after: endedIndex)...])
+        }
         guard !suffixIDs.isEmpty else { return }
 
         let cached: [ItemID: CachedMedia]

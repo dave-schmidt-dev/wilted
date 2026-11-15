@@ -440,9 +440,9 @@ extension LibraryAppModel {
         return commandState.token
     }
 
-    /// The forward suffix a manual start captures: the shared play order from `entryID` on, so
-    /// auto-continue advances through what the list said when the listener chose the row and
-    /// never wraps backwards. A row the list does not show still captures itself alone.
+    /// The forward suffix a manual start captures: the model's list order (Play order or Mac order)
+    /// from `entryID` on, so auto-continue advances through what the list said when the listener chose
+    /// the row and never wraps backwards. A row the list does not show still captures itself alone.
     func manualForwardSuffix(from entryID: ItemID) -> [ItemID] {
         let order = playOrderRows
         guard let index = order.firstIndex(where: { sameLogicalEpisode($0.id, entryID) }) else { return [entryID] }
