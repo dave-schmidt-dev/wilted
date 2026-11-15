@@ -382,5 +382,10 @@ final class WiltedMacMediaSnapshotProjectionTests: XCTestCase {
         XCTAssertEqual(queued[2].0, bookID)
         XCTAssertEqual(queued[2].1.revisionID, bookRevID)
         XCTAssertFalse(queued.map(\.0).contains(podFinishedID), "finished episode must be omitted from prepared queued entries")
+
+        // The podcast-only source keeps the same promise, so no runtime built on it uploads a finished episode.
+        let local = try await WiltedMacLocalReadyAudioSource(store: store).preparedQueued()
+        XCTAssertEqual(local.entries.map(\.0), [pod1ID])
+        XCTAssertEqual(local.larderIDs, [articleID, podFinishedID, pod1ID, bookID])
     }
 }

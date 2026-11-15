@@ -105,6 +105,7 @@ actor WiltedMacMediaService {
     var preuploadStopped = false
     var preuploadPausedUntil: Date?
     var preuploadConsecutiveTransients = 0
+    /// Targets a failed upload set aside, and until when. Kept in memory only: a relaunch tries each once more.
     var preuploadSkippedUntil: [AssetKey: Date] = [:]
     /// The queue every media request passes through.
     let uploadQueue: WiltedMacMediaUploadQueue
@@ -194,6 +195,9 @@ actor WiltedMacMediaService {
     /// throttling at once so shutdown does not sit behind it. A request that was waiting stays
     /// queued and is served on the next launch.
     func drainEndingThrottleWaits() async {
+        if preuploadLimit > 0, !preuploadStopped {
+            mediaLog.notice("Pre-upload stopped for shutdown; it starts again at the next launch")
+        }
         preuploadStopped = true
         preuploadWaitTask?.cancel()
         await preuploadTask?.value

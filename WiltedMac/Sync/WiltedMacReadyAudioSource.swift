@@ -69,7 +69,10 @@ struct WiltedMacLocalReadyAudioSource: WiltedMacReadyAudioSource {
         let snapshot = try await store.podcastLibrarySnapshot(profile: .publication)
         let prepared = Self.preparedAudio(in: snapshot)
         return WiltedMacPreparedQueue(
-            entries: snapshot.podcastQueue.episodeIDs.compactMap { id in prepared[id].map { (id, $0) } },
+            entries: snapshot.podcastQueue.episodeIDs.compactMap { id in
+                guard snapshot.listeningStates[id]?.completedAt == nil else { return nil }
+                return prepared[id].map { (id, $0) }
+            },
             larderIDs: Set(snapshot.podcastQueue.episodeIDs))
     }
 

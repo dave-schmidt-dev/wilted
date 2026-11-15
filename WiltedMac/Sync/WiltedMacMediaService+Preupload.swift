@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import WiltedCloudKit
 import WiltedDomain
 import WiltedLibrary
 
@@ -52,12 +53,11 @@ extension WiltedMacMediaService {
         }
     }
 
-    /// True while the pump is paused for a retry delay or quota wait.
+    /// True while the pump is paused for a retry delay or quota wait. A pure read: the pump itself
+    /// clears the mark when its wait ends.
     var isPreuploadPaused: Bool {
         guard let pausedUntil = preuploadPausedUntil else { return false }
-        if now() < pausedUntil { return true }
-        preuploadPausedUntil = nil
-        return false
+        return now() < pausedUntil
     }
 
     /// Uploads missing pre-upload targets one at a time, re-reading targets after each step.
@@ -233,5 +233,7 @@ private func isQuotaExceeded(_ error: Error) -> Bool {
     if nsError.domain == "CKErrorDomain" && nsError.code == 25 {
         return true
     }
-    return String(describing: error).contains("cloudKit(code: 25")
+    // The shape the iCloud adapter throws: `CKError.Code.quotaExceeded` is 25.
+    if case .cloudKit(code: 25, _) = error as? CloudKitSyncError { return true }
+    return false
 }
