@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import OSLog
 import WiltedCloudKit
 import WiltedDomain
 import WiltedLibrary
@@ -330,11 +331,17 @@ extension CloudKitLibraryTransport {
         } else {
             do { try await driver.deleteRecordsRaw([audioID]) } catch { throw failure(error) }
         }
+        let offerWriteStarted = ContinuousClock.now
         // The offer is saved only after its asset is durable, so it never points at nothing.
         try await write(name: try mapper.recordID(offerFor: offer.entryID).recordName, conflictIsSuccess: false) {
             try self.mapper.record(offer: offer, existing: $0)
         }
         try await updateOfferIndex(adding: offer.entryID, removing: nil)
+        let elapsed = ContinuousClock.now - offerWriteStarted
+        if elapsed > .seconds(5) {
+            let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            log.notice("Offer write for \(offer.entryID.rawValue, privacy: .public) took \(seconds, format: .fixed(precision: 1)) s after the asset")
+        }
     }
 
     public func fetchMedia(_ offer: LibraryMediaOffer, progress: @escaping MediaProgressHandler) async throws -> URL {
