@@ -490,9 +490,13 @@ extension WiltedMacModel {
 
     /// Re-reads ahead-of-time media upload activity and queued requests from the current runtime.
     func refreshMediaActivity() async {
-        guard let inbound = librarySyncController?.inbound else { return }
+        // A stopped runtime is never read, and a read that spans a stop or restart of the same
+        // runtime (the account gate closing and reopening) is dropped.
+        guard let inbound = librarySyncController?.inbound, inbound.poller != nil else { return }
+        let lifecycle = inbound.lifecycle
         let snapshot = await inbound.mediaActivity()
-        guard librarySyncController?.inbound === inbound else { return }
+        guard librarySyncController?.inbound === inbound, inbound.lifecycle == lifecycle,
+              inbound.poller != nil else { return }
         if librarySyncActivity.media != snapshot {
             librarySyncActivity.media = snapshot
         }

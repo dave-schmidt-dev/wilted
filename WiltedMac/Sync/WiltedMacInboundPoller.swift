@@ -211,6 +211,8 @@ final class WiltedMacInboundRuntime {
     private var startup: Task<Void, Never>?
     private var shutdown: Task<Void, Never>?
     private(set) var poller: WiltedMacInboundPoller?
+    /// Bumped on every start and stop, so a read that spans one can tell it is stale.
+    private(set) var lifecycle = 0
 
     init(
         source: any WiltedMacReadyAudioSource,
@@ -355,6 +357,7 @@ final class WiltedMacInboundRuntime {
             onRoundFinished: onRoundFinished
         )
         self.poller = poller
+        lifecycle += 1
         let beforePollerStart = beforePollerStart
         let previousShutdown = shutdown
         let lanServer = lanServer
@@ -378,6 +381,7 @@ final class WiltedMacInboundRuntime {
     func stop() -> Task<Void, Never>? {
         guard let poller else { return shutdown }
         self.poller = nil
+        lifecycle += 1
         let startup = startup
         startup?.cancel()
         let service = service

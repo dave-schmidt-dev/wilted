@@ -68,10 +68,15 @@ extension WiltedMacMediaService {
             return currentTime < skipUntil
         }.count
         let isPaused = isPreuploadPaused
+        // The audio is booked before its transcript is sent, so a target already counted as
+        // uploaded is no longer the one being sent.
+        let sendingID = preuploadUploadingID.flatMap { id in
+            targets.contains { $0.entryID.rawValue == id && published[id] == $0.audio.revisionID.rawValue } ? nil : id
+        }
         let preupload = WiltedMacMediaActivity.Preupload(
             targetCount: targets.count,
             uploadedCount: uploadedCount,
-            uploadingID: preuploadUploadingID,
+            uploadingID: sendingID,
             pausedUntil: isPaused ? preuploadPausedUntil : nil,
             pauseReason: isPaused ? preuploadPauseReason : nil,
             setAsideCount: setAsideCount,

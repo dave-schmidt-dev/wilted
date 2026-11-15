@@ -95,8 +95,13 @@ final class PumpScriptedAudioSource: WiltedMacReadyAudioSource, @unchecked Senda
         }
     }
 
+    /// Runs before every transcript read, so a test can hold the step after the audio is booked.
+    func holdTranscriptReads(_ hold: @escaping @Sendable () async -> Void) { lock.withLock { transcriptHold = hold } }
+    private var transcriptHold: (@Sendable () async -> Void)?
+
     func transcript(for entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
-        lock.withLock {
+        if let hold = lock.withLock({ transcriptHold }) { await hold() }
+        return lock.withLock {
             guard let transcript = transcriptStore[entryID], transcript.revisionID == revisionID else { return nil }
             return transcript
         }
