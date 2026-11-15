@@ -37,6 +37,13 @@ final class LibraryRuntime {
         self.model = model
         self.player = player
         self.settings = settings
+        settings.$listSort
+            .sink { [weak model] sort in
+                MainActor.assumeIsolated {
+                    model?.listOrder = sort.listOrder
+                }
+            }
+            .store(in: &subscriptions)
     }
 
     /// The production stack: CloudKit-backed model, real audio engine, `UserDefaults` settings, and

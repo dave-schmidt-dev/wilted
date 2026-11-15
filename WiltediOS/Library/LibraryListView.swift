@@ -167,9 +167,9 @@ struct LibraryListView: View {
             if rows.isEmpty {
                 emptyState
             } else {
-                if sort != .playOrder {
+                if let note = LibraryToolbar.orderNote(sort: sort) {
                     Section {
-                        Text("Sorted by \(sort.label). Playback and Next still follow the play order.")
+                        Text(note)
                             .wiltedFont(.utility)
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .accessibilityIdentifier("wilted-library-order-note")

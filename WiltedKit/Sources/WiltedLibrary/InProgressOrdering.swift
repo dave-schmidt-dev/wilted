@@ -15,7 +15,8 @@ public struct EpisodeProgress: Sendable, Equatable {
 }
 
 /// The one rule for "in progress" and for listing in-progress episodes first, shared by the phone's
-/// list, CarPlay and Siri so they never disagree.
+/// list, CarPlay and Siri so they never disagree. While the iPhone's Mac order sort is selected those
+/// surfaces list the Mac Larder's order instead (`LibraryListOrder.mac`) and do not call `playOrder`.
 ///
 /// An episode is in progress when any device, the Mac included, has a position past the start and the
 /// episode is neither completed nor played to its end. The newest record decides how far along it is.
@@ -118,7 +119,7 @@ public enum InProgressOrdering {
         return pinned.map(\.element) + rest + done.map(\.element)
     }
 
-    /// The one play order, for CarPlay, Siri and auto-continue: in-progress episodes first (newest play
+    /// The play order, for CarPlay, Siri and auto-continue unless Mac order is selected: in-progress episodes first (newest play
     /// first), then the not-started ones, oldest published first (ties keep their given, Larder, order),
     /// then the completed ones last, most recently completed first.
     public static func playOrder<Element>(

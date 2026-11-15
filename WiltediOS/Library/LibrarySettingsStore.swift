@@ -74,8 +74,9 @@ final class LibrarySettingsStore: ObservableObject {
         didSet { if directDownloadsOnboardingShown != oldValue { defaults.set(directDownloadsOnboardingShown, forKey: Self.directDownloadsOnboardingShownKey) } }
     }
 
-    /// How the Larder list is sorted and grouped. Display only: playback, auto-continue, CarPlay and
-    /// Siri keep the play order. An unknown stored value reads as the play order / no grouping.
+    /// How the Larder list is sorted and grouped. In Mac order, playback, auto-continue, CarPlay and
+    /// Siri follow the Mac's order; other sort options are display only. An unknown stored value reads
+    /// as the play order / no grouping.
     @Published var listSort: LibrarySortOption {
         didSet { if listSort != oldValue { defaults.set(listSort.rawValue, forKey: Self.listSortKey) } }
     }

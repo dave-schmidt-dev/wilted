@@ -3,11 +3,11 @@ import WiltedDomain
 import WiltedLibrary
 
 extension LibraryAppModel {
-    /// The episodes on the phone in the one play order CarPlay, Siri and auto-continue share.
+    /// The episodes on the phone in the list order (`listOrder`) CarPlay, Siri and auto-continue share.
     var playOrderRows: [LibraryRow] {
         LibraryListing.rows(
             logicalQueued, offered: [], onPhone: logicalIDs(preparedIDs.onPhone), filter: .onPhone, query: "",
-            progress: logicalProgress, finished: logicalFinished)
+            progress: logicalProgress, finished: logicalFinished, order: listOrder)
     }
 
     /// An episode played to its end: remember it as played out and saved at its end (local and unsent,

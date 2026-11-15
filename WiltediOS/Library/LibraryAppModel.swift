@@ -40,6 +40,8 @@ final class LibraryAppModel: ObservableObject {
     @Published var kindFilter: LibraryKindFilter = .all {
         didSet { if kindFilter != oldValue { preferences.set(kindFilter.rawValue, forKey: LibraryKindFilter.storageKey) } }
     }
+    /// Whether rows are listed and continued in the phone's play order or the Mac's queue order.
+    @Published var listOrder: LibraryListOrder = .playOrder
     @Published var searchText = ""
     /// The most authoritative record per entry from any device other than this one.
     @Published private(set) var checkpoints: [ItemID: ObservedPlayback] = [:] {

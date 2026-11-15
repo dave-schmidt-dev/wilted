@@ -51,10 +51,31 @@ extension LibraryAppModel {
             let shown = Set(rows.map(\.id))
             rows += logicalQueued.filter { !shown.contains($0.id) && !$0.preparationAnnotations.isEmpty }
         }
+        if listOrder == .mac {
+            var queueIndices: [ItemID: Int] = [:]
+            for (index, row) in logicalQueued.enumerated() {
+                if queueIndices[row.id] == nil {
+                    queueIndices[row.id] = index
+                }
+            }
+            rows = rows.enumerated().sorted { left, right in
+                switch (queueIndices[left.element.id], queueIndices[right.element.id]) {
+                case let (l?, r?):
+                    return l < r
+                case (.some, nil):
+                    return true
+                case (nil, .some):
+                    return false
+                case (nil, nil):
+                    return left.offset < right.offset
+                }
+            }.map(\.element)
+        }
         let preparationIDs = Set(rows.filter { !$0.preparationAnnotations.isEmpty }.map(\.id))
         return LibraryListing.rows(rows, offered: ids.offered,
             onPhone: ids.onPhone, filter: filter, kind: kindFilter, query: searchText,
-            progress: logicalProgress, finished: logicalFinished, preparationIDs: preparationIDs)
+            progress: logicalProgress, finished: logicalFinished, preparationIDs: preparationIDs,
+            order: listOrder)
     }
 
     /// True once the Larder has something true to show (W-INV-040): the saved prepared rows as soon as the

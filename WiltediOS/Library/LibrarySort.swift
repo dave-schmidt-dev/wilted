@@ -50,19 +50,35 @@ enum LibraryKindFilter: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// How the Larder list is laid out on screen. A display choice only: it never changes what plays next.
+/// Which order queued rows are returned in: the phone's shared play order or the Mac's queue order.
+enum LibraryListOrder: String, CaseIterable, Identifiable, Sendable {
+    case playOrder, mac
+
+    var id: String { rawValue }
+}
+
+/// How the Larder list is laid out on screen. In Mac order, playback and Next follow it; other
+/// options are display choices only.
 enum LibrarySortOption: String, CaseIterable, Identifiable, Sendable {
-    case playOrder, newest, oldest, shortest, title
+    case playOrder, macOrder, newest, oldest, shortest, title
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .playOrder: "Play order"
+        case .macOrder: "Mac order"
         case .newest: "Newest"
         case .oldest: "Oldest"
         case .shortest: "Shortest"
         case .title: "Title"
+        }
+    }
+
+    var listOrder: LibraryListOrder {
+        switch self {
+        case .macOrder: .mac
+        default: .playOrder
         }
     }
 
@@ -120,6 +136,18 @@ enum LibraryToolbar {
             isActive: isActive)
     }
 
+    /// What to show under the Larder sort control. Nil for Play order; explains Mac order and the other sorts.
+    static func orderNote(sort: LibrarySortOption) -> String? {
+        switch sort {
+        case .playOrder:
+            return nil
+        case .macOrder:
+            return "Mac order, as last synced. Playback and Next follow it."
+        default:
+            return "Sorted by \(sort.label). Playback and Next still follow the play order."
+        }
+    }
+
     private static func label(sort: LibrarySortOption, group: LibraryGroupOption) -> String {
         guard sort != .playOrder || group != .none else { return "Sort and group" }
         switch (sort, group) {
@@ -141,11 +169,9 @@ struct LibraryRowSection: Identifiable, Equatable, Sendable {
     var namesShowInRows: Bool { title == nil }
 }
 
-/// The pure part of the Larder list: which queued rows appear and in what order. `rows` is always
-/// the shared play order (`InProgressOrdering.playOrder`), the same one CarPlay, Siri and auto-continue
-/// use. `organize` is a display transform over those rows (Sort and Group); it feeds nothing back, so
-/// playback keeps following the play order whatever the list shows. No drag-reorder on the phone
-/// (the Mac keeps its own custom order).
+/// The pure part of the Larder list: which queued rows appear and in what order. `rows` returns either
+/// the shared play order or the Mac's queue order (`LibraryListOrder`). `organize` is a display transform
+/// over those rows (Sort and Group); for `macOrder` rows stay in arriving order.
 enum LibraryListing {
     /// `rows` laid out for display. Every sort is stable against the incoming play order, so ties keep
     /// it; rows with no duration sort last under Shortest. Grouping by feed keeps the sorted order
@@ -175,10 +201,10 @@ enum LibraryListing {
     }
 
     private static func sorted(_ rows: [LibraryRow], by sort: LibrarySortOption) -> [LibraryRow] {
-        guard sort != .playOrder else { return rows }
+        guard sort != .playOrder && sort != .macOrder else { return rows }
         let precedes: (LibraryRow, LibraryRow) -> Bool? = { left, right in
             switch sort {
-            case .playOrder: nil
+            case .playOrder, .macOrder: nil
             case .newest: left.publishedAt == right.publishedAt ? nil : left.publishedAt > right.publishedAt
             case .oldest: left.publishedAt == right.publishedAt ? nil : left.publishedAt < right.publishedAt
             case .shortest:
@@ -202,15 +228,15 @@ enum LibraryListing {
     }
 
     /// Queued rows the Mac has prepared: a ready offer (or a transfer already under way) or audio
-    /// already on the phone, narrowed by `filter` and `query`, in the play order: episodes someone is
-    /// partway through first (newest play first), then not-started ones oldest published first (ties keep
-    /// the Mac's queue order, which `rows` arrive in), then completed ones last (`finished` adds those
-    /// played to the end but not marked).
+    /// already on the phone, narrowed by `filter` and `query`. In `.playOrder`, episodes someone is
+    /// partway through list first, then not-started ones oldest published first, then completed ones last.
+    /// In `.mac`, rows arrive in the Mac's queue order with completed ones moved to the end.
     static func rows(
         _ rows: [LibraryRow], offered: Set<ItemID>, onPhone: Set<ItemID>,
         filter: LibraryFilter, kind: LibraryKindFilter = .all, query: String,
         progress: [ItemID: EpisodeProgress] = [:], finished: [ItemID: Date] = [:],
-        preparationIDs: Set<ItemID> = []
+        preparationIDs: Set<ItemID> = [],
+        order: LibraryListOrder = .playOrder
     ) -> [LibraryRow] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let kept = rows.filter { row in
@@ -223,9 +249,23 @@ enum LibraryListing {
             }
         }.filter { kind.includes($0.kind) }.filter { matches($0, query: needle) }
         let projected = kept.map { $0.withMediaAvailability(offered: offered, onPhone: onPhone) }
-        return InProgressOrdering.playOrder(
-            projected, progress: progress, id: \.id, publishedAt: \.publishedAt,
-            completedAt: { completionDate($0, finished: finished) })
+        switch order {
+        case .playOrder:
+            return InProgressOrdering.playOrder(
+                projected, progress: progress, id: \.id, publishedAt: \.publishedAt,
+                completedAt: { completionDate($0, finished: finished) })
+        case .mac:
+            var uncompleted: [LibraryRow] = []
+            var completed: [LibraryRow] = []
+            for row in projected {
+                if completionDate(row, finished: finished) != nil {
+                    completed.append(row)
+                } else {
+                    uncompleted.append(row)
+                }
+            }
+            return uncompleted + completed
+        }
     }
 
     /// When a row was completed: marked on a device, else played to its end.

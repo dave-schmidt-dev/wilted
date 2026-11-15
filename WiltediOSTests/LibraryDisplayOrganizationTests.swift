@@ -125,8 +125,8 @@ final class LibraryDisplayOrganizationTests: XCTestCase {
         XCTAssertEqual(LibrarySettingsStore(defaults: defaults).listSort, .playOrder)
     }
 
-    func testTheFiveSortsAndTwoGroupsAreExactlyTheOnesOffered() {
-        XCTAssertEqual(LibrarySortOption.allCases.map(\.label), ["Play order", "Newest", "Oldest", "Shortest", "Title"])
+    func testTheSixSortsAndTwoGroupsAreExactlyTheOnesOffered() {
+        XCTAssertEqual(LibrarySortOption.allCases.map(\.label), ["Play order", "Mac order", "Newest", "Oldest", "Shortest", "Title"])
         XCTAssertEqual(LibraryGroupOption.allCases.map(\.label), ["No Grouping", "Feed"])
     }
 
