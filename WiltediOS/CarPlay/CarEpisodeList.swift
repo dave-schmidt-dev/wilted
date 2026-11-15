@@ -36,10 +36,12 @@ struct CarEpisodeList: Equatable, Sendable {
     static func make(
         rows: [LibraryRow], onPhone: Set<ItemID>,
         playingID: ItemID?, isLoading: Bool, limit: Int = defaultLimit, progress: [ItemID: EpisodeProgress] = [:],
-        finished: [ItemID: Date] = [:]
+        finished: [ItemID: Date] = [:],
+        order: LibraryListOrder = .playOrder
     ) -> CarEpisodeList {
         let listed = LibraryListing.rows(
-            rows, offered: [], onPhone: onPhone, filter: .onPhone, query: "", progress: progress, finished: finished)
+            rows, offered: [], onPhone: onPhone, filter: .onPhone, query: "", progress: progress, finished: finished,
+            order: order)
         let capped = Array(listed.prefix(max(1, limit)))
         guard !capped.isEmpty else {
             return CarEpisodeList(content: .empty(isLoading ? loadingMessage : emptyMessage), totalOnPhone: 0)
@@ -80,6 +82,6 @@ extension CarEpisodeList {
         make(
             rows: model.queued, onPhone: model.preparedIDs.onPhone, playingID: playingID,
             isLoading: model.lastSynchronizedAt == nil && model.isRefreshing, limit: limit, progress: model.progress,
-            finished: model.finished)
+            finished: model.finished, order: model.listOrder)
     }
 }

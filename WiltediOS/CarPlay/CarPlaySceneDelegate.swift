@@ -98,7 +98,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         guard let template = showsTemplate else { return }
         let shows = CarShowList.make(
             rows: model.queued, onPhone: model.preparedIDs.onPhone, progress: model.progress,
-            finished: model.finished, limit: limit)
+            finished: model.finished, limit: limit, order: model.listOrder)
         guard !shows.isEmpty else {
             template.emptyViewTitleVariants = [CarShowList.emptyMessage]
             template.updateSections([])
@@ -114,7 +114,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         let list = CarShowList.episodes(
             of: title, rows: model.queued, onPhone: model.preparedIDs.onPhone,
             playingID: player.item?.entryID, progress: model.progress,
-            finished: model.finished, limit: limit)
+            finished: model.finished, limit: limit, order: model.listOrder)
         apply(list, to: template)
         if case .empty = list.content, interfaceController?.topTemplate === template {
             interfaceController?.popTemplate(animated: true, completion: nil)
@@ -218,6 +218,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             model.$media.map { _ in () }.eraseToAnyPublisher(),
             model.$progress.map { _ in () }.eraseToAnyPublisher(),
             model.$finished.map { _ in () }.eraseToAnyPublisher(),
+            model.$listOrder.map { _ in () }.eraseToAnyPublisher(),
             model.$lastSynchronizedAt.map { _ in () }.eraseToAnyPublisher(),
             model.$isRefreshing.map { _ in () }.eraseToAnyPublisher(),
             player.$item.map { _ in () }.eraseToAnyPublisher(),

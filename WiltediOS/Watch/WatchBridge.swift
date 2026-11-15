@@ -15,7 +15,7 @@ protocol WatchBridgeSource: AnyObject {
     var changes: AnyPublisher<Void, Never> { get }
     /// The playing episode, or nil when the phone is idle.
     var currentNowPlaying: NowPlaying? { get }
-    /// Downloaded queue rows, in the Larder's play order.
+    /// Downloaded queue rows, in the Larder's play order or Mac order.
     var currentUpNext: [UpNextRow] { get }
     /// The current playback rate.
     var currentRate: Double { get }
@@ -427,7 +427,8 @@ final class LibraryWatchSource: WatchBridgeSource {
             model.$queued.map { _ in () }.eraseToAnyPublisher(),
             model.$media.map { _ in () }.eraseToAnyPublisher(),
             model.$progress.map { _ in () }.eraseToAnyPublisher(),
-            model.$finished.map { _ in () }.eraseToAnyPublisher())
+            model.$finished.map { _ in () }.eraseToAnyPublisher(),
+            model.$listOrder.map { _ in () }.eraseToAnyPublisher())
             .eraseToAnyPublisher()
     }
 
@@ -454,12 +455,12 @@ final class LibraryWatchSource: WatchBridgeSource {
 
     var stopsAfterCurrentEpisode: Bool { player.stopsAfterCurrentItem }
 
-    /// Episodes whose audio is on the phone, in the Larder's shared play order.
+    /// Episodes whose audio is on the phone, in the Larder's shared play order or Mac order.
     private func downloadedRows() -> [LibraryRow] {
         let ids = model.preparedIDs
         return LibraryListing.rows(
             model.queued, offered: ids.offered, onPhone: ids.onPhone, filter: .onPhone, query: "",
-            progress: model.progress, finished: model.finished)
+            progress: model.progress, finished: model.finished, order: model.listOrder)
     }
 
     private static func row(_ row: LibraryRow) -> UpNextRow {

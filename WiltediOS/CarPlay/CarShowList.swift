@@ -20,24 +20,33 @@ enum CarShowList {
     /// Shows in the order of the Downloaded list (so an in-progress episode's show leads), capped to `limit`.
     static func make(
         rows: [LibraryRow], onPhone: Set<ItemID>,
-        progress: [ItemID: EpisodeProgress] = [:], finished: [ItemID: Date] = [:], limit: Int = CarEpisodeList.defaultLimit
+        progress: [ItemID: EpisodeProgress] = [:], finished: [ItemID: Date] = [:], limit: Int = CarEpisodeList.defaultLimit,
+        order: LibraryListOrder = .playOrder
     ) -> [CarShowRow] {
         let listed = LibraryListing.rows(
-            rows, offered: [], onPhone: onPhone, filter: .onPhone, query: "", progress: progress, finished: finished)
-        var order: [String] = []
+            rows, offered: [], onPhone: onPhone, filter: .onPhone, query: "", progress: progress, finished: finished,
+            order: order)
+        var showOrder: [String] = []
         var counts: [String: Int] = [:]
         var art: [String: URL] = [:]
         for row in listed {
-            if counts[row.showTitle] == nil { order.append(row.showTitle) }
+            if counts[row.showTitle] == nil { showOrder.append(row.showTitle) }
             counts[row.showTitle, default: 0] += 1
             if art[row.showTitle] == nil, let url = row.showArtworkURL ?? row.artworkURL { art[row.showTitle] = url }
         }
-        var lastPlayed: [String: Date] = [:]
-        for row in listed {
-            guard let played = progress[row.id]?.lastPlayedAt else { continue }
-            lastPlayed[row.showTitle] = max(lastPlayed[row.showTitle] ?? .distantPast, played)
+        let orderedTitles: [String]
+        switch order {
+        case .playOrder:
+            var lastPlayed: [String: Date] = [:]
+            for row in listed {
+                guard let played = progress[row.id]?.lastPlayedAt else { continue }
+                lastPlayed[row.showTitle] = max(lastPlayed[row.showTitle] ?? .distantPast, played)
+            }
+            orderedTitles = InProgressOrdering.orderedShows(showOrder, progressByShow: lastPlayed)
+        case .mac:
+            orderedTitles = showOrder
         }
-        return InProgressOrdering.orderedShows(order, progressByShow: lastPlayed)
+        return orderedTitles
             .prefix(max(1, limit))
             .map { CarShowRow(title: $0, downloaded: counts[$0] ?? 0, artworkURL: art[$0]) }
     }
@@ -46,11 +55,12 @@ enum CarShowList {
     static func episodes(
         of show: String, rows: [LibraryRow], onPhone: Set<ItemID>,
         playingID: ItemID?, progress: [ItemID: EpisodeProgress] = [:], finished: [ItemID: Date] = [:],
-        limit: Int = CarEpisodeList.defaultLimit
+        limit: Int = CarEpisodeList.defaultLimit,
+        order: LibraryListOrder = .playOrder
     ) -> CarEpisodeList {
         CarEpisodeList.make(
             rows: rows.filter { $0.showTitle == show }, onPhone: onPhone, playingID: playingID,
             isLoading: false, limit: limit, progress: progress,
-            finished: finished)
+            finished: finished, order: order)
     }
 }

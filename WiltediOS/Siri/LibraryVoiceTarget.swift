@@ -21,10 +21,24 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
 
     func voiceSnapshot() async -> VoiceSnapshot {
         let rows = downloadedRows()
-        var seen = Set<String>()
-        let shows = InProgressOrdering.orderedShows(
-            model.queued.map(\.showTitle).filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted },
-            progressByShow: Self.lastPlayedByShow(model.queued, progress: model.progress))
+        let shows: [String]
+        switch model.listOrder {
+        case .playOrder:
+            var seen = Set<String>()
+            shows = InProgressOrdering.orderedShows(
+                model.queued.map(\.showTitle).filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted },
+                progressByShow: Self.lastPlayedByShow(model.queued, progress: model.progress))
+        case .mac:
+            var seen = Set<String>()
+            var collected: [String] = []
+            for title in rows.map(\.showTitle) where !title.isEmpty && seen.insert(title.lowercased()).inserted {
+                collected.append(title)
+            }
+            for title in model.queued.map(\.showTitle) where !title.isEmpty && seen.insert(title.lowercased()).inserted {
+                collected.append(title)
+            }
+            shows = collected
+        }
         return VoiceSnapshot(
             downloaded: rows.map(Self.episode), knownShowTitles: shows, nowPlaying: nowPlaying())
     }
@@ -123,13 +137,13 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
 
     private static func outcome(_ succeeded: Bool) -> VoiceOutcome { succeeded ? .done : .failed }
 
-    /// On-phone episodes in the shared play order, ignoring whatever filter or search text is
+    /// On-phone episodes in the selected list order, ignoring whatever filter or search text is
     /// showing: a spoken command must not depend on what the screen happens to be narrowed to.
     private func downloadedRows() -> [LibraryRow] {
         let ids = model.preparedIDs
         return LibraryListing.rows(
             model.queued, offered: ids.offered, onPhone: ids.onPhone, filter: .onPhone, query: "",
-            progress: model.progress, finished: model.finished)
+            progress: model.progress, finished: model.finished, order: model.listOrder)
     }
 
     /// When each show was last played, for the shows with an in-progress episode.
