@@ -222,13 +222,14 @@ final class LibraryDirectMediaTests: XCTestCase {
         _ cause: LibraryDirectFallback, _ model: LibraryAppModel, publish: Bool = true,
         file: StaticString = #filePath, line: UInt = #line
     ) async throws {
-        if publish { try await macPublish() }
         model.performMediaAction(.request, entryID: entryA)
+        // The Mac publishes only once the request is counted: audio uploaded ahead of a request downloads
+        // with no request sent, which would skip the iCloud request this checks.
+        try await eventually("the iCloud request") { self.counter.requestIDs.count == 1 }
         if publish {
+            try await macPublish()
             await model.waitForMedia(entryID: entryA)
             XCTAssertEqual(model.mediaState(for: entryA), .onPhone, file: file, line: line)
-        } else {
-            try await eventually("the iCloud request") { self.counter.requestIDs.count == 1 }
         }
         XCTAssertEqual(counter.requestIDs.count, 1, "the normal intent is sent", file: file, line: line)
         XCTAssertEqual(causes(model).last, cause, "the cause is typed and logged", file: file, line: line)
@@ -594,9 +595,10 @@ final class LibraryDirectMediaTests: XCTestCase {
         try await cache.bindOwner(ownerToken: owner, libraryScope: LibraryAppModel.mediaLibraryScope, held: false)
         try writePartial(target, bytes: 30_000)
         locator.set(.none)
-        try await macPublish()
         let model = makeModel()
         model.performMediaAction(.request, entryID: entryA)
+        try await eventually("the iCloud request") { self.counter.requestIDs.count == 1 }
+        try await macPublish() // after the request, so iCloud answers it rather than an upload found ahead
         await model.waitForMedia(entryID: entryA)
         XCTAssertEqual(model.mediaState(for: entryA), .onPhone)
         XCTAssertEqual(counter.requestIDs.count, 1, "iCloud delivered it")
