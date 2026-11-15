@@ -53,6 +53,17 @@ extension WiltedMacMediaService {
         }
     }
 
+    /// Clears the stopped mark `drainEndingThrottleWaits()` sets, so the next successful reconcile
+    /// kicks the pump again. Starts no upload itself. Call it only after that shutdown has finished:
+    /// while the mark is set, a step chained before shutdown starts no upload.
+    func resumePreupload() {
+        guard preuploadStopped else { return }
+        preuploadStopped = false
+        if preuploadLimit > 0 {
+            preuploadLog.notice("Pre-upload resumed: sync started again")
+        }
+    }
+
     /// True while the pump is paused for a retry delay or quota wait. A pure read: the pump itself
     /// clears the mark when its wait ends.
     var isPreuploadPaused: Bool {

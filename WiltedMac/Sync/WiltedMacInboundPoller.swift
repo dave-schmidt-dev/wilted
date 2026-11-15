@@ -339,7 +339,9 @@ final class WiltedMacInboundRuntime {
     }
 
     /// Starts the tick; intents reach `sink`, which routes media intents to `consume`. `publishRound`
-    /// is the Mac's own batched writes, run in every round after the reads.
+    /// is the Mac's own batched writes, run in every round after the reads. A start after a `stop()`
+    /// in the same launch (the iCloud account gate closing and reopening) waits for that shutdown,
+    /// then lets ahead-of-time uploads run again before the first round.
     @discardableResult
     func start(sink: any LibraryIntentSink, publishRound: (@Sendable () async -> Void)? = nil) -> Task<Void, Never>? {
         guard poller == nil else { return nil }
@@ -359,6 +361,9 @@ final class WiltedMacInboundRuntime {
         let task = Task {
             await previousShutdown?.value
             guard !Task.isCancelled else { return }
+            // The previous shutdown stopped pre-upload; a stop that follows this start joins this
+            // task before it drains, so it sets the mark again.
+            await service.resumePreupload()
             await self.resumeQueuedRequests()
             await beforePollerStart?()
             guard !Task.isCancelled else { return }

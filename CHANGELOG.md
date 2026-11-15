@@ -184,6 +184,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Ahead-of-time uploads to iCloud resume after the iCloud account is confirmed again, without restarting the Mac app.
 - The online labeller no longer receives transcripts for a show marked **This show has no ads**, or for an episode prepared with ad removal off; such episodes stay on this Mac.
 - On a show sent to the online labeller, the labeller's reply now decides the cut. Preparation transcribes the episode, asks once about the whole transcript, and removes the sponsor and network-promo breaks the reply marks must-cut (the show's own promotion only when that feed's switch is on). The local ad classifier is not loaded for those episodes. A break that cannot be placed stays in the audio, and a reply that does not match the transcript keeps the whole original. Shows not sent to the labeller use the local engine as before. Ad engine version is now v17.
 - When the labelling provider is rate-limited, unavailable or over its usage limit, the episode waits and is asked again after 2, 5, 15 and 30 minutes, then hourly, for up to two hours in all. At the daily request cap it waits for midnight. A rejected key, an unavailable model or an unusable answer stops at once. A stopped episode is prepared with its ads left in and records why. After three episodes run out the wait limit, further waits stop at once until the provider answers again.

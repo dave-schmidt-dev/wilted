@@ -531,4 +531,53 @@ final class WiltedMacMediaPreuploadPumpTests: XCTestCase {
         let uploads = rig.transport.readyUploads
         XCTAssertEqual(uploads, 0, "after drainEndingThrottleWaits() no upload starts even when reconcile follows")
     }
+
+    func testResumePreuploadAfterDrainLetsTheNextReconcileUploadAMissingTarget() async throws {
+        let rig = makeRig("pump-resume-after-drain")
+        let entryID = try ItemID(rawValue: "entry-01")
+        rig.source.set(entryID, try makeAudio(rig.directory, name: "entry-01", revision: "rev-1"))
+        rig.source.setQueueOrder([entryID])
+
+        let service = makeService(rig, preuploadLimit: 10)
+        await service.drainEndingThrottleWaits()
+        let okWhileStopped = await service.reconcileAvailable()
+        XCTAssertTrue(okWhileStopped)
+        await service.waitForPreuploadPump()
+        XCTAssertEqual(rig.transport.readyUploads, 0, "the target is still missing while pre-upload is stopped")
+        let stoppedBeforeResume = await service.preuploadStopped
+        XCTAssertTrue(stoppedBeforeResume)
+
+        await service.resumePreupload()
+        let stoppedAfterResume = await service.preuploadStopped
+        XCTAssertFalse(stoppedAfterResume, "resumePreupload() must clear the stopped mark")
+        XCTAssertEqual(rig.transport.readyUploads, 0, "resumePreupload() starts no upload itself")
+
+        let ok = await service.reconcileAvailable()
+        XCTAssertTrue(ok)
+        await service.waitForPreuploadPump()
+
+        XCTAssertEqual(rig.transport.uploadedIDs, [entryID], "the reconcile after resumePreupload() uploads the missing target")
+    }
+
+    func testDrainWithoutResumeKeepsPreuploadStoppedThroughLaterReconciles() async throws {
+        let rig = makeRig("pump-drain-without-resume")
+        let entryID = try ItemID(rawValue: "entry-01")
+        rig.source.set(entryID, try makeAudio(rig.directory, name: "entry-01", revision: "rev-1"))
+        rig.source.setQueueOrder([entryID])
+
+        let service = makeService(rig, preuploadLimit: 10)
+        await service.drainEndingThrottleWaits()
+
+        for _ in 1...2 {
+            let ok = await service.reconcileAvailable()
+            XCTAssertTrue(ok)
+            await service.waitForPreuploadPump()
+        }
+
+        XCTAssertEqual(rig.transport.readyUploads, 0, "without resumePreupload() a reconcile after shutdown uploads nothing")
+        let targets = await service.preuploadTargets
+        XCTAssertEqual(targets?.map(\.entryID), [entryID], "the target is listed, so only the stopped mark holds the upload back")
+        let isStopped = await service.preuploadStopped
+        XCTAssertTrue(isStopped, "a reconcile must not clear the stopped mark")
+    }
 }

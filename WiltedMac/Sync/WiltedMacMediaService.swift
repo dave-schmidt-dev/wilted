@@ -193,10 +193,10 @@ actor WiltedMacMediaService {
 
     /// Waits for every queued request and sweep like `drain()`, but ends any wait for iCloud
     /// throttling at once so shutdown does not sit behind it. A request that was waiting stays
-    /// queued and is served on the next launch.
+    /// queued and is served on the next launch. Pre-upload stays stopped until `resumePreupload()`.
     func drainEndingThrottleWaits() async {
         if preuploadLimit > 0, !preuploadStopped {
-            mediaLog.notice("Pre-upload stopped for shutdown; it starts again at the next launch")
+            mediaLog.notice("Pre-upload stopped for shutdown; it starts again when sync restarts")
         }
         preuploadStopped = true
         preuploadWaitTask?.cancel()
