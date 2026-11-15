@@ -48,6 +48,55 @@ private struct ShutdownEmptyAudio: WiltedMacReadyAudioSource {
     func preparedQueued() async throws -> WiltedMacPreparedQueue { WiltedMacPreparedQueue() }
 }
 
+private struct ShutdownPreparedAudio: WiltedMacReadyAudioSource {
+    let entryID: ItemID
+    let audio: WiltedMacReadyAudio
+
+    func readyAudio(for entryID: ItemID) async throws -> WiltedMacReadyAudio? {
+        entryID == self.entryID ? audio : nil
+    }
+    func preparedQueuedAudio() async throws -> [ItemID: WiltedMacReadyAudio] {
+        [entryID: audio]
+    }
+    func preparedQueued() async throws -> WiltedMacPreparedQueue {
+        WiltedMacPreparedQueue(entries: [(entryID, audio)], larderIDs: [entryID])
+    }
+}
+
+private final class ShutdownBlockingUploadTransport: LibraryTransport, @unchecked Sendable {
+    private let inner: InMemoryLibraryTransport
+    private let gate: LibraryShutdownGate
+
+    init(inner: InMemoryLibraryTransport, gate: LibraryShutdownGate) {
+        self.inner = inner
+        self.gate = gate
+    }
+
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
+    func send(intent: LibraryIntent) async throws { try await inner.send(intent: intent) }
+    func listIntents() async throws -> [LibraryIntent] { try await inner.listIntents() }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws { try await inner.publish(record, as: channel) }
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { try await inner.fetchDeviceRecords() }
+    func mediaOffers() async throws -> [LibraryMediaOffer] { try await inner.mediaOffers() }
+    func removeMedia(entryID: ItemID) async throws { try await inner.removeMedia(entryID: entryID) }
+    func publishTranscript(_ transcript: LibraryTranscript) async throws { try await inner.publishTranscript(transcript) }
+    func removeTranscript(entryID: ItemID) async throws { try await inner.removeTranscript(entryID: entryID) }
+    func transcript(entryID: ItemID, revisionID: RevisionID) async throws -> LibraryTranscript? {
+        try await inner.transcript(entryID: entryID, revisionID: revisionID)
+    }
+
+    func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
+        if offer.state == .ready {
+            await gate.hold()
+            await gate.recordWriterFinished()
+        }
+        try await inner.publishMedia(offer: offer, fileURL: fileURL)
+    }
+}
+
 @MainActor
 final class WiltedMacLibraryShutdownTests: XCTestCase {
     func testStopRacingSuspendedStartupCannotRestartPoller() async throws {
@@ -168,5 +217,48 @@ final class WiltedMacLibraryShutdownTests: XCTestCase {
                       "the managed SQLite root remains retained until terminal host cleanup")
         XCTAssertTrue(try WiltedMacTestRootOwnership.isManaged(root),
                       "close must preserve the exact managed root and its ownership marker")
+    }
+
+    func testCloseWithPreuploadBlockedInTransportReturnsWithinBudget() async throws {
+        let directory = wiltedTemporaryDirectory("library-shutdown-preupload")
+        let gate = LibraryShutdownGate()
+        let entryID = try ItemID(rawValue: "shutdown-entry")
+        let file = directory.appendingPathComponent("shutdown.m4a")
+        try Data(repeating: 0x42, count: 1024).write(to: file)
+        let audio = WiltedMacReadyAudio(
+            revisionID: try RevisionID(rawValue: "rev-shutdown"),
+            contentHash: try MediaHash.sha256(fileAt: file),
+            byteCount: 1024,
+            mediaType: "audio/mp4",
+            durationSeconds: 60,
+            fileURL: file,
+            preparation: LibraryMediaPreparation(preparedAt: Timestamp(Date(timeIntervalSince1970: 1_800_000_000)))
+        )
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let inner = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let transport = ShutdownBlockingUploadTransport(inner: inner, gate: gate)
+        let runtime = WiltedMacInboundRuntime(
+            source: ShutdownPreparedAudio(entryID: entryID, audio: audio),
+            transport: transport,
+            directory: directory,
+            onPollerStop: { await gate.release() },
+            preuploadLimit: 10
+        )
+        let startup = try XCTUnwrap(runtime.start(sink: WiltedMacLibraryIntentSink()))
+        await startup.value
+        // Nothing in a bare runtime reconciles offers (the model does that in production), and
+        // the pump only starts after a successful reconcile.
+        let reconciled = await runtime.service.reconcileAvailable()
+        XCTAssertTrue(reconciled)
+        await gate.waitUntilHeld()
+
+        let writerFinishedBeforeClose = await gate.writerFinished
+        XCTAssertFalse(writerFinishedBeforeClose, "pre-upload should be blocked in transport before close")
+
+        // close joins service.drainEndingThrottleWaits, releasing gate via onPollerStop
+        await runtime.close()
+
+        let writerFinishedAfterClose = await gate.writerFinished
+        XCTAssertTrue(writerFinishedAfterClose, "pre-upload writer must finish as part of close")
     }
 }

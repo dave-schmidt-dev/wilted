@@ -82,7 +82,8 @@ actor WiltedMacMediaService {
     let transport: any LibraryTransport
     private let accountingURL: URL?
     private let accountingWrite: AccountingWriter
-    private let now: @Sendable () -> Date
+    let now: @Sendable () -> Date
+    let sleep: @Sendable (Duration) async throws -> Void
     var records: [AssetKey: AssetRecord] = [:]
     var published: [String: String] = [:]
     /// What the transport holds per entry, seeded from it on the first reconcile.
@@ -99,6 +100,12 @@ actor WiltedMacMediaService {
     var delivered: [String: String] = [:]
     /// Current pre-upload targets; nil until the first successful reconcile of a launch.
     var preuploadTargets: [WiltedMacPreuploadTarget]?
+    var preuploadTask: Task<Void, Never>?
+    var preuploadWaitTask: Task<Void, any Error>?
+    var preuploadStopped = false
+    var preuploadPausedUntil: Date?
+    var preuploadConsecutiveTransients = 0
+    var preuploadSkippedUntil: [AssetKey: Date] = [:]
     /// The queue every media request passes through.
     let uploadQueue: WiltedMacMediaUploadQueue
 
@@ -126,6 +133,7 @@ actor WiltedMacMediaService {
         self.accountingURL = accountingURL
         self.accountingWrite = accountingWrite
         self.now = now
+        self.sleep = sleep
         self.preuploadLimit = preuploadLimit
         if let accountingURL, let data = try? Data(contentsOf: accountingURL) {
             if let stored = try? JSONDecoder().decode(Stored.self, from: data) {
@@ -186,6 +194,9 @@ actor WiltedMacMediaService {
     /// throttling at once so shutdown does not sit behind it. A request that was waiting stays
     /// queued and is served on the next launch.
     func drainEndingThrottleWaits() async {
+        preuploadStopped = true
+        preuploadWaitTask?.cancel()
+        await preuploadTask?.value
         await uploadQueue.drainEndingThrottleWaits()
         await tail?.value
     }
@@ -222,6 +233,17 @@ actor WiltedMacMediaService {
 
     private func serialized<T: Sendable>(_ work: @escaping @Sendable () async -> T) async -> T {
         await chained(work).value
+    }
+
+    @discardableResult
+    func chainedThrowing<T: Sendable>(_ work: @escaping @Sendable () async throws -> T) -> Task<T, any Error> {
+        let previous = tail
+        let task = Task<T, any Error> {
+            await previous?.value
+            return try await work()
+        }
+        tail = Task { _ = try? await task.value }
+        return task
     }
 
     @discardableResult
@@ -280,41 +302,9 @@ actor WiltedMacMediaService {
                 await reportRequest?(intent, .answered, "The Mac's audio file for this episode is missing.")
                 return
             }
-            let offer = try LibraryMediaOffer(
-                entryID: entryID, revisionID: ready.revisionID, contentHash: ready.contentHash,
-                byteCount: ready.byteCount, mediaType: ready.mediaType, durationSeconds: ready.durationSeconds,
-                preparation: ready.preparation
-            )
-            let key = AssetKey(entryID: entryID.rawValue, revisionID: ready.revisionID.rawValue)
-            // Unseeded offers only cost a fresh upload, so a failed read falls through to one.
-            try? await seedOffers()
-            if published[entryID.rawValue] == key.revisionID, offered[entryID.rawValue] == offer,
-               var existing = records[key] {
-                existing.requesters.insert(requester)
-                existing.acked.remove(requester)
-                existing.touchedAt = now()
-                records[key] = existing
-                try persist()
-                await publishTranscript(for: entryID, revisionID: ready.revisionID)
-                mediaLog.notice("Audio for \(entryID.rawValue, privacy: .public) is already offered; added a requester")
-                await reportRequest?(intent, .answered, nil)
-                return
+            try await uploadAndBook(entryID: entryID, ready: ready, requester: requester) {
+                if !isRetry { await self.reportRequest?(intent, .sending, nil) }
             }
-            if !isRetry { await reportRequest?(intent, .sending, nil) }
-            mediaLog.notice("Uploading \(ready.byteCount, privacy: .public) bytes of audio for \(entryID.rawValue, privacy: .public)")
-            let started = Date()
-            try await transport.publishMedia(offer: offer, fileURL: ready.fileURL)
-            mediaLog.notice("Uploaded audio for \(entryID.rawValue, privacy: .public) in \(Date().timeIntervalSince(started), format: .fixed(precision: 1), privacy: .public) s")
-            var record = records[key] ?? AssetRecord(key: key, requesters: [], acked: [], touchedAt: now())
-            record.requesters.insert(requester)
-            record.acked.remove(requester)
-            record.touchedAt = now()
-            records[key] = record
-            published[entryID.rawValue] = key.revisionID
-            offered[entryID.rawValue] = offer
-            try persist()
-            await publishTranscript(for: entryID, revisionID: ready.revisionID)
-            lastFailure = nil
             await reportRequest?(intent, .answered, nil)
         } catch {
             // No offer is published. The typed cause stays in this Mac's log, because the link

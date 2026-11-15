@@ -129,7 +129,10 @@ extension WiltedMacMediaService {
             }
         }
         do { try persist() } catch { offersLog.error("Could not save media accounting: \(String(describing: error), privacy: .public)") }
-        if succeeded { lastFailure = nil }
+        if succeeded {
+            lastFailure = nil
+            kickPreuploadPump()
+        }
         return succeeded
     }
 
