@@ -35,6 +35,8 @@ struct WiltedMacLibrarySyncActivity: Equatable, Sendable {
     var publicationOwner: String?
     /// The iPhones and iPads this Mac has linked this launch, with their requests in flight.
     var devices: [WiltedMacLinkedDevice] = []
+    /// Ahead-of-time media uploads and queued requests.
+    var media: WiltedMacMediaActivity?
 
     mutating func recordSend(acknowledged: Int, unsent: Int?, publicationCompleted: Bool = false, at date: Date) {
         hasFinishedPass = true
@@ -338,6 +340,9 @@ extension WiltedMacModel {
         var next = librarySyncActivity
         next.recordCheck(succeeded: error == nil, at: Date())
         if next != librarySyncActivity { librarySyncActivity = next }
+        Task { [weak self] in
+            await self?.refreshMediaActivity()
+        }
     }
 
     func installLibrarySyncFixture(_ scenario: WiltedMacLibrarySyncFixtureScenario) {

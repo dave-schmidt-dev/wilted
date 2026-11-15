@@ -487,6 +487,16 @@ extension WiltedMacModel {
         preferences.set(created, forKey: Self.libraryDeviceIDPreferenceKey)
         return created
     }
+
+    /// Re-reads ahead-of-time media upload activity and queued requests from the current runtime.
+    func refreshMediaActivity() async {
+        guard let inbound = librarySyncController?.inbound else { return }
+        let snapshot = await inbound.mediaActivity()
+        guard librarySyncController?.inbound === inbound else { return }
+        if librarySyncActivity.media != snapshot {
+            librarySyncActivity.media = snapshot
+        }
+    }
 }
 
 // MARK: - Handoff player

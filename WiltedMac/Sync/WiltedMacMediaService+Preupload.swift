@@ -73,7 +73,10 @@ extension WiltedMacMediaService {
 
     /// Uploads missing pre-upload targets one at a time, re-reading targets after each step.
     func runPreuploadPump() async {
-        defer { preuploadTask = nil }
+        defer {
+            preuploadTask = nil
+            preuploadUploadingID = nil
+        }
         // Targets a step left unpublished without an error: the audio changed or went away after the
         // reconcile that listed them. This run leaves them alone, so it cannot spin on one; the next
         // reconcile re-reads the Larder and kicks the pump again.
@@ -81,6 +84,8 @@ extension WiltedMacMediaService {
         while !preuploadStopped {
             guard let target = nextPreuploadTarget(excluding: stale) else { return }
             do {
+                preuploadUploadingID = target.entryID.rawValue
+                defer { preuploadUploadingID = nil }
                 try await chainedThrowing {
                     try await self.performPreupload(target)
                 }.value
@@ -98,8 +103,10 @@ extension WiltedMacMediaService {
                     preuploadLog.error("Pre-upload paused for 6 hours: iCloud quota exceeded: \(String(describing: error), privacy: .public)")
                     let duration: Duration = .seconds(6 * 3600)
                     preuploadPausedUntil = now().addingTimeInterval(6 * 3600)
+                    preuploadPauseReason = .storageFull
                     let waited = await waitPreupload(duration)
                     preuploadPausedUntil = nil
+                    preuploadPauseReason = nil
                     if !waited || preuploadStopped { return }
                     continue
                 }
@@ -118,8 +125,10 @@ extension WiltedMacMediaService {
                         resumeAt = now().addingTimeInterval(Double(seconds))
                     }
                     preuploadPausedUntil = resumeAt
+                    preuploadPauseReason = .retrying
                     let waited = await waitPreupload(duration)
                     preuploadPausedUntil = nil
+                    preuploadPauseReason = nil
                     if !waited || preuploadStopped { return }
                     continue
                 }

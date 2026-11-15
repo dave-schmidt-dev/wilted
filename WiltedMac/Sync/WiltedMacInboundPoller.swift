@@ -407,4 +407,11 @@ final class WiltedMacInboundRuntime {
     func stopDirectDownloads(for deviceID: String) async {
         await lanServer?.stopDirectDownloads(for: deviceID)
     }
+
+    /// A snapshot of ahead-of-time media uploads and queued requests.
+    func mediaActivity() async -> WiltedMacMediaActivity {
+        var snapshot = await service.activitySnapshot()
+        snapshot.requestsQueued = await service.uploadQueue.queuedCount
+        return snapshot
+    }
 }

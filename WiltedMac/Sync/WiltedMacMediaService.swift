@@ -103,7 +103,9 @@ actor WiltedMacMediaService {
     var preuploadTask: Task<Void, Never>?
     var preuploadWaitTask: Task<Void, any Error>?
     var preuploadStopped = false
+    var preuploadUploadingID: String?
     var preuploadPausedUntil: Date?
+    var preuploadPauseReason: WiltedMacMediaActivity.Preupload.PauseReason?
     var preuploadConsecutiveTransients = 0
     /// Targets a failed upload set aside, and until when. Kept in memory only: a relaunch tries each once more.
     var preuploadSkippedUntil: [AssetKey: Date] = [:]
