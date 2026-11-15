@@ -17,7 +17,8 @@ struct CarShowRow: Equatable, Identifiable, Sendable {
 enum CarShowList {
     static let emptyMessage = "No episodes on this iPhone"
 
-    /// Shows in the order of the Downloaded list (so an in-progress episode's show leads), capped to `limit`.
+    /// Shows in the order of the Downloaded list, capped to `limit`. In Play order an in-progress
+    /// episode's show leads; in Mac order shows follow first appearance in the Mac's order, none pinned.
     static func make(
         rows: [LibraryRow], onPhone: Set<ItemID>,
         progress: [ItemID: EpisodeProgress] = [:], finished: [ItemID: Date] = [:], limit: Int = CarEpisodeList.defaultLimit,

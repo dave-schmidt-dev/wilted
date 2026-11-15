@@ -16,7 +16,7 @@ public struct EpisodeProgress: Sendable, Equatable {
 
 /// The one rule for "in progress" and for listing in-progress episodes first, shared by the phone's
 /// list, CarPlay and Siri so they never disagree. While the iPhone's Mac order sort is selected those
-/// surfaces list the Mac Larder's order instead (`LibraryListOrder.mac`) and do not call `playOrder`.
+/// surfaces list the Mac Larder's order instead and do not call `playOrder`.
 ///
 /// An episode is in progress when any device, the Mac included, has a position past the start and the
 /// episode is neither completed nor played to its end. The newest record decides how far along it is.

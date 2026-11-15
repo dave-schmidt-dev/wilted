@@ -442,7 +442,9 @@ extension LibraryAppModel {
 
     /// The forward suffix a manual start captures: the model's list order (Play order or Mac order)
     /// from `entryID` on, so auto-continue advances through what the list said when the listener chose
-    /// the row and never wraps backwards. A row the list does not show still captures itself alone.
+    /// the row and never wraps backwards. One exception: in Mac order a podcast's natural end ignores
+    /// this suffix and reads the live order from the top, as the Mac does; a Next by hand still uses
+    /// the suffix. A row the list does not show still captures itself alone.
     func manualForwardSuffix(from entryID: ItemID) -> [ItemID] {
         let order = playOrderRows
         guard let index = order.firstIndex(where: { sameLogicalEpisode($0.id, entryID) }) else { return [entryID] }

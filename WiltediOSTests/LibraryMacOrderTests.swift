@@ -12,7 +12,7 @@ import XCTest
 final class LibraryMacOrderTests: XCTestCase {
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
     private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
-    private let suite = "library-mac-order-tests"
+    private let suite = "library-mac-order-tests-\(UUID().uuidString)"
     private var scratch: URL!
     private var versions: [LibraryRecordKey: UInt64] = [:]
     private var localSeq: UInt64 = 0

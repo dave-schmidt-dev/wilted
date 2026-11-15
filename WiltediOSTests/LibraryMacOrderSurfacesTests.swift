@@ -293,13 +293,19 @@ final class LibraryMacOrderSurfacesTests: XCTestCase {
             "WiltediOS/Watch/WatchBridge.swift"
         ]
 
-        let pattern = #"LibraryListing\.rows\([\s\S]*?order:\s*"#
-        let regex = try NSRegularExpression(pattern: pattern)
+        // `[^)]*` keeps the match inside the call's own argument list, so a later, unrelated
+        // `order:` cannot satisfy it; every call in the file must carry the argument.
+        let regex = try NSRegularExpression(pattern: #"LibraryListing\.rows\([^)]*order:"#)
+        let anyCall = try NSRegularExpression(pattern: #"LibraryListing\.rows\("#)
         for relativePath in filesToCheck {
             let fileURL = root.appendingPathComponent(relativePath)
             let text = try String(contentsOf: fileURL, encoding: .utf8)
-            let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-            XCTAssertFalse(matches.isEmpty, "\(relativePath) must contain 'order:' in its LibraryListing.rows call")
+            let whole = NSRange(text.startIndex..., in: text)
+            let calls = anyCall.numberOfMatches(in: text, range: whole)
+            XCTAssertGreaterThan(calls, 0, "\(relativePath) must call LibraryListing.rows")
+            XCTAssertEqual(
+                regex.numberOfMatches(in: text, range: whole), calls,
+                "\(relativePath) must pass 'order:' in every LibraryListing.rows call")
         }
     }
 }
