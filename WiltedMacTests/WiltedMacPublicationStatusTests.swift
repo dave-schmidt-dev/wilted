@@ -106,8 +106,10 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
         XCTAssertEqual(WiltedPublicationAge.summary(now.addingTimeInterval(1), verified: true, now: now), "Mac publication clock uncertain")
         XCTAssertEqual(WiltedPublicationAge.summary(nil, verified: true, now: now), "Mac publication unknown")
         let old = WiltedPublicationAge.summary(now.addingTimeInterval(-100), verified: false, now: now)
-        XCTAssertTrue(old.hasPrefix("Saved Mac last published"))
+        XCTAssertTrue(old.hasPrefix("Saved: Mac last sent library changes"))
         XCTAssertFalse(old.lowercased().contains("fresh"))
+        XCTAssertTrue(WiltedPublicationAge.summary(now.addingTimeInterval(-100), verified: true, now: now)
+            .hasPrefix("Mac last sent library changes"))
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(nil, verified: true, held: false, now: now), "Device sync status unknown")
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(now.addingTimeInterval(1), verified: true, held: false, now: now), "Device sync status unknown")
     }
@@ -121,7 +123,7 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(saved, verified: true, held: false, now: now),
-                       "Sent to devices \(formatter.localizedString(for: saved, relativeTo: now))")
+                       "Library changes sent \(formatter.localizedString(for: saved, relativeTo: now))")
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(nil, verified: true, held: false, now: now), unknown)
         XCTAssertEqual(WiltedPublicationAge.macSidebarSummary(now.addingTimeInterval(1), verified: true, held: false, now: now), unknown)
     }

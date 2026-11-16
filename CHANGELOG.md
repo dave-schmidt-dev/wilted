@@ -17,6 +17,7 @@ All notable changes to this project are documented in this file.
 - A show that is not sent for online ad finding now keeps its ads and says why, instead of being cut on the Mac.
 - The Mac makes fewer iCloud calls while playing: starting an episode is one write instead of four reads and a write, and the time-saved and ad-time totals go up at most once every 5 minutes.
 - Each sync round on the Mac and the iPhone reads playback positions in one iCloud request again, however many episodes have been played. Positions of episodes not playing anywhere are refreshed in turn, about every minute with today's history, and episodes being played are read every round.
+- The Mac sidebar now says "Library changes sent …" and the iPhone says "Mac last sent library changes …", instead of "Sent to devices" and "Mac last published". The time covers library changes only; playback positions sync every round.
 
 ### Added
 - The Mac has an Activity popover (click the sidebar's sync line) that shows what the Mac is doing in the background, including how many of the episodes it uploads ahead of time are already in iCloud.

@@ -37,7 +37,7 @@ public enum WiltedPublicationAge {
         guard publishedAt <= now else { return "Mac publication clock uncertain" }
         let formatter = RelativeDateTimeFormatter(); formatter.unitsStyle = .full
         let age = formatter.localizedString(for: publishedAt, relativeTo: now)
-        return "\(verified ? "Mac last published" : "Saved Mac last published") \(age)"
+        return "\(verified ? "Mac last sent library changes" : "Saved: Mac last sent library changes") \(age)"
     }
     public static func macSidebarSummary(
         _ publishedAt: Date?, verified: Bool, held: Bool, now: Date = Date()
@@ -45,7 +45,7 @@ public enum WiltedPublicationAge {
         guard verified, !held, let publishedAt, publishedAt <= now else { return "Device sync status unknown" }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
-        return "Sent to devices \(formatter.localizedString(for: publishedAt, relativeTo: now))"
+        return "Library changes sent \(formatter.localizedString(for: publishedAt, relativeTo: now))"
     }
 
     /// The publication time as an iPhone or iPad reads it; `deviceKind` is "iPad" or "iPhone".
