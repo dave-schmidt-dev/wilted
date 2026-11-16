@@ -44,6 +44,8 @@ public actor HandoffCoordinator {
     private let configuration: Configuration
     private var session: Session?
     private var clockOffset: TimeInterval = 0
+    /// The highest epoch this device has taken over at in this run.
+    private var highestOwnEpoch = 0
     /// True when the last `publishStoredPositions` skipped an entry only because a device was
     /// playing it, so the same list is worth offering again once that device pauses.
     public private(set) var deferredStoredPositions = false
@@ -82,7 +84,10 @@ public actor HandoffCoordinator {
         let records = if let known { known } else { try await transport.fetchDeviceRecords() }
         learnClockOffset(from: records)
         let seen = (records.nowPlaying + records.progress).map(\.record)
-        let epoch = HandoffResolver.takeoverEpoch(seen: seen)
+        // Records the caller held may predate this device's own last takeover; never reuse an
+        // epoch this device already published, or the next observe could pause it.
+        let epoch = max(HandoffResolver.takeoverEpoch(seen: seen), highestOwnEpoch + 1)
+        highestOwnEpoch = epoch
         session = Session(entryID: entryID, revision: revision, epoch: epoch, rate: rate,
                           position: positionSeconds, isPlaying: true, lastPublishedAt: nil)
         try await publishCurrent()

@@ -149,6 +149,55 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         XCTAssertEqual(controller.takeoverCount, 1)
     }
 
+    /// Poller records that still predate the Mac's own last takeover must not hand out its epoch
+    /// again: pausing and resuming against unchanged (empty) records raises the epoch.
+    func testResumingAgainstStalePollerRecordsRaisesTheEpoch() async throws {
+        let clock = TestClock()
+        let server = InMemoryLibraryServer(writerDeviceID: macID)
+        await server.setClock(clock.now)
+        let coordinator = HandoffCoordinator(
+            transport: InMemoryLibraryTransport(deviceID: macID, server: server), deviceID: macID,
+            clock: { clock.now }, sleep: { _ in })
+        let player = ScriptedPlayer()
+        player.revision = revision
+        let controller = WiltedMacHandoffController(
+            coordinator: coordinator, player: player, deviceID: macID,
+            latestRecords: { LibraryDeviceRecords() }, now: { clock.now })
+        let reader = InMemoryLibraryTransport(deviceID: "reader", server: server)
+
+        player.sample = WiltedMacPlaybackSample(episodeID: entry, positionSeconds: 10, rate: 1, isPlaying: true)
+        await controller.reconcile()
+        player.sample?.isPlaying = false
+        await controller.reconcile()
+        clock.advance(5)
+        await server.setClock(clock.now)
+        player.sample = WiltedMacPlaybackSample(episodeID: entry, positionSeconds: 10, rate: 1, isPlaying: true)
+        await controller.reconcile()
+
+        let mac = try await reader.fetchDeviceRecords().nowPlaying.first { $0.record.deviceID == macID }
+        XCTAssertEqual(try XCTUnwrap(mac).record.epoch, 2)
+        XCTAssertTrue(try XCTUnwrap(mac).record.isPlaying)
+        XCTAssertEqual(controller.takeoverCount, 2)
+    }
+
+    /// A phone that took over at the same epoch a moment later wins on server date; the Mac learns
+    /// it from the next round's poller records and pauses, with no confirming fetch of its own.
+    func testAnEqualEpochPeerSeenInTheNextRoundPausesTheMac() async throws {
+        let rig = await makeRig(usePollerRecords: true)
+        macPlays(rig, position: 10)
+        await rig.controller.reconcile()
+        let first = try await macPosition(rig)
+        XCTAssertEqual(first.epoch, 1)
+
+        rig.clock.advance(3)
+        try await phonePlays(rig, epoch: 1)
+        rig.clock.advance(2)
+        macPlays(rig, position: 15)
+        await rig.controller.reconcile()
+
+        XCTAssertEqual(rig.player.pauseCount, 1, "the later takeover at the same epoch wins")
+    }
+
     func testOnlyTheSyncRoundRepublishesWhilePlaying() async throws {
         let rig = await makeRig()
         macPlays(rig, position: 10)
