@@ -17,7 +17,7 @@ Pinned in tests: `SyncTickTests` (WiltedKit), `LibraryPollRequestCountTests` (Cl
 | Read | `poll([.intents, .deviceRecords])`: one `fetch-records` for the intent indexes and the playback records, with progress names budgeted to fill it to 100 (SYNC-R1); stage 2 only for records that changed or a pair a now-playing record just made hot | `poll([.deviceRecords, .offers] + .outcomes while a decision waits)`: one request when nothing changed |
 | Write | library state and statistics when changed; the playing checkpoint (NowPlaying + Progress as one write); stored positions every 2nd round | the playing checkpoint; positions saved offline |
 | State fetch | CKSyncEngine, on its own push | every 10th round, and at once on a foreground, push, pull, or while a decision waits |
-| Scan | throwaway engine every 4 rounds while no peer is known, every 40 once one is | none |
+| Scan | `discoverPeers` every 4 rounds while no peer is known, every 40 once one is; it reads the device directory and runs a throwaway scan engine only when the directory is missing or three reads in a row failed (SYNC-R1) | none |
 | Handoff | decides from the round's own records | decides from the round's own records (no separate observe loop, no confirming fetch after a takeover) |
 
 ## Request-rate audit (Mac)
@@ -34,7 +34,7 @@ Pinned in tests: `SyncTickTests` (WiltedKit), `LibraryPollRequestCountTests` (Cl
 
 The loops behind it: the 30 s inbound poller (intent list, device records, offer reads, a refetch of the missing own intent index every cycle: 228 `intentindex:mac-…` misses in the capture), the publisher's own intent relay and retry timers, the handoff publisher and the stored-position refresh, the statistics write on every listening-clock change, and a throwaway scan engine every 4th poll (19 engines, nine setup operations each, about 4.3 per minute on their own).
 
-**After (modeled by tests, to be measured on the installed build).** An idle Mac round is one operation (`LibraryPollRequestCountTests`: ten idle rounds, ten operations; `WiltedMacSyncRoundTests`: ten idle minutes, 21 reads, at most 2.1 per minute, nothing else touching the server). Add the scan: every 20 min once the phone has been seen (about 0.45 per minute), every 2 min before that. So the idle Mac is about 2 to 2.5 operations per minute, down from 17.
+**After (modeled by tests, to be measured on the installed build).** An idle Mac round is one operation (`LibraryPollRequestCountTests`: ten idle rounds, ten operations; `WiltedMacSyncRoundTests`: ten idle minutes, 21 reads, at most 2.1 per minute, nothing else touching the server). Add the scan: every 20 min once the phone has been seen (about 0.45 per minute), every 2 min before that. So the idle Mac is about 2 to 2.5 operations per minute, down from 17. (Later, the device directory replaced the periodic scan: while the directory exists, that slot is one directory read and no scan engine runs.)
 
 ## Request-rate audit (phone)
 
