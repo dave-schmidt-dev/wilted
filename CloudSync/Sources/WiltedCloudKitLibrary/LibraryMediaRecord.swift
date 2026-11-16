@@ -160,13 +160,7 @@ extension CloudKitLibraryTransport {
         if nowPlaying {
             ids += devices.compactMap { try? mapper.recordID(nowPlayingFor: $0) }
         }
-        var candidatePairs = peers.observedPairs
-        for device in devices {
-            for entry in peers.seedEntries {
-                candidatePairs.insert(LibraryPlaybackPair(deviceID: device, entryID: entry))
-            }
-        }
-        let sortedPairs = candidatePairs.sorted {
+        let sortedPairs = knownProgressPairs(devices: devices).sorted {
             ($0.deviceID, $0.entryID.rawValue) < ($1.deviceID, $1.entryID.rawValue)
         }
         ids += sortedPairs.compactMap { try? mapper.recordID(progressFor: $0.deviceID, entryID: $0.entryID) }
@@ -257,9 +251,13 @@ extension CloudKitLibraryTransport {
         return wanted.compactMap { intentCache[$0.name] }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
 
+    /// Every device's now-playing record and every known pair's progress, read fresh. Unlike
+    /// `poll`, this read is not budgeted: it runs only off the sync round.
     public func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
         var observed: [String: (channel: PlaybackChannel, observed: ObservedPlayback)] = [:]
         var asked = Set<String>()
+        var progressAsked: [String: ProgressAsk] = [:]
+        var fetched = Set<String>()
         func nextIDs(nowPlaying: Bool) -> [CKRecord.ID] {
             let devices = peers.devices.union([deviceID]).sorted()
             return playbackRecordIDs(devices: devices, nowPlaying: nowPlaying)
@@ -268,7 +266,9 @@ extension CloudKitLibraryTransport {
         var ids = nextIDs(nowPlaying: true)
         // The second round covers entries first named by a now-playing record from this call.
         for _ in 0..<2 where !ids.isEmpty {
+            noteProgressAsks(ids, devices: peers.devices.union([deviceID]).sorted(), ledger: &progressAsked)
             for record in try await fetchPresent(ids) {
+                fetched.insert(record.recordID.recordName)
                 guard case let .playback(channel, value)? = try? mapper.decode(record) else { continue }
                 peers.note(device: value.deviceID, entry: value.entryID)
                 observed[record.recordID.recordName] = (channel, ObservedPlayback(
@@ -276,6 +276,7 @@ extension CloudKitLibraryTransport {
             }
             ids = nextIDs(nowPlaying: false)
         }
+        bookProgressReads(progressAsked, found: fetched)
         func ordered(_ channel: PlaybackChannel) -> [ObservedPlayback] {
             observed.values.filter { $0.channel == channel }.map(\.observed)
                 .sorted { ($0.record.deviceID, $0.record.entryID.rawValue) < ($1.record.deviceID, $1.record.entryID.rawValue) }

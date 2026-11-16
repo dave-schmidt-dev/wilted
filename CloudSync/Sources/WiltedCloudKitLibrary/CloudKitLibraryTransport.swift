@@ -43,6 +43,8 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     private var sendAcc = LibrarySendAccumulator()
     private var sendRecordErrors: [String: Error] = [:]
     var serverRecords: [String: CKRecord] = [:]
+    /// Progress read history; cleared with `serverRecords` by `clearRecordCache()`.
+    var progressReads = LibraryProgressReads()
     private var busy = false
     /// Devices and entries learned from fetched records, so targeted fetches know which names to ask for.
     var peers = LibraryPeerDirectory()
@@ -242,7 +244,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         freshNilDriver = false
         enginePosition = nil
         committedFetchToken = nil
-        serverRecords = [:]
+        clearRecordCache()
         peers = LibraryPeerDirectory()
         consecutiveDirectoryFailures = 0
         lastObservedOfferGeneration = nil
@@ -403,7 +405,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
         enginePosition = state
         freshNilDriver = state == nil
         needsFetchRebuild = false
-        serverRecords = [:]
+        clearRecordCache()
         consumer = consume(replacement, epoch: mainEpoch)
     }
 
@@ -484,7 +486,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
             freshNilDriver = false
             quarantined = true
             await driver.resetZoneBootstrap()
-            serverRecords = [:]
+            clearRecordCache()
             peers = LibraryPeerDirectory()
             enginePosition = nil
             finish(.failure(CloudKitSyncError.accountChanged))

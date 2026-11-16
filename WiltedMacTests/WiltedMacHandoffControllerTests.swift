@@ -422,4 +422,33 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         XCTAssertEqual(after?.record.positionSeconds, 30)
         XCTAssertNotNil(first)
     }
+
+    func testStoredPositionPublicationReadsFreshRecordsEvenWithPollerRecords() async throws {
+        let clock = TestClock()
+        let server = InMemoryLibraryServer(writerDeviceID: macID)
+        await server.setClock(clock.now)
+        let coordinator = HandoffCoordinator(
+            transport: InMemoryLibraryTransport(deviceID: macID, server: server), deviceID: macID,
+            clock: { clock.now }, sleep: { _ in })
+        let player = ScriptedPlayer()
+        player.revision = revision
+        player.stored = [.init(entryID: entry, revision: revision, positionSeconds: 100, updatedAt: clock.now)]
+        // The poller's records predate the phone's save and never show it.
+        let stale = LibraryDeviceRecords(nowPlaying: [], progress: [])
+        let controller = WiltedMacHandoffController(
+            coordinator: coordinator, player: player, deviceID: macID, latestRecords: { stale }, now: { clock.now })
+
+        clock.advance(60)
+        await server.setClock(clock.now)
+        let peer = try DevicePlaybackPosition(
+            deviceID: phoneID, entryID: entry, revision: revision, positionSeconds: 500, isPlaying: false,
+            epoch: 2, publishedAt: clock.now)
+        try await InMemoryLibraryTransport(deviceID: phoneID, server: server).publish(peer, as: .progress)
+
+        await controller.tickRound()
+
+        let mac = try await InMemoryLibraryTransport(deviceID: "reader", server: server)
+            .fetchDeviceRecords().progress.filter { $0.record.deviceID == macID }
+        XCTAssertTrue(mac.isEmpty, "the newer peer save in the server, absent from the poller records, wins")
+    }
 }

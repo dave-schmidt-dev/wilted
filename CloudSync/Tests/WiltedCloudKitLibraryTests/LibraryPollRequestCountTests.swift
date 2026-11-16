@@ -131,19 +131,24 @@ final class LibraryPollRequestCountTests: XCTestCase {
 
         let askedNames = await mac.driver.askedNames
         let lastBatch = try XCTUnwrap(askedNames.last)
-        // Batches must scale with observed pairs (2) + explicit seeds (3 devices x 1 seed = 3) + nowPlaying (3 devices) = 8 names, not 360+ names!
-        XCTAssertEqual(lastBatch.count, 8)
+        // Batches must scale with observed pairs (2) + explicit seeds (3 devices x 1 seed = 3) + nowPlaying (3 devices), not 360+
+        // names. The Mac's own seed pair was read (and found missing) in the first round, so the poll serves it from its cache:
+        // 7 names.
+        XCTAssertEqual(lastBatch.count, 7)
+        let ownSeedName = try LibraryRecordMapper().recordID(progressFor: "mac", entryID: item("ep-seed")).recordName
+        XCTAssertFalse(lastBatch.contains(ownSeedName))
         // Ensure no speculative names for passive offer entries were asked
         for offerID in offerEntryIDs {
             let speculativeName = try LibraryRecordMapper().recordID(progressFor: "phone1", entryID: offerID).recordName
             XCTAssertFalse(lastBatch.contains(speculativeName), "passive offer entry \(offerID.rawValue) must not be queried speculatively")
         }
 
-        // Equivalence check: fetchDeviceRecords returns equivalent records without Cartesian fanout
+        // Equivalence check: fetchDeviceRecords returns equivalent records without Cartesian fanout. It is a full fresh read,
+        // so it also asks the own seed pair the poll served from its cache.
         let separateRecords = try await mac.transport.fetchDeviceRecords()
         XCTAssertEqual(polled.records, separateRecords)
         let separateBatch = await mac.driver.askedNames.last
-        XCTAssertEqual(Set(try XCTUnwrap(separateBatch)), Set(lastBatch))
+        XCTAssertEqual(Set(try XCTUnwrap(separateBatch)), Set(lastBatch).union([ownSeedName]))
     }
 
     func testExistingProgressPairsContinueToReturnChangedRewoundPositions() async throws {

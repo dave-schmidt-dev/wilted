@@ -31,13 +31,15 @@ extension CloudKitLibraryTransport {
     /// Everything a sync round reads from the zone, by name, in as few requests as the names allow.
     ///
     /// The first request holds every name that is known up front: the intent and outcome indexes,
-    /// the offer index, the device directory and this device's link, and each device's now-playing
-    /// and progress records. A second request exists only when the first named something new
-    /// (intents or outcomes not cached yet, the offers the index lists, progress for an entry a
-    /// now-playing record just introduced, the intent index of a device the directory just
+    /// the offer index, the device directory and this device's link, each device's now-playing
+    /// record, and the progress records `LibraryProgressSchedule` picks to fill the request to 100
+    /// names. A second request exists only when the first named something new (intents or
+    /// outcomes not cached yet, the offers the index lists, progress for a pair never read or one
+    /// a now-playing record in this read made hot, the intent index of a device the directory just
     /// introduced). A third exists only on the round a new device's index first names intents, so
     /// its waiting request is read in that same round. An idle round is therefore one request.
-    /// Progress names are limited to observed pairs and explicit cold-start seeds.
+    /// Progress names are limited to observed pairs and explicit cold-start seeds, and the result
+    /// lists every known pair: the ones read now plus cached copies of the rest.
     public func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
         try await CloudKitOperationContext.$caller.withValue(.poll) {
         peers.pruneStale(now: clock())
@@ -56,8 +58,21 @@ extension CloudKitLibraryTransport {
         if options.contains(.deviceLink), let id = try? mapper.recordID(deviceLinkFor: deviceID) { first.append(id) }
         var asked = Set<String>()
         func unasked(_ ids: [CKRecord.ID]) -> [CKRecord.ID] { ids.filter { asked.insert($0.recordName).inserted } }
-        if options.contains(.deviceRecords) { first += playbackRecordIDs(devices: devices, nowPlaying: true) }
+        let readsRecords = options.contains(.deviceRecords)
+        var progressAsked: [String: ProgressAsk] = [:]
+        func askProgress(_ pairs: [LibraryPlaybackPair]) -> [CKRecord.ID] { progressIDs(pairs, ledger: &progressAsked) }
+        if readsRecords {
+            progressReads.round += 1
+            first += devices.compactMap { try? mapper.recordID(nowPlayingFor: $0) }
+        }
         first = unasked(first)
+        if readsRecords {
+            let known = knownProgressPairs(devices: devices)
+            first += unasked(askProgress(LibraryProgressSchedule.pairs(
+                known: known, ownDeviceID: deviceID, hotEntryIDs: progressReads.hotEntries,
+                neverRead: known.filter { !hasRead($0) }, lastReadRound: progressReads.lastReadRound,
+                slotCount: 100 - first.count)))
+        }
 
         var observed: [String: (channel: PlaybackChannel, observed: ObservedPlayback)] = [:]
         var wantedIntents: [(name: String, deviceID: String, id: String)] = []
@@ -69,9 +84,11 @@ extension CloudKitLibraryTransport {
         var directory: LibraryDeviceDirectory?
         var link: LibraryDeviceLink?
         var introduced: [String] = []
+        var fetched = Set<String>()
 
         func absorb(_ records: [CKRecord]) {
             for record in records {
+                fetched.insert(record.recordID.recordName)
                 switch try? decodeTolerant(record) {
                 case let .intentIndex(index)?:
                     peers.note(device: index.deviceID)
@@ -134,9 +151,9 @@ extension CloudKitLibraryTransport {
             .compactMap { try? mapper.recordID(intentID: $0.id, deviceID: $0.deviceID) }
         second += wantedOutcomes.filter { outcomeCache[$0.name] == nil }
             .compactMap { try? mapper.recordID(outcomeIntentID: $0.id, deviceID: $0.deviceID) }
-        if options.contains(.deviceRecords) {
+        if readsRecords {
             let currentDevices = peers.devices.union([deviceID]).sorted()
-            second += playbackRecordIDs(devices: currentDevices, nowPlaying: false)
+            second += askProgress(followUpPairs(devices: currentDevices, observed: observed))
             second += introduced.compactMap { try? mapper.recordID(nowPlayingFor: $0) }
         }
         second = unasked(second)
@@ -152,8 +169,8 @@ extension CloudKitLibraryTransport {
         if !introduced.isEmpty {
             var pending = wantedIntents.filter { intentCache[$0.name] == nil }
                 .compactMap { try? mapper.recordID(intentID: $0.id, deviceID: $0.deviceID) }
-            if options.contains(.deviceRecords) {
-                pending += playbackRecordIDs(devices: peers.devices.union([deviceID]).sorted(), nowPlaying: false)
+            if readsRecords {
+                pending += askProgress(followUpPairs(devices: peers.devices.union([deviceID]).sorted(), observed: observed))
             }
             let third = unasked(pending)
             if !third.isEmpty { absorb(try await fetchPresent(third)) }
@@ -183,14 +200,106 @@ extension CloudKitLibraryTransport {
             }
             result.offers = cachedOffers
         }
-        if options.contains(.deviceRecords) {
+        if readsRecords {
+            bookProgressReads(progressAsked, found: fetched)
+            let known = knownProgressPairs(devices: peers.devices.union([deviceID]).sorted())
+            for (name, cached) in cachedProgress(of: known, skipping: Set(progressAsked.keys)) where observed[name] == nil {
+                observed[name] = (.progress, cached)
+            }
             func ordered(_ channel: PlaybackChannel) -> [ObservedPlayback] {
                 observed.values.filter { $0.channel == channel }.map(\.observed)
                     .sorted { ($0.record.deviceID, $0.record.entryID.rawValue) < ($1.record.deviceID, $1.record.entryID.rawValue) }
             }
-            result.records = LibraryDeviceRecords(nowPlaying: ordered(.nowPlaying), progress: ordered(.progress))
+            let records = LibraryDeviceRecords(nowPlaying: ordered(.nowPlaying), progress: ordered(.progress))
+            progressReads.hotEntries = Set(records.nowPlaying.map(\.record.entryID))
+            result.records = records
         }
         return result
         }
+    }
+}
+
+// MARK: - Progress selection and cached results
+
+extension CloudKitLibraryTransport {
+    /// A progress name asked in one read, with the cached record it had when asked.
+    typealias ProgressAsk = (pair: LibraryPlaybackPair, cached: CKRecord?)
+
+    /// Empties the record cache and the progress read history with it, so the next poll reads
+    /// every known pair once.
+    func clearRecordCache() {
+        serverRecords = [:]
+        progressReads = LibraryProgressReads()
+    }
+
+    /// Every observed pair, plus each seed entry paired with each of `devices`.
+    func knownProgressPairs(devices: [String]) -> Set<LibraryPlaybackPair> {
+        var pairs = peers.observedPairs
+        for device in devices {
+            for entry in peers.seedEntries { pairs.insert(LibraryPlaybackPair(deviceID: device, entryID: entry)) }
+        }
+        return pairs
+    }
+
+    func progressName(_ pair: LibraryPlaybackPair) -> String? {
+        try? mapper.recordID(progressFor: pair.deviceID, entryID: pair.entryID).recordName
+    }
+
+    /// A pair is read while it has a cached record or was read and found missing since the last clear.
+    func hasRead(_ pair: LibraryPlaybackPair) -> Bool {
+        guard let name = progressName(pair) else { return true }
+        return serverRecords[name] != nil || progressReads.foundMissing.contains(name)
+    }
+
+    /// The record IDs for `pairs`, noting each in `ledger` so the read can be booked when it ends.
+    func progressIDs(_ pairs: [LibraryPlaybackPair], ledger: inout [String: ProgressAsk]) -> [CKRecord.ID] {
+        pairs.compactMap { pair in
+            guard let id = try? mapper.recordID(progressFor: pair.deviceID, entryID: pair.entryID) else { return nil }
+            if ledger[id.recordName] == nil { ledger[id.recordName] = (pair, serverRecords[id.recordName]) }
+            return id
+        }
+    }
+
+    /// Notes every known pair whose progress name is among `ids`.
+    func noteProgressAsks(_ ids: [CKRecord.ID], devices: [String], ledger: inout [String: ProgressAsk]) {
+        let names = Set(ids.map(\.recordName))
+        _ = progressIDs(knownProgressPairs(devices: devices).filter { progressName($0).map(names.contains) == true },
+                        ledger: &ledger)
+    }
+
+    /// Pairs a later request of the same round reads: pairs never read (a new device's seeds, an
+    /// entry a now-playing record just introduced) and pairs a now-playing record in this read
+    /// made hot. The caller drops the ones already asked.
+    func followUpPairs(devices: [String],
+                       observed: [String: (channel: PlaybackChannel, observed: ObservedPlayback)]) -> [LibraryPlaybackPair] {
+        let hot = Set(observed.values.filter { $0.channel == .nowPlaying }.map(\.observed.record.entryID))
+        return knownProgressPairs(devices: devices)
+            .filter { !hasRead($0) || ($0.deviceID != deviceID && hot.contains($0.entryID)) }
+            .sorted { ($0.deviceID, $0.entryID.rawValue) < ($1.deviceID, $1.entryID.rawValue) }
+    }
+
+    /// Books a finished read. A found record is already cached by `fetchPresent`. A name asked and
+    /// not found leaves the cache and is marked missing, unless an own save cached it meanwhile.
+    func bookProgressReads(_ ledger: [String: ProgressAsk], found: Set<String>) {
+        for (name, ask) in ledger {
+            progressReads.lastReadRound[ask.pair] = progressReads.round
+            if found.contains(name) {
+                progressReads.foundMissing.remove(name)
+            } else if serverRecords[name] === ask.cached {
+                serverRecords[name] = nil
+                progressReads.foundMissing.insert(name)
+            }
+        }
+    }
+
+    /// Cached progress records of `known` pairs not asked in this read, keyed by record name.
+    func cachedProgress(of known: Set<LibraryPlaybackPair>, skipping asked: Set<String>) -> [String: ObservedPlayback] {
+        var cached: [String: ObservedPlayback] = [:]
+        for pair in known {
+            guard let name = progressName(pair), !asked.contains(name), let record = serverRecords[name],
+                  case let .playback(.progress, value)? = try? mapper.decode(record) else { continue }
+            cached[name] = ObservedPlayback(record: value, serverModifiedAt: record.modificationDate ?? .distantPast)
+        }
+        return cached
     }
 }

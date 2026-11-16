@@ -274,8 +274,8 @@ final class WiltedMacHandoffController {
             storedPositionsDue = false
             return
         }
-        let records = await latestRecords?()
-        let written = try await coordinator.publishStoredPositions(positions, records: records)
+        // A fresh read, not the poller's records: those may hold a cached copy older than a peer's save.
+        let written = try await coordinator.publishStoredPositions(positions)
         // A list held back while a device was playing is offered again on the next refresh.
         lastStoredPositions = await coordinator.deferredStoredPositions ? [] : positions
         storedPositionsDue = false
