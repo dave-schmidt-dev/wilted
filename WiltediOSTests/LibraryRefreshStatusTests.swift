@@ -249,7 +249,8 @@ final class LibraryRefreshStatusTests: XCTestCase {
                 let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
                 try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage)).perform([request])
                 let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
-                XCTAssertTrue(text.contains(context == "unknown" ? "mac publication unknown" : "saved mac last published"), text)
+                XCTAssertTrue(context == "unknown" ? text.contains("mac publication unknown")
+                    : text.contains("saved") && text.contains("mac last sent library changes"), text)
                 if context == "cold" { XCTAssertTrue(text.contains("unverified"), text) }
                 if context == "failed" { XCTAssertTrue(text.contains("refresh failed"), text) }
                 if context == "held" { XCTAssertTrue(text.contains("account review required"), text) }

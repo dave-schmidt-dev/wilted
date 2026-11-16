@@ -147,7 +147,7 @@ final class WiltedMacPublicationStatusTests: XCTestCase {
                     attachment.lifetime = .keepAlways; add(attachment)
                     let text = try capturePublicationEvidence(root, model: model, size: CGSize(width: width, height: 900), name: "root-\(context)-\(scale)-\(Int(width))-\(scheme)", fullSidebar: width == 1400).lowercased()
                     let expected = model.libraryPublicationVerified && model.libraryAccountStatus?.needsReview != true
-                        && model.librarySyncActivity.publication != nil ? "sent to devices" : "device sync status unknown"
+                        && model.librarySyncActivity.publication != nil ? "library changes sent" : "device sync status unknown"
                     // The icon rail has a status glyph; native help and accessibility retain the exact status.
                     if width == 1400 { XCTAssertTrue(text.contains(expected), text) }
                     XCTAssertEqual(bitmap.pixelsWide, Int(width))
