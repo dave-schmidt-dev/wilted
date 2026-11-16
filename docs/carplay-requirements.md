@@ -1,13 +1,13 @@
 # CarPlay requirements for Wilted
 
-Binding requirements for any CarPlay work. Sources: Apple's *CarPlay Developer Guide* (June 2026, dated 2026-06-08) and the *CarPlay Entitlement Addendum* (Rev. 06-08-2026, LYL247). Page numbers are the guide's own. The PDF is kept locally under gitignored `.logs/reference/` because Apple's terms do not allow redistribution; this file is a paraphrase of the parts that apply to an audio app.
+Binding requirements for any CarPlay work. Sources: Apple's *CarPlay Developer Guide* (June 2026, dated 2026-06-08) and the *CarPlay Entitlement Addendum* (Rev. 06-08-2026, LYL247). Page numbers are the guide's own. The PDF is kept locally under gitignored `.logs/reference/` because Apple's terms do not allow redistribution. This file is a paraphrase of the parts that apply to an audio app.
 
 Status: Audio entitlement requested 2026-09-30 (Case-ID 22579502) and **assigned to the Zero Delta account by Apple on 2026-09-30** (email from Apple Developer Relations). Assignment is not yet a profile: the capability still has to be enabled on the App ID and a provisioning profile created and imported (see Category and entitlement). Nothing here is implemented yet.
 
 ## Category and entitlement
 
 - Wilted is a **CarPlay audio app**: key `com.apple.developer.carplay-audio`, iOS 14 or later (p.12-13).
-- Apple must assign the entitlement to the Zero Delta developer account after review; the request is made at developer.apple.com/carplay and includes accepting the CarPlay Entitlement Addendum (p.12). Submitted 2026-09-30 as app type Audio.
+- Apple must assign the entitlement to the Zero Delta developer account after review. The request is made at developer.apple.com/carplay and includes accepting the CarPlay Entitlement Addendum (p.12). Submitted 2026-09-30 as app type Audio.
 - After approval: enable the capability on the App ID, make a new provisioning profile, import it into Xcode. Xcode and the simulator need a profile that supports CarPlay, so testing with the real entitlement follows approval (p.12). Signing must be manual for the CarPlay build and `CODE_SIGN_ENTITLEMENTS` must point at the entitlements file (p.12).
 - Once the entitlement is in a published build, the app icon appears on the CarPlay home screen for everyone. CarPlay cannot be shown to some users only, so ship it only when it is ready for all of them (p.12).
 - The deprecated `com.apple.developer.playable-content` key is for iOS 13 and earlier only. Do not use it (p.67).
@@ -17,11 +17,11 @@ Status: Audio entitlement requested 2026-09-30 (Case-ID 22579502) and **assigned
 - **No CarPlay API access before the entitlement profile arrives.** The Addendum (section 2) says Zero Delta will not access or attempt to access the CarPlay APIs without having received a CarPlay Entitlement Profile from Apple. So until approval there is no `import CarPlay`, no CarPlay scene declaration, and no CarPlay entitlement in any build, including simulator-only builds. Only groundwork that does not touch the CarPlay APIs is allowed (see Open items).
 - Apple grants each profile case by case, may refuse, and may revoke at any time. Approval is not guaranteed and the timeline is not stated (Addendum note, sections 2 and 6.4).
 - A "CarPlay App" is one Apple has approved in writing before the profile is used and before any App Store Connect submission (section 1).
-- The profile is for this Zero Delta app only, under the standard Developer Program (not Enterprise), for iOS (section 2). Apple may issue a development-only profile first; it may be used only for internal testing on registered test units.
+- The profile is for this Zero Delta app only, under the standard Developer Program (not Enterprise), for iOS (section 2). Apple may issue a development-only profile first. It may be used only for internal testing on registered test units.
 - The app must minimize driver distraction and never require physically handling the iPhone in CarPlay mode (section 3.1).
 - Audio apps (section 3.4): primarily audio playback (podcasts named as an example); no gaming, commerce, social networking, texting, or mapping on the car screen or audio interface; no text-to-speech email readers, lyrics, web browsers, or turn-by-turn directions.
 - Disclose the CarPlay API use in writing when submitting to App Store Connect, and the app must comply with the Addendum, the guidelines, and App Review Guidelines (section 4). Apple can still reject or stop distributing the app.
-- Apple may change the terms; continued use requires accepting new terms (section 5). Retest with every new OS release (section 6.2). Additional indemnification applies (section 8).
+- Apple may change the terms. Continued use requires accepting new terms (section 5). Retest with every new OS release (section 6.2). Additional indemnification applies (section 8).
 
 ## Guidelines the app must meet (p.4)
 
@@ -43,7 +43,7 @@ Consequence for Wilted: the car offers listening only. Downloading, deleting, La
 - On `didConnect`, keep the `CPInterfaceController`, set a root template, and release it on `didDisconnect` (p.31).
 - Template depth for audio apps is limited to 5 (p.14). Only these templates are allowed for audio: action sheet (iOS 17+), alert, grid, list, tab bar, voice control (iOS 27+), now playing, search (iOS 27+). Using any other template raises a runtime exception (p.14).
 - Now Playing is a shared instance, `CPNowPlayingTemplate.shared`. Configure it at connect time, because iOS can show it immediately from the home screen or the navigation bar. It must always be able to show something. Only a list template may be pushed on top of it, for example an up-next queue (p.21, p.33).
-- The MiniPlayer (iOS 27) is on by default; `allowsMiniPlayer = false` puts the Now Playing button in the navigation bar instead (p.21).
+- The MiniPlayer (iOS 27) is on by default. `allowsMiniPlayer = false` puts the Now Playing button in the navigation bar instead (p.21).
 - Tab bar: read the maximum tab count from iOS (currently 4 for audio) and do not hard-code it. More than 4 tabs can hide the Now Playing button (p.25).
 - List templates: some cars limit lists to 12 items, so read the maximum and handle 12 (p.18). Read `maximumImageSize` on list items and supply artwork of that size (p.28).
 - A list item handler that does async work shows a spinner until its completion block is called, so always call it (p.32).
@@ -52,7 +52,7 @@ Consequence for Wilted: the car offers listening only. Downloading, deleting, La
 ## Audio handling (p.29)
 
 - Activate the audio session only when the driver actually starts playback. Activating at launch stops the car's radio or other source.
-- No recording in CarPlay; configure the session without recording.
+- No recording in CarPlay. Configure the session without recording.
 - **iPhone is usually locked in the car.** Anything CarPlay reads must be readable while locked: nothing at `NSFileProtectionComplete` or `CompleteUnlessOpen`, and no keychain items with `WhenUnlocked`, `WhenUnlockedThisDeviceOnly`, or `WhenPasscodeSetThisDeviceOnly`. Cached audio, the library snapshot, and play positions must all satisfy this. Test with the phone locked.
 
 ## Assets (p.28)
@@ -62,7 +62,7 @@ Consequence for Wilted: the car offers listening only. Downloading, deleting, La
 
 ## Testing (p.8)
 
-- CarPlay Simulator (Mac app, in Additional Tools for Xcode) connects to a phone over USB. Real head units work too; a wireless aftermarket unit lets the phone stay connected to Xcode by cable.
+- CarPlay Simulator (Mac app, in Additional Tools for Xcode) connects to a phone over USB. Real head units work too. A wireless aftermarket unit lets the phone stay connected to Xcode by cable.
 
 ## Design decisions for Wilted (from the above)
 
@@ -74,7 +74,7 @@ Consequence for Wilted: the car offers listening only. Downloading, deleting, La
 
 ## Siri
 
-Voice commands are developed together with CarPlay but do not depend on it: they drive the same `LibraryPlayer` and work on the phone alone. The car screen shows no Siri button (the list has no assistant cell, p.18): "Hey Siri" and the car's Siri button cover it. Siri work does not use CarPlay APIs, so it may proceed before the entitlement is granted. See the Siri task in TASKS.md; the mechanism (App Intents or SiriKit media intents) is verified against current Apple docs before coding.
+Voice commands are developed together with CarPlay but do not depend on it: they drive the same `LibraryPlayer` and work on the phone alone. The car screen shows no Siri button (the list has no assistant cell, p.18): "Hey Siri" and the car's Siri button cover it. Siri work does not use CarPlay APIs, so it may proceed before the entitlement is granted. See the Siri task in TASKS.md. The mechanism (App Intents or SiriKit media intents) is verified against current Apple docs before coding.
 
 ## iOS 26 floor and API availability
 
@@ -99,19 +99,19 @@ Availability read from the iOS 27.0 SDK's CarPlay headers (Xcode 27.0, 27A266a).
 | `CPListTemplate.listHeader`, `CPPlaybackConfiguration`, `CPImageOverlay`, `CPListItem` (26.4 extension) | **iOS 26.4** (above the 26.0 floor) | no |
 | `CPListImageRowItem` elements, `CPGridButton`, `headerGridButtons` | iOS 26.0 | no (not needed for an episode list) |
 
-Only a runtime check on an iOS 26 simulator and a real iOS 26 head unit proves the behaviour; the header table proves only that the symbols exist.
+Only a runtime check on an iOS 26 simulator and a real iOS 26 head unit proves the behaviour. The header table proves only that the symbols exist.
 
 ## Open items
 
 - Entitlement granted 2026-09-30; the Addendum's no-access clause lifts once the CarPlay entitlement profile exists for the App ID. Until that profile is in place, nothing that touches the CarPlay APIs is added (see TASKS.md). Allowed groundwork now: the locked-phone file-protection audit, making the library model, transport, and player start without the iPhone window scene, and a framework-free episode-list model for the car. An earlier idea of adding the entitlement for simulator builds only is dropped because of the Addendum's no-access clause.
-- Whether the file protection class of the audio cache, library snapshot, and positions allows access while locked is covered headless by `LibraryFileProtectionTests` (source audit plus the files on disk) and by `CarPlayJourneyTests.testOwnPositionStoreIsReadableWhileTheDeviceIsLocked` for the own-position store; a locked-phone run on a device remains the attended evidence.
+- Whether the file protection class of the audio cache, library snapshot, and positions allows access while locked is covered headless by `LibraryFileProtectionTests` (source audit plus the files on disk) and by `CarPlayJourneyTests.testOwnPositionStoreIsReadableWhileTheDeviceIsLocked` for the own-position store. A locked-phone run on a device remains the attended evidence.
 - Whether launching with only the CarPlay scene can bring up the library model, transport, and player without the iPhone window scene.
 
 ## Siri
 
 Decision (David, 2026-10-01): the CarPlay list shows no Siri assistant cell. "Hey Siri" and the car's Siri button already cover spoken requests, so `CPListTemplate(title:sections:)` is built without `assistantCellConfiguration` and `CarPlaySourceTests.testNoAssistantCellIsConfiguredAnywhereInTheApp` fails if any app source configures one.
 
-What is built for spoken requests: `PlayMediaIntentHandler` (WiltediOS/Siri) handles `INPlayMediaIntent` in the app. It maps the request with `PlayMediaRequest` onto the existing Voice layer (`VoiceCommandPlanner`, `VoiceShowMatcher`), resolves only to episodes already on the phone, and plays through `VoiceRuntime` -> `LibraryRuntime.shared.prepare()` -> `playCachedWithoutToggling`, so it never waits on a sync and never starts a download. The `WiltediOSIntents` Intents extension (`com.zerodelta.wilted.ios.intents`, embedded in the app) resolves and confirms `INPlayMediaIntent` and answers `.handleInApp`; the app's `application(_:handle:completionHandler:)` then plays through the handler. The app declares `INIntentsSupported` = `INPlayMediaIntent`, `NSSiriUsageDescription`, and `com.apple.developer.siri` (Development only); `SiriAuthorization.requestIfNeeded()` asks once when the phone UI first appears, in the Development configuration only (`WILTED_SIRI`). No App Group; the extension sees no episode data. Tests: `PlayMediaIntentTests`, `IntentsExtensionTests`.
+What is built for spoken requests: `PlayMediaIntentHandler` (WiltediOS/Siri) handles `INPlayMediaIntent` in the app. It maps the request with `PlayMediaRequest` onto the existing Voice layer (`VoiceCommandPlanner`, `VoiceShowMatcher`), resolves only to episodes already on the phone, and plays through `VoiceRuntime` -> `LibraryRuntime.shared.prepare()` -> `playCachedWithoutToggling`, so it never waits on a sync and never starts a download. The `WiltediOSIntents` Intents extension (`com.zerodelta.wilted.ios.intents`, embedded in the app) resolves and confirms `INPlayMediaIntent` and answers `.handleInApp`. The app's `application(_:handle:completionHandler:)` then plays through the handler. The app declares `INIntentsSupported` = `INPlayMediaIntent`, `NSSiriUsageDescription`, and `com.apple.developer.siri` (Development only). `SiriAuthorization.requestIfNeeded()` asks once when the phone UI first appears, in the Development configuration only (`WILTED_SIRI`). No App Group. The extension sees no episode data. Tests: `PlayMediaIntentTests`, `IntentsExtensionTests`.
 
 Release leaves the extension out (a build script embeds it for Debug and Development only), because Production has no Siri entitlement and an App Store app with an Intents extension needs one.
 

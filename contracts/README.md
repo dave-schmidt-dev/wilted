@@ -16,8 +16,8 @@ state, schema compatibility, atomic preparation failure, and timeout terminal
 errors. Playback adoption across devices is not a fixture operation: its rules
 are `merge.rules` in `contracts/domain/schema.json`, tested in
 `Producer/Tests/WiltedProducerTests/RemotePositionRulesTests.swift`. Add new
-cases as separate files and teach the validator to execute their operation;
-unknown operations fail closed.
+cases as separate files and teach the validator to execute their operation.
+Unknown operations fail closed.
 
 Run:
 

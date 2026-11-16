@@ -9,7 +9,7 @@ as playing audio so the system avoids interrupting it
 (<https://developer.apple.com/documentation/appintents/audioplaybackintent>); `AppShortcutsProvider`
 (iOS 16+) registers spoken phrases with no user setup
 (<https://developer.apple.com/documentation/appintents/appshortcutsprovider>). The deployment target
-was iOS 17 when this was written and is now iOS 26. No entitlement is needed for in-app App Intents; no Intents extension target is needed
+was iOS 17 when this was written and is now iOS 26. No entitlement is needed for in-app App Intents. No Intents extension target is needed
 while the intents run in the app process (`openAppWhenRun = false`).
 
 ## Layers
@@ -49,7 +49,7 @@ while the intents run in the app process (`openAppWhenRun = false`).
 | listDownloaded | none | none | "No episodes are downloaded." |
 | | n episodes | none | "<n> episode(s) downloaded: <t1>, <t2>, <t3>." (first 3; "and <n-3> more" when more) |
 
-"Playing" means the player holds the episode (playing or paused); the next-episode rules use the
+"Playing" means the player holds the episode (playing or paused). The next-episode rules use the
 loaded episode, not whether it is audible.
 
 ## Coverage map (TASKS.md v1 set)
@@ -116,8 +116,8 @@ built app (the tests are hosted in it) and asserts all 14 intents, `ShowEntity`,
 queries and the `SpeedOption` and `SleepTimerOption` enums are exported, exactly 9 App Shortcuts are declared
 (every intent except the four voiced by Siri's transport commands and the sleep timer has one), every phrase contains
 `${applicationName}`, and no phrase starts with pause, resume, continue, stop or skip. Last build log (`xcodebuild test`, Xcode 27): no `appintentsmetadataprocessor`
-warnings for the app target; the only ones are "Metadata extraction skipped, no AppIntents.framework
-dependency found" for the unit- and UI-test bundles, which do not link AppIntents. `requestConfirmation(dialog:)` (iOS 18) shows the mark-completed question; the deployment target is iOS 26, so it is called directly.
+warnings for the app target. The only ones are "Metadata extraction skipped, no AppIntents.framework
+dependency found" for the unit- and UI-test bundles, which do not link AppIntents. `requestConfirmation(dialog:)` (iOS 18) shows the mark-completed question. The deployment target is iOS 26, so it is called directly.
 
 ## Outcomes and races
 
@@ -134,7 +134,7 @@ The sleep timer has no App Shortcut. On a device (phone and CarPlay, the PCC Sir
 including ones without the word "timer", was handled as a system sleep timer by the Clock (a 30 second timer
 was created, and "end of episode" was refused), so Wilted's intent was never reached. David does not expect to
 use it, so the slot is free (9 of 10). The `SleepTimerIntent` stays available in the Shortcuts app and works
-from there; the planner, `SleepTimer` and `LibraryPlayer.stopsAfterCurrentItem` are unchanged.
+from there. The planner, `SleepTimer` and `LibraryPlayer.stopsAfterCurrentItem` are unchanged.
 
 | Command | Condition | Action | Dialog |
 |---|---|---|---|
@@ -158,11 +158,11 @@ from there; the planner, `SleepTimer` and `LibraryPlayer.stopsAfterCurrentItem` 
 - Speed persists as `LibrarySettingsStore.defaultSpeed` (the Settings speed, kept in `UserDefaults`) and is also
   applied to the loaded episode with `LibraryPlayer.setRate`. `player.setRate` alone would be reset by the next
   `start()`. `SpeedOption` (an `AppEnum`, because a phrase may only carry an enum or entity parameter) has exactly
-  the player's six rates; `VoiceStateTests` keeps `SpeedOption`, `LibraryPlayer.rates` and
+  the player's six rates. `VoiceStateTests` keeps `SpeedOption`, `LibraryPlayer.rates` and
   `VoiceCommandPlanner.supportedSpeeds` equal.
 - The sleep timer (`SleepTimer`, one per process) is deadline-based: it wakes, checks the clock and sleeps the
   remainder. A wake more than 30 s past the deadline (the app was suspended while paused) is dropped, so it never
-  pauses something started since. Starting again replaces it; "off" cancels it. Presets are 5, 10, 15, 20, 30,
+  pauses something started since. Starting again replaces it. "off" cancels it. Presets are 5, 10, 15, 20, 30,
   45, 60 and 90 minutes (`SleepTimerOption`, an `AppEnum` with "off" as a case so one intent covers cancel).
   "End of episode" is a `SleepTimerOption` too: it sets `LibraryPlayer.stopsAfterCurrentItem`, which makes the
   next natural end report auto-play off (once) through `onFinished`, so the episode finishes, its bookkeeping
@@ -208,4 +208,4 @@ for "resume" (Siri's own "resume" covers it; Play next would skip ahead).
 
 Unverified on a physical iPhone: how Siri's speech recognition matches the numeric speed titles and the
 minute presets (the enum cases carry spoken synonyms such as "one and a half" and "an hour"). The
-enums, phrases and exported metadata are covered by tests; recognition is not.
+enums, phrases and exported metadata are covered by tests. Recognition is not.

@@ -5,8 +5,8 @@ The release adapter is configured for the Wilted iOS product
 `wilted-app-store-connect-bridge` consumer. It defines the fixed identity,
 readiness and local-gate commands, Production archive/sign/artifact checks, and
 the credentialed App Store Connect operations with content-addressed evidence
-under `.release-state/`. Do not add secrets or executable-selection fields;
-credentials remain broker-owned.
+under `.release-state/`. Do not add secrets or executable-selection fields.
+Credentials remain broker-owned.
 
 Offline checks:
 

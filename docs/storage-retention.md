@@ -3,15 +3,15 @@
 `scripts/storage-retention.py` is the policy owner. It is a dry run unless
 `--apply` is supplied, accepts `--budget-seconds` (the scheduled job uses the
 300-second default), and records weekly due state under the reserved
-`.logs/retention-due.json`. The LaunchAgent installer is idempotent; its
+`.logs/retention-due.json`. The LaunchAgent installer is idempotent. Its
 `RunAtLoad` entry invokes `/bin/bash scripts/run-storage-retention.sh`, which
 then invokes `/usr/bin/python3`. Due state prevents login-triggered repeats.
 
 The policy never sweeps source, `.git`, media, feedback originals, README /
 INVARIANTS / TASKS evidence, pinned evidence, or reserved retention outputs.
 Ordinary evidence is archived into a verified compressed archive before deletion.
-Archives contain a manifest mapping original paths to SHA-256 content members;
-duplicate bytes are stored once. A failed archive, changed identity, symlink,
+Archives contain a manifest mapping original paths to SHA-256 content members.
+Duplicate bytes are stored once. A failed archive, changed identity, symlink,
 mount boundary, busy lock, failed export, or uncertain liveness skips the item.
 After 14 quiet days, an unpinned, inactive test bundle with missing root metadata
 or an explicitly unknown test outcome is deleted without an archive. Each such
@@ -36,7 +36,7 @@ attachment-export failure on a bundle with root metadata retains the bundle.
 The schedule runs locally once a week and checks on login without repeating a
 successful run within seven days. It has a five-minute work budget, prevents
 self-overlap, and writes a terminal receipt under `.logs/retention-runs`.
-A busy or uncertain item is reported and left in place; the 4-GiB target is not
+A busy or uncertain item is reported and left in place. The 4-GiB target is not
 an unconditional disk quota. Cache removal can make the next build slower.
 
 ## Shared executor API
@@ -49,7 +49,7 @@ and verifies an atomic deduplicated `content.zip` plus `manifest.json`;
 `verify_archive(destination)` verifies CRCs and every recorded content hash; and
 `delete_verified(path, expected_identity, root=...)` rechecks identity and
 containment immediately before unlinking. Evidence and backup removal use the tree manifest/digest primitives. Cache
-eviction has a separate verified remover for opaque internal links; it uses
+eviction has a separate verified remover for opaque internal links. It uses
 platform-safe recursive deletion only after lock and snapshot checks. Callers
 must not add ad hoc recursive removal.
 `restore_archive(archive, destination)` verifies first and restores only
@@ -57,7 +57,7 @@ manifest paths and hash-checked bytes into a new tree.
 
 Build caches are evicted as whole units only after 24 quiet hours, while their
 existing advisory lock is held; lock files, lock namespaces, unknown roots,
-active processes, mount boundaries and linked roots remain untouched. Cache payloads may contain ordinary internal framework/debug links: these are inventoried as opaque links and never followed; a target outside the same cache unit prevents eviction. Evidence and backup trees reject links entirely. Automatic
+active processes, mount boundaries and linked roots remain untouched. Cache payloads may contain ordinary internal framework/debug links: these are inventoried as opaque links and never followed. A target outside the same cache unit prevents eviction. Evidence and backup trees reject links entirely. Automatic
 SQLite backups are recognized only by the versioned UUID directory form,
 retain newest three and all younger than 30 days, and require read-only
 `quick_check`. Manual, preimport, recovery, unknown, live database/WAL/media
@@ -68,7 +68,7 @@ paths are preserved.
 The owner subsequently directed deletion of all 79 bundles that the initial
 audit retained for missing metadata or unknown outcomes. They were removed
 without a new archive. The current disposition is recorded in
-`.logs/retention-reassessment-2026-11-04/removal-receipt.json`; original cleanup
+`.logs/retention-reassessment-2026-11-04/removal-receipt.json`. Original cleanup
 receipts describe the earlier preservation, not current availability. The
 weekly policy now expires future incomplete or unknown results after 14 quiet
 days, subject to the protections above.
@@ -82,10 +82,10 @@ python3 scripts/storage-retention.py --restore ARCHIVE_DIRECTORY NEW_DIRECTORY
 ```
 
 For a large restore, add `--budget-seconds 3600`. Interactive recovery accepts
-up to 24 hours; scheduled maintenance remains capped at five minutes.
+up to 24 hours. Scheduled maintenance remains capped at five minutes.
 
 When that restored archive contains a source-member export, rebuild its original
-file names with `python3 scripts/storage-retention.py --restore-snapshot EXPORT_DIRECTORY NEW_SOURCE_DIRECTORY`. The export keeps member bytes and a reconstruction map; it does not recreate the original compressed container byte for byte.
+file names with `python3 scripts/storage-retention.py --restore-snapshot EXPORT_DIRECTORY NEW_SOURCE_DIRECTORY`. The export keeps member bytes and a reconstruction map. It does not recreate the original compressed container byte for byte.
 
 For the November 4 audit, the original relative path is the lookup key:
 
@@ -97,10 +97,10 @@ python3 scripts/retention/manifest_recovery.py restore-archive --source-archive 
 The archive command reconstructs source members as a directory tree. It does
 not promise a byte-identical ZIP/TAR container. Intentional disposal rows,
 such as obsolete whole-device captures, have no recovery copy. Keep the audit
-maps and their protected content packs together; the Git recovery pack is
+maps and their protected content packs together. The Git recovery pack is
 self-contained and does not depend on a branch or reflog remaining available.
 
 The tracked `scripts/retention/apply_manifest.py` executor is deliberately bound
 to the November 4, 2026 audit. It is not used by the weekly job and does not
 authorize a future audit. Open-file checks and identity verification reduce
-writer races; they do not impose a global filesystem lock on other programs.
+writer races. They do not impose a global filesystem lock on other programs.

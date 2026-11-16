@@ -12,6 +12,8 @@ All notable changes to this project are documented in this file.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 
 ### Changed
+- Project docs rewritten in plain English with no token growth.
+- README and INVARIANTS cite local evidence and the private Apple guide as paths, not dead links.
 - A show that is not sent for online ad finding now keeps its ads and says why, instead of being cut on the Mac.
 - The Mac makes fewer iCloud calls while playing: starting an episode is one write instead of four reads and a write, and the time-saved and ad-time totals go up at most once every 5 minutes.
 - Each sync round on the Mac and the iPhone reads playback positions in one iCloud request again, however many episodes have been played. Positions of episodes not playing anywhere are refreshed in turn, about every minute with today's history, and episodes being played are read every round.

@@ -15,7 +15,7 @@ retry, status), the `WiltedAutomationSettings` family in
 Wilted has no background agent, launchd job, or push mechanism. Automation is driven
 entirely by two triggers a running app can notice: launch, and a 900-second timer that
 only exists while a window is open. A closed app and a sleeping Mac do no work of any
-kind — there is nothing running to notice a due refresh.
+kind: there is nothing running to notice a due refresh.
 
 This is deliberate, not a gap to be closed later. `refreshPolicy`'s `.whileOpen` case is
 evaluated against a persisted last-success timestamp rather than a wall-clock schedule: a
@@ -36,26 +36,26 @@ app.
 
 ### Refresh policy (`refreshPolicy`)
 
-- **Manual** (default) — automation never refreshes a feed. Only the listener's own
+- **Manual** (default): automation never refreshes a feed. Only the listener's own
   Refresh action does.
-- **On launch** — every app launch triggers a refresh evaluation. The interval tick never
-  refreshes under this policy; only the `.launch` trigger does.
-- **While open, every 6, 12, or 24 hours** — the open-window tick (and launch) refreshes
+- **On launch**: every app launch triggers a refresh evaluation. The interval tick never
+  refreshes under this policy. Only the `.launch` trigger does.
+- **While open, every 6, 12, or 24 hours**: the open-window tick (and launch) refreshes
   once the persisted last-success timestamp is at least that old. With no stored
   timestamp yet (first run under this policy), a refresh is immediately due.
 
 ### Download policy (`downloadPolicy`)
 
-Automation only ever claims episodes that the triggering refresh itself just admitted —
+Automation only ever claims episodes that the triggering refresh itself just admitted,
 never the existing back catalogue of a feed. This is a hard limit inside the store, not
-just a UI default; see Claims, below.
+just a UI default. See Claims, below.
 
-- **Manual** (default) — a refresh may run, but nothing is downloaded automatically.
-- **Newest new episode per enabled feed** — up to 1 newly admitted episode per feed, no
+- **Manual** (default): a refresh may run, but nothing is downloaded automatically.
+- **Newest new episode per enabled feed**: up to 1 newly admitted episode per feed, no
   ceiling across the whole refresh.
-- **Newest 3 new episodes per enabled feed** — up to 3 per feed, same lack of a
+- **Newest 3 new episodes per enabled feed**: up to 3 per feed, same lack of a
   refresh-wide ceiling.
-- **All newly admitted, up to 20 per refresh** — up to 20 per feed, but also capped at 20
+- **All newly admitted, up to 20 per refresh**: up to 20 per feed, but also capped at 20
   total across the entire refresh pass. Feeds are processed in a stable order and the
   budget is consumed as it goes, so a feed reached later in the pass can end up claiming
   fewer than 20, or none, if earlier feeds already used the budget.
@@ -64,8 +64,8 @@ Manual download from a Larder row remains available under every policy.
 
 ### Processing policy (`processingPolicy`) and transcript policy (`transcriptPolicy`)
 
-These exist as settings today — **Immediately after download** (default), **Manual**, or
-**Off-peak while open** with a local start/end time for processing; and **Best
+These exist as settings today: **Immediately after download** (default), **Manual**, or
+**Off-peak while open** with a local start/end time for processing, and **Best
 available** (default), **Always transcribe**, or **No local STT** for transcript
 acquisition, alongside the `removeAds` boolean (default on). They validate, persist, and
 are captured when preparation is admitted.
@@ -77,14 +77,14 @@ supplies both the ad detector and the displayed transcript. **No local STT** wit
 so while both are selected rather than leaving it to be discovered one episode at a time:
 the worker refuses each preparation, typed as `aligned-stt-required` before any model
 work, leaving the downloaded audio untouched. Neither control is disabled or silently
-rewritten -- a configuration saved when removal could still run from publisher cues stays
+rewritten: a configuration saved when removal could still run from publisher cues stays
 readable, and either control resolves it. On a transcript-only run (`removeAds` off) the published
 transcript is used when it describes the downloaded file.
 
 ## Claims: what stops the same episode transferring twice
 
 A "claim" is not a separate table or flag. It is a `PodcastDownload` record with status
-`.queued`. Creating that record — by whatever path — is what reserves an episode for
+`.queued`. Creating that record (by whatever path) reserves an episode for
 download, because the download coordinator and the preparation pipeline both key off that
 same record's existence and status.
 
@@ -95,18 +95,18 @@ in a second save leaves a crash window: if the process dies between the two save
 next launch has no way to tell which episodes were newly admitted by that refresh, because
 "newly admitted by this admission" is not a fact recorded anywhere except the admission
 itself. Doing both in one save means the new episode rows and their claims are either both
-durable or neither is — there is no partial state to reconcile.
+durable or neither is: there is no partial state to reconcile.
 
 Within that same call, an episode is only claimed if no `PodcastDownload` record exists
-for it at all (any status — queued, downloading, completed, failed, or cancelled all
+for it at all (any status: queued, downloading, completed, failed, or cancelled all
 count as spoken for). This mirrors `claimPodcastDownload`'s `.untouched` scope, used
 elsewhere for the same purpose: a settled decision, even a failed one, is the listener's
 to revisit, not automation's to redo.
 
 Manual downloads go through `claimPodcastDownload(episodeID:scope:)` instead, using
 `.notInFlight` scope: only an in-progress transfer (`.queued` or `.downloading`) blocks a
-new claim. This is what lets a listener retry a failed or cancelled download from the row
-— the settled record does not block a fresh claim the way it would for automation. Both
+new claim. This is what lets a listener retry a failed or cancelled download from the row.
+The settled record does not block a fresh claim the way it would for automation. Both
 scopes exist for the same reason: manual and automatic entry points race (a refresh can
 admit an episode the instant before the listener presses Download on it), and the store
 actor makes the existence check and the insert one atomic step, so only one caller ever
@@ -120,13 +120,13 @@ nonzero limit.
 ## What happens on relaunch
 
 A claim (a `.queued` or `.downloading` `PodcastDownload` record) is durable, but a running
-transfer is not — if Wilted's process dies mid-download, the record survives with no
+transfer is not: if Wilted's process dies mid-download, the record survives with no
 transfer behind it. `LocalLibraryStore.unfinishedPodcastDownloads()` is how a fresh launch
-finds those records; it is the only source of truth for which episodes are in that state,
+finds those records. It is the only source of truth for which episodes are in that state,
 since automation keeps no separate bookkeeping of its own.
 
 Relaunch also resumes a `.failed` record whose `failureKind` is `.retryable`
-(`LocalLibraryStore.resumablePodcastDownloads()`) — see Failure and retry, below, for what
+(`LocalLibraryStore.resumablePodcastDownloads()`). See Failure and retry, below, for what
 earns that classification. `unfinishedAutomationClaims()` unions both sets before handing
 them to `reconcile()`, so a stranded in-flight claim and a resumable failure both drain
 through the same serial queue rather than one of them starting outside it.
@@ -174,32 +174,32 @@ A download that starts and then genuinely fails settles to a `.failed` `PodcastD
 record carrying a `failureKind`, `PodcastDownloadCoordinatorError`'s own classification of
 what went wrong:
 
-- **`.retryable`** (`.transport`, `.invalidResponse`) — a transport hiccup or a bad-but-
+- **`.retryable`** (`.transport`, `.invalidResponse`): a transport hiccup or a bad-but-
   plausible HTTP response. Worth trying again without asking anyone.
 - **`.terminal`** (everything else that can fail a transfer: oversized, wrong media type,
-  `.hashMismatch`, `.invalidAudio`, and the rest) — the bytes themselves are wrong or the
-  request can never succeed as sent. Another attempt would not fix it; it needs a person.
-- **`nil`** — `.cancelled` and `.episodeNotFound` are neither. A cancellation is a user
+  `.hashMismatch`, `.invalidAudio`, and the rest): the bytes themselves are wrong or the
+  request can never succeed as sent. Another attempt would not fix it. It needs a person.
+- **`nil`**: `.cancelled` and `.episodeNotFound` are neither. A cancellation is a user
   decision, not a transfer outcome, and a missing episode has no retryability question to
   answer.
 
 `WiltedAutomationCoordinator.withRetries` only ever sees `.retryable` failures reach its
-bounded backoff; `startClaimedDownload` wraps anything else — a `.terminal` failure, a
-cancellation, or a lost claim — in an error conforming to `WiltedAutomationNonRetryable`
+bounded backoff. `startClaimedDownload` wraps anything else (a `.terminal` failure, a
+cancellation, or a lost claim) in an error conforming to `WiltedAutomationNonRetryable`
 before it gets there, so `withRetries` rethrows it on the first attempt and `drain` treats
 it as one claim done, not the whole pass stopping. A `.retryable` failure that survives all
 3 in-process retries settles `.failed` like any other and is picked up by
-`resumablePodcastDownloads()` at the next launch; a `.terminal` one is excluded from that
+`resumablePodcastDownloads()` at the next launch. A `.terminal` one is excluded from that
 set on purpose and stays a manual action from the Larder row, exactly as a cancellation
 does.
 
-Status through a pass — `idle`, `refreshing(feedsRemaining:)`,
+Status through a pass (`idle`, `refreshing(feedsRemaining:)`,
 `downloading(episode:remaining:)`, `retrying(afterSeconds:attempt:)`, `failed`,
-`cancelled`, `finished(refreshed:downloaded:)` — is reported live so a listening surface
+`cancelled`, `finished(refreshed:downloaded:)`) is reported live so a listening surface
 can show progress and a working cancel action rather than going quiet for the minutes a
 refresh-and-download pass can take. On failure, the surface is told only that "Automatic
-updates could not finish. They will try again," deliberately without the underlying cause
-— the cause belongs in the log and in Prep's preparation journal, not in a banner the
+updates could not finish. They will try again," deliberately without the underlying cause:
+the cause belongs in the log and in Prep's preparation journal, not in a banner the
 listener cannot act on directly.
 
 ## Known limits
@@ -207,21 +207,21 @@ listener cannot act on directly.
 - **Backfill admission never claims a download**, regardless of the limit a caller passes.
   Subscribing to a feed is intake, not a standing request to download its catalogue.
 - **The default policy is all-manual.** `refreshPolicy` defaults to `.manual`, so
-  automation performs no action of any kind — no refresh, no download — until a listener
+  automation performs no action of any kind (no refresh, no download) until a listener
   changes it. Absent any configuration, this feature is inert.
 - **Manual preparation starts immediately.** Processing schedules govern automatically
-  admitted work; choosing Prepare from an episode row remains an explicit request to run
+  admitted work. Choosing Prepare from an episode row remains an explicit request to run
   now.
 - **Only a `.terminal` failure requires a manual retry.** A `.retryable` one gets bounded
-  in-process backoff, then relaunch resume through `resumablePodcastDownloads()`; a
+  in-process backoff, then relaunch resume through `resumablePodcastDownloads()`. A
   `.terminal` failure is a decision reconciliation treats as already made, not an
   unfinished claim to resume.
 - **A permanently unreachable URL classified `.retryable` retries forever, once per
   launch.** Nothing yet distinguishes "this will work if I wait" from "this will never
-  work" beyond the HTTP-status/transport-exception split `failureKind` already draws; a
+  work" beyond the HTTP-status/transport-exception split `failureKind` already draws. A
   dead host that still answers with a retryable-looking error keeps costing one bounded
   retry sequence every time Wilted opens. Left for the batched-admission work already
   planned for a later phase.
-- **Automation is Mac-local.** Settings live in `UserDefaults` on the Mac; there is no
+- **Automation is Mac-local.** Settings live in `UserDefaults` on the Mac. There is no
   CloudKit sync of preferences and no background agent. Automation only ever runs inside
   a foreground, currently-open Wilted process on the machine where it was configured.

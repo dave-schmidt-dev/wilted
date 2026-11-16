@@ -4,7 +4,7 @@ Store schema V14 adds the measured lifetime ledger (`LifetimeMeasureEventRecord`
 its per-session/attempt high-water rows (`LifetimeMeasureHighWaterRecord`), one
 rebuildable summary row (`LifetimeStatisticsSummaryRecord`) and the write-once
 tracking-start row (`LifetimeStatisticsTrackingRecord`). No existing table
-changes shape; the V13 -> V14 stage is lightweight. The code is in
+changes shape. The V13 -> V14 stage is lightweight. The code is in
 `Producer/Sources/WiltedProducer/LocalLibrary/LocalLibraryStore+Bootstrap.swift`
 and `LocalLibraryStore+Migration.swift`.
 

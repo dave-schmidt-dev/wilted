@@ -9,8 +9,8 @@ The operator owns the inventory, evidence, experiments, and dispositions.
 
 At intake, snapshot the current `ad-feedback.json` and record its capture time.
 Keep this snapshot and all episode-specific evidence in private local storage,
-never in tracked files or external review packets. Retain the original report;
-an investigation must not silently relabel or dismiss the owner's inbox entry.
+never in tracked files or external review packets. Retain the original report.
+An investigation must not silently relabel or dismiss the owner's inbox entry.
 
 Create one ledger row per feedback ID, including dismissed, duplicate, unmapped,
 and contradictory reports. Record item ID, revision ID, engine version, pipeline
@@ -25,7 +25,7 @@ the preparation timeline, provenance, and relevant policy/model settings before
 running experiments. Copy; do not move, replace, or re-prepare owner media.
 Identify source audio by its journal `sourceHash`, and prepared audio by the
 revision's content hash. A successful preparation can replace downloaded bytes
-with cut audio; the current download path is **not proof of original audio**.
+with cut audio. The current download path is **not proof of original audio**.
 Use the original file's probed duration when available. The last retained or
 removed timeline endpoint can exclude trimmed trailing silence and is not proof
 of the full source duration. Correct both sides of a comparison together.
@@ -35,7 +35,7 @@ artifacts by embedded source identity, not just filenames. Record the transcript
 model and schema as well: a matching audio hash with a different speech model
 does not establish the exact transcript consumed by the reported preparation.
 For recovered audio, compare its bytes with the original source hash. A new
-download may contain different dynamically inserted ads; never reuse old times
+download may contain different dynamically inserted ads. Never reuse old times
 or labels on changed bytes.
 
 **Current limitation:** player presses persist metadata only. Neither the inbox
@@ -88,7 +88,7 @@ boundary windows locally and have the model adjudicate that source-bound
 supplement. Preserve the original labels, exact clip offsets, audio/transcript
 hashes and model provenance. Re-transcription is evidence, not a claim that a
 model listened directly or verified every acoustic boundary. Text-only judgments
-must say so. Mixed or still-uncertain passages remain protected; no confidence
+must say so. Mixed or still-uncertain passages remain protected. No confidence
 score or agreement count substitutes for source evidence. Independent model
 adjudication can accept labels without a human review step. Reference labels must
 never directly become runtime cuts.
@@ -97,15 +97,15 @@ never directly become runtime cuts.
 
 Use `make ad-feedback-drafts` for draft labels only. Its current exporter groups
 by item, so split the input by revision and source identity before using it on
-multi-revision reports; never adopt a draft without identity and timing review.
+multi-revision reports. Never adopt a draft without identity and timing review.
 `make ad-corpus-adopt SOURCE=<snapshot-directory>` pins inputs for cases and
-acquired gap inputs already named in the manifest; it does not automatically
+acquired gap inputs already named in the manifest. It does not automatically
 turn new feedback into cases or establish their labels.
 
 Record the saved cuts, matched to their labels' input identity. Recorded
 scoring (the one mode of `ad_corpus.py`) requires a successful
-preparation with the case's source hash and, when supplied, `revisionID`;
-an unmatched or malformed timeline is unavailable, never a passing empty cut.
+preparation with the case's source hash and, when supplied, `revisionID`.
+An unmatched or malformed timeline is unavailable, never a passing empty cut.
 Use `ad_corpus.py --strict --case <case-id>` for a targeted case, then the
 full strict corpus for candidate acceptance. A saved labelling reply is
 replayed through the reply check and the cut stage's break objects by
@@ -113,10 +113,10 @@ replayed through the reply check and the cut stage's break objects by
 
 Identify the failing stage: transcription, labelling, reply validation, break
 placement, final outcome, or audio rendering. Retain relevant
-bounded model requests/responses locally when needed to explain a failure;
-never include raw replies in owner journals or public artifacts.
+bounded model requests/responses locally when needed to explain a failure.
+Never include raw replies in owner journals or public artifacts.
 Compare like-for-like configuration, including self-promotion policy. An unknown
-historical setting stays unknown; testing a declared setting is a new experiment.
+historical setting stays unknown. Testing a declared setting is a new experiment.
 
 ## 5. Iterate against declared acceptance criteria
 
@@ -127,16 +127,16 @@ regression fixes and ensure the existing runner discovers any new test file.
 
 Compare target ad remnants, programme loss, changed cut boundaries, unresolved
 reviews, model failures, and unknown/unlabelled cut time. Repeat relevant baseline
-and candidate runs when outcomes vary; improvement must exceed observed variation.
+and candidate runs when outcomes vary. Improvement must exceed observed variation.
 A different refusal reason or one favorable run is not a demonstrated fix.
 Frozen retained inputs and labels are the comparison basis, not a fresh download.
 
 Accept only when the targeted improvement is demonstrated, reviewed programme
 loss does not increase, confirmed-ad remnants do not worsen, and affected tests
 and required gates pass. Evaluate all runnable corpus cases and inspect new cuts
-outside reviewed labels. Missing cases prevent a whole-corpus pass claim; report
-the exact tested scope. A small tuning set is not evidence of generalization;
-use held-out confirmed cases and distinguish them from examples used to tune.
+outside reviewed labels. Missing cases prevent a whole-corpus pass claim. Report
+the exact tested scope. A small tuning set is not evidence of generalization.
+Use held-out confirmed cases and distinguish them from examples used to tune.
 Unknown new cuts cannot be treated as harmless merely because the scorer has no
 label there. Never loosen a safety threshold to make a candidate pass.
 
@@ -158,7 +158,7 @@ An unavailable original is unresolved, not fixed or dismissed.
 Commit accepted source changes and update CHANGELOG/HISTORY/TASKS under the normal
 repository gates. Track installation and owner-listening acceptance separately
 from source verification. Publication, installation, and replacement of prepared
-owner audio require their normal authorization; no experiment grants it.
+owner audio require their normal authorization. No experiment grants it.
 Existing episodes are not automatically repaired by a newer engine.
 
 End each pass with report counts, accepted/rejected changes, measured scope,
