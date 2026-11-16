@@ -100,6 +100,9 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
     func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
         try await run { try await inner.fetchDeviceRecords() }
     }
+    func fetchDeviceRecords(entries: Set<ItemID>) async throws -> LibraryDeviceRecords {
+        try await run { try await inner.fetchDeviceRecords(entries: entries) }
+    }
     func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
         let generation = try gate.admit()
         try await inner.publish(records)  // The tuple array is not Sendable, so not through `run`.

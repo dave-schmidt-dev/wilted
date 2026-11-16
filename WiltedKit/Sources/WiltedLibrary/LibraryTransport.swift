@@ -234,6 +234,8 @@ public protocol LibraryTransport: Sendable {
     /// Publishes this device's own record; `record.deviceID` must be this device.
     func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws
     func fetchDeviceRecords() async throws -> LibraryDeviceRecords
+    /// Every now-playing record and the progress records of `entries` only, read fresh.
+    func fetchDeviceRecords(entries: Set<ItemID>) async throws -> LibraryDeviceRecords
     /// Publishes several of this device's own records as one write, so the now-playing and
     /// progress records of one moment cost one operation.
     func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws
@@ -285,6 +287,10 @@ public extension LibraryTransport {
     func operationGeneration() async -> UInt64 { 0 }
     func verifiedOwnerToken() async -> String? { nil }
     func verifyOwner() async throws {}
+    func fetchDeviceRecords(entries: Set<ItemID>) async throws -> LibraryDeviceRecords {
+        let all = try await fetchDeviceRecords()
+        return LibraryDeviceRecords(nowPlaying: all.nowPlaying, progress: all.progress.filter { entries.contains($0.record.entryID) })
+    }
     func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
         for item in records { try await publish(item.record, as: item.channel) }
     }

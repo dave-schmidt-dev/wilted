@@ -199,6 +199,19 @@ extension LibraryPollRequestCountTests {
         XCTAssertEqual(records.progress.count, 251)
     }
 
+    func testAStoredPositionReadAsksOnlyThoseEntriesInOneRequest() async throws {
+        let (_, mac, _) = try await budgetRig()
+        _ = try await pollRound(mac)
+        let before = await mac.driver.askedNames.count
+        let records = try await mac.transport.fetchDeviceRecords(entries: [try item("ep-007"), try item("ep-099")])
+        let requests = Array(await mac.driver.askedNames.dropFirst(before))
+        XCTAssertEqual(requests.count, 1)
+        let progressNames = Set(try ["ep-007", "ep-099"].flatMap { [try progressName("mac", $0), try progressName("phone", $0)] })
+        XCTAssertTrue(progressNames.isSubset(of: Set(requests.joined())))
+        XCTAssertEqual(Set(records.progress.map(\.record.entryID.rawValue)), ["ep-007", "ep-099"])
+        XCTAssertEqual(records.progress.count, 4)
+    }
+
     func testADeletedPairLeavesTheResultsOnceRead() async throws {
         let (fixture, mac, _) = try await budgetRig()
         _ = try await pollRound(mac)
@@ -253,7 +266,10 @@ extension LibraryPollRequestCountTests {
             positionSeconds: 55, rate: 1, isPlaying: false, epoch: 2)
         try await transport.publish(saved, as: .progress)
         await gate.release()
-        _ = try await firstPoll.value
+        let firstResult = try await firstPoll.value
+        let first = try XCTUnwrap(firstResult.records).progress
+            .first { $0.record.deviceID == "mac" && $0.record.entryID.rawValue == "ep-own" }
+        XCTAssertEqual(first?.record.positionSeconds, 55, "the poll that raced the save returns the save")
 
         let nextResult = try await transport.poll([.deviceRecords])
         let next = try XCTUnwrap(nextResult.records)

@@ -203,9 +203,9 @@ extension CloudKitLibraryTransport {
         if readsRecords {
             bookProgressReads(progressAsked, found: fetched)
             let known = knownProgressPairs(devices: peers.devices.union([deviceID]).sorted())
-            for (name, cached) in cachedProgress(of: known, skipping: Set(progressAsked.keys)) where observed[name] == nil {
-                observed[name] = (.progress, cached)
-            }
+            // The cache, not this read, is the answer for every known pair: it holds what was just
+            // fetched, or an own save that landed while the read was in flight.
+            for (name, cached) in cachedProgress(of: known, skipping: []) { observed[name] = (.progress, cached) }
             func ordered(_ channel: PlaybackChannel) -> [ObservedPlayback] {
                 observed.values.filter { $0.channel == channel }.map(\.observed)
                     .sorted { ($0.record.deviceID, $0.record.entryID.rawValue) < ($1.record.deviceID, $1.record.entryID.rawValue) }

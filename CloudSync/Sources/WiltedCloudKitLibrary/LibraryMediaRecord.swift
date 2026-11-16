@@ -259,14 +259,29 @@ extension CloudKitLibraryTransport {
     /// Every device's now-playing record and every known pair's progress, read fresh. Unlike
     /// `poll`, this read is not budgeted: it runs only off the sync round.
     public func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
+        try await fetchDeviceRecords(only: nil)
+    }
+
+    /// Every device's now-playing record and the progress of known pairs for `entries` only,
+    /// read fresh: what a stored-position publication needs, in one request for a few entries.
+    public func fetchDeviceRecords(entries: Set<ItemID>) async throws -> LibraryDeviceRecords {
+        try await fetchDeviceRecords(only: entries)
+    }
+
+    private func fetchDeviceRecords(only entries: Set<ItemID>?) async throws -> LibraryDeviceRecords {
         var observed: [String: (channel: PlaybackChannel, observed: ObservedPlayback)] = [:]
         var asked = Set<String>()
         var progressAsked: [String: ProgressAsk] = [:]
         var fetched = Set<String>()
         func nextIDs(nowPlaying: Bool) -> [CKRecord.ID] {
             let devices = peers.devices.union([deviceID]).sorted()
+            var skipped = Set<String>()
+            if let entries {
+                skipped = Set(knownProgressPairs(devices: devices).filter { !entries.contains($0.entryID) }
+                    .compactMap(progressName))
+            }
             return playbackRecordIDs(devices: devices, nowPlaying: nowPlaying)
-                .filter { asked.insert($0.recordName).inserted }
+                .filter { !skipped.contains($0.recordName) && asked.insert($0.recordName).inserted }
         }
         var ids = nextIDs(nowPlaying: true)
         // The second round covers entries first named by a now-playing record from this call.
@@ -282,6 +297,9 @@ extension CloudKitLibraryTransport {
             ids = nextIDs(nowPlaying: false)
         }
         bookProgressReads(progressAsked, found: fetched)
+        // An own save that landed while this read was in flight is newer than what was fetched.
+        let askedPairs = Set(progressAsked.values.map(\.pair))
+        for (name, cached) in cachedProgress(of: askedPairs, skipping: []) { observed[name] = (.progress, cached) }
         func ordered(_ channel: PlaybackChannel) -> [ObservedPlayback] {
             observed.values.filter { $0.channel == channel }.map(\.observed)
                 .sorted { ($0.record.deviceID, $0.record.entryID.rawValue) < ($1.record.deviceID, $1.record.entryID.rawValue) }

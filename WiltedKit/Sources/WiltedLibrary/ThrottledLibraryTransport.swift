@@ -53,6 +53,10 @@ public struct ThrottledLibraryTransport: LibraryTransport {
         try await gate.run(priority: .handoff) { try await inner.fetchDeviceRecords() }
     }
 
+    public func fetchDeviceRecords(entries: Set<ItemID>) async throws -> LibraryDeviceRecords {
+        try await gate.run(priority: .handoff) { try await inner.fetchDeviceRecords(entries: entries) }
+    }
+
     public func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
         try await gate.run(priority: .handoff) { try await inner.publish(records) }
     }

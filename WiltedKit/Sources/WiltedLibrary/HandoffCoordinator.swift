@@ -172,7 +172,10 @@ public actor HandoffCoordinator {
     ) async throws -> [ItemID] {
         deferredStoredPositions = false
         guard !positions.isEmpty else { return [] }
-        let records = if let known { known } else { try await transport.fetchDeviceRecords() }
+        // A fresh read of only the entries being published: one request, however long the history.
+        let records = if let known { known } else {
+            try await transport.fetchDeviceRecords(entries: Set(positions.map(\.entryID)))
+        }
         learnClockOffset(from: records)
         let now = clock()
         var written: [ItemID] = []
