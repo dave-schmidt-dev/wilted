@@ -355,7 +355,15 @@ actor WiltedMacLibraryPublisher {
         try await verify(context)
         var next = LibraryStats(lifetime, updatedAt: clock())
         next.supportedIntentActions = Self.supportedIntentActions
-        if let publishedStats, publishedStats.hasSameMetrics(as: next) { return }
+        if let publishedStats {
+            if publishedStats.hasSameMetrics(as: next) { return }
+            // The listening clock moves on every round while audio plays; it goes up at most once
+            // per `statsListeningPace`. Any other change (a new action, processed audio) goes at once.
+            if Self.differsOnlyInListeningClock(publishedStats, next),
+               let last = publishedStats.updatedAt, clock().timeIntervalSince(last) < Self.statsListeningPace {
+                return
+            }
+        }
         do {
             try await transport.publishStats(next)
             try await verify(context)
@@ -365,6 +373,20 @@ actor WiltedMacLibraryPublisher {
             try await verify(context)
             report.statsFailures += 1
         }
+    }
+
+    /// The least time between two statistics writes that differ only in the listening clock.
+    static let statsListeningPace: TimeInterval = 300
+
+    /// True when `lhs` and `rhs` differ only in the totals that advance while audio plays: time
+    /// saved by faster playback and confirmed ad time removed (both grow as the listener plays).
+    static func differsOnlyInListeningClock(_ lhs: LibraryStats, _ rhs: LibraryStats) -> Bool {
+        var a = lhs, b = rhs
+        for field in [\LibraryStats.fasterPlaybackTimeSavedSeconds, \.confirmedAdTimeRemovedSeconds] {
+            a[keyPath: field] = 0
+            b[keyPath: field] = 0
+        }
+        return a.hasSameMetrics(as: b)
     }
 
     /// The phone intents this Mac answers beyond the media and decision actions, so a phone sends

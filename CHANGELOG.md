@@ -13,6 +13,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - A show that is not sent for online ad finding now keeps its ads and says why, instead of being cut on the Mac.
+- The Mac makes fewer iCloud calls while playing: starting an episode is one write instead of four reads and a write, and the time-saved and ad-time totals go up at most once every 5 minutes.
 
 ### Added
 - The Mac has an Activity popover (click the sidebar's sync line) that shows what the Mac is doing in the background, including how many of the episodes it uploads ahead of time are already in iCloud.

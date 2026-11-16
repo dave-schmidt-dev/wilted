@@ -12,6 +12,14 @@ private final class TestClock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) { lock.withLock { time += seconds } }
 }
 
+/// Counts calls made from any isolation, such as the coordinator's injected sleep.
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
+}
+
 /// A scripted Mac player: the test sets what plays, and pausing really stops it.
 @MainActor
 private final class ScriptedPlayer: WiltedMacHandoffPlayer {
@@ -110,6 +118,35 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         XCTAssertEqual(record.positionSeconds, 42)
         XCTAssertEqual(record.revision, revision)
         XCTAssertEqual(rig.controller.takeoverCount, 1)
+    }
+
+    /// A takeover with poller records reads nothing: its epoch comes from those records (the server
+    /// itself is empty here, so a fetch would give epoch 1), and no confirming fetch follows.
+    func testATakeoverWithPollerRecordsIsOneWriteAndNoRead() async throws {
+        let clock = TestClock()
+        let server = InMemoryLibraryServer(writerDeviceID: macID)
+        await server.setClock(clock.now)
+        let settles = Counter()
+        let coordinator = HandoffCoordinator(
+            transport: InMemoryLibraryTransport(deviceID: macID, server: server), deviceID: macID,
+            clock: { clock.now }, sleep: { _ in settles.increment() })
+        let peer = try DevicePlaybackPosition(
+            deviceID: phoneID, entryID: entry, revision: revision, positionSeconds: 300, isPlaying: false,
+            epoch: 7, publishedAt: clock.now)
+        let known = LibraryDeviceRecords(nowPlaying: [], progress: [ObservedPlayback(record: peer, serverModifiedAt: clock.now)])
+        let player = ScriptedPlayer()
+        player.revision = revision
+        player.sample = WiltedMacPlaybackSample(episodeID: entry, positionSeconds: 10, rate: 1, isPlaying: true)
+        let controller = WiltedMacHandoffController(
+            coordinator: coordinator, player: player, deviceID: macID, latestRecords: { known }, now: { clock.now })
+
+        await controller.reconcile()
+
+        let mac = try await InMemoryLibraryTransport(deviceID: "reader", server: server)
+            .fetchDeviceRecords().nowPlaying.first { $0.record.deviceID == macID }
+        XCTAssertEqual(try XCTUnwrap(mac).record.epoch, 8, "the epoch comes from the poller's records, not a fetch")
+        XCTAssertEqual(settles.value, 0, "no settle wait and confirming fetch after the takeover")
+        XCTAssertEqual(controller.takeoverCount, 1)
     }
 
     func testOnlyTheSyncRoundRepublishesWhilePlaying() async throws {

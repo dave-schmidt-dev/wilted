@@ -217,14 +217,19 @@ final class WiltedMacHandoffController {
             handoffLog.warning("Playing \(sample.episodeID.rawValue, privacy: .public) has no known revision; not published")
             return
         }
+        // With poller records the takeover costs one write: the epoch comes from the round's records,
+        // and a takeover that raced this one (equal epoch, later server date) is caught by the next
+        // tick's `observeDecision`. Without them, read first and confirm once, as before.
+        let records = await latestRecords?()
         let epoch = try await coordinator.takeover(
-            entryID: sample.episodeID, revision: revision, positionSeconds: sample.positionSeconds, rate: sample.rate)
+            entryID: sample.episodeID, revision: revision, positionSeconds: sample.positionSeconds, rate: sample.rate,
+            records: records)
         sessionPlaying = true
         sessionEntry = sample.episodeID
         pendingRelinquish = false
         takeoverCount += 1
         handoffLog.notice("Took over playback at epoch \(epoch)")
-        try await applyDecision(await coordinator.settleCheck())
+        if records == nil { try await applyDecision(await coordinator.settleCheck()) }
     }
 
     /// Whether another device outranks this one, judged from the poller's last records so a tick

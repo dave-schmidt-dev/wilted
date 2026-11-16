@@ -58,6 +58,30 @@ final class WiltedMacLibraryStatsPublishTests: XCTestCase {
         XCTAssertEqual(updated?.audioProcessedSeconds, 90)
     }
 
+    /// Ten playing minutes at 1.5x move the time-saved total on every pass; it goes up once at the
+    /// start and then at most once per pace window, while a processed-audio change goes at once.
+    func testListeningTotalsArePacedAndOtherChangesAreNot() async throws {
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let box = StatsBox()
+        let seconds = LockedCounter()
+        let pub = WiltedMacLibraryPublisher(
+            source: EmptyStateSource(), transport: InMemoryLibraryTransport(deviceID: "mac", server: server),
+            sink: DiscardingSink(), isEnabled: true,
+            statsProvider: { await box.value },
+            clock: { Date(timeIntervalSince1970: TimeInterval(1_000 + seconds.current)) })
+        var writes = 0
+        for round in 0..<20 {   // twenty 30 s rounds
+            await box.set(LifetimeStatistics(audioProcessedSeconds: 60, fasterPlaybackTimeSavedSeconds: Double(round) * 10))
+            if try await pub.sync().statsPublished { writes += 1 }
+            seconds.add(30)
+        }
+        XCTAssertEqual(writes, 2, "first write, then one more after \(WiltedMacLibraryPublisher.statsListeningPace) s")
+
+        await box.set(LifetimeStatistics(audioProcessedSeconds: 120, fasterPlaybackTimeSavedSeconds: 200))
+        let processed = try await pub.sync()
+        XCTAssertTrue(processed.statsPublished, "processed audio is not paced")
+    }
+
     func testPublishedStatsAdvertiseSubscribeAndAddArticle() async throws {
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
         let box = StatsBox()
@@ -99,6 +123,8 @@ private final class LockedCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
     func next() -> Int { lock.withLock { value += 1; return value } }
+    var current: Int { lock.withLock { value } }
+    func add(_ amount: Int) { lock.withLock { value += amount } }
 }
 
 /// Forwards state operations but keeps the protocol-extension `publishStats` default (throws).

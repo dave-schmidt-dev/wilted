@@ -5,6 +5,8 @@ import WiltedCloudKit
 import WiltedDomain
 import WiltedLibrary
 
+private let operationTraceLog = Logger(subsystem: "com.zerodelta.wilted", category: "CloudKitOperationTrace")
+
 /// An engine driver wrapper that counts every CloudKit operation before delegating.
 final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
     let inner: any CloudKitEngineDriver
@@ -73,10 +75,10 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         }
         do {
             try await inner.sendChanges()
-            counters.record(caller: caller, recordCount: pending.count, bytes: bytes, result: .ok)
+            note("sendChanges", pendingNames(pending), caller: caller, recordCount: pending.count, bytes: bytes, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            counters.record(caller: caller, recordCount: pending.count, bytes: bytes, result: result)
+            note("sendChanges", pendingNames(pending), caller: caller, recordCount: pending.count, bytes: bytes, result: result)
             throw error
         }
     }
@@ -86,11 +88,11 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         do {
             let records = try await inner.fetchRecordsIfPresent(ids, desiredKeys: desiredKeys)
             let bytes = records.reduce(0) { $0 + recordBytes($1) }
-            counters.record(caller: caller, recordCount: records.count, bytes: bytes, result: .ok)
+            note("fetchRecordsIfPresent", ids.map(\.recordName), caller: caller, recordCount: records.count, bytes: bytes, result: .ok)
             return records
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            counters.record(caller: caller, recordCount: 0, bytes: 0, result: result)
+            note("fetchRecordsIfPresent", ids.map(\.recordName), caller: caller, recordCount: 0, bytes: 0, result: result)
             throw error
         }
     }
@@ -100,11 +102,11 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         do {
             let records = try await inner.fetchRecords(ids)
             let bytes = records.reduce(0) { $0 + recordBytes($1) }
-            counters.record(caller: caller, recordCount: records.count, bytes: bytes, result: .ok)
+            note("fetchRecords", ids.map(\.recordName), caller: caller, recordCount: records.count, bytes: bytes, result: .ok)
             return records
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            counters.record(caller: caller, recordCount: 0, bytes: 0, result: result)
+            note("fetchRecords", ids.map(\.recordName), caller: caller, recordCount: 0, bytes: 0, result: result)
             throw error
         }
     }
@@ -114,10 +116,10 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let bytes = recordBytes(record)
         do {
             try await inner.saveRecordRaw(record, progress: progress)
-            counters.record(caller: caller, recordCount: 1, bytes: bytes, result: .ok)
+            note("saveRecordRaw", [record.recordID.recordName], caller: caller, recordCount: 1, bytes: bytes, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            counters.record(caller: caller, recordCount: 1, bytes: bytes, result: result)
+            note("saveRecordRaw", [record.recordID.recordName], caller: caller, recordCount: 1, bytes: bytes, result: result)
             throw error
         }
     }
@@ -129,11 +131,11 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
             let record = try await inner.fetchAssetRecordRaw(id, assetField: assetField, to: destination, progress: progress)
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
             let bytes = max(fileSize, recordBytes(record))
-            counters.record(caller: caller, recordCount: 1, bytes: bytes, result: .ok)
+            note("fetchAssetRecordRaw", [id.recordName], caller: caller, recordCount: 1, bytes: bytes, result: .ok)
             return record
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            counters.record(caller: caller, recordCount: 1, bytes: 0, result: result)
+            note("fetchAssetRecordRaw", [id.recordName], caller: caller, recordCount: 1, bytes: 0, result: result)
             throw error
         }
     }
@@ -142,10 +144,10 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let caller = CloudKitOperationContext.caller ?? resolveCaller(for: ids)
         do {
             try await inner.deleteRecordsRaw(ids)
-            counters.record(caller: caller, recordCount: ids.count, bytes: 0, result: .ok)
+            note("deleteRecordsRaw", ids.map(\.recordName), caller: caller, recordCount: ids.count, bytes: 0, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            counters.record(caller: caller, recordCount: ids.count, bytes: 0, result: result)
+            note("deleteRecordsRaw", ids.map(\.recordName), caller: caller, recordCount: ids.count, bytes: 0, result: result)
             throw error
         }
     }
@@ -154,10 +156,10 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let caller = CloudKitOperationContext.caller ?? .poll
         do {
             try await inner.fetchChanges(zoneIDs: zoneIDs)
-            counters.record(caller: caller, recordCount: 0, bytes: 0, result: .ok)
+            note("fetchChanges", [], caller: caller, recordCount: 0, bytes: 0, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            counters.record(caller: caller, recordCount: 0, bytes: 0, result: result)
+            note("fetchChanges", [], caller: caller, recordCount: 0, bytes: 0, result: result)
             throw error
         }
     }
@@ -166,11 +168,31 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let caller = CloudKitOperationContext.caller ?? .poll
         do {
             try await inner.fetchChanges()
-            counters.record(caller: caller, recordCount: 0, bytes: 0, result: .ok)
+            note("fetchChanges", [], caller: caller, recordCount: 0, bytes: 0, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            counters.record(caller: caller, recordCount: 0, bytes: 0, result: result)
+            note("fetchChanges", [], caller: caller, recordCount: 0, bytes: 0, result: result)
             throw error
+        }
+    }
+
+    /// Counts one operation and, at debug level, says what it was and which records it touched,
+    /// so a request rate can be traced to its call sites (`log stream --level debug`).
+    private func note(_ operation: String, _ names: [String], caller: CloudKitOperationCaller,
+                      recordCount: Int, bytes: Int64, result: CloudKitOperationResult) {
+        counters.record(caller: caller, recordCount: recordCount, bytes: bytes, result: result)
+        let shown = names.prefix(4).joined(separator: ",") + (names.count > 4 ? ",+\(names.count - 4)" : "")
+        operationTraceLog.debug(
+            "op \(operation, privacy: .public) caller=\(caller.rawValue, privacy: .public) records=\(recordCount) result=\(String(describing: result), privacy: .public) names=\(shown, privacy: .public)")
+    }
+
+    private func pendingNames(_ changes: [CKSyncEngine.PendingRecordZoneChange]) -> [String] {
+        changes.compactMap { change in
+            switch change {
+            case let .saveRecord(id): "save:" + id.recordName
+            case let .deleteRecord(id): "delete:" + id.recordName
+            @unknown default: nil
+            }
         }
     }
 
