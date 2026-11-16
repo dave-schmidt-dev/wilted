@@ -1,4 +1,5 @@
 import CloudKit
+import WiltedCloudKit
 import WiltedDomain
 import WiltedLibrary
 import XCTest
@@ -225,4 +226,90 @@ private final class BuiltDrivers: @unchecked Sendable {
         lock.withLock { drivers.append(driver) }
         return driver
     }
+}
+
+// MARK: - A save during a read
+
+extension LibraryPollRequestCountTests {
+    /// The first read of an own pair is in flight when this device saves that pair. The older
+    /// fetched copy must not replace the saved one, because own pairs are not read again.
+    func testAnOwnSaveDuringTheFirstReadOfThatPairIsNotReplacedByTheFetchedCopy() async throws {
+        let fixture = try MediaFixture()
+        let old = try fixture.endpoint("mac", writer: true)
+        try await old.transport.publish(try makePosition(device: "mac", entry: "ep-own"), as: .progress)
+
+        let outbox = CloudKitLibraryOutbox()
+        let server = fixture.server
+        let gate = HeldFetchDriver(inner: FakeMediaDriver(server: fixture.server, outbox: outbox))
+        let transport = try CloudKitLibraryTransport(
+            deviceID: "mac", isLibraryWriter: true, driver: gate,
+            driverFactory: { _ in FakeMediaDriver(server: server, outbox: outbox) }, outbox: outbox)
+        await transport.track(entries: [try item("ep-own")])
+
+        let firstPoll = Task { try await transport.poll([.deviceRecords]) }
+        await gate.waitUntilHeld()
+        let saved = try DevicePlaybackPosition(
+            deviceID: "mac", entryID: item("ep-own"), revision: RevisionID(rawValue: "rev-1"),
+            positionSeconds: 55, rate: 1, isPlaying: false, epoch: 2)
+        try await transport.publish(saved, as: .progress)
+        await gate.release()
+        _ = try await firstPoll.value
+
+        let nextResult = try await transport.poll([.deviceRecords])
+        let next = try XCTUnwrap(nextResult.records)
+        let own = next.progress.first { $0.record.deviceID == "mac" && $0.record.entryID.rawValue == "ep-own" }
+        XCTAssertEqual(own?.record.positionSeconds, 55)
+    }
+}
+
+/// Holds the first progress read until the test releases it; every other call passes through.
+private actor HeldFetchDriver: CloudKitEngineDriver {
+    private let inner: any CloudKitEngineDriver
+    private var held = false
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    init(inner: any CloudKitEngineDriver) { self.inner = inner }
+
+    func waitUntilHeld() async {
+        if held { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+
+    var events: AsyncStream<CloudKitEngineEvent> { get async { await inner.events } }
+    func currentAccountIdentity() async throws -> CloudKitAccountIdentity? { try await inner.currentAccountIdentity() }
+    func ensureZone() async throws { try await inner.ensureZone() }
+    func ensureZone(_ zoneID: CKRecordZone.ID) async throws { try await inner.ensureZone(zoneID) }
+    func fetchChanges() async throws { try await inner.fetchChanges() }
+    func fetchChanges(zoneIDs: Set<CKRecordZone.ID>) async throws { try await inner.fetchChanges(zoneIDs: zoneIDs) }
+    func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] { try await inner.fetchRecords(ids) }
+    func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] {
+        let records = try await inner.fetchRecordsIfPresent(ids, desiredKeys: desiredKeys)
+        if !held, ids.contains(where: { $0.recordName.contains("ep-own") }) {
+            held = true
+            heldWaiters.forEach { $0.resume() }
+            heldWaiters = []
+            if !released { await withCheckedContinuation { releaseWaiter = $0 } }
+        }
+        return records
+    }
+    func saveRecordRaw(_ record: CKRecord, progress: @escaping @Sendable (Double) -> Void) async throws {
+        try await inner.saveRecordRaw(record, progress: progress)
+    }
+    func fetchAssetRecordRaw(_ id: CKRecord.ID, assetField: String, to destination: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> CKRecord {
+        try await inner.fetchAssetRecordRaw(id, assetField: assetField, to: destination, progress: progress)
+    }
+    func deleteRecordsRaw(_ ids: [CKRecord.ID]) async throws { try await inner.deleteRecordsRaw(ids) }
+    func sendChanges() async throws { try await inner.sendChanges() }
+    func cancelOperations() async { await inner.cancelOperations() }
+    func resetZoneBootstrap() async { await inner.resetZoneBootstrap() }
+    func addPendingRecordZoneChanges(_ changes: [CKSyncEngine.PendingRecordZoneChange]) async { await inner.addPendingRecordZoneChanges(changes) }
+    nonisolated func isValidStateData(_ data: Data) -> Bool { inner.isValidStateData(data) }
 }

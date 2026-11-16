@@ -218,13 +218,18 @@ extension CloudKitLibraryTransport {
     func fetchPresent(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
         guard !quarantined else { throw CloudKitSyncError.quarantined }
         let unique = Array(Set(ids))
+        let before = Dictionary(uniqueKeysWithValues: unique.map { ($0.recordName, serverRecords[$0.recordName]) })
         var found: [CKRecord] = []
         do {
             for start in stride(from: 0, to: unique.count, by: 100) {
                 found += try await driver.fetchRecordsIfPresent(Array(unique[start..<min(start + 100, unique.count)]), desiredKeys: nil)
             }
         } catch { throw failure(error) }
-        for record in found { serverRecords[record.recordID.recordName] = record }
+        // A save that landed while this read was in flight is newer than the fetched copy. Keep it,
+        // because own pairs are served from this cache rather than read again.
+        for record in found where serverRecords[record.recordID.recordName] === before[record.recordID.recordName] ?? nil {
+            serverRecords[record.recordID.recordName] = record
+        }
         return found
     }
 
