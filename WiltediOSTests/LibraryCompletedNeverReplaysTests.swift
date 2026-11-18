@@ -302,7 +302,7 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
 
     /// `a` plays to its end with "play the next one" off, so it stays loaded, ended. Returns the runtime
     /// that routes the car's commands.
-    private func endedAndStillLoaded(_ rig: Rig) async throws -> LibraryRuntime {
+    private func endedAndStillLoaded(_ rig: Rig, pausedAtTheEnd: Bool = false) async throws -> LibraryRuntime {
         let suite = "library-no-replay-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
@@ -312,6 +312,14 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
         await runtime.prepare()
         await rig.model.refresh()
         try await start(rig, "a")
+        if pausedAtTheEnd {
+            // A pause that lands after the audio ended and before the model takes the finish up.
+            let takeUp = rig.player.onFinished
+            rig.player.onFinished = { [player = rig.player] ended, autoPlayNext in
+                player.pause()
+                takeUp?(ended, autoPlayNext)
+            }
+        }
         rig.engine.finishNaturally()
         await settleOnClock()
         XCTAssertEqual(rig.player.item?.entryID, id("a"), "it stays loaded")
@@ -332,6 +340,20 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
         await settled(rig, on: "b")
         XCTAssertEqual(rig.player.item?.entryID, id("b"))
         XCTAssertTrue(rig.player.isPlaying)
+        withExtendedLifetime(runtime) {}
+    }
+
+    func testTheCarsPlayButtonSkipsAnEndedEpisodeWhoseFinishAPauseKeptFromBeingRecorded() async throws {
+        try await seed()
+        let rig = await launch()
+        rig.engine.duration = 540 // shorter than the feed's 600, so its position does not read as finished
+        let runtime = try await endedAndStillLoaded(rig, pausedAtTheEnd: true)
+        XCTAssertFalse(rig.model.isFinishedHere(id("a")), "the pause right at the end withdrew the finish")
+        XCTAssertEqual(rig.model.remoteResumeRow?.id, id("a"), "so the library would pick the same episode")
+
+        XCTAssertTrue(rig.player.handleRemote(.play))
+        await settled(rig, on: "b")
+        XCTAssertEqual(rig.player.item?.entryID, id("b"))
         withExtendedLifetime(runtime) {}
     }
 

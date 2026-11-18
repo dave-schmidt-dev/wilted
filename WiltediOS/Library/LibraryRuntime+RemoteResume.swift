@@ -28,6 +28,11 @@ extension LibraryRuntime {
     /// reports success and starts the episode in a task that logs how it ended. Before the library is
     /// loaded (a background launch for this very command) the answer is success, as nothing is known yet.
     func resumeFromIdleRemote(_ command: LibraryRemoteCommand) -> Bool {
+        // A loaded episode at its end is finished here, also when its finish was never taken up (a
+        // pause right at the end withdraws it): the library must not hand the same episode back.
+        if player.status == .ended, let ended = player.item?.entryID, !model.isFinishedHere(ended) {
+            model.rememberFinishedHere(ended)
+        }
         if model.localStateLoaded, model.remoteResumeRow == nil {
             playerLog.notice("Remote resume \(command.logName, privacy: .public): nothing on this iPhone to resume")
             return false
