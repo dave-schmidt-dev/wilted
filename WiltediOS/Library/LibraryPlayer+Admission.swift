@@ -34,15 +34,34 @@ extension LibraryPlayer {
         }
         guard needsAdmission, let authorizePlayback else { return performAdmitted(command) }
         let epoch = admissionEpoch
+        var resumes = false
+        switch command {
+        case .play, .togglePlayPause: resumes = status == .paused
+        default: break
+        }
         admissionTask = Task { @MainActor [weak self] in
             guard let self, !Task.isCancelled, self.admissionEpoch == epoch, self.item == item else { return }
+            // Alongside the file check, so a resume waits for the slower of the two, not both.
+            let moved = resumes ? self.resumePosition.map { ask in Task { @MainActor in await ask(item) } } : nil
             let admitted = await authorizePlayback(item)
+            let target = await moved?.value ?? nil
             guard !Task.isCancelled, self.admissionEpoch == epoch, self.item == item else { return }
             self.admissionTask = nil
             guard admitted else { self.invalidateLoadedItem(); return }
+            if let target { self.adoptPausedPosition(target) }
             _ = self.performAdmitted(command)
         }
         return true
+    }
+
+    /// Moves the paused item to where another device left it, just before a resume. Not a
+    /// transport command: it cancels no admission, so the admitted play that follows still runs.
+    func adoptPausedPosition(_ seconds: TimeInterval) {
+        guard item != nil, status == .paused, remoteSeekState == nil else { return }
+        let target = min(max(0, seconds), duration)
+        engine.currentTime = target
+        position = target
+        publishNowPlaying()
     }
 
     @discardableResult

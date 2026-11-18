@@ -18,6 +18,12 @@ struct LibraryHandoffTiming: Sendable {
     var settleSleep: @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
     /// The longest a manual start waits for the episode's fresh records (`freshenStartRecords`).
     var startRecordsWait: Duration = .seconds(2)
+    /// A resume of the loaded, paused episode reads its records fresh only when the phone set that
+    /// paused position at least this long ago: another device cannot have taken the episode over
+    /// and played it on in less, and a quick pause and play stays instant.
+    var resumeReadAfterPause: TimeInterval = SyncCadence.tickInterval
+    /// The longest such a resume waits for the records (`resumePositionFromOtherDevice`).
+    var resumeRecordsWait: Duration = .seconds(1)
 }
 
 /// Mutable handoff bookkeeping. A class so the model's extension can keep state without stored
@@ -102,6 +108,7 @@ extension LibraryAppModel {
         player.onFinished = { [weak self] ended, autoPlayNext in
             Task { @MainActor [weak self] in await self?.episodeFinished(ended, autoPlayNext: autoPlayNext) }
         }
+        player.resumePosition = { [weak self] item in await self?.resumePositionFromOtherDevice(item.entryID) }
         player.onWillReplaceItem = { [weak self] outgoingID, position in
             MainActor.assumeIsolated {
                 guard let self else { return }

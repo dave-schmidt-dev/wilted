@@ -72,8 +72,14 @@ final class LibraryPlayer: ObservableObject {
     @Published private(set) var item: Item?
     @Published private(set) var status: Status = .idle {
         // Anything that leaves `.playing` (pause, stop, a new item, a failure) also ends a spoken-bulletin hold.
-        didSet { if status != .playing, speechHold != nil { speechHold = nil; onSpeechHoldEnded?() } }
+        didSet {
+            if status != .playing, speechHold != nil { speechHold = nil; onSpeechHoldEnded?() }
+            if status != .paused { pausedPositionSetAt = nil } else if oldValue != .paused { pausedPositionSetAt = Date() }
+        }
     }
+    /// When the phone itself last set the paused position: the pause, or a seek made while paused.
+    /// nil unless paused.
+    var pausedPositionSetAt: Date?
     /// Set while a spoken bulletin holds program audio: the engine is stopped, status stays `.playing`, the
     /// timer keeps running and the position is the checkpoint. Owned by `LibraryPlayerInterruptions`.
     @Published var speechHold: LibrarySpeechHold?
@@ -104,6 +110,9 @@ final class LibraryPlayer: ObservableObject {
     var admissionEpoch: UInt64 = 0
     var admissionTask: Task<Void, Never>?
     var authorizePlayback: (@MainActor (Item) async -> Bool)?
+    /// Asked alongside `authorizePlayback` when a play command resumes the paused item: where
+    /// another device has played it on to since, or nil to resume in place.
+    var resumePosition: (@MainActor (Item) async -> TimeInterval?)?
     private var endedAtTransportCount = -1
     /// A natural finish survives unloading an ineligible item, but never a transport command.
     struct NaturalCompletion: Equatable {
@@ -329,7 +338,7 @@ final class LibraryPlayer: ObservableObject {
         let target = min(max(0, seconds), duration)
         engine.currentTime = target
         position = target
-        if status == .ended, target < duration { status = .paused }
+        if status == .ended, target < duration { status = .paused } else if status == .paused { pausedPositionSetAt = Date() }
         publishNowPlaying()
     }
 
@@ -522,6 +531,7 @@ final class LibraryPlayer: ObservableObject {
     func moveRemoteSeeking(by distance: TimeInterval) -> Bool {
         let target = min(max(0, position + distance), duration)
         engine.currentTime = target; position = target
+        if status == .paused { pausedPositionSetAt = Date() }
         publishNowPlaying()
         return target > 0 && target < duration
     }

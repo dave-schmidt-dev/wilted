@@ -382,6 +382,17 @@ extension LibraryAppModel {
         guard player.item?.entryID != rawID || player.item?.fileURL != cached.url else {
             // Loaded already: playing stays playing (a start made during the lookup is not undone).
             if player.isPlaying { return .alreadyPlaying }
+            // Paused here while another device played it on: resume from that device's place.
+            // The read can wait on the network, so everything checked above is checked again: any
+            // command that reached the player meanwhile is the listener's newer word.
+            let commands = player.transportCount
+            let target = await resumePositionFromOtherDevice(rawID)
+            guard commandState.token == token, player.transportCount == commands else { return .superseded }
+            guard player.item?.entryID == rawID, player.item?.fileURL == cached.url,
+                  queued.contains(where: { $0.id == rawID }), media[rawID] == .onPhone,
+                  !accountQuarantined else { return .declined }
+            if let onlyIf, !onlyIf(player) { return .declined }
+            if let target { player.adoptPausedPosition(target) }
             commandState.pending = nil
             playbackCommand = nil
             guard player.playAdmitted(traceToken: token) else { return failStart(row, player.lastFailure ?? .engineRefused, kind: kind) }
