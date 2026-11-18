@@ -22,7 +22,8 @@ extension LibraryRuntime {
         player.installRemoteCommands()
     }
 
-    /// A play command with nothing loaded. The handler must answer at once, so this decides what it can
+    /// A play command with nothing loaded, or with an episode loaded that already played to its end.
+    /// The handler must answer at once, so this decides what it can
     /// without waiting: once the library is loaded and holds nothing to resume it fails, and otherwise it
     /// reports success and starts the episode in a task that logs how it ended. Before the library is
     /// loaded (a background launch for this very command) the answer is success, as nothing is known yet.
@@ -40,7 +41,7 @@ extension LibraryRuntime {
         await prepare()
         // A listener's start (the phone, Siri, an earlier press of this same button) that is already
         // loaded or looking up its file keeps the player; this command never replaces it.
-        if player.item != nil {
+        if player.item != nil, player.status != .ended {
             playerLog.notice("Remote resume \(name, privacy: .public): an episode was loaded meanwhile")
             return
         }
@@ -55,7 +56,7 @@ extension LibraryRuntime {
         // The same start Siri makes: the system already counted this play, so it is not donated again.
         var outcome = LibraryStartOutcome.superseded
         await IntentDonor.shared.withoutDonatingPlay(of: row.id) {
-            outcome = await model.startCached(row, kind: .select) { $0.item == nil }
+            outcome = await model.startCached(row, kind: .select) { $0.item == nil || $0.status == .ended }
         }
         if outcome.opensNowPlaying {
             playerLog.notice("Remote resume \(name, privacy: .public): resumed \(row.id.rawValue)")

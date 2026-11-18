@@ -88,19 +88,33 @@ extension LibraryPlayer {
     /// Lock-screen, headset, steering-wheel and CarPlay commands. Next-track arrives as `.skipForward`, so
     /// while a bulletin is spoken it skips the bulletin instead of seeking; with nothing loaded only play
     /// and play/pause can act (they resume from the library); every command is logged with its result.
+    ///
+    /// Play and play/pause for an episode that already played to its end are treated as with nothing
+    /// loaded: the library picks what to resume, and it never picks a finished episode. Without this a
+    /// car that sends Play when it connects started the finished episode again from the beginning
+    /// (2026-11-18). The phone's own Play button on that episode still plays it again.
     func handleRemote(_ command: LibraryRemoteCommand) -> Bool {
         let loaded = item != nil
         let handled: Bool
         if speechHold != nil, case .skipForward = command {
             skipSpeech()
             handled = true
-        } else if loaded {
+        } else if loaded, !resumesFromLibrary(command) {
             handled = handle(command)
         } else {
             handled = handleIdleRemote(command)
         }
         logRemote(command, loaded: loaded, handled: handled)
         return handled
+    }
+
+    /// True for a play request while the loaded episode is at its end and a runtime can resume another.
+    private func resumesFromLibrary(_ command: LibraryRemoteCommand) -> Bool {
+        guard status == .ended, onIdleRemoteCommand != nil else { return false }
+        switch command {
+        case .play, .togglePlayPause: return true
+        default: return false
+        }
     }
 }
 

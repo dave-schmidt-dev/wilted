@@ -298,6 +298,81 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
         XCTAssertEqual(second.model.remoteResumeRow?.id, id("b"))
     }
 
+    // MARK: - An episode that ended and stayed loaded
+
+    /// `a` plays to its end with "play the next one" off, so it stays loaded, ended. Returns the runtime
+    /// that routes the car's commands.
+    private func endedAndStillLoaded(_ rig: Rig) async throws -> LibraryRuntime {
+        let suite = "library-no-replay-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let settings = LibrarySettingsStore(defaults: defaults)
+        settings.autoPlayNext = false
+        let runtime = LibraryRuntime(model: rig.model, player: rig.player, settings: settings)
+        await runtime.prepare()
+        await rig.model.refresh()
+        try await start(rig, "a")
+        rig.engine.finishNaturally()
+        await settleOnClock()
+        XCTAssertEqual(rig.player.item?.entryID, id("a"), "it stays loaded")
+        XCTAssertEqual(rig.player.status, .ended)
+        return runtime
+    }
+
+    private func settled(_ rig: Rig, on raw: String) async {
+        for _ in 0..<400 where rig.player.item?.entryID != id(raw) { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+
+    func testTheCarsPlayButtonAfterAnEpisodeEndedStartsTheNextOneNotTheSameOneAgain() async throws {
+        try await seed()
+        let rig = await launch()
+        let runtime = try await endedAndStillLoaded(rig)
+
+        XCTAssertTrue(rig.player.handleRemote(.play))
+        await settled(rig, on: "b")
+        XCTAssertEqual(rig.player.item?.entryID, id("b"))
+        XCTAssertTrue(rig.player.isPlaying)
+        withExtendedLifetime(runtime) {}
+    }
+
+    func testTheCarsPlayPauseButtonAfterAnEpisodeEndedStartsTheNextOneToo() async throws {
+        try await seed()
+        let rig = await launch()
+        let runtime = try await endedAndStillLoaded(rig)
+
+        XCTAssertTrue(rig.player.handleRemote(.togglePlayPause))
+        await settled(rig, on: "b")
+        XCTAssertEqual(rig.player.item?.entryID, id("b"))
+        withExtendedLifetime(runtime) {}
+    }
+
+    func testTheCarsPlayButtonDoesNothingWhenTheEndedEpisodeIsTheOnlyOneLeft() async throws {
+        try await seed()
+        let rig = await launch()
+        let runtime = try await endedAndStillLoaded(rig)
+        await rig.model.decide(.markDone, entryID: id("b"))
+        await rig.model.decide(.markDone, entryID: id("c"))
+        XCTAssertNil(rig.model.remoteResumeRow)
+
+        XCTAssertFalse(rig.player.handleRemote(.play), "nothing to resume: the finished episode is not started again")
+        await settleOnClock()
+        XCTAssertEqual(rig.player.status, .ended)
+        XCTAssertFalse(rig.engine.isPlaying)
+        withExtendedLifetime(runtime) {}
+    }
+
+    func testPlayOnThePhoneItselfStillPlaysAnEndedEpisodeAgain() async throws {
+        try await seed()
+        let rig = await launch()
+        let runtime = try await endedAndStillLoaded(rig)
+
+        rig.player.play() // the player screen's own button, pressed on the episode it shows as finished
+        for _ in 0..<400 where !rig.player.isPlaying { try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(rig.player.item?.entryID, id("a"))
+        XCTAssertTrue(rig.player.isPlaying)
+        withExtendedLifetime(runtime) {}
+    }
+
     // MARK: - What brings it back
 
     func testTheListenerPlayingItAgainMakesItAnOrdinaryEpisodeAgain() async throws {
