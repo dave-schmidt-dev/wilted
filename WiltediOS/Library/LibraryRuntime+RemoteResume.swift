@@ -6,9 +6,11 @@ extension LibraryAppModel {
     /// What a play command resumes when nothing is loaded: the first episode on the phone that is not
     /// completed, in the model's list order (Play order or Mac order) that CarPlay, Siri and auto-continue share.
     /// Nil when every episode on the phone is completed, or none is: a finished episode is never restarted from the car.
+    /// An episode the listener finished on this phone counts as completed here whatever its row shows
+    /// (`LibraryAppModel+FinishedHere`).
     var remoteResumeRow: LibraryRow? {
         let finished = logicalFinished
-        return playOrderRows.first { LibraryListing.completionDate($0, finished: finished) == nil }
+        return playOrderRows.first { LibraryListing.completionDate($0, finished: finished) == nil && !isFinishedHere($0.id) }
     }
 }
 

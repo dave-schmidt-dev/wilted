@@ -15,6 +15,7 @@ extension LibraryAppModel {
     func episodeFinished(_ endedID: ItemID, autoPlayNext: Bool) async {
         guard let player = handoffState.player, let completion = player.naturalCompletion(after: endedID) else { return }
         playedOut[endedID] = now().addingTimeInterval(handoffState.clockOffset)
+        rememberFinishedHere(endedID)
         handoffState.unpublished[endedID] = (completion.duration, now())
         // One cache walk serves the final position and the advance's candidate snapshot; each
         // candidate's own start still looks the file up afresh.
@@ -44,7 +45,8 @@ extension LibraryAppModel {
     /// Starts the next episode after `endedID` finished in the model's list order, Play order or Mac order:
     /// in Play order (or after an audiobook), walks the saved forward sequence suffix without wrapping backwards;
     /// in Mac order, reads candidate rows from the live queue minus the ended row and audiobooks.
-    /// Skips completed, removed, media-ineligible, and cache-missing candidates.
+    /// Skips completed, removed, media-ineligible, and cache-missing candidates, and every episode the
+    /// listener finished on this phone, whatever its row shows (`LibraryAppModel+FinishedHere`).
     /// A candidate whose file disappears between the initial snapshot and the start's own lookup
     /// is skipped the same way, by trying the one after it. Preserves playback speed and stops
     /// cleanly when none remain. A command given meanwhile (pause, play, seek, another start)
@@ -84,7 +86,10 @@ extension LibraryAppModel {
         let candidates = suffixIDs.compactMap { id -> LibraryRow? in
             guard cached[backingEntryID(for: id)] != nil else { return nil }
             return queuedByID[id]
-        }.filter { mediaState(for: $0.id) == .onPhone && LibraryListing.completionDate($0, finished: logicalFinished) == nil }
+        }.filter {
+            mediaState(for: $0.id) == .onPhone && !isFinishedHere($0.id)
+                && LibraryListing.completionDate($0, finished: logicalFinished) == nil
+        }
         let rate = completion.rate
         for candidate in candidates {
             // Re-read after every await: a command given while the previous candidate was
@@ -133,7 +138,7 @@ extension LibraryAppModel {
         guard let row = logicalRow(for: entryID),
               decisionContent.entries[entryID]?.removal == LibraryRemoval.none,
               decisionContent.listening[entryID]?.isCompleted != true,
-              mediaState(for: entryID) == .onPhone else { return false }
+              mediaState(for: entryID) == .onPhone, !isFinishedHere(entryID) else { return false }
         return LibraryListing.completionDate(row, finished: logicalFinished) == nil
     }
 

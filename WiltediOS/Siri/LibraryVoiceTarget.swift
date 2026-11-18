@@ -139,11 +139,13 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
 
     /// On-phone episodes in the selected list order, ignoring whatever filter or search text is
     /// showing: a spoken command must not depend on what the screen happens to be narrowed to.
+    /// Episodes the listener finished on this phone are ordered as completed, so "play something"
+    /// never picks one while another is left; one asked for by name still plays.
     private func downloadedRows() -> [LibraryRow] {
         let ids = model.preparedIDs
         return LibraryListing.rows(
             model.queued, offered: ids.offered, onPhone: ids.onPhone, filter: .onPhone, query: "",
-            progress: model.progress, finished: model.finished, order: model.listOrder)
+            progress: model.progress, finished: model.finishedIncludingHere, order: model.listOrder)
     }
 
     /// When each show was last played, for the shows with an in-progress episode.

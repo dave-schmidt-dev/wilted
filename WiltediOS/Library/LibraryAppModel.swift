@@ -198,6 +198,8 @@ final class LibraryAppModel: ObservableObject {
     }
     /// The unsent intents on disk; owned by `LibraryAppModel+Outbox`.
     let outboxState: LibraryOutboxState
+    /// Episodes the listener finished on this phone; owned by `LibraryAppModel+FinishedHere`.
+    let finishedHereState: LibraryFinishedHereState
     var mediaRevocations: Set<ItemID> = []
     @Published var undoableCompletion: ItemID?
     /// Transcripts for audio on the phone, keyed by entry; each is for the cached revision.
@@ -233,6 +235,7 @@ final class LibraryAppModel: ObservableObject {
         preferences: UserDefaults = .standard,
         ownPositionsURL: URL? = nil,
         outboxURL: URL? = nil,
+        finishedHereURL: URL? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current,
         throttleSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
@@ -256,6 +259,7 @@ final class LibraryAppModel: ObservableObject {
         self.preferences = preferences
         handoffState.ownPositionStore = LibraryOwnPositionStore(url: ownPositionsURL)
         self.outboxState = LibraryOutboxState(outbox: LibraryIntentOutbox(url: outboxURL))
+        self.finishedHereState = LibraryFinishedHereState(store: LibraryFinishedHereStore(url: finishedHereURL))
         self.phoneStats = LibraryPhoneStatsStore(defaults: preferences)
         self.store = store
         self.deviceID = deviceID
@@ -302,6 +306,7 @@ final class LibraryAppModel: ObservableObject {
         let content = saved.content
         entryDurations = content.entries.compactMapValues(\.durationSeconds)
         decisionContent = content
+        pruneFinishedHere()
         // The phone's own last positions, so an offline launch resumes where it left off.
         if handoffState.ownPositions.isEmpty {
             let saved = handoffState.ownPositionStore.load()
@@ -475,6 +480,7 @@ final class LibraryAppModel: ObservableObject {
         displayContext = (generation, saved.displayAdmissionRevision)
         entryDurations = saved.content.entries.compactMapValues(\.durationSeconds)
         decisionContent = saved.content
+        pruneFinishedHere()
         if let records = polled?.records {
             checkpoints = Self.checkpoints(from: records, excluding: deviceID)
             handoffState.savedCheckpoints = checkpoints
@@ -504,6 +510,7 @@ final class LibraryAppModel: ObservableObject {
 
     private func applyStoreMetadata(_ saved: LibraryStoreState) {
         outboxOwnerChanged(saved.ownerToken)
+        finishedHereOwnerSeen(saved.ownerToken)
         accountQuarantined = accountQuarantined || saved.reviewHold
         cachedDisplayIDs = saved.displayPreparedIDs ?? []
         if saved.ownerToken != nil, saved.displayRefreshPending, let content = saved.completedDisplay {
@@ -540,7 +547,10 @@ final class LibraryAppModel: ObservableObject {
             durations: entryDurations, nowPlaying: playing, now: now().addingTimeInterval(handoffState.clockOffset))
         if next != progress { progress = next }
         // Playing an episode again takes it out of the played-out set; its new position decides from here.
-        if let loaded = player?.item?.entryID, player?.status != .ended { playedOut[loaded] = nil }
+        if let loaded = player?.item?.entryID, player?.status != .ended {
+            playedOut[loaded] = nil
+            forgetFinishedHere(loaded, because: "played again")
+        }
         var ended = InProgressOrdering.finished(
             checkpoints: checkpoints, ownPositions: handoffState.ownPositions, completed: completed,
             durations: entryDurations, nowPlaying: playing, now: now().addingTimeInterval(handoffState.clockOffset))

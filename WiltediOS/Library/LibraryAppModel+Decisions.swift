@@ -118,6 +118,13 @@ struct PendingDecision: Identifiable, Equatable, Sendable {
     var id: String { intent.id }
     var entryID: ItemID { intent.action.entryID }
     var showsOptimistically: Bool { !isSilent && !supersededByRestore && phase != .pendingOnMac }
+    /// True for a decision that ends the episode's time on the Larder.
+    var finishesEpisode: Bool {
+        switch intent.action {
+        case .markDone, .removeFromLarder, .skip: true
+        default: false
+        }
+    }
 
     /// True once the fetched state already shows what this decision asked for.
     func isSatisfied(by placement: EntryPlacement) -> Bool {
@@ -273,6 +280,7 @@ extension LibraryAppModel {
         if sameLogicalEpisode(undoableCompletion, entryID) { undoableCompletion = nil }
         decisions.removeAll { sameLogicalEpisode($0.entryID, entryID) }
         decisionNotices[entryID] = nil
+        forgetFinishedHere(entryID, because: "stopped waiting")
         rebuildRows()
     }
 
@@ -282,6 +290,7 @@ extension LibraryAppModel {
         decisionContent = LibrarySnapshot()
         startedEntries = []
         undoableCompletion = nil
+        discardFinishedHereAfterAccountChange()
     }
 
     // MARK: - Settling
@@ -314,6 +323,9 @@ extension LibraryAppModel {
                     }
                     if !decision.isSilent, !decision.supersededByRestore {
                         decisionNotices[decision.entryID] = Self.rejectionText(outcome.reason)
+                    }
+                    if decision.finishesEpisode, !decision.supersededByRestore {
+                        forgetFinishedHere(decision.entryID, because: "declined by the Mac")
                     }
                     settled = true
                 }
@@ -402,7 +414,10 @@ extension LibraryAppModel {
         decisions.append(decision)
         if !silent, action == .removeFromLarder || action == .markDone {
             for id in episodeGroup(entryID)?.memberIDs ?? [entryID] { withdrawQueuePlayback(id) }
+            // After the unload: a loaded episode that is not at its end counts as played again.
+            rememberFinishedHere(entryID)
         }
+        if action == .restore { forgetFinishedHere(entryID, because: "restored") }
         rebuildRows()
         return decision
     }

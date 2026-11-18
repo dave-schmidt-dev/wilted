@@ -51,7 +51,8 @@ enum LibraryEnvironment {
         let model = LibraryAppModel(
             transport: built.transport, store: store, deviceID: deviceID, recovery: recovery,
             ownPositionsURL: directory.appendingPathComponent("own-positions.json"),
-            outboxURL: directory.appendingPathComponent("pending-intents.json"))
+            outboxURL: directory.appendingPathComponent("pending-intents.json"),
+            finishedHereURL: directory.appendingPathComponent("finished-here.json"))
         if isLiveAllowed { installDirectPath(on: model) }
         return model
     }
