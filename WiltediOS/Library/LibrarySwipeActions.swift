@@ -101,3 +101,29 @@ enum LibrarySwipe: Equatable {
         }
     }
 }
+
+/// The one-line hint under the Larder list: what a right and a left swipe do for the rows shown.
+enum LibrarySwipeHint {
+    /// nil when no listed row has any swipe action. Each side lists its distinct actions in first-seen
+    /// order, joined with " or ": "Swipe right: Mark completed or Remove from Larder · Swipe left: Play or Download".
+    /// A side with no action is left out.
+    static func text(leading: [[LibrarySwipe]], trailing: [[LibrarySwipe]]) -> String? {
+        let right = describe(side: "Swipe right", actions: leading)
+        let left = describe(side: "Swipe left", actions: trailing)
+        let parts = [right, left].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private static func describe(side: String, actions: [[LibrarySwipe]]) -> String? {
+        var distinctTitles: [String] = []
+        for action in actions.flatMap({ $0 }) {
+            let normalized: LibrarySwipe = (action == .pause) ? .play : action
+            let title = normalized.title
+            if !distinctTitles.contains(title) {
+                distinctTitles.append(title)
+            }
+        }
+        guard !distinctTitles.isEmpty else { return nil }
+        return "\(side): \(distinctTitles.joined(separator: " or "))"
+    }
+}

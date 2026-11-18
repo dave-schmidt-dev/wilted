@@ -20,6 +20,7 @@ All notable changes to this project are documented in this file.
 - The Mac sidebar now says "Library changes sent …" and the iPhone says "Mac last sent library changes …", instead of "Sent to devices" and "Mac last published". The time covers library changes only; playback positions sync every round.
 
 ### Added
+- The iPhone Larder has one quiet line under the list that says what a swipe does: "Swipe right: Mark completed or Remove from Larder · Swipe left: Play or Download". It lists only the actions the episodes shown have.
 - The Mac has an Activity popover (click the sidebar's sync line) that shows what the Mac is doing in the background, including how many of the episodes it uploads ahead of time are already in iCloud.
 - The iPhone Larder's Sort menu has Mac order: the list, CarPlay, Siri and the Watch follow the Mac Larder's order as last synced, and the next episode is picked by the Mac's rule. Play order stays the default; the other sorts stay display-only.
 - The Mac uploads the next 10 prepared Larder entries that are not finished and not yet on a device to iCloud ahead of time, one at a time, so **Get audio** on the iPhone for those works with the Mac asleep or away; other entries still upload when asked.

@@ -182,6 +182,15 @@ struct LibraryListView: View {
                         sectionHeader(section, total: rows.count)
                     }
                 }
+                if let hint = swipeHint(for: rows) {
+                    Section {
+                        Text(hint)
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .accessibilityIdentifier("wilted-library-swipe-hint")
+                            .listRowBackground(Color.clear)
+                    }
+                }
             }
         }
         .listStyle(.insetGrouped)
@@ -266,6 +275,12 @@ struct LibraryListView: View {
         return LibrarySwipe.trailing(
             media: model.mediaState(for: row.id), isPlaying: model.sameLogicalEpisode(playingID, row.id),
             canRequest: model.canRequestAudio)
+    }
+
+    private func swipeHint(for rows: [LibraryRow]) -> String? {
+        LibrarySwipeHint.text(
+            leading: rows.map { leading(for: $0) },
+            trailing: rows.map { trailing(for: $0) })
     }
 
     /// What VoiceOver can do to a row by name: open it, plus every swipe action, through the same

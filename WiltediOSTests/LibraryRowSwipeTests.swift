@@ -49,6 +49,57 @@ final class LibraryRowSwipeTests: XCTestCase {
         XCTAssertNotEqual(LibrarySwipe.Confirmation.removeFromLarder(id).id, LibrarySwipe.Confirmation.markCompleted(id).id)
     }
 
+    // MARK: Swipe hint
+
+    func testSwipeHintBothSidesAndOneSideOnly() {
+        let both = LibrarySwipeHint.text(
+            leading: [[.markCompleted], [.removeFromLarder]],
+            trailing: [[.play], [.download]])
+        XCTAssertEqual(both, "Swipe right: Mark completed or Remove from Larder · Swipe left: Play or Download")
+
+        let leadingOnly = LibrarySwipeHint.text(leading: [[.markCompleted]], trailing: [])
+        XCTAssertEqual(leadingOnly, "Swipe right: Mark completed")
+
+        let trailingOnly = LibrarySwipeHint.text(leading: [[], []], trailing: [[.download]])
+        XCTAssertEqual(trailingOnly, "Swipe left: Download")
+    }
+
+    func testSwipeHintNoActionsGivesNil() {
+        XCTAssertNil(LibrarySwipeHint.text(leading: [], trailing: []))
+        XCTAssertNil(LibrarySwipeHint.text(leading: [[], []], trailing: [[], []]))
+    }
+
+    func testSwipeHintDeduplicationAcrossRows() {
+        let text = LibrarySwipeHint.text(
+            leading: [[.markCompleted], [.markCompleted], [.removeFromLarder], [.markCompleted]],
+            trailing: [[.play], [.play], [.download], [.download]])
+        XCTAssertEqual(text, "Swipe right: Mark completed or Remove from Larder · Swipe left: Play or Download")
+    }
+
+    func testSwipeHintPauseShownAsPlay() {
+        XCTAssertEqual(
+            LibrarySwipeHint.text(leading: [], trailing: [[.pause]]),
+            "Swipe left: Play")
+        XCTAssertEqual(
+            LibrarySwipeHint.text(leading: [], trailing: [[.pause], [.play]]),
+            "Swipe left: Play", "pause and play de-duplicate to single Play")
+        XCTAssertEqual(
+            LibrarySwipeHint.text(leading: [], trailing: [[.play], [.pause]]),
+            "Swipe left: Play", "play and pause de-duplicate to single Play")
+    }
+
+    func testSwipeHintFirstSeenOrder() {
+        let text1 = LibrarySwipeHint.text(
+            leading: [[.removeFromLarder], [.markCompleted]],
+            trailing: [[.download], [.play]])
+        XCTAssertEqual(text1, "Swipe right: Remove from Larder or Mark completed · Swipe left: Download or Play")
+
+        let text2 = LibrarySwipeHint.text(
+            leading: [[.markCompleted], [.removeFromLarder]],
+            trailing: [[.play], [.download]])
+        XCTAssertEqual(text2, "Swipe right: Mark completed or Remove from Larder · Swipe left: Play or Download")
+    }
+
     // MARK: Hosted row
 
     /// a: downloaded and started, b: downloaded, c: not downloaded.
@@ -73,6 +124,13 @@ final class LibraryRowSwipeTests: XCTestCase {
         XCTAssertEqual(hosted.element("wilted-library-title-a")?.customActionNames, ["Play", "Mark completed", "Open episode"])
         XCTAssertEqual(hosted.element("wilted-library-title-b")?.customActionNames, ["Play", "Mark completed", "Open episode"], "downloaded but not started still offers it")
         XCTAssertEqual(hosted.element("wilted-library-title-c")?.customActionNames, ["Download", "Remove from Larder", "Open episode"])
+    }
+
+    func testHostedLarderListExposesSwipeHint() async throws {
+        let hosted = try await host()
+        let hint = try XCTUnwrap(hosted.element("wilted-library-swipe-hint"))
+        let label = try XCTUnwrap(hint.label)
+        XCTAssertTrue(label.hasPrefix("Swipe"), "expected swipe hint label to start with 'Swipe', got '\(label)'")
     }
 
     func testTheRowCarriesNoInlineCompletionTick() async throws {
