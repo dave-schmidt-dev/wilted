@@ -445,6 +445,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
         XCTAssertTrue(
             intents.contains { $0.action == .markDone(entryID: id("a")) && $0.deviceID == "phone" },
             "the decision travels as a markDone intent from this phone")
+        XCTAssertTrue(rig.model.isFinishedHere(id("a")), "and the phone itself remembers it, so it never starts unasked")
     }
 
     func testMarkCompletedForAnUnstartedQueuedEpisodeSendsTheOwnerFinish() async throws {
@@ -460,6 +461,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
         let intents = try await mac.listIntents()
         XCTAssertEqual(intents.filter { $0.action == .markDone(entryID: id("b")) }.count, 1)
         XCTAssertNotNil(rig.model.pendingDecision(for: id("b")), "Unstarted queue membership supports a manual finish")
+        XCTAssertTrue(rig.model.isFinishedHere(id("b")))
     }
 
     func testMarkCompletedSaysDoneOnlyOnceTheMacHasBeenSentTheIntent() async throws {

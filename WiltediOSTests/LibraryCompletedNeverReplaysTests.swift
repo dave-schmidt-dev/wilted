@@ -207,6 +207,22 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
         XCTAssertEqual(siri.downloaded.map(\.id.rawValue), ["b", "c", "a"], "still there to ask for by name, and last")
     }
 
+    func testSiriPlaySomethingInPlayOrderNeverPicksAnEpisodeMarkedCompletedWhileTheMacHasNotAnswered() async throws {
+        try await seed()
+        let rig = await launch(listOrder: .playOrder)
+        await rig.model.refresh()
+        try await start(rig, "a")
+        await rig.model.decide(.markDone, entryID: id("a"))
+        clock.advance(600)
+        await syncRounds(rig)
+        assertStillListedAndDownloaded(rig, "a")
+
+        let siri = await LibraryVoiceTarget(model: rig.model, player: rig.player).voiceSnapshot()
+        XCTAssertEqual(siri.downloaded.count, 3)
+        XCTAssertEqual(siri.downloaded.last?.id, id("a"))
+        XCTAssertEqual(rig.model.remoteResumeRow.map { $0.id == id("a") }, false, "nor does the car's play button")
+    }
+
     func testAnEpisodeRemovedFromTheLarderIsNotContinuedIntoWhileTheMacHasNotAnswered() async throws {
         try await seed()
         let rig = await launch()
