@@ -225,7 +225,7 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertEqual(rig.nowPlaying.updates.last, .init(title: "Episode One", duration: 600, position: 42, rate: 0))
     }
 
-    /// 2026-11-18: after two minutes suspended the engine resumed from its last seek (92 s), not the pause (931 s).
+    /// 2026-11-18: after two minutes suspended the engine resumed from its last seek, minutes before the pause (931 s).
     func testResumeRestoresThePausedPositionWhenTheEngineLostIt() {
         let rig = rigPausedWithALostEnginePosition()
         XCTAssertTrue(rig.player.play())
@@ -257,6 +257,21 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(rig.remote.handler)(.play))
         XCTAssertEqual(rig.player.status, .playing)
         XCTAssertEqual(rig.engine.currentTime, 931)
+    }
+
+    func testAResumeThatFailsOnceStillResumesFromThePause() {
+        let rig = rigPausedWithALostEnginePosition()
+        rig.session.failActivation = true
+        XCTAssertFalse(rig.player.play())
+        rig.events.send(.routeLost)
+        rig.player.pause()
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.position, 931)
+        rig.session.failActivation = false
+        XCTAssertTrue(rig.player.play())
+        XCTAssertEqual(rig.player.status, .playing)
+        XCTAssertEqual(rig.engine.currentTime, 931)
+        XCTAssertEqual(rig.player.position, 931)
     }
 
     func testASkipWhilePausedMovesFromThePauseNotFromTheEngine() {

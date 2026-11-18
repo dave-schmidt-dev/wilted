@@ -404,10 +404,17 @@ final class LibraryPlayer: ObservableObject {
         session.deactivate()
     }
 
-    /// While paused the player's own position is the truth and the engine is never read: after a
-    /// suspension `AVAudioPlayer` can come back at its last seek instead of where it paused (2026-11-18).
-    /// Every resume writes the position back to the engine, and every seek moves both.
-    var holdsOwnPosition: Bool { status == .paused }
+    /// While paused, or loaded after a failed play, the player's own position is the truth and the
+    /// engine is never read: after a suspension `AVAudioPlayer` can come back at its last seek instead
+    /// of where it paused (2026-11-18). Every resume writes the position back to the engine, and every
+    /// seek moves both.
+    var holdsOwnPosition: Bool {
+        switch status {
+        case .paused: true
+        case .failed: item != nil
+        case .idle, .playing, .ended: false
+        }
+    }
 
     /// Syncs the readout with the engine; the timer calls this while playing.
     func refreshPosition() {
