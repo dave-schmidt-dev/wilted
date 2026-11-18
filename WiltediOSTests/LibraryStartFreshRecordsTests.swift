@@ -457,6 +457,29 @@ final class LibraryStartFreshRecordsTests: XCTestCase {
         XCTAssertEqual(rig.player.position, 1_200)
     }
 
+    /// The whole phone session ran with no signal, so even its takeover never reached the server.
+    func testAMacPositionOfferedAgainNeverRewindsASessionThePhoneCouldNotPublish() async throws {
+        let rig = try await makeRig(resumeReadAfterPause: 0)
+        try await macPauses(rig, at: 300, epoch: 7)
+        await rig.model.refresh()
+        rig.control.publishFails = true   // no signal for the phone's writes from here on
+        await rig.model.playCached(try rig.row())
+        await rig.model.waitForHandoff()
+        rig.player.seek(to: 1_200)
+        rig.player.pause()
+        await rig.model.waitForHandoff()
+        try await Task.sleep(for: .milliseconds(50))
+        let stored = try DevicePlaybackPosition(
+            deviceID: "mac", entryID: entryID, revision: revision, positionSeconds: 300, rate: 1,
+            isPlaying: false, epoch: 7, publishedAt: Date())
+        try await rig.mac.publish(stored, as: .progress)
+
+        await remotePlay(rig)
+
+        XCTAssertEqual(rig.player.status, .playing)
+        XCTAssertEqual(rig.player.position, 1_200)
+    }
+
     // MARK: A row pressed on the paused episode, while its records are read
 
     /// A row press on the paused episode with the read of its records held open.
