@@ -191,6 +191,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- An episode on the iPhone could resume minutes behind where it was paused. Three causes are fixed. A pause for the episode that just finished, arriving late, marked the next episode paused, so the iPhone played on without publishing its position. An iPhone that is playing with nothing to publish now takes playback over again at the next sync. And a sync that read iCloud before a pause no longer puts that older position back over the pause.
 - Ahead-of-time uploads to iCloud resume after the iCloud account is confirmed again, without restarting the Mac app.
 - The online labeller no longer receives transcripts for a show marked **This show has no ads**, or for an episode prepared with ad removal off; such episodes stay on this Mac.
 - On a show sent to the online labeller, the labeller's reply now decides the cut. Preparation transcribes the episode, asks once about the whole transcript, and removes the sponsor and network-promo breaks the reply marks must-cut (the show's own promotion only when that feed's switch is on). The local ad classifier is not loaded for those episodes. A break that cannot be placed stays in the audio, and a reply that does not match the transcript keeps the whole original. Shows not sent to the labeller use the local engine as before. Ad engine version is now v17.

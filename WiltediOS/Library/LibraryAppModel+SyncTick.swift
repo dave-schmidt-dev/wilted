@@ -108,6 +108,7 @@ extension LibraryAppModel {
 
     /// What the round does for a playing phone: another device that outranks it pauses it, otherwise the
     /// position is published as the checkpoint. The records are the round's own, so there is no second read.
+    /// A checkpoint that published nothing while the phone still plays starts a new takeover.
     func observeHandoff(_ records: LibraryDeviceRecords) async {
         guard handoffState.reportedPlaying else { return }
         defer { handoffState.observeCycles += 1 }
@@ -116,7 +117,9 @@ extension LibraryAppModel {
             return
         }
         guard let player = handoffState.player else { return }
-        do { try await coordinator.checkpoint(player.position, rate: player.rate) } catch {
+        do {
+            if try await coordinator.checkpoint(player.position, rate: player.rate) == false { retakeQuietSession() }
+        } catch {
             tickLog.error("Could not publish the checkpoint: \(String(describing: error), privacy: .public)")
         }
     }

@@ -107,22 +107,31 @@ public actor HandoffCoordinator {
 
     /// The sync round's checkpoint: publishes the current position now, whatever the last publish
     /// was, so a playing device's record rides the device's one tick instead of a timer of its own.
-    /// No-op while paused, stopped or relinquished.
-    public func checkpoint(_ positionSeconds: Double, rate: Double? = nil) async throws {
-        guard var current = session, current.isPlaying, !current.relinquished else { return }
+    /// No-op while paused, stopped or relinquished. Returns whether a record was published, so a
+    /// device that is still playing can tell that its session went quiet.
+    @discardableResult
+    public func checkpoint(_ positionSeconds: Double, rate: Double? = nil) async throws -> Bool {
+        guard var current = session, current.isPlaying, !current.relinquished else { return false }
         current.position = positionSeconds
         if let rate { current.rate = rate }
         session = current
         try await publishCurrent()
+        return true
     }
 
-    /// Publishes immediately as paused at `positionSeconds`.
-    public func paused(at positionSeconds: Double) async throws {
-        guard var current = session else { return }
+    /// Publishes immediately as paused at `positionSeconds`. `entryID` names the episode the pause
+    /// is for: a pause that arrives after the session moved on to another episode publishes nothing,
+    /// because it would mark that episode paused at the wrong position. Returns whether a record
+    /// was published.
+    @discardableResult
+    public func paused(at positionSeconds: Double, entryID: ItemID? = nil) async throws -> Bool {
+        guard var current = session else { return false }
+        if let entryID, current.entryID != entryID { return false }
         current.position = positionSeconds
         current.isPlaying = false
         session = current
         try await publishCurrent()
+        return true
     }
 
     /// Publishes the new position immediately, keeping the play state. No-op once relinquished.
@@ -133,10 +142,13 @@ public actor HandoffCoordinator {
         try await publishCurrent()
     }
 
-    /// Publishes a final paused record and ends the session.
-    public func stopped(at positionSeconds: Double) async throws {
-        try await paused(at: positionSeconds)
+    /// Publishes a final paused record and ends the session. A stop for an episode the session
+    /// no longer belongs to (see `paused`) publishes nothing and leaves the session alone.
+    @discardableResult
+    public func stopped(at positionSeconds: Double, entryID: ItemID? = nil) async throws -> Bool {
+        guard try await paused(at: positionSeconds, entryID: entryID) else { return false }
         session = nil
+        return true
     }
 
     /// A durable position the device holds for an entry it is not playing right now.

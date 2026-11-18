@@ -187,6 +187,16 @@ extension LibraryAppModel {
 
     // MARK: - Event chain
 
+    /// The round found nothing to publish for a phone that is playing: the session went quiet. Forget
+    /// that playback was reported, so the next sync takes over again and checkpoints resume.
+    func retakeQuietSession() {
+        guard let player = handoffState.player, player.isPlaying, handoffState.reportedPlaying,
+              handoffState.reportedEntry == player.item?.entryID else { return }
+        handoffLog.notice("Playing with no session to publish; taking over again")
+        handoffState.reportedPlaying = false
+        enqueueHandoffSync()
+    }
+
     private func enqueueHandoffSync() {
         guard !handoffState.syncQueued else { return }
         handoffState.syncQueued = true
@@ -268,11 +278,14 @@ extension LibraryAppModel {
     }
 
     /// Publishes a pause (or a stop) and notes whether it reached the server, so the next sync
-    /// retries one that did not.
+    /// retries one that did not. A pause the session did not publish, because it already belongs to
+    /// the next episode, is kept and goes out as a stored position.
     private func publishPause(_ entryID: ItemID?, at position: Double, stopped: Bool, clock: Date) async {
         var published = true
         do {
-            if stopped { try await coordinator.stopped(at: position) } else { try await coordinator.paused(at: position) }
+            published = stopped
+                ? try await coordinator.stopped(at: position, entryID: entryID)
+                : try await coordinator.paused(at: position, entryID: entryID)
         } catch {
             published = false
             handoffLog.error("Could not publish the pause: \(String(describing: error), privacy: .public)")

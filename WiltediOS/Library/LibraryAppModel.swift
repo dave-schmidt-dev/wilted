@@ -477,10 +477,8 @@ final class LibraryAppModel: ObservableObject {
         if let records = polled?.records {
             checkpoints = Self.checkpoints(from: records, excluding: deviceID)
             handoffState.savedCheckpoints = checkpoints
-            var own = Self.ownPositions(from: records, deviceID: deviceID)
-            for entryID in handoffState.unpublished.keys {
-                if let local = handoffState.ownPositions[entryID] { own[entryID] = local }
-            }
+            let own = Self.ownPositions(
+                from: records, deviceID: deviceID, keeping: handoffState.ownPositions, unpublished: Set(handoffState.unpublished.keys))
             handoffState.ownPositions = own; startedEntries = Self.startedEntries(from: records)
         }
         rebuildRows(); await refreshMediaFromCache()
@@ -580,11 +578,25 @@ final class LibraryAppModel: ObservableObject {
         return Dictionary(grouping: others, by: { $0.record.entryID }).compactMapValues(HandoffResolver.winner(among:))
     }
 
-    /// This device's own progress record per entry, as the server last held it.
-    static func ownPositions(from records: LibraryDeviceRecords, deviceID: String) -> [ItemID: ObservedPlayback] {
-        Dictionary(
+    /// This device's own progress record per entry, as the server last held it. A `local` position
+    /// stays when it is `unpublished`, or when the polled copy was written before it at another
+    /// position: only this device writes its own records, so that copy is an old read (a round that
+    /// polled before a pause and applied after it), not news.
+    static func ownPositions(
+        from records: LibraryDeviceRecords, deviceID: String,
+        keeping local: [ItemID: ObservedPlayback] = [:], unpublished: Set<ItemID> = []
+    ) -> [ItemID: ObservedPlayback] {
+        var own = Dictionary(
             records.progress.filter { $0.record.deviceID == deviceID }.map { ($0.record.entryID, $0) },
             uniquingKeysWith: { first, _ in first })
+        for (entryID, kept) in local {
+            if unpublished.contains(entryID) { own[entryID] = kept; continue }
+            guard let polled = own[entryID], let polledAt = polled.record.publishedAt,
+                  let keptAt = kept.record.publishedAt, polledAt < keptAt,
+                  abs(polled.record.positionSeconds - kept.record.positionSeconds) >= 0.5 else { continue }
+            own[entryID] = kept
+        }
+        return own
     }
 
     private static func message(for error: Error) -> String {

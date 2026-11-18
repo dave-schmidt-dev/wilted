@@ -53,7 +53,12 @@ final class LibraryResumePersistenceTests: XCTestCase {
     private actor NetworkGate {
         private(set) var hanging = false
         private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var arrival: CheckedContinuation<Void, Never>?
         func hang() { hanging = true }
+        /// Returns once a call is waiting at the gate.
+        func waitUntilHeld() async {
+            if waiters.isEmpty { await withCheckedContinuation { arrival = $0 } }
+        }
         func release() {
             hanging = false
             let pending = waiters
@@ -62,13 +67,19 @@ final class LibraryResumePersistenceTests: XCTestCase {
         }
         func passThrough() async {
             guard hanging else { return }
-            await withCheckedContinuation { waiters.append($0) }
+            await withCheckedContinuation {
+                waiters.append($0)
+                arrival?.resume()
+                arrival = nil
+            }
         }
     }
 
     private struct GatedTransport: LibraryTransport {
         let inner: InMemoryLibraryTransport
         let gate: NetworkGate
+        /// Holds a poll's answer after the server was read, so the answer is stale when it lands.
+        var answerGate: NetworkGate?
         func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
         func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
         func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch { try await inner.fetchChanges(since: token) }
@@ -91,7 +102,9 @@ final class LibraryResumePersistenceTests: XCTestCase {
         }
         func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
             await gate.passThrough()
-            return try await inner.poll(options)
+            let result = try await inner.poll(options)
+            await answerGate?.passThrough()
+            return result
         }
         func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws { try await inner.publishMedia(offer: offer, fileURL: fileURL) }
         func mediaOffers() async throws -> [LibraryMediaOffer] { try await inner.mediaOffers() }
@@ -240,13 +253,8 @@ final class LibraryResumePersistenceTests: XCTestCase {
         }
     }
 
-    private func storedPosition() -> Double? {
-        LibraryOwnPositionStore(url: positionsURL).load().positions[entryID]?.record.positionSeconds
-    }
-
-    // MARK: tests
-
-    func testDifferentEpisodeDoesNotDiscardPendingLocalSave() async throws {
+    /// Adds `item-b` to the Larder and to the phone's cache; returns its id and audio file.
+    private func addSecondEpisode() async throws -> (ItemID, URL) {
         let secondID = try ItemID(rawValue: "item-b")
         let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
         let second = try LibraryEntry(id: secondID, kind: .podcastEpisode, sourceID: secondID,
@@ -263,7 +271,28 @@ final class LibraryResumePersistenceTests: XCTestCase {
             byteCount: Int64(payload.count), mediaType: "audio/mp4", durationSeconds: 3_600))
         _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: secondFile, for: secondOffer, owner: "fixture-owner")
         let cached = await cache.cachedEntries()
-        let media = try XCTUnwrap(cached[entryID])
+        return (secondID, try XCTUnwrap(cached[secondID]).url)
+    }
+
+    private func phoneTransport(answerGate: NetworkGate? = nil) -> GatedTransport {
+        GatedTransport(inner: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
+                       gate: gate, answerGate: answerGate)
+    }
+
+    /// The phone's NowPlaying record, as the Mac reads it.
+    private func phoneNowPlaying() async throws -> DevicePlaybackPosition? {
+        let mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
+        return try await mac.fetchDeviceRecords().nowPlaying.first { $0.record.deviceID == "phone" }?.record
+    }
+
+    private func storedPosition() -> Double? {
+        LibraryOwnPositionStore(url: positionsURL).load().positions[entryID]?.record.positionSeconds
+    }
+
+    // MARK: tests
+
+    func testDifferentEpisodeDoesNotDiscardPendingLocalSave() async throws {
+        let (secondID, media) = try await addSecondEpisode()
         let gated = GatedCache(base: cache)
         let model = makeModel(transport: UnavailableLibraryTransport(reason: "no signal"), mediaCache: gated)
         let (player, _) = makePlayer()
@@ -272,7 +301,7 @@ final class LibraryResumePersistenceTests: XCTestCase {
         player.start(try await loadedItem(), at: 0)
         let pending = try XCTUnwrap(model.saveLoadedPositionLocally(123))
         await gated.waitUntilBlocked()
-        player.start(.init(entryID: secondID, title: "Second", showTitle: "Show", fileURL: media.url), at: 0)
+        player.start(.init(entryID: secondID, title: "Second", showTitle: "Show", fileURL: media), at: 0)
         model.saveLoadedPositionLocally(456)
         try await eventually("the second episode save") { model.handoffState.unpublished[secondID]?.position == 456 }
         await gated.release()
@@ -353,5 +382,82 @@ final class LibraryResumePersistenceTests: XCTestCase {
         player.refreshPosition()
         Task { await model.sceneEnteredBackground() }
         try await eventually("the position to be saved on backgrounding") { storedPosition() == 55 }
+    }
+
+    // MARK: 2026-11-18, the episode that came back minutes behind
+
+    /// A skip to the end while the seek is still being published: the next episode starts, takes playback
+    /// over, and only then does the pause for the finished episode run. It must not pause the next one.
+    func testALatePauseForTheFinishedEpisodeDoesNotPauseTheNextOne() async throws {
+        let (secondID, secondFile) = try await addSecondEpisode()
+        let model = makeModel(transport: phoneTransport())
+        let (player, engine) = makePlayer()
+        model.attachPlayer(player)
+        player.start(try await loadedItem(), at: 0)
+        await model.waitForHandoff()
+
+        await gate.hang()
+        engine.currentTime = 3_000
+        player.refreshPosition()            // a seek: its publish now hangs at the gate
+        await gate.waitUntilHeld()
+        engine.currentTime = 3_001
+        player.refreshPosition()            // one more sync waits behind it
+        player.start(.init(entryID: secondID, title: "Second", showTitle: "Show", fileURL: secondFile), at: 0)
+        await gate.release()
+        await model.waitForHandoff()
+
+        let record = try await phoneNowPlaying()
+        XCTAssertEqual(record?.entryID, secondID)
+        XCTAssertEqual(record?.isPlaying, true, "the finished episode's pause must not land on the next episode")
+        XCTAssertEqual(model.handoffState.ownPositions[entryID]?.record.positionSeconds, 3_001, "the finished episode keeps its own position")
+        player.stop()
+    }
+
+    /// Whatever silenced the session, a phone that is still playing takes playback over again at the
+    /// next round rather than playing on with no checkpoints.
+    func testAPlayingPhoneWhoseSessionWentQuietTakesOverAgain() async throws {
+        let model = makeModel(transport: phoneTransport())
+        let (player, _) = makePlayer()
+        model.attachPlayer(player)
+        player.start(try await loadedItem(), at: 0)
+        await model.waitForHandoff()
+        try await model.coordinator.paused(at: 5)
+        let quiet = try await phoneNowPlaying()
+        XCTAssertEqual(quiet?.isPlaying, false)
+
+        await model.refresh()
+        await model.waitForHandoff()
+        let record = try await phoneNowPlaying()
+        XCTAssertEqual(record?.isPlaying, true, "the round noticed nothing was published and took over again")
+        player.stop()
+    }
+
+    /// A round read the server before the pause and applied its answer after it. That older copy of this
+    /// phone's own position must not replace the pause.
+    func testAnOlderPolledCopyDoesNotReplaceTheNewerPause() async throws {
+        let answers = NetworkGate()
+        addTeardownBlock { await answers.release() }
+        let model = makeModel(transport: phoneTransport(answerGate: answers))
+        let (player, engine) = makePlayer()
+        model.attachPlayer(player)
+        player.start(try await loadedItem(), at: 0)
+        await model.waitForHandoff()
+        engine.currentTime = 92
+        await model.sceneEnteredBackground()   // the server now holds 92 s
+
+        await answers.hang()
+        let round = Task { await model.refresh() }
+        await answers.waitUntilHeld()          // the round holds an answer that says 92 s
+        engine.currentTime = 931
+        player.pause()
+        try await eventually("the pause to reach the phone's own store") { storedPosition() == 931 }
+        await model.waitForHandoff()
+        await model.republishUnpublishedPositions()
+        XCTAssertNil(model.handoffState.unpublished[entryID], "the pause was published")
+        await answers.release()
+        await round.value
+
+        XCTAssertEqual(model.resumeStart(for: entryID, cachedRevision: revisionID), 931, "the older polled copy must not win")
+        XCTAssertEqual(storedPosition(), 931)
     }
 }

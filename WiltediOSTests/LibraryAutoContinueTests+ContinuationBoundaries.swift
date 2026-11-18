@@ -254,4 +254,34 @@ extension LibraryAutoContinueTests {
         XCTAssertTrue(rig.player.isPlaying)
         rig.player.stop()
     }
+
+    /// 2026-11-18: after an automatic advance the phone played on for eleven minutes while the Mac saw no
+    /// playing position at all. The next episode's own record must say it is playing, and the sync round
+    /// must keep publishing where it is.
+    func testAnAutoAdvancedEpisodeKeepsPublishingItsPlayingPosition() async throws {
+        let rig = try await makeRig(entries: ["19", "20", "21"])
+        await start(rig, "19")
+        await rig.model.waitForHandoff()
+        rig.engine.finishNaturally()
+        try await eventually("20 after 19") { rig.player.item?.entryID == self.id("20") && rig.player.isPlaying }
+        await settle()
+        await rig.model.waitForHandoff()
+        var record = try await phoneNowPlaying()
+        XCTAssertEqual(record?.entryID, id("20"), "the advance took playback over for the next episode")
+        XCTAssertEqual(record?.isPlaying, true, "a late pause for the finished episode must not pause the next one")
+
+        rig.engine.currentTime = 1
+        rig.player.refreshPosition()
+        await rig.model.waitForHandoff()
+        await rig.model.syncRound(.timer)
+        record = try await phoneNowPlaying()
+        XCTAssertEqual(record?.entryID, id("20"))
+        XCTAssertEqual(record?.isPlaying, true)
+        XCTAssertEqual(record?.positionSeconds ?? -1, 1, accuracy: 0.01, "the round publishes the playing checkpoint")
+        rig.player.stop()
+    }
+
+    private func phoneNowPlaying() async throws -> DevicePlaybackPosition? {
+        try await mac.fetchDeviceRecords().nowPlaying.first { $0.record.deviceID == "phone" }?.record
+    }
 }

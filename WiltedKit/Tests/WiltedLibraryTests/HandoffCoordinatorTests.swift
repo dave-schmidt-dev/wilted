@@ -414,3 +414,42 @@ extension HandoffCoordinatorTests {
         }
     }
 }
+
+/// 2026-11-18: a pause for the finished episode ran after the phone had taken over the next one. It marked
+/// the next episode paused, and the phone played on for eleven minutes with no checkpoints.
+extension HandoffCoordinatorTests {
+    func testAPauseOrStopForAnotherEpisodeLeavesTheSessionPlaying() async throws {
+        let env = await makeEnv()
+        let finished = try ItemID(rawValue: "item-" + String(repeating: "b", count: 64))
+        let phone = env.coordinator("phone")
+        try await phone.takeover(entryID: entry, revision: revisionA, positionSeconds: 3)
+        let paused = try await phone.paused(at: 2_700, entryID: finished)
+        let stopped = try await phone.stopped(at: 2_700, entryID: finished)
+        XCTAssertFalse(paused)
+        XCTAssertFalse(stopped)
+        var published = try await nowPlaying(env, "phone")
+        XCTAssertEqual(published?.record.isPlaying, true)
+        XCTAssertEqual(published?.record.positionSeconds, 3)
+        let checkpointed = try await phone.checkpoint(40)
+        XCTAssertTrue(checkpointed, "the session is still the playing one")
+
+        let own = try await phone.paused(at: 55, entryID: entry)
+        XCTAssertTrue(own)
+        published = try await nowPlaying(env, "phone")
+        XCTAssertEqual(published?.record.isPlaying, false)
+        XCTAssertEqual(published?.record.positionSeconds, 55)
+    }
+
+    func testACheckpointSaysWhenNothingWasPublished() async throws {
+        let env = await makeEnv()
+        let phone = env.coordinator("phone")
+        let idle = try await phone.checkpoint(10)
+        XCTAssertFalse(idle, "no session")
+        try await phone.takeover(entryID: entry, revision: revisionA, positionSeconds: 10)
+        try await phone.paused(at: 20)
+        let quiet = try await phone.checkpoint(30)
+        XCTAssertFalse(quiet, "a paused session publishes no checkpoint")
+        let published = try await nowPlaying(env, "phone")
+        XCTAssertEqual(published?.record.positionSeconds, 20)
+    }
+}
