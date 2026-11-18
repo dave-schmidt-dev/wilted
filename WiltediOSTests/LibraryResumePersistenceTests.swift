@@ -443,7 +443,10 @@ final class LibraryResumePersistenceTests: XCTestCase {
         player.start(try await loadedItem(), at: 0)
         await model.waitForHandoff()
         engine.currentTime = 92
+        player.refreshPosition()
         await model.sceneEnteredBackground()   // the server now holds 92 s
+        let held = try await phoneNowPlaying()
+        XCTAssertEqual(held?.positionSeconds, 92)
 
         await answers.hang()
         let round = Task { await model.refresh() }

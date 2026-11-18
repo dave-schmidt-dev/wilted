@@ -55,7 +55,7 @@ final class LibraryRowSwipeTests: XCTestCase {
         let both = LibrarySwipeHint.text(
             leading: [[.markCompleted], [.removeFromLarder]],
             trailing: [[.play], [.download]])
-        XCTAssertEqual(both, "Swipe right: Mark completed or Remove from Larder · Swipe left: Play or Download")
+        XCTAssertEqual(both, "Swipe right: Mark completed or Remove from Larder\nSwipe left: Play or Download")
 
         let leadingOnly = LibrarySwipeHint.text(leading: [[.markCompleted]], trailing: [])
         XCTAssertEqual(leadingOnly, "Swipe right: Mark completed")
@@ -73,7 +73,7 @@ final class LibraryRowSwipeTests: XCTestCase {
         let text = LibrarySwipeHint.text(
             leading: [[.markCompleted], [.markCompleted], [.removeFromLarder], [.markCompleted]],
             trailing: [[.play], [.play], [.download], [.download]])
-        XCTAssertEqual(text, "Swipe right: Mark completed or Remove from Larder · Swipe left: Play or Download")
+        XCTAssertEqual(text, "Swipe right: Mark completed or Remove from Larder\nSwipe left: Play or Download")
     }
 
     func testSwipeHintPauseShownAsPlay() {
@@ -92,12 +92,12 @@ final class LibraryRowSwipeTests: XCTestCase {
         let text1 = LibrarySwipeHint.text(
             leading: [[.removeFromLarder], [.markCompleted]],
             trailing: [[.download], [.play]])
-        XCTAssertEqual(text1, "Swipe right: Remove from Larder or Mark completed · Swipe left: Download or Play")
+        XCTAssertEqual(text1, "Swipe right: Remove from Larder or Mark completed\nSwipe left: Download or Play")
 
         let text2 = LibrarySwipeHint.text(
             leading: [[.markCompleted], [.removeFromLarder]],
             trailing: [[.play], [.download]])
-        XCTAssertEqual(text2, "Swipe right: Mark completed or Remove from Larder · Swipe left: Play or Download")
+        XCTAssertEqual(text2, "Swipe right: Mark completed or Remove from Larder\nSwipe left: Play or Download")
     }
 
     // MARK: Hosted row
