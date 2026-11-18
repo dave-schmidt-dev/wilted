@@ -227,7 +227,8 @@ final class LibraryPlayer: ObservableObject {
         // "End of this episode" belongs to the episode it was set on, not to whatever plays next.
         if self.item?.entryID != item.entryID { stopsAfterCurrentItem = false }
         if let outgoing = self.item {
-            let outgoingPosition = duration > 0 ? min(max(0, engine.currentTime), duration) : max(0, engine.currentTime)
+            let outgoingTime = holdsOwnPosition ? position : engine.currentTime
+            let outgoingPosition = duration > 0 ? min(max(0, outgoingTime), duration) : max(0, outgoingTime)
             position = outgoingPosition
             onWillReplaceItem?(outgoing.entryID, outgoingPosition)
         }
@@ -283,7 +284,7 @@ final class LibraryPlayer: ObservableObject {
             return fail(.audioSession)
         }
         LibraryPlaybackTrace.shared.record(.sessionActivated, token: traceToken)
-        if status == .ended { engine.currentTime = 0 }
+        if status == .ended { engine.currentTime = 0 } else if holdsOwnPosition { engine.currentTime = position }
         guard engine.play() else { return fail(.engineRefused) }
         LibraryPlaybackTrace.shared.record(.playCalled, token: traceToken)
         lastFailure = nil
@@ -305,7 +306,7 @@ final class LibraryPlayer: ObservableObject {
         engine.pause()
         stopTicking()
         lastAccrual = nil
-        position = min(engine.currentTime, duration)
+        if !holdsOwnPosition { position = min(engine.currentTime, duration) }
         if status == .playing { status = .paused }
         publishNowPlaying()
     }
@@ -403,10 +404,15 @@ final class LibraryPlayer: ObservableObject {
         session.deactivate()
     }
 
+    /// While paused the player's own position is the truth and the engine is never read: after a
+    /// suspension `AVAudioPlayer` can come back at its last seek instead of where it paused (2026-11-18).
+    /// Every resume writes the position back to the engine, and every seek moves both.
+    var holdsOwnPosition: Bool { status == .paused }
+
     /// Syncs the readout with the engine; the timer calls this while playing.
     func refreshPosition() {
         // A spoken bulletin holds the position as the checkpoint and its time is not listening time.
-        guard item != nil, !isRemoteSeeking, speechHold == nil else { return }
+        guard item != nil, !isRemoteSeeking, speechHold == nil, !holdsOwnPosition else { return }
         accrueListening()
         position = min(max(0, engine.currentTime), duration)
         // The engine stopped on its own without a completion (something else took the output).

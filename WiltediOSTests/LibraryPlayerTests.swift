@@ -225,6 +225,63 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertEqual(rig.nowPlaying.updates.last, .init(title: "Episode One", duration: 600, position: 42, rate: 0))
     }
 
+    /// 2026-11-18: after two minutes suspended the engine resumed from its last seek (92 s), not the pause (931 s).
+    func testResumeRestoresThePausedPositionWhenTheEngineLostIt() {
+        let rig = rigPausedWithALostEnginePosition()
+        XCTAssertTrue(rig.player.play())
+        XCTAssertEqual(rig.engine.currentTime, 931)
+        XCTAssertEqual(rig.player.position, 931)
+    }
+
+    /// A player paused at 931 s whose engine has fallen back to 92 s, as after the suspension above.
+    private func rigPausedWithALostEnginePosition() -> Rig {
+        let engine = PlayerFakeEngine()
+        engine.duration = 1600
+        let rig = makeRig(engine: engine)
+        rig.player.start(item)
+        rig.player.seek(to: 92)
+        rig.engine.currentTime = 931
+        rig.player.pause()
+        rig.engine.currentTime = 92
+        return rig
+    }
+
+    func testASecondPauseOrRouteLossAfterTheEngineLostItsPositionKeepsThePause() throws {
+        let rig = rigPausedWithALostEnginePosition()
+        rig.player.pause()
+        rig.events.send(.routeLost)
+        rig.events.send(.interruptionBegan)
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.position, 931)
+        XCTAssertEqual(rig.nowPlaying.updates.last?.position, 931)
+        XCTAssertTrue(try XCTUnwrap(rig.remote.handler)(.play))
+        XCTAssertEqual(rig.player.status, .playing)
+        XCTAssertEqual(rig.engine.currentTime, 931)
+    }
+
+    func testASkipWhilePausedMovesFromThePauseNotFromTheEngine() {
+        let rig = rigPausedWithALostEnginePosition()
+        rig.player.skipForward()
+        let target = 931 + TimeInterval(rig.player.skipForwardSeconds)
+        XCTAssertEqual(rig.player.position, target)
+        rig.player.togglePlayPause()
+        XCTAssertEqual(rig.engine.currentTime, target)
+        rig.engine.currentTime = target + 20
+        rig.player.togglePlayPause()
+        XCTAssertEqual(rig.player.position, target + 20, "a pause while playing still takes the engine's time")
+    }
+
+    func testAnotherEpisodeStartedWhilePausedSavesThePauseForTheOutgoingOne() {
+        let rig = rigPausedWithALostEnginePosition()
+        var saved: [TimeInterval] = []
+        rig.player.onWillReplaceItem = { _, position in saved.append(position) }
+        let next = LibraryPlayer.Item(
+            entryID: try! ItemID(rawValue: "entry-2"), title: "Episode Two", showTitle: "Show", fileURL: item.fileURL)
+        XCTAssertTrue(rig.player.start(next, at: 5))
+        XCTAssertEqual(saved, [931])
+        XCTAssertEqual(rig.engine.currentTime, 5)
+    }
+
     func testPlayedTimeIsReportedWithTheSpeedItWasHeardAt() async {
         let rig = makeRig()
         var reports: [(TimeInterval, Double)] = []
