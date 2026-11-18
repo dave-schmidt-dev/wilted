@@ -57,6 +57,11 @@ public struct ThrottledLibraryTransport: LibraryTransport {
         try await gate.run(priority: .handoff) { try await inner.fetchDeviceRecords(entries: entries) }
     }
 
+    /// Local bookkeeping, not a request: it does not wait at the gate.
+    public func track(devices: [String], entries: [ItemID]) async {
+        await inner.track(devices: devices, entries: entries)
+    }
+
     public func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
         try await gate.run(priority: .handoff) { try await inner.publish(records) }
     }

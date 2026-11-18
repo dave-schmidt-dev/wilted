@@ -361,6 +361,10 @@ extension LibraryAppModel {
             }
         }
         let rawID = backingEntryID(for: row.id)
+        // A manual start of an episode that is not loaded reads its records fresh, alongside the
+        // file check: the last sync can predate what another device played since.
+        let freshRecords: Task<Void, Never>? = kind == .automatic || handoffState.player?.item?.entryID == rawID
+            ? nil : Task { @MainActor in await self.freshenStartRecords(for: rawID) }
         // One cache walk serves this start: the verification and a grouped episode's position lookup.
         let walked = await mediaCache.cachedEntries()
         let cached = await verifiedCachedMedia(rawID, token: token, walked: walked)
@@ -390,6 +394,7 @@ extension LibraryAppModel {
             return .resumed
         }
         let forwardSequence: [ItemID] = isManual ? manualForwardSuffix(from: row.id) : []
+        await freshRecords?.value
         guard let position = await associatedStartPosition(rawID, revision: cached.revisionID, walked: walked) else {
             return failStart(row, .engineRefused, kind: kind)
         }

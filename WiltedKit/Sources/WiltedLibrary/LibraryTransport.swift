@@ -239,6 +239,11 @@ public protocol LibraryTransport: Sendable {
     /// Publishes several of this device's own records as one write, so the now-playing and
     /// progress records of one moment cost one operation.
     func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws
+    /// Names other devices, and entries to read for every known device, that this process may not
+    /// have seen in a record yet. A transport that reads records by name learns devices and pairs
+    /// only from the records it fetches, so a new process that is told nothing reads nothing from a
+    /// device that has been idle since this one last synced.
+    func track(devices: [String], entries: [ItemID]) async
     /// The inbound reads of one sync round, as one batch. See `LibraryPollOptions`.
     func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult
     /// Mac only: offers `fileURL` as the audio for `offer`. The transport takes its own copy.
@@ -294,6 +299,7 @@ public extension LibraryTransport {
     func publish(_ records: [(record: DevicePlaybackPosition, channel: PlaybackChannel)]) async throws {
         for item in records { try await publish(item.record, as: item.channel) }
     }
+    func track(devices: [String], entries: [ItemID]) async {}
     func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult {
         var result = LibraryPollResult()
         if options.contains(.intents) { result.intents = try await listIntents() }

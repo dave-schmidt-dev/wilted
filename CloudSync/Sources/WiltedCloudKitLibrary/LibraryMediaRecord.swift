@@ -170,7 +170,10 @@ extension CloudKitLibraryTransport {
     /// Explicit cold-start seeds: every seed entry is queried for each known device, including
     /// devices learned later. Passive offers never add seed entries. Account quarantine/reset
     /// clears this account-scoped directory; callers must seed again for the new account.
-    public func track(devices: [String] = [], entries: [ItemID] = []) {
+    ///
+    /// `async` on purpose: it is the `LibraryTransport` requirement, and a synchronous overload loses
+    /// to the protocol's default no-op when called from an async context.
+    public func track(devices: [String] = [], entries: [ItemID] = []) async {
         peers.seed(devices: devices, entries: entries)
     }
 
@@ -262,8 +265,10 @@ extension CloudKitLibraryTransport {
         try await fetchDeviceRecords(only: nil)
     }
 
-    /// Every device's now-playing record and the progress of known pairs for `entries` only,
-    /// read fresh: what a stored-position publication needs, in one request for a few entries.
+    /// Every device's now-playing record and the progress of `entries` only, read fresh: what a
+    /// stored-position publication or a start needs, in one request for a few entries. Each entry is
+    /// asked of every known device, seen there before or not: a new process knows a device's pairs
+    /// only once a record names them, and an episode paused on the Mac was otherwise not read.
     public func fetchDeviceRecords(entries: Set<ItemID>) async throws -> LibraryDeviceRecords {
         try await fetchDeviceRecords(only: entries)
     }
@@ -275,13 +280,17 @@ extension CloudKitLibraryTransport {
         var fetched = Set<String>()
         func nextIDs(nowPlaying: Bool) -> [CKRecord.ID] {
             let devices = peers.devices.union([deviceID]).sorted()
-            var skipped = Set<String>()
+            var ids = playbackRecordIDs(devices: devices, nowPlaying: nowPlaying)
             if let entries {
-                skipped = Set(knownProgressPairs(devices: devices).filter { !entries.contains($0.entryID) }
+                let skipped = Set(knownProgressPairs(devices: devices).filter { !entries.contains($0.entryID) }
                     .compactMap(progressName))
+                ids.removeAll { skipped.contains($0.recordName) }
+                let named = devices.flatMap { device in
+                    entries.sorted { $0.rawValue < $1.rawValue }.map { LibraryPlaybackPair(deviceID: device, entryID: $0) }
+                }
+                ids += progressIDs(named, ledger: &progressAsked)
             }
-            return playbackRecordIDs(devices: devices, nowPlaying: nowPlaying)
-                .filter { !skipped.contains($0.recordName) && asked.insert($0.recordName).inserted }
+            return ids.filter { asked.insert($0.recordName).inserted }
         }
         var ids = nextIDs(nowPlaying: true)
         // The second round covers entries first named by a now-playing record from this call.

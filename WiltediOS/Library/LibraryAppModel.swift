@@ -435,6 +435,7 @@ final class LibraryAppModel: ObservableObject {
         if !decisions.isEmpty || hasAddAwaitingAnswer { options.insert(.outcomes) }
         let beforePoll = await roundStore.state()
         guard await current() else { return }
+        await tellTransportKnownPeers(writer: beforePoll.ownerToken == nil ? nil : beforePoll.observedPublication?.writerDeviceID)
         var polled: LibraryPollResult?
         do {
             let result = try await transport.poll(options)
@@ -576,6 +577,21 @@ final class LibraryAppModel: ObservableObject {
     static func checkpoints(from records: LibraryDeviceRecords, excluding deviceID: String) -> [ItemID: ObservedPlayback] {
         let others = (records.nowPlaying + records.progress).filter { $0.record.deviceID != deviceID }
         return Dictionary(grouping: others, by: { $0.record.entryID }).compactMapValues(HandoffResolver.winner(among:))
+    }
+
+    /// Lays a fresh read of `entries`' records over the checkpoints, keeping whichever record ranks
+    /// higher: the read is narrower than a round's, so it never removes or downgrades one.
+    func adoptFresherCheckpoints(from records: LibraryDeviceRecords, for entries: Set<ItemID>) {
+        let fresh = Self.checkpoints(from: records, excluding: deviceID)
+        var merged = checkpoints
+        for id in entries {
+            guard let read = fresh[id] else { continue }
+            merged[id] = HandoffResolver.winner(among: [merged[id], read].compactMap { $0 })
+        }
+        guard merged != checkpoints else { return }
+        checkpoints = merged
+        handoffState.savedCheckpoints = merged
+        rebuildRows()
     }
 
     /// This device's own progress record per entry, as the server last held it. A `local` position

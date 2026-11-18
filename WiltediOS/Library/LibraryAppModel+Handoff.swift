@@ -16,6 +16,8 @@ struct LibraryHandoffTiming: Sendable {
     var sleep: @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
     /// The coordinator's settle wait; the phone no longer makes a confirming fetch after a takeover, the next round decides.
     var settleSleep: @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
+    /// The longest a manual start waits for the episode's fresh records (`freshenStartRecords`).
+    var startRecordsWait: Duration = .seconds(2)
 }
 
 /// Mutable handoff bookkeeping. A class so the model's extension can keep state without stored
