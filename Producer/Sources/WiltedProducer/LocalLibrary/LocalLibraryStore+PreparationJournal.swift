@@ -450,12 +450,15 @@ extension LocalLibraryStore {
         return !rows.isEmpty
     }
 
+    /// Maximum journal rows fetched per timeline lookup page.
+    private static let timelineLookupPageSize = 64
+
     /// What the preparation that produced this revision removed.
     ///
-    /// `preparationRuns()` decodes every journalled status in the library,
-    /// which is the wrong shape for a lookup the player performs each time it
-    /// loads a transcript. A bounded recent scan handles the usual case;
-    /// the current outcome anchors an older Ready-proving generation on a miss.
+    /// Legacy records store the revision and timeline inside statusData. A kept-cut
+    /// Prepare Again writes a terminal without a timeline for the same revision, so
+    /// the scan can reach the start of this item's history. Paging bounds memory,
+    /// and the newest-first scan stops at the first match.
     ///
     /// The revision is part of the question rather than a detail of the
     /// answer. Cutting an episode changes its bytes and therefore its
@@ -472,18 +475,24 @@ extension LocalLibraryStore {
         let context = ModelContext(container)
         var descriptor = FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
             predicate: #Predicate { $0.itemID == raw },
-            sortBy: [SortDescriptor(\.emittedAt, order: .reverse)]
+            sortBy: [SortDescriptor(\.emittedAt, order: .reverse), SortDescriptor(\.id, order: .reverse)]
         )
-        descriptor.fetchLimit = Self.maximumTimelineLookupRecords
+        descriptor.fetchLimit = Self.timelineLookupPageSize
+        descriptor.fetchOffset = 0
         let decoder = JSONDecoder()
-        for record in try context.fetch(descriptor) {
-            guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
-                  status.terminal,
-                  let result = status.terminalResult,
-                  result.outcome == .succeeded,
-                  result.revisionID == revisionID,
-                  let timeline = status.timeline else { continue }
-            return timeline
+        while true {
+            let page = try context.fetch(descriptor)
+            for record in page {
+                guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
+                      status.terminal,
+                      let result = status.terminalResult,
+                      result.outcome == .succeeded,
+                      result.revisionID == revisionID,
+                      let timeline = status.timeline else { continue }
+                return timeline
+            }
+            if page.count < Self.timelineLookupPageSize { break }
+            descriptor.fetchOffset = (descriptor.fetchOffset ?? 0) + Self.timelineLookupPageSize
         }
         let outcomeID = raw + "|" + revisionID.rawValue
         var outcomeQuery = FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>(
@@ -504,10 +513,4 @@ extension LocalLibraryStore {
         }
         return nil
     }
-
-    /// A ceiling on the newest-first scan above. An item that has been
-    /// prepared repeatedly normally finds its last success within a few rows;
-    /// older Ready proof uses the separately bounded maintenance lookup.
-    private static let maximumTimelineLookupRecords = 64
-
 }
