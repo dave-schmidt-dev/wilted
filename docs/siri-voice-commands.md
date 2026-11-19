@@ -41,7 +41,7 @@ while the intents run in the app process (`openAppWhenRun = false`).
 | | nothing loaded | none | "Nothing is playing." |
 | restart | episode loaded | restart | "Starting over." |
 | | nothing loaded | none | "Nothing is playing." |
-| markCompleted | episode loaded and canMarkCompleted | markCompleted(id), needsConfirmation | "Mark <title> completed?" |
+| markCompleted | episode loaded and canMarkCompleted | markCompleted(id) | "Marked <title> completed." |
 | | episode loaded, cannot yet | none | "I can't mark that completed yet." |
 | | nothing loaded | none | "Nothing is playing." |
 | whatsPlaying | episode loaded | none | "<title>, from <Show>." (omit the show when empty) |
@@ -72,7 +72,7 @@ The sleep timer intent has no App Shortcut (see Phase 3).
 | resume | remote command (spoken); App Intent in Shortcuts app | `ResumeEpisodeIntent` | `resume` | planner, runner, adapter |
 | skip forward / back | remote command (spoken); App Intent in Shortcuts app | `SkipForwardIntent`, `SkipBackIntent` | `skipForward`, `skipBack` | planner, adapter |
 | restart this episode | App Intent | `RestartEpisodeIntent` | `restart` | planner, adapter |
-| mark this episode completed (confirms first) | App Intent | `MarkCompletedIntent` | `markCompleted` | planner, runner, adapter |
+| mark this episode completed (at once, no question) | App Intent | `MarkCompletedIntent` | `markCompleted` | planner, runner, adapter |
 | what's playing | App Intent | `WhatsPlayingIntent` | `whatsPlaying` | planner |
 | list downloaded | App Intent | `ListDownloadedIntent` | `listDownloaded` | planner |
 
@@ -106,8 +106,9 @@ the same tolerance (case, punctuation, accents, leading "the", whole-word runs, 
 `UnavailableLibraryTransport` (no network, nothing synced; only `prepare()` runs). It asserts the engine
 itself plays, pauses, skips (30 s forward, 15 s back) and restarts, that an episode not on the phone is
 never started or fetched, and that an empty phone plays nothing. Only the AVAudioSession, Now Playing
-and remote-command hooks are fakes, because they need a device. Mark completed needs
-`requestConfirmation`, which only exists inside a running intent, so it stays covered by the adapter tests.
+and remote-command hooks are fakes, because they need a device. Mark completed asks nothing (a spoken
+"Mark <title> completed?" sounded like the answer, and left unanswered it recorded nothing); the adapter
+tests and `LibraryCompletedNeverReplaysTests` cover it.
 
 ## App Intents metadata
 
@@ -117,7 +118,7 @@ queries and the `SpeedOption` and `SleepTimerOption` enums are exported, exactly
 (every intent except the four voiced by Siri's transport commands and the sleep timer has one), every phrase contains
 `${applicationName}`, and no phrase starts with pause, resume, continue, stop or skip. Last build log (`xcodebuild test`, Xcode 27): no `appintentsmetadataprocessor`
 warnings for the app target. The only ones are "Metadata extraction skipped, no AppIntents.framework
-dependency found" for the unit- and UI-test bundles, which do not link AppIntents. `requestConfirmation(dialog:)` (iOS 18) shows the mark-completed question. The deployment target is iOS 26, so it is called directly.
+dependency found" for the unit- and UI-test bundles, which do not link AppIntents.
 
 ## Outcomes and races
 

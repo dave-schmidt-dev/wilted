@@ -91,7 +91,7 @@ struct EpisodeEntityQuery: EntityStringQuery {
 /// Runs `command` through the shared runner and speaks the planner's short line.
 @MainActor
 func speak(_ command: VoiceCommand) async throws -> some IntentResult & ProvidesDialog {
-    let line = try await VoiceCommandRunner.run(command, on: await VoiceRuntime.target()) { _ in }
+    let line = await VoiceCommandRunner.run(command, on: await VoiceRuntime.target())
     return .result(dialog: IntentDialog(stringLiteral: line))
 }
 
@@ -157,17 +157,7 @@ struct RestartEpisodeIntent: AudioPlaybackIntent {
 struct MarkCompletedIntent: AppIntent {
     static let title: LocalizedStringResource = "Mark this episode completed"
 
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        let line = try await VoiceCommandRunner.run(.markCompleted, on: await VoiceRuntime.target()) { question in
-            try await confirm(question)
-        }
-        return .result(dialog: IntentDialog(stringLiteral: line))
-    }
-
-    /// Asks the question and throws if it is declined.
-    private func confirm(_ question: String) async throws {
-        try await requestConfirmation(dialog: IntentDialog(stringLiteral: question))
-    }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.markCompleted) }
 }
 
 struct WhatsPlayingIntent: AppIntent {

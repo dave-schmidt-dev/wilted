@@ -362,7 +362,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
         XCTAssertEqual(rig.player.status, .idle, "queue invalidation cleared loaded audio, retaining inert bytes")
         XCTAssertFalse(rig.player.handle(.play), "system remote resume cannot reanimate the invalidated item")
 
-        let dialog = try await VoiceCommandRunner.run(.resume, on: rig.target, confirm: { _ in XCTFail("resume needs no confirmation") })
+        let dialog = await VoiceCommandRunner.run(.resume, on: rig.target)
         await rig.model.waitForHandoff()
         XCTAssertEqual(dialog, "Nothing to resume.")
         XCTAssertNil(rig.player.item)
@@ -574,7 +574,7 @@ final class LibraryVoiceTargetTests: XCTestCase {
         ])
         let rig = try await makeRig(cached: ["a"])
         await rig.target.perform(.play(id("a")))
-        let dialog = try await VoiceCommandRunner.run(.playNext(show: "Unknown Radio"), on: rig.target, confirm: { _ in XCTFail("play needs no confirmation") })
+        let dialog = await VoiceCommandRunner.run(.playNext(show: "Unknown Radio"), on: rig.target)
         XCTAssertEqual(rig.player.item?.entryID, id("a"))
         XCTAssertTrue(rig.engine.isPlaying, "a named miss does not pause existing unrelated audio")
         XCTAssertEqual(rig.engine.loadedURLs.count, 1)

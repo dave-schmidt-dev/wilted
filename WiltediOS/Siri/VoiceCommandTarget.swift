@@ -32,31 +32,23 @@ enum VoiceRuntime {
     static func target() async -> (any VoiceCommandTarget)? { await provider() }
 }
 
-/// Plans a command and, unless it needs a confirmation the person declines, carries it out.
+/// Plans a command and carries it out at once. No command asks a second question: a spoken request
+/// is the decision, and a question nobody answers would drop it without a trace.
 @MainActor
 enum VoiceCommandRunner {
     static let unavailableDialog = "Open Wilted once, then try again."
-    static let completedDialog = "Marked completed."
     static let queuedDialog = "Queued. It will go to your Mac when it's reachable."
     static let failedDialog = "That didn't work."
 
-    /// Returns the line to speak. `confirm` is asked only for actions that need it and throws to
-    /// decline; nothing has been performed by then.
-    static func run(
-        _ command: VoiceCommand,
-        on target: (any VoiceCommandTarget)?,
-        confirm: (String) async throws -> Void
-    ) async throws -> String {
+    /// Returns the line to speak: the planner's when the action was done, and never a success that
+    /// did not happen.
+    static func run(_ command: VoiceCommand, on target: (any VoiceCommandTarget)?) async -> String {
         guard let target else { return unavailableDialog }
         let plan = VoiceCommandPlanner.plan(command, snapshot: await target.voiceSnapshot())
-        if plan.needsConfirmation {
-            try await confirm(plan.dialog)
-            switch await target.perform(plan.action) {
-            case .done: return completedDialog
-            case .queued: return queuedDialog
-            case .failed: return failedDialog
-            }
+        switch await target.perform(plan.action) {
+        case .done: return plan.dialog
+        case .queued: return queuedDialog
+        case .failed: return failedDialog
         }
-        return await target.perform(plan.action) == .failed ? failedDialog : plan.dialog
     }
 }

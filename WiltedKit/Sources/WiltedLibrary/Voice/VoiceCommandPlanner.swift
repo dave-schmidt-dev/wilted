@@ -113,10 +113,11 @@ public enum VoiceCommandPlanner {
                 return VoicePlan(action: .none, dialog: "Nothing is playing.")
             }
             if nowPlaying.canMarkCompleted {
+                // No second question: one left unanswered (in a car, as the listener parks) recorded
+                // nothing, and the episode came back. The line names the episode, and Restore undoes it.
                 return VoicePlan(
                     action: .markCompleted(nowPlaying.episode.id),
-                    dialog: "Mark \(nowPlaying.episode.title) completed?",
-                    needsConfirmation: true
+                    dialog: "Marked \(nowPlaying.episode.title) completed."
                 )
             } else {
                 return VoicePlan(action: .none, dialog: "I can't mark that completed yet.")

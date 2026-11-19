@@ -23,7 +23,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: "Unknown Show"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "I can't find a show called Unknown Show.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 2: playNext(show) - show given, ambiguous
@@ -37,7 +36,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: "techcrunch"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Did you mean TechCrunch Daily or TechCrunch Weekly?")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 3: playNext(show) - show matched, none downloaded
@@ -51,7 +49,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: "tech crunch daily"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "No TechCrunch Daily episodes are downloaded.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 4: playNext(show) - show matched, playing episode is of that show (not last)
@@ -67,7 +64,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: "daily"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .play(ep2.id))
         XCTAssertEqual(plan.dialog, "Playing Show Ep 2.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 5: playNext(show) - show matched, playing episode is the last one of that show
@@ -83,7 +79,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: "daily"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "That was the last downloaded episode of The Daily.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 6: playNext(show) - show matched, playing episode is another show (or nothing)
@@ -100,7 +95,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: "daily"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .play(epDaily1.id))
         XCTAssertEqual(plan.dialog, "Playing Daily Ep 1.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testPlayNextShowMatchedNothingPlaying() {
@@ -113,7 +107,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: "daily"), snapshot: snapshot)
         XCTAssertEqual(plan.action, .play(epDaily1.id))
         XCTAssertEqual(plan.dialog, "Playing Daily Ep 1.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 7: playNext(nil) - nothing downloaded
@@ -127,7 +120,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: nil), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "No episodes are downloaded.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 8: playNext(nil) - otherwise
@@ -143,7 +135,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: nil), snapshot: snapshot)
         XCTAssertEqual(plan.action, .play(ep2.id))
         XCTAssertEqual(plan.dialog, "Playing Episode Two.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testPlayNextNilPlayingEpisodeIsLastOne() {
@@ -157,7 +148,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: nil), snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "That was the last downloaded episode.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testPlayNextNilNothingPlaying() {
@@ -170,7 +160,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: nil), snapshot: snapshot)
         XCTAssertEqual(plan.action, .play(ep1.id))
         XCTAssertEqual(plan.dialog, "Playing Episode One.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testPlayNextNilPlayingNotListed() {
@@ -184,7 +173,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.playNext(show: nil), snapshot: snapshot)
         XCTAssertEqual(plan.action, .play(ep1.id))
         XCTAssertEqual(plan.dialog, "Playing Episode One.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 9 & 10: pause
@@ -199,7 +187,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.pause, snapshot: snapshot)
         XCTAssertEqual(plan.action, .pause)
         XCTAssertEqual(plan.dialog, "Paused.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testPauseWhenPaused() {
@@ -212,7 +199,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.pause, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Nothing is playing.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testPauseWhenNothingLoaded() {
@@ -220,7 +206,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.pause, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Nothing is playing.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 11, 12, 13: resume
@@ -235,7 +220,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.resume, snapshot: snapshot)
         XCTAssertEqual(plan.action, .resume)
         XCTAssertEqual(plan.dialog, "Resuming Episode One.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testResumeWhenAlreadyPlaying() {
@@ -248,7 +232,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.resume, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Already playing.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testResumeWhenNothingLoaded() {
@@ -256,7 +239,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.resume, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Nothing to resume.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 14 & 15: skipForward / skipBack
@@ -271,7 +253,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.skipForward, snapshot: snapshot)
         XCTAssertEqual(plan.action, .skipForward)
         XCTAssertEqual(plan.dialog, "Skipped forward.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testSkipForwardWhenNothingLoaded() {
@@ -279,7 +260,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.skipForward, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Nothing is playing.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testSkipBackWhenEpisodeLoaded() {
@@ -292,7 +272,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.skipBack, snapshot: snapshot)
         XCTAssertEqual(plan.action, .skipBack)
         XCTAssertEqual(plan.dialog, "Skipped back.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testSkipBackWhenNothingLoaded() {
@@ -300,7 +279,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.skipBack, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Nothing is playing.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 16 & 17: restart
@@ -315,7 +293,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.restart, snapshot: snapshot)
         XCTAssertEqual(plan.action, .restart)
         XCTAssertEqual(plan.dialog, "Starting over.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testRestartWhenNothingLoaded() {
@@ -323,7 +300,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.restart, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Nothing is playing.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 18, 19, 20: markCompleted
@@ -337,8 +313,7 @@ final class VoiceCommandPlannerTests: XCTestCase {
         )
         let plan = VoiceCommandPlanner.plan(.markCompleted, snapshot: snapshot)
         XCTAssertEqual(plan.action, .markCompleted(ep.id))
-        XCTAssertEqual(plan.dialog, "Mark Episode One completed?")
-        XCTAssertTrue(plan.needsConfirmation)
+        XCTAssertEqual(plan.dialog, "Marked Episode One completed.", "the line names the episode: no question guards it")
     }
 
     func testMarkCompletedWhenCannotYet() {
@@ -351,7 +326,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.markCompleted, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "I can't mark that completed yet.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testMarkCompletedWhenNothingLoaded() {
@@ -359,7 +333,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.markCompleted, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Nothing is playing.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 21 & 22: whatsPlaying
@@ -374,7 +347,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.whatsPlaying, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Episode One, from The Daily.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testWhatsPlayingWhenEpisodeLoadedWithoutShow() {
@@ -387,7 +359,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.whatsPlaying, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Standalone Episode.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testWhatsPlayingWhenNothingLoaded() {
@@ -395,7 +366,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.whatsPlaying, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "Nothing is playing.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     // MARK: - Row 23 & 24: listDownloaded
@@ -405,7 +375,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "No episodes are downloaded.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testListDownloadedWithOneEpisode() {
@@ -414,7 +383,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "1 episode downloaded: Ep 1.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testListDownloadedWithTwoEpisodes() {
@@ -424,7 +392,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "2 episodes downloaded: Ep 1, Ep 2.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testListDownloadedWithThreeEpisodes() {
@@ -435,7 +402,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "3 episodes downloaded: Ep 1, Ep 2, Ep 3.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testListDownloadedWithFourEpisodes() {
@@ -447,7 +413,6 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "4 episodes downloaded: Ep 1, Ep 2, Ep 3, and 1 more.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 
     func testListDownloadedWithFiveEpisodes() {
@@ -460,6 +425,5 @@ final class VoiceCommandPlannerTests: XCTestCase {
         let plan = VoiceCommandPlanner.plan(.listDownloaded, snapshot: snapshot)
         XCTAssertEqual(plan.action, .none)
         XCTAssertEqual(plan.dialog, "5 episodes downloaded: Ep 1, Ep 2, Ep 3, and 2 more.")
-        XCTAssertFalse(plan.needsConfirmation)
     }
 }

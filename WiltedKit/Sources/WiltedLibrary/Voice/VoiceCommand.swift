@@ -22,7 +22,7 @@ public enum VoiceCommand: Sendable, Equatable {
     case skipBack
     /// Seek the current episode to 0.
     case restart
-    /// Mark the current episode completed. Always asks first, like the Larder's own button.
+    /// Mark the current episode completed, at once: no question comes first.
     case markCompleted
     case whatsPlaying
     /// Count and first few titles of the episodes downloaded on the phone, in Larder order.
@@ -128,13 +128,10 @@ public struct VoicePlan: Sendable, Equatable {
     public let action: VoiceAction
     /// One short sentence; empty only when nothing should be said.
     public let dialog: String
-    /// True when the action must not run until the person confirms; `dialog` then holds the question.
-    public let needsConfirmation: Bool
 
-    public init(action: VoiceAction, dialog: String, needsConfirmation: Bool = false) {
+    public init(action: VoiceAction, dialog: String) {
         self.action = action
         self.dialog = dialog
-        self.needsConfirmation = needsConfirmation
     }
 }
 

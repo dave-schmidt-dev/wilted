@@ -39,7 +39,6 @@ final class VoicePlayLookupPlannerTests: XCTestCase {
         let result = plan(.playEpisode(title: "Tide Pools", show: nil))
         XCTAssertEqual(result.action, .play(item("4")))
         XCTAssertEqual(result.dialog, "Playing Tide Pools.")
-        XCTAssertFalse(result.needsConfirmation)
     }
 
     func testEpisodeByLooseSpokenTitle() {

@@ -4,8 +4,6 @@ import WiltedLibrary
 import XCTest
 @testable import WiltediOS
 
-private struct Declined: Error {}
-
 @MainActor
 final class VoiceCommandRunnerTests: XCTestCase {
     private func episode(_ name: String) throws -> VoiceEpisode {
@@ -20,48 +18,35 @@ final class VoiceCommandRunnerTests: XCTestCase {
     }
 
     func testWithoutATargetItSaysToOpenTheApp() async throws {
-        let line = try await VoiceCommandRunner.run(.pause, on: nil) { _ in XCTFail("no confirmation") }
+        let line = await VoiceCommandRunner.run(.pause, on: nil)
         XCTAssertEqual(line, VoiceCommandRunner.unavailableDialog)
     }
 
     func testPauseIsPerformedWithoutAskingAndSpeaksThePlannersLine() async throws {
         let target = RecordingTarget(snapshot: try snapshot(playing: true))
-        let line = try await VoiceCommandRunner.run(.pause, on: target) { _ in XCTFail("no confirmation") }
+        let line = await VoiceCommandRunner.run(.pause, on: target)
         XCTAssertEqual(target.performed, [.pause])
         XCTAssertEqual(line, "Paused.")
     }
 
     func testNothingPlayingPerformsNothingAndSaysSo() async throws {
         let target = RecordingTarget(snapshot: try snapshot(playing: nil))
-        let line = try await VoiceCommandRunner.run(.skipForward, on: target) { _ in }
+        let line = await VoiceCommandRunner.run(.skipForward, on: target)
         XCTAssertEqual(target.performed, [.none])
         XCTAssertEqual(line, "Nothing is playing.")
     }
 
-    func testMarkCompletedAsksFirstAndPerformsOnlyAfterConfirmation() async throws {
+    /// A question left unanswered recorded nothing (2026-11-18), so the request itself is the decision.
+    func testMarkCompletedIsPerformedAtOnceAndNamesTheEpisode() async throws {
         let target = RecordingTarget(snapshot: try snapshot(playing: true))
-        var asked: [String] = []
-        let line = try await VoiceCommandRunner.run(.markCompleted, on: target) { question in
-            asked.append(question)
-            XCTAssertTrue(target.performed.isEmpty, "nothing may run before the answer")
-        }
-        XCTAssertEqual(asked, ["Mark Title e1 completed?"])
+        let line = await VoiceCommandRunner.run(.markCompleted, on: target)
         XCTAssertEqual(target.performed, [.markCompleted(try ItemID(rawValue: "e1"))])
-        XCTAssertEqual(line, VoiceCommandRunner.completedDialog)
+        XCTAssertEqual(line, "Marked Title e1 completed.")
     }
 
-    func testDecliningTheConfirmationPerformsNothing() async throws {
-        let target = RecordingTarget(snapshot: try snapshot(playing: true))
-        do {
-            _ = try await VoiceCommandRunner.run(.markCompleted, on: target) { _ in throw Declined() }
-            XCTFail("declining must throw")
-        } catch is Declined {}
-        XCTAssertTrue(target.performed.isEmpty)
-    }
-
-    func testMarkCompletedThatTheLarderDoesNotOfferNeverAsks() async throws {
+    func testMarkCompletedThatTheLarderDoesNotOfferPerformsNothing() async throws {
         let target = RecordingTarget(snapshot: try snapshot(playing: true, canMark: false))
-        let line = try await VoiceCommandRunner.run(.markCompleted, on: target) { _ in XCTFail("no confirmation") }
+        let line = await VoiceCommandRunner.run(.markCompleted, on: target)
         XCTAssertEqual(target.performed, [.none])
         XCTAssertEqual(line, "I can't mark that completed yet.")
     }
@@ -69,17 +54,16 @@ final class VoiceCommandRunnerTests: XCTestCase {
     func testAFailedActionIsNeverAnnouncedAsSuccess() async throws {
         let target = RecordingTarget(snapshot: try snapshot(playing: false))
         target.outcome = .failed
-        let resumed = try await VoiceCommandRunner.run(.resume, on: target) { _ in }
+        let resumed = await VoiceCommandRunner.run(.resume, on: target)
         XCTAssertEqual(resumed, VoiceCommandRunner.failedDialog)
-        let marked = try await VoiceCommandRunner.run(.markCompleted, on: target) { _ in }
+        let marked = await VoiceCommandRunner.run(.markCompleted, on: target)
         XCTAssertEqual(marked, VoiceCommandRunner.failedDialog)
     }
 
     func testAQueuedMarkCompletedIsSaidToBeQueuedNotDone() async throws {
         let target = RecordingTarget(snapshot: try snapshot(playing: true))
         target.outcome = .queued
-        let line = try await VoiceCommandRunner.run(.markCompleted, on: target) { _ in }
+        let line = await VoiceCommandRunner.run(.markCompleted, on: target)
         XCTAssertEqual(line, VoiceCommandRunner.queuedDialog)
-        XCTAssertNotEqual(line, VoiceCommandRunner.completedDialog)
     }
 }

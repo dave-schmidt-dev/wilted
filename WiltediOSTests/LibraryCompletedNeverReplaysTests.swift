@@ -223,6 +223,27 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
         XCTAssertEqual(rig.model.remoteResumeRow.map { $0.id == id("a") }, false, "nor does the car's play button")
     }
 
+    /// 2026-11-18: an episode marked completed through Siri while driving started again after the next
+    /// stop, and no mark for it was on record. Siri used to ask "Mark ... completed?" first; left
+    /// unanswered, that recorded nothing. Here nothing answers a question, and the mark still holds.
+    func testASiriMarkNeedsNoSecondAnswerAndTheRelaunchedAppDoesNotStartTheEpisode() async throws {
+        try await seed()
+        let rig = await launch()
+        await rig.model.refresh()
+        try await start(rig, "a")
+
+        let line = await VoiceCommandRunner.run(
+            .markCompleted, on: LibraryVoiceTarget(model: rig.model, player: rig.player))
+        XCTAssertEqual(line, "Marked Title a completed.", "Siri names what it marked: no question guards it")
+        XCTAssertTrue(rig.model.isFinishedHere(id("a")), "the spoken request is the decision")
+        XCTAssertNil(rig.player.item, "marking it completed stops it")
+
+        let relaunched = await launch()
+        await relaunched.model.loadLocalState()
+        XCTAssertTrue(relaunched.model.isFinishedHere(id("a")))
+        XCTAssertEqual(relaunched.model.remoteResumeRow?.id, id("b"), "the car's play button starts the next one")
+    }
+
     func testAnEpisodeRemovedFromTheLarderIsNotContinuedIntoWhileTheMacHasNotAnswered() async throws {
         try await seed()
         let rig = await launch()
