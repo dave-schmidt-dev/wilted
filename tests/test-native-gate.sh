@@ -343,6 +343,7 @@ assert_snapshot_contract() {
   assert_contains 'trap cleanup EXIT' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS' "$gate"
   assert_contains 'WILTED_XCODE_TEST_TIMEOUT_SECONDS:-600' "$gate"
+  assert_contains 'local xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-900}"' "$gate"
   # The Mac unit leg's one xcodebuild test both builds and tests, so it gets both budgets (cold-cache kills at 600 s).
   assert_contains 'WILTED_XCODE_BUILD_AND_TEST_TIMEOUT_SECONDS:-1200' "$gate"
   assert_contains 'WILTED_TEST_TIMEOUT_SECONDS="${xcode_build_and_test_timeout_seconds:-$xcode_test_timeout_seconds}"' "$native_gate_xcode"

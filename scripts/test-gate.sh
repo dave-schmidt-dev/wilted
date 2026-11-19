@@ -707,6 +707,9 @@ PYMETADATA
 
 leg_ios_ui_tests() {
   local udid result=0
+  # 36 fresh app launches (each test needs clean fixture state and appearance) took 541-623 s,
+  # so 600 s timed out on a busy Mac. 900 s keeps headroom without regrouping the tests.
+  local xcode_test_timeout_seconds="${WILTED_XCODE_TEST_TIMEOUT_SECONDS:-900}"
   udid="$(create_gate_simulator ios-pixel-ui)" || return 1
   WILTED_UI_TEST_SIMULATOR_UDID="$udid" xcode_test_leg \
     ios-pixel-snapshot-tests "$integration_root/WiltediOSUITests" WiltediOS \
