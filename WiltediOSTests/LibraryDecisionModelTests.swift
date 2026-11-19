@@ -4,7 +4,7 @@ import WiltedLibrary
 import XCTest
 @testable import WiltediOS
 
-private final class DecisionClock: @unchecked Sendable {
+final class DecisionClock: @unchecked Sendable {
     private let lock = NSLock()
     private var time: TimeInterval = 1_700_000_000
     var now: Date { lock.withLock { Date(timeIntervalSince1970: time) } }
