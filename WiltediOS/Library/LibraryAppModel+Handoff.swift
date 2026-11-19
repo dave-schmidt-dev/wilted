@@ -176,15 +176,15 @@ extension LibraryAppModel {
             .compactMap { $0 }.filter { $0.record.revision == cachedRevision }
         let winner = HandoffResolver.winner(among: candidates)
         let position = LibraryRowBuilder.resumeSeconds(winner, duration: entryDurations[entryID]) ?? 0
-        notePositionSource(winner?.record.deviceID, position: position)
+        notePositionSource(winner?.record.deviceID, position: position, for: entryID)
         return position
     }
 
     /// Hands the next start's journal line where its position came from: this iPhone's own record,
     /// another device's (the Mac's), or nothing.
-    func notePositionSource(_ sourceDeviceID: String?, position: Double) {
+    func notePositionSource(_ sourceDeviceID: String?, position: Double, for entryID: ItemID) {
         let source = position == 0 || sourceDeviceID == nil ? "zero" : sourceDeviceID == deviceID ? "own" : "other-device"
-        handoffState.player?.pendingPositionSource = source
+        handoffState.player?.pendingPositionSource = (entryID, source)
     }
 
     /// The app moved to the background: publish the current position now, since the next

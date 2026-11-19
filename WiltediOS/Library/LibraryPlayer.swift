@@ -174,8 +174,8 @@ final class LibraryPlayer: ObservableObject {
     private(set) var lastFailure: LibraryStartFailure?
     /// The durable record of commands, starts and stops; nil in tests and previews.
     var journal: LibraryJournal?
-    /// Where the next start's position came from, set by the model just before it starts one.
-    var pendingPositionSource: String?
+    /// Where a start position came from, set by the model when it picks one; used only for that entry.
+    var pendingPositionSource: (entryID: ItemID, source: String)?
 
     init(
         engine: any ListenerAudioEngine,
@@ -232,6 +232,7 @@ final class LibraryPlayer: ObservableObject {
     /// sets `.failed` when the file cannot be loaded or the session or engine refuses.
     @discardableResult
     func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true, traceToken: UInt64 = 0) -> Bool {
+        if let old = self.item, old.entryID != item.entryID { journal?.note("stop reason=replaced entry=\(old.entryID.rawValue) position=\(String(format: "%.1f", position))") }
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
@@ -258,7 +259,7 @@ final class LibraryPlayer: ObservableObject {
         }
         LibraryPlaybackTrace.shared.record(.loadCalled, token: traceToken)
         self.item = item
-        journal?.note("start entry=\(item.entryID.rawValue) title=\"\(item.title.prefix(40))\" position=\(String(format: "%.1f", start)) autoplay=\(autoplay) position-source=\(pendingPositionSource ?? (start == 0 ? "zero" : "unknown"))")
+        journal?.note("start entry=\(item.entryID.rawValue) title=\"\(item.title.prefix(40))\" position=\(String(format: "%.1f", start)) autoplay=\(autoplay) position-source=\(pendingPositionSource?.entryID == item.entryID ? pendingPositionSource?.source ?? "unknown" : start == 0 ? "zero" : "unknown")")
         pendingPositionSource = nil
         artworkData = artwork?.loadedData(for: item.artworkURL)
         if artworkData == nil { loadArtwork(for: item) }

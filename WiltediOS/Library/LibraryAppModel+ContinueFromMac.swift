@@ -81,6 +81,8 @@ extension LibraryAppModel {
             guard commandState.token == token else { return }
             continuation = nil
             // Loading applies phone defaults; the winning Mac rate belongs to this continuation.
+            journal?.note("start-request kind=continue-from-mac entry=\(entryID.rawValue)")
+            player.pendingPositionSource = (entryID, "other-device")
             if player.start(item, at: position, autoplay: false) {
                 player.setRate(rate)
                 if player.playAdmitted() { handoffState.forwardSequenceIDs = forwardSequence }

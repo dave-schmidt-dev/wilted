@@ -179,6 +179,7 @@ final class LibraryJournalTests: XCTestCase {
 
         try assertInOrder(journalLines(), [
             ("first launch", ["launch build="]),
+            ("the phone's own play of a", ["start-request kind=toggle entry=a"]),
             ("start of a", ["start entry=a", "position=0.0", "position-source=zero"]),
             ("remote pause", ["remote-command command=pause", "result=handled", "entry=a"]),
             ("Siri's mark", ["voice-action", "markCompleted"]),
@@ -188,6 +189,7 @@ final class LibraryJournalTests: XCTestCase {
             ("request sent", ["decision-sent action=markDone entry=a"]),
             ("second launch", ["launch build="]),
             ("remote play with nothing loaded", ["remote-command command=play", "loaded=false", "result=handled"]),
+            ("the request that play made", ["start-request kind=select entry=b"]),
             ("start of b", ["start entry=b", "position=0.0", "position-source=zero"]),
             ("why b started", ["remote-resume command=play", "result=resumed", "entry=b"])
         ])
@@ -296,6 +298,50 @@ final class LibraryJournalTests: XCTestCase {
         XCTAssertEqual(player.status, .paused)
         player.stop()
         XCTAssertNil(player.item)
+    }
+
+    /// The third reading of the 17:32 report: Siri heard "play the next episode", which moves on
+    /// without marking. The journal must show that it was a voice request and what it started.
+    func testSirisPlayNextShowsAsAVoiceRequestThatStartedTheNextEpisode() async throws {
+        try await seed()
+        let rig = await launch()
+        await rig.model.refresh()
+        try await start(rig, "a")
+
+        _ = await VoiceCommandRunner.run(.playNext(show: nil), on: LibraryVoiceTarget(model: rig.model, player: rig.player))
+
+        XCTAssertEqual(rig.player.item?.entryID, id("b"))
+        XCTAssertFalse(rig.model.isFinishedHere(id("a")), "moving on marks nothing")
+        try assertInOrder(journalLines(), [
+            ("start of a", ["start entry=a"]),
+            ("the voice request", ["voice-action action=play(b)"]),
+            ("the start it asked for", ["start-request kind=select entry=b"]),
+            ("where a was when b replaced it", ["stop reason=replaced entry=a position=0.0"]),
+            ("start of b", ["start entry=b"]),
+            ("its outcome", ["voice-action-outcome action=play(b) outcome=done"])
+        ])
+        XCTAssertFalse(try journalLines().contains { $0.contains("decision-begun") }, "no mark was made")
+    }
+
+    func testAPositionLookedUpForOneEpisodeIsNotReportedForAnother() async throws {
+        try await seed()
+        let rig = await launch()
+        await rig.model.loadLocalState()
+        rig.model.handoffState.ownPositions[id("a")] = ObservedPlayback(
+            record: try DevicePlaybackPosition(
+                deviceID: "phone", entryID: id("a"), revision: revision,
+                positionSeconds: 98.0, isPlaying: false, epoch: 2,
+                publishedAt: Date(timeIntervalSince1970: 1_700_000_100)),
+            serverModifiedAt: Date(timeIntervalSince1970: 1_700_000_100))
+        XCTAssertEqual(rig.model.resumeStart(for: id("a"), cachedRevision: revision), 98)
+
+        XCTAssertEqual(rig.player.pendingPositionSource?.source, "own")
+        let file = scratch.appendingPathComponent("b-direct.m4a")
+        try payload.write(to: file)
+        XCTAssertTrue(rig.player.start(LibraryPlayer.Item(entryID: id("b"), title: "Title b", showTitle: "", fileURL: file), at: 12))
+
+        let startLine = try XCTUnwrap(try journalLines().last { $0.contains("start entry=b") })
+        XCTAssertTrue(startLine.contains("position-source=unknown"), startLine)
     }
 
     func testLinesCarryNoOwnerToken() async throws {

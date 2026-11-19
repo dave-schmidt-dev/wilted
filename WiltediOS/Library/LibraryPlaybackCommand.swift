@@ -301,8 +301,7 @@ extension LibraryAppModel {
     /// revision. A second press while the first is still looking up the file joins it: one attempt.
     @discardableResult
     func playCached(_ row: LibraryRow) async -> LibraryStartOutcome {
-        journal?.note("trigger=ui-play entry=\(row.id.rawValue) title=\"\(row.title.prefix(40))\"")
-        return await startCached(row, kind: .toggle)
+        await startCached(row, kind: .toggle)
     }
 
     /// An explicit play (CarPlay row, Siri): a loaded episode plays and is never paused, also when
@@ -327,6 +326,9 @@ extension LibraryAppModel {
         _ row: LibraryRow, kind: LibraryStartKind, onlyIf: (@MainActor (LibraryPlayer) -> Bool)? = nil
     ) async -> LibraryStartOutcome {
         guard let player = handoffState.player else { return .failed(.playerUnavailable) }
+        // Every start goes through here: toggle is the phone's own row or button, select is the car's
+        // list, Siri, the Watch, a remote play with nothing loaded or Retry, automatic is auto-continue.
+        journal?.note("start-request kind=\(kind) entry=\(row.id.rawValue) title=\"\(row.title.prefix(40))\"")
         let state = commandState
         if let pending = state.pending {
             // The listener's own command always outranks auto-continue.
