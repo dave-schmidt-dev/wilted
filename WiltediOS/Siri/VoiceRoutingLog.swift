@@ -73,9 +73,9 @@ final class VoiceRoutingLog: @unchecked Sendable {
     }
 
     /// Local date and time, so a line can be matched to a moment in a drive.
-    static func stamp(_ date: Date = Date()) -> String {
-        date.formatted(.iso8601.year().month().day().dateSeparator(.dash).time(includingFractionalSeconds: false)
-            .timeZone(separator: .omitted)) + " "
+    static func stamp(_ date: Date = Date(), timeZone: TimeZone = .current) -> String {
+        Date.ISO8601FormatStyle(timeZone: timeZone).year().month().day().dateSeparator(.dash)
+            .time(includingFractionalSeconds: false).format(date) + " "
     }
 
     /// Appends one routing line to the in-memory buffer, writes to disk (keeping the last 50 lines),

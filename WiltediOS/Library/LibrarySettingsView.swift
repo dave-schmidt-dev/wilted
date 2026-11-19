@@ -199,7 +199,7 @@ struct LibrarySettingsView: View {
     private var diagnosticsCard: some View {
         let rows = LibrarySettingsFormat.diagnosticsRows(
             deviceID: model.deviceID, syncDetail: model.syncSummary.detail,
-            voiceLines: VoiceRoutingLog.shared.lines())
+            voiceLines: VoiceRoutingLog.shared.lines().reversed())
         return WiltedSettingsCard(title: LibrarySettingsFormat.diagnosticsTitle) {
             DisclosureGroup(isExpanded: $isDiagnosticsExpanded) {
                 ForEach(rows, id: \.identifier) { row in

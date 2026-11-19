@@ -22,9 +22,9 @@ final class MediaSiriContextTests: XCTestCase {
 
         donations.played(item)
 
-        XCTAssertEqual(donor.interactions.count, 1, "a play from the app must record a SiriKit donation")
-        guard let interaction = donor.interactions.first,
-              let intent = interaction.intent as? INPlayMediaIntent else {
+        XCTAssertEqual(donor.siriKitPlays.count, 1, "a play from the app must record a SiriKit donation")
+        guard let episode = donor.siriKitPlays.first,
+              let intent = SiriKitPlayDonation.interaction(for: episode).intent as? INPlayMediaIntent else {
             XCTFail("expected INPlayMediaIntent donation")
             return
         }
@@ -54,7 +54,7 @@ final class MediaSiriContextTests: XCTestCase {
             donations.played(item)
         }
 
-        XCTAssertTrue(donor.interactions.isEmpty, "a Siri-run play must record no SiriKit donation")
+        XCTAssertTrue(donor.siriKitPlays.isEmpty, "a Siri-run play must record no SiriKit donation")
         XCTAssertTrue(donor.played.isEmpty, "a Siri-run play must record no AppIntents donation")
     }
 

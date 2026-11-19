@@ -225,11 +225,11 @@ struct SendFailingTransport: LibraryTransport {
 @MainActor
 final class VoiceRecordingDonor: IntentDonating {
     private(set) var played: [String] = []
-    private(set) var interactions: [INInteraction] = []
+    private(set) var siriKitPlays: [VoiceEpisode] = []
     private(set) var marks = 0
 
     func donatePlay(of episode: EpisodeEntity) { played.append(episode.id) }
-    func donate(interaction: INInteraction) { interactions.append(interaction) }
+    func donateSiriKitPlay(of episode: VoiceEpisode) { siriKitPlays.append(episode) }
     func donateMarkCompleted() { marks += 1 }
 }
 

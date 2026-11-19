@@ -197,7 +197,7 @@ and `handle` of `PlayMediaIntentHandler`, including requests that resolve to not
 the `INMediaSearch` fields (`mediaType`, `mediaName`, `artistName`, `albumName`, `sortOrder`) and whether
 Siri had already chosen an item. Lines go to the system log (category `VoiceRouting`, public) and the last
 50, each with a local time, are kept in `Application Support/Wilted/voice-routing.log` and shown under
-Settings > Diagnostics with a copy button. The Intents extension has no app group, so its
+Settings > Diagnostics, newest first, with a copy button. The Intents extension has no app group, so its
 `resolveMediaItems` line goes to the system log only. Both targets format lines with `VoiceRoutingLine`.
 
 ## App Selection inputs

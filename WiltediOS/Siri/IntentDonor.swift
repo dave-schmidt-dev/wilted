@@ -9,7 +9,9 @@ import WiltedLibrary
 @MainActor
 protocol IntentDonating: AnyObject {
     func donatePlay(of episode: EpisodeEntity)
-    func donate(interaction: INInteraction)
+    /// The SiriKit form of a play (App Selection learns from it). Must not block the caller: it runs
+    /// while the player publishes `.playing`.
+    func donateSiriKitPlay(of episode: VoiceEpisode)
     func donateMarkCompleted()
 }
 
@@ -21,9 +23,11 @@ final class SystemIntentDonor: IntentDonating {
         IntentDonationManager.shared.donate(intent: intent)
     }
 
-    func donate(interaction: INInteraction) {
+    func donateSiriKitPlay(of episode: VoiceEpisode) {
         #if WILTED_SIRI
-        interaction.donate(completion: nil)
+        Task.detached(priority: .utility) {
+            SiriKitPlayDonation.interaction(for: episode).donate(completion: nil)
+        }
         #endif
     }
 
@@ -60,31 +64,7 @@ final class IntentDonor {
         if skippedPlays.remove(item.entryID) != nil { return }
         let episode = VoiceEpisode(id: item.entryID, title: item.title, showTitle: item.showTitle)
         donor.donatePlay(of: EpisodeEntity(episode))
-        let mediaItem = INMediaItem(
-            identifier: episode.id.rawValue,
-            title: episode.title,
-            type: .podcastEpisode,
-            artwork: nil,
-            artist: episode.showTitle
-        )
-        let showContainer = INMediaItem(
-            identifier: nil,
-            title: episode.showTitle,
-            type: .podcastShow,
-            artwork: nil,
-            artist: nil
-        )
-        let intent = INPlayMediaIntent(
-            mediaItems: [mediaItem],
-            mediaContainer: showContainer,
-            playShuffled: nil,
-            playbackRepeatMode: .unknown,
-            resumePlayback: nil,
-            playbackQueueLocation: .unknown,
-            playbackSpeed: nil,
-            mediaSearch: nil
-        )
-        donor.donate(interaction: INInteraction(intent: intent, response: nil))
+        donor.donateSiriKitPlay(of: episode)
     }
 
     /// The pending decisions changed: each decision's id and, for a Mark completed, its entry.
@@ -127,5 +107,21 @@ final class IntentDonor {
                 MainActor.assumeIsolated { self?.decisions(summary, loaded: player?.item?.entryID) }
             },
         ]
+    }
+}
+
+/// Builds the SiriKit interaction for one played episode: the episode as the item, its show as the
+/// container. Pure, so the system donor can build it off the main actor.
+enum SiriKitPlayDonation {
+    static func interaction(for episode: VoiceEpisode) -> INInteraction {
+        let item = INMediaItem(
+            identifier: episode.id.rawValue, title: episode.title, type: .podcastEpisode, artwork: nil,
+            artist: episode.showTitle)
+        let show = INMediaItem(
+            identifier: nil, title: episode.showTitle, type: .podcastShow, artwork: nil, artist: nil)
+        let intent = INPlayMediaIntent(
+            mediaItems: [item], mediaContainer: show, playShuffled: nil, playbackRepeatMode: .unknown,
+            resumePlayback: nil, playbackQueueLocation: .unknown, playbackSpeed: nil, mediaSearch: nil)
+        return INInteraction(intent: intent, response: nil)
     }
 }

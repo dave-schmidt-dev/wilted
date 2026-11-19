@@ -35,7 +35,7 @@ private final class RecordingDonor: IntentDonating {
     private(set) var played: [String] = []
     private(set) var marks = 0
     func donatePlay(of episode: EpisodeEntity) { played.append(episode.id) }
-    func donate(interaction: INInteraction) {}
+    func donateSiriKitPlay(of episode: VoiceEpisode) {}
     func donateMarkCompleted() { marks += 1 }
 }
 
