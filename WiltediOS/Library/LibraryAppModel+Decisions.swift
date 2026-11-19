@@ -108,6 +108,9 @@ struct PendingDecision: Identifiable, Equatable, Sendable {
     var phase: Phase = .awaiting
     /// False until the transport accepted the intent; unsent intents are saved in the outbox and retried.
     var isSent = false
+    /// When the transport accepted this decision during the current launch.
+    var sentAt: Date?
+    var confirmationStart: Date { sentAt ?? intent.createdAt }
     /// A decision the listener did not make (an episode that played to its end): sent and tracked like
     /// any other, but it changes nothing on screen and says nothing on the row; the row follows the Mac.
     var isSilent = false
@@ -383,7 +386,9 @@ extension LibraryAppModel {
         let limit = decisionTiming.confirmationTimeout
         switch decision.phase {
         case .awaiting:
-            if current.timeIntervalSince(decision.intent.createdAt) >= limit { decision.phase = .pendingOnMac }
+            if decision.isSent, current.timeIntervalSince(decision.confirmationStart) >= limit {
+                decision.phase = .pendingOnMac
+            }
             return false
         case let .applied(since): return current.timeIntervalSince(since) >= limit
         case .pendingOnMac: return false
@@ -456,8 +461,11 @@ extension LibraryAppModel {
     private func send(_ decision: PendingDecision) async {
         do {
             try await transport.send(intent: decision.intent)
-            if let index = decisions.firstIndex(where: { $0.id == decision.id }) {
-                decisions[index].isSent = true
+            if let index = decisions.firstIndex(where: { $0.id == decision.id && !$0.isSent }) {
+                var accepted = decisions[index]
+                accepted.sentAt = now()
+                accepted.isSent = true
+                decisions[index] = accepted
             }
             journal?.note("decision-sent \(decision.journalFields)")
         } catch {

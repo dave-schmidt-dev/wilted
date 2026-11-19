@@ -106,7 +106,8 @@ struct OutboxScriptedTransport: LibraryTransport {
 final class LibraryIntentOutboxTests: XCTestCase {
     private let server = InMemoryLibraryServer(writerDeviceID: "mac")
     private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
-    private let now = Date(timeIntervalSince1970: 1_700_000_000)
+    private let clock = DecisionClock()
+    private var now: Date { clock.now }
     private let feed = URL(string: "https://feeds.example.com/show.xml")!
     private var versions: [LibraryRecordKey: UInt64] = [:]
     private var localSeq: UInt64 = 0
@@ -157,16 +158,17 @@ final class LibraryIntentOutboxTests: XCTestCase {
     }
 
     /// One launch of the app: a new model over the same mirror and outbox.
-    private func launch(_ script: OutboxSendScript, outbox: URL? = nil) -> LibraryAppModel {
-        let now = now
+    private func launch(_ script: OutboxSendScript, outbox: URL? = nil,
+                        timing: LibraryDecisionTiming = LibraryDecisionTiming(confirmationTimeout: 60)) -> LibraryAppModel {
+        let clock = clock
         return LibraryAppModel(
             transport: OutboxScriptedTransport(
                 base: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
                 script: script),
             store: FileLibraryStore(url: mirrorURL), deviceID: "phone",
-            decisionTiming: LibraryDecisionTiming(confirmationTimeout: 60),
+            decisionTiming: timing,
             preferences: UserDefaults(suiteName: suite)!, outboxURL: outbox ?? outboxURL,
-            now: { now }, timeZone: TimeZone(identifier: "UTC")!)
+            now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
     }
 
     /// The intent ids on disk now.
@@ -202,6 +204,51 @@ final class LibraryIntentOutboxTests: XCTestCase {
         XCTAssertFalse(model.isDurablyQueued(pending.id))
         let onServer = try await serverIntentIDs()
         XCTAssertEqual(onServer, [pending.id])
+    }
+
+    func testDelayedSendGetsNinetySecondsForMacConfirmation() async throws {
+        try await seed()
+        let script = OutboxSendScript(.hold)
+        let model = launch(script, timing: LibraryDecisionTiming())
+        await model.refresh()
+        let entryID = id("b")
+        let send = Task { await model.decide(.removeFromLarder, entryID: entryID) }
+        let started = await waitOnClock { script.attempts.count == 1 }
+        XCTAssertTrue(started)
+        clock.advance(120)
+        script.release()
+        await send.value
+        XCTAssertEqual(model.pendingDecision(for: entryID)?.isSent, true)
+
+        clock.advance(89)
+        await model.resolveDecisions(outcomes: [])
+        XCTAssertEqual(model.decisionStatus(for: entryID), .waiting)
+        clock.advance(2)
+        await model.resolveDecisions(outcomes: [])
+        XCTAssertEqual(model.decisionStatus(for: entryID), .pendingOnMac)
+    }
+
+    func testRestoredDecisionGetsNinetySecondsFromSendForMacConfirmation() async throws {
+        try await seed()
+        let entryID = id("b")
+        let first = launch(OutboxSendScript(.fail))
+        await first.refresh()
+        await first.decide(.removeFromLarder, entryID: entryID)
+
+        clock.advance(120)
+        let restored = launch(OutboxSendScript(.deliver), timing: LibraryDecisionTiming())
+        await restored.loadLocalState()
+        await restored.refresh()
+        // The relaunched app sends the saved decision 120 s after the tap; the wait starts now.
+        XCTAssertEqual(restored.pendingDecision(for: entryID)?.isSent, true)
+        await restored.resolveDecisions(outcomes: [])
+        XCTAssertEqual(restored.decisionStatus(for: entryID), .waiting)
+        clock.advance(89)
+        await restored.resolveDecisions(outcomes: [])
+        XCTAssertEqual(restored.decisionStatus(for: entryID), .waiting)
+        clock.advance(1)
+        await restored.resolveDecisions(outcomes: [])
+        XCTAssertEqual(restored.decisionStatus(for: entryID), .pendingOnMac)
     }
 
     // MARK: replay after relaunch, no duplicate
