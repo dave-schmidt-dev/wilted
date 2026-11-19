@@ -37,6 +37,8 @@ extension WiltedMacModelTests {
             preferences: WiltedMacTestPreferences.ephemeral()
         )
         addTeardownBlock { await model.close() }
+        // A server error is tried again after a wait; no test waits it out.
+        model.prepareAgainRetrySleep = { _ in }
         model.startStoreBootstrap()
         await model.waitForStoreBootstrap()
         return CutFixture(model: model, store: store, episodeID: episodeID, directory: directory, enclosure: enclosure)
@@ -170,6 +172,101 @@ extension WiltedMacModelTests {
         let after = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
         XCTAssertEqual(WiltedMacModel.larderGroup(for: after), .playable)
         XCTAssertTrue(stagedFiles(under: fixture.directory).isEmpty)
+    }
+
+    func testAServerErrorOnTheOriginalIsTriedAgainAndTheRunGoesOn() async throws {
+        let attempts = DownloadAttemptCounter()
+        let runner = BlockingPodcastPipelineRunner()
+        let body = Data("the original, second time lucky".utf8)
+        let fixture = try await cutFixture("server-error-once", transport: { enclosure in
+            ServerErrorThenPodcastDownloadTransport(
+                enclosureURL: enclosure, statusCode: 500, failures: 1, counter: attempts,
+                events: [
+                    .response(.init(url: enclosure, statusCode: 200, mediaType: "audio/mpeg",
+                                    expectedByteCount: Int64(body.count))),
+                    .data(body),
+                ])
+        }, runner: runner)
+        let model = fixture.model
+        var waits: [TimeInterval] = []
+        model.prepareAgainRetrySleep = { waits.append($0) }
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == fixture.episodeID.rawValue })
+
+        model.prepareAgain(episode)
+        try await eventually("the second download to stage the original") {
+            model.prepareAgainRows[episode.id]?.phase == .preparing
+        }
+
+        XCTAssertEqual(attempts.count, 2, "one server error, one good download")
+        XCTAssertEqual(waits, [2])
+        await runner.resume(throwing: PodcastPreparationError.workerUnavailable("test worker refused the run"))
+        await model.waitForPodcastPreparationOperationsForTesting()
+    }
+
+    func testAServerErrorThatPersistsStopsAfterThreeRetriesAndStaysOffered() async throws {
+        let attempts = DownloadAttemptCounter()
+        let fixture = try await cutFixture(
+            "server-error-persists",
+            transport: { CountingFailingPodcastDownloadTransport(enclosureURL: $0, statusCode: 503, counter: attempts) },
+            runner: CancellingPodcastPipelineRunner()
+        )
+        let model = fixture.model
+        var waits: [TimeInterval] = []
+        model.prepareAgainRetrySleep = { waits.append($0) }
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == fixture.episodeID.rawValue })
+
+        model.prepareAgain(episode)
+        await model.waitForPodcastPreparationOperationsForTesting()
+
+        XCTAssertEqual(attempts.count, 4, "the first download and three retries")
+        XCTAssertEqual(waits, [2, 4, 8])
+        XCTAssertEqual(model.prepareAgainRows[episode.id]?.phase,
+                       .note("Could not download the original, so nothing changed"))
+        let after = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
+        XCTAssertTrue(stagedFiles(under: fixture.directory).isEmpty)
+        XCTAssertTrue(model.canPrepareAgain(after), "nothing was decided, so the offer stands")
+    }
+
+    func testAMissingOriginalIsNotTriedAgain() async throws {
+        let attempts = DownloadAttemptCounter()
+        let fixture = try await cutFixture(
+            "not-found",
+            transport: { CountingFailingPodcastDownloadTransport(enclosureURL: $0, statusCode: 404, counter: attempts) },
+            runner: CancellingPodcastPipelineRunner()
+        )
+        let model = fixture.model
+        var waits: [TimeInterval] = []
+        model.prepareAgainRetrySleep = { waits.append($0) }
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == fixture.episodeID.rawValue })
+
+        model.prepareAgain(episode)
+        await model.waitForPodcastPreparationOperationsForTesting()
+
+        XCTAssertEqual(attempts.count, 1, "the server answered that the file is not there")
+        XCTAssertEqual(waits, [])
+        XCTAssertEqual(model.prepareAgainRows[episode.id]?.phase,
+                       .note("Could not download the original, so nothing changed"))
+    }
+
+    func testAStopDuringTheWaitBeforeARetryIsAStopNotAFailure() async throws {
+        let attempts = DownloadAttemptCounter()
+        let fixture = try await cutFixture(
+            "stopped-waiting",
+            transport: { CountingFailingPodcastDownloadTransport(enclosureURL: $0, statusCode: 500, counter: attempts) },
+            runner: CancellingPodcastPipelineRunner()
+        )
+        let model = fixture.model
+        model.prepareAgainRetrySleep = { _ in throw CancellationError() }
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == fixture.episodeID.rawValue })
+
+        model.prepareAgain(episode)
+        await model.waitForPodcastPreparationOperationsForTesting()
+
+        XCTAssertEqual(attempts.count, 1)
+        XCTAssertNil(model.prepareAgainRows[episode.id], "a stopped run leaves no note")
+        XCTAssertEqual(model.podcastOperationMessage, "Preparation cancelled.")
+        let after = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
+        XCTAssertTrue(model.canPrepareAgain(after))
     }
 
     func testDownloadProgressShowsOnTheRowUntilTheOriginalIsHere() throws {

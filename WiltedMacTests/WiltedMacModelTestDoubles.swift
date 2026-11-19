@@ -322,6 +322,29 @@ struct CountingFailingPodcastDownloadTransport: PodcastDownloadTransporting {
     }
 }
 
+/// Answers with `statusCode` for the first `failures` attempts, then serves
+/// `events`: a host that has a bad moment and recovers.
+struct ServerErrorThenPodcastDownloadTransport: PodcastDownloadTransporting {
+    let enclosureURL: URL
+    let statusCode: Int
+    let failures: Int
+    let counter: DownloadAttemptCounter
+    let events: [PodcastDownloadEvent]
+    func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
+        counter.increment()
+        let failing = counter.count <= failures
+        return AsyncThrowingStream { continuation in
+            if failing {
+                continuation.yield(.response(.init(url: enclosureURL, statusCode: statusCode,
+                                                   mediaType: "audio/mpeg", expectedByteCount: nil)))
+            } else {
+                for event in events { continuation.yield(event) }
+            }
+            continuation.finish()
+        }
+    }
+}
+
 /// A fixed successful event sequence that counts how many times it was asked
 /// for -- used to prove a terminal (non-retryable) failure downstream of a
 /// clean transfer makes exactly one attempt rather than a bounded retry's

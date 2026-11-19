@@ -1,4 +1,5 @@
 import Foundation
+import os
 import WiltedDomain
 import WiltedProducer
 
@@ -162,6 +163,33 @@ extension WiltedMacModel {
 
     // MARK: Run
 
+    /// Fetches the original for a prepare-again run, trying again after a
+    /// server error (HTTP 5xx): a podcast host's bad moment usually passes in
+    /// seconds, and a run that gives up on the first one waits for the listener
+    /// to notice. Bounded like automation's retries (three, the wait doubling
+    /// from two seconds). Every other failure, and a stop during the wait,
+    /// ends the run as before.
+    func stageOriginalRetryingServerErrors(
+        _ coordinator: PodcastDownloadCoordinator, episodeID: ItemID, enclosureURL: URL,
+        onStatus: @escaping @Sendable (PodcastDownloadProgress) -> Void
+    ) async throws -> StagedPodcastAudio {
+        var retry = 0
+        while true {
+            do {
+                return try await coordinator.stageOriginal(
+                    episodeID: episodeID, enclosureURL: enclosureURL, onStatus: onStatus)
+            } catch PodcastDownloadCoordinatorError.invalidResponse(let status?)
+                where (500..<600).contains(status) && retry < WiltedAutomationCoordinator.maximumRetries {
+                retry += 1
+                let delay = WiltedAutomationCoordinator.baseRetryDelay * pow(2, Double(retry - 1))
+                Self.downloadLog.warning(
+                    "prepare-again download got HTTP \(status, privacy: .public): episode=\(episodeID.rawValue, privacy: .public) retry=\(retry, privacy: .public) afterSeconds=\(delay, privacy: .public)"
+                )
+                try await prepareAgainRetrySleep(delay)
+            }
+        }
+    }
+
     /// Runs one admitted preparation and returns the sentence that reports it.
     ///
     /// A cut episode is prepared from a staged copy of its original while the
@@ -205,7 +233,9 @@ extension WiltedMacModel {
             let outcome = try await pipeline.prepareAgain(
                 candidate: again,
                 stage: {
-                    try await coordinator.stageOriginal(episodeID: itemID, enclosureURL: again.enclosureURL) { report in
+                    try await self.stageOriginalRetryingServerErrors(
+                        coordinator, episodeID: itemID, enclosureURL: again.enclosureURL
+                    ) { report in
                         throttle.submit(report) { progress in
                             Task { @MainActor in self.showPrepareAgainDownload(episodeID, progress) }
                         }

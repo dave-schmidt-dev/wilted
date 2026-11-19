@@ -168,6 +168,10 @@ final class WiltedMacModel {
     @ObservationIgnored var prepareAgainRefreshGeneration: UInt64 = 0
     /// What a prepare-again run is saying on its Larder row, by episode id.
     var prepareAgainRows: [String: WiltedMacPrepareAgainRow] = [:]
+    /// The wait before a prepare-again download is tried again after a server error.
+    @ObservationIgnored var prepareAgainRetrySleep: @MainActor (TimeInterval) async throws -> Void = {
+        try await Task.sleep(for: .seconds($0))
+    }
     /// The confirmation before re-preparing every episode that kept its ads.
     var isConfirmingPrepareAgainAll = false
     /// Asked once when a newly added feed looks paid or ad-free, before it is saved.
