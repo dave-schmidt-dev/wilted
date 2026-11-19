@@ -5,7 +5,7 @@ import OSLog
 /// Builds and keeps voice routing records.
 ///
 /// Keeps the last 50 voice routing lines in a small file in the app's own container and logs each
-/// line through the system log with public privacy.
+/// line through the system log (readable there only in Development device builds).
 final class VoiceRoutingLog: @unchecked Sendable {
     static let maxLines = 50
     static let fileName = "voice-routing.log"
@@ -79,7 +79,7 @@ final class VoiceRoutingLog: @unchecked Sendable {
     }
 
     /// Appends one routing line to the in-memory buffer, writes to disk (keeping the last 50 lines),
-    /// and logs through OSLog with public privacy.
+    /// and sends it to the system log.
     func log(_ line: String) {
         lock.withLock {
             buffer.append(line)
@@ -91,7 +91,7 @@ final class VoiceRoutingLog: @unchecked Sendable {
                 try? text.write(to: fileURL, atomically: true, encoding: .utf8)
             }
         }
-        Self.logger.info("\(line, privacy: .public)")
+        VoiceRoutingLine.emit(line, to: Self.logger)
     }
 
     /// The kept lines, oldest first and newest last.

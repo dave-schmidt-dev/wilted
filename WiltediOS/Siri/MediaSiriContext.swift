@@ -56,8 +56,11 @@ final class MediaSiriContext {
     }
 
     func observe(_ model: LibraryAppModel) -> AnyCancellable {
-        model.$queued.combineLatest(model.$media)
-            .sink { [weak self] queued, media in
+        // Until the saved library has loaded the model is empty, and telling Siri "no episodes, no
+        // shows" at every launch would wipe what it knew.
+        model.$queued.combineLatest(model.$media, model.$localStateLoaded)
+            .filter { queued, _, loaded in loaded || !queued.isEmpty }
+            .sink { [weak self] queued, media, _ in
                 MainActor.assumeIsolated {
                     let downloadedCount = queued.filter { media[$0.id] == .onPhone }.count
                     var seen = Set<String>()

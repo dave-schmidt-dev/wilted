@@ -195,7 +195,7 @@ the iOS 26.0 floor) is not used.
 `VoiceRoutingLog` writes one line per voice request: every App Intent (`speak`), and `resolveMediaItems`
 and `handle` of `PlayMediaIntentHandler`, including requests that resolve to nothing. A SiriKit line carries
 the `INMediaSearch` fields (`mediaType`, `mediaName`, `artistName`, `albumName`, `sortOrder`) and whether
-Siri had already chosen an item. Lines go to the system log (category `VoiceRouting`, public) and the last
+Siri had already chosen an item. Lines go to the system log (category `VoiceRouting`; readable there only in Development device builds, redacted in every other build) and the last
 50, each with a local time, are kept in `Application Support/Wilted/voice-routing.log` and shown under
 Settings > Diagnostics, newest first, with a copy button. The Intents extension has no app group, so its
 `resolveMediaItems` line goes to the system log only. Both targets format lines with `VoiceRoutingLine`.

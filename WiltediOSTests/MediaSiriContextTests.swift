@@ -121,6 +121,8 @@ final class MediaSiriContextTests: XCTestCase {
         let context = MediaSiriContext(service: service)
         let cancellable = MediaSiriContext.observe(model, context: context)
         defer { cancellable.cancel() }
+        XCTAssertNil(service.latestLibraryCount, "nothing is sent before the saved library loads")
+        XCTAssertNil(service.latestVocabulary, "an empty model at launch does not wipe Siri's show names")
 
         let showAID = try ItemID(rawValue: "show-a")
         let showBID = try ItemID(rawValue: "show-b")

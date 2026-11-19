@@ -282,6 +282,8 @@ targets:
         # extension's App ID and profile; the app keeps its manual "Wilted iOS Development" profile.
         Development:
           CODE_SIGN_ENTITLEMENTS: WiltediOSIntents/WiltediOSIntents.entitlements
+          # Lets the extension's voice routing lines be read in Console on a Development build.
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_SIRI"
           CODE_SIGN_STYLE: Automatic
           CODE_SIGN_IDENTITY: "Apple Development"
           CODE_SIGNING_ALLOWED: YES

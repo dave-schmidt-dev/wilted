@@ -27,7 +27,7 @@ final class PlayMediaExtensionHandler: NSObject, INPlayMediaIntentHandling {
                 outcome: "notRequired",
                 search: intent.mediaSearch,
                 prechosen: prechosen)
-            Self.logger.info("\(line, privacy: .public)")
+            VoiceRoutingLine.emit(line, to: Self.logger)
             return [.notRequired()]
         }
         let line = Self.siriKitLine(
@@ -35,7 +35,7 @@ final class PlayMediaExtensionHandler: NSObject, INPlayMediaIntentHandling {
             outcome: "success",
             search: intent.mediaSearch,
             prechosen: prechosen)
-        Self.logger.info("\(line, privacy: .public)")
+        VoiceRoutingLine.emit(line, to: Self.logger)
         return items.map { .success(with: $0) }
     }
 
