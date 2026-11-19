@@ -77,7 +77,11 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
 
     public let configuration: Configuration
 
-    public init(configuration: Configuration = .resolved()) {
+    private let retrySleep: @Sendable (Duration) async throws -> Void
+
+    public init(configuration: Configuration = .resolved(),
+                retrySleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.retrySleep = retrySleep
         self.configuration = configuration
     }
 
@@ -89,6 +93,33 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
     }
 
     public func run(
+        request: Data,
+        onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
+    ) async throws -> Data {
+        var attempt = 1
+        while true {
+            do {
+                return try await runOnce(request: request, onProgress: onProgress)
+            } catch let crash as StartupExit {
+                guard attempt < 3 else { throw crash.failure }
+                let delay = Duration.seconds(2 * attempt)
+                Self.logger.warning("Worker exited before reporting progress on attempt \(attempt); retrying")
+                do {
+                    try await retrySleep(delay)
+                    try Task.checkCancellation()
+                } catch is CancellationError {
+                    throw PodcastPreparationError.cancelled
+                }
+                attempt += 1
+            }
+        }
+    }
+
+    private struct StartupExit: Error {
+        let failure: PodcastPreparationError
+    }
+
+    private func runOnce(
         request: Data,
         onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> Data {
@@ -221,10 +252,12 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
             let tail = collector.diagnosticTail()
             Self.logDiagnosticTail(tail)
             let suffix = tail.isEmpty ? "" : "; stderr: \(tail)"
-            throw PodcastPreparationError.workerFailed(
+            let failure = PodcastPreparationError.workerFailed(
                 code: "no-output",
                 message: "the worker exited with status \(terminationStatus) and produced no result\(suffix)"
             )
+            if terminationStatus != 0 && !collector.reportedProgress { throw StartupExit(failure: failure) }
+            throw failure
         }
         return result
     }
@@ -306,6 +339,9 @@ final class WorkerOutputCollector: @unchecked Sendable {
     private let lock = NSLock()
     private let readLock = NSLock()
     private var reading = true
+    private var sawProgress = false
+    var reportedProgress: Bool { lock.withLock { sawProgress } }
+
     private var stdoutBuffer = Data()
     private var stderrBuffer = Data()
     private var diagnosticBuffer = Data()
@@ -410,6 +446,7 @@ final class WorkerOutputCollector: @unchecked Sendable {
         guard !line.isEmpty else { return }
         if let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
            let stage = object["stage"] as? String {
+            lock.withLock { sawProgress = true }
             onProgress(PodcastPreparationProgress(stage: stage,
                                                   detail: object["detail"] as? String ?? "",
                                                   fraction: object["fraction"] as? Double,
