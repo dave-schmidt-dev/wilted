@@ -1,10 +1,18 @@
+import Foundation
 @preconcurrency import Intents
+import OSLog
 
 /// Resolves and confirms a "play ..." request in the extension and hands it to the app. An extension's
 /// lifespan is short and it cannot see the downloaded episodes, so it never plays or matches anything:
 /// the app decides which downloaded episode is meant (`PlayMediaIntentHandler`) and plays it through the
 /// shared player, started in the background by `.handleInApp` (Apple: media playback belongs in the app).
 final class PlayMediaExtensionHandler: NSObject, INPlayMediaIntentHandling {
+    private static let logger = Logger(subsystem: "com.zerodelta.wilted", category: "VoiceRouting")
+
+    static func siriKitLine(path: String, outcome: String, search: INMediaSearch?, prechosen: Bool) -> String {
+        VoiceRoutingLine.siriKit(path: path, outcome: outcome, search: search, prechosen: prechosen)
+    }
+
     /// What Siri already chose, kept as is; nil when nothing was chosen and the app must match the search.
     static func chosenItems(for intent: INPlayMediaIntent) -> [INMediaItem]? {
         guard let items = intent.mediaItems, !items.isEmpty else { return nil }
@@ -12,7 +20,22 @@ final class PlayMediaExtensionHandler: NSObject, INPlayMediaIntentHandling {
     }
 
     func resolveMediaItems(for intent: INPlayMediaIntent) async -> [INPlayMediaMediaItemResolutionResult] {
-        guard let items = Self.chosenItems(for: intent) else { return [.notRequired()] }
+        let prechosen = intent.mediaItems?.first?.identifier != nil
+        guard let items = Self.chosenItems(for: intent) else {
+            let line = Self.siriKitLine(
+                path: "PlayMediaExtensionHandler.resolveMediaItems",
+                outcome: "notRequired",
+                search: intent.mediaSearch,
+                prechosen: prechosen)
+            Self.logger.info("\(line, privacy: .public)")
+            return [.notRequired()]
+        }
+        let line = Self.siriKitLine(
+            path: "PlayMediaExtensionHandler.resolveMediaItems",
+            outcome: "success",
+            search: intent.mediaSearch,
+            prechosen: prechosen)
+        Self.logger.info("\(line, privacy: .public)")
         return items.map { .success(with: $0) }
     }
 

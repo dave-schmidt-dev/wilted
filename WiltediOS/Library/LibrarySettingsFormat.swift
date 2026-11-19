@@ -73,7 +73,17 @@ enum LibrarySettingsFormat {
     static let deviceIdentifier = "wilted-library-settings-device-id"
     static let syncDetailIdentifier = "wilted-library-settings-sync-detail"
     static let syncDiagnosticsIdentifier = "wilted-library-settings-sync-diagnostics"
+    static let voiceRoutingLogIdentifier = "wilted-library-settings-voice-routing-log"
     static let copyDeviceIDLabel = "Copy device ID"
+    static let copyVoiceRoutingLogLabel = "Copy voice routing log"
+
+    /// Formats the voice routing lines as a diagnostics row.
+    static func voiceRoutingRow(lines: [String]) -> SettingsRow {
+        let text = lines.isEmpty ? "None" : lines.joined(separator: "\n")
+        return SettingsRow(
+            label: "Voice routing", value: text, symbol: "waveform",
+            identifier: voiceRoutingLogIdentifier, isCopyable: true, wrapsText: true)
+    }
 
     /// One settings row, described outside the view so which card holds the device ID and whether it
     /// is copyable is testable without hosting the sheet (CI-7).
@@ -105,8 +115,10 @@ enum LibrarySettingsFormat {
     }
 
     /// The collapsed Diagnostics disclosure: the device ID, copyable, plus the sync detail the sync
-    /// card keeps out of the way unless the row reports an error (CI-7).
-    static func diagnosticsRows(deviceID: String, syncDetail: String?) -> [SettingsRow] {
+    /// card keeps out of the way unless the row reports an error (CI-7), and the voice routing log.
+    static func diagnosticsRows(
+        deviceID: String, syncDetail: String?, voiceLines: [String]? = nil
+    ) -> [SettingsRow] {
         var rows = [
             SettingsRow(
                 label: "Device", value: deviceID, symbol: "iphone", identifier: deviceIdentifier,
@@ -116,6 +128,9 @@ enum LibrarySettingsFormat {
             rows.append(SettingsRow(
                 label: "Sync detail", value: syncDetail, symbol: "arrow.triangle.2.circlepath",
                 identifier: syncDetailIdentifier, wrapsText: true))
+        }
+        if let voiceLines {
+            rows.append(voiceRoutingRow(lines: voiceLines))
         }
         return rows
     }

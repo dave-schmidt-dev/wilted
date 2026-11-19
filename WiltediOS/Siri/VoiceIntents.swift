@@ -90,8 +90,9 @@ struct EpisodeEntityQuery: EntityStringQuery {
 
 /// Runs `command` through the shared runner and speaks the planner's short line.
 @MainActor
-func speak(_ command: VoiceCommand) async throws -> some IntentResult & ProvidesDialog {
+func speak(_ command: VoiceCommand, path: String) async throws -> some IntentResult & ProvidesDialog {
     let line = await VoiceCommandRunner.run(command, on: await VoiceRuntime.target())
+    VoiceRoutingLog.shared.logAppIntent(path: path, command: "\(command)", outcome: line)
     return .result(dialog: IntentDialog(stringLiteral: line))
 }
 
@@ -102,7 +103,7 @@ struct PlayNextEpisodeIntent: AudioPlaybackIntent {
     @Parameter(title: "Show") var show: ShowEntity?
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        try await speak(.playNext(show: show?.id))
+        try await speak(.playNext(show: show?.id), path: "PlayNextEpisodeIntent.perform")
     }
 }
 
@@ -113,7 +114,7 @@ struct PlayEpisodeIntent: AudioPlaybackIntent {
     @Parameter(title: "Episode") var episode: EpisodeEntity
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        try await speak(.playEpisodeByID(try ItemID(rawValue: episode.id)))
+        try await speak(.playEpisodeByID(try ItemID(rawValue: episode.id)), path: "PlayEpisodeIntent.perform")
     }
 }
 
@@ -125,49 +126,65 @@ struct PlayFirstEpisodeIntent: AudioPlaybackIntent {
     @Parameter(title: "Show") var show: ShowEntity?
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        try await speak(.playFirst(show: show?.id))
+        try await speak(.playFirst(show: show?.id), path: "PlayFirstEpisodeIntent.perform")
     }
 }
 
 struct PauseEpisodeIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Pause"
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.pause) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.pause, path: "PauseEpisodeIntent.perform")
+    }
 }
 
 struct ResumeEpisodeIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Resume"
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.resume) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.resume, path: "ResumeEpisodeIntent.perform")
+    }
 }
 
 struct SkipForwardIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Skip forward"
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.skipForward) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.skipForward, path: "SkipForwardIntent.perform")
+    }
 }
 
 struct SkipBackIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Skip back"
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.skipBack) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.skipBack, path: "SkipBackIntent.perform")
+    }
 }
 
 struct RestartEpisodeIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Restart this episode"
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.restart) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.restart, path: "RestartEpisodeIntent.perform")
+    }
 }
 
 struct MarkCompletedIntent: AppIntent {
     static let title: LocalizedStringResource = "Mark this episode completed"
 
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.markCompleted) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.markCompleted, path: "MarkCompletedIntent.perform")
+    }
 }
 
 struct WhatsPlayingIntent: AppIntent {
     static let title: LocalizedStringResource = "What's playing"
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.whatsPlaying) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.whatsPlaying, path: "WhatsPlayingIntent.perform")
+    }
 }
 
 struct ListDownloadedIntent: AppIntent {
     static let title: LocalizedStringResource = "List downloaded episodes"
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.listDownloaded) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.listDownloaded, path: "ListDownloadedIntent.perform")
+    }
 }
 
 /// The phrases Siri recognizes with no setup. Every phrase names the app, as App Shortcuts require,

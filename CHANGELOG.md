@@ -21,6 +21,8 @@ All notable changes to this project are documented in this file.
 - The Mac sidebar now says "Library changes sent …" and the iPhone says "Mac last sent library changes …", instead of "Sent to devices" and "Mac last published". The time covers library changes only; playback positions sync every round.
 
 ### Added
+- iPhone: Settings > Diagnostics now lists the last 50 voice requests (time, which Siri path answered, what Siri asked for, and the result), with a copy button. Requests Wilted turned down are listed too.
+- iPhone: Wilted now tells Siri which episodes you play, how many are downloaded and what your shows are called, so Siri has what Apple asks for to pick Wilted for a spoken play request that does not name the app. Not yet checked in a car.
 - The iPhone Larder has a quiet note under the list that says what a swipe does, one line for each direction: "Swipe right: Mark completed or Remove from Larder" and "Swipe left: Play or Download". It lists only the actions the episodes shown have.
 - The Mac has an Activity popover (click the sidebar's sync line) that shows what the Mac is doing in the background, including how many of the episodes it uploads ahead of time are already in iCloud.
 - The iPhone Larder's Sort menu has Mac order: the list, CarPlay, Siri and the Watch follow the Mac Larder's order as last synced, and the next episode is picked by the Mac's rule. Play order stays the default; the other sorts stay display-only.

@@ -101,6 +101,31 @@ final class PlayMediaIntentTests: XCTestCase {
         XCTAssertEqual(none.code, .failure)
     }
 
+    func testSiriKitRequestResolvingToNothingWritesVoiceRoutingLineWithSearchFields() async throws {
+        VoiceRoutingLog.shared.clear()
+        _ = install([])
+        let mediaSearch = search(
+            type: .podcastEpisode, sort: .newest, name: "Missing Episode", artist: "Unknown Artist")
+        let request = intent(search: mediaSearch)
+        let resolved = await PlayMediaIntentHandler.resolvedEpisode(for: request)
+        XCTAssertNil(resolved)
+        let handler = PlayMediaIntentHandler()
+        let results = await handler.resolveMediaItems(for: request)
+        XCTAssertEqual(results.count, 1)
+
+        let lines = VoiceRoutingLog.shared.lines()
+        XCTAssertFalse(lines.isEmpty, "a SiriKit request resolving to nothing must write a voice routing line")
+        guard let line = lines.last else { return }
+        XCTAssertTrue(line.contains("PlayMediaIntentHandler.resolveMediaItems"), "line must contain the path")
+        XCTAssertTrue(line.contains("outcome=unsupported"), "line must contain the outcome")
+        XCTAssertTrue(line.contains("mediaType=podcastEpisode"), "line must contain mediaType")
+        XCTAssertTrue(line.contains("mediaName=Missing Episode"), "line must contain mediaName")
+        XCTAssertTrue(line.contains("artistName=Unknown Artist"), "line must contain artistName")
+        XCTAssertTrue(line.contains("albumName="), "line must contain albumName")
+        XCTAssertTrue(line.contains("sortOrder=newest"), "line must contain sortOrder")
+        XCTAssertTrue(line.contains("prechosen=false"), "line must contain prechosen status")
+    }
+
     func testResolveReturnsOneResultAndNeverStartsPlayback() async throws {
         let target = install([try episode("a", "Gold Rush", "Planet Money")])
         let results = await PlayMediaIntentHandler().resolveMediaItems(for: intent(search: search(name: "Gold Rush")))

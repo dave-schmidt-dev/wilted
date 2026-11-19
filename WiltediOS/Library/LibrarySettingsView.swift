@@ -198,7 +198,8 @@ struct LibrarySettingsView: View {
     /// collapsed; the device ID is still one tap and a copy away (CI-7).
     private var diagnosticsCard: some View {
         let rows = LibrarySettingsFormat.diagnosticsRows(
-            deviceID: model.deviceID, syncDetail: model.syncSummary.detail)
+            deviceID: model.deviceID, syncDetail: model.syncSummary.detail,
+            voiceLines: VoiceRoutingLog.shared.lines())
         return WiltedSettingsCard(title: LibrarySettingsFormat.diagnosticsTitle) {
             DisclosureGroup(isExpanded: $isDiagnosticsExpanded) {
                 ForEach(rows, id: \.identifier) { row in
@@ -228,7 +229,10 @@ struct LibrarySettingsView: View {
 
     /// One described settings row: the copy button rides along when the value should be copyable.
     private func settingsRow(_ row: LibrarySettingsFormat.SettingsRow) -> some View {
-        iconRow(row.symbol, row.label) {
+        let copyLabel = row.identifier == LibrarySettingsFormat.voiceRoutingLogIdentifier
+            ? LibrarySettingsFormat.copyVoiceRoutingLogLabel
+            : LibrarySettingsFormat.copyDeviceIDLabel
+        return iconRow(row.symbol, row.label) {
             Spacer(minLength: 0)
             Text(row.value).wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -248,7 +252,7 @@ struct LibrarySettingsView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(LibrarySettingsFormat.copyDeviceIDLabel)
+                .accessibilityLabel(copyLabel)
                 .accessibilityIdentifier("\(row.identifier)-copy")
             }
         }

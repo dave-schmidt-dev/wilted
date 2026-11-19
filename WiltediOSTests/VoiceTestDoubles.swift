@@ -1,5 +1,7 @@
+import AppIntents
 import CryptoKit
 import Foundation
+@preconcurrency import Intents
 import WiltedDomain
 import WiltedLibrary
 import WiltedPlayback
@@ -216,4 +218,34 @@ struct SendFailingTransport: LibraryTransport {
     func removeTranscript(entryID: ItemID) async throws { try await base.removeTranscript(entryID: entryID) }
     func commitFetchedState(_ token: LibraryChangeToken?) async throws { try await base.commitFetchedState(token) }
     func commitSentState(_ token: LibraryChangeToken?) async throws { try await base.commitSentState(token) }
+}
+
+// MARK: - Siri doubles
+
+@MainActor
+final class VoiceRecordingDonor: IntentDonating {
+    private(set) var played: [String] = []
+    private(set) var interactions: [INInteraction] = []
+    private(set) var marks = 0
+
+    func donatePlay(of episode: EpisodeEntity) { played.append(episode.id) }
+    func donate(interaction: INInteraction) { interactions.append(interaction) }
+    func donateMarkCompleted() { marks += 1 }
+}
+
+@MainActor
+final class RecordingMediaSiriContext: MediaSiriContextServing {
+    private(set) var libraryCounts: [Int] = []
+    private(set) var vocabularyLists: [[String]] = []
+
+    var latestLibraryCount: Int? { libraryCounts.last }
+    var latestVocabulary: [String]? { vocabularyLists.last }
+
+    func setNumberOfLibraryItems(_ count: Int) {
+        libraryCounts.append(count)
+    }
+
+    func setVocabularyStrings(_ showTitles: [String]) {
+        vocabularyLists.append(showTitles)
+    }
 }

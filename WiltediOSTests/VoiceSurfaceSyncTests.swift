@@ -2,6 +2,7 @@ import AppIntents
 import Foundation
 import WiltedDomain
 import WiltedLibrary
+@preconcurrency import Intents
 import XCTest
 @testable import WiltediOS
 
@@ -34,6 +35,7 @@ private final class RecordingDonor: IntentDonating {
     private(set) var played: [String] = []
     private(set) var marks = 0
     func donatePlay(of episode: EpisodeEntity) { played.append(episode.id) }
+    func donate(interaction: INInteraction) {}
     func donateMarkCompleted() { marks += 1 }
 }
 

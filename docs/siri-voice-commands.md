@@ -190,6 +190,24 @@ the iOS 26.0 floor) is not used.
   A play or mark Siri itself ran is skipped (the system already counted it), and a decision restored at launch
   is not donated (nothing is loaded then).
 
+## Voice routing log
+
+`VoiceRoutingLog` writes one line per voice request: every App Intent (`speak`), and `resolveMediaItems`
+and `handle` of `PlayMediaIntentHandler`, including requests that resolve to nothing. A SiriKit line carries
+the `INMediaSearch` fields (`mediaType`, `mediaName`, `artistName`, `albumName`, `sortOrder`) and whether
+Siri had already chosen an item. Lines go to the system log (category `VoiceRouting`, public) and the last
+50, each with a local time, are kept in `Application Support/Wilted/voice-routing.log` and shown under
+Settings > Diagnostics with a copy button. The Intents extension has no app group, so its
+`resolveMediaItems` line goes to the system log only. Both targets format lines with `VoiceRoutingLine`.
+
+## App Selection inputs
+
+Apple's App Selection guidance (written with music apps as its examples) lists inputs that help Siri choose an app when a spoken media request does not name one. Wilted supplies these three, in builds that carry the Siri entitlement (`WILTED_SIRI`). Whether they change routing in the car is not yet verified on a device:
+
+1. **Donations.** Every episode playback that starts from the app or the car list donates an `INInteraction(intent: INPlayMediaIntent)` with the episode as `INMediaItem` (type `.podcastEpisode`, artist = show title) and the show as `mediaContainer` (type `.podcastShow`). Plays initiated by Siri are skipped to avoid double-counting. `deleteAllSearchableItems` is never called anywhere because Apple documents that it deletes donated interactions.
+2. **Library count.** `MediaSiriContext` sets `INMediaUserContext.numberOfLibraryItems` to the count of episodes downloaded on the phone and calls `becomeCurrent()`.
+3. **Show vocabulary.** `MediaSiriContext` registers the current show titles with `INVocabulary.shared().setVocabularyStrings(showTitles, of: .mediaShowTitle)` so Siri recognizes the user's podcast shows when spoken. Both context signals refresh whenever the library queue or media states change.
+
 ## App Shortcut phrases (9 of 10)
 
 Every phrase names the app, none starts with pause, resume, continue, stop or skip, and none stands in

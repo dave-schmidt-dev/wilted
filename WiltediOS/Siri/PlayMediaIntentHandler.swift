@@ -80,7 +80,20 @@ final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling {
     }
 
     func resolveMediaItems(for intent: INPlayMediaIntent) async -> [INPlayMediaMediaItemResolutionResult] {
-        guard let episode = await Self.resolvedEpisode(for: intent) else { return [.unsupported()] }
+        let prechosen = intent.mediaItems?.first?.identifier != nil
+        guard let episode = await Self.resolvedEpisode(for: intent) else {
+            VoiceRoutingLog.shared.logSiriKit(
+                path: "PlayMediaIntentHandler.resolveMediaItems",
+                outcome: "unsupported",
+                search: intent.mediaSearch,
+                prechosen: prechosen)
+            return [.unsupported()]
+        }
+        VoiceRoutingLog.shared.logSiriKit(
+            path: "PlayMediaIntentHandler.resolveMediaItems",
+            outcome: "success",
+            search: intent.mediaSearch,
+            prechosen: prechosen)
         let item = INMediaItem(
             identifier: episode.id.rawValue, title: episode.title, type: .podcastEpisode, artwork: nil,
             artist: episode.showTitle)
@@ -88,9 +101,20 @@ final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling {
     }
 
     func handle(intent: INPlayMediaIntent) async -> INPlayMediaIntentResponse {
+        let prechosen = intent.mediaItems?.first?.identifier != nil
         guard let episode = await Self.resolvedEpisode(for: intent), await PlayMediaCore.play(episode.id) else {
+            VoiceRoutingLog.shared.logSiriKit(
+                path: "PlayMediaIntentHandler.handle",
+                outcome: "failure",
+                search: intent.mediaSearch,
+                prechosen: prechosen)
             return INPlayMediaIntentResponse(code: .failure, userActivity: nil)
         }
+        VoiceRoutingLog.shared.logSiriKit(
+            path: "PlayMediaIntentHandler.handle",
+            outcome: "success",
+            search: intent.mediaSearch,
+            prechosen: prechosen)
         return INPlayMediaIntentResponse(code: .success, userActivity: nil)
     }
 }

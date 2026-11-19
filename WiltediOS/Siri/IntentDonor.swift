@@ -1,6 +1,7 @@
 import AppIntents
 import Combine
 import Foundation
+@preconcurrency import Intents
 import WiltedDomain
 import WiltedLibrary
 
@@ -8,6 +9,7 @@ import WiltedLibrary
 @MainActor
 protocol IntentDonating: AnyObject {
     func donatePlay(of episode: EpisodeEntity)
+    func donate(interaction: INInteraction)
     func donateMarkCompleted()
 }
 
@@ -17,6 +19,12 @@ final class SystemIntentDonor: IntentDonating {
         let intent = PlayEpisodeIntent()
         intent.episode = episode
         IntentDonationManager.shared.donate(intent: intent)
+    }
+
+    func donate(interaction: INInteraction) {
+        #if WILTED_SIRI
+        interaction.donate(completion: nil)
+        #endif
     }
 
     func donateMarkCompleted() {
@@ -52,6 +60,31 @@ final class IntentDonor {
         if skippedPlays.remove(item.entryID) != nil { return }
         let episode = VoiceEpisode(id: item.entryID, title: item.title, showTitle: item.showTitle)
         donor.donatePlay(of: EpisodeEntity(episode))
+        let mediaItem = INMediaItem(
+            identifier: episode.id.rawValue,
+            title: episode.title,
+            type: .podcastEpisode,
+            artwork: nil,
+            artist: episode.showTitle
+        )
+        let showContainer = INMediaItem(
+            identifier: nil,
+            title: episode.showTitle,
+            type: .podcastShow,
+            artwork: nil,
+            artist: nil
+        )
+        let intent = INPlayMediaIntent(
+            mediaItems: [mediaItem],
+            mediaContainer: showContainer,
+            playShuffled: nil,
+            playbackRepeatMode: .unknown,
+            resumePlayback: nil,
+            playbackQueueLocation: .unknown,
+            playbackSpeed: nil,
+            mediaSearch: nil
+        )
+        donor.donate(interaction: INInteraction(intent: intent, response: nil))
     }
 
     /// The pending decisions changed: each decision's id and, for a Mark completed, its entry.

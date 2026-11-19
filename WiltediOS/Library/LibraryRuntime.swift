@@ -101,6 +101,7 @@ final class LibraryRuntime {
         attachPushHandler()
         player.apply(settings.playback)
         ShortcutParameterRefresher.observe(model).store(in: &subscriptions)
+        MediaSiriContext.observe(model).store(in: &subscriptions)
         subscriptions.insert(SpotlightIndexer.observe(model))
         IntentDonor.shared.observe(model, player).forEach { subscriptions.insert($0) }
         settings.objectWillChange

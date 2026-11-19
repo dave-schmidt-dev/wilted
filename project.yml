@@ -268,6 +268,8 @@ targets:
       - path: WiltediOSIntents
         excludes:
           - "*.entitlements"
+      # The routing line format is shared with the app, so both logs read the same.
+      - path: WiltediOS/Siri/VoiceRoutingLine.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.intents
@@ -406,6 +408,7 @@ targets:
         optional: true
       # The extension's handler is plain Intents code, so the tests compile it directly.
       - path: WiltediOSIntents/PlayMediaExtensionHandler.swift
+      - path: WiltediOS/Siri/VoiceRoutingLine.swift
     dependencies:
       - target: WiltediOS
       - package: WiltedKit

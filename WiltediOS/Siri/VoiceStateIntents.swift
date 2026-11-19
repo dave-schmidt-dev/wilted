@@ -70,7 +70,9 @@ enum SleepTimerOption: Int, AppEnum, CaseIterable {
 struct TimeLeftIntent: AppIntent {
     static let title: LocalizedStringResource = "How much is left"
     static let description = IntentDescription("Says how much of the playing episode is left, at the current speed.")
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog { try await speak(.timeLeft) }
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.timeLeft, path: "TimeLeftIntent.perform")
+    }
 }
 
 struct SetSpeedIntent: AppIntent {
@@ -80,7 +82,7 @@ struct SetSpeedIntent: AppIntent {
     @Parameter(title: "Speed") var speed: SpeedOption
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        try await speak(.setSpeed(speed.rate))
+        try await speak(.setSpeed(speed.rate), path: "SetSpeedIntent.perform")
     }
 }
 
@@ -92,6 +94,6 @@ struct SleepTimerIntent: AppIntent {
     @Parameter(title: "When", default: .off) var option: SleepTimerOption
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        try await speak(.sleepTimer(option.request))
+        try await speak(.sleepTimer(option.request), path: "SleepTimerIntent.perform")
     }
 }
