@@ -112,6 +112,44 @@ struct LocalLibraryPreparationJournalLookupTests {
         #expect(await store.preparationRunMaximumBatchRows <= 256)
     }
 
+    @Test func keptCutFindsTimelineBeyond64LaterRows() async throws {
+        try await Self.checkKeptCutLookup(sameRevision: true)
+    }
+
+    @Test func keptCutRejectsTimelineFromDifferentRevision() async throws {
+        try await Self.checkKeptCutLookup(sameRevision: false)
+    }
+
+    private static func checkKeptCutLookup(sameRevision: Bool) async throws {
+        let directory = OwnedTestTemp.root.appendingPathComponent("wilted-kept-cut-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: directory.appendingPathComponent("library.sqlite"))
+        let context = ModelContext(store.container)
+        let item = try ItemID(rawValue: "episode")
+        let revision = try RevisionID(rawValue: "ready")
+        let timeline = try PreparationStatus.PreparationTimeline(
+            removed: [try .init(originalStartSeconds: 0, originalEndSeconds: 10, label: "ad", confidence: 1)],
+            kept: [try .init(originalStartSeconds: 10, originalEndSeconds: 60, outputStartSeconds: 0)]
+        )
+        let base: TimeInterval = 1_700_000_000
+        context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(entry(
+            id: "original", itemID: item.rawValue, requestID: "first", at: base,
+            revision: sameRevision ? revision.rawValue : "older", timeline: timeline
+        )))
+        for index in 1...65 {
+            try insert(id: "progress-\(index)", itemID: item.rawValue, requestID: "again",
+                       at: Date(timeIntervalSince1970: base + Double(index)), in: context)
+        }
+        context.insert(try LocalLibrarySchemaV3Models.PreparationRecord(entry(
+            id: "kept", itemID: item.rawValue, requestID: "again", at: base + 66, revision: revision.rawValue
+        )))
+        try context.save()
+
+        let found = try await store.latestPreparationTimeline(for: item, revisionID: revision)
+        #expect(found == (sameRevision ? timeline : nil))
+    }
+
     private static func seedHistory(
         in container: ModelContainer, preserving preservedHistory: PreparationJournalEntry,
         sameRequest: String, siblingID: String
@@ -130,14 +168,17 @@ struct LocalLibraryPreparationJournalLookupTests {
         try context.save()
     }
 
-    private static func entry(id: String, itemID: String, requestID: String, at: TimeInterval) throws -> PreparationJournalEntry {
+    private static func entry(
+        id: String, itemID: String, requestID: String, at: TimeInterval,
+        revision: String? = nil, timeline: PreparationStatus.PreparationTimeline? = nil
+    ) throws -> PreparationJournalEntry {
         PreparationJournalEntry(
             id: id, itemID: try ItemID(rawValue: itemID), requestID: requestID,
             status: try PreparationStatus(
                 stage: .completed, detail: "Synthetic terminal success", fraction: 1, cancellable: false,
                 terminalResult: try PreparationTerminalResult(
-                    outcome: .succeeded, revisionID: RevisionID(rawValue: "revision-\(id)")
-                ), emittedAt: Timestamp(Date(timeIntervalSince1970: at))
+                    outcome: .succeeded, revisionID: RevisionID(rawValue: revision ?? "revision-\(id)")
+                ), emittedAt: Timestamp(Date(timeIntervalSince1970: at)), timeline: timeline
             )
         )
     }
