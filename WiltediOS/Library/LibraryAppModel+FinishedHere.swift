@@ -89,6 +89,7 @@ extension LibraryAppModel {
         let at = now()
         for id in finishedHereMembers(entryID) { finishedHereState.entries[id] = at }
         finishedHereLog.notice("Finished here, not started unasked from now on: \(entryID.rawValue, privacy: .public)")
+        journal?.note("finished-here action=remember entry=\(entryID.rawValue)")
         persistFinishedHere()
     }
 
@@ -97,6 +98,7 @@ extension LibraryAppModel {
         guard !members.isEmpty else { return }
         for id in members { finishedHereState.entries[id] = nil }
         finishedHereLog.notice("No longer held back (\(reason, privacy: .public)): \(entryID.rawValue, privacy: .public)")
+        journal?.note("finished-here action=forget entry=\(entryID.rawValue) reason=\"\(reason)\"")
         persistFinishedHere()
     }
 

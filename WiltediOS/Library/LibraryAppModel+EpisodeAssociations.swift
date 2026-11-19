@@ -98,13 +98,14 @@ extension LibraryAppModel {
     func associatedStartPosition(_ id: ItemID, revision: RevisionID, walked: [ItemID: CachedMedia]? = nil) async -> Double? {
         guard let group = episodeGroup(id) else { return resumeStart(for: id, cachedRevision: revision) }
         let candidates = group.memberIDs.flatMap { [checkpoints[$0], handoffState.ownPositions[$0]].compactMap { $0 } }
-        guard !candidates.isEmpty else { return 0 }
+        guard !candidates.isEmpty else { notePositionSource(nil, position: 0); return 0 }
         let inventory = await continuationInventory(walked: walked)
         let target = HandoffResolver.resumeTarget(observed: candidates, localDeviceID: "",
             entries: Array(decisionContent.entries.values), localRevision: { $0 == id ? inventory.revisions[$0] : nil },
             mediaOffer: { inventory.offers[$0] }, now: now(), clockOffset: handoffState.clockOffset,
             durationSeconds: { self.entryDurations[$0] })
         guard case let .resume(resume) = target, resume.entryID == id, resume.revision == revision else { return nil }
+        notePositionSource(resume.sourceDeviceID, position: resume.positionSeconds)
         return resume.positionSeconds
     }
 

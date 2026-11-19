@@ -41,5 +41,6 @@ extension LibraryPlayer {
     func logRemote(_ command: LibraryRemoteCommand, loaded: Bool, handled: Bool) {
         playerLog.notice(
             "Remote command \(command.logName, privacy: .public): loaded=\(loaded, privacy: .public) result=\(handled ? "handled" : "failed", privacy: .public)")
+        journal?.note("remote-command command=\(command.logName) loaded=\(loaded) result=\(handled ? "handled" : "failed") entry=\(item?.entryID.rawValue ?? "none") position=\(String(format: "%.1f", position))")
     }
 }

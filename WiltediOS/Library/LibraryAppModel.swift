@@ -134,6 +134,8 @@ final class LibraryAppModel: ObservableObject {
     let transport: any LibraryTransport
     /// Per-operation CloudKit counters for diagnostics.
     let operationCounters: CloudKitOperationCounters?
+    /// The durable record of commands, decisions and starts; nil in tests and previews.
+    var journal: LibraryJournal?
 
     /// Current CloudKit operation summary snapshot, or nil when counters are unavailable.
     var operationSummary: CloudKitOperationSummary? {
@@ -239,8 +241,10 @@ final class LibraryAppModel: ObservableObject {
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current,
         throttleSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
-        operationCounters: CloudKitOperationCounters? = nil
+        operationCounters: CloudKitOperationCounters? = nil,
+        journal: LibraryJournal? = nil
     ) {
+        self.journal = journal
         self.throttleSleep = throttleSleep
         self.operationCounters = operationCounters ?? (transport as? CloudKitLibraryTransport)?.counters
         let relay = LibraryThrottleRelay()

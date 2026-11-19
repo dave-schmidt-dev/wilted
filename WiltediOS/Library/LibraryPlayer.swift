@@ -172,6 +172,10 @@ final class LibraryPlayer: ObservableObject {
     var onCommand: (@MainActor () -> Void)?
     /// Why the last start or play failed; nil once one succeeds.
     private(set) var lastFailure: LibraryStartFailure?
+    /// The durable record of commands, starts and stops; nil in tests and previews.
+    var journal: LibraryJournal?
+    /// Where the next start's position came from, set by the model just before it starts one.
+    var pendingPositionSource: String?
 
     init(
         engine: any ListenerAudioEngine,
@@ -254,6 +258,8 @@ final class LibraryPlayer: ObservableObject {
         }
         LibraryPlaybackTrace.shared.record(.loadCalled, token: traceToken)
         self.item = item
+        journal?.note("start entry=\(item.entryID.rawValue) title=\"\(item.title.prefix(40))\" position=\(String(format: "%.1f", start)) autoplay=\(autoplay) position-source=\(pendingPositionSource ?? (start == 0 ? "zero" : "unknown"))")
+        pendingPositionSource = nil
         artworkData = artwork?.loadedData(for: item.artworkURL)
         if artworkData == nil { loadArtwork(for: item) }
         duration = engine.duration
@@ -295,6 +301,7 @@ final class LibraryPlayer: ObservableObject {
         LibraryPlaybackTrace.shared.record(.sessionActivated, token: traceToken)
         if status == .ended { engine.currentTime = 0 } else if holdsOwnPosition { engine.currentTime = position }
         guard engine.play() else { return fail(.engineRefused) }
+        journal?.note("play entry=\(item?.entryID.rawValue ?? "") position=\(String(format: "%.1f", engine.currentTime))")
         LibraryPlaybackTrace.shared.record(.playCalled, token: traceToken)
         lastFailure = nil
         status = .playing
@@ -305,7 +312,7 @@ final class LibraryPlayer: ObservableObject {
         return true
     }
 
-    func pause() {
+    func pause(reason: String = "direct") {
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
@@ -316,6 +323,7 @@ final class LibraryPlayer: ObservableObject {
         stopTicking()
         lastAccrual = nil
         if !holdsOwnPosition { position = min(engine.currentTime, duration) }
+        journal?.note("stop reason=pause pause-reason=\(reason) entry=\(item?.entryID.rawValue ?? "") position=\(String(format: "%.1f", position))")
         if status == .playing { status = .paused }
         publishNowPlaying()
     }
@@ -405,6 +413,7 @@ final class LibraryPlayer: ObservableObject {
         stopTicking()
         lastAccrual = nil
         resumeAfterInterruption = false
+        if let item { journal?.note("stop reason=unload entry=\(item.entryID.rawValue) position=\(String(format: "%.1f", position))") }
         item = nil
         status = .idle
         position = 0
@@ -458,7 +467,7 @@ final class LibraryPlayer: ObservableObject {
         switch event {
         case .interruptionBegan:
             let wasPlaying = isPlaying
-            pause()
+            pause(reason: "interruption")
             resumeAfterInterruption = wasPlaying
         case let .interruptionEnded(shouldResume):
             let resume = resumeAfterInterruption && shouldResume && item != nil
@@ -466,7 +475,7 @@ final class LibraryPlayer: ObservableObject {
             if resume { handle(LibraryRemoteCommand.play) }
         case .routeLost:
             // Never resumes on its own: audio must not jump to the speaker when headphones leave.
-            pause()
+            pause(reason: "routeLost")
         }
     }
 
@@ -499,6 +508,7 @@ final class LibraryPlayer: ObservableObject {
         }
         position = duration
         status = .ended
+        if let item { journal?.note("stop reason=natural-end entry=\(item.entryID.rawValue) position=\(String(format: "%.1f", duration))") }
         publishNowPlaying()
         let holdAtEnd = stopsAfterCurrentItem
         stopsAfterCurrentItem = false
@@ -508,6 +518,7 @@ final class LibraryPlayer: ObservableObject {
     @discardableResult
     func fail(_ failure: LibraryStartFailure) -> Bool {
         playerLog.error("Player failure: \(failure.playerReason, privacy: .public)")
+        journal?.note("stop reason=fail failure=\(failure.playerReason) entry=\(item?.entryID.rawValue ?? "") position=\(String(format: "%.1f", position))")
         _ = cancelRemoteSeeking()
         stopTicking()
         engine.pause()

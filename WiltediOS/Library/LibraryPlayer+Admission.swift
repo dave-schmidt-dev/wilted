@@ -69,8 +69,8 @@ extension LibraryPlayer {
         guard item != nil else { return false }
         switch command {
         case .play: playAdmitted()
-        case .pause: pause()
-        case .togglePlayPause: if isPlaying { pause() } else { _ = playAdmitted() }
+        case .pause: pause(reason: "remote-command")
+        case .togglePlayPause: if isPlaying { pause(reason: "remote-command") } else { _ = playAdmitted() }
         case let .skipForward(seconds): seekAdmitted(to: position + seconds)
         case let .skipBackward(seconds): seekAdmitted(to: position - seconds)
         case let .seek(seconds): seekAdmitted(to: seconds)

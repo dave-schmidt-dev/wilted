@@ -35,6 +35,7 @@ extension LibraryRuntime {
         }
         if model.localStateLoaded, model.remoteResumeRow == nil {
             playerLog.notice("Remote resume \(command.logName, privacy: .public): nothing on this iPhone to resume")
+            journal?.note("remote-resume command=\(command.logName) result=nothing-to-resume")
             return false
         }
         Task { await resumeFromLibrary(for: command) }
@@ -48,14 +49,17 @@ extension LibraryRuntime {
         // loaded or looking up its file keeps the player; this command never replaces it.
         if player.item != nil, player.status != .ended {
             playerLog.notice("Remote resume \(name, privacy: .public): an episode was loaded meanwhile")
+            journal?.note("remote-resume command=\(name) result=already-loaded")
             return
         }
         if case .starting = model.playbackCommand {
             playerLog.notice("Remote resume \(name, privacy: .public): a start is already under way")
+            journal?.note("remote-resume command=\(name) result=start-under-way")
             return
         }
         guard let row = model.remoteResumeRow else {
             playerLog.notice("Remote resume \(name, privacy: .public): nothing on this iPhone to resume")
+            journal?.note("remote-resume command=\(name) result=nothing-to-resume")
             return
         }
         // The same start Siri makes: the system already counted this play, so it is not donated again.
@@ -65,8 +69,10 @@ extension LibraryRuntime {
         }
         if outcome.opensNowPlaying {
             playerLog.notice("Remote resume \(name, privacy: .public): resumed \(row.id.rawValue)")
+            journal?.note("remote-resume command=\(name) result=resumed entry=\(row.id.rawValue) title=\"\(row.title.prefix(40))\"")
         } else {
             playerLog.error("Remote resume \(name, privacy: .public): failed, \(outcome.logName, privacy: .public)")
+            journal?.note("remote-resume command=\(name) result=failed reason=\"\(outcome.logName)\"")
         }
     }
 }

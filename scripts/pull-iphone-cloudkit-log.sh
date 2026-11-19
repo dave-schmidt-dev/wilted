@@ -33,3 +33,25 @@ cat "${files[@]}" | awk '
     lim = ($0 ~ /no limits since launch/) ? "no limits" : "LIMITED"
   }
   END { flush(); printf "launches %d, requests %d, records %d, launches with a limit %d\n", launches, treqs, trecs, limited }'
+
+journal_log="$dest/playback-journal.log"
+journal_files=()
+[[ -f "$journal_log.1" ]] && journal_files+=("$journal_log.1")
+[[ -f "$journal_log" ]] && journal_files+=("$journal_log")
+if [[ ${#journal_files[@]} -gt 0 ]]; then
+  echo ""
+  echo "Playback journal (times are UTC):"
+  cat "${journal_files[@]}" | tail -n 40
+fi
+
+# The Siri request log lives outside Library/Logs; a build older than it has none, which is not an error.
+voice_log="$dest/voice-routing.log"
+timeout 300 xcrun devicectl device copy from --device "$device" \
+  --domain-type appDataContainer --domain-identifier com.zerodelta.wilted.ios \
+  --source "Library/Application Support/Wilted/voice-routing.log" --destination "$voice_log" --quiet 2>/dev/null || true
+
+if [[ -f "$voice_log" ]]; then
+  echo ""
+  echo "Voice routing log (local time):"
+  cat "$voice_log"
+fi

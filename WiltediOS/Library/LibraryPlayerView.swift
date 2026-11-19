@@ -325,7 +325,7 @@ struct LibraryPlayerCompletion: View {
             titleVisibility: .visible, presenting: confirming
         ) { question in
             Button(question.confirmLabel, role: question.isDestructive ? .destructive : nil) { question.confirmed(on: model) }
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) { model.journal?.note("confirmation-cancelled question=\"\(question.title)\"") }
         } message: { question in
             Text(question.message)
         }
@@ -333,7 +333,7 @@ struct LibraryPlayerCompletion: View {
 
     private func button(_ question: LibrarySwipe.Confirmation, _ identifier: String) -> some View {
         let action: LibraryDecisionAction = question.isDestructive ? .removeFromLarder : .markDone
-        return Button { confirming = question } label: {
+        return Button { confirming = question; model.journal?.note("confirmation-asked question=\"\(question.title)\" entry=\(entryID.rawValue)") } label: {
             Label(action.title, systemImage: action.systemImage)
                 .wiltedFont(.body)
                 .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)

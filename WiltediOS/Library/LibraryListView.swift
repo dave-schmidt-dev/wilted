@@ -220,7 +220,7 @@ struct LibraryListView: View {
             titleVisibility: .visible, presenting: confirming
         ) { question in
             Button(question.confirmLabel, role: question.isDestructive ? .destructive : nil) { question.confirmed(on: model) }
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) { model.journal?.note("confirmation-cancelled question=\"\(question.title)\"") }
         } message: { question in
             Text(question.message)
         }
@@ -304,8 +304,12 @@ struct LibraryListView: View {
     /// Download and Play act at once; Remove from Larder and Mark completed ask first.
     private func perform(_ item: LibrarySwipe, row: LibraryRow) {
         switch item {
-        case .removeFromLarder: confirming = .removeFromLarder(row.id)
-        case .markCompleted: confirming = .markCompleted(row.id)
+        case .removeFromLarder:
+            confirming = .removeFromLarder(row.id)
+            model.journal?.note("confirmation-asked question=\"Remove from the Larder?\" entry=\(row.id.rawValue)")
+        case .markCompleted:
+            confirming = .markCompleted(row.id)
+            model.journal?.note("confirmation-asked question=\"Mark completed?\" entry=\(row.id.rawValue)")
         case .download: model.performMediaAction(.request, entryID: row.id)
         case .play, .pause: onPlay?(row)
         }

@@ -165,6 +165,7 @@ extension LibraryAppModel {
             handoffState.lastItemEntry = entryID
             handoffState.unpublished[entryID] = (player.position, stoppedAt)
             saveLoadedPositionLocally(player.position)
+            journal?.note("stop reason=withdraw entry=\(entryID.rawValue) position=\(String(format: "%.1f", player.position))")
             player.invalidateLoadedItem()
         }
         media[entryID] = nil

@@ -281,6 +281,7 @@ extension LibraryAppModel {
         decisions.removeAll { sameLogicalEpisode($0.entryID, entryID) }
         decisionNotices[entryID] = nil
         forgetFinishedHere(entryID, because: "stopped waiting")
+        journal?.note("decision-cancelled entry=\(entryID.rawValue)")
         rebuildRows()
     }
 
@@ -316,7 +317,10 @@ extension LibraryAppModel {
             var settled = false
             if let outcome = outcomes[decision.id] {
                 if outcome.isApplied {
-                    if case .applied = decision.phase {} else { decision.phase = .applied(at: current) }
+                    if case .applied = decision.phase {} else {
+                        decision.phase = .applied(at: current)
+                        journal?.note("decision-applied \(decision.journalFields)")
+                    }
                 } else {
                     if sameLogicalEpisode(undoableCompletion, decision.entryID), !decision.supersededByRestore {
                         undoableCompletion = nil
@@ -327,13 +331,23 @@ extension LibraryAppModel {
                     if decision.finishesEpisode, !decision.supersededByRestore {
                         forgetFinishedHere(decision.entryID, because: "declined by the Mac")
                     }
+                    journal?.note("decision-declined \(decision.journalFields) reason=\"\(outcome.reason ?? "none")\"")
                     settled = true
                 }
             }
-            if !settled { settled = isSettledByFetchedState(decision) }
+            var why = "declined"
+            if !settled { settled = isSettledByFetchedState(decision); why = "library-shows-it" }
             if !settled, !decision.isSent, isContradictedByFetchedState(decision) { decision.phase = .pendingOnMac }
-            if !settled { settled = advance(&decision, at: current) }
-            if settled { changed[decision.id] = .some(nil) } else if decision != original { changed[decision.id] = decision }
+            if !settled { settled = advance(&decision, at: current); why = "applied-wait-over" }
+            if settled {
+                changed[decision.id] = .some(nil)
+                journal?.note("decision-forgotten \(decision.journalFields) why=\(why)")
+            } else if decision != original {
+                changed[decision.id] = decision
+                if decision.phase == .pendingOnMac, original.phase != .pendingOnMac {
+                    journal?.note("decision-pending-on-mac \(decision.journalFields) sent=\(decision.isSent)")
+                }
+            }
         }
         if !changed.isEmpty { decisions = decisions.compactMap { changed[$0.id] ?? $0 } }
         clearUnavailableCompletionRestore()
@@ -412,6 +426,7 @@ extension LibraryAppModel {
         if action == .restore { undoableCompletion = nil }
         if !silent { decisionNotices[entryID] = nil }
         decisions.append(decision)
+        journal?.note("decision-begun action=\(action) entry=\(entryID.rawValue) silent=\(silent)")
         if !silent, action == .removeFromLarder || action == .markDone {
             for id in episodeGroup(entryID)?.memberIDs ?? [entryID] { withdrawQueuePlayback(id) }
             // After the unload: a loaded episode that is not at its end counts as played again.
@@ -439,9 +454,15 @@ extension LibraryAppModel {
 
     /// Sends the intent; a failure leaves it unsent and it is retried on the next settle pass.
     private func send(_ decision: PendingDecision) async {
-        guard (try? await transport.send(intent: decision.intent)) != nil,
-              let index = decisions.firstIndex(where: { $0.id == decision.id }) else { return }
-        decisions[index].isSent = true
+        do {
+            try await transport.send(intent: decision.intent)
+            if let index = decisions.firstIndex(where: { $0.id == decision.id }) {
+                decisions[index].isSent = true
+            }
+            journal?.note("decision-sent \(decision.journalFields)")
+        } catch {
+            journal?.note("decision-send-failed \(decision.journalFields)")
+        }
     }
 
     static func rejectionText(_ reason: String?) -> String {
@@ -452,5 +473,12 @@ extension LibraryAppModel {
         case IntentOutcome.reasonFailed: "The Mac could not apply it."
         default: "The Mac declined it."
         }
+    }
+}
+
+private extension PendingDecision {
+    /// `action=<name> entry=<id>` for a journal line; the action is named as `decision-begun` names it.
+    var journalFields: String {
+        "action=\(String(describing: intent.action).prefix { $0 != "(" }) entry=\(entryID.rawValue)"
     }
 }

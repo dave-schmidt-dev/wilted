@@ -15,6 +15,7 @@ final class LibraryRuntime {
     let model: LibraryAppModel
     let player: LibraryPlayer
     let settings: LibrarySettingsStore
+    let journal: LibraryJournal?
     private let artwork: LibraryArtworkCache?
     private let watchSession: (any WatchSessionProtocol)?
     private let pushHandler: any LibraryPushHandling
@@ -29,14 +30,20 @@ final class LibraryRuntime {
     init(
         model: LibraryAppModel, player: LibraryPlayer, settings: LibrarySettingsStore,
         artwork: LibraryArtworkCache? = nil, watchSession: (any WatchSessionProtocol)? = nil,
-        pushHandler: any LibraryPushHandling = LibraryPushHandler.shared
+        pushHandler: any LibraryPushHandling = LibraryPushHandler.shared,
+        journal: LibraryJournal? = nil
     ) {
+        let activeJournal = journal ?? model.journal ?? player.journal
+        self.journal = activeJournal
+        if model.journal == nil { model.journal = activeJournal }
+        if player.journal == nil { player.journal = activeJournal }
         self.artwork = artwork
         self.watchSession = watchSession.map { WatchSessionActivationGate($0) as (any WatchSessionProtocol) }
         self.pushHandler = pushHandler
         self.model = model
         self.player = player
         self.settings = settings
+        recordLaunch()
         settings.$listSort
             .sink { [weak model] sort in
                 MainActor.assumeIsolated {
@@ -46,12 +53,22 @@ final class LibraryRuntime {
             .store(in: &subscriptions)
     }
 
+    func recordLaunch(bundle: Bundle = .main) {
+        let short = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        journal?.note("launch build=\(short) (\(version))")
+    }
+
     /// The production stack: CloudKit-backed model, real audio engine, `UserDefaults` settings, and
     /// the system Watch session.
     static func live() -> LibraryRuntime {
-        LibraryRuntime(
-            model: LibraryEnvironment.makeModel(), player: .live(), settings: LibrarySettingsStore(),
-            artwork: .shared, watchSession: WatchSession())
+        let journal = LibraryJournal.standard()
+        let model = LibraryEnvironment.makeModel(journal: journal)
+        let player = LibraryPlayer.live()
+        player.journal = journal
+        return LibraryRuntime(
+            model: model, player: player, settings: LibrarySettingsStore(),
+            artwork: .shared, watchSession: WatchSession(), journal: journal)
     }
 
     /// Wires the entry points a launch with no scene still needs: the silent-push handler, the system

@@ -301,7 +301,8 @@ extension LibraryAppModel {
     /// revision. A second press while the first is still looking up the file joins it: one attempt.
     @discardableResult
     func playCached(_ row: LibraryRow) async -> LibraryStartOutcome {
-        await startCached(row, kind: .toggle)
+        journal?.note("trigger=ui-play entry=\(row.id.rawValue) title=\"\(row.title.prefix(40))\"")
+        return await startCached(row, kind: .toggle)
     }
 
     /// An explicit play (CarPlay row, Siri): a loaded episode plays and is never paused, also when

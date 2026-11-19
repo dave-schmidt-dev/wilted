@@ -45,6 +45,13 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
 
     @discardableResult
     func perform(_ action: VoiceAction) async -> VoiceOutcome {
+        model.journal?.note("voice-action action=\(action)")
+        let outcome = await executeAction(action)
+        model.journal?.note("voice-action-outcome action=\(action) outcome=\(outcome)")
+        return outcome
+    }
+
+    private func executeAction(_ action: VoiceAction) async -> VoiceOutcome {
         switch action {
         case .none: return .done
         case let .seekBegin(holdID, direction, entryID, sessionID):

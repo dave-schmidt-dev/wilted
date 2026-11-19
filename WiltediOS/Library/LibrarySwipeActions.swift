@@ -48,6 +48,7 @@ enum LibrarySwipe: Equatable {
 
         /// Sends the decision down the same path as the Larder's other controls, so the Mac applies it.
         @MainActor func confirmed(on model: LibraryAppModel) {
+            model.journal?.note("confirmation-confirmed question=\"\(title)\"")
             switch self {
             case let .removeFromLarder(id): model.performDecision(.removeFromLarder, entryID: id)
             case let .markCompleted(id): model.performDecision(.markDone, entryID: id)

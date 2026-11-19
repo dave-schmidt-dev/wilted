@@ -104,6 +104,7 @@ extension LibraryAppModel {
     /// player directly, so its published state is the source of truth, not the buttons.
     func attachPlayer(_ player: LibraryPlayer) {
         guard handoffState.player !== player else { return }
+        if player.journal == nil { player.journal = journal }
         player.onListened = { [phoneStats] wall, rate in phoneStats.recordListening(wall: wall, rate: rate) }
         player.onFinished = { [weak self] ended, autoPlayNext in
             Task { @MainActor [weak self] in await self?.episodeFinished(ended, autoPlayNext: autoPlayNext) }
@@ -173,8 +174,17 @@ extension LibraryAppModel {
     func resumeStart(for entryID: ItemID, cachedRevision: RevisionID) -> Double {
         let candidates = [checkpoints[entryID], handoffState.ownPositions[entryID]]
             .compactMap { $0 }.filter { $0.record.revision == cachedRevision }
-        return LibraryRowBuilder.resumeSeconds(
-            HandoffResolver.winner(among: candidates), duration: entryDurations[entryID]) ?? 0
+        let winner = HandoffResolver.winner(among: candidates)
+        let position = LibraryRowBuilder.resumeSeconds(winner, duration: entryDurations[entryID]) ?? 0
+        notePositionSource(winner?.record.deviceID, position: position)
+        return position
+    }
+
+    /// Hands the next start's journal line where its position came from: this iPhone's own record,
+    /// another device's (the Mac's), or nothing.
+    func notePositionSource(_ sourceDeviceID: String?, position: Double) {
+        let source = position == 0 || sourceDeviceID == nil ? "zero" : sourceDeviceID == deviceID ? "own" : "other-device"
+        handoffState.player?.pendingPositionSource = source
     }
 
     /// The app moved to the background: publish the current position now, since the next
@@ -427,7 +437,7 @@ extension LibraryAppModel {
             guard let self, let player = self.handoffState.player, self.handoffState.reportedPlaying else { return }
             let state = self.handoffState
             state.reportedPlaying = false
-            player.pause()
+            player.pause(reason: "relinquish")
             state.lastPosition = player.position
             // The coordinator does not publish a paused record on its own after a loss.
             try? await self.coordinator.paused(at: player.position)

@@ -27,7 +27,8 @@ enum LibraryEnvironment {
         defaults: UserDefaults = .standard,
         directory: URL = defaultDirectory(),
         isLiveAllowed: Bool = NSClassFromString("XCTestCase") == nil,
-        transportFactory: TransportFactory? = nil
+        transportFactory: TransportFactory? = nil,
+        journal: LibraryJournal? = nil
     ) -> LibraryAppModel {
         let deviceID = stableDeviceID(defaults: defaults)
         let storeURL = directory.appendingPathComponent("library-state.json")
@@ -52,7 +53,8 @@ enum LibraryEnvironment {
             transport: built.transport, store: store, deviceID: deviceID, recovery: recovery,
             ownPositionsURL: directory.appendingPathComponent("own-positions.json"),
             outboxURL: directory.appendingPathComponent("pending-intents.json"),
-            finishedHereURL: directory.appendingPathComponent("finished-here.json"))
+            finishedHereURL: directory.appendingPathComponent("finished-here.json"),
+            journal: journal)
         if isLiveAllowed { installDirectPath(on: model) }
         return model
     }

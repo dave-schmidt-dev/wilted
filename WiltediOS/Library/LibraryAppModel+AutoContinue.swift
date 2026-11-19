@@ -81,6 +81,9 @@ extension LibraryAppModel {
         guard let player = handoffState.player, player.owns(completion) else { return }
 
         let queuedByID = Dictionary(uniqueKeysWithValues: logicalQueued.map { ($0.id, $0) })
+        for id in suffixIDs where isFinishedHere(id) {
+            journal?.note("auto-continue action=skip entry=\(id.rawValue) reason=finished-here")
+        }
         // The snapshot only prunes candidates that are already gone; a file can still disappear
         // before a candidate's own start lookup, so everyone cached here stays in the walk.
         let candidates = suffixIDs.compactMap { id -> LibraryRow? in
@@ -95,6 +98,7 @@ extension LibraryAppModel {
             // Re-read after every await: a command given while the previous candidate was
             // looked at cancels the whole walk.
             guard let player = handoffState.player, player.owns(completion) else { return }
+            journal?.note("auto-continue action=pick entry=\(candidate.id.rawValue) title=\"\(candidate.title.prefix(40))\"")
             let outcome = await startCached(candidate, kind: .automatic) { player in
                 // The last look before the start itself: the candidate is still queued and
                 // still unfinished, and nothing has been commanded since the end.
