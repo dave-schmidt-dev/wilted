@@ -53,12 +53,12 @@ def main() -> None:
 
     # Kokoro TTS
     try:
-        from mlx_audio.tts.kokoro import KokoroTTS  # type: ignore
+        from speech_stack.tts import DEFAULT_TTS_MODEL, load_tts_model
 
         results.append(
             measure_model(
                 "Kokoro 82M",
-                lambda: KokoroTTS("mlx-community/Kokoro-82M-bf16"),
+                lambda: load_tts_model(DEFAULT_TTS_MODEL),
             )
         )
     except ImportError:
