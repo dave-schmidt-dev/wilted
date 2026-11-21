@@ -43,16 +43,8 @@ struct WiltedMacLibrarySyncCard: View {
             // Each iPhone and iPad this Mac links as soon as it syncs, and the requests it is answering.
             ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in
                 Divider()
-                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    WiltedSettingsRow(row.label, value: row.value, identifier: "wilted-sync-device")
-                    if row.label.hasPrefix("iPhone") {
-                        Button("Stop direct downloads for this iPhone") {
-                            model.stopDirectDownloads(for: row.id)
-                        }
-                        .wiltedFont(.utility)
-                        .buttonStyle(.link)
-                        .accessibilityIdentifier("wilted-sync-stop-direct-\(row.id)")
-                    }
+                WiltedMacDeviceDownloadsRow(row: row, macEnabled: model.isDirectDownloadsEnabled) {
+                    model.stopDirectDownloads(for: row.id)
                 }
             }
             // The counters are not observed, so the line re-reads them on a 30 s timeline. Without
@@ -92,5 +84,63 @@ struct WiltedMacLibrarySyncCard: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-sync-controls")
+    }
+}
+
+struct WiltedMacDeviceDownloadsRow: View {
+    let row: WiltedMacLibrarySyncStatus.DeviceRow
+    let macEnabled: Bool
+    let onStop: () -> Void
+    @State private var showsMenu = false
+
+    var body: some View {
+        HStack {
+            WiltedSettingsRow(row.label, value: row.value, identifier: "wilted-sync-device")
+            Button { showsMenu.toggle() } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 28, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Options for \(row.label)")
+            .help("Options for \(row.label)")
+            .accessibilityIdentifier("wilted-sync-device-menu-\(row.id)")
+            .popover(isPresented: $showsMenu, arrowEdge: .bottom) {
+                WiltedMacDeviceDownloadsMenu(row: row, macEnabled: macEnabled, onStop: onStop)
+            }
+        }
+    }
+}
+
+struct WiltedMacDeviceDownloadsMenu: View {
+    let row: WiltedMacLibrarySyncStatus.DeviceRow
+    let macEnabled: Bool
+    let onStop: () -> Void
+
+    var canStop: Bool { macEnabled && !row.isDirectDownloadsStopped }
+
+    var downloads: Binding<Bool> {
+        Binding(get: { !row.isDirectDownloadsStopped }, set: { enabled in
+            if !enabled && canStop { onStop() }
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            Toggle("Direct downloads", isOn: downloads)
+                .toggleStyle(.switch)
+                .disabled(!canStop)
+                .accessibilityIdentifier("wilted-sync-device-toggle-\(row.id)")
+            if row.isDirectDownloadsStopped {
+                Text("Pair again to turn direct downloads back on.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(WiltedTheme.Spacing.medium)
+        .frame(width: 248, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-sync-stop-direct-\(row.id)")
     }
 }

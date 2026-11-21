@@ -328,13 +328,16 @@ actor WiltedMacLANMediaServer {
 extension WiltedMacModel {
     /// Whether direct downloads from this Mac are enabled.
     var isDirectDownloadsEnabled: Bool {
-        librarySyncController?.inbound?.lanServer?.isDirectDownloadsEnabled
+        access(keyPath: \.isDirectDownloadsEnabled)
+        return librarySyncController?.inbound?.lanServer?.isDirectDownloadsEnabled
             ?? (preferences.object(forKey: WiltedMacLANMediaServer.directDownloadsEnabledKey) as? Bool ?? true)
     }
 
     /// Sets whether direct downloads from this Mac are enabled.
     func setDirectDownloadsEnabled(_ enabled: Bool) {
-        preferences.set(enabled, forKey: WiltedMacLANMediaServer.directDownloadsEnabledKey)
+        withMutation(keyPath: \.isDirectDownloadsEnabled) {
+            preferences.set(enabled, forKey: WiltedMacLANMediaServer.directDownloadsEnabledKey)
+        }
         Task { @MainActor in
             await librarySyncController?.inbound?.lanServer?.setEnabled(enabled)
         }

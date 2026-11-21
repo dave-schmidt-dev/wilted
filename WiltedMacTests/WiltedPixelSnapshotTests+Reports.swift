@@ -30,6 +30,42 @@ extension WiltedPixelSnapshotTests {
         await captureSettingsSection(.devices, testName: "testDevicesSettingsPixels")
     }
 
+    func testDevicesSettingsWithSyntheticDeviceRowsPixels() async {
+        let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("settings-devices-rows"),
+            preferences: WiltedMacTestPreferences.ephemeral())
+        model.selectedNavigation = .settings
+        model.settingsSection = .devices
+        await model.waitForLifetimeStatisticsForTesting()
+        model.librarySyncActivity.devices = [
+            WiltedMacLinkedDevice(deviceID: "snapshot-phone", kind: "iPhone Snapshot", isLinked: true, inFlight: []),
+            WiltedMacLinkedDevice(deviceID: "snapshot-device", kind: nil, isLinked: false, inFlight: [])
+        ]
+        let image = render(WiltedMacRootView(model: model),
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false), size: windowCanvas)
+        assertSnapshot(image,
+            named: WiltedSnapshotContract.shellName(kind: "section-devices-synthetic-rows", appearance: .light),
+            testName: "testDevicesSettingsWithSyntheticDeviceRowsPixels")
+        await model.close()
+    }
+
+    func testDirectDownloadsDeviceMenuPixels() throws {
+        let device = WiltedMacLinkedDevice(
+            deviceID: "snapshot-phone", kind: "iPhone Snapshot", isLinked: true, inFlight: [],
+            isDirectDownloadsStopped: true)
+        let row = try XCTUnwrap(WiltedMacLibrarySyncStatus.deviceRows([device]).first)
+        let content = WiltedMacDeviceDownloadsMenu(row: row, macEnabled: true, onStop: {})
+            .padding(WiltedTheme.Spacing.small)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(WiltedTheme.color(.card, scheme: .light))
+        let image = render(content,
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false),
+            size: CGSize(width: 360, height: 150))
+        assertSnapshot(image,
+            named: WiltedSnapshotContract.shellName(kind: "direct-downloads-device-menu", appearance: .light),
+            testName: "testDirectDownloadsDeviceMenuPixels")
+    }
+
     func testAboutSettingsPixels() async {
         await captureSettingsSection(.about, testName: "testAboutSettingsPixels")
     }

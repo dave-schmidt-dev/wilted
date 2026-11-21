@@ -188,6 +188,7 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
         let id: String
         let label: String
         let value: String
+        let isDirectDownloadsStopped: Bool
     }
 
     static func deviceRows(_ devices: [WiltedMacLinkedDevice]) -> [DeviceRow] {
@@ -197,7 +198,8 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
             let kind = device.kind ?? "Device"
             seen[kind, default: 0] += 1
             let label = (counts[kind] ?? 0) > 1 ? "\(kind) \(seen[kind] ?? 1)" : kind
-            return DeviceRow(id: device.deviceID, label: label, value: deviceValue(device))
+            return DeviceRow(id: device.deviceID, label: label, value: deviceValue(device),
+                             isDirectDownloadsStopped: device.isDirectDownloadsStopped)
         }
     }
 

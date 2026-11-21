@@ -62,7 +62,10 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         let sectionNames = WiltedMacSettingsSection.allCases.map {
             WiltedSnapshotContract.shellName(kind: "section-" + $0.rawValue, appearance: .light)
         }
-        let names = shellAndStateNames + sectionNames
+        let deviceNames = ["section-devices-synthetic-rows", "direct-downloads-device-menu"].map {
+            WiltedSnapshotContract.shellName(kind: $0, appearance: .light)
+        }
+        let names = shellAndStateNames + sectionNames + deviceNames
         XCTAssertEqual(names.count, WiltedSnapshotContract.expectedPixelBaselineCount)
         XCTAssertEqual(Set(names).count, names.count)
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("state-") || $0.hasPrefix("mac-shell-") })

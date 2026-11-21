@@ -15,6 +15,15 @@ def controls(text):
 
 
 class SettingsInventory(unittest.TestCase):
+    def test_every_device_row_offers_a_menu_instead_of_the_stop_link(self):
+        card = source("WiltedMacLibrarySyncCard")
+        self.assertNotIn("Stop direct downloads for this iPhone", card)
+        rows = card.split("ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in")[1].split("// The counters")[0]
+        self.assertNotIn("if ", rows)
+        self.assertIn("WiltedMacDeviceDownloadsRow(row: row, macEnabled: model.isDirectDownloadsEnabled)", rows)
+        self.assertIn("model.stopDirectDownloads(for: row.id)", rows)
+        self.assertIn(".disabled(!canStop)", card)
+
     def test_sections(self):
         settings = source("WiltedMacSettingsView")
         self.assertIn("sectionContent", settings, "Settings must render the selected section")
@@ -162,6 +171,8 @@ INVENTORY = {
         'wilted-sync-last-check',
         'wilted-sync-direct-downloads-toggle',
         'wilted-sync-device',
+        'wilted-sync-device-menu-\\(row.id)',
+        'wilted-sync-device-toggle-\\(row.id)',
         'wilted-sync-stop-direct-\\(row.id)',
         'wilted-sync-diagnostics',
         'wilted-sync-scope-note',

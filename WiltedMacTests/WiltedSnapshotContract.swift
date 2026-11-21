@@ -8,7 +8,7 @@ import WiltedProducer
 enum WiltedSnapshotContract {
     static let stateCount = WiltedPreviewState.allCases.count
     static let variantCount = WiltedVisualVariant.matrix.count
-    static let shellCount = 67
+    static let shellCount = 69
     static let expectedPixelBaselineCount = stateCount * variantCount + shellCount
 
     static var recordMode: Bool {
