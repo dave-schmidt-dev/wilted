@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 
 ### Changed
+- Mac Show settings opens from Feeds, a Larder row or Settings > Ads > All shows. Each show lists its defaults and custom choices together. Reset all preserves an existing refusal to send transcripts.
 - Reports shows what you need to hear bulletins, where to set up headlines and weather alerts, and a short sample you can play. On the Mac, **Try again** checks the sound output immediately.
 - **Prepare Again** on the Mac now tries the download of the original again when the podcast server answers with a server error (HTTP 500 to 599): up to three more times, waiting 2, 4 and 8 seconds. Before, one such answer ended the run with "Could not download the original, so nothing changed".
 - Project docs rewritten in plain English with no token growth.
@@ -22,6 +23,7 @@ All notable changes to this project are documented in this file.
 - The Mac sidebar now says "Library changes sent …" and the iPhone says "Mac last sent library changes …", instead of "Sent to devices" and "Mac last published". The time covers library changes only; playback positions sync every round.
 
 ### Added
+- Mac Settings > Devices shows each device’s last announcement and lets you name it on this Mac. Removing a device asks first. A newer announcement can link it again, with direct downloads still stopped.
 - iPhone: the app now keeps its own record (`Library/Logs/playback-journal.log`, about the last 2 MB) of every play, pause and skip command it receives from the car, the lock screen, a headset, Siri or the Watch, every start and stop with the position and whether that position was the phone's own, another device's or zero, what auto-continue picked or passed over, and every Mark completed or Remove request from the tap to the Mac's answer. `scripts/pull-iphone-cloudkit-log.sh` copies it to the Mac and prints its last 40 lines, with the voice request log when the phone has one.
 - iPhone: Settings > Diagnostics now lists the last 50 voice requests (time, which Siri path answered, what Siri asked for, and the result), with a copy button. Requests Wilted turned down are listed too.
 - iPhone: Wilted now tells Siri which episodes you play, how many are downloaded and what your shows are called, so Siri has what Apple asks for to pick Wilted for a spoken play request that does not name the app. Development device builds only (the builds that carry the Siri entitlement). Not yet checked in a car.

@@ -36,7 +36,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
     }
 
     func testPixelSnapshotSelectorsAreUniqueAndComplete() {
-        let names = Self.visualFixtures.flatMap { fixture in
+        let shellAndStateNames = Self.visualFixtures.flatMap { fixture in
             Self.visualVariants.map { variant in
                 WiltedSnapshotContract.stateName(state: fixture.state, variant: variant)
             }
@@ -52,7 +52,8 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: "sidebar-counts", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "toolbar", appearance: appearance)
             ] + ["add-sheet-link", "add-sheet-results", "add-sheet-followed", "add-sheet-error", "add-sheet-import-progress", "add-sheet-import-refusal",
-                "feed-policy-article", "feeds-article-row", "feeds-row",
+                "show-settings-article",
+                "feeds-article-row", "feeds-row",
                 "larder-kind-filter", "larder-real-size-minimum", "larder-real-size-full", "larder-book-row", "player-chapters",
                 "sidebar-playlists", "playlist-manual", "playlist-rules", "settings-reports",
                 "settings-reports-not-ready", "settings-reports-ready",
@@ -60,6 +61,20 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: $0, appearance: appearance)
             }
         }
+        let sectionNames = WiltedMacSettingsSection.allCases.map {
+            WiltedSnapshotContract.shellName(kind: "section-" + $0.rawValue, appearance: .light)
+        }
+        let deviceNames = [
+            "section-devices-synthetic-rows",
+            "direct-downloads-device-menu",
+            "device-removal-confirmation"
+        ].map {
+            WiltedSnapshotContract.shellName(kind: $0, appearance: .light)
+        }
+        let showSettingsNames = ["show-settings", "show-settings-changed"].map {
+            WiltedSnapshotContract.shellName(kind: $0, appearance: .light)
+        }
+        let names = shellAndStateNames + sectionNames + deviceNames + showSettingsNames
         XCTAssertEqual(names.count, WiltedSnapshotContract.expectedPixelBaselineCount)
         XCTAssertEqual(Set(names).count, names.count)
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("state-") || $0.hasPrefix("mac-shell-") })
@@ -327,130 +342,112 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         }
     }
 
-    func testSnapshotBaselinePreservesExistingBytesWhenMatchingInRecordMode() throws {
-        let baseline = try baselineTestURL(for: "matching-baseline")
-        let existingBitmap = makeSolidBitmap(width: 4, height: 2, red: 17, green: 34, blue: 51, alpha: 255)
-        let existingBytes = try XCTUnwrap(existingBitmap.representation(using: .png, properties: [:]))
-        try existingBytes.write(to: baseline, options: .atomic)
-
-        let actualBitmap = makeSolidBitmap(width: 4, height: 2, red: 17, green: 34, blue: 51, alpha: 255)
-        let actualBytes = try XCTUnwrap(actualBitmap.representation(using: .png, properties: [:]))
-        let mutation = try applySnapshotRecordModeUpdate(
-            baseline: baseline,
-            actual: actualBitmap,
-            actualPNG: actualBytes,
-            forceRecord: false
-        )
-
-        XCTAssertFalse(mutation)
-        XCTAssertEqual(try Data(contentsOf: baseline), existingBytes)
+    func testShippingMacProducerPixelBaselines() {
+        for appearance in WiltedAppearance.allCases {
+            let model = WiltedMacModel(
+                arguments: [
+                    "--wilted-ui-fixture-article-flow",
+                    "--wilted-ui-fixture-podcasts",
+                    "--wilted-ui-fixture-ready",
+                    "--wilted-ui-fixture-prepared"
+                ], stateDirectoryOverride: wiltedTemporaryDirectory("fixture"), preferences: WiltedMacTestPreferences.ephemeral()
+            )
+            model.podcastQueueIDs = model.episodes.map(\.id)
+            XCTAssertFalse(model.podcastQueueIDs.isEmpty, "the producer capture must show queued podcasts")
+            XCTAssertFalse(model.larderVisibleEpisodes.isEmpty, "the Larder capture must contain podcast rows")
+            let variant = WiltedVisualVariant(
+                appearance: appearance,
+                dynamicType: .standard,
+                reduceMotion: false
+            )
+            assertSnapshot(
+                render(WiltedMacRootView(model: model), variant: variant, size: windowCanvas),
+                named: WiltedSnapshotContract.shellName(kind: "producer-library", appearance: appearance),
+                testName: "testShippingMacProducerPixelBaselines"
+            )
+        }
     }
 
-    func testSnapshotBaselineReplacesWhenBaselineIsMissingOrUnreadableOrDifferentInRecordMode() throws {
-        let missingBaseline = try baselineTestURL(for: "missing-baseline")
-        let replacement = makeSolidBitmap(width: 3, height: 2, red: 12, green: 25, blue: 38, alpha: 255)
-        let replacementBytes = try XCTUnwrap(replacement.representation(using: .png, properties: [:]))
-        let missing = try applySnapshotRecordModeUpdate(
-            baseline: missingBaseline,
-            actual: replacement,
-            actualPNG: replacementBytes,
-            forceRecord: false
-        )
-        XCTAssertTrue(missing)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: missingBaseline.path))
-
-        let unreadableBaseline = try baselineTestURL(for: "unreadable-baseline")
-        try Data("not-an-image".utf8).write(to: unreadableBaseline, options: .atomic)
-        let unreadable = try applySnapshotRecordModeUpdate(
-            baseline: unreadableBaseline,
-            actual: replacement,
-            actualPNG: replacementBytes,
-            forceRecord: false
-        )
-        XCTAssertTrue(unreadable)
-
-        let dimensionMismatchBaseline = try baselineTestURL(for: "dimension-mismatch-baseline")
-        let smallBitmap = makeSolidBitmap(width: 2, height: 2, red: 12, green: 25, blue: 38, alpha: 255)
-        let smallBytes = try XCTUnwrap(smallBitmap.representation(using: .png, properties: [:]))
-        try smallBytes.write(to: dimensionMismatchBaseline, options: .atomic)
-        let dimensionMismatch = try applySnapshotRecordModeUpdate(
-            baseline: dimensionMismatchBaseline,
-            actual: replacement,
-            actualPNG: replacementBytes,
-            forceRecord: false
-        )
-        XCTAssertTrue(dimensionMismatch)
-
-        let materialMismatchBaseline = try baselineTestURL(for: "material-mismatch-baseline")
-        let oldBitmap = makeSolidBitmap(width: 3, height: 2, red: 1, green: 2, blue: 3, alpha: 255)
-        let oldBytes = try XCTUnwrap(oldBitmap.representation(using: .png, properties: [:]))
-        try oldBytes.write(to: materialMismatchBaseline, options: .atomic)
-        let materialMismatch = try applySnapshotRecordModeUpdate(
-            baseline: materialMismatchBaseline,
-            actual: replacement,
-            actualPNG: replacementBytes,
-            forceRecord: false
-        )
-        XCTAssertTrue(materialMismatch)
+    func testShippingMacURLFocusPixelBaselines() {
+        for appearance in WiltedAppearance.allCases {
+            let variant = WiltedVisualVariant(
+                appearance: appearance,
+                dynamicType: .standard,
+                reduceMotion: false
+            )
+            assertSnapshot(
+                render(
+                    WiltedMacLinkField(
+                        text: .constant("https://example.com/article"),
+                        focusedOverride: true
+                    ),
+                    variant: variant
+                ),
+                named: WiltedSnapshotContract.shellName(kind: "producer-url-focus", appearance: appearance),
+                testName: "testShippingMacURLFocusPixelBaselines"
+            )
+        }
     }
 
-    func testSnapshotBaselineReplacesWhenForceRecordEnabled() throws {
-        let baseline = try baselineTestURL(for: "force-record-baseline")
-        let existingBitmap = makeSolidBitmap(width: 2, height: 2, red: 12, green: 25, blue: 38, alpha: 255)
-        let existingBytes = try XCTUnwrap(existingBitmap.representation(using: .png, properties: [:]))
-        try existingBytes.write(to: baseline, options: .atomic)
-
-        let actualBitmap = makeSolidBitmap(width: 2, height: 2, red: 13, green: 26, blue: 39, alpha: 255)
-        let actualBytes = try XCTUnwrap(actualBitmap.representation(using: .png, properties: [:]))
-        let mutation = try applySnapshotRecordModeUpdate(
-            baseline: baseline,
-            actual: actualBitmap,
-            actualPNG: actualBytes,
-            forceRecord: true
-        )
-        XCTAssertTrue(mutation)
-        XCTAssertNotEqual(try Data(contentsOf: baseline), existingBytes)
-    }
-
-    func testForceRecordHasNoEffectWhenRecordModeIsDisabled() throws {
-        let baseline = try baselineTestURL(for: "force-without-record")
-        let existingBitmap = makeSolidBitmap(width: 2, height: 2, red: 12, green: 25, blue: 38, alpha: 255)
-        let existingBytes = try XCTUnwrap(existingBitmap.representation(using: .png, properties: [:]))
-        try existingBytes.write(to: baseline, options: .atomic)
-
-        let actualBitmap = makeSolidBitmap(width: 2, height: 2, red: 13, green: 26, blue: 39, alpha: 255)
-        let actualBytes = try XCTUnwrap(actualBitmap.representation(using: .png, properties: [:]))
-        let mutation = try applySnapshotRecordModeUpdate(
-            baseline: baseline,
-            actual: actualBitmap,
-            actualPNG: actualBytes,
-            forceRecord: true,
-            recordMode: false
-        )
-        XCTAssertFalse(mutation)
-        XCTAssertEqual(try Data(contentsOf: baseline), existingBytes)
-    }
-}
-
-enum WiltedSnapshotContract {
-    static let stateCount = WiltedPreviewState.allCases.count
-    static let variantCount = WiltedVisualVariant.matrix.count
-    static let shellCount = 64
-    static let expectedPixelBaselineCount = stateCount * variantCount + shellCount
-
-    static var recordMode: Bool {
-        ProcessInfo.processInfo.environment["WILTED_RECORD_SNAPSHOTS"] == "1"
-    }
-
-    static var forceRecordMode: Bool {
-        ProcessInfo.processInfo.environment["WILTED_FORCE_RECORD_SNAPSHOTS"] == "1"
-    }
-
-    static func stateName(state: WiltedPreviewState, variant: WiltedVisualVariant) -> String {
-        "state-\(state.id)-\(variant.id)"
-    }
-
-    static func shellName(kind: String, appearance: WiltedAppearance) -> String {
-        "mac-shell-\(kind)-\(appearance.rawValue)"
+    /// The Add sheet's reading and book-import states, rendered as the sheet's own content.
+    func testMacAddSheetPixelBaselines() async throws {
+        let feed = try XCTUnwrap(URL(string: "https://feeds.example.test/followed.xml"))
+        let shows = [
+            PodcastCatalogShow(collectionID: 1, title: "The Followed Hour", feedURL: feed, author: "Example Audio"),
+            PodcastCatalogShow(
+                collectionID: 2, title: "Field Notes",
+                feedURL: try XCTUnwrap(URL(string: "https://feeds.example.test/field-notes.xml")),
+                author: "Example Studio"),
+            PodcastCatalogShow(
+                collectionID: 3, title: "Slow Radio",
+                feedURL: try XCTUnwrap(URL(string: "https://feeds.example.test/slow.xml")), author: nil),
+        ]
+        let page = try XCTUnwrap(URL(string: "https://blog.example.test/posts/one"))
+        let advertised = try XCTUnwrap(URL(string: "https://blog.example.test/feed.xml"))
+        let cases: [(kind: String, text: String, followed: Bool, intake: String?,
+                     search: WiltedMacAddSession.Search, classify: WiltedMacAddSession.Classify,
+                     importState: WiltedMacAddSession.ImportState?)] = [
+            ("add-sheet-link", page.absoluteString, false, nil, { _ in [] }, { _ in .articleAdvertisingFeed(advertised) }, nil),
+            ("add-sheet-results", "slow", false, nil, { _ in shows }, { _ in .article }, nil),
+            ("add-sheet-followed", "hour", true, nil, { _ in shows }, { _ in .article }, nil),
+            ("add-sheet-error", feed.absoluteString, false, WiltedMacModel.PodcastFeedHasNoAudio.message,
+             { _ in [] }, { _ in .podcastFeed }, nil),
+            ("add-sheet-import-progress", "", false, nil, { _ in [] }, { _ in .article },
+             .working(fraction: 0.4, detail: "Converting chapter 2 of 5: The Whale")),
+            ("add-sheet-import-refusal", "", false, nil, { _ in [] }, { _ in .article },
+             .refused("Moby Dick.epub is copy-protected and cannot be imported.")),
+        ]
+        for testCase in cases {
+            for appearance in WiltedAppearance.allCases {
+                let model = WiltedMacModel(
+                    arguments: ["--wilted-ui-fixture-ready"],
+                    stateDirectoryOverride: wiltedTemporaryDirectory(testCase.kind),
+                    preferences: WiltedMacTestPreferences.ephemeral())
+                if testCase.followed {
+                    model.subscriptions = [WiltedMacSubscription(
+                        id: try ItemID.derivePodcastFeed(from: feed).rawValue, title: "The Followed Hour",
+                        feedURL: feed, episodeCount: 5, subscribedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                        enabled: true)]
+                }
+                let session = model.makeAddSession(
+                    search: testCase.search, classify: testCase.classify, linkDebounce: .zero, searchDebounce: .zero)
+                session.text = testCase.text
+                await session.settle()
+                model.podcastFeedDraftStatus = testCase.intake
+                if let state = testCase.importState { session.showImportForPreview(state) }
+                let content = WiltedMacAddSheetContent(session: session)
+                    .environment(\.wiltedTextScale, model.textScale)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background(WiltedTheme.color(.card, scheme: appearance == .dark ? .dark : .light))
+                let image = render(
+                    content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
+                    size: CGSize(width: 520, height: 420))
+                let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+                XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "\(testCase.kind) drew")
+                assertSnapshot(
+                    image, named: WiltedSnapshotContract.shellName(kind: testCase.kind, appearance: appearance),
+                    testName: "testMacAddSheetPixelBaselines")
+            }
+        }
     }
 }

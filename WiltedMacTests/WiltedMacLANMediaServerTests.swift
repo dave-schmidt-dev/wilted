@@ -324,15 +324,17 @@ final class WiltedMacLANMediaServerTests: XCTestCase {
         try await server.updateDirectory(directory)
         XCTAssertEqual(try keyStore.currentKey().publicKey, initialKey.publicKey, "the first owner keeps the key")
         await server.stopDirectDownloads(for: "phone-1")
+        preferences.setDeviceRemovalDate(Date(), for: "removed-fixture")
 
         owner.value = "owner-b"
         try await server.updateDirectory(directory)
         XCTAssertNotEqual(try keyStore.currentKey().publicKey, initialKey.publicKey)
-        XCTAssertEqual(preferences.stoppedPhones, [], "the previous library's stops do not carry over")
+        XCTAssertEqual(preferences.stoppedPhones, ["removed-fixture"],
+                       "ordinary stops clear, and removal tombstones remain")
         XCTAssertEqual(fakeServer.simulateIncomingConnection(from: phoneKey.publicKey), .admitted)
     }
 
-    /// "Stop direct downloads for this iPhone" survives a relaunch.
+    /// The saved stopped state is shown by the device row after a relaunch.
     func testAStoppedPhoneStaysStoppedAfterRelaunch() async throws {
         let gate = WiltedMacLibraryAccountGate(open: true)
         let keyStore = InMemoryLANKeyStore()
@@ -350,9 +352,22 @@ final class WiltedMacLANMediaServerTests: XCTestCase {
         let second = makeServer(gate: gate, links: links, keyStore: keyStore, server: relaunched, owner: OwnerBox("owner-a"))
         await second.start()
         try await second.updateDirectory(directory)
+        await links.noteDirectory(directory)
+        await links.flush()
         XCTAssertEqual(relaunched.simulateIncomingConnection(from: phoneKey.publicKey), .rejectedUnknownPeer)
         let stopped = await links.isDirectDownloadsStopped(for: "phone-1")
         XCTAssertTrue(stopped)
+        let devices = await links.devices()
+        let row = try XCTUnwrap(WiltedMacLibrarySyncStatus.deviceRows(devices).first)
+        XCTAssertTrue(row.isDirectDownloadsStopped)
+        await MainActor.run {
+            let menu = WiltedMacDeviceDownloadsMenu(row: row, macEnabled: true) {
+                XCTFail("A stopped device must stay off")
+            }
+            XCTAssertFalse(menu.downloads.wrappedValue)
+            menu.downloads.wrappedValue = true
+            XCTAssertFalse(menu.downloads.wrappedValue)
+        }
     }
 
     /// Asserts the Bonjour service configuration matches the required specification.

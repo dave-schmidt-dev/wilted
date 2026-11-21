@@ -10,7 +10,6 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 gate="$repo_root/scripts/test-gate.sh"
 native_gate_validation="$repo_root/scripts/lib/native-gate-validation.sh"
-native_gate_snapshots="$repo_root/scripts/lib/native-gate-snapshots.sh"
 native_gate_xcode="$repo_root/scripts/lib/native-gate-xcode.sh"
 native_gate_simulator="$repo_root/scripts/lib/native-gate-simulator.sh"
 # shellcheck source=../scripts/lib/mac-test-parent.sh
@@ -62,10 +61,7 @@ assert_absent() {
 }
 
 assert_validation_contains() {
-  grep -Fq -- "$1" "$native_gate_validation" "$native_gate_snapshots" || {
-    printf 'assertion failed: missing %s in native validation scripts\n' "$1" >&2
-    exit 1
-  }
+  grep -Fq -- "$1" "$native_gate_validation" || assert_contains "$1" "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
 }
 
 assert_block_contains() {
@@ -78,7 +74,48 @@ assert_block_contains() {
   }
 }
 
-source "$repo_root/tests/native-gate-contract-checks.sh"
+source "$repo_root/tests/lib/native-gate-static-contracts.sh"
+
+assert_result_bundle_contract() {
+  if rg -q 'xcodebuild.*(Executed [0-9]+ tests|Test run with [0-9]+ tests)' "$gate"; then
+    printf '%s\n' 'assertion failed: native gate still infers counts from xcodebuild stdout' >&2
+    exit 1
+  fi
+  assert_validation_contains 'xcrun xcresulttool get test-results summary'
+  assert_validation_contains 'totalTestCount'
+  assert_validation_contains 'parse_result_bundle_test_count'
+  assert_validation_contains 'result_bundle_summary_passed'
+  assert_block_contains 'wait_macos_ui_supervisor' "$(sed -n '/^leg_macos_ui_tests()/,/^leg_ios_ui_tests()/p' "$gate")"
+  assert_contains '-resultBundlePath' "$gate"
+  assert_validation_contains 'native.result-bundle-missing'
+  if rg -q -- '--xunit-output|assert_xunit_tests|count\(//testcase\)' "$gate" "$native_gate_validation"; then
+    printf '%s\n' 'assertion failed: native gate still relies on SwiftPM xUnit output' >&2
+    exit 1
+  fi
+  assert_contains '--build-tests' "$gate"
+  assert_contains 'xcrun xctest' "$gate"
+  assert_validation_contains 'assert_xctest_output'
+  assert_validation_contains 'native.xctest-missing'
+  assert_validation_contains 'parse_xctest_output_count'
+  assert_contains 'build_with_cache="$repo_root/scripts/build-with-cache.py"' "$gate"
+  assert_contains 'python3 "$build_with_cache" path "$kind" "$key"' "$gate"
+  assert_contains 'python3 "$build_with_cache" run "$kind" "$key" -- "$@"' "$gate"
+  assert_contains 'cache_path="$(build_cache_path swiftpm "$cache_key")"' "$gate"
+  assert_contains 'run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests' "$gate"
+  assert_contains 'run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package"' "$native_gate_validation"
+  assert_contains 'local cache_key="native-$label"' "$gate"
+  assert_contains 'label_data="$(build_cache_path xcode "$cache_key")"' "$gate"
+  if rg -q -- '--scratch-path|derived_data=|DerivedData' "$gate" "$native_gate_validation"; then
+    printf '%s\n' 'assertion failed: native gate still creates per-run SwiftPM or DerivedData caches' >&2
+    exit 1
+  fi
+  if rg -q 'find "\$package/\.build".*WiltedProducerPackageTests\.xctest' "$gate" "$native_gate_validation"; then
+    printf '%s\n' 'assertion failed: Producer XCTest discovery still reads checkout-local .build' >&2
+    exit 1
+  fi
+}
+
+assert_result_bundle_contract
 ui_wait_helper="$(sed -n '/^wait_macos_ui_supervisor()/,/^}/p' "$gate")"
 set +e; bash -c 'eval "$1"; WILTED_UI_LOCK_PID_FILE=fixture; wilted_wait_active_supervisor() { return 42; }; wait_macos_ui_supervisor; status=$?; [[ -z "$WILTED_UI_LOCK_PID_FILE" ]] || exit 99; exit "$status"' _ "$ui_wait_helper"
 ui_wait_status=$?; set -e
@@ -338,6 +375,30 @@ assert_contains 'self_test_watchos_zero_test_evidence' "$gate"
 # The shipping phone lane keeps the original eight captures, adds the eight Add sheet captures, and verifies pixels, not hidden labels.
 assert_validation_contains 'iOS pixel snapshot method membership must remain exactly twenty-six'
 assert_validation_contains 'iOS pixel test does not verify painted date and Storage geometry'
+assert_validation_contains 'expected_count=228'
+assert_validation_contains 'shells=76'
+assert_validation_contains 'window_shells=16'
+for snapshot in \
+  testShowSettingsPagePixelBaselines.mac-shell-show-settings-light.png \
+  testShowSettingsPagePixelBaselines.mac-shell-show-settings-changed-light.png \
+  testArticleShowSettingsPixelBaselines.mac-shell-show-settings-article-light.png \
+  testArticleShowSettingsPixelBaselines.mac-shell-show-settings-article-dark.png; do
+  assert_contains "$snapshot" "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
+done
+assert_contains 'testShowSettingsPagePixelBaselines' \
+  "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+ShowSettings.swift"
+assert_contains 'testArticleShowSettingsPixelBaselines' \
+  "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+ShowSettings.swift"
+assert_contains 'testDevicesSettingsWithSyntheticDeviceRowsPixels.mac-shell-section-devices-synthetic-rows-light.png' \
+  "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
+assert_contains 'testDirectDownloadsDeviceMenuPixels.mac-shell-direct-downloads-device-menu-light.png' \
+  "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
+assert_contains 'testDeviceRemovalConfirmationPixels.mac-shell-device-removal-confirmation-light.png' \
+  "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
+for method in testDevicesSettingsWithSyntheticDeviceRowsPixels testDirectDownloadsDeviceMenuPixels \
+  testDeviceRemovalConfirmationPixels; do
+  assert_contains "func $method" "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift"
+done
 assert_contains 'VNRecognizeTextRequest()' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'value.frame.minY, label.frame.maxY' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'assertPaintedLine("Nov 14, 2023", frame: date.frame)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"

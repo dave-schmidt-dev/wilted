@@ -282,6 +282,8 @@ public protocol LibraryTransport: Sendable {
     func fetchDeviceDirectory() async throws -> LibraryDeviceDirectory?
     /// Mac only: writes its side of the handshake with `link.deviceID`, merged into the server copy.
     func publishDeviceLink(_ link: LibraryDeviceLink) async throws
+    /// Mac only: removes exactly one linked-device record. This leaves announcements and library data untouched.
+    func deleteDeviceLink(deviceID: String) async throws
     /// The Mac's link with this device, or nil until the Mac has linked it. Read by name.
     func fetchDeviceLink() async throws -> LibraryDeviceLink?
     func commitFetchedState(_ token: LibraryChangeToken?) async throws
@@ -348,6 +350,9 @@ public extension LibraryTransport {
     func fetchDeviceDirectory() async throws -> LibraryDeviceDirectory? { nil }
     func publishDeviceLink(_ link: LibraryDeviceLink) async throws {
         throw LibraryTransportError.transport("device links are not supported by this transport")
+    }
+    func deleteDeviceLink(deviceID: String) async throws {
+        throw LibraryTransportError.transport("device link deletion is not supported by this transport")
     }
     func fetchDeviceLink() async throws -> LibraryDeviceLink? { nil }
     func commitFetchedState(_ token: LibraryChangeToken?) async throws {}

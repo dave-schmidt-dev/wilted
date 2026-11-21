@@ -39,13 +39,9 @@ final class WiltedMacAdFindingSettings {
     private(set) var hasKey: Bool
     private(set) var isOnlineFindingOn: Bool
 
-    /// The confirm sheet: whether it is presented, the shows it lists, and
-    /// which of them the draft sends. `confirmsSwitchOn` remembers that the
-    /// sheet opened because the owner turned the switch on.
+    /// The global confirmation sheet and the eligible feed IDs it previews.
     private(set) var isConfirming = false
-    private(set) var sheetShows: [Show] = []
     private(set) var sheetSent: Set<String> = []
-    private var confirmsSwitchOn = false
 
     init(preferences: UserDefaults, keyStore: any LabellerKeyStoring,
          now: @escaping @Sendable () -> Date = Date.init,
@@ -59,7 +55,12 @@ final class WiltedMacAdFindingSettings {
     }
 
     private var labeller: AdLabellerPreferences { AdLabellerPreferences(preferences: preferences) }
-    private var shows: [Show] { showsProvider() }
+    private var shows: [Show] {
+        showsProvider().filter { show in
+            guard let feedURL = show.feedURL else { return true }
+            return !WiltedMacFeedKind.isArticleFeed(feedID: show.feedID, feedURL: feedURL)
+        }
+    }
 
     // MARK: Key
 
@@ -111,94 +112,75 @@ final class WiltedMacAdFindingSettings {
             return
         }
         guard !labeller.confirmedFeedIDs.isEmpty else {
-            openConfirmSheet(for: shows, confirmingSwitch: true)
+            openConfirmSheet(for: shows)
             return
         }
         isOnlineFindingOn = true
         labeller.isEnabled = true
     }
 
-    // MARK: Waiting shows
+    // MARK: Confirm sheet
 
-    /// Subscribed shows the owner has not decided: not in the confirmed set, not kept
-    /// back by the owner, and not forced not sent by the policy.
-    var waitingShows: [Show] {
-        let confirmed = Set(labeller.confirmedFeedIDs)
-        let keptBack = Set(labeller.keptBackFeedIDs)
-        return shows.filter { show in
-            !confirmed.contains(show.feedID) && !keptBack.contains(show.feedID)
-                && forcedNotSentReason(for: show) == nil
+    /// Current eligible shows covered by the global confirmation.
+    var sheetSentShows: [Show] {
+        let refusals = Set(labeller.keptBackFeedIDs)
+        return shows.filter {
+            sheetSent.contains($0.feedID) && !refusals.contains($0.feedID)
+                && forcedNotSentReason(for: $0) == nil
         }
     }
 
-    var waitingShowCount: Int { waitingShows.count }
-
-    /// Opens the sheet for the waiting shows only; confirming adds to, never
-    /// replaces, the confirmed set.
-    func reviewWaitingShows() {
-        openConfirmSheet(for: waitingShows, confirmingSwitch: false)
+    /// Current shows left out of the confirmation, including subscriptions added after it opened.
+    var sheetNotSentShows: [Show] {
+        let refusals = Set(labeller.keptBackFeedIDs)
+        return shows.filter {
+            !sheetSent.contains($0.feedID) || refusals.contains($0.feedID)
+                || forcedNotSentReason(for: $0) != nil
+        }
     }
 
-    // MARK: Confirm sheet
+    func confirmationNotSentMessage(for show: Show) -> String {
+        if let reason = forcedNotSentMessage(for: show) { return reason }
+        if labeller.keptBackFeedIDs.contains(show.feedID) { return "Kept local" }
+        return "Not included in this confirmation"
+    }
 
-    /// The sheet's two groups, in subscribed order.
-    var sheetSentShows: [Show] { sheetShows.filter { sheetSent.contains($0.feedID) } }
-    var sheetNotSentShows: [Show] { sheetShows.filter { !sheetSent.contains($0.feedID) } }
-
-    /// Why the policy keeps this show not sent whatever the owner chooses;
-    /// nil when the owner may send it.
+    /// Why the policy excludes this show from remote labelling; nil when eligible.
     func forcedNotSentReason(for show: Show) -> RemoteLabellingNotSentReason? {
         RemoteLabellingPolicy.forcedNotSentReason(for: RemoteLabellingInput(
             feedID: show.feedID, feedURL: show.feedURL, feedTitle: show.publisherTitle ?? show.title,
             customTitle: show.title, audioURL: nil))
     }
 
-    /// The forced reason in the plain words the feed page already uses.
+    /// The forced reason in plain words for the settings page.
     func forcedNotSentMessage(for show: Show) -> String? {
         forcedNotSentReason(for: show)?.forcedNotSentMessage
     }
 
-    /// A show the policy forces not sent cannot be toggled to sent.
-    func setSheetSent(_ sent: Bool, for show: Show) {
-        guard forcedNotSentReason(for: show) == nil else { return }
-        if sent { sheetSent.insert(show.feedID) } else { sheetSent.remove(show.feedID) }
-    }
-
-    /// Writes the sheet's choices: the shows listed as sent into the confirmed
-    /// set (a review adds to it), and the shows the owner left unsent as kept back,
-    /// so the next sheet does not offer them as sent. A show the policy forces not
-    /// sent is not the owner's choice and is only left unconfirmed. When the sheet
-    /// opened from the switch, the switch turns on here and not before.
+    /// Confirms the eligible shows previewed when the owner enabled the global switch.
+    /// A refusal written while the sheet was open wins when the sheet is confirmed.
     func confirm() {
         guard isConfirming else { return }
-        for show in sheetShows where !sheetSent.contains(show.feedID) {
-            if forcedNotSentReason(for: show) == nil {
-                labeller.keepBack(feedID: show.feedID)
-            } else {
-                labeller.setConfirmed(feedID: show.feedID, false)
-            }
-        }
+        let currentRefusals = Set(labeller.keptBackFeedIDs)
+        let currentShowsByID = Dictionary(shows.map { ($0.feedID, $0) }, uniquingKeysWith: { first, _ in first })
         for feedID in sheetSent {
+            guard let show = currentShowsByID[feedID],
+                  forcedNotSentReason(for: show) == nil,
+                  !currentRefusals.contains(feedID) else { continue }
             labeller.setConfirmed(feedID: feedID, true)
         }
-        if confirmsSwitchOn {
-            isOnlineFindingOn = true
-            labeller.isEnabled = true
-        }
+        isOnlineFindingOn = true
+        labeller.isEnabled = true
         isConfirming = false
-        confirmsSwitchOn = false
     }
 
     /// Closes the sheet changing nothing.
     func cancel() {
         guard isConfirming else { return }
         isConfirming = false
-        confirmsSwitchOn = false
     }
 
-    private func openConfirmSheet(for shows: [Show], confirmingSwitch: Bool) {
-        sheetShows = shows
-        confirmsSwitchOn = confirmingSwitch
+    private func openConfirmSheet(for shows: [Show]) {
         // A show starts sent unless the policy forces it not sent or the owner
         // kept it back.
         let keptBack = Set(labeller.keptBackFeedIDs)

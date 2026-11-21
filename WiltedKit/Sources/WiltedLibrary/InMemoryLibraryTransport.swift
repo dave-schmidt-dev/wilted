@@ -169,6 +169,13 @@ public actor InMemoryLibraryServer {
 
     func link(for deviceID: String) -> LibraryDeviceLink? { links[deviceID] }
 
+    func deleteLink(for targetDeviceID: String, from deviceID: String) throws {
+        guard deviceID == writerDeviceID else {
+            throw LibraryTransportError.ownershipViolation("\(deviceID) may not remove device links")
+        }
+        links.removeValue(forKey: targetDeviceID)
+    }
+
     func publishPublication(_ value: LibraryPublication, from deviceID: String) throws {
         guard deviceID == writerDeviceID, value.writerDeviceID == deviceID else {
             throw LibraryTransportError.ownershipViolation("only the library writer may publish a receipt")
@@ -338,6 +345,10 @@ public actor InMemoryLibraryTransport: LibraryTransport {
 
     public func publishDeviceLink(_ link: LibraryDeviceLink) async throws {
         try await server.publishLink(link, from: deviceID)
+    }
+
+    public func deleteDeviceLink(deviceID: String) async throws {
+        try await server.deleteLink(for: deviceID, from: self.deviceID)
     }
 
     public func fetchDeviceLink() async throws -> LibraryDeviceLink? { await server.link(for: deviceID) }

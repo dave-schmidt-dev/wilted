@@ -1,4 +1,58 @@
-source "$(dirname "${BASH_SOURCE[0]}")/native-gate-snapshots.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/native-gate-mac-snapshots.sh"
+
+validate_ios_pixel_snapshot_baselines() {
+  local root="$1"
+  local snapshot_dir="$root/WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"
+  local source="$root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
+  local expected actual bad_pngs
+
+  require_tool file
+  [[ -f "$source" ]] || fail "missing iOS pixel snapshot test source: $source"
+  [[ -d "$snapshot_dir" ]] || fail "missing iOS pixel snapshot directory: $snapshot_dir"
+  grep -Fq 'wilted-library-root-fixture' "$source" ||
+    fail 'iOS pixel test does not exercise the production LibraryRoot fixture'
+  grep -Fq 'assertShippingFacts(screen, app: app, image: screenshot)' "$source" ||
+    fail 'iOS pixel test does not verify painted date and Storage geometry'
+  [[ "$(grep -Ec '^[[:space:]]*func[[:space:]]+test.*PixelBaseline\(' "$source")" -eq 26 ]] ||
+    fail 'iOS pixel snapshot method membership must remain exactly twenty-six'
+  for method in \
+    testLibraryLarderDarkPixelBaseline \
+    testLibraryLarderLightPixelBaseline \
+    testLibraryLarderGroupedDarkPixelBaseline \
+    testLibraryLarderGroupedLightPixelBaseline \
+    testLibraryEpisodeDetailDarkPixelBaseline \
+    testLibraryEpisodeDetailLightPixelBaseline \
+    testLibraryAddSearchDarkPixelBaseline \
+    testLibraryAddSearchLightPixelBaseline \
+    testLibraryAddSentDarkPixelBaseline \
+    testLibraryAddSentLightPixelBaseline \
+    testLibraryAddRejectedDarkPixelBaseline \
+    testLibraryAddRejectedLightPixelBaseline \
+    testLibraryAddUpdateMacDarkPixelBaseline \
+    testLibraryAddUpdateMacLightPixelBaseline \
+    testLibraryFilterArticlesDarkPixelBaseline \
+    testLibraryFilterArticlesLightPixelBaseline \
+    testLibraryBookRowDarkPixelBaseline \
+    testLibraryBookRowLightPixelBaseline \
+    testLibraryNowPlayingBulletinDarkPixelBaseline \
+    testLibraryNowPlayingBulletinLightPixelBaseline \
+    testLibraryNowPlayingChaptersDarkPixelBaseline \
+    testLibraryNowPlayingChaptersLightPixelBaseline \
+    testLibraryReportRowDarkPixelBaseline \
+    testLibraryReportRowLightPixelBaseline \
+    testLibrarySettingsDarkPixelBaseline \
+    testLibrarySettingsLightPixelBaseline; do
+    grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$source" ||
+      fail "iOS pixel snapshot test method is missing: $method"
+  done
+
+  expected=$'library-add-rejected-dark.png\nlibrary-add-rejected-light.png\nlibrary-add-search-dark.png\nlibrary-add-search-light.png\nlibrary-add-sent-dark.png\nlibrary-add-sent-light.png\nlibrary-add-update-mac-dark.png\nlibrary-add-update-mac-light.png\nlibrary-book-row-dark.png\nlibrary-book-row-light.png\nlibrary-episode-detail-dark.png\nlibrary-episode-detail-light.png\nlibrary-filter-articles-dark.png\nlibrary-filter-articles-light.png\nlibrary-larder-dark.png\nlibrary-larder-grouped-dark.png\nlibrary-larder-grouped-light.png\nlibrary-larder-light.png\nlibrary-now-playing-bulletin-dark.png\nlibrary-now-playing-bulletin-light.png\nlibrary-now-playing-chapters-dark.png\nlibrary-now-playing-chapters-light.png\nlibrary-report-row-dark.png\nlibrary-report-row-light.png\nlibrary-settings-dark.png\nlibrary-settings-light.png'
+  actual="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; | LC_ALL=C sort)"
+  [[ "$actual" == "$expected" ]] || fail 'iOS pixel baseline selectors are missing or unexpected'
+  bad_pngs="$(find "$snapshot_dir" -type f -name '*.png' -exec file {} \; | grep -vc 'PNG image data, 390 x 844' || true)"
+  [[ "$bad_pngs" -eq 0 ]] || fail "iOS pixel baselines are invalid or wrong-sized: $bad_pngs"
+  printf 'native.ios-snapshots.baselines count=26 library-root-light-dark\n'
+}
 
 parse_result_bundle_test_count() {
   local summary_file="$1"

@@ -134,6 +134,10 @@ public struct ThrottledLibraryTransport: LibraryTransport {
         try await gate.run(priority: .background) { try await inner.publishDeviceLink(link) }
     }
 
+    public func deleteDeviceLink(deviceID: String) async throws {
+        try await gate.run(priority: .ownerAction) { try await inner.deleteDeviceLink(deviceID: deviceID) }
+    }
+
     public func fetchDeviceLink() async throws -> LibraryDeviceLink? {
         try await gate.run(priority: .poll) { try await inner.fetchDeviceLink() }
     }

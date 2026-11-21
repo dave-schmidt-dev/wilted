@@ -79,15 +79,16 @@ enum WiltedMacHeadless {
     }
 
     /// Renders `view` offscreen in light mode and returns its bitmap.
-    static func render<V: View>(_ view: V, size: CGSize = windowCanvas) throws -> NSBitmapImageRep {
+    static func render<V: View>(_ view: V, size: CGSize = windowCanvas, scale: Int = 1) throws -> NSBitmapImageRep {
         let hostingView = NSHostingView(
             rootView: view.environment(\.colorScheme, .light).frame(width: size.width, height: size.height))
         hostingView.frame = NSRect(origin: .zero, size: size)
         hostingView.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width) * scale, pixelsHigh: Int(size.height) * scale,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0))
+        bitmap.size = size
         hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
         return bitmap
     }
@@ -113,33 +114,53 @@ enum WiltedMacHeadless {
         try recognizedLines(view, size: size).map(\.text)
     }
 
+    static func showSectionText(
+        _ page: WiltedMacShowSettingsView, _ section: WiltedMacShowSettingsView.Section,
+        width: CGFloat = 800
+    ) throws -> [String] {
+        let height: CGFloat = switch section {
+        case .newEpisodes, .ads: 650
+        case .type: 240
+        case .details: 900
+        }
+        return try recognizedLines(page.sectionContent(section), size: CGSize(width: width, height: height),
+                                   readEnglish: true, readColumns: section == .ads).map(\.text)
+    }
+
     /// The same lines with their vertical position, top of the view first.
     static func recognizedLines<V: View>(
-        _ view: V, size: CGSize = windowCanvas
+        _ view: V, size: CGSize = windowCanvas, readEnglish: Bool = false,
+        readColumns: Bool = false
     ) throws -> [(text: String, top: CGFloat)] {
         let scale = 2
         // Vision misses text that touches the image edge, so the view sits inside a margin.
-        let hostingView = NSHostingView(
-            rootView: view.environment(\.colorScheme, .light).padding(24)
-                .frame(width: size.width, height: size.height, alignment: .topLeading)
-                .background(Color.white))
-        hostingView.frame = NSRect(origin: .zero, size: size)
-        hostingView.layoutSubtreeIfNeeded()
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: Int(size.width) * scale, pixelsHigh: Int(size.height) * scale,
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0))
-        bitmap.size = size
-        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        let content = view.padding(24)
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .background(Color.white)
+        let bitmap = try render(content, size: size, scale: scale)
         let cgImage = try XCTUnwrap(bitmap.cgImage)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
+        if readEnglish {
+            request.recognitionLanguages = ["en-US"]
+            request.customWords = ["Wilted", "Larder", "labelling"]
+        }
+        request.usesLanguageCorrection = readEnglish
         // The default skips text shorter than 1/32 of the image, which drops body copy in a tall render.
         request.minimumTextHeight = 0.004
         try VNImageRequestHandler(cgImage: cgImage).perform([request])
-        return (request.results ?? []).compactMap { observation in
+        // Ads has labels on the left and multiline explanations on the right.
+        // Keep a paragraph contiguous even when its label shares a baseline.
+        let lines = (request.results ?? []).sorted { lhs, rhs in
+            if readColumns {
+                let left = lhs.boundingBox.minX < 0.16
+                let right = rhs.boundingBox.minX < 0.16
+                if left != right { return left }
+            }
+            return lhs.boundingBox.maxY > rhs.boundingBox.maxY
+        }
+        return lines.compactMap { observation in
             observation.topCandidates(1).first.map { ($0.string, 1 - observation.boundingBox.maxY) }
-        }.sorted { $0.1 < $1.1 }
+        }
     }
 }

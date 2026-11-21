@@ -131,7 +131,8 @@ enum WiltedMacLibraryTransports {
     /// unavailable stand-in without `WILTED_CLOUDKIT_LIVE` or under XCTest.
     static func production(deviceID: String, hostsTests: Bool) -> any LibraryTransport {
 #if WILTED_CLOUDKIT_LIVE
-        guard !hostsTests else { return WiltedMacUnavailableLibraryTransport(reason: "iCloud sync is off in tests.") }
+        let isTestHost = hostsTests || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        guard !isTestHost else { return WiltedMacUnavailableLibraryTransport(reason: "iCloud sync is off in tests.") }
         do {
             let outbox = CloudKitLibraryOutbox()
             let factory = driverFactory(outbox: outbox)

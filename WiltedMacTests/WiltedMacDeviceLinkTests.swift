@@ -6,7 +6,7 @@ import XCTest
 
 /// Forwards to the in-memory transport, counts link writes, can fail the next ones, and can hold
 /// every ready upload until the test releases it, as a slow connection would.
-private final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
+final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
     private let inner: InMemoryLibraryTransport
     private let lock = NSLock()
     private var linkWrites = 0
@@ -14,12 +14,21 @@ private final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
     private var holding = false
     private var held: [CheckedContinuation<Void, Never>] = []
     private var uploadsFail = false
+    private var linkDeleteIDs: [String] = []
+    private var failLinkDeletes = 0
 
-    init(_ inner: InMemoryLibraryTransport) { self.inner = inner }
+    private let beforeLinkWrite: @Sendable () async -> Void
+
+    init(_ inner: InMemoryLibraryTransport, beforeLinkWrite: @escaping @Sendable () async -> Void = {}) {
+        self.inner = inner
+        self.beforeLinkWrite = beforeLinkWrite
+    }
 
     var linkWriteCount: Int { lock.withLock { linkWrites } }
     var heldUploads: Int { lock.withLock { held.count } }
+    var deletedLinkIDs: [String] { lock.withLock { linkDeleteIDs } }
     func failNextLinkWrites(_ count: Int) { lock.withLock { failLinks = count } }
+    func failNextLinkDeletes(_ count: Int) { lock.withLock { failLinkDeletes = count } }
     func holdUploads() { lock.withLock { holding = true } }
     func failUploads() { lock.withLock { uploadsFail = true } }
     func releaseUploads() {
@@ -57,7 +66,19 @@ private final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
             return true
         }
         if fails { throw URLError(.notConnectedToInternet) }
+        await beforeLinkWrite()
         try await inner.publishDeviceLink(link)
+    }
+
+    func deleteDeviceLink(deviceID: String) async throws {
+        let shouldFail = lock.withLock { () -> Bool in
+            linkDeleteIDs.append(deviceID)
+            guard failLinkDeletes > 0 else { return false }
+            failLinkDeletes -= 1
+            return true
+        }
+        if shouldFail { throw URLError(.notConnectedToInternet) }
+        try await inner.deleteDeviceLink(deviceID: deviceID)
     }
 
     func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
@@ -289,6 +310,67 @@ final class WiltedMacDeviceLinkTests: XCTestCase {
         ])
         XCTAssertEqual(rows.map(\.label), ["iPad 1", "iPad 2", "iPhone"])
         XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode, 2 episodes queued", "Linking…", "Linked"])
+    }
+
+    func testStoppingDirectDownloadsClearsOnlyLinkKeysAndKeepsRequestStatus() async throws {
+        let server = InMemoryLibraryServer(writerDeviceID: macID)
+        await server.setClock(start)
+        let macTransport = HandshakeTransport(InMemoryLibraryTransport(deviceID: macID, server: server))
+        let phoneTransport = InMemoryLibraryTransport(deviceID: ipadID, server: server)
+        let links = WiltedMacDeviceLinks(transport: macTransport, macDeviceID: macID, now: { [start] in start })
+        let phoneKey = LANKeyAgreementKey()
+        let directory = LibraryDeviceDirectory(devices: [LibraryDeviceAnnouncement(
+            deviceID: ipadID, kind: "iPad", announcedAt: start, lanPublicKey: phoneKey.publicKey)])
+        await links.setMacLANPublicKey(Data([1, 2, 3]))
+        await links.noteDirectory(directory)
+        let request = try LibraryIntent.requestMedia(
+            entryID: entry("ep-stop"), deviceID: ipadID, createdAt: start, id: "r-stop")
+        await links.record(request, stage: .sending)
+
+        let beforeValue = try await phoneTransport.fetchDeviceLink()
+        let before = try XCTUnwrap(beforeValue)
+        XCTAssertNotNil(before.lanPublicKey)
+        XCTAssertNotNil(before.knownPhoneKeyFingerprint)
+        XCTAssertEqual(before.status(intentID: "r-stop")?.stage, .sending)
+
+        let devicesBefore = await links.devices()
+        let row = try XCTUnwrap(WiltedMacLibrarySyncStatus.deviceRows(devicesBefore).first)
+        let writesBefore = macTransport.linkWriteCount
+        var operation: Task<Void, Never>?
+        let menu = WiltedMacDeviceDownloadsMenu(row: row, macEnabled: true) {
+            operation = Task { await links.stopDirectDownloads(for: row.id) }
+        }
+        menu.downloads.wrappedValue = false
+        let stop = try XCTUnwrap(operation)
+        await stop.value
+        XCTAssertEqual(macTransport.linkWriteCount, writesBefore + 1)
+
+        let afterValue = try await phoneTransport.fetchDeviceLink()
+        let after = try XCTUnwrap(afterValue)
+        XCTAssertNil(after.lanPublicKey)
+        XCTAssertNil(after.knownPhoneKeyFingerprint)
+        XCTAssertEqual(after.deviceID, before.deviceID)
+        XCTAssertEqual(after.linkedAt, before.linkedAt)
+        XCTAssertEqual(after.requests, before.requests)
+
+        let devices = await links.devices()
+        let device = try XCTUnwrap(devices.first)
+        XCTAssertEqual(device.inFlight.map(\.stage), [.sending])
+        XCTAssertTrue(device.isDirectDownloadsStopped)
+    }
+
+    func testDeviceRowsCarryStoppedStateWithoutChangingLiveStatus() throws {
+        let item = try entry("ep-row")
+        let sending = LibraryMediaRequestStatus(intentID: "r-row", entryID: item, stage: .sending, updatedAt: start)
+        let rows = WiltedMacLibrarySyncStatus.deviceRows([
+            WiltedMacLinkedDevice(deviceID: "phone", kind: "iPhone", isLinked: true,
+                                  inFlight: [sending], isDirectDownloadsStopped: true),
+            WiltedMacLinkedDevice(deviceID: "other", kind: nil, isLinked: false, inFlight: []),
+        ])
+
+        XCTAssertEqual(rows.map(\.label), ["iPhone", "Linked device"])
+        XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode", "Linking…"])
+        XCTAssertEqual(rows.map(\.isDirectDownloadsStopped), [true, false])
     }
 
     /// A Mac linked only to an iPad names the iPad, and its copy about devices in general names no phone.

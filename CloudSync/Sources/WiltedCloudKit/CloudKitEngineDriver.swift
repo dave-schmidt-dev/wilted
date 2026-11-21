@@ -474,8 +474,8 @@ extension LiveCloudKitEngineDriver {
             try await run(operation, outcome: outcome) { continuation in
                 operation.modifyRecordsResultBlock = { continuation.resume(with: $0) }
             }
-        } catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem {
-            return
+        } catch {
+            guard CloudKitRawDeleteFailure.isIdempotent(error) else { throw error }
         }
     }
 

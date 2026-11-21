@@ -1,3 +1,4 @@
+# Sourced by tests/test-native-gate.sh; a helper library, not a test entrypoint.
 assert_gatekeeper_contract() {
   if rg -q 'CODE_SIGNING_(ALLOWED|REQUIRED)=NO' "$gate"; then
     printf '%s\n' 'assertion failed: native gate disables code signing' >&2; exit 1
@@ -109,7 +110,7 @@ assert_build_cache_routing_contract() {
   assert_validation_contains "$cloudsync_cache"
   assert_validation_contains "$playback_cache"
   assert_contains "$producer_cache" "$gate"
-  unique_count="$(rg -o "local cache_key='native-[^']+'" "$gate" "$native_gate_validation" "$native_gate_snapshots" | sort -u | wc -l | tr -d ' ')"
+  unique_count="$(rg -o "local cache_key='native-[^']+'" "$gate" "$native_gate_validation" | sort -u | wc -l | tr -d ' ')"
   [[ "$unique_count" -eq 4 ]] || {
     printf '%s\n' 'assertion failed: SwiftPM package legs share a cache key' >&2
     exit 1
@@ -129,17 +130,17 @@ assert_build_cache_routing_contract() {
   assert_block_contains 'build_cache_path xcode "$cache_key"' "$mac_ui_block"
   assert_block_contains 'run_with_build_cache xcode "$cache_key" xcodebuild build-for-testing' "$mac_ui_block"
   assert_block_contains 'run xcode "$cache_key" -- xcodebuild test-without-building' "$mac_ui_block"
-  if rg -q -- '--scratch-path|\$tmp_root/swiftpm|derived_data=|DerivedData' "$gate" "$native_gate_validation" "$native_gate_snapshots"; then
+  if rg -q -- '--scratch-path|\$tmp_root/swiftpm|derived_data=|DerivedData' "$gate" "$native_gate_validation"; then
     printf '%s\n' 'assertion failed: native gate retains a per-run build cache root' >&2
     exit 1
   fi
   if rg -n '(^|[[:space:]])(swift (build|test)|xcodebuild (test|build-for-testing|test-without-building))' \
-      "$gate" "$native_gate_validation" "$native_gate_snapshots" | \
+      "$gate" "$native_gate_validation" | \
       rg -qv 'run_with_build_cache|build_with_cache.*run xcode'; then
     printf '%s\n' 'assertion failed: a native build bypasses the reusable build cache helper' >&2
     exit 1
   fi
-  if rg -q 'find "\$package/\.build".*PackageTests\.xctest' "$gate" "$native_gate_validation" "$native_gate_snapshots"; then
+  if rg -q 'find "\$package/\.build".*PackageTests\.xctest' "$gate" "$native_gate_validation"; then
     printf '%s\n' 'assertion failed: XCTest discovery still reads checkout-local .build' >&2
     exit 1
   fi
@@ -202,7 +203,7 @@ assert_macos_ui_leg_is_executed() {
   # test holds the count up. The gate asserts this one by identifier too.
   assert_validation_contains 'testLarderOverridesAnOffPeakDeferralWithPrepareNow'
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
-  for method in test01IntakeJourneyAcrossLarderFeedsAndSettings test02EpisodeDecisionJourneyFromFeedsToLarder; do
+  for method in test01IntakeJourneyAcrossLarderFeedsAndSettings test02ShowSettingsUsesTheSameFeedIDFromFeedsLarderAndAllShows test02EpisodeDecisionJourneyFromFeedsToLarder; do
     assert_contains "$method" "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift"
   done
   # The other journeys run headless in the Mac unit leg.
@@ -216,13 +217,20 @@ assert_snapshot_contract() {
   assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_validation_contains 'expected_count=216'
-  assert_validation_contains 'shells=64'
+  assert_validation_contains 'expected_count=228'
+  assert_validation_contains 'shells=76'
   for state in not-ready ready; do
     for appearance in light dark; do
       assert_validation_contains "testReportsSettingsPixelBaselines.mac-shell-settings-reports-$state-$appearance.png"
     done
   done
+  assert_validation_contains 'window_shells=16'
+  assert_validation_contains 'mac-shell-show-settings-light'
+  assert_validation_contains 'mac-shell-show-settings-changed-light'
+  assert_validation_contains 'mac-shell-show-settings-article-light'
+  assert_validation_contains 'mac-shell-show-settings-article-dark'
+  assert_contains 'func testDeviceRemovalConfirmationPixels()' \
+    "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift"
   assert_validation_contains 'WiltedPixelSnapshotTests+Rendering.swift'
   assert_validation_contains "expected_size='202 x 260'"
   assert_validation_contains "expected_size='56 x 260'"
@@ -307,6 +315,13 @@ assert_snapshot_contract() {
     testLibraryAndPreparingBaselinesContainRenderedControls \
     testMacLibraryShellPixelBaselines \
     testMacPlayerShellPixelBaselines \
+    testGeneralSettingsPixels \
+    testNewEpisodesSettingsPixels \
+    testPreparingSettingsPixels \
+    testAdsSettingsPixels \
+    testReportsSettingsPixels \
+    testDevicesSettingsPixels \
+    testAboutSettingsPixels \
     testMacNavigationSelectionPixelBaselines \
     testShippingMacProducerPixelBaselines \
     testShippingMacURLFocusPixelBaselines \
@@ -315,7 +330,8 @@ assert_snapshot_contract() {
     testMacSidebarCountsPixelBaselines \
     testMacToolbarPixelBaselines \
     testMacAddSheetPixelBaselines \
-    testArticleFeedPolicyPopoverPixelBaselines \
+    testShowSettingsPagePixelBaselines \
+    testArticleShowSettingsPixelBaselines \
     testArticleFeedInboxRowPixelBaselines \
     testLarderKindFilterPixelBaselines \
     testLarderBookRowPixelBaselines \
@@ -388,44 +404,3 @@ assert_ios_mvp_journey_contract() {
 }
 
 assert_ios_mvp_journey_contract
-
-assert_result_bundle_contract() {
-  if rg -q 'xcodebuild.*(Executed [0-9]+ tests|Test run with [0-9]+ tests)' "$gate"; then
-    printf '%s\n' 'assertion failed: native gate still infers counts from xcodebuild stdout' >&2
-    exit 1
-  fi
-  assert_validation_contains 'xcrun xcresulttool get test-results summary'
-  assert_validation_contains 'totalTestCount'
-  assert_validation_contains 'parse_result_bundle_test_count'
-  assert_validation_contains 'result_bundle_summary_passed'
-  assert_block_contains 'wait_macos_ui_supervisor' "$(sed -n '/^leg_macos_ui_tests()/,/^leg_ios_ui_tests()/p' "$gate")"
-  assert_contains '-resultBundlePath' "$gate"
-  assert_validation_contains 'native.result-bundle-missing'
-  if rg -q -- '--xunit-output|assert_xunit_tests|count\(//testcase\)' "$gate" "$native_gate_validation" "$native_gate_snapshots"; then
-    printf '%s\n' 'assertion failed: native gate still relies on SwiftPM xUnit output' >&2
-    exit 1
-  fi
-  assert_contains '--build-tests' "$gate"
-  assert_contains 'xcrun xctest' "$gate"
-  assert_validation_contains 'assert_xctest_output'
-  assert_validation_contains 'native.xctest-missing'
-  assert_validation_contains 'parse_xctest_output_count'
-  assert_contains 'build_with_cache="$repo_root/scripts/build-with-cache.py"' "$gate"
-  assert_contains 'python3 "$build_with_cache" path "$kind" "$key"' "$gate"
-  assert_contains 'python3 "$build_with_cache" run "$kind" "$key" -- "$@"' "$gate"
-  assert_contains 'cache_path="$(build_cache_path swiftpm "$cache_key")"' "$gate"
-  assert_contains 'run_with_build_cache swiftpm "$cache_key" swift build --package-path "$package" --build-tests' "$gate"
-  assert_contains 'run_with_build_cache swiftpm "$cache_key" swift test --package-path "$package"' "$native_gate_validation"
-  assert_contains 'local cache_key="native-$label"' "$gate"
-  assert_contains 'label_data="$(build_cache_path xcode "$cache_key")"' "$gate"
-  if rg -q -- '--scratch-path|derived_data=|DerivedData' "$gate" "$native_gate_validation" "$native_gate_snapshots"; then
-    printf '%s\n' 'assertion failed: native gate still creates per-run SwiftPM or DerivedData caches' >&2
-    exit 1
-  fi
-  if rg -q 'find "\$package/\.build".*WiltedProducerPackageTests\.xctest' "$gate" "$native_gate_validation" "$native_gate_snapshots"; then
-    printf '%s\n' 'assertion failed: Producer XCTest discovery still reads checkout-local .build' >&2
-    exit 1
-  fi
-}
-
-assert_result_bundle_contract

@@ -160,22 +160,17 @@ final class WiltedMacFeedRulesSheetTests: XCTestCase {
         )
     }
 
-    // MARK: The gear opens a sheet; the popover page is gone
+    // MARK: The Show settings page opens the rules sheet
 
-    func testGearOpensTheRulesSheetAndThePopoverPagePathIsGone() throws {
+    func testShowSettingsOpensTheRulesSheetWithoutAnOldPopoverReturnPath() throws {
         XCTAssertEqual(WiltedMacFeedRulesView.width, 720)
         XCTAssertEqual(WiltedMacFeedRulesView.height, 560)
-        XCTAssertEqual(WiltedMacFeedPolicyContent.width, 460, "the popover itself keeps its width")
 
-        let policy = try WiltedMacHeadless.viewSource("WiltedMacFeedPolicyView.swift")
-        XCTAssertTrue(policy.contains(".sheet(isPresented: $isEditingRules) {"), "the sheet hangs on the gear")
-        XCTAssertTrue(policy.contains("openRules: { isPresented = false; isEditingRules = true }"),
-                      "opening the rules closes the popover and opens the sheet")
-        XCTAssertTrue(policy.contains("open: openRules"))
-        XCTAssertTrue(policy.contains("dismiss: { isEditingRules = false }"))
-        for retired in ["showsRules", "back:"] {
-            XCTAssertFalse(policy.contains(retired), "\(retired) is the retired popover page path")
-        }
+        let settings = try WiltedMacHeadless.viewSource("WiltedMacShowSettingsView.swift")
+        XCTAssertTrue(settings.contains(".sheet(isPresented: $isEditingRules) {"))
+        XCTAssertTrue(settings.contains("WiltedMacFeedRulesEntry("))
+        XCTAssertTrue(settings.contains("open: { isEditingRules = true }"))
+        XCTAssertTrue(settings.contains("dismiss: { isEditingRules = false }"))
 
         let rules = try WiltedMacHeadless.viewSource("WiltedMacFeedRulesView.swift")
         let preview = try WiltedMacHeadless.viewSource("WiltedMacFeedRulesPreviewView.swift")
@@ -201,9 +196,7 @@ final class WiltedMacFeedRulesSheetTests: XCTestCase {
         let task = try XCTUnwrap(rules.range(of: ".task {"))
         XCTAssertTrue(rules[task.upperBound...].prefix(120).contains("editor.preview()"), "opening previews at once")
 
-        // The details sheet hosts the same gear, so the rules sheet stacks over it.
-        let details = try WiltedMacHeadless.viewSource("WiltedMacFeedDetailsView.swift")
-        XCTAssertTrue(details.contains("WiltedMacFeedPolicyButton(board: board, subscription: subscription)"))
+        XCTAssertTrue(settings.contains("newEpisodesSection"), "the same page owns its rules entry")
     }
 
     // MARK: Fixture

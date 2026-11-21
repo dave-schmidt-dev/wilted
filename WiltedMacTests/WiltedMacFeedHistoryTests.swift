@@ -132,8 +132,8 @@ final class WiltedMacFeedHistoryTests: XCTestCase {
         XCTAssertEqual(loader.rows.map(\.episodeID.rawValue), [ids["passed"]!], "search matches the episode title")
     }
 
-    /// Feed details embeds this same history, so its rows carry the same labels.
-    func testFeedDetailsHistoryRendersPlayedSkippedAndRuleLabels() async throws {
+    /// The Show settings Details section embeds this same history and its labels.
+    func testShowSettingsHistoryRendersPlayedSkippedAndRuleLabels() async throws {
         let model = WiltedMacModel(
             arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("history-labels"),
             preferences: WiltedMacTestPreferences.ephemeral()
@@ -155,8 +155,8 @@ final class WiltedMacFeedHistoryTests: XCTestCase {
             XCTAssertTrue(drawn.contains(ordinal), "History visibly numbers its rows: \(ordinal). Drawn: \(drawn)")
         }
         XCTAssertEqual(drawn.filter { $0 == "Restore" }.count, 4, text)
-        let details = try WiltedMacHeadless.viewSource("WiltedMacFeedDetailsView.swift")
-        XCTAssertTrue(details.contains("WiltedMacFeedHistoryView(model: model, feedID: subscription.id)"))
+        let settings = try WiltedMacHeadless.viewSource("WiltedMacShowSettingsView.swift")
+        XCTAssertTrue(settings.contains("WiltedMacFeedDetailsSection(model: model, subscription: subscription)"))
     }
 
     /// One feed's History in a fresh store, loaded: a finished episode, a hand

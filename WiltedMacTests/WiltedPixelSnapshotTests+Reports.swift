@@ -7,6 +7,110 @@ import XCTest
 @testable import WiltedMac
 
 extension WiltedPixelSnapshotTests {
+    private func snapshotDeviceAnnouncementDate() -> Date {
+        var components = DateComponents()
+        components.year = 2020
+        components.month = 1
+        components.day = 15
+        components.hour = 12
+        return Calendar.current.date(from: components) ?? Date(timeIntervalSince1970: 1_579_089_600)
+    }
+
+    func testGeneralSettingsPixels() async {
+        await captureSettingsSection(.general, testName: "testGeneralSettingsPixels")
+    }
+
+    func testNewEpisodesSettingsPixels() async {
+        await captureSettingsSection(.newEpisodes, testName: "testNewEpisodesSettingsPixels")
+    }
+
+    func testPreparingSettingsPixels() async {
+        await captureSettingsSection(.preparing, testName: "testPreparingSettingsPixels")
+    }
+
+    func testAdsSettingsPixels() async {
+        await captureSettingsSection(.ads, testName: "testAdsSettingsPixels")
+    }
+
+    func testReportsSettingsPixels() async {
+        await captureSettingsSection(.reports, testName: "testReportsSettingsPixels")
+    }
+
+    func testDevicesSettingsPixels() async {
+        await captureSettingsSection(.devices, testName: "testDevicesSettingsPixels")
+    }
+
+    func testDevicesSettingsWithSyntheticDeviceRowsPixels() async {
+        let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("settings-devices-rows"),
+            preferences: WiltedMacTestPreferences.ephemeral())
+        model.selectedNavigation = .settings
+        model.settingsSection = .devices
+        await model.waitForLifetimeStatisticsForTesting()
+        model.librarySyncActivity.devices = [
+            WiltedMacLinkedDevice(deviceID: "snapshot-phone", kind: "iPhone", isLinked: true, inFlight: [],
+                displayName: "Kitchen iPhone", lastAnnouncedAt: snapshotDeviceAnnouncementDate()),
+            WiltedMacLinkedDevice(deviceID: "snapshot-device", kind: nil, isLinked: false, inFlight: [],
+                displayName: nil, lastAnnouncedAt: nil)
+        ]
+        let image = render(WiltedMacRootView(model: model),
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false), size: windowCanvas)
+        assertSnapshot(image,
+            named: WiltedSnapshotContract.shellName(kind: "section-devices-synthetic-rows", appearance: .light),
+            testName: "testDevicesSettingsWithSyntheticDeviceRowsPixels")
+        await model.close()
+    }
+
+    func testDirectDownloadsDeviceMenuPixels() throws {
+        let device = WiltedMacLinkedDevice(
+            deviceID: "snapshot-phone", kind: "iPhone", isLinked: true, inFlight: [],
+            isDirectDownloadsStopped: true, displayName: "Study iPhone",
+            lastAnnouncedAt: snapshotDeviceAnnouncementDate())
+        let row = try XCTUnwrap(WiltedMacLibrarySyncStatus.deviceRows([device]).first)
+        let content = WiltedMacDeviceDownloadsMenu(row: row, macEnabled: true, onStop: {}, onRename: {}, onRemove: {})
+            .padding(WiltedTheme.Spacing.small)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(WiltedTheme.color(.card, scheme: .light))
+        let image = render(content,
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false),
+            size: CGSize(width: 360, height: 210))
+        assertSnapshot(image,
+            named: WiltedSnapshotContract.shellName(kind: "direct-downloads-device-menu", appearance: .light),
+            testName: "testDirectDownloadsDeviceMenuPixels")
+    }
+
+    func testDeviceRemovalConfirmationPixels() {
+        let content = WiltedMacDeviceRemovalConfirmation(
+            deviceName: "Travel iPhone", transferInFlight: true, onCancel: {}, onRemove: {},
+            isRemoving: false, errorMessage: nil)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .background(WiltedTheme.color(.card, scheme: .light))
+        let image = render(content,
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false),
+            size: CGSize(width: 520, height: 260))
+        assertSnapshot(image,
+            named: WiltedSnapshotContract.shellName(kind: "device-removal-confirmation", appearance: .light),
+            testName: "testDeviceRemovalConfirmationPixels")
+    }
+
+    func testAboutSettingsPixels() async {
+        await captureSettingsSection(.about, testName: "testAboutSettingsPixels")
+    }
+
+    private func captureSettingsSection(_ section: WiltedMacSettingsSection, testName: String) async {
+        let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("settings-section"),
+            preferences: WiltedMacTestPreferences.ephemeral())
+        model.selectedNavigation = .settings
+        model.settingsSection = section
+        await model.waitForLifetimeStatisticsForTesting()
+        let image = render(WiltedMacRootView(model: model),
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false), size: windowCanvas)
+        assertSnapshot(image, named: WiltedSnapshotContract.shellName(kind: "section-" + section.rawValue, appearance: .light),
+            testName: testName)
+        await model.close()
+    }
+
     // MARK: Reports settings
 
     /// The Reports section with interruptions on, the daily report on and typed coordinates in use.
@@ -115,6 +219,7 @@ extension WiltedPixelSnapshotTests {
                 preferences: WiltedMacTestPreferences.ephemeral()
             )
             model.selectedNavigation = .settings
+            model.settingsSection = .newEpisodes
             let image = render(WiltedMacRootView(model: model), variant: variant, size: windowCanvas)
             let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
             let detail = NSRect(x: 260, y: 0, width: bitmap.pixelsWide - 260, height: bitmap.pixelsHigh)
