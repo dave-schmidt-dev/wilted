@@ -7,6 +7,23 @@ import WiltedProducer
 
 @MainActor
 extension WiltedMacFeedPolicyViewTests {
+    func testSettingsSavedBeforeTheGlobalDefaultsExistReadAsOffAndUnlimited() throws {
+        let current = try JSONEncoder().encode(WiltedAutomationSettings.defaults)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: current) as? [String: Any])
+        object.removeValue(forKey: "autoKeepNewEpisodes")
+        object.removeValue(forKey: "keptLimitPerFeed")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(WiltedAutomationSettings.self, from: legacy)
+        XCTAssertEqual(decoded, WiltedAutomationSettings.defaults)
+        XCTAssertFalse(decoded.autoKeepNewEpisodes)
+        XCTAssertNil(decoded.keptLimitPerFeed)
+        let limited = WiltedAutomationSettings.defaults.settingKeptLimitPerFeed(0)
+        XCTAssertNil(limited.keptLimitPerFeed, "a limit below one is No limit, never zero")
+    }
+
+    // MARK: Narrow and wide
+
+
     func testPolicyAndRuleWritesDuringReloadRemainVisibleAndDurable() async throws {
         let model = await WiltedMacHeadless.model(
             self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "feed-policy-write-race"

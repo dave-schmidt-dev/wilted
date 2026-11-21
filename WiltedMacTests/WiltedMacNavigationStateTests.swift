@@ -223,7 +223,6 @@ final class WiltedMacNavigationStateTests: XCTestCase {
         XCTAssertTrue(feeds.contains("model.navigationState.selectedFeedEpisodeIDs"))
         for (file, destination) in [
             ("WiltedMacFeedsView.swift", ".feeds"), ("WiltedMacLarderView.swift", ".larder"),
-            ("WiltedMacSettingsView.swift", ".settings"),
         ] {
             let source = try WiltedMacHeadless.viewSource(file)
             XCTAssertTrue(source.contains("scrollAnchor: model.scrollAnchor(for: \(destination))"), file)

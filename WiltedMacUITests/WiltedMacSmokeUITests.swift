@@ -213,6 +213,17 @@ extension WiltedMacJourneyUITests {
         app.typeKey(.escape, modifierFlags: [])
 
         navSettings.click()
+        for (section, control) in [
+            ("general", "wilted-text-scale"), ("new-episodes", "wilted-automation-status"),
+            ("preparing", "wilted-automation-processing-policy"), ("ads", "wilted-automation-remove-ads"),
+            ("reports", "wilted-reports-controls"), ("about", "wilted-lifetime-statistics"),
+            ("devices", "wilted-sync-controls")
+        ] {
+            let selector = app.buttons["wilted-settings-section-\(section)"]
+            XCTAssertTrue(selector.waitForExistence(timeout: 5), section)
+            selector.click()
+            XCTAssertTrue(element(app, control).waitForExistence(timeout: 5), section)
+        }
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
         XCTAssertFalse(removedAddHint.exists)
         XCTAssertTrue(compact.exists)

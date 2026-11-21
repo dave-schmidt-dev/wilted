@@ -122,6 +122,7 @@ extension WiltedMacJourneyUITests {
         // Settings leaves the player visible while keeping the Larder title
         // out of the query, so this click proves the actual player entry point.
         element(playing, "wilted-navigation-settings").click()
+        XCTAssertTrue(playing.buttons["wilted-settings-section-general"].waitForExistence(timeout: 5))
         let playerTitle = playing.buttons["wilted-player-show-notes-\(episodeID)"]
         XCTAssertTrue(playerTitle.waitForExistence(timeout: 10))
         playerTitle.click()

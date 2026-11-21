@@ -13,7 +13,7 @@ final class WiltedMacSyncBannerTests: XCTestCase {
         XCTAssertEqual(past.noticeWithResumeTime(now: now, retrying: false), "iCloud is rate limiting sync. Retrying now…")
         let view = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WiltedMac/Views/WiltedMacSettingsView.swift"), encoding: .utf8)
+            .appendingPathComponent("WiltedMac/Views/WiltedMacLibrarySyncCard.swift"), encoding: .utf8)
         XCTAssertTrue(view.contains("noticeWithResumeTime(now: context.date"), "the Mac banner uses the same line as the phone")
         XCTAssertFalse(view.contains("Resumes at"), "no stale resume time")
     }

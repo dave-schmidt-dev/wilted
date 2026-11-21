@@ -36,7 +36,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
     }
 
     func testPixelSnapshotSelectorsAreUniqueAndComplete() {
-        let names = Self.visualFixtures.flatMap { fixture in
+        let shellAndStateNames = Self.visualFixtures.flatMap { fixture in
             Self.visualVariants.map { variant in
                 WiltedSnapshotContract.stateName(state: fixture.state, variant: variant)
             }
@@ -59,6 +59,10 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: $0, appearance: appearance)
             }
         }
+        let sectionNames = WiltedMacSettingsSection.allCases.map {
+            WiltedSnapshotContract.shellName(kind: "section-" + $0.rawValue, appearance: .light)
+        }
+        let names = shellAndStateNames + sectionNames
         XCTAssertEqual(names.count, WiltedSnapshotContract.expectedPixelBaselineCount)
         XCTAssertEqual(Set(names).count, names.count)
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("state-") || $0.hasPrefix("mac-shell-") })
@@ -433,207 +437,5 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                     testName: "testMacAddSheetPixelBaselines")
             }
         }
-    }
-
-    /// The feed settings popover of an article feed: no download choice, and the "News" row.
-    func testArticleFeedPolicyPopoverPixelBaselines() throws {
-        let feedURL = try XCTUnwrap(URL(string: "https://blog.example.test/feed.xml"))
-        let feedID = try ItemID.articleFeed(canonicalFeedURL: feedURL).rawValue
-        let subscription = WiltedMacSubscription(
-            id: feedID, title: "The Example Blog", feedURL: feedURL, episodeCount: 0,
-            subscribedAt: Date(timeIntervalSince1970: 1_700_000_000), enabled: true)
-        for appearance in WiltedAppearance.allCases {
-            let model = WiltedMacModel(
-                arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("feed-policy-article"),
-                preferences: WiltedMacTestPreferences.ephemeral())
-            model.subscriptions = [subscription]
-            let board = WiltedMacFeedPolicyBoard(model: model)
-            board.loadForPreview(feedID: feedID, isArticleFeed: true, isNews: true)
-            let content = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-                .padding(WiltedTheme.Spacing.large)
-                .environment(\.wiltedTextScale, model.textScale)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(WiltedTheme.color(.card, scheme: appearance == .dark ? .dark : .light))
-            let image = render(
-                content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
-                size: CGSize(width: 520, height: 460))
-            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
-            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the article feed popover drew")
-            assertSnapshot(
-                image, named: WiltedSnapshotContract.shellName(kind: "feed-policy-article", appearance: appearance),
-                testName: "testArticleFeedPolicyPopoverPixelBaselines")
-        }
-        let shown = try WiltedMacHeadless.recognizedText(
-            WiltedMacFeedPolicyContent(board: {
-                let model = WiltedMacModel(
-                    arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("feed-policy-article-text"),
-                    preferences: WiltedMacTestPreferences.ephemeral())
-                model.subscriptions = [subscription]
-                let board = WiltedMacFeedPolicyBoard(model: model)
-                board.loadForPreview(feedID: feedID, isArticleFeed: true, isNews: true)
-                return board
-            }(), subscription: subscription),
-            size: CGSize(width: WiltedMacFeedPolicyContent.width, height: 800)
-        ).joined(separator: " ")
-        XCTAssertTrue(shown.contains("News"), shown)
-        XCTAssertFalse(shown.contains("Auto download"), "an article has nothing to download: \(shown)")
-    }
-
-    /// An offered post of an article feed in the Feeds inbox, with Keep and Skip.
-    func testArticleFeedInboxRowPixelBaselines() throws {
-        let article = WiltedMacOfferedArticle(
-            id: "article-row-fixture", feedID: "feed", feedTitle: "The Example Blog",
-            title: "Why small tools last longer than big ones",
-            link: try XCTUnwrap(URL(string: "https://blog.example.test/post")),
-            publishedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            item: ArticleFeedItem(
-                guid: "g", title: "Why small tools last longer than big ones",
-                link: try XCTUnwrap(URL(string: "https://blog.example.test/post")),
-                publishedAt: Date(timeIntervalSince1970: 1_700_000_000)))
-        for appearance in WiltedAppearance.allCases {
-            let model = WiltedMacModel(
-                arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: wiltedTemporaryDirectory("feeds-article-row"),
-                preferences: WiltedMacTestPreferences.ephemeral())
-            let content = WiltedMacFeedsArticleRow(model: model, article: article)
-                .padding(WiltedTheme.Spacing.large)
-                .environment(\.wiltedTextScale, model.textScale)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(WiltedTheme.color(.card, scheme: appearance == .dark ? .dark : .light))
-            let image = render(
-                content, variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
-                size: CGSize(width: 520, height: 90))
-            let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
-            XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8, "the article row drew")
-            assertSnapshot(
-                image, named: WiltedSnapshotContract.shellName(kind: "feeds-article-row", appearance: appearance),
-                testName: "testArticleFeedInboxRowPixelBaselines")
-        }
-    }
-
-    func testSnapshotBaselinePreservesExistingBytesWhenMatchingInRecordMode() throws {
-        let baseline = try baselineTestURL(for: "matching-baseline")
-        let existingBitmap = makeSolidBitmap(width: 4, height: 2, red: 17, green: 34, blue: 51, alpha: 255)
-        let existingBytes = try XCTUnwrap(existingBitmap.representation(using: .png, properties: [:]))
-        try existingBytes.write(to: baseline, options: .atomic)
-
-        let actualBitmap = makeSolidBitmap(width: 4, height: 2, red: 17, green: 34, blue: 51, alpha: 255)
-        let actualBytes = try XCTUnwrap(actualBitmap.representation(using: .png, properties: [:]))
-        let mutation = try applySnapshotRecordModeUpdate(
-            baseline: baseline,
-            actual: actualBitmap,
-            actualPNG: actualBytes,
-            forceRecord: false
-        )
-
-        XCTAssertFalse(mutation)
-        XCTAssertEqual(try Data(contentsOf: baseline), existingBytes)
-    }
-
-    func testSnapshotBaselineReplacesWhenBaselineIsMissingOrUnreadableOrDifferentInRecordMode() throws {
-        let missingBaseline = try baselineTestURL(for: "missing-baseline")
-        let replacement = makeSolidBitmap(width: 3, height: 2, red: 12, green: 25, blue: 38, alpha: 255)
-        let replacementBytes = try XCTUnwrap(replacement.representation(using: .png, properties: [:]))
-        let missing = try applySnapshotRecordModeUpdate(
-            baseline: missingBaseline,
-            actual: replacement,
-            actualPNG: replacementBytes,
-            forceRecord: false
-        )
-        XCTAssertTrue(missing)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: missingBaseline.path))
-
-        let unreadableBaseline = try baselineTestURL(for: "unreadable-baseline")
-        try Data("not-an-image".utf8).write(to: unreadableBaseline, options: .atomic)
-        let unreadable = try applySnapshotRecordModeUpdate(
-            baseline: unreadableBaseline,
-            actual: replacement,
-            actualPNG: replacementBytes,
-            forceRecord: false
-        )
-        XCTAssertTrue(unreadable)
-
-        let dimensionMismatchBaseline = try baselineTestURL(for: "dimension-mismatch-baseline")
-        let smallBitmap = makeSolidBitmap(width: 2, height: 2, red: 12, green: 25, blue: 38, alpha: 255)
-        let smallBytes = try XCTUnwrap(smallBitmap.representation(using: .png, properties: [:]))
-        try smallBytes.write(to: dimensionMismatchBaseline, options: .atomic)
-        let dimensionMismatch = try applySnapshotRecordModeUpdate(
-            baseline: dimensionMismatchBaseline,
-            actual: replacement,
-            actualPNG: replacementBytes,
-            forceRecord: false
-        )
-        XCTAssertTrue(dimensionMismatch)
-
-        let materialMismatchBaseline = try baselineTestURL(for: "material-mismatch-baseline")
-        let oldBitmap = makeSolidBitmap(width: 3, height: 2, red: 1, green: 2, blue: 3, alpha: 255)
-        let oldBytes = try XCTUnwrap(oldBitmap.representation(using: .png, properties: [:]))
-        try oldBytes.write(to: materialMismatchBaseline, options: .atomic)
-        let materialMismatch = try applySnapshotRecordModeUpdate(
-            baseline: materialMismatchBaseline,
-            actual: replacement,
-            actualPNG: replacementBytes,
-            forceRecord: false
-        )
-        XCTAssertTrue(materialMismatch)
-    }
-
-    func testSnapshotBaselineReplacesWhenForceRecordEnabled() throws {
-        let baseline = try baselineTestURL(for: "force-record-baseline")
-        let existingBitmap = makeSolidBitmap(width: 2, height: 2, red: 12, green: 25, blue: 38, alpha: 255)
-        let existingBytes = try XCTUnwrap(existingBitmap.representation(using: .png, properties: [:]))
-        try existingBytes.write(to: baseline, options: .atomic)
-
-        let actualBitmap = makeSolidBitmap(width: 2, height: 2, red: 13, green: 26, blue: 39, alpha: 255)
-        let actualBytes = try XCTUnwrap(actualBitmap.representation(using: .png, properties: [:]))
-        let mutation = try applySnapshotRecordModeUpdate(
-            baseline: baseline,
-            actual: actualBitmap,
-            actualPNG: actualBytes,
-            forceRecord: true
-        )
-        XCTAssertTrue(mutation)
-        XCTAssertNotEqual(try Data(contentsOf: baseline), existingBytes)
-    }
-
-    func testForceRecordHasNoEffectWhenRecordModeIsDisabled() throws {
-        let baseline = try baselineTestURL(for: "force-without-record")
-        let existingBitmap = makeSolidBitmap(width: 2, height: 2, red: 12, green: 25, blue: 38, alpha: 255)
-        let existingBytes = try XCTUnwrap(existingBitmap.representation(using: .png, properties: [:]))
-        try existingBytes.write(to: baseline, options: .atomic)
-
-        let actualBitmap = makeSolidBitmap(width: 2, height: 2, red: 13, green: 26, blue: 39, alpha: 255)
-        let actualBytes = try XCTUnwrap(actualBitmap.representation(using: .png, properties: [:]))
-        let mutation = try applySnapshotRecordModeUpdate(
-            baseline: baseline,
-            actual: actualBitmap,
-            actualPNG: actualBytes,
-            forceRecord: true,
-            recordMode: false
-        )
-        XCTAssertFalse(mutation)
-        XCTAssertEqual(try Data(contentsOf: baseline), existingBytes)
-    }
-}
-
-enum WiltedSnapshotContract {
-    static let stateCount = WiltedPreviewState.allCases.count
-    static let variantCount = WiltedVisualVariant.matrix.count
-    static let shellCount = 60
-    static let expectedPixelBaselineCount = stateCount * variantCount + shellCount
-
-    static var recordMode: Bool {
-        ProcessInfo.processInfo.environment["WILTED_RECORD_SNAPSHOTS"] == "1"
-    }
-
-    static var forceRecordMode: Bool {
-        ProcessInfo.processInfo.environment["WILTED_FORCE_RECORD_SNAPSHOTS"] == "1"
-    }
-
-    static func stateName(state: WiltedPreviewState, variant: WiltedVisualVariant) -> String {
-        "state-\(state.id)-\(variant.id)"
-    }
-
-    static func shellName(kind: String, appearance: WiltedAppearance) -> String {
-        "mac-shell-\(kind)-\(appearance.rawValue)"
     }
 }

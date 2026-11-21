@@ -6,6 +6,48 @@ import XCTest
 @testable import WiltedMac
 
 extension WiltedPixelSnapshotTests {
+    func testGeneralSettingsPixels() async {
+        await captureSettingsSection(.general, testName: "testGeneralSettingsPixels")
+    }
+
+    func testNewEpisodesSettingsPixels() async {
+        await captureSettingsSection(.newEpisodes, testName: "testNewEpisodesSettingsPixels")
+    }
+
+    func testPreparingSettingsPixels() async {
+        await captureSettingsSection(.preparing, testName: "testPreparingSettingsPixels")
+    }
+
+    func testAdsSettingsPixels() async {
+        await captureSettingsSection(.ads, testName: "testAdsSettingsPixels")
+    }
+
+    func testReportsSettingsPixels() async {
+        await captureSettingsSection(.reports, testName: "testReportsSettingsPixels")
+    }
+
+    func testDevicesSettingsPixels() async {
+        await captureSettingsSection(.devices, testName: "testDevicesSettingsPixels")
+    }
+
+    func testAboutSettingsPixels() async {
+        await captureSettingsSection(.about, testName: "testAboutSettingsPixels")
+    }
+
+    private func captureSettingsSection(_ section: WiltedMacSettingsSection, testName: String) async {
+        let model = WiltedMacModel(arguments: ["--wilted-ui-fixture-ready"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("settings-section"),
+            preferences: WiltedMacTestPreferences.ephemeral())
+        model.selectedNavigation = .settings
+        model.settingsSection = section
+        await model.waitForLifetimeStatisticsForTesting()
+        let image = render(WiltedMacRootView(model: model),
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false), size: windowCanvas)
+        assertSnapshot(image, named: WiltedSnapshotContract.shellName(kind: "section-" + section.rawValue, appearance: .light),
+            testName: testName)
+        await model.close()
+    }
+
     // MARK: Reports settings
 
     /// The Reports section with interruptions on, the daily report on and typed coordinates in use.
@@ -58,6 +100,7 @@ extension WiltedPixelSnapshotTests {
                 preferences: WiltedMacTestPreferences.ephemeral()
             )
             model.selectedNavigation = .settings
+            model.settingsSection = .newEpisodes
             let image = render(WiltedMacRootView(model: model), variant: variant, size: windowCanvas)
             let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
             let detail = NSRect(x: 260, y: 0, width: bitmap.pixelsWide - 260, height: bitmap.pixelsHigh)

@@ -44,6 +44,8 @@ enum WiltedMacSource {
         "Views/WiltedMacPlayerContent.swift",
         "Views/WiltedMacPlayerContent+Sections.swift",
         "Views/WiltedMacSettingsView.swift",
+        "Views/WiltedMacSettingsSections.swift",
+        "Views/WiltedMacLibrarySyncCard.swift",
     ]
 
     /// The model layer: `WiltedMac/Models` and `WiltedMac/ViewModel`.

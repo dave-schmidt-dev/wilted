@@ -469,12 +469,20 @@ struct WiltedMacInheritedFeedDefaults: View {
         ForEach(WiltedFeedAutomationSummary.globalRows(model.automationSettings).filter {
             $0.label == "Auto download" || $0.label == "Auto prepare"
         }, id: \.label) { row in
-            HStack {
-                Text(row.label).wiltedFont(.body)
-                Spacer()
-                Text("\(row.value) · Set in \(row.label == "Auto download" ? "Larder" : "Processing")")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            let label = Text(row.label).wiltedFont(.body)
+            let value = Text("\(row.value) · Set in \(row.label == "Auto download" ? "Larder" : "Processing")")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    label
+                    Spacer()
+                    value
+                }
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                    label
+                    value
+                }
             }
             .accessibilityIdentifier("wilted-automation-feed-default-\(row.label.lowercased().replacingOccurrences(of: " ", with: "-"))")
         }

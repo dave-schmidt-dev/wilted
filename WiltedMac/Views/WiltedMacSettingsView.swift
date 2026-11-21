@@ -20,17 +20,35 @@ struct WiltedMacSettingsView: View {
     }
 
     var body: some View {
-        WiltedMacDestination(
-            title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings", watermark: true,
-            scrollAnchor: model.scrollAnchor(for: .settings)
-        ) {
-            appearanceCard.id("settings-appearance")
-            WiltedMacLifetimeStatisticsCard(model: model).id("settings-statistics")
-            automationCard.id("settings-automation")
-            WiltedMacAdFindingSettingsView(model: model.adFinding).id("settings-ad-finding")
-            WiltedMacAdFeedbackCard(feedback: model.adFeedback).id("settings-ad-feedback")
-            WiltedMacReportsCard(model: model, location: location).id("settings-reports")
-            syncCard.id("settings-sync")
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                ForEach(WiltedMacSettingsSection.allCases, id: \.self) { section in
+                    Button {
+                        model.settingsSection = section
+                    } label: {
+                        Text(section.title)
+                            .wiltedFont(.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(WiltedTheme.Spacing.small)
+                            .background {
+                                if model.settingsSection == section {
+                                    RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.16))
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(model.settingsSection == section ? .isSelected : [])
+                    .accessibilityIdentifier("wilted-settings-section-\(section.rawValue)")
+                }
+                Spacer()
+            }
+            .padding(WiltedTheme.Spacing.small)
+            .frame(width: 136)
+            Divider()
+            WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings", watermark: true) {
+                sectionContent
+            }
+            .id(model.settingsSection)
         }
     }
 
@@ -121,60 +139,6 @@ struct WiltedMacSettingsView: View {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
 
-
-                Divider()
-
-                automationSectionTitle("Processing")
-                Picker("Prepare episodes", selection: processingPolicyBinding) {
-                    Text(WiltedAutomationProcessingPolicy.immediate.settingsControlLabel)
-                        .tag(WiltedAutomationProcessingPolicy.immediate.settingsControlLabel)
-                    Text(WiltedAutomationProcessingPolicy.manual.settingsControlLabel)
-                        .tag(WiltedAutomationProcessingPolicy.manual.settingsControlLabel)
-                    Text(WiltedAutomationProcessingPolicy.offPeak(defaultOffPeakWindow).settingsControlLabel)
-                        .tag(WiltedAutomationProcessingPolicy.offPeak(defaultOffPeakWindow).settingsControlLabel)
-                }
-                .accessibilityIdentifier("wilted-automation-processing-policy")
-
-                if isOffPeakProcessing {
-                    DatePicker("Start", selection: offPeakStartBinding, displayedComponents: .hourAndMinute)
-                        .accessibilityIdentifier("wilted-automation-off-peak-start")
-                    DatePicker("End", selection: offPeakEndBinding, displayedComponents: .hourAndMinute)
-                        .accessibilityIdentifier("wilted-automation-off-peak-end")
-                    Text("Uses local time. The window may continue overnight.")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("wilted-automation-off-peak-explanation")
-                }
-
-                Divider()
-
-                automationSectionTitle("Transcript")
-                Picker("Transcript source", selection: transcriptPolicyBinding) {
-                    ForEach([
-                        WiltedAutomationTranscriptPolicy.bestAvailable,
-                        .alwaysTranscribe,
-                        .noLocalSTT
-                    ], id: \.rawValue) { policy in
-                        Text(policy.settingsControlLabel).tag(policy.settingsControlLabel)
-                    }
-                }
-                .accessibilityIdentifier("wilted-automation-transcript-policy")
-                Toggle("Remove ads", isOn: removeAdsBinding)
-                    .accessibilityIdentifier("wilted-automation-remove-ads")
-                Toggle("Chime where an ad was removed", isOn: Binding(
-                    get: { model.marksRemovedAds }, set: { model.marksRemovedAds = $0 }
-                ))
-                    .accessibilityIdentifier("wilted-automation-ad-marker")
-                    .help("Plays a short, quiet tone at each spot an advertisement was cut. Takes effect immediately; nothing is re-prepared.")
-                if model.automationSettings.transcriptPolicyBlocksAdRemoval {
-                    Text(WiltedAutomationSettings.transcriptPolicyBlocksAdRemovalExplanation)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("wilted-automation-transcript-conflict")
-                }
-
                 Divider()
 
                 HStack {
@@ -202,6 +166,65 @@ struct WiltedMacSettingsView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-automation-controls")
+    }
+
+    var preparingCard: some View {
+        WiltedSettingsCard(title: "Processing") {
+            Picker("Prepare episodes", selection: processingPolicyBinding) {
+                Text(WiltedAutomationProcessingPolicy.immediate.settingsControlLabel)
+                    .tag(WiltedAutomationProcessingPolicy.immediate.settingsControlLabel)
+                Text(WiltedAutomationProcessingPolicy.manual.settingsControlLabel)
+                    .tag(WiltedAutomationProcessingPolicy.manual.settingsControlLabel)
+                Text(WiltedAutomationProcessingPolicy.offPeak(defaultOffPeakWindow).settingsControlLabel)
+                    .tag(WiltedAutomationProcessingPolicy.offPeak(defaultOffPeakWindow).settingsControlLabel)
+            }
+            .accessibilityIdentifier("wilted-automation-processing-policy")
+
+            if isOffPeakProcessing {
+                DatePicker("Start", selection: offPeakStartBinding, displayedComponents: .hourAndMinute)
+                    .accessibilityIdentifier("wilted-automation-off-peak-start")
+                DatePicker("End", selection: offPeakEndBinding, displayedComponents: .hourAndMinute)
+                    .accessibilityIdentifier("wilted-automation-off-peak-end")
+                Text("Uses local time. The window may continue overnight.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-automation-off-peak-explanation")
+            }
+
+            Divider()
+
+            automationSectionTitle("Transcript")
+            Picker("Transcript source", selection: transcriptPolicyBinding) {
+                ForEach([
+                    WiltedAutomationTranscriptPolicy.bestAvailable,
+                    .alwaysTranscribe,
+                    .noLocalSTT
+                ], id: \.rawValue) { policy in
+                    Text(policy.settingsControlLabel).tag(policy.settingsControlLabel)
+                }
+            }
+            .accessibilityIdentifier("wilted-automation-transcript-policy")
+            if model.automationSettings.transcriptPolicyBlocksAdRemoval {
+                Text(WiltedAutomationSettings.transcriptPolicyBlocksAdRemovalExplanation)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-automation-transcript-conflict")
+            }
+        }
+    }
+
+    var adRemovalCard: some View {
+        WiltedSettingsCard(title: "Automation") {
+            Toggle("Remove ads", isOn: removeAdsBinding)
+                .accessibilityIdentifier("wilted-automation-remove-ads")
+            Toggle("Chime where an ad was removed", isOn: Binding(
+                get: { model.marksRemovedAds }, set: { model.marksRemovedAds = $0 }
+            ))
+                .accessibilityIdentifier("wilted-automation-ad-marker")
+                .help("Plays a short, quiet tone at each spot an advertisement was cut. Takes effect immediately; nothing is re-prepared.")
+        }
     }
 
     private func automationSectionTitle(_ title: String) -> some View {
@@ -366,101 +389,7 @@ struct WiltedMacSettingsView: View {
     }
 
     /// The library publisher's card, or its not-running state when no engine is selected.
-    @ViewBuilder private var syncCard: some View {
+    @ViewBuilder var syncCard: some View {
         WiltedMacLibrarySyncCard(model: model)
-    }
-}
-
-/// The library publisher's Sync card (Task 5.2): one status line, this Mac's own send and read
-/// times, one Sync now, and the account review. Times are local; the phone reports its own fetch.
-private struct WiltedMacLibrarySyncCard: View {
-    let model: WiltedMacModel
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var isReviewing = false
-
-    var body: some View {
-        let status = model.librarySyncStatus
-        let activity = model.librarySyncActivity
-        WiltedSettingsCard(title: WiltedScreenCopy.sync) {
-            WiltedPublicationNotice(summary: model.libraryPublicationSummary, detail: model.libraryPublicationDetail,
-                qualifier: model.libraryPublicationQualifier)
-            WiltedSettingsRow("Status", value: status.headline, identifier: "wilted-sync-status", tone: status.tone)
-            if let throttle = model.libraryThrottle {
-                Divider()
-                // The retry time while it is ahead, "Retrying now…" once it has passed (never a time
-                // that has gone by); cleared by the next call that succeeds.
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    WiltedSettingsRow(
-                        "iCloud", value: throttle.noticeWithResumeTime(now: context.date, retrying: false),
-                        identifier: "wilted-sync-throttle", tone: .caution)
-                }
-            }
-            Divider()
-            WiltedSettingsRow(
-                "Sent from this Mac", value: WiltedMacLibrarySyncStatus.timeLabel(activity.lastSentAt),
-                identifier: "wilted-sync-last-send")
-            Divider()
-            WiltedSettingsRow(
-                "Device changes read", value: WiltedMacLibrarySyncStatus.timeLabel(activity.lastCheckedAt),
-                identifier: "wilted-sync-last-check")
-            Divider()
-            Toggle("Direct downloads from this Mac", isOn: Binding(
-                get: { model.isDirectDownloadsEnabled },
-                set: { model.setDirectDownloadsEnabled($0) }
-            ))
-            .wiltedFont(.utility)
-            .accessibilityIdentifier("wilted-sync-direct-downloads-toggle")
-            // Each iPhone and iPad this Mac links as soon as it syncs, and the requests it is answering.
-            ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in
-                Divider()
-                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    WiltedSettingsRow(row.label, value: row.value, identifier: "wilted-sync-device")
-                    if row.label.hasPrefix("iPhone") {
-                        Button("Stop direct downloads for this iPhone") {
-                            model.stopDirectDownloads(for: row.id)
-                        }
-                        .wiltedFont(.utility)
-                        .buttonStyle(.link)
-                        .accessibilityIdentifier("wilted-sync-stop-direct-\(row.id)")
-                    }
-                }
-            }
-            // The counters are not observed, so the line re-reads them on a 30 s timeline. Without
-            // counters there is no timeline at all, so the card's spacing stays as before.
-            if model.librarySyncDiagnostics != nil {
-                TimelineView(.periodic(from: .now, by: 30)) { _ in
-                    Text(model.librarySyncDiagnostics ?? "")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("wilted-sync-diagnostics")
-                }
-            }
-            Text(WiltedMacLibrarySyncStatus.scopeNote)
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("wilted-sync-scope-note")
-            HStack(spacing: WiltedTheme.Spacing.small) {
-                Button("Sync now") { model.syncLibraryNow() }
-                    .disabled(!status.canSyncNow)
-                    .accessibilityIdentifier("wilted-sync-now")
-                if status.reviewContext != nil {
-                    Button("Review account…") { isReviewing = true }
-                        .accessibilityIdentifier("wilted-sync-review-account")
-                }
-            }
-            .padding(.top, WiltedTheme.Spacing.xSmall)
-        }
-        .alert(WiltedMacLibrarySyncStatus.reviewTitle, isPresented: $isReviewing) {
-            Button(WiltedMacLibrarySyncStatus.approveReview) { model.reviewLibraryAccount() }
-                .accessibilityIdentifier("wilted-sync-review-approve")
-            Button(WiltedMacLibrarySyncStatus.keepHeld, role: .cancel) {}
-                .accessibilityIdentifier("wilted-sync-review-keep-held")
-        } message: {
-            Text("\(status.reviewContext ?? "") \(WiltedMacLibrarySyncStatus.reviewExplanation)")
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-sync-controls")
     }
 }
