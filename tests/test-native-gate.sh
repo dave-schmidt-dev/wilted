@@ -375,8 +375,8 @@ assert_contains 'self_test_watchos_zero_test_evidence' "$gate"
 # The shipping phone lane keeps the original eight captures, adds the eight Add sheet captures, and verifies pixels, not hidden labels.
 assert_validation_contains 'iOS pixel snapshot method membership must remain exactly twenty-six'
 assert_validation_contains 'iOS pixel test does not verify painted date and Storage geometry'
-assert_validation_contains 'expected_count=223'
-assert_validation_contains 'shells=71'
+assert_validation_contains 'expected_count=224'
+assert_validation_contains 'shells=72'
 assert_validation_contains 'window_shells=16'
 for snapshot in \
   testShowSettingsPagePixelBaselines.mac-shell-show-settings-light.png \
@@ -393,7 +393,10 @@ assert_contains 'testDevicesSettingsWithSyntheticDeviceRowsPixels.mac-shell-sect
   "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
 assert_contains 'testDirectDownloadsDeviceMenuPixels.mac-shell-direct-downloads-device-menu-light.png' \
   "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
-for method in testDevicesSettingsWithSyntheticDeviceRowsPixels testDirectDownloadsDeviceMenuPixels; do
+assert_contains 'testDeviceRemovalConfirmationPixels.mac-shell-device-removal-confirmation-light.png' \
+  "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
+for method in testDevicesSettingsWithSyntheticDeviceRowsPixels testDirectDownloadsDeviceMenuPixels \
+  testDeviceRemovalConfirmationPixels; do
   assert_contains "func $method" "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift"
 done
 assert_contains 'VNRecognizeTextRequest()' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"

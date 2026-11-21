@@ -189,18 +189,43 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
         let label: String
         let value: String
         let isDirectDownloadsStopped: Bool
+        var lastAnnouncedAt: Date? = nil
+        var hasInFlightTransfer: Bool = false
+
+        var lastAnnouncedLabel: String {
+            lastAnnouncedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Unknown"
+        }
     }
 
     static func deviceRows(_ devices: [WiltedMacLinkedDevice]) -> [DeviceRow] {
         var seen: [String: Int] = [:]
-        let counts = Dictionary(devices.map { ($0.kind ?? "Device", 1) }, uniquingKeysWith: +)
-        return devices.map { device in
-            let kind = device.kind ?? "Device"
-            seen[kind, default: 0] += 1
-            let label = (counts[kind] ?? 0) > 1 ? "\(kind) \(seen[kind] ?? 1)" : kind
-            return DeviceRow(id: device.deviceID, label: label, value: deviceValue(device),
-                             isDirectDownloadsStopped: device.isDirectDownloadsStopped)
+        let fallbackKinds = devices.compactMap { device -> String? in
+            guard usableDisplayName(device.displayName) == nil,
+                  let kind = device.kind?.trimmingCharacters(in: .whitespacesAndNewlines), !kind.isEmpty else { return nil }
+            return kind
         }
+        let counts = Dictionary(fallbackKinds.map { ($0, 1) }, uniquingKeysWith: +)
+        return devices.map { device in
+            let label: String
+            if let displayName = usableDisplayName(device.displayName) {
+                label = displayName
+            } else if let kind = device.kind?.trimmingCharacters(in: .whitespacesAndNewlines), !kind.isEmpty {
+                seen[kind, default: 0] += 1
+                label = (counts[kind] ?? 0) > 1 ? "\(kind) \(seen[kind] ?? 1)" : kind
+            } else {
+                label = "Linked device"
+            }
+            return DeviceRow(id: device.deviceID, label: label, value: deviceValue(device),
+                             isDirectDownloadsStopped: device.isDirectDownloadsStopped,
+                             lastAnnouncedAt: device.lastAnnouncedAt,
+                             hasInFlightTransfer: !device.inFlight.isEmpty)
+        }
+    }
+
+    private static func usableDisplayName(_ name: String?) -> String? {
+        guard let name else { return nil }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func deviceValue(_ device: WiltedMacLinkedDevice) -> String {

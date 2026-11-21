@@ -19,38 +19,6 @@ public protocol LANMediaServing: Sendable {
 
 extension LANMediaServer: LANMediaServing {}
 
-/// Thread-safe wrapper for UserDefaults for direct download preferences.
-final class WiltedMacLANPreferences: @unchecked Sendable {
-    static let stoppedPhonesKey = "wilted.mac.directDownloadsStoppedPhones"
-    static let ownerFingerprintKey = "wilted.mac.directDownloadsOwnerFingerprint"
-
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    var isDirectDownloadsEnabled: Bool {
-        defaults.object(forKey: WiltedMacLANMediaServer.directDownloadsEnabledKey) as? Bool ?? true
-    }
-
-    func setDirectDownloadsEnabled(_ enabled: Bool) {
-        defaults.set(enabled, forKey: WiltedMacLANMediaServer.directDownloadsEnabledKey)
-    }
-
-    /// Phones whose direct downloads the owner stopped; kept across launches until the key rotates.
-    var stoppedPhones: Set<String> {
-        get { Set(defaults.stringArray(forKey: Self.stoppedPhonesKey) ?? []) }
-        set { defaults.set(newValue.sorted(), forKey: Self.stoppedPhonesKey) }
-    }
-
-    /// A one-way fingerprint of the owner the current key was used for, so an account change rotates it.
-    var ownerFingerprint: String? {
-        get { defaults.string(forKey: Self.ownerFingerprintKey) }
-        set { defaults.set(newValue, forKey: Self.ownerFingerprintKey) }
-    }
-}
-
 /// Lets the server's source closure, built before the actor exists, report that a transfer began.
 private final class WiltedMacLANServeHook: @unchecked Sendable {
     private let lock = NSLock()
@@ -79,6 +47,10 @@ actor WiltedMacLANMediaServer {
 
     private var isStarted = false
     private var stoppedPhones: Set<String>
+    private var desiredPeersByDeviceID: [String: LANTLSPeer] = [:]
+    private var peersByDeviceID: [String: LANTLSPeer] = [:]
+    private var peerRefreshGeneration: UInt64 = 0
+    private var listenerUpdateTask: Task<Void, Never>?
     private var cachedDirectory: LibraryDeviceDirectory?
     private var servingActivity: NSObjectProtocol?
     private var activityMonitorTask: Task<Void, Never>?
@@ -152,7 +124,10 @@ actor WiltedMacLANMediaServer {
         if enabled {
             try? await refreshPeers()
         } else {
-            await server.stop()
+            peerRefreshGeneration &+= 1
+            await stopListener()
+            desiredPeersByDeviceID.removeAll()
+            peersByDeviceID.removeAll()
             endServingActivity()
         }
     }
@@ -168,29 +143,73 @@ actor WiltedMacLANMediaServer {
     /// Stops the server during quit drain or disable.
     public func stop() async {
         isStarted = false
-        await server.stop()
+        peerRefreshGeneration &+= 1
+        await stopListener()
+        desiredPeersByDeviceID.removeAll()
+        peersByDeviceID.removeAll()
         endServingActivity()
     }
 
     /// Drops direct download capabilities for one device ("Stop direct downloads for this iPhone").
     public func stopDirectDownloads(for deviceID: String) async {
         stoppedPhones.insert(deviceID)
-        preferences.stoppedPhones = stoppedPhones
+        preferences.insertStoppedPhone(deviceID)
         await links.stopDirectDownloads(for: deviceID)
         try? await refreshPeers()
     }
 
+    /// Keeps a removed device stopped and revokes its listener key after DeviceLinks has removed
+    /// its cached link. An unrelated listener update is avoided when it was never an allowed peer.
+    public func removeDevice(_ deviceID: String) async {
+        stoppedPhones.insert(deviceID)
+        preferences.insertStoppedPhone(deviceID)
+        let hadDesiredPeer = desiredPeersByDeviceID.removeValue(forKey: deviceID) != nil
+        let hadAppliedPeer = peersByDeviceID.removeValue(forKey: deviceID) != nil
+        let hadPeer = hadDesiredPeer || hadAppliedPeer
+        if let directory = cachedDirectory {
+            cachedDirectory = LibraryDeviceDirectory(
+                devices: directory.devices.filter { $0.deviceID != deviceID })
+        }
+        guard hadPeer else { return }
+
+        peerRefreshGeneration &+= 1
+        let generation = peerRefreshGeneration
+        let peers = isStarted && isDirectDownloadsEnabled && accountGate.isOpen
+            ? desiredPeersByDeviceID
+            : [:]
+        do {
+            _ = try await updateListenerPeers(Array(peers.values))
+            guard generation == peerRefreshGeneration else { return }
+            desiredPeersByDeviceID = peers
+            peersByDeviceID = peers
+        } catch {
+            guard generation == peerRefreshGeneration else { return }
+            await stopListener()
+            desiredPeersByDeviceID.removeAll()
+            peersByDeviceID.removeAll()
+            endServingActivity()
+        }
+    }
+
+    /// Whether any LAN transfer is active. The TLS transport does not expose a device identity,
+    /// so this is an aggregate signal for removal confirmation copy.
+    public nonisolated var hasActiveTransfers: Bool { server.activeTransferCount > 0 }
+
     /// Rotates this install's LAN key agreement key on account change; the caller republishes links.
     private func rotateKey() throws {
         ownKey = try keyStore.rotate()
-        stoppedPhones.removeAll()
-        preferences.stoppedPhones = []
+        let removedDevices = Set(preferences.deviceRemovalDates.keys)
+        stoppedPhones = removedDevices
+        preferences.replaceStoppedPhonesKeepingRemovalTombstones([])
         lanLog.notice("Rotated the LAN key for a new library owner")
     }
 
     /// Refreshes allowed peers from the device directory and updates the listener.
     public func updateDirectory(_ directory: LibraryDeviceDirectory?) async throws {
-        cachedDirectory = directory
+        let removedIDs = preferences.deviceRemovalDates.keys
+        cachedDirectory = directory.map {
+            LibraryDeviceDirectory(devices: $0.devices.filter { !removedIDs.contains($0.deviceID) })
+        }
         try await refreshPeers()
     }
 
@@ -203,16 +222,29 @@ actor WiltedMacLANMediaServer {
 
     private func refreshPeers() async throws {
         guard isDirectDownloadsEnabled, isStarted else { return }
+        peerRefreshGeneration &+= 1
+        let generation = peerRefreshGeneration
         guard accountGate.isOpen else {
-            _ = try await server.updatePeers([])
+            _ = try await updateListenerPeers([])
+            guard generation == peerRefreshGeneration else { return }
+            desiredPeersByDeviceID.removeAll()
+            peersByDeviceID.removeAll()
             return
         }
-        guard let ownerToken = await ownerTokenProvider(), !ownerToken.isEmpty else {
-            _ = try await server.updatePeers([])
+        let owner = await ownerTokenProvider()
+        guard generation == peerRefreshGeneration else { return }
+        guard let ownerToken = owner, !ownerToken.isEmpty else {
+            _ = try await updateListenerPeers([])
+            guard generation == peerRefreshGeneration else { return }
+            desiredPeersByDeviceID.removeAll()
+            peersByDeviceID.removeAll()
             return
         }
         guard let directory = cachedDirectory else {
-            _ = try await server.updatePeers([])
+            _ = try await updateListenerPeers([])
+            guard generation == peerRefreshGeneration else { return }
+            desiredPeersByDeviceID.removeAll()
+            peersByDeviceID.removeAll()
             return
         }
 
@@ -231,29 +263,59 @@ actor WiltedMacLANMediaServer {
             currentOwnKey = loaded
         }
         await links.setMacLANPublicKey(currentOwnKey.publicKey)
+        guard generation == peerRefreshGeneration else { return }
+        let peers = Self.derivePeers(
+            directory: directory, macDeviceID: macDeviceID, macKey: currentOwnKey,
+            ownerToken: ownerToken, stoppedPhones: stoppedPhones)
+        guard generation == peerRefreshGeneration else { return }
+        desiredPeersByDeviceID = peers
+        _ = try await updateListenerPeers(Array(peers.values))
+        guard generation == peerRefreshGeneration else { return }
+        peersByDeviceID = peers
+    }
 
-        var peers: [LANTLSPeer] = []
+    private func updateListenerPeers(_ peers: [LANTLSPeer]) async throws -> (port: UInt16?, restarted: Bool) {
+        let previous = listenerUpdateTask
+        let server = self.server
+        let update = Task {
+            await previous?.value
+            return try await server.updatePeers(peers)
+        }
+        listenerUpdateTask = Task { _ = try? await update.value }
+        return try await update.value
+    }
+
+    private func stopListener() async {
+        let previous = listenerUpdateTask
+        let server = self.server
+        let stop = Task {
+            await previous?.value
+            await server.stop()
+        }
+        listenerUpdateTask = stop
+        await stop.value
+    }
+
+    private static func derivePeers(
+        directory: LibraryDeviceDirectory, macDeviceID: String?, macKey: LANKeyAgreementKey,
+        ownerToken: String, stoppedPhones: Set<String>
+    ) -> [String: LANTLSPeer] {
+        var peers: [String: LANTLSPeer] = [:]
         for device in directory.devices {
-            guard device.deviceID != macDeviceID else { continue }
-            guard !stoppedPhones.contains(device.deviceID) else { continue }
-            guard let phonePublicKey = device.lanPublicKey else { continue }
+            guard device.deviceID != macDeviceID, !stoppedPhones.contains(device.deviceID),
+                  let phonePublicKey = device.lanPublicKey else { continue }
             do {
                 let psk = try LANPairingKey.derive(
-                    ownKey: currentOwnKey,
-                    peerPublicKey: phonePublicKey,
-                    ownerBindingTag: ownerToken,
-                    macDeviceID: macDeviceID ?? "",
-                    phoneDeviceID: device.deviceID,
-                    macPublicKey: currentOwnKey.publicKey,
-                    phonePublicKey: phonePublicKey
-                )
+                    ownKey: macKey, peerPublicKey: phonePublicKey, ownerBindingTag: ownerToken,
+                    macDeviceID: macDeviceID ?? "", phoneDeviceID: device.deviceID,
+                    macPublicKey: macKey.publicKey, phonePublicKey: phonePublicKey)
                 let identity = LANPairingKey.identity(phonePublicKey: phonePublicKey)
-                peers.append(LANTLSPeer(identity: identity, psk: psk))
+                peers[device.deviceID] = LANTLSPeer(identity: identity, psk: psk)
             } catch {
                 lanLog.error("Failed to derive peer PSK: \(String(describing: error), privacy: .public)")
             }
         }
-        _ = try await server.updatePeers(peers)
+        return peers
     }
 
     private func handleGateInvalidated() async {
@@ -326,6 +388,11 @@ actor WiltedMacLANMediaServer {
 
 #if canImport(AppKit)
 extension WiltedMacModel {
+    /// Whether any current LAN audio transfer may be interrupted by removing a device.
+    var hasActiveLANTransfer: Bool {
+        librarySyncController?.inbound?.lanServer?.hasActiveTransfers == true
+    }
+
     /// Whether direct downloads from this Mac are enabled.
     var isDirectDownloadsEnabled: Bool {
         access(keyPath: \.isDirectDownloadsEnabled)

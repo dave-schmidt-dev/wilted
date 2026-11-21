@@ -216,13 +216,15 @@ assert_snapshot_contract() {
   assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_validation_contains 'expected_count=223'
-  assert_validation_contains 'shells=71'
+  assert_validation_contains 'expected_count=224'
+  assert_validation_contains 'shells=72'
   assert_validation_contains 'window_shells=16'
   assert_validation_contains 'mac-shell-show-settings-light'
   assert_validation_contains 'mac-shell-show-settings-changed-light'
   assert_validation_contains 'mac-shell-show-settings-article-light'
   assert_validation_contains 'mac-shell-show-settings-article-dark'
+  assert_contains 'func testDeviceRemovalConfirmationPixels()' \
+    "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift"
   assert_validation_contains 'WiltedPixelSnapshotTests+Rendering.swift'
   assert_validation_contains "expected_size='202 x 260'"
   assert_validation_contains "expected_size='56 x 260'"

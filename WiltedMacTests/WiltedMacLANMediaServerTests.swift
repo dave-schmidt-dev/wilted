@@ -324,11 +324,13 @@ final class WiltedMacLANMediaServerTests: XCTestCase {
         try await server.updateDirectory(directory)
         XCTAssertEqual(try keyStore.currentKey().publicKey, initialKey.publicKey, "the first owner keeps the key")
         await server.stopDirectDownloads(for: "phone-1")
+        preferences.setDeviceRemovalDate(Date(), for: "removed-fixture")
 
         owner.value = "owner-b"
         try await server.updateDirectory(directory)
         XCTAssertNotEqual(try keyStore.currentKey().publicKey, initialKey.publicKey)
-        XCTAssertEqual(preferences.stoppedPhones, [], "the previous library's stops do not carry over")
+        XCTAssertEqual(preferences.stoppedPhones, ["removed-fixture"],
+                       "ordinary stops clear, and removal tombstones remain")
         XCTAssertEqual(fakeServer.simulateIncomingConnection(from: phoneKey.publicKey), .admitted)
     }
 

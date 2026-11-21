@@ -63,7 +63,11 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         let sectionNames = WiltedMacSettingsSection.allCases.map {
             WiltedSnapshotContract.shellName(kind: "section-" + $0.rawValue, appearance: .light)
         }
-        let deviceNames = ["section-devices-synthetic-rows", "direct-downloads-device-menu"].map {
+        let deviceNames = [
+            "section-devices-synthetic-rows",
+            "direct-downloads-device-menu",
+            "device-removal-confirmation"
+        ].map {
             WiltedSnapshotContract.shellName(kind: $0, appearance: .light)
         }
         let showSettingsNames = ["show-settings", "show-settings-changed"].map {
