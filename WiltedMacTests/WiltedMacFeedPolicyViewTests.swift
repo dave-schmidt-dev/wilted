@@ -309,12 +309,21 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
             XCTAssertEqual(feeds.split(separator: "\n").filter { String($0).caseInsensitiveCompare("Waiting for space") == .orderedSame }.count, 1, "\(width): \(feeds)")
             XCTAssertTrue(feeds.contains("never removes"), "\(width): \(feeds)")
         }
-        let page = try capture(
-            WiltedMacShowSettingsView(model: fixture.model, board: board, subscription: subscription),
-            "show-settings-page", width: 900, height: 2_200
-        )
-        for text in ["New episodes", "Playback", "Ads", "Type", "Details", "Kept limit", "Default:"] {
-            XCTAssertTrue(page.contains(text), "\(text) in \(page)")
+        // No per-show playback rows exist yet (speed and start point are WL-I1/WL-19), so the empty
+        // Playback section stays hidden; testRenderedSectionsHaveRowsInDefaultOrderForBothFeedKinds pins that.
+        let page = WiltedMacShowSettingsView(model: fixture.model, board: board, subscription: subscription)
+        let expectations: [(WiltedMacShowSettingsView.Section, [String])] = [
+            (.newEpisodes, ["New episodes", "Kept limit", "Default:"]), (.ads, ["Ads"]),
+            (.type, ["Type"]), (.details, ["Details"]),
+        ]
+        for width in [narrowWidth, CGFloat(1_400)] {
+            for (section, labels) in expectations {
+                let shown = try WiltedMacHeadless.showSectionText(page, section, width: min(800, width - 48))
+                    .joined(separator: " ")
+                for text in labels {
+                    XCTAssertTrue(shown.contains(text), "\(text) in \(shown)")
+                }
+            }
         }
         fixture.model.settingsSection = .newEpisodes
         let settings = try WiltedMacHeadless.recognizedText(

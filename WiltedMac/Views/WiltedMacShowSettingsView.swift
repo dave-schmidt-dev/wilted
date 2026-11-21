@@ -4,6 +4,10 @@ import WiltedProducer
 
 /// One place to inspect and change a followed show's settings.
 struct WiltedMacShowSettingsView: View {
+    enum Section: CaseIterable, Hashable {
+        case newEpisodes, ads, type, details
+    }
+
     let model: WiltedMacModel
     let board: WiltedMacFeedPolicyBoard
     let subscription: WiltedMacSubscription
@@ -33,11 +37,8 @@ struct WiltedMacShowSettingsView: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
                 changesSummary
                 loadStatus
-                newEpisodesSection
-                adsSection
-                typeSection
-                settingsSection("Details", identifier: "details") {
-                    WiltedMacFeedDetailsSection(model: model, subscription: subscription)
+                ForEach(Section.allCases, id: \.self) { section in
+                    sectionContent(section)
                 }
             }
         }
@@ -51,6 +52,18 @@ struct WiltedMacShowSettingsView: View {
                 editor: board.rulesEditor(for: feedID), subscription: subscription,
                 resolved: board.resolved(for: feedID), dismiss: { isEditingRules = false }
             )
+        }
+    }
+
+    @ViewBuilder func sectionContent(_ section: Section) -> some View {
+        switch section {
+        case .newEpisodes: newEpisodesSection
+        case .ads: adsSection
+        case .type: typeSection
+        case .details:
+            settingsSection("Details", identifier: "details") {
+                WiltedMacFeedDetailsSection(model: model, subscription: subscription)
+            }
         }
     }
 
@@ -106,7 +119,7 @@ struct WiltedMacShowSettingsView: View {
         }
     }
 
-    @ViewBuilder private var loadStatus: some View {
+    @ViewBuilder var loadStatus: some View {
         if let failure = board.loadFailureMessage {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Label(failure, systemImage: "exclamationmark.triangle")
@@ -360,7 +373,7 @@ struct WiltedMacShowSettingsView: View {
         case .notSent(.noKey):
             "No provider key saved"
         case .notSent(.dailyCapReached):
-            "Today's limit for online labelling is reached"
+            "Today's limit for online labelling is reached. Transcripts are sent to the labelling provider when capacity is available."
         case .notSent:
             "Not sent"
         }

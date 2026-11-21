@@ -52,16 +52,15 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-feed-policy-send-for-ad-finding\")"))
         XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-feed-policy-ad-route\")"))
 
-        let shown = try WiltedMacHeadless.recognizedText(
-            fixture.content, size: CGSize(width: 760, height: 1_400)
-        ).joined(separator: " ")
+        let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("Send this show for ad finding"), shown)
         XCTAssertTrue(shown.contains("private token"), shown)
         XCTAssertTrue(shown.contains("so it is never sent for"), shown)
         XCTAssertTrue(shown.contains("Not sent"), shown)
         XCTAssertFalse(shown.contains("When on, this show's transcripts go to the labelling provider"),
                        "the reason replaces the ordinary caption: \(shown)")
-        XCTAssertTrue(shown.contains("The Night Ledger"), shown)
+        let header = try WiltedMacHeadless.recognizedText(fixture.content, size: CGSize(width: 800, height: 620))
+        XCTAssertTrue(header.joined(separator: " ").contains("The Night Ledger"), "\(header)")
     }
 
     func testUnconfirmedShowRendersTheWaitingLineBesideTheOrdinaryCaption() throws {
@@ -76,9 +75,7 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertNil(fixture.board.forcedNotSentAdReason(for: fixture.feedID))
         XCTAssertFalse(fixture.board.sendsForAdFinding(fixture.feedID))
 
-        let shown = try WiltedMacHeadless.recognizedText(
-            fixture.content, size: CGSize(width: 760, height: 1_400)
-        ).joined(separator: " ")
+        let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("Send this show for ad finding"), shown)
         XCTAssertTrue(shown.contains("When on, this show's transcripts go to the labelling provider and its ads are removed. When off, nothing is sent and its ads stay in."), shown)
         XCTAssertTrue(shown.contains("Not sent"), shown)
@@ -98,13 +95,12 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertNil(fixture.board.forcedNotSentAdReason(for: fixture.feedID))
         XCTAssertTrue(fixture.board.sendsForAdFinding(fixture.feedID))
 
-        let shown = try WiltedMacHeadless.recognizedText(
-            fixture.content, size: CGSize(width: 760, height: 1_400)
-        ).joined(separator: " ")
+        let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("Send this show for ad finding"), shown)
         XCTAssertTrue(shown.contains("Transcripts are sent to the labelling provider"), shown)
         XCTAssertFalse(shown.contains("Not sent"), shown)
-        XCTAssertTrue(shown.contains("The Evening Ledger"), shown)
+        let header = try WiltedMacHeadless.recognizedText(fixture.content, size: CGSize(width: 800, height: 620))
+        XCTAssertTrue(header.joined(separator: " ").contains("The Evening Ledger"), "\(header)")
     }
 
     /// Regression: a confirmed show at the daily limit names the limit and keeps the prior route line.
@@ -120,9 +116,7 @@ extension WiltedMacFeedPolicyViewTests {
         for _ in 0..<counter.cap { counter.record() }
 
         XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .notSent(.dailyCapReached))
-        let shown = try WiltedMacHeadless.recognizedText(
-            fixture.content, size: CGSize(width: 760, height: 1_400)
-        ).joined(separator: " ")
+        let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("limit for online labelling is reached"), shown)
         XCTAssertFalse(shown.contains("Not sent"), shown)
         XCTAssertTrue(shown.contains("Transcripts are sent to the labelling provider"), shown)

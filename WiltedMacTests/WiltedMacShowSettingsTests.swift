@@ -1,5 +1,4 @@
 import SwiftUI
-import Vision
 import XCTest
 import WiltedDomain
 import WiltedProducer
@@ -9,15 +8,22 @@ import WiltedProducer
 final class WiltedMacShowSettingsTests: XCTestCase {
     func testPodcastSettingsShowEveryPodcastControlAndItsDefaultOnce() async throws {
         let fixture = try makeFixture(isArticle: false)
-        let text = try rendered(fixture)
-
-        for label in [
-            "New episodes", "Ads", "Type", "Details", "Auto keep", "Auto download",
-            "Auto prepare", "Kept limit", "Remove ads", "Remove the show's own promotion",
-            "Send this show for ad finding", "Default:", "Same as default",
-        ] {
-            XCTAssertTrue(text.contains(label), "Expected \(label) in \(text)")
-        }
+        let page = WiltedMacShowSettingsView(
+            model: fixture.model, board: fixture.board, subscription: fixture.subscription
+        )
+        let expected: [WiltedMacShowSettingsView.Section: [String]] = [
+            .newEpisodes: ["New episodes", "Auto keep", "Auto download", "Auto prepare",
+                           "Kept limit", "Default:", "Same as default"],
+            .ads: ["Ads", "Remove ads", "Remove the show's own promotion", "Send this show for ad finding"],
+            .type: ["Type"], .details: ["Details"],
+        ]
+        let text = try WiltedMacShowSettingsView.Section.allCases.map { section in
+            let shown = try WiltedMacHeadless.showSectionText(page, section).joined(separator: " ")
+            for label in try XCTUnwrap(expected[section]) {
+                XCTAssertTrue(shown.contains(label), "Expected \(label) in \(shown)")
+            }
+            return shown
+        }.joined(separator: " ")
         for label in ["Auto keep", "Auto download", "Auto prepare", "Kept limit", "Remove ads"] {
             XCTAssertEqual(WiltedMacHeadless.occurrences(of: label, in: text), 1, "\(label) in \(text)")
         }
@@ -179,33 +185,8 @@ final class WiltedMacShowSettingsTests: XCTestCase {
         let view = WiltedMacShowSettingsView(
             model: fixture.model, board: fixture.board, subscription: fixture.subscription
         )
-        let bitmap = try WiltedMacHeadless.render(
-            view.padding(24).background(Color.white), size: CGSize(width: 900, height: 2_200), scale: 2
-        )
-        let image = try XCTUnwrap(bitmap.cgImage)
-        var lines: [(top: CGFloat, text: String)] = []
-        // Overlap the crops so a heading crossing a boundary is still read in full.
-        // Keep each line only in the band containing its midpoint.
-        for start in stride(from: 0, to: image.height, by: 400) {
-            let top = max(0, start - 60)
-            let end = min(image.height, start + 460)
-            let crop = try XCTUnwrap(image.cropping(to: CGRect(x: 0, y: top, width: image.width, height: end - top)))
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = false
-            request.minimumTextHeight = 0.004
-            request.customWords = ["Type"]
-            try VNImageRequestHandler(cgImage: crop).perform([request])
-            for observation in request.results ?? [] {
-                let midpoint = CGFloat(top) + (1 - observation.boundingBox.midY) * CGFloat(crop.height)
-                guard midpoint >= CGFloat(start), midpoint < CGFloat(start + 400),
-                      let best = observation.topCandidates(3).first else { continue }
-                let text = observation.topCandidates(3).contains {
-                    $0.string.caseInsensitiveCompare("Type") == .orderedSame
-                } ? "Type" : best.string
-                lines.append((midpoint, text.trimmingCharacters(in: .whitespacesAndNewlines)))
-            }
+        return try WiltedMacShowSettingsView.Section.allCases.flatMap {
+            try WiltedMacHeadless.showSectionText(view, $0)
         }
-        return lines.sorted { $0.top < $1.top }.map { $0.text }
     }
 }
