@@ -1,3 +1,4 @@
+# Sourced by tests/test-native-gate.sh; a helper library, not a test entrypoint.
 assert_gatekeeper_contract() {
   if rg -q 'CODE_SIGNING_(ALLOWED|REQUIRED)=NO' "$gate"; then
     printf '%s\n' 'assertion failed: native gate disables code signing' >&2; exit 1

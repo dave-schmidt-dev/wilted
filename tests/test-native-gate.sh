@@ -74,7 +74,7 @@ assert_block_contains() {
   }
 }
 
-source "$repo_root/tests/native-gate-static-contracts.sh"
+source "$repo_root/tests/lib/native-gate-static-contracts.sh"
 
 assert_result_bundle_contract() {
   if rg -q 'xcodebuild.*(Executed [0-9]+ tests|Test run with [0-9]+ tests)' "$gate"; then
