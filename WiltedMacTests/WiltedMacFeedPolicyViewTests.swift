@@ -327,7 +327,7 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         }
         fixture.model.settingsSection = .newEpisodes
         let settings = try WiltedMacHeadless.recognizedText(
-            WiltedMacSettingsView(model: fixture.model), size: CGSize(width: narrowWidth, height: 2_600)
+            WiltedMacSettingsView(model: fixture.model), size: CGSize(width: narrowWidth, height: 1_400)
         ).joined(separator: "\n")
         XCTAssertTrue(settings.contains("Feed defaults"), settings)
         XCTAssertTrue(settings.contains("Auto keep"), settings)
