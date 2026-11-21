@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import WiltedLibrary
 @testable import WiltedMac
 
 final class WiltedMacLibraryRuntimeSelectionTests: XCTestCase {
@@ -98,5 +99,25 @@ final class WiltedMacLibraryRuntimeSelectionTests: XCTestCase {
         let explicitOff = Selection.select(environment: ["WILTED_LIBRARY_SYNC": "0"], facts: liveFacts, fixtureMode: false)
         XCTAssertFalse(explicitOff.admits(managedTransport: true))
         XCTAssertFalse(explicitOff.admits(managedTransport: false))
+    }
+
+    @MainActor
+    func testXCTestProductionTransportCannotReachCloudKitDeviceLinkDeletion() async {
+        guard WiltedMacModel.hostsTests else {
+            return XCTFail("this regression test must run inside XCTest's app host")
+        }
+        let transport = WiltedMacLibraryTransports.production(deviceID: "synthetic-mac", hostsTests: false)
+        guard let unavailable = transport as? WiltedMacUnavailableLibraryTransport else {
+            return XCTFail("the XCTest host must receive the unavailable transport")
+        }
+
+        do {
+            try await unavailable.deleteDeviceLink(deviceID: "synthetic-device")
+            XCTFail("the test host must not reach a live CloudKit deletion")
+        } catch is LibraryTransportError {
+            // The unavailable test transport rejects the request without CloudKit.
+        } catch {
+            XCTFail("unexpected error from the unavailable transport: \(error)")
+        }
     }
 }

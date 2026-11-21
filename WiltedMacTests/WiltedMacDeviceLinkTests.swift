@@ -6,7 +6,7 @@ import XCTest
 
 /// Forwards to the in-memory transport, counts link writes, can fail the next ones, and can hold
 /// every ready upload until the test releases it, as a slow connection would.
-private final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
+final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
     private let inner: InMemoryLibraryTransport
     private let lock = NSLock()
     private var linkWrites = 0
@@ -14,12 +14,21 @@ private final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
     private var holding = false
     private var held: [CheckedContinuation<Void, Never>] = []
     private var uploadsFail = false
+    private var linkDeleteIDs: [String] = []
+    private var failLinkDeletes = 0
 
-    init(_ inner: InMemoryLibraryTransport) { self.inner = inner }
+    private let beforeLinkWrite: @Sendable () async -> Void
+
+    init(_ inner: InMemoryLibraryTransport, beforeLinkWrite: @escaping @Sendable () async -> Void = {}) {
+        self.inner = inner
+        self.beforeLinkWrite = beforeLinkWrite
+    }
 
     var linkWriteCount: Int { lock.withLock { linkWrites } }
     var heldUploads: Int { lock.withLock { held.count } }
+    var deletedLinkIDs: [String] { lock.withLock { linkDeleteIDs } }
     func failNextLinkWrites(_ count: Int) { lock.withLock { failLinks = count } }
+    func failNextLinkDeletes(_ count: Int) { lock.withLock { failLinkDeletes = count } }
     func holdUploads() { lock.withLock { holding = true } }
     func failUploads() { lock.withLock { uploadsFail = true } }
     func releaseUploads() {
@@ -57,7 +66,19 @@ private final class HandshakeTransport: LibraryTransport, @unchecked Sendable {
             return true
         }
         if fails { throw URLError(.notConnectedToInternet) }
+        await beforeLinkWrite()
         try await inner.publishDeviceLink(link)
+    }
+
+    func deleteDeviceLink(deviceID: String) async throws {
+        let shouldFail = lock.withLock { () -> Bool in
+            linkDeleteIDs.append(deviceID)
+            guard failLinkDeletes > 0 else { return false }
+            failLinkDeletes -= 1
+            return true
+        }
+        if shouldFail { throw URLError(.notConnectedToInternet) }
+        try await inner.deleteDeviceLink(deviceID: deviceID)
     }
 
     func publishMedia(offer: LibraryMediaOffer, fileURL: URL) async throws {
@@ -347,7 +368,7 @@ final class WiltedMacDeviceLinkTests: XCTestCase {
             WiltedMacLinkedDevice(deviceID: "other", kind: nil, isLinked: false, inFlight: []),
         ])
 
-        XCTAssertEqual(rows.map(\.label), ["iPhone", "Device"])
+        XCTAssertEqual(rows.map(\.label), ["iPhone", "Linked device"])
         XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode", "Linking…"])
         XCTAssertEqual(rows.map(\.isDirectDownloadsStopped), [true, false])
     }

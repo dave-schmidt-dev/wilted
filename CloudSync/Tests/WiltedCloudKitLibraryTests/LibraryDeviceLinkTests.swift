@@ -86,6 +86,40 @@ final class LibraryDeviceLinkTests: XCTestCase {
         XCTAssertTrue(records.isEmpty, "nothing was written")
     }
 
+    func testMacDeletesOnlyTheSelectedDeviceLink() async throws {
+        let fixture = try MediaFixture()
+        let mac = try fixture.endpoint("mac", writer: true)
+        let phone = try fixture.endpoint("phone", writer: false)
+        try await mac.transport.publishDeviceLink(LibraryDeviceLink(deviceID: "fixture-a", linkedAt: at))
+        try await mac.transport.publishDeviceLink(LibraryDeviceLink(deviceID: "fixture-b", linkedAt: at))
+        try await phone.transport.announceDevice(announcement("phone", "iPhone"))
+
+        try await mac.transport.deleteDeviceLink(deviceID: "fixture-a")
+
+        let records = await fixture.server.allRecords()
+        let remaining = Set(records.map { $0.recordID.recordName })
+        XCTAssertFalse(remaining.contains("devicelink:fixture-a"))
+        XCTAssertTrue(remaining.contains("devicelink:fixture-b"))
+        XCTAssertTrue(remaining.contains("devicedirectory:library"))
+        let log = await fixture.server.log
+        let deletes = log.filter { $0.contains(" delete ") }
+        XCTAssertEqual(deletes, ["raw delete devicelink:fixture-a"])
+    }
+
+    func testFollowerCannotDeleteAMacDeviceLink() async throws {
+        let fixture = try MediaFixture()
+        let phone = try fixture.endpoint("phone", writer: false)
+
+        do {
+            try await phone.transport.deleteDeviceLink(deviceID: "fixture-a")
+            XCTFail("a follower must not remove a device link")
+        } catch let error as LibraryTransportError {
+            guard case .ownershipViolation = error else { return XCTFail("wrong error \(error)") }
+        }
+        let records = await fixture.server.allRecords()
+        XCTAssertTrue(records.isEmpty)
+    }
+
     func testTheDeviceReadsItsLinkInItsRoundAndARestartedMacKeepsTheFirstLinkTime() async throws {
         let fixture = try MediaFixture()
         let ipad = try fixture.endpoint("ipad", writer: false)

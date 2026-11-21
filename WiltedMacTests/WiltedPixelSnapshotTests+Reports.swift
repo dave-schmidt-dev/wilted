@@ -6,6 +6,15 @@ import XCTest
 @testable import WiltedMac
 
 extension WiltedPixelSnapshotTests {
+    private func snapshotDeviceAnnouncementDate() -> Date {
+        var components = DateComponents()
+        components.year = 2020
+        components.month = 1
+        components.day = 15
+        components.hour = 12
+        return Calendar.current.date(from: components) ?? Date(timeIntervalSince1970: 1_579_089_600)
+    }
+
     func testGeneralSettingsPixels() async {
         await captureSettingsSection(.general, testName: "testGeneralSettingsPixels")
     }
@@ -38,8 +47,10 @@ extension WiltedPixelSnapshotTests {
         model.settingsSection = .devices
         await model.waitForLifetimeStatisticsForTesting()
         model.librarySyncActivity.devices = [
-            WiltedMacLinkedDevice(deviceID: "snapshot-phone", kind: "iPhone Snapshot", isLinked: true, inFlight: []),
-            WiltedMacLinkedDevice(deviceID: "snapshot-device", kind: nil, isLinked: false, inFlight: [])
+            WiltedMacLinkedDevice(deviceID: "snapshot-phone", kind: "iPhone", isLinked: true, inFlight: [],
+                displayName: "Kitchen iPhone", lastAnnouncedAt: snapshotDeviceAnnouncementDate()),
+            WiltedMacLinkedDevice(deviceID: "snapshot-device", kind: nil, isLinked: false, inFlight: [],
+                displayName: nil, lastAnnouncedAt: nil)
         ]
         let image = render(WiltedMacRootView(model: model),
             variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false), size: windowCanvas)
@@ -51,19 +62,34 @@ extension WiltedPixelSnapshotTests {
 
     func testDirectDownloadsDeviceMenuPixels() throws {
         let device = WiltedMacLinkedDevice(
-            deviceID: "snapshot-phone", kind: "iPhone Snapshot", isLinked: true, inFlight: [],
-            isDirectDownloadsStopped: true)
+            deviceID: "snapshot-phone", kind: "iPhone", isLinked: true, inFlight: [],
+            isDirectDownloadsStopped: true, displayName: "Study iPhone",
+            lastAnnouncedAt: snapshotDeviceAnnouncementDate())
         let row = try XCTUnwrap(WiltedMacLibrarySyncStatus.deviceRows([device]).first)
-        let content = WiltedMacDeviceDownloadsMenu(row: row, macEnabled: true, onStop: {})
+        let content = WiltedMacDeviceDownloadsMenu(row: row, macEnabled: true, onStop: {}, onRename: {}, onRemove: {})
             .padding(WiltedTheme.Spacing.small)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(WiltedTheme.color(.card, scheme: .light))
         let image = render(content,
             variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false),
-            size: CGSize(width: 360, height: 150))
+            size: CGSize(width: 360, height: 210))
         assertSnapshot(image,
             named: WiltedSnapshotContract.shellName(kind: "direct-downloads-device-menu", appearance: .light),
             testName: "testDirectDownloadsDeviceMenuPixels")
+    }
+
+    func testDeviceRemovalConfirmationPixels() {
+        let content = WiltedMacDeviceRemovalConfirmation(
+            deviceName: "Travel iPhone", transferInFlight: true, onCancel: {}, onRemove: {},
+            isRemoving: false, errorMessage: nil)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .background(WiltedTheme.color(.card, scheme: .light))
+        let image = render(content,
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false),
+            size: CGSize(width: 520, height: 260))
+        assertSnapshot(image,
+            named: WiltedSnapshotContract.shellName(kind: "device-removal-confirmation", appearance: .light),
+            testName: "testDeviceRemovalConfirmationPixels")
     }
 
     func testAboutSettingsPixels() async {

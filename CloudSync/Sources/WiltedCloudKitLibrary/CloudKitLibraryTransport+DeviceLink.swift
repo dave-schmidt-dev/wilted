@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import WiltedCloudKit
 import WiltedLibrary
 
 // MARK: - The device handshake (named records, no engine, no zone scan)
@@ -62,6 +63,33 @@ extension CloudKitLibraryTransport {
                 return try self.mapper.record(deviceLink: link.updating(nil, server: server, now: self.clock()), existing: base)
             }
             peers.note(device: link.deviceID)
+        }
+    }
+
+    /// Mac only. Removes exactly the selected follower link record, leaving the directory and
+    /// every library, request, playback and other device record untouched.
+    public func deleteDeviceLink(deviceID: String) async throws {
+        try await CloudKitOperationContext.$caller.withValue(.deviceLink) {
+            await acquire()
+            defer { release() }
+            guard isLibraryWriter, deviceID != self.deviceID else {
+                throw LibraryTransportError.ownershipViolation("\(self.deviceID) may only remove a follower device link")
+            }
+            guard !quarantined else { throw CloudKitSyncError.quarantined }
+            let generation = operationGenerationValue
+            try await observeCurrentOwner(generation: generation)
+            let owner = observedOwnerToken
+            try verifyFetchContext(generation: generation, owner: owner)
+            let id = try mapper.recordID(deviceLinkFor: deviceID)
+            do {
+                try await driver.deleteRecordsRaw([id])
+                try await observeCurrentOwner(generation: generation)
+                try verifyFetchContext(generation: generation, owner: owner)
+                serverRecords.removeValue(forKey: id.recordName)
+                peers.remove(device: deviceID)
+            } catch {
+                throw failure(error)
+            }
         }
     }
 

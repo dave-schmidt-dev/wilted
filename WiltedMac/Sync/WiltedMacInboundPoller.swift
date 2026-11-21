@@ -223,6 +223,7 @@ final class WiltedMacInboundRuntime {
         accountGate: WiltedMacLibraryAccountGate? = nil,
         keyStore: (any LANKeyStore)? = nil,
         lanServer: (any LANMediaServing)? = nil,
+        preferences: WiltedMacLANPreferences? = nil,
         discover: (@Sendable () async throws -> Void)? = nil,
         onDeviceRecords: (@Sendable (LibraryDeviceRecords) async -> Void)? = nil,
         maintenance: (@Sendable () async -> Void)? = nil,
@@ -245,7 +246,9 @@ final class WiltedMacInboundRuntime {
         self.beforePollerStart = beforePollerStart
         self.onPollerStop = onPollerStop
         ledger = WiltedMacIntentLedger(fileURL: directory.appendingPathComponent("intent-ledger.json"), now: now)
-        let links = WiltedMacDeviceLinks(transport: transport, macDeviceID: deviceID, now: now, onChange: onDevicesChange)
+        let links = WiltedMacDeviceLinks(
+            transport: transport, macDeviceID: deviceID, now: now,
+            onChange: onDevicesChange, preferences: preferences)
         self.links = links
         service = WiltedMacMediaService(
             source: source, transport: transport,
@@ -264,6 +267,7 @@ final class WiltedMacInboundRuntime {
             deviceID: deviceID,
             ownerTokenProvider: { await transport.verifiedOwnerToken() },
             keyStore: keyStore,
+            preferences: preferences ?? WiltedMacLANPreferences(),
             server: lanServer
         ) }
     }
@@ -410,6 +414,12 @@ final class WiltedMacInboundRuntime {
     /// Drops direct download capabilities for one device ("Stop direct downloads for this iPhone").
     func stopDirectDownloads(for deviceID: String) async {
         await lanServer?.stopDirectDownloads(for: deviceID)
+    }
+
+    /// Removes one linked device and immediately stops its LAN access after the cloud delete succeeds.
+    func removeDevice(_ deviceID: String) async throws {
+        try await links.removeDevice(deviceID)
+        await lanServer?.removeDevice(deviceID)
     }
 
     /// A snapshot of ahead-of-time media uploads and queued requests.

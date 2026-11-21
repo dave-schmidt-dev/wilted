@@ -20,9 +20,13 @@ class SettingsInventory(unittest.TestCase):
         self.assertNotIn("Stop direct downloads for this iPhone", card)
         rows = card.split("ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in")[1].split("// The counters")[0]
         self.assertNotIn("if ", rows)
-        self.assertIn("WiltedMacDeviceDownloadsRow(row: row, macEnabled: model.isDirectDownloadsEnabled)", rows)
-        self.assertIn("model.stopDirectDownloads(for: row.id)", rows)
+        self.assertIn("WiltedMacDeviceDownloadsRow(row: row, macEnabled: model.isDirectDownloadsEnabled,", rows)
+        self.assertIn("onStop: { model.stopDirectDownloads(for: row.id) }", rows)
+        self.assertIn("onRename: { try await model.renameDevice(row.id, to: $0) }", rows)
+        self.assertIn("onRemove: { try await model.removeDevice(row.id) }", rows)
         self.assertIn(".disabled(!canStop)", card)
+        self.assertIn('Button("Rename…", action: onRename)', card)
+        self.assertIn('Button("Remove device…", role: .destructive, action: onRemove)', card)
 
     def test_sections(self):
         settings = source("WiltedMacSettingsView")
@@ -174,6 +178,11 @@ INVENTORY = {
         'wilted-sync-device-menu-\\(row.id)',
         'wilted-sync-device-toggle-\\(row.id)',
         'wilted-sync-stop-direct-\\(row.id)',
+        'wilted-sync-device-rename-\\(row.id)',
+        'wilted-sync-device-remove-\\(row.id)',
+        'wilted-sync-device-last-announced-\\(row.id)',
+        'wilted-sync-device-name-field',
+        'wilted-sync-device-confirm-remove',
         'wilted-sync-diagnostics',
         'wilted-sync-scope-note',
         'wilted-sync-now',
