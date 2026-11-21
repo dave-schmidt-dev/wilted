@@ -12,7 +12,7 @@ enum LibrarySettingsSection: String, CaseIterable {
         case .storage: "Removing audio frees space on this \(deviceKind)."
         case .reports: "Bulletins are read on this \(deviceKind) while Spoken interruptions is on under Playback."
         case .devices: "Sync status and direct downloads are for this \(deviceKind)."
-        case .about: "Statistics, version and diagnostics are for this \(deviceKind)."
+        case .about: "Statistics and version are for this \(deviceKind)."
         }
     }
 }

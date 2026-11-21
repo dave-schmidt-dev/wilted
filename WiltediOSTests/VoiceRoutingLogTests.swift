@@ -148,31 +148,19 @@ final class VoiceRoutingLogTests: XCTestCase {
 
     // MARK: - Settings View Model Integration
 
-    func testDiagnosticsRowsIncludesVoiceRoutingLogBesideExistingDiagnosticsWithCopy() {
+    func testSupportRowsIncludeTheVoiceRoutingLogWithCopy() {
         let lines = ["Line 1: playNext", "Line 2: outcome=success"]
-        let rows = LibrarySettingsFormat.diagnosticsRows(
-            deviceID: "phone-test-id", syncDetail: "All caught up", voiceLines: lines)
-
-        let identifiers = rows.map(\.identifier)
-        XCTAssertEqual(
-            identifiers,
-            [
-                LibrarySettingsFormat.deviceIdentifier,
-                LibrarySettingsFormat.syncDetailIdentifier,
-                LibrarySettingsFormat.voiceRoutingLogIdentifier,
-            ],
-            "Voice routing log row must appear beside existing device and sync diagnostics")
-
+        let rows = LibrarySettingsFormat.supportRows(deviceID: "phone-test-id", voiceLines: lines, requests: nil)
+        XCTAssertEqual(rows.map(\.identifier),
+                       [LibrarySettingsFormat.deviceIdentifier, LibrarySettingsFormat.voiceRoutingLogIdentifier])
         let voiceRow = rows.first { $0.identifier == LibrarySettingsFormat.voiceRoutingLogIdentifier }
-        XCTAssertNotNil(voiceRow)
         XCTAssertEqual(voiceRow?.value, "Line 1: playNext\nLine 2: outcome=success")
         XCTAssertTrue(voiceRow?.isCopyable == true, "Voice routing log row must have a copy button")
         XCTAssertTrue(voiceRow?.wrapsText == true)
     }
 
-    func testDiagnosticsRowsWithEmptyVoiceLinesShowsNone() {
-        let rows = LibrarySettingsFormat.diagnosticsRows(
-            deviceID: "phone-1", syncDetail: nil, voiceLines: [])
+    func testSupportRowsWithEmptyVoiceLinesShowNone() {
+        let rows = LibrarySettingsFormat.supportRows(deviceID: "phone-1", voiceLines: [], requests: nil)
         let voiceRow = rows.first { $0.identifier == LibrarySettingsFormat.voiceRoutingLogIdentifier }
         XCTAssertEqual(voiceRow?.value, "None")
         XCTAssertTrue(voiceRow?.isCopyable == true)

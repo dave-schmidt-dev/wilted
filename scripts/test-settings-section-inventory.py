@@ -18,8 +18,9 @@ class SettingsInventory(unittest.TestCase):
     def test_every_device_row_offers_a_menu_instead_of_the_stop_link(self):
         card = source("WiltedMacLibrarySyncCard")
         self.assertNotIn("Stop direct downloads for this iPhone", card)
-        rows = card.split("ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in")[1].split("// The counters")[0]
+        rows = card.split("ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in")[1].split("// The iCloud request counts")[0]
         self.assertNotIn("if ", rows)
+        self.assertNotIn("librarySyncDiagnostics", card, "request counts stay in the Activity window")
         self.assertIn("WiltedMacDeviceDownloadsRow(row: row, macEnabled: model.isDirectDownloadsEnabled,", rows)
         self.assertIn("onStop: { model.stopDirectDownloads(for: row.id) }", rows)
         self.assertIn("onRename: { try await model.renameDevice(row.id, to: $0) }", rows)
@@ -38,7 +39,7 @@ class SettingsInventory(unittest.TestCase):
             self.assertIn(f"scopeNote(.{name})", body)
         self.assertEqual(view.count("WiltedSettingsCard(title:"), 5)
         about = view.split("private var aboutCard:", 1)[1].split("private var", 1)[0]
-        for content in ("StatisticsRows(", "aboutRows(", "diagnosticsDisclosure"):
+        for content in ("StatisticsRows(", "aboutRows(", "supportDetails"):
             self.assertIn(content, about)
 
     def test_sections(self):
@@ -295,7 +296,6 @@ INVENTORY = {
         'wilted-sync-device-last-announced-\\(row.id)',
         'wilted-sync-device-name-field',
         'wilted-sync-device-confirm-remove',
-        'wilted-sync-diagnostics',
         'wilted-sync-scope-note',
         'wilted-sync-now',
         'wilted-sync-review-account',

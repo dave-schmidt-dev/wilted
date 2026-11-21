@@ -49,17 +49,8 @@ struct WiltedMacLibrarySyncCard: View {
                     onRemove: { try await model.removeDevice(row.id) },
                     hasActiveLANTransfer: { model.hasActiveLANTransfer })
             }
-            // The counters are not observed, so the line re-reads them on a 30 s timeline. Without
-            // counters there is no timeline at all, so the card's spacing stays as before.
-            if model.librarySyncDiagnostics != nil {
-                TimelineView(.periodic(from: .now, by: 30)) { _ in
-                    Text(model.librarySyncDiagnostics ?? "")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("wilted-sync-diagnostics")
-                }
-            }
+            // The iCloud request counts are support detail: they live in the Activity window's
+            // Requests row, not here.
             Text(WiltedMacLibrarySyncStatus.scopeNote)
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

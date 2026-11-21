@@ -114,7 +114,11 @@ enum LibrarySettingsFormat {
         }
     }
 
-    static let diagnosticsDisclosureLabel = "Device and sync details"
+    /// Support details stay hidden until asked for: a long press on the Version row, or the row's
+    /// accessibility action, shows them; the same again hides them.
+    static let supportDetailsLabel = "Support details"
+    static let showSupportDetailsAction = "Show support details"
+    static let hideSupportDetailsAction = "Hide support details"
     static let versionIdentifier = "wilted-library-settings-version"
     static let deviceIdentifier = "wilted-library-settings-device-id"
     static let syncDetailIdentifier = "wilted-library-settings-sync-detail"
@@ -154,29 +158,25 @@ enum LibrarySettingsFormat {
         }
     }
 
-    /// The About card holds the build alone; the device ID moved to the collapsed Diagnostics
-    /// disclosure (CI-7).
+    /// The About card shows the version alone.
     static func aboutRows(version: String) -> [SettingsRow] {
         [SettingsRow(label: "Version", value: version, symbol: "info.circle", identifier: versionIdentifier)]
     }
 
-    /// The collapsed Diagnostics disclosure: the device ID, copyable, plus the sync detail the sync
-    /// card keeps out of the way unless the row reports an error (CI-7), and the voice routing log.
-    static func diagnosticsRows(
-        deviceID: String, syncDetail: String?, voiceLines: [String]? = nil
-    ) -> [SettingsRow] {
+    /// The hidden support details: this phone's device ID, the voice routing log and the iCloud
+    /// request counts, for matching a report with the Mac's logs. Nothing reads them from the screen;
+    /// pairing and Remove device on the Mac work without them.
+    static func supportRows(deviceID: String, voiceLines: [String], requests: String?) -> [SettingsRow] {
         var rows = [
             SettingsRow(
                 label: "Device", value: deviceID, symbol: "iphone", identifier: deviceIdentifier,
-                isCopyable: true)
+                isCopyable: true),
+            voiceRoutingRow(lines: voiceLines),
         ]
-        if let syncDetail, !syncDetail.isEmpty {
+        if let requests {
             rows.append(SettingsRow(
-                label: "Sync detail", value: syncDetail, symbol: "arrow.triangle.2.circlepath",
-                identifier: syncDetailIdentifier, wrapsText: true))
-        }
-        if let voiceLines {
-            rows.append(voiceRoutingRow(lines: voiceLines))
+                label: "iCloud", value: requests.replacingOccurrences(of: "iCloud: ", with: ""),
+                symbol: "icloud", identifier: syncDiagnosticsIdentifier, wrapsText: true))
         }
         return rows
     }
@@ -187,8 +187,8 @@ enum LibrarySettingsFormat {
         let tone: WiltedStatusTone
     }
 
-    /// The sync card shows its detail inline only for an error; every other state keeps it in the
-    /// collapsed Diagnostics disclosure (CI-7).
+    /// The sync card shows its detail only for an error. Other states say enough in the status line,
+    /// the Larder's rate-limit banner and the account notice.
     static func showsSyncDetailInline(_ summary: SyncSummary) -> Bool {
         summary.tone == .failure && summary.detail != nil
     }

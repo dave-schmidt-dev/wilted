@@ -17,7 +17,7 @@ struct LibrarySettingsView: View {
     @State private var cache = LibraryCacheSummary()
     @State private var isConfirmingRemoval = false
     @State private var removalNotice: String?
-    @State private var isDiagnosticsExpanded = false
+    @State private var showsSupportDetails = false
 
     var body: some View {
         NavigationStack {
@@ -137,8 +137,8 @@ struct LibrarySettingsView: View {
         .accessibilityIdentifier("wilted-library-settings-storage")
     }
 
-    /// One row: the status, and, once idle, when this phone last fetched the library. The detail
-    /// line waits in the collapsed Diagnostics disclosure; only an error shows it inline (CI-7).
+    /// One row: the status, and, once idle, when this phone last fetched the library. Only an error
+    /// adds a detail line.
     private var devicesCard: some View {
         let sync = model.syncSummary
         return WiltedSettingsCard(title: LibrarySettingsSection.devices.title) {
@@ -168,15 +168,6 @@ struct LibrarySettingsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier(LibrarySettingsFormat.syncDetailIdentifier)
             }
-            // The counters are not observed, so the line re-reads them on a 30 s timeline.
-            TimelineView(.periodic(from: .now, by: 30)) { _ in
-                if let diagnostics = model.syncDiagnostics {
-                    Text(diagnostics)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .accessibilityIdentifier(LibrarySettingsFormat.syncDiagnosticsIdentifier)
-                }
-            }
             scopeNote(.devices)
         }
         .accessibilityElement(children: .contain)
@@ -192,35 +183,36 @@ struct LibrarySettingsView: View {
             StatisticsRows(stats: model.phoneStats, deviceKind: model.deviceKind)
             ForEach(LibrarySettingsFormat.aboutRows(version: version), id: \.identifier) { row in
                 settingsRow(row)
+                    .contentShape(Rectangle())
+                    .onLongPressGesture(minimumDuration: 0.8) { showsSupportDetails.toggle() }
+                    .accessibilityAction(named: showsSupportDetails
+                        ? LibrarySettingsFormat.hideSupportDetailsAction
+                        : LibrarySettingsFormat.showSupportDetailsAction) { showsSupportDetails.toggle() }
             }
-            diagnosticsDisclosure
+            if showsSupportDetails { supportDetails }
             scopeNote(.about)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-about")
     }
 
-    /// The device ID and the sync detail, folded away until asked for. The disclosure starts
-    /// collapsed; the device ID is still one tap and a copy away (CI-7).
-    private var diagnosticsDisclosure: some View {
-        let rows = LibrarySettingsFormat.diagnosticsRows(
-            deviceID: model.deviceID, syncDetail: model.syncSummary.detail,
-            voiceLines: VoiceRoutingLog.shared.lines().reversed())
-        return VStack(alignment: .leading) {
-            DisclosureGroup(isExpanded: $isDiagnosticsExpanded) {
-                ForEach(rows, id: \.identifier) { row in
-                    settingsRow(row)
-                }
-            } label: {
-                Text(LibrarySettingsFormat.diagnosticsDisclosureLabel)
+    /// The hidden support details, shown only after a long press on Version. The request counts are
+    /// not observed, so they re-read on a 30 s timeline.
+    private var supportDetails: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { _ in
+            VStack(alignment: .leading) {
+                Text(LibrarySettingsFormat.supportDetailsLabel)
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                ForEach(LibrarySettingsFormat.supportRows(
+                    deviceID: model.deviceID, voiceLines: VoiceRoutingLog.shared.lines().reversed(),
+                    requests: model.syncDiagnostics), id: \.identifier) { row in
+                    settingsRow(row)
+                }
             }
-            .tint(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-            .accessibilityIdentifier("wilted-library-settings-diagnostics-disclosure")
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wilted-library-settings-diagnostics")
+        .accessibilityIdentifier("wilted-library-settings-support-details")
     }
 
     private func scopeNote(_ section: LibrarySettingsSection) -> some View {

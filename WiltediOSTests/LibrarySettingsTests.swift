@@ -186,21 +186,25 @@ final class LibrarySettingsTests: XCTestCase {
                        "the device ID moves out of About into Diagnostics")
     }
 
-    func testDiagnosticsDisclosureKeepsTheDeviceIDCopyable() {
-        let rows = LibrarySettingsFormat.diagnosticsRows(deviceID: "phone-123", syncDetail: nil)
-        XCTAssertEqual(rows.map(\.identifier), [LibrarySettingsFormat.deviceIdentifier])
-        XCTAssertEqual(rows.first?.label, "Device")
+    func testSupportDetailsKeepTheDeviceIDAndVoiceLogCopyableWithTheRequestCounts() {
+        let rows = LibrarySettingsFormat.supportRows(
+            deviceID: "phone-123", voiceLines: [],
+            requests: "iCloud: 3 requests in the last 5 minutes · no limits since launch")
+        XCTAssertEqual(rows.map(\.identifier), [LibrarySettingsFormat.deviceIdentifier,
+                                                LibrarySettingsFormat.voiceRoutingLogIdentifier,
+                                                LibrarySettingsFormat.syncDiagnosticsIdentifier])
+        XCTAssertEqual(rows.map(\.label), ["Device", "Voice routing", "iCloud"])
         XCTAssertEqual(rows.first?.value, "phone-123")
-        XCTAssertEqual(rows.first?.isCopyable, true, "the device ID stays copyable")
+        XCTAssertEqual(rows.map(\.isCopyable), [true, true, false])
+        XCTAssertEqual(rows.last?.value, "3 requests in the last 5 minutes · no limits since launch")
+        XCTAssertEqual(LibrarySettingsFormat.supportRows(deviceID: "p", voiceLines: [], requests: nil).count, 2,
+                       "without counters there is no request row")
     }
 
-    func testSyncDetailShowsInlineOnlyForAnErrorAndOtherwiseWaitsInDiagnostics() {
+    func testSyncDetailShowsOnlyForAnError() {
         let fetched = LibrarySettingsFormat.sync(
             isRefreshing: false, quarantined: false, error: nil, lastRefresh: Date(), deviceKind: "iPhone")
         XCTAssertFalse(LibrarySettingsFormat.showsSyncDetailInline(fetched))
-        let fetchedRows = LibrarySettingsFormat.diagnosticsRows(deviceID: "phone", syncDetail: fetched.detail)
-        XCTAssertEqual(fetchedRows.map(\.identifier),
-                       [LibrarySettingsFormat.deviceIdentifier, LibrarySettingsFormat.syncDetailIdentifier])
 
         let failure = LibrarySettingsFormat.sync(
             isRefreshing: false, quarantined: false, error: "The library could not be fetched.", lastRefresh: nil, deviceKind: "iPhone")
@@ -404,8 +408,6 @@ extension LibrarySettingsTests {
             "wilted-library-settings-button",
             "wilted-library-settings-cache-size",
             "wilted-library-settings-device-id",
-            "wilted-library-settings-diagnostics",
-            "wilted-library-settings-diagnostics-disclosure",
             "wilted-library-settings-direct-downloads",
             "wilted-library-settings-direct-downloads-denied",
             "wilted-library-settings-done",
@@ -422,6 +424,7 @@ extension LibrarySettingsTests {
             "wilted-library-settings-stat-saved",
             "wilted-library-settings-storage",
             "wilted-library-settings-storage-info",
+            "wilted-library-settings-support-details",
             "wilted-library-settings-sync",
             "wilted-library-settings-sync-detail",
             "wilted-library-settings-sync-diagnostics",

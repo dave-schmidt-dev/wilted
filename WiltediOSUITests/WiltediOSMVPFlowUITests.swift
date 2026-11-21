@@ -94,17 +94,9 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
 
         let status = settingsSyncStatus(in: app)
         XCTAssertTrue(status.label.hasPrefix("Paused"), status.label)
-        // A paused sync is not an error, so its detail sits in the Diagnostics disclosure (CI-7). The
-        // disclosure starts collapsed; scroll to it, expand it, then find the detail inside.
-        let disclosure = app.descendants(matching: .any)["wilted-library-settings-diagnostics-disclosure"]
-        for _ in 0..<6 where !disclosure.exists { app.swipeUp() }
-        XCTAssertTrue(disclosure.waitForExistence(timeout: 5), app.debugDescription)
-        disclosure.tap()
-        let detail = app.staticTexts.matching(
-            NSPredicate(format: "label BEGINSWITH %@", "iCloud is rate limiting sync.")).firstMatch
-        for _ in 0..<6 where !detail.exists { app.swipeUp() }
-        XCTAssertTrue(detail.waitForExistence(timeout: 5), app.debugDescription)
-        XCTAssertTrue(detail.label.hasPrefix("iCloud is rate limiting sync."), detail.label)
+        // A paused sync is not an error: the Larder banner above explains it, and Settings adds no
+        // detail row.
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-library-settings-sync-detail"].exists)
         assertNoLiveTransport(in: app)
     }
 
