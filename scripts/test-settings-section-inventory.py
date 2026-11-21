@@ -24,6 +24,19 @@ class SettingsInventory(unittest.TestCase):
         self.assertIn("model.stopDirectDownloads(for: row.id)", rows)
         self.assertIn(".disabled(!canStop)", card)
 
+    def test_phone_sections_render_in_declared_order(self):
+        view = (ROOT.parent / "WiltediOS/Library/LibrarySettingsView.swift").read_text()
+        self.assertIn("ForEach(LibrarySettingsSection.allCases", view)
+        for name in ("general", "playback", "storage", "devices", "about"):
+            self.assertRegex(view, rf"case \.{name}:\s+{name}Card")
+            body = view.split(f"private var {name}Card:", 1)[1].split("\n    }", 1)[0]
+            self.assertIn(f"WiltedSettingsCard(title: LibrarySettingsSection.{name}.title)", body)
+            self.assertIn(f"scopeNote(.{name})", body)
+        self.assertEqual(view.count("WiltedSettingsCard(title:"), 5)
+        about = view.split("private var aboutCard:", 1)[1].split("private var", 1)[0]
+        for content in ("StatisticsRows(", "aboutRows(", "diagnosticsDisclosure"):
+            self.assertIn(content, about)
+
     def test_sections(self):
         settings = source("WiltedMacSettingsView")
         self.assertIn("sectionContent", settings, "Settings must render the selected section")

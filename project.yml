@@ -408,6 +408,8 @@ targets:
     sources:
       - path: WiltediOSTests
         optional: true
+      # Compare the phone section titles with the shipping Mac enum.
+      - path: WiltedMac/Views/WiltedMacSettingsSections.swift
       # The extension's handler is plain Intents code, so the tests compile it directly.
       - path: WiltediOSIntents/PlayMediaExtensionHandler.swift
       - path: WiltediOS/Siri/VoiceRoutingLine.swift

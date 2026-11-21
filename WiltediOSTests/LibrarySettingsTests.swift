@@ -370,3 +370,70 @@ extension LibrarySettingsTests {
         XCTAssertTrue(rig.engine.isPlaying)
     }
 }
+
+extension LibrarySettingsTests {
+    func testPhoneSettingsSectionOrderAndTitles() {
+        XCTAssertEqual(LibrarySettingsSection.allCases.map(\.title), ["General", "Playback", "Storage", "Devices", "About"])
+    }
+
+    func testSharedSettingsTitlesMatchMacOrder() {
+        let phone = LibrarySettingsSection.allCases.filter { [.general, .devices, .about].contains($0) }
+        let mac = WiltedMacSettingsSection.allCases.filter { [.general, .devices, .about].contains($0) }
+        XCTAssertEqual(phone.map(\.title), mac.map(\.title))
+    }
+
+    func testPhoneSettingsScopeFootnotes() {
+        for section in LibrarySettingsSection.allCases {
+            XCTAssertTrue(section.footnote(deviceKind: "iPhone").contains("this iPhone"), section.title)
+            XCTAssertTrue(section.footnote(deviceKind: "iPad").contains("this iPad"), section.title)
+        }
+    }
+
+    func testPhoneSettingsIdentifierInventory() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let paths = ["WiltediOS/Library/LibrarySettingsView.swift", "WiltediOS/Library/LibrarySettingsFormat.swift",
+                     "WiltediOS/Library/LibraryListView.swift", "Shared/WiltedRootView.swift"]
+        let sources = try paths.map { try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8) }.joined()
+        let identifiers = [
+            "wilted-library-settings",
+            "wilted-library-settings-about",
+            "wilted-library-settings-appearance",
+            "wilted-library-settings-auto-play-next",
+            "wilted-library-settings-button",
+            "wilted-library-settings-cache-size",
+            "wilted-library-settings-device-id",
+            "wilted-library-settings-diagnostics",
+            "wilted-library-settings-diagnostics-disclosure",
+            "wilted-library-settings-direct-downloads",
+            "wilted-library-settings-direct-downloads-denied",
+            "wilted-library-settings-done",
+            "wilted-library-settings-playback",
+            "wilted-library-settings-remove-audio",
+            "wilted-library-settings-remove-notice",
+            "wilted-library-settings-skip-back",
+            "wilted-library-settings-skip-forward",
+            "wilted-library-settings-speak-interruptions",
+            "wilted-library-settings-speed",
+            "wilted-library-settings-stat-downloaded",
+            "wilted-library-settings-stat-listened",
+            "wilted-library-settings-stat-saved",
+            "wilted-library-settings-storage",
+            "wilted-library-settings-storage-info",
+            "wilted-library-settings-sync",
+            "wilted-library-settings-sync-detail",
+            "wilted-library-settings-sync-diagnostics",
+            "wilted-library-settings-sync-progress",
+            "wilted-library-settings-sync-status",
+            "wilted-library-settings-text-scale",
+            "wilted-library-settings-version",
+            "wilted-library-settings-voice-routing-log",
+            "wilted-lifetime-statistics",
+            "wilted-use-current-account",
+        ]
+        for id in identifiers {
+            XCTAssertEqual(sources.components(separatedBy: "\"\(id)\"").count - 1, 1, id)
+        }
+        XCTAssertTrue(sources.contains(#""\(row.identifier)-copy""#))
+        XCTAssertTrue(sources.contains(#""\(identifier)-\(option.id)""#))
+    }
+}

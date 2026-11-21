@@ -20,6 +20,7 @@ enum WiltedMacSettingsSection: String, CaseIterable {
     }
 }
 
+#if os(macOS)
 extension WiltedMacModel {
     var settingsSection: WiltedMacSettingsSection {
         get { WiltedMacSettingsSection(savedAnchor: scrollAnchor(for: .settings).wrappedValue) }
@@ -49,3 +50,4 @@ extension WiltedMacSettingsView {
         }
     }
 }
+#endif

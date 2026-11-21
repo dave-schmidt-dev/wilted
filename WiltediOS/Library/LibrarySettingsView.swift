@@ -23,13 +23,15 @@ struct LibrarySettingsView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xLarge) {
-                    appearanceCard
-                    playbackCard
-                    storageCard
-                    syncCard
-                    statisticsCard
-                    aboutCard
-                    diagnosticsCard
+                    ForEach(LibrarySettingsSection.allCases, id: \.self) { section in
+                        switch section {
+                        case .general: generalCard
+                        case .playback: playbackCard
+                        case .storage: storageCard
+                        case .devices: devicesCard
+                        case .about: aboutCard
+                        }
+                    }
                 }
                 .padding(WiltedTheme.Spacing.large)
             }
@@ -60,17 +62,18 @@ struct LibrarySettingsView: View {
 
     // MARK: Cards
 
-    private var appearanceCard: some View {
-        WiltedSettingsCard(title: "Appearance") {
+    private var generalCard: some View {
+        WiltedSettingsCard(title: LibrarySettingsSection.general.title) {
             iconRow("textformat.size", "Text and icon size") { EmptyView() }
             segmented(selection: $settings.textScale, identifier: "wilted-library-settings-text-scale")
+            scopeNote(.general)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-appearance")
     }
 
     private var playbackCard: some View {
-        WiltedSettingsCard(title: "Playback") {
+        WiltedSettingsCard(title: LibrarySettingsSection.playback.title) {
             Toggle("Auto-play next episode", isOn: $settings.autoPlayNext)
                 .wiltedFont(.utility)
                 .accessibilityIdentifier("wilted-library-settings-auto-play-next")
@@ -97,13 +100,14 @@ struct LibrarySettingsView: View {
                     "Fast forward", selection: $settings.skipForwardSeconds, symbol: "goforward", leading: false,
                     identifier: "wilted-library-settings-skip-forward")
             }
+            scopeNote(.playback)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-playback")
     }
 
     private var storageCard: some View {
-        WiltedSettingsCard(title: "Storage") {
+        WiltedSettingsCard(title: LibrarySettingsSection.storage.title) {
             LibraryStorageSummaryView(summary: cache)
             Button(role: .destructive) { isConfirmingRemoval = true } label: {
                 Label { Text("Remove all downloaded audio").wiltedFont(.body) } icon: { Image(systemName: "trash") }
@@ -116,6 +120,7 @@ struct LibrarySettingsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-library-settings-remove-notice")
             }
+            scopeNote(.storage)
         }
         .confirmationDialog(
             "Remove all downloaded audio?", isPresented: $isConfirmingRemoval, titleVisibility: .visible
@@ -133,9 +138,9 @@ struct LibrarySettingsView: View {
 
     /// One row: the status, and, once idle, when this phone last fetched the library. The detail
     /// line waits in the collapsed Diagnostics disclosure; only an error shows it inline (CI-7).
-    private var syncCard: some View {
+    private var devicesCard: some View {
         let sync = model.syncSummary
-        return WiltedSettingsCard(title: WiltedScreenCopy.sync) {
+        return WiltedSettingsCard(title: LibrarySettingsSection.devices.title) {
             WiltedPublicationNotice(summary: model.publicationSummary, detail: model.publicationDetail, qualifier: model.publicationQualifier)
             if model.accountQuarantined { WiltedAccountRecoveryNotice(role: .phone) { Task { await model.recoverFromAccountChange() } } }
             iconRow("arrow.triangle.2.circlepath", "Status") {
@@ -171,13 +176,10 @@ struct LibrarySettingsView: View {
                         .accessibilityIdentifier(LibrarySettingsFormat.syncDiagnosticsIdentifier)
                 }
             }
+            scopeNote(.devices)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-sync")
-    }
-
-    private var statisticsCard: some View {
-        StatisticsCard(stats: model.phoneStats, deviceKind: model.deviceKind)
     }
 
     private var aboutCard: some View {
@@ -185,10 +187,13 @@ struct LibrarySettingsView: View {
 #if DEBUG
         if let pinned = LibraryUITestFixture.pinnedVersion { version = pinned }
 #endif
-        return WiltedSettingsCard(title: LibrarySettingsFormat.aboutTitle) {
+        return WiltedSettingsCard(title: LibrarySettingsSection.about.title) {
+            StatisticsRows(stats: model.phoneStats, deviceKind: model.deviceKind)
             ForEach(LibrarySettingsFormat.aboutRows(version: version), id: \.identifier) { row in
                 settingsRow(row)
             }
+            diagnosticsDisclosure
+            scopeNote(.about)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-about")
@@ -196,11 +201,11 @@ struct LibrarySettingsView: View {
 
     /// The device ID and the sync detail, folded away until asked for. The disclosure starts
     /// collapsed; the device ID is still one tap and a copy away (CI-7).
-    private var diagnosticsCard: some View {
+    private var diagnosticsDisclosure: some View {
         let rows = LibrarySettingsFormat.diagnosticsRows(
             deviceID: model.deviceID, syncDetail: model.syncSummary.detail,
             voiceLines: VoiceRoutingLog.shared.lines().reversed())
-        return WiltedSettingsCard(title: LibrarySettingsFormat.diagnosticsTitle) {
+        return VStack(alignment: .leading) {
             DisclosureGroup(isExpanded: $isDiagnosticsExpanded) {
                 ForEach(rows, id: \.identifier) { row in
                     settingsRow(row)
@@ -215,6 +220,12 @@ struct LibrarySettingsView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-diagnostics")
+    }
+
+    private func scopeNote(_ section: LibrarySettingsSection) -> some View {
+        Text(section.footnote(deviceKind: model.deviceKind))
+            .wiltedFont(.utility)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
     }
 
     // MARK: Pieces
@@ -413,13 +424,14 @@ private struct SettingsInfoButton: View {
 }
 
 /// This device's lifetime totals. Observes the store itself, since the model does not republish it.
-private struct StatisticsCard: View {
+private struct StatisticsRows: View {
     @ObservedObject var stats: LibraryPhoneStatsStore
     let deviceKind: String
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        WiltedSettingsCard(title: LibrarySettingsFormat.statisticsTitle(deviceKind: deviceKind)) {
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
+            Text(LibrarySettingsFormat.statisticsTitle(deviceKind: deviceKind)).wiltedFont(.body)
             ForEach(LibrarySettingsFormat.phoneStatRows(stats.stats), id: \.identifier) { stat in
                 HStack(spacing: WiltedTheme.Spacing.medium) {
                     Image(symbol: stat.symbol)
