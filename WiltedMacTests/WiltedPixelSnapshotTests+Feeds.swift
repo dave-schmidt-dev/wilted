@@ -35,7 +35,7 @@ extension WiltedPixelSnapshotTests {
                 appearance: appearance, dynamicType: .standard, reduceMotion: false)
             let image = render(
                 WiltedMacFeedsView(model: model, policyBoard: board), variant: variant,
-                size: CGSize(width: 760, height: 560))
+                size: CGSize(width: 760, height: 660))
             let bitmap = try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
             XCTAssertGreaterThan(distinctColorCount(in: bitmap), 8)
             assertSnapshot(image,

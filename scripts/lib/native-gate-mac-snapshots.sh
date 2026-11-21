@@ -242,7 +242,7 @@ validate_pixel_snapshot_baselines() {
       testMacToolbarPixelBaselines.mac-shell-toolbar-*.png) expected_size='224 x 56' ;;
       testMacAddSheetPixelBaselines.mac-shell-add-sheet-*.png) expected_size='520 x 420' ;;
       testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-*.png) expected_size='520 x 90' ;;
-      testFeedsRowPixelBaselines.mac-shell-feeds-row-*.png) expected_size='760 x 440' ;;
+      testFeedsRowPixelBaselines.mac-shell-feeds-row-*.png) expected_size='760 x 660' ;;
       testLarderKindFilterPixelBaselines.mac-shell-larder-kind-filter-*.png) expected_size='760 x 560' ;;
       testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-minimum-*.png) expected_size='520 x 560' ;;
       testRealSizeLarderHeaderPixelBaselines.mac-shell-larder-real-size-full-*.png) expected_size='1000 x 560' ;;
